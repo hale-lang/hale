@@ -112,7 +112,7 @@ main locus App {
         return n;
     }
     run() {
-        let repo = "/tmp/dna-apply-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("apply");
         self.repo = repo;
         std::io::fs::mkdir(repo) or discard;
         std::io::fs::mkdir(repo + "/.hale") or discard;
@@ -312,8 +312,7 @@ main locus App {
         // library reads the library's files; git prints some names
         // quoted; an ignored file is compiled all the same. The inputs
         // are the compiler's own word.
-        let repo2 = "/tmp/dna-apply-imp-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo2) or discard;
+        let repo2 = dna::scratch_root("apply-imp");
         std::io::fs::mkdir(repo2 + "/app") or discard;
         std::io::fs::mkdir(repo2 + "/lib") or discard;
         std::io::fs::mkdir(repo2 + "/elsewhere") or discard;
@@ -407,8 +406,7 @@ main locus App {
         // untracked, unfinished `lib/helper.hl` is nothing to the
         // destination's build today and an input the moment the
         // candidate lands — and it was applied, and broke the build.
-        let repo3 = "/tmp/dna-apply-newimp-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo3) or discard;
+        let repo3 = dna::scratch_root("apply-newimp");
         std::io::fs::mkdir(repo3 + "/app") or discard;
         std::io::fs::mkdir(repo3 + "/lib") or discard;
         std::io::fs::mkdir(repo3 + "/.hale") or discard;
@@ -484,6 +482,9 @@ main locus App {
         std::test::assert(self.imp.journal.verify_chain(), "the second repository's chain is intact");
 
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
+        dna::scratch_done(repo);
+        dna::scratch_done(repo2);
+        dna::scratch_done(repo3);
     }
 }
 fn main() { App { }; }

@@ -288,10 +288,10 @@ main locus App {
         std::test::assert(std::str::contains(self.body_of(j, "mutation.failed", me), "private"), label + ": and the editor was asked under it — the private backend answered: " + self.body_of(j, "mutation.failed", me));
     }
     run() {
-        let base = "/tmp/dna-corr-" + to_string(std::process::pid());
+        let base = dna::scratch_root("corr");
 
         // ---- live: two sibling edit Works of one Task, planned and mutated
-        let repo = self.repo_at(base + "-live");
+        let repo = self.repo_at(base + "/live");
         self.live = dna::Dna {
             journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
@@ -337,7 +337,7 @@ main locus App {
         self.live = dna::Dna { };
 
         // ---- a restart over the shapes a stopped organism leaves
-        let repo2 = self.repo_at(base + "-restart");
+        let repo2 = self.repo_at(base + "/restart");
         self.seeded = dna::GitJournal { repo: repo2, author: "dna" };
         self.seed();
         self.restarted = dna::Dna {
@@ -412,7 +412,7 @@ main locus App {
         // ---- the same shapes read as record + ledger: the record's
         //      Mutation rows come before the ledger's births and plans,
         //      and every association still answers by id
-        let repo3 = self.repo_at(base + "-split");
+        let repo3 = self.repo_at(base + "/split");
         self.record = dna::GitJournal { repo: repo3, author: "dna" };
         self.ledger = dna::MemJournal { };
         self.seed_mode = "two";
@@ -447,7 +447,7 @@ main locus App {
         //      recovery from every row it has: the Review is restored, the
         //      Mutation is not failed for lacking its summary, no second
         //      Mutation is minted, nothing is resumed
-        let repo4 = self.repo_at(base + "-summary");
+        let repo4 = self.repo_at(base + "/summary");
         self.summary_refused = dna::Dna {
             journal: Refusing { inner: dna::GitJournal { repo: repo4 }, refuse_kind: "mutation.proposed" },
             gateway: dna::MutationGateway {
@@ -498,7 +498,7 @@ main locus App {
         std::test::assert_eq_int(self.rows(jr, "mutation.requested", ""), 1, "and mints no second Mutation");
         std::test::assert_eq_int(self.rows(jr, "task.resumed", ts), 0, "nor resumes the Task: its Work's Mutation is in the record");
 
-        let rm = sh("rm\n-rf\n" + repo + "\n" + repo2 + "\n" + repo3 + "\n" + repo4);
+        dna::scratch_done(base);
 
         // ---- (review) the binding carries the whole request: every field
         //      of it survives the row and comes back as asked

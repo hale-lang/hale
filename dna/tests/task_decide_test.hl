@@ -97,8 +97,7 @@ main locus App {
         std::test::assert(!dna::digest_well_formed("sha256:ABC"), "not a digest");
         std::test::assert_eq_str(dna::evidence_digest(" 00ff "), "sha256:00ff", "a bare hex digest is named as the record names evidence");
 
-        let scratch = "/tmp/dna-decide-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("decide");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/books";
@@ -184,7 +183,7 @@ main locus App {
         let bound = dna_cli(app, decide + "t45\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--as\nmara");
         std::test::assert(std::str::contains(bound, "task t45 still handed") && std::str::contains(bound, "practice `acceptance/contract-signature` (" + native + ") requires a native decision"), "decided under the practice it was handed with: " + bound);
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

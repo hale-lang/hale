@@ -195,8 +195,7 @@ main locus App {
         let acceptance = source() + "/dna/acceptance";
         std::test::assert(std::io::fs::file_exists(acceptance + "/books/main.hl"), "the books intake is at " + acceptance + "/books (HALE_DNA_SOURCE names the repository)");
         let fixture = acceptance + "/books.fixture";
-        let scratch = "/tmp/dna-books-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("books");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
         let app = scratch + "/books";
@@ -402,7 +401,7 @@ main locus App {
         std::test::assert(std::str::contains(week2, "total CU 470") && std::str::contains(week2, "bills: 5; open obligations: 0"), "and still counted once: " + week2);
         std::test::assert_eq_int(count(app, "grant.reserved", "", ""), 0, "no money moved");
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

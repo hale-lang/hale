@@ -142,16 +142,15 @@ main locus App {
         return cookie_line[0..std::str::index_of(cookie_line, ";")];
     }
     run() {
-        let scratch = "/tmp/dna-two-heads-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("two-heads");
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nshared");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/shared";
-        let port = 30000 + (std::process::pid() + 17) % 20000;
-        let kport = 30000 + (std::process::pid() + 23) % 20000;
+        let port = dna::free_port(0);
+        let kport = dna::free_port(1);
         let ui = "http://127.0.0.1:" + to_string(port);
         let service = "http://127.0.0.1:" + to_string(kport);
         let g1 = in_dir(app, "git\nconfig\nuser.name\nhead-operator");
@@ -244,7 +243,7 @@ main locus App {
 
         let stop = dna::run_tool("kill\n" + pid);
         let stop2 = dna::run_tool("kill\n" + kpid2);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

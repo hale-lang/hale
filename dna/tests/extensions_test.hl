@@ -74,7 +74,7 @@ main locus App {
         std::time::sleep(150ms);
     }
     run() {
-        let repo = "/tmp/dna-ext-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("ext");
         self.repo = repo;
         std::io::fs::mkdir(repo) or discard;
         std::io::fs::mkdir(repo + "/.hale") or discard;
@@ -196,6 +196,7 @@ main locus App {
         std::test::assert_eq_int(self.count("appendage.proposed"), 1, "proposed once, not on every raise");
         std::test::assert_eq_int(self.dna.mutations_minted, mutations_before, "nothing was grown or mutated");
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

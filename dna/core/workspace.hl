@@ -154,6 +154,129 @@ fn wait_scale() -> Int {
 // `secs` seconds on a quiet machine, widened by `wait_scale()`.
 fn wait_secs(secs: Int) -> Int { return secs * wait_scale(); }
 
+// ---- a port a fixture's service can have (GH #873) -------------------
+
+// A loopback port nothing is listening on: bound here, closed, and
+// handed back.
+//
+// The fixtures used to compute `30000 + (pid + salt) % 17000` and trust
+// it. Nothing checked, so a collision with any other listener on the
+// box — a neighbouring slice's fixture, another checkout's DNA run, a
+// server of the developer's — reached the fixture as "the service never
+// came up", which is the shape #795 reported and #869 could not
+// reproduce. Here the bind IS the check: a candidate that cannot be
+// bound is not returned, and the search steps to the next one. Each
+// refusal's errno is on stderr from the bind itself
+// (`lotus_tcp_listen_socket: bind: Address already in use`), so a
+// fixture that ends up with no port says which ports it tried and why
+// each was refused.
+//
+// `index` separates the several ports one fixture needs: closing the
+// probe leaves the port free again, so two calls with the same index
+// answer the same port. Give each service its own (0, 1, 2, …) — the
+// starts are 512 apart, so one search would have to cross 512 bound
+// ports to reach another's answer.
+//
+// 30000..46999, the range the fixtures' own arithmetic chose: clear of
+// the fixed ports the OIDC fixtures bind. -1, with a line saying so,
+// when every candidate was in use.
+//
+// A window stays open between the close here and the service's own
+// bind — the Rust harness's `free_port()` has the same one. What this
+// removes is the fixture that never looked.
+fn free_port(index: Int) -> Int {
+    let span = 17000;
+    let start = (std::process::pid() * 64 + index * 512) % span;
+    let mut i = 0;
+    while i < 512 {
+        let port = 30000 + (start + i) % span;
+        let fd = std::io::tcp::__listen_socket("127.0.0.1", port);
+        if fd >= 0 {
+            std::io::tcp::__close_fd(fd);
+            return port;
+        }
+        i = i + 1;
+    }
+    println("dna::free_port: every port from ", 30000 + start, " on (512 candidates in 30000..46999) was refused at bind; each errno is above. The caller is handed -1.");
+    return -1;
+}
+
+// ---- where a fixture works (GH #909) ---------------------------------
+
+// A fixture's scratch root: `/tmp/dna-<what>-<pid>`, empty, and its
+// own. Anything left at that path from an earlier run that held this
+// pid goes first, so a fixture never reads a stranger's files.
+//
+// One place knows the shape, because three things read it: the
+// fixture, the suite's leftover-process guard (which attributes a
+// leaked process to the root in its command line, GH #872), and the
+// sweep below.
+fn scratch_root(what: String) -> String {
+    let dir = "/tmp/dna-" + what + "-" + to_string(std::process::pid());
+    let gone = run_tool("rm\n-rf\n" + dir);
+    std::io::fs::mkdir(dir) or discard;
+    scratch_register(dir);
+    return dir;
+}
+
+// Where the slice that started this fixture records the roots it is
+// responsible for: `/tmp/dna-suite-<HALE_DNA_SUITE_TAG>`, one file per
+// root. "" when nothing stamped this process — a fixture run by hand
+// belongs to no slice, and nobody sweeps after it.
+fn scratch_registry() -> String {
+    let tag = trim_nl(std::env::var("HALE_DNA_SUITE_TAG"));
+    if len(tag) == 0 { return ""; }
+    return "/tmp/dna-suite-" + tag;
+}
+
+// The entry in the registry for `dir`, named after the root and
+// holding the root's path. The sweep never has to reconstruct a path
+// from a name, and never touches a root it has no entry for: a
+// neighbouring slice's roots, and another checkout's, carry a
+// different tag or none.
+fn scratch_register(dir: String) {
+    let reg = scratch_registry();
+    if len(reg) == 0 { return; }
+    std::io::fs::mkdir(reg) or discard;
+    std::io::fs::write_file(reg + "/" + scratch_name(dir), dir) or discard;
+}
+
+// The fixture is done with `dir` and passed: the root goes, and its
+// registry entry with it. `HALE_DNA_KEEP_SCRATCH` keeps both and says
+// where the root is, which is the knob for looking at what a fixture
+// built.
+fn scratch_done(dir: String) {
+    if keep_scratch() {
+        println("kept (HALE_DNA_KEEP_SCRATCH): ", dir);
+        return;
+    }
+    let gone = run_tool("rm\n-rf\n" + dir);
+    let reg = scratch_registry();
+    if len(reg) == 0 { return; }
+    // A root can survive its own removal: a host or a body the fixture
+    // started is still on its way down and writes the directory back
+    // underneath the `rm` (`relayrepeat` left a 20K skeleton that way).
+    // The record stays for exactly that case, so the slice's sweep —
+    // which runs once everything the fixture started is gone — takes
+    // it. Dropping the record here regardless is what let one through.
+    if (std::io::fs::list_dir_count(dir) or - 1) >= 0 { return; }
+    std::io::fs::unlink(reg + "/" + scratch_name(dir)) or discard;
+}
+
+// Whether a scratch root is kept for inspection instead of removed.
+// Read by the fixtures AND by the suite's sweep, so one value decides
+// both: a knob that cleaned up behind the fixture that honoured it
+// would be no knob at all.
+fn keep_scratch() -> Bool {
+    let v = trim_nl(std::env::var("HALE_DNA_KEEP_SCRATCH"));
+    return len(v) > 0 && v != "0";
+}
+
+// A root's last path segment, which is what names its registry entry.
+fn scratch_name(dir: String) -> String {
+    return dir[(last_slash(dir) + 1)..len(dir)];
+}
+
 // ---- workspaces ------------------------------------------------------
 
 type Worktree {

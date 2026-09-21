@@ -92,8 +92,7 @@ main locus App {
         std::test::assert_eq_str(dna::completion_refusal("mara", false, "", "", ""), "", "no condition, a note will do");
         std::test::assert(std::str::contains(dna::completion_refusal("mara", true, "", "lost", "Mara"), "someone other than"), "self-authorized, case aside");
 
-        let scratch = "/tmp/dna-evidence-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("evidence");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbills");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/bills";
@@ -164,7 +163,7 @@ main locus App {
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"exception.authorized\"\t\"entity\": \"t55\""), 0, "and nothing was authorized");
         std::test::assert(std::str::contains(dna_cli(app, "status"), "t53 [done] i-t53: file the April taxi receipt — exception: the driver gave no receipt (authorized by dana)"), "and shown as one");
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

@@ -44,8 +44,7 @@ main locus App {
         return n;
     }
     run() {
-        let repo = "/tmp/dna-eff-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("eff");
         std::io::fs::mkdir(repo + "/app") or discard;
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
@@ -108,7 +107,7 @@ main locus App {
         std::test::assert(dna::effect_request(self.one.journal, "commit:m9:s1", "the candidate"), "another request holds the commit's claim");
         let committed = self.one.gateway.commit(self.one.journal, "m9", "s1", "the candidate", lease9.token, now);
         std::test::assert(!committed.ok && std::str::contains(committed.refused, "commit in flight"), "a commit under a held claim is refused: " + committed.refused);
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

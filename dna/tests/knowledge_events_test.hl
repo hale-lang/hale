@@ -48,8 +48,7 @@ main locus App {
         return out;
     }
     run() {
-        let repo = "/tmp/dna-know-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("know");
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
@@ -117,7 +116,7 @@ main locus App {
         let d3 = self.again.propose_knowledge(dna::Idea { id: "p3", kind: "idea", text: "siblings coordinating", author: "org/a" }, "org/b");
         std::test::assert_eq_str(d3, "", "refused");
         std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "lateral"), "the reason");
-        let rm = dna::run_tool("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 

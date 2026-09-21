@@ -58,8 +58,7 @@ main locus App {
         std::test::assert_eq_str(dna::protected_erase_step(false, "", false), "", "no body, never kept: the redaction is recorded");
         std::test::assert_eq_str(dna::protected_erase_step(false, "get: connection refused", false), "unread: get: connection refused", "a store that could not read records nothing");
         std::test::assert_eq_str(dna::protected_erase_step(false, "get: connection refused", true), "unread: get: connection refused", "and never says already redacted");
-        let scratch = "/tmp/dna-retention-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("retention");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
@@ -163,7 +162,7 @@ main locus App {
         std::test::assert(listed.code != 0 && std::str::contains(listed.stdout + listed.stderr, "already redacted"), "the other clone knows it was redacted: " + listed.stdout + listed.stderr);
 
         // ---- a protected body, through a memory service and the CLI
-        let port = 30000 + (std::process::pid() + 7) % 20000;
+        let port = dna::free_port(0);
         let url = "http://127.0.0.1:" + to_string(port);
         let started = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup \"$1\" dna knowledge . --port \"$2\" >.hale/retention-service.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port));
         let pid = dna::trim_nl(started.stdout);
@@ -244,7 +243,7 @@ main locus App {
         std::test::assert(summary.status == 200 && std::str::contains(sbody, "\"error\": \"\""), "the service still projects the record: " + sbody);
 
         let stop = dna::run_tool("kill\n" + pid);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

@@ -94,7 +94,7 @@ main locus App {
         return copied;
     }
     run() {
-        let repo = "/tmp/dna-recovery-two-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("recovery-two");
         let mk = sh("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1/app\" \"$1/org\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n" + repo);
         std::test::assert(mk.code == 0, "a repository");
         std::io::fs::write_file(repo + "/app/main.hl", APP) or discard;
@@ -181,7 +181,7 @@ main locus App {
         let mut k = 0;
         while k < self.one.journal.revision() { let e = self.one.journal.read(k); if e.entity == t5 || std::str::starts_with(e.entity, t5 + "/") { about = about + e.kind + "@" + to_string(e.seq) + " "; } k = k + 1; }
         std::test::assert(born >= 0 && planned > born, "the birth precedes the plan, in the merged order: born " + to_string(born) + ", planned " + to_string(planned) + " for " + t5 + ": " + about);
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 

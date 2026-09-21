@@ -102,8 +102,7 @@ main locus App {
         std::test::assert(len(dna::connection_name_refusal("Acct")) > 0 && len(dna::connection_name_refusal("sync")) > 0 && len(dna::connection_name_refusal("acct-2")) == 0, "connection names");
         std::test::assert(dna::handoff_id("g", "p", "task", "t7") == dna::handoff_id("g", "p", "task", "t7") && dna::handoff_id("g", "p", "task", "t7") != dna::handoff_id("g", "p", "receipt", "t7") && dna::handoff_id("g", "p", "task", "t7") != dna::handoff_id("g", "q", "task", "t7"), "one fact into one record, one handoff");
 
-        let scratch = "/tmp/dna-handoff-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("handoff");
         let firm = project(scratch, "firm", "riley");
         let acct = project(scratch, "acct", "noor");
         let firm_url = scratch + "/firm.git";
@@ -275,7 +274,7 @@ main locus App {
         std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\""), 5, "history stays here");
         std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\""), 5, "and there");
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 
