@@ -341,7 +341,14 @@ hale replay run.halerec app.hl --diff --json      # ...that verdict, machine-rea
 hale replay run.halerec app.hl --at 65:12 # SIGSTOP at consumer 65's 12th consume
 hale replay run.halerec app.hl --allow-truncated  # crashed run → replay the prefix
 hale replay run.halerec app.hl --feed     # inject the ingress tape into changed code
+hale replay run.halerec app.hl --dev      # the build options the recording was made under
 ```
+
+`replay` recompiles the program, so it takes `hale build`'s options
+— as `hale run` does — and needs the ones the recording was made
+under: they are part of the execution identity, so a recording from
+`hale run --dev` is refused by a default `hale replay` and admitted
+by `hale replay --dev`.
 
 The full story — admission by executable identity, the
 safe-by-default effect gate (`--allow-live-effects`), env-value

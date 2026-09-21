@@ -274,6 +274,110 @@ fn admission_rejects_model_mismatch_and_truncation() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// GH #904: the execution identity carries the options the
+/// recording was MADE under. `hale run` compiled with
+/// `BuildOptions::default()` and fingerprinted those defaults
+/// whatever the command line said, so a recording could claim
+/// options it was not built with — and no `hale run` invocation
+/// could produce a non-default build in the first place. Both
+/// commands take the same flag set now, so the identity is the
+/// admission boundary it is supposed to be.
+#[test]
+fn a_recording_carries_the_build_options_it_was_made_under() {
+    let dir = workdir("buildopts");
+    let prog = dir.join("demo.hl");
+    // No effect frontier, so the effects gate stays out of the way
+    // and admission is the only thing under test.
+    std::fs::write(&prog, "fn main() { let x = 1 + 1; }\n").unwrap();
+
+    let dev_rec = dir.join("dev.halerec");
+    let out = hale()
+        .args(["run", "--dev"])
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &dev_rec)
+        .output()
+        .expect("hale run --dev");
+    assert!(
+        out.status.success(),
+        "`hale run --dev` must build and run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dev_rec.is_file(), "`hale run --dev` recorded nothing");
+
+    // A default compile is not the executable this was recorded
+    // from: refused, by the identity check, with the identity
+    // message.
+    let out = hale()
+        .arg("replay")
+        .arg(&dev_rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a --dev recording is not a default build: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("different build inputs"),
+        "and it is the identity that refuses it: {}",
+        stderr
+    );
+
+    // The same options: admitted, and it replays.
+    let out = hale()
+        .args(["replay", "--dev"])
+        .arg(&dev_rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay --dev");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success() && !stderr.contains("different build inputs"),
+        "`hale replay --dev` must admit a `hale run --dev` \
+         recording: {}",
+        stderr
+    );
+
+    // The mirror, so this cannot pass by refusing everything: a
+    // DEFAULT recording is not admitted by `--dev` either, and is
+    // admitted by the default replay.
+    let def_rec = record(&dir, &prog);
+    let out = hale()
+        .args(["replay", "--dev"])
+        .arg(&def_rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay --dev");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the boundary is the OPTIONS, not the flag's presence: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("different build inputs"),
+        "and it is the identity that refuses it: {}",
+        stderr
+    );
+    let out = hale()
+        .arg("replay")
+        .arg(&def_rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    assert!(
+        out.status.success(),
+        "a default recording replays under a default replay: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Review round 2, finding 1's canary: an otherwise deterministic
 /// program that publishes to a transport-BOUND topic (a unix
 /// socket here; same class as udp) must be
