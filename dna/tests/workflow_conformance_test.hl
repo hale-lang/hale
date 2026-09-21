@@ -1,0 +1,900 @@
+// dna/tests/workflow_conformance_test.hl — the baseline qualified (DNA
+// workflow card 19).
+//
+// One example — the canonical three-level close-month of
+// dna/WORKFLOW-CONTRACT.md §6 — one oracle, every supported mode. The
+// oracle reads the record and the adapters' own stores, never a final
+// word alone: the members each step registered, each step activated
+// and completed once, every Work settled once on an attempt the record
+// admitted, one execution claim per admitted attempt, the adapter's
+// invocation count per attempt, the order of the record (C1 before its
+// step, the grandchild before the child's step, the child before the
+// root's step, D's step activated before D was claimed, the root
+// settled last), and the tree reclaimed — born and dissolved balance.
+//
+// The replies: immediate; delayed and out of order (the grandchild's
+// before the root's own leaf); a duplicate of a settled reply; a stale
+// reply for an attempt the Work retried past; a failed grandchild whose
+// ancestors fail while an outstanding leaf keeps its responsibility; a
+// cancellation reaching the grandchild's leaf. The modes: one memory in
+// process; a git record with a restart mid-flight and a reboot of the
+// completed record; two memories (record and ledger) reconstructed
+// mid-flight; a leased record fenced by a takeover. Repeated completed
+// runs leave nothing alive. A real process-stop boundary is the
+// runner's under `conformance/` (below), killed at three cuts of the
+// same example over one git record and resumed by the public assembly.
+//
+// Where an attempt's claim is logical exactly-once (one `effect.requested`
+// per attempt, ever) and where an external effect is reconciled instead
+// (a pending performer asked again by the incarnation that restored the
+// attempt, under the same id; a durable adapter that recorded its
+// effect answering from its store, not asked again) is asserted apart.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source_root() -> String {
+    if std::env::var_exists("HALE_DNA_SOURCE") { return std::env::var("HALE_DNA_SOURCE"); }
+    return ".";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+fn attempt_of(req: dna::WorkRequest) -> String { return req.work_id + "/a" + to_string(req.attempt_no); }
+
+// The adapters. Every invocation is a row of the adapter's own store,
+// which the fixture keeps across boots — the external system's record
+// of what was done under which attempt. Each can say, from that store,
+// whether an attempt acted. What each answers is the scenario's.
+//
+// `Recording` (service) does the work at once.
+locus Recording {
+    params { store: dna::MemJournal = dna::MemJournal { }; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "service"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        let id = attempt_of(req);
+        let r = self.store.append(self.store.revision(), "invocation", id, "service done " + req.objective);
+        return dna::WorkResult { disposition: "done", result: "done " + req.objective, performer: "service", attempt_id: id };
+    }
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        return recorded(self.store, kind, identity, req);
+    }
+}
+
+// `Later` (agent) takes the work and answers later — the reply is the
+// fixture's, through the runtime. Asked after a restart, it says
+// truthfully that it has not acted (the reply is still out), so the
+// restored attempt is delivered to it again, under the same id.
+locus Later {
+    params { store: dna::MemJournal = dna::MemJournal { }; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "agent"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        let id = attempt_of(req);
+        let r = self.store.append(self.store.revision(), "invocation", id, "agent pending " + req.objective);
+        return dna::WorkResult { disposition: "pending", performer: "agent", attempt_id: id };
+    }
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        return dna::Reconciliation { kind: kind, identity: "agent", established: true, performed: false, why: "the reply for " + attempt_of(req) + " is still out" };
+    }
+}
+
+// `Flaky` (software) fails attempt zero and does attempt one.
+locus Flaky {
+    params { store: dna::MemJournal = dna::MemJournal { }; }
+    fn kind() -> String { return "software"; }
+    fn identity() -> String { return "software"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        let id = attempt_of(req);
+        let ok = req.attempt_no > 0;
+        let r = self.store.append(self.store.revision(), "invocation", id, "software " + (if ok { "done " } else { "failed " }) + req.objective);
+        return dna::WorkResult { disposition: if ok { "done" } else { "failed" }, result: if ok { "done" } else { "no" }, performer: "software", attempt_id: id };
+    }
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        return recorded(self.store, kind, identity, req);
+    }
+}
+
+// `Refusing` (human) fails every attempt.
+locus Refusing {
+    params { store: dna::MemJournal = dna::MemJournal { }; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "alice"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        let id = attempt_of(req);
+        let r = self.store.append(self.store.revision(), "invocation", id, "human failed " + req.objective);
+        return dna::WorkResult { disposition: "failed", result: "no", performer: "alice", attempt_id: id };
+    }
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        return recorded(self.store, kind, identity, req);
+    }
+}
+
+// What a durable store says about an attempt: the invocation it holds
+// is the outcome, and the effect is not performed twice.
+@unbounded
+fn recorded(store: dna::MemJournal, kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+    let id = attempt_of(req);
+    let mut i = 0;
+    while i < store.revision() {
+        let e = store.read(i);
+        if e.kind == "invocation" && e.entity == id {
+            let done = std::str::contains(e.body, " done ");
+            return dna::Reconciliation {
+                kind: kind, identity: identity, established: true, performed: true,
+                result: dna::WorkResult { disposition: if done { "done" } else { "failed" }, result: e.body, performer: identity, attempt_id: id },
+                why: "the invocation of " + id + " is in the adapter's store"
+            };
+        }
+        i = i + 1;
+    }
+    return dna::Reconciliation { kind: kind, identity: identity, established: true, performed: false, why: "no invocation of " + id + " is in the adapter's store" };
+}
+
+// One incarnation of the engine: the committer and the executions owner
+// of one scope, over one record. Swapping it is the crash.
+locus Boot {
+    params {
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
+        owner: dna::Executions = dna::Executions { };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        boot: Boot = Boot { };
+        store: dna::MemJournal = dna::MemJournal { }; // every adapter's invocations, across boots
+        record: dna::MemJournal = dna::MemJournal { }; // the two-memory mode's record ...
+        ledger: dna::MemJournal = dna::MemJournal { }; // ... and its ledger
+        lives: String = ""; // "<key>:<what> " per RunLife
+        outcomes: String = ""; // "<task>:<disposition> " per WorkflowSettled
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        publish dna::ExecutionAsked;
+        publish dna::WorkflowCancelRequested;
+        publish dna::RecordResumed;
+    }
+    @unbounded
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    @unbounded
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+
+    // ---- the tree's identities (contract §6) ----------------------------
+    fn a_of(t: String) -> String { return t + "/wf1/s0/a"; }
+    fn b_of(t: String) -> String { return t + ".s0.b"; }
+    fn b1_of(t: String) -> String { return t + ".s0.b/wf1/s0/b1"; }
+    fn c_of(t: String) -> String { return t + ".s0.b.s1.c"; }
+    fn c1_of(t: String) -> String { return t + ".s0.b.s1.c/wf1/s0/c1"; }
+    fn d_of(t: String) -> String { return t + "/wf1/s1/d"; }
+    // whether a resident's key is in t's tree (a Task's key is "task:<id>")
+    fn in_tree(key: String, t: String) -> Bool {
+        let k = if std::str::starts_with(key, "task:") { key[5..len(key)] } else { key };
+        if k == t { return true; }
+        return std::str::starts_with(k, t + "/") || std::str::starts_with(k, t + ".");
+    }
+
+    // ---- reading -----------------------------------------------------------
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows_in(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn rows(kind: String, entity: String) -> Int { return self.rows_in(self.boot.rt.journal, kind, entity); }
+    // the position of the first such row, -1 for none
+    @unbounded
+    fn at(kind: String, entity: String) -> Int {
+        let mut i = 0;
+        while i < self.boot.rt.journal.revision() {
+            let e = self.boot.rt.journal.read(i);
+            if e.kind == kind && e.entity == entity { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    @unbounded
+    fn body_of(kind: String, entity: String) -> String {
+        let mut i = 0;
+        while i < self.boot.rt.journal.revision() {
+            let e = self.boot.rt.journal.read(i);
+            if e.kind == kind && e.entity == entity { return std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return "";
+    }
+    fn members_of(step: String) -> String { return dna::decode_members(self.body_of("step.registered", step)).value.members; }
+    fn workflow_disposition(t: String) -> String { return dna::decode_workflow_outcome(self.body_of("workflow.settled", t)).value.disposition; }
+    fn work_attempt(w: String) -> String { return dna::decode_work_outcome(self.body_of("work.settled", w)).value.attempt_id; }
+    fn invocations(attempt_id: String) -> Int { return self.rows_in(self.store, "invocation", attempt_id); }
+    fn claims(attempt_id: String) -> Int { return self.rows("effect.requested", "attempt:" + attempt_id); }
+    // every row of t's tree, "<kind> <entity>\n" per row, in the record's order
+    @unbounded
+    fn tree_rows(j: dna::Journal, t: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            let entity = if std::str::starts_with(e.entity, "attempt:") { e.entity[8..len(e.entity)] } else { e.entity };
+            if self.in_tree(entity, t) { out = out + e.kind + " " + e.entity + "\n"; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // born minus dissolved among the residents of t's tree
+    @unbounded
+    fn live_of(t: String) -> Int {
+        let mut n = 0;
+        let mut rest = self.lives;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let item = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+            let mut colon = len(item) - 1;
+            while colon > 0 && item[colon..(colon + 1)] != ":" { colon = colon - 1; }
+            let key = item[0..colon];
+            let what = item[(colon + 1)..len(item)];
+            if self.in_tree(key, t) {
+                if what == "born" { n = n + 1; }
+                if what == "dissolved" { n = n - 1; }
+            }
+        }
+        return n;
+    }
+
+    // ---- waiting: a wait that runs out is a failure, never a silence ------
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_rows(kind: String, entity: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.rows(kind, entity) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::test::assert(false, "timed out waiting for " + to_string(n) + " " + kind + " " + entity);
+    }
+    @unbounded
+    fn until_outcome(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.count(self.outcomes, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::test::assert(false, "timed out waiting for " + to_string(n) + " " + item);
+    }
+    @unbounded
+    fn until_reclaimed(t: String) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.count(self.lives, "task:" + t + ":dissolved") >= 1 { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::test::assert(false, "timed out waiting for task:" + t + " to reclaim");
+    }
+    fn until_claimed(attempt_id: String) { self.until_rows("effect.requested", "attempt:" + attempt_id, 1); }
+
+    // ---- driving -----------------------------------------------------------
+    // A root: admitted in the record as card 07 admits it, then asked of
+    // the executions owner with its leaves' performer kinds.
+    fn ask_root(t: String, kinds: String) {
+        let x = self.cat.expand(t, "close-month", 1, self.limits);
+        std::test::assert(x.ok, t + " expands: " + x.why);
+        let body = dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: t, definition: "close-month", revision: 1, request: "ask-" + t,
+            recipe: self.cat.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        });
+        let r = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "workflow.admitted", t, body);
+        std::test::assert(r.ok, t + " is admitted in the record: " + r.error);
+        self.resume(t, kinds);
+    }
+    // what a restart does for an admitted root (`Dna.resume_executions`)
+    fn resume(t: String, kinds: String) {
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: t, kinds: kinds };
+    }
+    fn reply(attempt_id: String, disposition: String) -> dna::Executed { return self.reply_as(attempt_id, disposition, "agent"); }
+    // a reply names its performer: one from another identity is nobody's
+    fn reply_as(attempt_id: String, disposition: String, performer: String) -> dna::Executed {
+        return self.boot.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: performer, attempt_id: attempt_id });
+    }
+
+    // ---- the oracle --------------------------------------------------------
+    // What every completed run must show, whatever the mode. `again` names
+    // the attempts a restart delivered to a pending performer a second
+    // time: those were invoked twice under one claim; every other admitted
+    // attempt exactly once.
+    fn verify_done(t: String, again: String) {
+        let a = self.a_of(t);
+        let b = self.b_of(t);
+        let b1 = self.b1_of(t);
+        let c = self.c_of(t);
+        let c1 = self.c1_of(t);
+        let d = self.d_of(t);
+        self.verify_shape(t, again);
+        // the required sets, whole, before anything of the step ran
+        std::test::assert_eq_str(self.members_of(t + "/wf1/s1"), "d:leaf:" + d, t + ": the root's second step registered D");
+        std::test::assert_eq_int(self.rows("step.activated", t + "/wf1/s1"), 1, t + ": and activated once");
+        std::test::assert_eq_int(self.rows("step.completed", t + "/wf1/s1"), 1, t + ": and completed once");
+        // every Work settled once, on the attempt the record admitted
+        std::test::assert_eq_int(self.rows("work.settled", d), 1, t + ": D settled once");
+        std::test::assert_eq_int(self.rows("attempt.admitted", self.work_attempt(d)), 1, t + ": on its admitted attempt");
+        std::test::assert_eq_int(self.rows("step.completed", "") - self.rows_before(t, "step.completed"), 5, t + ": five steps completed");
+        std::test::assert_eq_int(self.rows("step.failed", t + "/wf1/s0") + self.rows("step.failed", b + "/wf1/s0") + self.rows("step.failed", b + "/wf1/s1") + self.rows("step.failed", c + "/wf1/s0"), 0, t + ": no step failed");
+        // the order of the record
+        std::test::assert(self.at("work.settled", c1) < self.at("step.completed", c + "/wf1/s0"), t + ": C1 settled before its step completed");
+        std::test::assert(self.at("step.completed", c + "/wf1/s0") < self.at("workflow.settled", c), t + ": the grandchild's step before the grandchild settled");
+        std::test::assert(self.at("workflow.settled", c) < self.at("step.completed", b + "/wf1/s1"), t + ": the grandchild before the child's step completed");
+        std::test::assert(self.at("step.completed", b + "/wf1/s1") < self.at("workflow.settled", b), t + ": the child's step before the child settled");
+        std::test::assert(self.at("workflow.settled", b) < self.at("step.completed", t + "/wf1/s0"), t + ": the child before the root's step completed");
+        std::test::assert(self.at("work.settled", a) < self.at("step.completed", t + "/wf1/s0"), t + ": and A before it");
+        std::test::assert(self.at("step.completed", t + "/wf1/s0") < self.at("step.activated", t + "/wf1/s1"), t + ": the root's first step completed before its second activated");
+        std::test::assert(self.at("step.activated", t + "/wf1/s1") < self.at("effect.requested", "attempt:" + d + "/a0"), t + ": D's step activated before D was claimed");
+        std::test::assert(self.at("work.settled", d) < self.at("step.completed", t + "/wf1/s1"), t + ": D settled before its step completed");
+        std::test::assert(self.at("step.completed", t + "/wf1/s1") < self.at("workflow.settled", t), t + ": and the root settled last");
+        std::test::assert_eq_str(self.workflow_disposition(t) + " " + self.workflow_disposition(b) + " " + self.workflow_disposition(c), "done done done", t + ": root, child and grandchild settled done");
+        std::test::assert_eq_int(self.count(self.outcomes, t + ":done"), 1, t + ": the root's settlement heard once");
+        self.verify_reclaimed(t);
+    }
+    // What every run that reached the grandchild must show, done or not.
+    @unbounded
+    fn verify_shape(t: String, again: String) {
+        let a = self.a_of(t);
+        let b = self.b_of(t);
+        let b1 = self.b1_of(t);
+        let c = self.c_of(t);
+        let c1 = self.c1_of(t);
+        // the executions, each admitted once, the children under their parents
+        std::test::assert_eq_int(self.rows("workflow.admitted", t) + self.rows("workflow.admitted", b) + self.rows("workflow.admitted", c), 3, t + ": root, child and grandchild admitted once each");
+        let adm_b = dna::decode_admission(self.body_of("workflow.admitted", b));
+        let adm_c = dna::decode_admission(self.body_of("workflow.admitted", c));
+        std::test::assert(adm_b.ok && adm_b.value.parent_task == t && adm_b.value.spawning_step == t + "/wf1/s0" && adm_b.value.member_key == "b", t + ": the child admitted under the root's first step as b");
+        std::test::assert(adm_c.ok && adm_c.value.parent_task == b && adm_c.value.spawning_step == b + "/wf1/s1" && adm_c.value.member_key == "c", t + ": the grandchild under the child's second step as c");
+        // the required sets, whole, before anything of the step ran
+        std::test::assert_eq_str(self.members_of(t + "/wf1/s0"), "a:leaf:" + a + " b:child:" + b, t + ": the root's first step registered A and b");
+        std::test::assert_eq_str(self.members_of(b + "/wf1/s0"), "b1:leaf:" + b1, t + ": the child's first step registered B1");
+        std::test::assert_eq_str(self.members_of(b + "/wf1/s1"), "c:child:" + c, t + ": the child's second step registered c");
+        std::test::assert_eq_str(self.members_of(c + "/wf1/s0"), "c1:leaf:" + c1, t + ": the grandchild's step registered C1");
+        std::test::assert(self.at("step.registered", t + "/wf1/s0") < self.at("effect.requested", "attempt:" + a + "/a0"), t + ": registered before A was claimed");
+        std::test::assert(self.at("step.registered", c + "/wf1/s0") < self.at("effect.requested", "attempt:" + c1 + "/a0"), t + ": registered before C1 was claimed");
+        // each step activated once
+        std::test::assert_eq_int(self.rows("step.activated", t + "/wf1/s0") + self.rows("step.activated", b + "/wf1/s0") + self.rows("step.activated", b + "/wf1/s1") + self.rows("step.activated", c + "/wf1/s0"), 4, t + ": four steps activated once each");
+        std::test::assert(self.at("step.completed", b + "/wf1/s0") < self.at("step.activated", b + "/wf1/s1"), t + ": the child's first step completed before its second activated");
+        std::test::assert(self.at("step.activated", b + "/wf1/s1") < self.at("workflow.admitted", c), t + ": which admitted the grandchild");
+        std::test::assert(self.at("workflow.admitted", c) < self.at("effect.requested", "attempt:" + c1 + "/a0"), t + ": before C1 was claimed");
+        // the leaves that ran settled once each, on an admitted attempt
+        std::test::assert_eq_int(self.rows("work.settled", a) + self.rows("work.settled", b1) + self.rows("work.settled", c1), 3, t + ": A, B1 and C1 settled once each");
+        std::test::assert_eq_int(self.rows("attempt.admitted", self.work_attempt(a)) + self.rows("attempt.admitted", self.work_attempt(b1)) + self.rows("attempt.admitted", self.work_attempt(c1)), 3, t + ": each on the attempt the record admitted");
+        // every admitted attempt of the tree: claimed once, its outcome
+        // recorded once, invoked as many times as its delivery says
+        let mut i = 0;
+        let mut attempts = 0;
+        while i < self.boot.rt.journal.revision() {
+            let e = self.boot.rt.journal.read(i);
+            if e.kind == "attempt.admitted" && self.in_tree(e.entity, t) {
+                attempts = attempts + 1;
+                let at = dna::decode_attempt(e.body);
+                std::test::assert(at.ok && at.value.attempt_id == e.entity && std::str::ends_with(e.entity, "/a" + to_string(at.value.attempt_no)), t + ": " + e.entity + " is admitted as itself");
+                std::test::assert_eq_int(self.claims(e.entity), 1, t + ": " + e.entity + " claimed exactly once");
+                std::test::assert_eq_int(self.rows("attempt.outcome", e.entity), 1, t + ": " + e.entity + " has one outcome");
+                let expected = if std::str::contains(" " + again + " ", " " + e.entity + " ") { 2 } else { 1 };
+                std::test::assert_eq_int(self.invocations(e.entity), expected, t + ": " + e.entity + " reached its adapter " + to_string(expected) + " time(s)");
+                std::test::assert_eq_int(self.rows("effect.redelivered", "attempt:" + e.entity), expected - 1, t + ": " + e.entity + " redelivered " + to_string(expected - 1) + " time(s), recorded as such");
+                std::test::assert(self.at("attempt.admitted", e.entity) < self.at("effect.requested", "attempt:" + e.entity), t + ": " + e.entity + " admitted before it was claimed");
+                std::test::assert(self.at("effect.requested", "attempt:" + e.entity) < self.at("attempt.outcome", e.entity), t + ": and claimed before its outcome");
+            }
+            i = i + 1;
+        }
+        std::test::assert(attempts >= 3, t + ": at least the three leaves' attempts were admitted");
+        std::test::assert_eq_int(self.rows_in(self.store, "invocation", "") - self.invocations_outside(t), attempts + self.count_words(again), t + ": the adapters hold exactly the tree's invocations");
+    }
+    @unbounded
+    fn count_words(s: String) -> Int {
+        let mut n = 0;
+        let mut rest = s;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if sp < 0 { return n + 1; }
+            n = n + 1;
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn invocations_outside(t: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.store.revision() {
+            if !self.in_tree(self.store.read(i).entity, t) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn rows_before(t: String, kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.boot.rt.journal.revision() {
+            let e = self.boot.rt.journal.read(i);
+            if e.kind == kind && !self.in_tree(e.entity, t) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn verify_reclaimed(t: String) {
+        self.until_reclaimed(t);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "task:" + t + ":born"), self.count(self.lives, "task:" + t + ":dissolved"), t + ": the root's Task was born once per incarnation and dissolved as often");
+        std::test::assert_eq_int(self.live_of(t), 0, t + ": every resident of the tree is dissolved");
+        std::test::assert(self.boot.rt.journal.verify_chain(), t + ": the record's chain holds");
+        std::test::assert_eq_int(self.boot.rt.conflicts, 0, t + ": no conflict");
+    }
+    // What the failed run must show (contract §6, "when C fails").
+    fn verify_failed(t: String) {
+        let a = self.a_of(t);
+        let b = self.b_of(t);
+        let c = self.c_of(t);
+        let c1 = self.c1_of(t);
+        self.verify_shape(t, "");
+        std::test::assert_eq_int(self.rows("attempt.admitted", c1 + "/a0") + self.rows("attempt.admitted", c1 + "/a1"), 2, t + ": C1 was tried twice, its allowance");
+        std::test::assert_eq_int(self.rows("step.failed", c + "/wf1/s0"), 1, t + ": then its step failed");
+        std::test::assert_eq_str(self.workflow_disposition(c) + " " + self.workflow_disposition(b) + " " + self.workflow_disposition(t), "failed failed failed", t + ": grandchild, child and root settled failed");
+        std::test::assert_eq_int(self.rows("step.failed", b + "/wf1/s1") + self.rows("step.failed", t + "/wf1/s0"), 2, t + ": the child's second step and the root's first failed");
+        std::test::assert_eq_int(self.rows("step.completed", t + "/wf1/s0"), 0, t + ": the root's first step never completed: A's later outcome did not reopen it");
+        std::test::assert_eq_int(self.rows("step.registered", t + "/wf1/s1") + self.claims(self.d_of(t) + "/a0"), 0, t + ": the root's second step was never registered and D never claimed");
+        std::test::assert(self.at("work.settled", a) < self.at("workflow.settled", t), t + ": the root settled after A did");
+        std::test::assert_eq_int(self.count(self.outcomes, t + ":failed"), 1, t + ": once");
+        self.verify_reclaimed(t);
+    }
+
+    // ---- the scenarios, each on whatever boot stands ------------------------
+    fn immediate(t: String) {
+        self.ask_root(t, "a=service b1=service c1=service d=service");
+        self.until_outcome(t + ":done", 1);
+        self.verify_done(t, "");
+    }
+    // A and C1 answer later; the grandchild's reply comes before the
+    // root's own leaf's; a settled reply repeated changes nothing.
+    fn delayed_out_of_order(t: String) {
+        let a = self.a_of(t) + "/a0";
+        let c1 = self.c1_of(t) + "/a0";
+        self.ask_root(t, "a=agent b1=service c1=agent d=service");
+        self.until_claimed(c1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", t + "/wf1/s0") + self.rows("step.registered", t + "/wf1/s1"), 0, t + ": with A and C1 out, the root's first step waits and D is not registered");
+        let first = self.reply(c1, "done");
+        std::test::assert(first.ok && !first.reused, t + ": C1's reply is recorded: " + first.why);
+        self.until_outcome(self.b_of(t) + ":done", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", t + "/wf1/s0"), 0, t + ": the child settled; the root's first step still waits for A");
+        let rev = self.boot.rt.journal.revision();
+        let dup = self.reply(c1, "done");
+        std::test::assert(dup.ok && dup.reused && !dup.ran, t + ": C1's reply again is the recorded outcome, not a second one: " + dup.why);
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), rev, t + ": and wrote nothing");
+        let second = self.reply(a, "done");
+        std::test::assert(second.ok, t + ": A's reply is recorded: " + second.why);
+        self.until_outcome(t + ":done", 1);
+        let stale = self.reply(a, "done");
+        std::test::assert(stale.ok && stale.reused && !stale.ran, t + ": a reply for a settled attempt is answered from the record: " + stale.why);
+        self.verify_done(t, "");
+    }
+    // C1's first attempt fails and its second is done — the performer
+    // sees attempt one as attempt one; a stale reply for attempt zero
+    // after attempt one was admitted changes nothing.
+    fn retried(t: String) {
+        let c1 = self.c1_of(t);
+        self.ask_root(t, "a=service b1=service c1=software d=service");
+        self.until_outcome(t + ":done", 1);
+        std::test::assert_eq_int(self.rows("attempt.admitted", c1 + "/a0") + self.rows("attempt.admitted", c1 + "/a1"), 2, t + ": C1's two attempts admitted once each");
+        std::test::assert_eq_str(dna::decode_attempt_outcome(self.body_of("attempt.outcome", c1 + "/a0")).value.disposition + " " + dna::decode_attempt_outcome(self.body_of("attempt.outcome", c1 + "/a1")).value.disposition, "failed done", t + ": attempt zero failed, attempt one done");
+        std::test::assert_eq_int(self.invocations(c1 + "/a1"), 1, t + ": the performer was asked for attempt one as attempt one");
+        std::test::assert_eq_str(self.work_attempt(c1), c1 + "/a1", t + ": C1 settled on attempt one");
+        let rev = self.boot.rt.journal.revision();
+        let other = self.reply(c1 + "/a0", "done");
+        std::test::assert(!other.ok && !other.ran, t + ": a late success from another identity is nobody's: " + other.why);
+        let stale = self.reply_as(c1 + "/a0", "done", "software");
+        std::test::assert(stale.ok && stale.reused && !stale.ran, t + ": a late success for attempt zero is answered from its recorded outcome: " + stale.why);
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), rev, t + ": and changes nothing");
+        std::test::assert_eq_int(self.rows("work.settled", c1), 1, t + ": C1 settled once");
+        self.verify_done(t, "");
+    }
+    // C1 fails terminally while A is still out: the ancestors fail, D
+    // never runs, and the root settles failed only after A settles.
+    fn failed_grandchild(t: String) {
+        let a = self.a_of(t) + "/a0";
+        self.ask_root(t, "a=agent b1=service c1=human d=service");
+        self.until_rows("step.failed", t + "/wf1/s0", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", self.c_of(t)) + self.rows("workflow.settled", self.b_of(t)), 2, t + ": the grandchild and the child settled failed");
+        std::test::assert_eq_int(self.rows("workflow.settled", t), 0, t + ": the root has not: A keeps its responsibility under the drain policy");
+        std::test::assert_eq_int(self.rows("work.settled", self.a_of(t)), 0, t + ": A is still out");
+        let late = self.reply(a, "done");
+        std::test::assert(late.ok, t + ": A's late outcome is recorded: " + late.why);
+        self.until_outcome(t + ":failed", 1);
+        self.verify_failed(t);
+    }
+    // The root cancelled while C1 is out: the fence reaches the
+    // grandchild's leaf, D never runs, the tree drains and reclaims, and
+    // C1's late reply is still recorded.
+    fn cancelled(t: String) {
+        let c1 = self.c1_of(t) + "/a0";
+        self.ask_root(t, "a=service b1=service c1=agent d=service");
+        self.until_claimed(c1);
+        self.settle();
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: t, reason: "the month is closed by hand" };
+        self.until_outcome(t + ":cancelled", 1);
+        self.until_reclaimed(t);
+        self.settle();
+        std::test::assert_eq_str(self.workflow_disposition(t) + " " + self.workflow_disposition(self.b_of(t)) + " " + self.workflow_disposition(self.c_of(t)), "cancelled cancelled cancelled", t + ": root, child and grandchild settled cancelled");
+        std::test::assert_eq_int(self.rows("work.settled", self.c1_of(t)), 1, t + ": C1, out under the fence, settled");
+        std::test::assert_eq_str(dna::decode_work_outcome(self.body_of("work.settled", self.c1_of(t))).value.disposition, "cancelled", t + ": cancelled");
+        std::test::assert_eq_int(self.rows("step.registered", t + "/wf1/s1") + self.claims(self.d_of(t) + "/a0"), 0, t + ": D was never registered nor claimed");
+        std::test::assert_eq_int(self.claims(c1), 1, t + ": C1 was claimed once");
+        std::test::assert_eq_int(self.live_of(t), 0, t + ": the tree reclaimed itself");
+        let late = self.reply(c1, "done");
+        std::test::assert(late.ok, t + ": C1's late reply is recorded: " + late.why);
+        std::test::assert_eq_int(self.rows("attempt.outcome", c1), 1, t + ": as the attempt's outcome");
+        std::test::assert_eq_int(self.rows("work.settled", self.c1_of(t)), 1, t + ": which reopens nothing");
+        std::test::assert(self.boot.rt.journal.verify_chain() && self.boot.rt.conflicts == 0, t + ": the chain holds, no conflict");
+    }
+
+    // ---- the boots ---------------------------------------------------------
+    fn boot_mem() {
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem {
+            service: Recording { store: self.store }, agent: Later { store: self.store },
+            software: Flaky { store: self.store }, human: Refusing { store: self.store },
+            service_reconciler: Recording { store: self.store }, agent_reconciler: Later { store: self.store },
+            software_reconciler: Flaky { store: self.store }, human_reconciler: Refusing { store: self.store }
+        } }, owner: dna::Executions { scope: "main" } };
+    }
+    fn boot_git(repo: String) {
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: dna::GitJournal { repo: repo, author: "dna" }, work: dna::WorkSystem {
+            service: Recording { store: self.store }, agent: Later { store: self.store },
+            software: Flaky { store: self.store }, human: Refusing { store: self.store },
+            service_reconciler: Recording { store: self.store }, agent_reconciler: Later { store: self.store },
+            software_reconciler: Flaky { store: self.store }, human_reconciler: Refusing { store: self.store }
+        } }, owner: dna::Executions { scope: "main" } };
+    }
+    fn boot_routed() {
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: dna::RoutedJournal { record: self.record, ledger: self.ledger }, work: dna::WorkSystem {
+            service: Recording { store: self.store }, agent: Later { store: self.store },
+            software: Flaky { store: self.store }, human: Refusing { store: self.store },
+            service_reconciler: Recording { store: self.store }, agent_reconciler: Later { store: self.store },
+            software_reconciler: Flaky { store: self.store }, human_reconciler: Refusing { store: self.store }
+        } }, owner: dna::Executions { scope: "main" } };
+    }
+    fn boot_leased(key: String) {
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem {
+            service: Recording { store: self.store }, agent: Later { store: self.store },
+            software: Flaky { store: self.store }, human: Refusing { store: self.store },
+            service_reconciler: Recording { store: self.store }, agent_reconciler: Later { store: self.store },
+            software_reconciler: Flaky { store: self.store }, human_reconciler: Refusing { store: self.store }
+        } }, owner: dna::Executions { scope: "main" } };
+    }
+
+    @unbounded
+    run() {
+        // ---- the canonical example, bound (contract §6)
+        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 1), "", "a");
+        std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
+        std::test::assert_eq_str(self.cat.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "b1");
+        std::test::assert_eq_str(self.cat.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "c");
+        std::test::assert_eq_str(self.cat.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "c1");
+
+        // ---- mode 1: one memory, in process — every reply pattern, and
+        //      repeated completed runs leave nothing alive
+        self.boot_mem();
+        self.immediate("m1");
+        self.immediate("m2");
+        self.immediate("m3");
+        std::test::assert_eq_int(self.live_of("m1") + self.live_of("m2") + self.live_of("m3"), 0, "three completed runs: nothing of them is alive");
+        std::test::assert_eq_int(self.boot.owner.roots, 3, "three roots ran");
+        self.delayed_out_of_order("m4");
+        self.retried("m5");
+        self.failed_grandchild("m6");
+        self.cancelled("m7");
+        std::test::assert_eq_int(self.boot.owner.roots, 7, "seven roots ran in one boot");
+        std::test::assert_eq_int(self.boot.owner.child_count, 14, "with their children and grandchildren");
+        std::test::assert_eq_int(self.boot.rt.stray_reports + self.boot.rt.reports_refused + self.boot.owner.strays + self.boot.owner.refused, 0, "nothing stray, nothing refused");
+
+        // ---- mode 2: a git record — the same runs over a persistent
+        //      record; a restart mid-flight rebuilds only what is unfinished,
+        //      with its original ids; a reboot of the completed record does
+        //      nothing
+        let repo = dna::scratch_root("wf-conformance");
+        let init = sh("sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && echo base > base && git add -A && git commit -q -m base\nsh\n" + repo);
+        std::test::assert_eq_int(init.code, 0, "a repository: " + init.stderr);
+        self.boot_git(repo);
+        self.immediate("g1");
+        self.failed_grandchild("g2");
+        // g3: A and C1 out; the process dies; another incarnation over the
+        // same record asks for the root again
+        let a3 = self.a_of("g3") + "/a0";
+        let c3 = self.c1_of("g3") + "/a0";
+        self.ask_root("g3", "a=agent b1=service c1=agent d=service");
+        self.until_claimed(c3);
+        self.settle();
+        let cut = self.boot.rt.journal.revision();
+        let before = self.tree_rows(self.boot.rt.journal, "g3");
+        self.boot_git(repo);
+        self.settle();
+        std::test::assert_eq_int(self.live_of("g3"), 0, "g3: the crash took every resident");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), cut, "g3: the new incarnation reads the record as the crash left it");
+        self.resume("g3", "a=agent b1=service c1=agent d=service");
+        self.until_rows("effect.requested", "attempt:" + c3, 1);
+        self.settle();
+        std::test::assert(std::str::contains(self.boot.rt.redelivered, a3) && std::str::contains(self.boot.rt.redelivered, c3), "g3: A and C1 were redelivered, not re-admitted: " + self.boot.rt.redelivered);
+        std::test::assert_eq_int(self.rows("attempt.admitted", a3) + self.rows("attempt.admitted", c3), 2, "g3: under their original attempt ids, once each");
+        std::test::assert_eq_int(self.rows("attempt.admitted", self.a_of("g3") + "/a1") + self.rows("attempt.admitted", self.c1_of("g3") + "/a1"), 0, "g3: no second attempt");
+        std::test::assert_eq_int(self.invocations(self.b1_of("g3") + "/a0"), 1, "g3: the completed B1 did not run again");
+        std::test::assert_eq_int(self.invocations(a3) + self.invocations(c3), 4, "g3: the pending performers were asked again, once each, under the same ids");
+        std::test::assert_eq_int(self.rows("step.registered", "") - self.rows_before("g3", "step.registered"), 4, "g3: no step registered twice");
+        std::test::assert_eq_int(self.rows("step.activated", "") - self.rows_before("g3", "step.activated"), 4, "g3: no step activated twice");
+        std::test::assert_eq_str(self.tree_rows(self.boot.rt.journal, "g3"), before + "effect.redelivered attempt:" + a3 + "\neffect.redelivered attempt:" + c3 + "\n", "g3: the restart added nothing to the tree but the two redeliveries, recorded as such");
+        let r3 = self.reply(c3, "done");
+        std::test::assert(r3.ok, "g3: C1's reply to the new incarnation is recorded: " + r3.why);
+        self.until_outcome(self.b_of("g3") + ":done", 1);
+        let r3a = self.reply(a3, "done");
+        std::test::assert(r3a.ok, "g3: then A's: " + r3a.why);
+        self.until_outcome("g3:done", 1);
+        self.verify_done("g3", a3 + " " + c3);
+        // the completed record rebooted: asked for its roots, nothing runs
+        let full = self.boot.rt.journal.revision();
+        let invoked = self.store.revision();
+        self.boot_git(repo);
+        self.settle();
+        self.resume("g1", "a=service b1=service c1=service d=service");
+        self.resume("g3", "a=agent b1=service c1=agent d=service");
+        self.until_reclaimed("g1");
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), full, "reboot: a completed record gains no row");
+        std::test::assert_eq_int(self.store.revision(), invoked, "reboot: no adapter was asked");
+        std::test::assert_eq_int(self.live_of("g1") + self.live_of("g3"), 0, "reboot: nothing of the settled roots stays alive");
+        std::test::assert(self.boot.rt.journal.verify_chain(), "reboot: the chain holds");
+        dna::scratch_done(repo);
+
+        // ---- mode 3: two memories — the tree's facts are the ledger's, so
+        //      a reconstruction of the routed record keeps their order; a
+        //      restart over the reconstructed pair continues exactly
+        let adopted = self.record.append(0, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"conformance\"}");
+        std::test::assert(adopted.ok, "the record adopted a ledger");
+        self.boot_routed();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), 1, "the routed record reads the adoption");
+        self.immediate("r1");
+        std::test::assert_eq_int(self.record.revision(), 1, "r1: the record holds only the adoption: every fact of the tree is the ledger's");
+        let mut i = 0;
+        while i < self.ledger.revision() {
+            std::test::assert_eq_str(dna::memory_of(self.ledger.read(i).kind), "ledger", "r1: " + self.ledger.read(i).kind + " is routed to the ledger");
+            i = i + 1;
+        }
+        let a2 = self.a_of("r2") + "/a0";
+        let c2 = self.c1_of("r2") + "/a0";
+        self.ask_root("r2", "a=agent b1=service c1=agent d=service");
+        self.until_claimed(c2);
+        self.settle();
+        let rows2 = self.tree_rows(self.boot.rt.journal, "r2");
+        let cut2 = self.boot.rt.journal.revision();
+        self.boot_routed();
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), cut2, "r2: the reconstructed record has every row");
+        std::test::assert_eq_str(self.tree_rows(self.boot.rt.journal, "r2"), rows2, "r2: in the order they were committed");
+        self.resume("r2", "a=agent b1=service c1=agent d=service");
+        self.until_rows("effect.requested", "attempt:" + c2, 1);
+        self.settle();
+        std::test::assert_eq_str(self.tree_rows(self.boot.rt.journal, "r2"), rows2 + "effect.redelivered attempt:" + a2 + "\neffect.redelivered attempt:" + c2 + "\n", "r2: the restart over two memories added nothing but the two redeliveries: nothing re-admitted, nothing resumed as new work");
+        let rc = self.reply(c2, "done");
+        let ra = self.reply(a2, "done");
+        std::test::assert(rc.ok && ra.ok, "r2: the replies are recorded: " + rc.why + ra.why);
+        self.until_outcome("r2:done", 1);
+        self.verify_done("r2", a2 + " " + c2);
+        std::test::assert(self.record.verify_chain() && self.ledger.verify_chain(), "both chains hold");
+
+        // ---- mode 4: a leased record — a takeover fences this holder's
+        //      replies; nothing of them is written; with the lease back the
+        //      run completes as every other did
+        let key = "lease/workflow/main";
+        self.boot_leased(key);
+        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        let a4 = self.a_of("l1") + "/a0";
+        let c4 = self.c1_of("l1") + "/a0";
+        self.ask_root("l1", "a=agent b1=service c1=agent d=service");
+        self.until_claimed(c4);
+        self.settle();
+        let rev4 = self.boot.rt.journal.revision();
+        self.boot.rt.tick(160);
+        let expired = self.reply(c4, "done");
+        std::test::assert(!expired.ok && expired.fenced, "l1: with the lease expired, the reply is fenced: " + expired.why);
+        let beta = dna::lease_take(self.boot.rt.journal, key, "beta", 200, 100);
+        std::test::assert(beta.present && beta.holder == "beta", "beta holds the lease at 200");
+        self.boot.rt.tick(200);
+        let stale4 = self.reply(a4, "done");
+        std::test::assert(!stale4.ok && stale4.fenced, "l1: under beta's lease, alpha's reply is fenced: " + stale4.why);
+        std::test::assert_eq_int(self.rows("attempt.outcome", a4) + self.rows("attempt.outcome", c4), 0, "l1: and recorded nothing");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), rev4 + 1, "l1: the only new row is beta's lease: the fenced holder wrote nothing");
+        std::test::assert_eq_int(self.boot.rt.fenced_off, 2, "l1: the fence refused both replies");
+        std::test::assert(self.boot.rt.take_lease(400, 100), "alpha holds the lease again at 400");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "the lease is ours again" };
+        let again_c = self.reply(c4, "done");
+        std::test::assert(again_c.ok, "l1: C1's reply goes through under the live lease: " + again_c.why);
+        self.until_outcome(self.b_of("l1") + ":done", 1);
+        let again_a = self.reply(a4, "done");
+        std::test::assert(again_a.ok, "l1: and A's: " + again_a.why);
+        self.until_outcome("l1:done", 1);
+        self.verify_done("l1", "");
+
+        // ---- the real process-stop boundary: the runner over one git
+        //      record, killed at three cuts and resumed by the public
+        //      assembly
+        self.process_boundary();
+    }
+    // ---- the process boundary ------------------------------------------------
+    // `conformance/runner.hl` is one assembly (`dna::Dna`) over a git
+    // record, running the canonical example through `run_workflow` with
+    // durable adapters whose store is a file; told to die at a cut, it
+    // kills its own process the moment that row — or that effect — has
+    // landed. Each later run is a restart: the assembly resumes the
+    // admitted root from the record.
+    fn runner_line(out: String, needle: String) -> Bool { return std::str::contains(out, needle); }
+    fn run_runner(bin: String, repo: String, store: String, die: String) -> dna::RunResult {
+        return sh("sh\n-c\nHALE_DNA_DISCOVER=off \"$1\" \"$2\" \"$3\" \"$4\"; echo \"exit=$?\"\nsh\n" + bin + "\n" + repo + "\n" + store + "\n" + die);
+    }
+    @unbounded
+    fn lines_of(path: String, needle: String) -> Int {
+        let text = std::io::fs::read_file(path) or "";
+        let mut n = 0;
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            if nl < 0 { return n + (if rest == needle { 1 } else { 0 }); }
+            if rest[0..nl] == needle { n = n + 1; }
+            rest = rest[(nl + 1)..len(rest)];
+        }
+        return n;
+    }
+    fn process_boundary() {
+        let scratch = dna::scratch_root("wf-runner");
+        // the runner, built beside a copy of the core so the checkout is
+        // never built in
+        let copied = sh("sh\n-c\nmkdir -p \"$1/dna/tests/conformance\" && cp -r \"$2/dna/core\" \"$1/dna/core\" && cp \"$2/dna/tests/conformance/runner.hl\" \"$1/dna/tests/conformance/runner.hl\"\nsh\n" + scratch + "\n" + source_root());
+        std::test::assert_eq_int(copied.code, 0, "the runner and the core copied to scratch: " + copied.stderr);
+        let built = sh(toolchain() + "\nbuild\n--dev\n" + scratch + "/dna/tests/conformance/runner.hl");
+        std::test::assert_eq_int(built.code, 0, "the runner builds: " + built.stdout + built.stderr);
+        let bin = scratch + "/dna/tests/conformance/runner";
+        let repo = scratch + "/repo";
+        let mk = sh("sh\n-c\nmkdir -p \"$1/.hale/dna\" \"$1/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '/.hale/\\n' > .gitignore && echo base > base && git add -A && git commit -q -m base\nsh\n" + repo);
+        std::test::assert_eq_int(mk.code, 0, "the runner's repository: " + mk.stderr);
+        let store = scratch + "/invocations";
+        let root = "t1";
+        let c1 = self.c1_of(root) + "/a0";
+        let reader = dna::GitJournal { repo: repo, author: "reader" };
+
+        // cut 1: the process dies the moment C1's attempt is admitted —
+        // before it is claimed
+        let r1 = self.run_runner(bin, repo, store, "row:attempt.admitted:" + c1);
+        std::test::assert(std::str::contains(r1.stdout, "exit=137"), "cut 1: the runner was killed at the cut: " + r1.stdout + r1.stderr);
+        std::test::assert(reader.refresh() || reader.revision() > 0, "cut 1: the record is readable");
+        std::test::assert_eq_int(self.rows_in(reader, "attempt.admitted", c1), 1, "cut 1: C1's attempt is admitted");
+        std::test::assert_eq_int(self.rows_in(reader, "effect.requested", "attempt:" + c1), 0, "cut 1: and not claimed");
+        std::test::assert_eq_int(self.lines_of(store, self.a_of(root) + "/a0") + self.lines_of(store, self.b1_of(root) + "/a0"), 2, "cut 1: A and B1 acted, once each");
+        std::test::assert_eq_int(self.lines_of(store, c1), 0, "cut 1: C1 did not");
+        let admitted_before = self.rows_in(reader, "workflow.admitted", "");
+
+        // cut 2: resumed, the process dies the moment C1 is claimed —
+        // before its performer acts
+        let r2 = self.run_runner(bin, repo, store, "row:effect.requested:attempt:" + c1);
+        std::test::assert(std::str::contains(r2.stdout, "exit=137"), "cut 2: killed at the cut: " + r2.stdout + r2.stderr);
+        let moved2 = reader.refresh();
+        std::test::assert_eq_int(self.rows_in(reader, "effect.requested", "attempt:" + c1), 1, "cut 2: C1 claimed, once");
+        std::test::assert_eq_int(self.rows_in(reader, "attempt.admitted", c1), 1, "cut 2: the restored attempt kept its admission: no second one");
+        std::test::assert_eq_int(self.lines_of(store, c1), 0, "cut 2: C1 has not acted");
+        std::test::assert_eq_int(self.lines_of(store, self.a_of(root) + "/a0") + self.lines_of(store, self.b1_of(root) + "/a0"), 2, "cut 2: the completed members did not run again");
+
+        // cut 3: resumed, the claim stands and C1 is delivered; its
+        // adapter records the effect and the process dies before the
+        // outcome lands
+        let r3 = self.run_runner(bin, repo, store, "effect:" + c1);
+        std::test::assert(std::str::contains(r3.stdout, "exit=137"), "cut 3: killed at the cut: " + r3.stdout + r3.stderr);
+        let moved3 = reader.refresh();
+        std::test::assert_eq_int(self.lines_of(store, c1), 1, "cut 3: C1 acted, once");
+        std::test::assert_eq_int(self.rows_in(reader, "attempt.outcome", c1), 0, "cut 3: with no outcome in the record");
+        std::test::assert_eq_int(self.rows_in(reader, "effect.requested", "attempt:" + c1), 1, "cut 3: under the one claim");
+        std::test::assert_eq_int(self.rows_in(reader, "effect.redelivered", "attempt:" + c1), 1, "cut 3: the restored claim was redelivered once, recorded as such, before the adapter acted");
+
+        // resumed once more: the adapter's store is the outcome — C1 is not
+        // performed twice — and the run completes
+        let r4 = self.run_runner(bin, repo, store, "none");
+        std::test::assert(std::str::contains(r4.stdout, "settled done") && std::str::contains(r4.stdout, "exit=0"), "run 4: the root settled done: " + r4.stdout + r4.stderr);
+        let moved4 = reader.refresh();
+        std::test::assert_eq_int(self.lines_of(store, c1), 1, "run 4: C1 was not performed twice: its store answered");
+        std::test::assert_eq_int(self.lines_of(store, self.d_of(root) + "/a0"), 1, "run 4: D acted once");
+        std::test::assert_eq_int(self.lines_of(store, self.a_of(root) + "/a0") + self.lines_of(store, self.b1_of(root) + "/a0"), 2, "run 4: A and B1 still once each");
+        std::test::assert_eq_int(self.rows_in(reader, "workflow.admitted", ""), admitted_before, "run 4: no execution admitted again");
+        std::test::assert_eq_int(self.rows_in(reader, "effect.redelivered", "attempt:" + c1), 1, "run 4: C1 was not delivered again: its adapter's store answered instead");
+        let full = reader.revision();
+        // the oracle over the runner's record
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "process", journal: dna::GitJournal { repo: repo, author: "oracle" }, work: dna::WorkSystem {
+            service: Recording { store: self.store }, agent: Later { store: self.store },
+            software: Flaky { store: self.store }, human: Refusing { store: self.store },
+            service_reconciler: Recording { store: self.store }, agent_reconciler: Later { store: self.store },
+            software_reconciler: Flaky { store: self.store }, human_reconciler: Refusing { store: self.store }
+        } }, owner: dna::Executions { scope: "process" } };
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), full, "the oracle reads the whole record");
+        self.verify_process_record(root);
+
+        // the completed record, once more: nothing runs, no row, no effect
+        let lines_before = self.lines_of(store, self.a_of(root) + "/a0") + self.lines_of(store, self.b1_of(root) + "/a0") + self.lines_of(store, c1) + self.lines_of(store, self.d_of(root) + "/a0");
+        let r5 = self.run_runner(bin, repo, store, "none");
+        std::test::assert(std::str::contains(r5.stdout, "settled done") && std::str::contains(r5.stdout, "exit=0"), "run 5: the completed record answers at once: " + r5.stdout + r5.stderr);
+        let moved5 = reader.refresh();
+        std::test::assert_eq_int(reader.revision(), full, "run 5: a completed record gains no row");
+        std::test::assert_eq_int(self.lines_of(store, self.a_of(root) + "/a0") + self.lines_of(store, self.b1_of(root) + "/a0") + self.lines_of(store, c1) + self.lines_of(store, self.d_of(root) + "/a0"), lines_before, "run 5: no adapter was asked");
+        std::test::assert(reader.verify_chain(), "the runner's chain holds");
+        dna::scratch_done(scratch);
+    }
+    // The order and identity assertions over the runner's record: the same
+    // as every in-process mode's, with the adapter's store read from its
+    // file.
+    fn verify_process_record(t: String) {
+        let a = self.a_of(t);
+        let b = self.b_of(t);
+        let b1 = self.b1_of(t);
+        let c = self.c_of(t);
+        let c1 = self.c1_of(t);
+        let d = self.d_of(t);
+        std::test::assert_eq_int(self.rows("workflow.admitted", t) + self.rows("workflow.admitted", b) + self.rows("workflow.admitted", c), 3, "process: root, child and grandchild admitted once each");
+        std::test::assert_eq_str(self.members_of(t + "/wf1/s0"), "a:leaf:" + a + " b:child:" + b, "process: the root's first step registered A and b");
+        std::test::assert_eq_str(self.members_of(b + "/wf1/s1"), "c:child:" + c, "process: the child's second step registered c");
+        std::test::assert_eq_str(self.members_of(t + "/wf1/s1"), "d:leaf:" + d, "process: the root's second step registered D");
+        std::test::assert_eq_int(self.rows("step.activated", t + "/wf1/s0") + self.rows("step.activated", b + "/wf1/s0") + self.rows("step.activated", b + "/wf1/s1") + self.rows("step.activated", c + "/wf1/s0") + self.rows("step.activated", t + "/wf1/s1"), 5, "process: five steps activated once each, across four incarnations");
+        std::test::assert_eq_int(self.rows("step.completed", ""), 5, "process: and completed once each");
+        std::test::assert_eq_int(self.rows("attempt.admitted", ""), 4, "process: four attempts admitted, one per leaf");
+        std::test::assert_eq_int(self.rows("effect.requested", ""), 4, "process: four claims, one per attempt");
+        std::test::assert_eq_int(self.rows("attempt.outcome", ""), 4, "process: four outcomes");
+        std::test::assert_eq_int(self.rows("work.settled", ""), 4, "process: four Works settled");
+        std::test::assert_eq_str(self.work_attempt(a) + " " + self.work_attempt(b1) + " " + self.work_attempt(c1) + " " + self.work_attempt(d), a + "/a0 " + b1 + "/a0 " + c1 + "/a0 " + d + "/a0", "process: each on its attempt zero");
+        std::test::assert(self.at("work.settled", c1) < self.at("step.completed", c + "/wf1/s0") && self.at("step.completed", c + "/wf1/s0") < self.at("workflow.settled", c) && self.at("workflow.settled", c) < self.at("step.completed", b + "/wf1/s1") && self.at("step.completed", b + "/wf1/s1") < self.at("workflow.settled", b) && self.at("workflow.settled", b) < self.at("step.completed", t + "/wf1/s0"), "process: the settlement climbed in order");
+        std::test::assert(self.at("step.completed", t + "/wf1/s0") < self.at("step.activated", t + "/wf1/s1") && self.at("step.activated", t + "/wf1/s1") < self.at("effect.requested", "attempt:" + d + "/a0") && self.at("work.settled", d) < self.at("workflow.settled", t), "process: D after the root's first step, the root last");
+        std::test::assert_eq_str(self.workflow_disposition(t) + " " + self.workflow_disposition(b) + " " + self.workflow_disposition(c), "done done done", "process: root, child and grandchild done");
+        std::test::assert_eq_int(self.rows("workflow.settled", ""), 3, "process: three settlements, no more");
+        std::test::assert(std::str::contains(dna::decode_attempt_outcome(self.body_of("attempt.outcome", c1 + "/a0")).value.result, "from the store"), "process: C1's outcome is what its adapter recorded, reconciled rather than performed again");
+        std::test::assert_eq_int(self.rows("effect.redelivered", ""), 1, "process: one redelivery in the whole record, C1's");
+    }
+}
+
+fn main() { App { }; }
