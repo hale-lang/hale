@@ -1,0 +1,88 @@
+// GH #911 B5 — a generic instantiation TYPECHECKS as the monomorph
+// codegen builds. `hale test` runs the checker, so every line here
+// is an agreement assertion as much as a behaviour one: before the
+// fix each of these was refused with `expected `Box_Int`, got `Box``
+// while `build_executable` (which skips the checker, and is all
+// `generics.rs` ever used) lowered and ran it.
+//
+// What this pins:
+//   1. a generic STRUCT literal whose arguments come from the `let`
+//      ascription;
+//   2. a generic LOCUS the same way — the checker had no monomorph
+//      path for loci at all;
+//   3. a generic locus's params substituted from its type argument;
+//   4. a return slot supplying the arguments, for both;
+//   5. a struct literal's field init supplying them;
+//   6. several arguments, mangled in declaration order.
+//
+// Reading a monomorph locus's params from outside is part of it: the
+// checker used to answer "no field `cap` on `Cache_Int_String`".
+// Calling a METHOD on one is not — codegen does not carry the
+// template's methods onto the synthesized locus yet, and both layers
+// refuse it.
+
+type Box<T> {
+    value: T = 0;
+}
+
+type Pair<A, B> {
+    a: A = 0;
+    b: B = false;
+}
+
+type Outer {
+    inner: Box<Int> = Box { value: 0 };
+}
+
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+}
+
+locus Holder<T> {
+    params {
+        wrapped: Box<T> = Box { value: 7 };
+    }
+}
+
+fn make_box() -> Box<Int> {
+    return Box { value: 4 };
+}
+
+fn make_cache() -> Cache<Int, String> {
+    return Cache { cap: 3 };
+}
+
+fn main() {
+    // 1 — the ascription pins `T`, and the literal spelled with the
+    // template name builds the monomorph.
+    let b: Box<Int> = Box { value: 1 };
+    std::test::assert_eq_int(b.value, 1, "generic struct via let ascription");
+
+    // 2 — the same for a generic locus, params read from outside.
+    let c: Cache<Int, String> = Cache { cap: 2 };
+    std::test::assert_eq_int(c.cap, 2, "generic locus via let ascription");
+
+    // 3 — the locus's own params substitute the argument: `Box<T>`
+    // is `Box_Int` inside `Holder_Int`, default and all.
+    let h: Holder<Int> = Holder { };
+    std::test::assert_eq_int(h.wrapped.value, 7, "param default of a generic locus");
+
+    // 4 — a return slot supplies the arguments just as an
+    // ascription does, for a type and for a locus.
+    let rb: Box<Int> = make_box();
+    std::test::assert_eq_int(rb.value, 4, "generic struct through a return slot");
+    let rc: Cache<Int, String> = make_cache();
+    std::test::assert_eq_int(rc.cap, 3, "generic locus through a return slot");
+
+    // 5 — a struct literal's field init supplies them from the
+    // declared field type.
+    let o: Outer = Outer { inner: Box { value: 9 } };
+    std::test::assert_eq_int(o.inner.value, 9, "field init of a generic type");
+
+    // 6 — two arguments, in declaration order.
+    let p: Pair<Int, Bool> = Pair { a: 5, b: true };
+    std::test::assert_eq_int(p.a, 5, "first generic argument");
+    std::test::assert(p.b, "second generic argument");
+}

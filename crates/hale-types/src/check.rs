@@ -315,6 +315,70 @@ fn collect_generic_types<'a>(
     }
 }
 
+/// GH #911 B5: collect generic LOCUS templates. The locus twin of
+/// `collect_generic_types` — `locus Cache<K, V> { ... }` is
+/// monomorphized exactly as `type Box<T> { ... }` is (one mangled
+/// name per (template, type args) tuple, synthesized by codegen from
+/// discovery), so the checker has to know both or it refuses
+/// instantiations the build lowers.
+fn collect_generic_loci<'a>(
+    items: &'a [TopDecl],
+    out: &mut BTreeMap<String, &'a LocusDecl>,
+) {
+    for item in items {
+        match item {
+            TopDecl::Locus(l) if !l.generics.is_empty() => {
+                out.insert(l.name.name.clone(), l);
+            }
+            TopDecl::Module(m) => collect_generic_loci(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// GH #911 B5: the declaration a mangled monomorph name (`Box_Int`,
+/// `Cache_Int_String`) comes from.
+///
+/// Generic types and generic loci monomorphize the same way, so
+/// resolving a mangled name is one function over both. What differs
+/// is which SITES codegen can rewrite a bare template name at —
+/// which is why the callers say whether a locus counts rather than
+/// the lookup deciding for them. The site-by-site table is in
+/// `crates/hale-codegen/tests/generic_monomorph_agreement.rs`.
+#[derive(Clone, Copy)]
+enum GenericTemplate<'a> {
+    Type(&'a TypeDecl),
+    Locus(&'a LocusDecl),
+}
+
+impl<'a> GenericTemplate<'a> {
+    fn name(self) -> &'a str {
+        match self {
+            GenericTemplate::Type(t) => t.name.name.as_str(),
+            GenericTemplate::Locus(l) => l.name.name.as_str(),
+        }
+    }
+
+    fn generics(self) -> &'a [GenericParam] {
+        match self {
+            GenericTemplate::Type(t) => &t.generics,
+            GenericTemplate::Locus(l) => &l.generics,
+        }
+    }
+
+    /// The declaration keyword, for a diagnostic.
+    fn kind(self) -> &'static str {
+        match self {
+            GenericTemplate::Type(_) => "type",
+            GenericTemplate::Locus(_) => "locus",
+        }
+    }
+
+    fn is_type(self) -> bool {
+        matches!(self, GenericTemplate::Type(_))
+    }
+}
+
 /// M3 stage 3 tranche 2: resolve one mangle token (`Int`, `Float`,
 /// a user type name, or a nested mangled monomorph) to a Ty. The
 /// codegen mangle joins tokens with `_`, so this stays permissive
@@ -516,6 +580,8 @@ pub fn check_bundle_scoped(
         let mut generic_types: BTreeMap<String, &TypeDecl> =
             BTreeMap::new();
         collect_generic_types(&program.items, &mut generic_types);
+        let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
+        collect_generic_loci(&program.items, &mut generic_loci);
         let mut cx = Checker {
             top,
             known: &known,
@@ -534,6 +600,7 @@ pub fn check_bundle_scoped(
             generic_params: Vec::new(),
             generic_fns,
             generic_types,
+            generic_loci,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
@@ -7703,6 +7770,14 @@ struct Checker<'a> {
     /// codegen unit tests, which skip the checker, exercised
     /// them). Fields validate against the SUBSTITUTED types.
     generic_types: BTreeMap<String, &'a TypeDecl>,
+    /// GH #911 B5: generic LOCUS templates (name → decl). The same
+    /// table for `locus Cache<K, V> { ... }`, and for the same
+    /// reason: without it the checker refused every instantiation of
+    /// a generic locus while `hale build` lowered it, so the shape
+    /// was reachable only from codegen tests (which skip the
+    /// checker). A locus's `params` are its fields — the monomorph's
+    /// are the template's with the arguments substituted.
+    generic_loci: BTreeMap<String, &'a LocusDecl>,
     /// GH #255 phase 1: topic names with a declared transport
     /// binding (any `bindings { }` entry, bundle-wide). Gates
     /// `or wait` on publishes — the loss window it waits out
@@ -10806,10 +10881,19 @@ impl<'a> Checker<'a> {
                             // monomorph's own field validation
                             // already checked the arguments; this is
                             // the same value under two spellings.
+                            //
+                            // GH #911 B5: generic TYPES only.
+                            // `c: Cache<Int, String> = Cache { }` on
+                            // a generic LOCUS is refused at build
+                            // ("generic instantiation
+                            // `Cache_Int_String` not synthesized —
+                            // discovery missed the use site"), so
+                            // accepting it here would trade one
+                            // divergence for another.
                             let monomorph_of_template = self
                                 .resolve_generic_monomorph(w)
                                 .is_some_and(|(t, _)| {
-                                    t.name.name == *g
+                                    t.is_type() && t.name() == g.as_str()
                                 });
                             serves_or_iface || monomorph_of_template
                         }
@@ -11704,7 +11788,21 @@ impl<'a> Checker<'a> {
                         // body.
                         self.check_type_annotation(te);
                         let want = resolve_type_expr(te, self.known);
-                        if !want.assignable_from(&got) {
+                        // GH #911 B5: `let h: Holder<Int> = Holder { };`
+                        // — the annotation resolves to the mangled
+                        // monomorph `Holder_Int` while the literal
+                        // types as the template `Holder`. Codegen
+                        // rewrites the bare template name against
+                        // exactly this ascription and builds the
+                        // monomorph, for a generic locus as well as a
+                        // generic type; the checker refused both, so
+                        // neither shape was reachable outside the
+                        // codegen tests (which skip the checker).
+                        let monomorph = self
+                            .two_spellings_of_one_monomorph(
+                                &want, &got, true,
+                            );
+                        if !monomorph && !want.assignable_from(&got) {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -11717,7 +11815,16 @@ impl<'a> Checker<'a> {
                         }
                         want
                     }
-                    None => got,
+                    None => {
+                        // GH #911 B5: no annotation is no arguments.
+                        if matches!(value, Expr::Struct { .. }) {
+                            self.refuse_generic_literal_without_arguments(
+                                &got,
+                                value.span(),
+                            );
+                        }
+                        got
+                    }
                 };
                 self.locals.insert(
                     &name.name,
@@ -11877,7 +11984,17 @@ impl<'a> Checker<'a> {
                     // declared success return type when in a
                     // fallible body.
                     if let Some((expected_ret, _)) = &self.fallible_ctx {
-                        if !expected_ret.assignable_from(&got) {
+                        // GH #911 B5: the return slot is the other
+                        // site codegen rewrites a bare generic
+                        // template name at — `fn make() -> Box<Int> {
+                        // return Box { value: 4 }; }` builds and runs.
+                        let monomorph = self
+                            .two_spellings_of_one_monomorph(
+                                expected_ret,
+                                &got,
+                                true,
+                            );
+                        if !monomorph && !expected_ret.assignable_from(&got) {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -11899,7 +12016,18 @@ impl<'a> Checker<'a> {
                                 Ty::Prim(PrimType::Int)
                             )
                         );
-                        if !widening && !expected_ret.assignable_from(&got) {
+                        // GH #911 B5: the same return-slot rewrite as
+                        // the fallible branch above.
+                        let monomorph = self
+                            .two_spellings_of_one_monomorph(
+                                expected_ret,
+                                &got,
+                                true,
+                            );
+                        if !widening
+                            && !monomorph
+                            && !expected_ret.assignable_from(&got)
+                        {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -12063,8 +12191,19 @@ impl<'a> Checker<'a> {
                 if matches!(e, Expr::Or { .. }) {
                     self.or_value_discarded = true;
                 }
-                let _ = self.check_expr_addressed(e);
+                let got = self.check_expr_addressed(e);
                 self.or_value_discarded = false;
+                // GH #911 B5: `Cache { cap: 2 };` in statement
+                // position — the other site with no declared type to
+                // take the arguments from. (`App { };`, the ordinary
+                // main-locus instantiation, names no generic
+                // template and is untouched.)
+                if matches!(e, Expr::Struct { .. }) {
+                    self.refuse_generic_literal_without_arguments(
+                        &got,
+                        e.span(),
+                    );
+                }
             }
             Stmt::ShmWrite { topic, max, binding, body, span } => {
                 // The receiver must be a declared topic (its layout-bound
@@ -13158,21 +13297,60 @@ impl<'a> Checker<'a> {
                 if self.top.lookup(n).is_none() {
                     let (template, bindings) =
                         self.resolve_generic_monomorph(n)?;
-                    if let TypeDeclBody::Struct(tfields) =
-                        &template.body
-                    {
-                        return tfields
-                            .iter()
-                            .find(|f| f.name.name == name)
-                            .map(|f| {
-                                substitute_generic_ty(
-                                    &f.ty,
-                                    &bindings,
-                                    self.known,
-                                )
-                            });
+                    match template {
+                        GenericTemplate::Type(td) => {
+                            if let TypeDeclBody::Struct(tfields) = &td.body {
+                                return tfields
+                                    .iter()
+                                    .find(|f| f.name.name == name)
+                                    .map(|f| {
+                                        substitute_generic_ty(
+                                            &f.ty,
+                                            &bindings,
+                                            self.known,
+                                        )
+                                    });
+                            }
+                            return None;
+                        }
+                        // GH #911 B5: `c.cap` where
+                        // `c: Cache<Int, String>`. A locus's params
+                        // are its fields, and the monomorph's are
+                        // the template's with the arguments
+                        // substituted — the struct rule above, for
+                        // the locus half. Codegen reads the field
+                        // (the synthesized locus goes through the
+                        // ordinary locus passes); the checker
+                        // answered "no field `cap` on
+                        // `Cache_Int_String`" and refused a program
+                        // that builds and runs.
+                        GenericTemplate::Locus(ld) => {
+                            for m in &ld.members {
+                                let LocusMember::Params(pb) = m else {
+                                    continue;
+                                };
+                                for p in &pb.params {
+                                    if p.name.name != name {
+                                        continue;
+                                    }
+                                    // A param with no declared type
+                                    // takes it from its default, and
+                                    // that inference does not run
+                                    // here — stay permissive rather
+                                    // than invent one.
+                                    return Some(match &p.ty {
+                                        Some(te) => substitute_generic_ty(
+                                            te,
+                                            &bindings,
+                                            self.known,
+                                        ),
+                                        None => Ty::Unknown,
+                                    });
+                                }
+                            }
+                            return None;
+                        }
                     }
-                    return None;
                 }
                 match self.top.lookup(n)? {
                 TopSymbol::Type(info) => match &info.kind {
@@ -13462,6 +13640,10 @@ impl<'a> Checker<'a> {
         // program this bundle holds, so it is decided before the
         // strict-identifier gate below — see the function's own doc.
         self.check_generic_arg_vocabulary(te);
+        // GH #911 B5: the argument COUNT is not a strictness — it is
+        // decided by the declaration, which a single file of a
+        // multi-file seed reads as well as the whole bundle does.
+        self.check_generic_arity(te);
         if !self.strict_idents {
             return;
         }
@@ -13623,7 +13805,13 @@ impl<'a> Checker<'a> {
         // `Box_Int` written out: the mangled monomorph name a
         // generic instantiation resolves to, which codegen
         // synthesizes from the template.
-        self.resolve_generic_monomorph(name).is_some()
+        //
+        // GH #911 B5: generic TYPES only. A generic LOCUS's monomorph
+        // name is not a spelling codegen accepts anywhere (see
+        // `check_struct_literal`), so admitting it as an annotation
+        // would admit a program the build refuses.
+        self.resolve_generic_monomorph(name)
+            .is_some_and(|(t, _)| t.is_type())
     }
 
     /// Nearest spelling to `name` among the things a type annotation
@@ -15880,26 +16068,41 @@ impl<'a> Checker<'a> {
     }
 
     /// M3 stage 3 tranche 2: match a mangled monomorph name
-    /// (`Box_Int`, `Pair_Int_String`) against a generic type
+    /// (`Box_Int`, `Pair_Int_String`) against a generic
     /// template, producing the generic→Ty bindings. The mangle
     /// joins single tokens with `_`; template base names
     /// containing `_` are handled by prefix match. None when no
     /// template matches or the token count disagrees.
+    ///
+    /// GH #911 B5: generic LOCI are searched too (`Cache_Int_String`
+    /// against `locus Cache<K, V>`). The answer says which kind of
+    /// declaration it found, because a caller's site decides whether
+    /// a locus may appear there — see
+    /// [`Self::two_spellings_of_one_monomorph`].
     fn resolve_generic_monomorph(
         &self,
         name: &str,
-    ) -> Option<(&'a TypeDecl, BTreeMap<String, Ty>)> {
-        for (base, template) in &self.generic_types {
+    ) -> Option<(GenericTemplate<'a>, BTreeMap<String, Ty>)> {
+        let templates = self
+            .generic_types
+            .iter()
+            .map(|(base, t)| (base, GenericTemplate::Type(*t)))
+            .chain(
+                self.generic_loci
+                    .iter()
+                    .map(|(base, l)| (base, GenericTemplate::Locus(*l))),
+            );
+        for (base, template) in templates {
             let prefix = format!("{}_", base);
             let Some(rest) = name.strip_prefix(&prefix) else {
                 continue;
             };
             let toks: Vec<&str> = rest.split('_').collect();
-            if toks.len() != template.generics.len() {
+            if toks.len() != template.generics().len() {
                 continue;
             }
             let mut bindings: BTreeMap<String, Ty> = BTreeMap::new();
-            for (g, tok) in template.generics.iter().zip(toks.iter()) {
+            for (g, tok) in template.generics().iter().zip(toks.iter()) {
                 bindings.insert(
                     g.name.name.clone(),
                     mangle_token_to_ty(tok, self.known),
@@ -15908,6 +16111,160 @@ impl<'a> Checker<'a> {
             return Some((template, bindings));
         }
         None
+    }
+
+    /// GH #911 B5: are `want` and `got` the two spellings of ONE
+    /// monomorph — an annotation that resolved to the mangled name
+    /// (`Box_Int`, `Cache_Int_String`) and a literal that typed as
+    /// the generic TEMPLATE it instantiates (`Box`, `Cache`)?
+    ///
+    /// A literal spelled with the template name carries no type
+    /// arguments of its own; codegen takes them from the declared
+    /// type at the site and rewrites the path to the monomorph
+    /// (`resolve_generic_struct_path`). The checker has to allow the
+    /// same thing at the same sites or it refuses programs the build
+    /// lowers.
+    ///
+    /// `allow_loci` is a per-SITE answer, not a property of the
+    /// question. Codegen does the rewrite for a generic locus as
+    /// well as a generic type at a `let` ascription and a return
+    /// slot; at a locus param DEFAULT and at a locus literal's field
+    /// init only a generic TYPE resolves (a generic locus there dies
+    /// with "not synthesized — discovery missed the use site"), so
+    /// those two sites pass `false` and keep check agreeing with the
+    /// build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
+    /// holds the site-by-site evidence.
+    fn two_spellings_of_one_monomorph(
+        &self,
+        want: &Ty,
+        got: &Ty,
+        allow_loci: bool,
+    ) -> bool {
+        let (Ty::Named(w), Ty::Named(g)) = (want, got) else {
+            return false;
+        };
+        self.resolve_generic_monomorph(w).is_some_and(|(t, _)| {
+            (allow_loci || t.is_type()) && t.name() == g.as_str()
+        })
+    }
+
+    /// GH #911 B5: the generic template a literal's own path names,
+    /// if any. `Box { value: 1 }` types as `Ty::Named("Box")` — the
+    /// template, not a monomorph — and that is only lowerable where
+    /// a declared type supplies the arguments.
+    fn generic_template_named(&self, ty: &Ty) -> Option<GenericTemplate<'a>> {
+        let Ty::Named(n) = ty else { return None };
+        if let Some(t) = self.generic_types.get(n.as_str()) {
+            return Some(GenericTemplate::Type(*t));
+        }
+        self.generic_loci
+            .get(n.as_str())
+            .map(|l| GenericTemplate::Locus(*l))
+    }
+
+    /// GH #911 B5: refuse a generic literal at a site that declares
+    /// no type for it.
+    ///
+    /// `let b = Box { value: 1 };` and `Cache { cap: 2 };` checked
+    /// clean and then died at build with an unlocated
+    /// `expression form Discriminant(12)` / `struct literal
+    /// "Box": no locus or type by that name` — codegen has no
+    /// inference from the literal's fields back to `T`, so there is
+    /// nothing to infer the arguments from. The rule is therefore
+    /// "say them", and the error carries the line that has to change.
+    fn refuse_generic_literal_without_arguments(
+        &mut self,
+        ty: &Ty,
+        span: Span,
+    ) {
+        let Some(template) = self.generic_template_named(ty) else {
+            return;
+        };
+        let name = template.name();
+        let params: Vec<&str> = template
+            .generics()
+            .iter()
+            .map(|g| g.name.name.as_str())
+            .collect();
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`{}` is a generic {}: a literal spelled with the \
+                 template name takes its type arguments from the \
+                 declared type at the site, and this site declares \
+                 none — write them (`let x: {}<{}> = {} {{ ... }};`)",
+                name,
+                template.kind(),
+                name,
+                params.join(", "),
+                name
+            ),
+        ));
+    }
+
+    /// GH #911 B5: a generic instantiation's argument COUNT must
+    /// match the template's parameter count.
+    ///
+    /// `Box<Int, String>` used to resolve, silently, to the
+    /// monomorph name `Box_Int_String` — a name nothing declares —
+    /// and every use of the binding then failed for an unrelated
+    /// reason ("no field `value` on `Box_Int_String`") while
+    /// `hale build` refused the arity directly. Reported at the
+    /// annotation, and not gated on `strict_idents`: arity is
+    /// decided by the declaration, which one file of a multi-file
+    /// seed can see as well as the whole bundle can.
+    fn check_generic_arity(&mut self, te: &TypeExpr) {
+        match te {
+            TypeExpr::Named { path, generic_args, span } => {
+                for arg in generic_args {
+                    self.check_generic_arity(arg);
+                }
+                if path.segments.len() != 1 || generic_args.is_empty() {
+                    return;
+                }
+                let name = &path.segments[0].name;
+                let Some(template) =
+                    self.generic_template_named(&Ty::Named(name.clone()))
+                else {
+                    return;
+                };
+                let want = template.generics().len();
+                if generic_args.len() == want {
+                    return;
+                }
+                self.diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "generic {} `{}` takes {} type argument{}, not {}",
+                        template.kind(),
+                        name,
+                        want,
+                        if want == 1 { "" } else { "s" },
+                        generic_args.len()
+                    ),
+                ));
+            }
+            TypeExpr::Projection { inner, .. } => {
+                self.check_generic_arity(inner);
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.check_generic_arity(elem);
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.check_generic_arity(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.check_generic_arity(p);
+                }
+                if let Some(r) = ret {
+                    self.check_generic_arity(r);
+                }
+            }
+            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
     }
 
     fn check_struct_literal(
@@ -16039,24 +16396,66 @@ impl<'a> Checker<'a> {
             if let Some((template, bindings)) =
                 self.resolve_generic_monomorph(name)
             {
-                if let TypeDeclBody::Struct(tfields) = &template.body {
-                    let fields: Vec<(String, Ty, bool)> = tfields
-                        .iter()
-                        .map(|f| {
-                            (
-                                f.name.name.clone(),
-                                substitute_generic_ty(
-                                    &f.ty,
-                                    &bindings,
-                                    self.known,
-                                ),
-                                f.default.is_some(),
-                            )
-                        })
-                        .collect();
-                    return self.check_literal_fields(
-                        name, &fields, "type", true, inits, span,
-                    );
+                match template {
+                    GenericTemplate::Type(td) => {
+                        if let TypeDeclBody::Struct(tfields) = &td.body {
+                            let fields: Vec<(String, Ty, bool)> = tfields
+                                .iter()
+                                .map(|f| {
+                                    (
+                                        f.name.name.clone(),
+                                        substitute_generic_ty(
+                                            &f.ty,
+                                            &bindings,
+                                            self.known,
+                                        ),
+                                        f.default.is_some(),
+                                    )
+                                })
+                                .collect();
+                            return self.check_literal_fields(
+                                name, &fields, "type", true, inits, span,
+                            );
+                        }
+                    }
+                    // GH #911 B5: the mangled name of a generic
+                    // LOCUS monomorph, written out. `hale build`
+                    // refuses it — the ownership pre-pass never
+                    // numbers a node spelled this way (F.39), with
+                    // or without the monomorph having been
+                    // discovered — so the checker refuses it too,
+                    // and says which spelling does work instead of
+                    // "unknown type".
+                    GenericTemplate::Locus(ld) => {
+                        let args: Vec<String> = ld
+                            .generics
+                            .iter()
+                            .map(|g| {
+                                bindings
+                                    .get(&g.name.name)
+                                    .map(|t| t.display())
+                                    .unwrap_or_else(|| "?".to_string())
+                            })
+                            .collect();
+                        let args = args.join(", ");
+                        let base = ld.name.name.clone();
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "`{}` is the compiler's name for the \
+                                 generic locus `{}<{}>`, not a spelling \
+                                 you can instantiate — build it through \
+                                 the template name with the type \
+                                 arguments on the binding \
+                                 (`let x: {}<{}> = {} {{ ... }};`)",
+                                name, base, args, base, args, base
+                            ),
+                        ));
+                        for init in inits {
+                            let _ = self.check_expr(&init.value);
+                        }
+                        return Ty::Unknown;
+                    }
                 }
             }
         }
@@ -16244,8 +16643,29 @@ impl<'a> Checker<'a> {
                     } else {
                         false
                     };
+                    // GH #911 B5: `Outer { inner: Box { value: 9 } }`
+                    // where `inner: Box<Int>` — the field's declared
+                    // type resolved to the mangled monomorph, the
+                    // literal typed as the template.
+                    // `populate_user_type_fields` rewrites the bare
+                    // name against the declared field type, so a
+                    // TYPE literal's field init builds and runs.
+                    //
+                    // TYPE literals only, and generic types only.
+                    // Codegen's locus-literal path has no such
+                    // rewrite (it rewrites a param DEFAULT, not a
+                    // field init at the literal), and
+                    // `L { b: Box { value: 8 } }` dies at build — so
+                    // a locus literal keeps the plain mismatch below,
+                    // the same call PR #531's review made for
+                    // perspective designation.
+                    let monomorph_field = kind_label == "type"
+                        && self.two_spellings_of_one_monomorph(
+                            want, &got, false,
+                        );
                     if !interface_satisfied
                         && !perspective_designated
+                        && !monomorph_field
                         && !want.assignable_from(&got)
                     {
                         self.diags.push(Diag::ty(
