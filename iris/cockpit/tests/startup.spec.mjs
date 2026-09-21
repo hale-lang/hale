@@ -26,7 +26,24 @@ const test = base.extend({
     const env = isolatedEnvironment(); env.HALE_BIN = process.env.HALE_BIN;
     if (!env.HALE_BIN || !process.env.HALE_API_BIN) throw new Error('Run through the native browser test launcher or provide HALE_BIN and HALE_API_BIN.');
     const generated = boundedNative(env.HALE_BIN, ['dna', 'new', root], { build: true });
-    const children = [];
+    const children = [], stateDirs = [];
+    const stopRecordedChildren = async () => {
+      for (const dir of stateDirs) {
+        let names = [];
+        try { names = await readdir(path.join(dir, 'children')); } catch { continue; }
+        for (const name of names.filter(n => n.endsWith('.pid'))) {
+          try { const pid = Number((await readFile(path.join(dir, 'children', name), 'utf8')).trim()); if (pid > 0) process.kill(pid, 'SIGTERM'); } catch { }
+        }
+      }
+      await sleep(500);
+      for (const dir of stateDirs) {
+        let names = [];
+        try { names = await readdir(path.join(dir, 'children')); } catch { continue; }
+        for (const name of names.filter(n => n.endsWith('.pid'))) {
+          try { const pid = Number((await readFile(path.join(dir, 'children', name), 'utf8')).trim()); if (pid > 0) process.kill(pid, 'SIGKILL'); } catch { }
+        }
+      }
+    };
     try {
       await execute(generated.command, generated.args, { env, timeout: 300000, maxBuffer: 2097152 });
       const git = args => execute('git', ['-C', root, ...args], { env, timeout: 5000 }).then(r => r.stdout.trim());
@@ -36,19 +53,32 @@ const test = base.extend({
       const state = async () => ({ refs: await git(['show-ref']), status: await git(['status', '--porcelain']), source: await readFile(path.join(root, 'dna/org/main.hl'), 'utf8') });
       const start = async ({ build = false, drafts = false, extraEnv = {} } = {}) => {
         const chosenPort = await port(), origin = `http://127.0.0.1:${chosenPort}`;
-        const options = [root, '--port', String(chosenPort), ...(drafts ? ['--source-drafts'] : [])];
-        const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN;
-        if (!build) options.push('--api', process.env.HALE_API_BIN);
+        // The head's API child listens on its own port and outlives the head
+        // by design: each launch gets a port of its own, and the teardown
+        // stops every child the head recorded.
+        const apiPort = await port();
+        const options = [root, '--port', String(chosenPort), '--api-port', String(apiPort), ...(drafts ? ['--source-drafts'] : [])];
+        const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN; delete childEnv.HALE_HEAD_BIN;
+        // The head keeps a registry and receipts under the state directory:
+        // every launch here gets its own, never the operator's.
+        childEnv.XDG_STATE_HOME = path.join(scratch, 'state'); childEnv.XDG_CONFIG_HOME = path.join(scratch, 'config');
+        childEnv.HALE_IRIS_HEAD_STATE = path.join(scratch, 'head-state-' + String(chosenPort)); stateDirs.push(childEnv.HALE_IRIS_HEAD_STATE);
+        // The launcher builds the head unless handed one: a case that supplies
+        // the API also supplies a built head when the environment names one,
+        // and otherwise takes the build budget for the head it will build.
+        const prebuiltHead = process.env.HALE_NATIVE_HEAD_BIN || '';
+        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) options.push('--head', prebuiltHead); }
         else { childEnv.TMPDIR = path.join(scratch, 'build temporary'); await mkdir(childEnv.TMPDIR); }
+        const builds = build || !prebuiltHead;
         // Bound the real compiler/API tree without holding the native build lock
         // for the HTTP process lifetime. No application body is run or observed.
-        const bounded = boundedNative(launcher, options, { build, lock: false });
+        const bounded = boundedNative(launcher, options, { build: builds, lock: false });
         const child = spawn(bounded.command, bounded.args, { env: childEnv, cwd: scratch, stdio: ['ignore', 'pipe', 'pipe'] });
         children.push(child); let log = ''; let failure;
         child.on('error', error => { failure = error; });
         child.stdout.on('data', chunk => { log = (log + chunk).slice(-262144); }); child.stderr.on('data', chunk => { log = (log + chunk).slice(-262144); });
-        // A launcher that builds the API tree needs the build budget's wall time.
-        const deadline = Date.now() + (build ? 600000 : 45000);
+        // A launcher that builds the head or the API tree needs the build budget's wall time.
+        const deadline = Date.now() + (builds ? 600000 : 45000);
         while (Date.now() < deadline && child.exitCode === null && !failure) {
           try {
             const response = await fetch(origin + '/api/hale/v1/applications', { signal: AbortSignal.timeout(1000) });
@@ -60,7 +90,7 @@ const test = base.extend({
         throw failure || new Error('Iris launcher did not become ready: ' + log);
       };
       await use({ root, env, scratch, state, start });
-    } finally { for (const child of children) await stop(child); await rm(scratch, { recursive: true, force: true }); }
+    } finally { for (const child of children) await stop(child); await stopRecordedChildren(); await rm(scratch, { recursive: true, force: true }); }
   },
 });
 test.setTimeout(900000);
@@ -77,7 +107,9 @@ test('One-command startup builds native Iris for a fresh DNA project without cha
   await expect(page.getByRole('button', { name: 'Edit organization', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Edit ownership', exact: true })).toBeEnabled();
   const capabilities = await page.request.get(`${service.origin}/api/hale/v1/applications/${service.application}/capabilities`);
-  const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(true);
+  // The head attaches the project under a synthesized local policy, so the
+  // cockpit it serves can write practices and verdicts; definitions stay off.
+  const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(false); expect(caps.data.writes.practice_propose).toBe(true);
   expect(await project.state()).toEqual(before); expect(errors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath('fresh-project-iris.png') });
   await writeFile(testInfo.outputPath('startup-capabilities.json'), JSON.stringify(caps, null, 2));

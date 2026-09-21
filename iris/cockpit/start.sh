@@ -120,7 +120,6 @@ export HALE_BIN=$hale
 # way the API was built here before: a one-line seed importing the checkout.
 build_seed() {
   local seed=$1 name=$2
-  [[ -n "$build_dir" ]] || build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-iris-head.XXXXXXXX")
   local import_path=${checkout//\\/\\\\}; import_path=${import_path//\"/\\\"}
   printf 'import "%s/%s" as host;\nfn main() { host::main(); }\n' "$import_path" "$seed" > "$build_dir/$name.hl"
   printf 'Iris: building %s from this checkout…\n' "$seed" >&2
@@ -133,6 +132,9 @@ absolute_executable() {
   [[ -f "$1" && -x "$1" ]] || fail "$2 binary must be an executable file"
   printf '%s\n' "$(cd -- "$(dirname -- "$1")" && pwd -P)/$(basename -- "$1")"
 }
+# One build directory for both seeds, made here rather than inside the
+# command substitution that calls build_seed, so cleanup removes it.
+if [[ -z "$api" || -z "$head" ]]; then build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-iris-head.XXXXXXXX"); fi
 if [[ -z "$api" ]]; then api=$(build_seed dna/api/practice_review practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then head=$(build_seed dna/api/project_service project_service); else head=$(absolute_executable "$head" head); fi
 
