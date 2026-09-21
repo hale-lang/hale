@@ -167,6 +167,7 @@ main locus App {
         p: dna::WorkflowProjection = dna::WorkflowProjection { };
         q: dna::WorkflowProjection = dna::WorkflowProjection { };
         dna: dna::Dna = dna::Dna {
+            runs_engine: false, // the admission alone is under test
             journal: Contended { },
             work: dna::WorkSystem {
                 human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
@@ -233,7 +234,7 @@ main locus App {
         std::test::assert_eq_str(self.request_of("t2"), "mine", "t2 is this one's");
         std::test::assert_eq_int(self.rows("task.born", "t2"), 1, "with its summary");
         std::test::assert_eq_int(self.rows("task.born", "t1"), 0, "and none written for the other body's");
-        std::test::assert_eq_int(self.dna.work.requests, 0, "nothing was dispatched");
+        std::test::assert_eq_int(self.dna.executions_asked, 0, "nothing was dispatched");
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "mine", definition: "one-step", revision: 1 }), "t2", "asked again, it is still t2");
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "theirs", definition: "one-step", revision: 1 }), "t1", "and the other body's ask, asked here, is its execution");
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), 2, "two executions, two admissions");
@@ -254,7 +255,7 @@ main locus App {
         std::test::assert_eq_int(self.rows("workflow.refused", ""), 1, "the refusal is in the record");
         let why = dna::decode_refusal(self.body_of("workflow.refused"));
         std::test::assert(why.ok && std::str::contains(why.value.why, "io") && why.value.definition == "one-step", "as the versioned refusal, saying why: " + why.why + why.value.why);
-        std::test::assert_eq_int(self.dna.work.requests, 0, "and nothing was dispatched");
+        std::test::assert_eq_int(self.dna.executions_asked, 0, "and nothing was dispatched");
 
         // ---- the store refuses the admission and the refusal: the answer says so
         let unrecorded = self.dna.admit_workflow(dna::WorkflowAsk { id: "fourth", definition: "one-step", revision: 1 });

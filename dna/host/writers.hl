@@ -682,23 +682,18 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
         let q = open_projection(root, ".", "");
         let refused = find_after(q, before, " intent.refused ", intent_id);
         if refused.seq >= 0 { return answer("refused: " + refused.body + "\n"); }
-        let offered = find_after(q, before, " intent.offered ", intent_id);
-        if offered.seq >= 0 {
-            let mut i = before;
-            while i < q.rows() {
-                let t = q.row(i);
-                if t.kind == "task.born" && i >= offered.seq {
-                    let mut state = "active";
-                    let mut k = i + 1;
-                    while k < q.rows() {
-                        let x = q.row(k);
-                        if x.entity == t.entity && std::str::starts_with(x.kind, "task.") && x.kind != "task.born" { state = x.kind[5..len(x.kind)]; }
-                        k = k + 1;
-                    }
-                    return answer("task " + t.entity + " born for intent " + intent_id + " [" + state + "]\n");
-                }
-                i = i + 1;
+        // card 18: the ask's own execution — the admission that names this
+        // intent as its request — never the next birth in the record,
+        // which may be another ask's; its state is the projection's
+        let mut i = before;
+        while i < q.rows() {
+            let t = q.row(i);
+            if t.kind == "workflow.admitted" && std::json::find_string_field(t.body, "request") == intent_id {
+                let projected = q.task_of(t.entity);
+                let state = if len(projected.state) > 0 { projected.state } else { "active" };
+                return answer("task " + t.entity + " born for intent " + intent_id + " [" + state + "]\n");
             }
+            i = i + 1;
         }
         if std::time::now() > deadline { return fail("published intent " + intent_id + ", but the organism journaled no answer in time (record revision " + to_string(q.rows()) + ")"); }
         std::time::sleep(if local { 150ms } else { 1000ms });

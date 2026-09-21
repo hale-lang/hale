@@ -218,6 +218,7 @@ main locus App {
     }
     fn boot_org(repo: String) {
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -231,6 +232,7 @@ main locus App {
     // An owner's assembly over the shared ledger (acme: alice; north: bob).
     fn boot_owner_org(repo: String, me: String) {
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
             ownership: dna::Ownership { me: me, me_env: "", text: OWNERS },
             gateway: dna::MutationGateway {

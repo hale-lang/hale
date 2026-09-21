@@ -34,14 +34,14 @@ The names and their ownership meanings are kept. **[existing]**
 
 | Locus | Owns | Answers to |
 |---|---|---|
-| `Metabolism` | the Task pool; mediates delegated settlement | the assembly (`Dna`) or the application |
-| `Task` | one bounded intention; binds one workflow recipe and revision | `Metabolism` |
-| `Workflow` | the ordered steps of one execution; activates each next step | its `Task` |
-| `Step` | its required-member set and its barrier | its `Workflow` |
-| `Work` | one logical piece of work across its Attempts | its `Step` |
-| `Attempt` | one performer on one request | its `Work` (the owner of the performers runs it) |
+| `Executions` (card 18: the assembly's, for its scope) | every execution of a scope; mediates delegated settlement | the assembly (`Dna`) or the application |
+| `TaskRun` | one bounded intention; binds one workflow recipe and revision | `Executions` |
+| `WorkflowRun` | the ordered steps of one execution; activates each next step | its `TaskRun` |
+| `StepRun` | its required-member set and its barrier | its `WorkflowRun` |
+| `WorkRun` | one logical piece of work across its attempts | its `StepRun` |
+| an attempt | one performer on one request | the runtime (the owner of the performers runs it) |
 
-A child workflow is a child `Task`, owned by `Metabolism` like every
+A child workflow is a child `TaskRun`, owned by `Executions` like every
 Task, and correlated to its spawning Step by data (`parent_task`,
 `spawning_step`, member key). **[existing]** In the resident runtime the
 Step asks for the child over the bus and the Task owner creates it from
@@ -282,9 +282,8 @@ is not retried as a whole unless the application's policy says so.
 
 One retry owner: the durable Work lifecycle admits each attempt under
 the bound routing/retry policy. The new executor path runs exactly one
-admitted attempt per request and never retries on its own. The current
-`WorkSystem` loop, which retries internally, stays for legacy callers
-until card 18. **[decided; proven: `workflow_attempt_test.hl`, card 08 —
+admitted attempt per request and never retries on its own. The
+`WorkSystem` loop that retried internally is gone (card 18). **[decided; proven: `workflow_attempt_test.hl`, card 08 —
 `AttemptExecutor` runs nothing before a durable admission, reuses a
 recorded outcome, decides and claims the execution at one refreshed
 reading of the record — an outcome durable before the claim is the
@@ -352,9 +351,9 @@ announcement. **[decided]**
 
 One positive discriminator: `workflow.admitted` with `engine: wf1`
 marks a new-engine execution, written atomically with its bound recipe
-before anything runs. A Task without it keeps the legacy recovery path.
-A partial new admission never falls through to legacy `requires: edit`
-recovery. **[decided; proven: `workflow_admission_test.hl`,
+before anything runs. A Task without it is left where it is (card 18:
+the legacy recovery is gone). A partial new admission never falls
+through to legacy `requires: edit` recovery — there is none. **[decided; proven: `workflow_admission_test.hl`,
 `workflow_admission_contention_test.hl`, card 07 — the admission is
 appended with exact compare-and-append before the `task.born` summary,
 a refusal writes no summary and requests no work, the same ask id is one
@@ -420,10 +419,10 @@ The rules the proof pinned down, natively (hale 0.20.0, this tree):
 of them resident means removing every `release` of that type and moving
 every reader of a settled child from `release` to the bus, which ends
 the synchronous in-tower shape (F.5) the legacy callers and fixtures use.
-**Decision:** the runtime uses new resident types beside the legacy flow
-types, with the same ownership meanings; the legacy types stay for the
-legacy path until card 18 retires it. Names, fixed here for cards 09 on,
-in `dna/core/workflow_runtime.hl`:
+**Decision:** the runtime uses new resident types with the same
+ownership meanings; card 18 retired the flow types (`process.hl`) with
+the legacy path. Names, fixed here for cards 09 on, in
+`dna/core/workflow_runtime.hl`:
 
 | Resident type | Accepts | Accepted by | Meaning |
 |---|---|---|---|
@@ -618,19 +617,30 @@ failed even when their assertions hold; the silent regressions in cards
 
 ## 10. Compatibility
 
-Until card 18 **[decided]**:
+Card 18 cut over, hard, by the owner's ruling (2026-09-21: no
+backwards compatibility, and no old records to care about — the legacy
+recovery goes with the rest) **[decided]**:
 
-- `Dna.ask`, `Metabolism.offer` and `Knobs` keep their current
-  behaviour; the new engine is assembled explicitly.
-- Legacy records keep their legacy recovery (fixed for split memories
-  in card 02).
+- `Dna.ask(Intent)` admits a workflow and runs it in the one engine the
+  assembly owns for its scope; `Dna.run_workflow(WorkflowAsk)` is the
+  authored-definition API, the same admission (card 07) and start.
+  `Metabolism`, `Knobs`, the flow types (`Task` / `Workflow` / `Step` /
+  `Work` / `Attempt`, `process.hl`), the routed exchange
+  (`WorkRequested` / `WorkDone` / `TaskSettled`) and the `WorkSystem`'s
+  own retry loop are deleted, not adapted. Nothing renders the old
+  summaries; completion is read from the record.
+- There is no legacy recovery path and no legacy adapter: a Task with
+  no admission is left where it is. A restart asks the engine again for
+  every admitted root not yet settled.
 - The meaning of human completion (`hale dna task done`, evidence,
   exceptions) and of code-review completion is unchanged.
 - No historical journal row is rewritten.
-
-After card 18, new work uses one engine; old records are read through a
-narrow legacy adapter. `Knobs` becomes an adapter that produces an
-equivalent definition.
+- The four baseline controls and the three original reproductions of
+  the assessment pinned the old shapes (the in-tower `detail` strings,
+  the `WorkSystem` counters, a synchronous `offer`); under this ruling
+  they are replaced by engine-native fixtures, not kept passing
+  (`workflow_public_admission_test.hl` covers the delayed continuation
+  and the retry identity on the public surface).
 
 ## 11. Proof status
 
@@ -662,6 +672,7 @@ equivalent definition.
 | edit outcomes through Work completion: an edit leaf's attempt reaches the assembly through the `edit` performer kind and its outcome is reported for that exact attempt into the generic lifecycle; the Work completes under its declared contract — `Patch`, a candidate prepared for review; `Applied`, approved and applied, waiting on the review of its Task's candidate — while an unfinished sibling keeps the root pending; a later denial reverses nothing about the prepared candidate and settles the review-waiting Work; a verdict already settled answers a waiting Work at once; preparation failure maps to the Work that asked; an attempt asked again edits nothing twice; the workflow is the one root terminal writer of an admitted execution — no Work, no verdict, no legacy request settles its Task; a report names one attempt whole, or is nobody's; an `Applied` Work waits on the exact candidate its request names — the Mutation bound to the attempt the named producing Work settled on, never a Task-wide or Work-wide guess (a failed first attempt retried is not the candidate), the same after a restart — evaluated again whenever a prerequisite lands (a Work's end, a verdict, a resume, a redrive, an ask), so a producer settling after its candidate applied, or settling unsuccessfully, still answers its waiter; and completes only on that candidate's durable application — a refused or pending apply keeps it waiting, an approval again that lands wakes it; a report the record refuses is kept and put again when the record resumes, never by editing again | proven, card 15 |
 | each human Work a distinct case: a human leaf's attempt is relayed through the `human` performer kind and admitted as its own handed Task `<task>.s<i>.<key>`, the versioned `case.admitted` exact at its reading before `task.born` / `task.handed`; assignee, obligation, acceptance and required evidence bind as a job's (the leader's word where one plans, unassigned without); the hand-off settles no Work and marks no root; two human Works in one step are two independently completable cases; an attempt asked again, or a later attempt of the Work, finds the case by its stable identity, admits no second and asks the leader nothing (a case awaiting the leader's word is not asked for twice); the terms bind from the reading the admission is exact at, a stale reading repeating the decision (a retirement landing between sends the case to the successor); a restart between the admission and either compatibility row completes them in order and never plans, resumes or pends a case as edit work; the rows say what the admission recorded (its `owner`, its `to`), only the recorded owner completes them, and a transfer is the receiving owner's to hand once accepted; a compatibility row the record refuses holds the case, completed on `RecordResumed` / `redrive` without a restart, the hand-off announced once durable | proven, card 16 |
 | the workflow resumes from accepted human completion: a case's completion by its person — `task.done` in their name through the tooling's gate, with the evidence or authorized exception the bound condition wants, or a decision reported by the assignee and accepted under the bound practice — is the outcome of the attempt the case was admitted for, reported to the runtime as an edit's outcome is and settled once by its barrier; judged against the admission's bound terms (assignee as reassigned, evidence required, practice — evidence linked or a decision accepted under another policy is none, as is a decision whose scope is not exactly this case; an exception applies to the person closing, recorded in their name and authorized by someone else, whoever the case was reassigned to), never a practice in force later; a refused completion connects nothing and a later valid one connects; a duplicate settles nothing twice; the other case's completion advances nothing; observed live (the tick, by the revision the cases were last examined at, not by its own refresh), on resume, on `redrive`, at a restart of the assembly and through the redelivery of a restarted execution, which keeps its step waiting until then | proven, card 17 |
+| public admission in the one engine: `Dna.ask` admits a workflow under the intent's identity (the leader's word bound in its inputs, once) and runs it in the assembly's own engine; an edit leaf under the bound class and target, a person's job handed to whom the word named with no second word; the authored-definition API runs what an application defined; every leaf's kind is named for its exact bound Work id, never its key; a restart asks again for every admitted root not finished — settled and drained, the Works and the admitted children owed anywhere in its tree counted, a cancelled parent draining its child, a reborn child reading its ancestor's cancellation from the record — and plans nothing, and a drained record is asked for nothing; the tooling's answer to an ask is the execution whose admission names it; a Task with no admission is left where it is, an intent with no admission noted once; inline and delayed performers reach the same settlement; the legacy tower, exchange, retry loop and recovery are gone | proven, card 18 |
 | delivery across off-thread bindings | not yet, card 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD

@@ -1,12 +1,12 @@
 // dna/tests/extensions_test.hl — GH #529 D7: intent to Mutation in
 // one process, and the four extension scenarios.
 //
-//   0. intent through the membrane births a Task whose Work is routed
-//      back to the assembly as source-editing Work: the Attempt locates
-//      the file under its grant, the pipeline runs to the Review, the
-//      verdict applies, and the Task settles through the Journal;
-//   1. the Workflow definition evolves while a Task is active — the
-//      active Task finishes under the revision it was born with;
+//   0. intent through the membrane is an admitted workflow whose edit
+//      leaf the assembly's editor performs: the Attempt locates the file
+//      under its grant, the pipeline runs to the Review, the verdict
+//      applies, and the root settles through the engine;
+//   1. (gone with card 18: an execution binds its admitted recipe; the
+//      catalog's revisions decide future adoption)
 //   2. post-review autonomy for a reversible internal refactor: applied
 //      under the grant, the audit says so, the Review follows, and a
 //      rejection rolls it back;
@@ -31,21 +31,28 @@ main locus App {
     params {
         repo: String = "";
         dna: dna::Dna = dna::Dna { };
-        t2_active_at_evolve: Bool = false;
-        evolved_to: Int = 0;
     }
     bus {
         publish dna::IntentOffered;
         publish dna::ReviewVerdict;
         publish dna::ExpressionObserved;
         publish dna::PressureRaised;
-        // scenario 1: evolve the definition WHILE t2's Work is in flight
-        subscribe dna::WorkRequested as on_work_seen;
     }
-    fn on_work_seen(req: dna::WorkRequest) {
-        if req.task_id != "t2" { return; }
-        self.t2_active_at_evolve = self.dna.metabolism.find("t2").id == "";
-        self.evolved_to = self.dna.metabolism.evolve_workflow();
+    @unbounded
+    fn until_rows(kind: String, entity: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            let mut seen = 0;
+            let mut k = 0;
+            while k < self.dna.journal.revision() {
+                let e = self.dna.journal.read(k);
+                if e.kind == kind && e.entity == entity { seen = seen + 1; }
+                k = k + 1;
+            }
+            if seen >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
     }
     fn head() -> String { return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout); }
     @unbounded
@@ -109,31 +116,20 @@ main locus App {
             }
         };
 
-        // ---- 0. intent -> Task -> routed Work -> the assembly's editor -> Review
+        // ---- 0. intent -> an admitted workflow -> its edit leaf, the assembly's editor -> Review
         dna::IntentOffered <- dna::IntentOffer { intent_id: "i1", outcome: "document locus A in main.hl", from: "test" };
-        std::time::sleep(200ms);
-        std::test::assert(std::str::contains(self.last("task.born", "t1"), "i1: document"), "t1 born for i1: " + self.last("task.born", "t1"));
+        self.until_rows("workflow.settled", "t1", 1);
+        std::time::sleep(100ms);
+        std::test::assert(std::str::contains(self.last("workflow.admitted", "t1"), "\"request\": \"i1\""), "t1 admitted for i1: " + self.last("workflow.admitted", "t1"));
+        std::test::assert(std::str::contains(self.last("task.born", "t1"), "i1: "), "and listed: " + self.last("task.born", "t1"));
         std::test::assert(std::str::contains(self.last("mutation.proposed", "m1"), "task t1 application:"), "m1 proposed for t1: " + self.last("mutation.proposed", "m1"));
         std::test::assert(std::str::contains(self.last("mutation.located", "m1"), "main.hl under read edit fmt check @"), "the Attempt located the file under its grant: " + self.last("mutation.located", "m1"));
         let cand1 = self.last("mutation.candidate", "m1");
         std::test::assert_eq_int(len(cand1), 40, "a candidate");
         // `application` is outside the grant (refactor): escalate — and still a blocking Review in Phase 2
         std::test::assert_eq_str(std::json::find_string_field(self.last("review.requested", "review:m1"), "disposition"), "escalate", "outside the grant: escalate, reviewed");
-        std::test::assert(std::str::contains(self.last("task.done", "t1"), "a0:editor:done"), "the Task settled through the Journal, its Work done by the editor: " + self.last("task.done", "t1"));
-
-        // ---- 1. the Workflow definition evolves while t2 is active; t2 keeps its revision
-        // (dispatch is synchronous in-process: `on_work_seen` evolves the
-        // definition from inside t2's own Work request, while t2 is alive)
-        let t2 = self.dna.ask(dna::Intent { id: "i2", outcome: "document locus A in main.hl", from: "test" }, dna::Knobs { routed: true, requires: "edit" });
-        std::test::assert_eq_str(t2, "t2", t2);
-        std::time::sleep(100ms);
-        std::test::assert_eq_int(self.evolved_to, 2, "the definition evolved during t2");
-        std::test::assert(self.t2_active_at_evolve, "t2 was active when the definition evolved");
-        std::test::assert_eq_int(self.dna.metabolism.find("t2").revision, 1, "t2 finished under the revision it was born with");
-        let t3 = self.dna.ask(dna::Intent { id: "i3", outcome: "document locus A in main.hl", from: "test" }, dna::Knobs { routed: true, requires: "edit" });
-        std::time::sleep(200ms);
-        std::test::assert_eq_int(self.dna.metabolism.find("t3").revision, 2, "t3 adopted the new definition");
-        std::test::assert(std::str::contains(self.dna.status(), "\"workflow_revision\": 2"), self.dna.status());
+        std::test::assert(std::str::contains(self.last("workflow.settled", "t1"), "\"disposition\": \"done\""), "the root settled through the engine once the candidate was in review: " + self.last("workflow.settled", "t1"));
+        std::test::assert_eq_str(self.last("task.done", "t1"), "", "no legacy settlement row");
 
         // apply m1 so the lineage has an accepted Mutation (novelty drops)
         self.verdict("m1", cand1, "approve");
@@ -148,12 +144,12 @@ main locus App {
         // no hard boundary, evidence check+verify+rollback rehearsed,
         // novelty 1 now that the lineage has applied something)
         let out4 = self.dna.mutate("t4", "refactor", "document locus A again", "main.hl", 400);
-        std::test::assert_eq_str(out4, "m4: release", "released under the post grant: " + out4);
-        let cand4 = self.last("mutation.candidate", "m4");
-        std::test::assert_eq_str(self.last("mutation.applied", "m4"), cand4, "applied under the grant, before any verdict");
-        std::test::assert_eq_str(self.head(), cand4, "HEAD is m4");
-        let req4 = self.last("review.requested", "review:m4");
-        std::test::assert(std::str::contains(std::json::find_string_field(req4, "question"), "post-review: applied m4"), "the Review follows: " + req4);
+        std::test::assert_eq_str(out4, "m2: release", "released under the post grant: " + out4);
+        let cand4 = self.last("mutation.candidate", "m2");
+        std::test::assert_eq_str(self.last("mutation.applied", "m2"), cand4, "applied under the grant, before any verdict");
+        std::test::assert_eq_str(self.head(), cand4, "HEAD is m2");
+        let req4 = self.last("review.requested", "review:m2");
+        std::test::assert(std::str::contains(std::json::find_string_field(req4, "question"), "post-review: applied m2"), "the Review follows: " + req4);
         std::test::assert_eq_str(std::json::find_string_field(req4, "required_authority"), "reviewer", "a reviewer suffices for a refactor");
         // the audit: the boundary's own record of the decision
         let mut released = 0;
@@ -165,9 +161,9 @@ main locus App {
         }
         std::test::assert_eq_int(released, 1, "the audit shows one release");
         // the human disagrees after the fact: rolled back, old expression asked for
-        self.verdict("m4", cand4, "reject");
-        std::test::assert_eq_str(self.head(), cand1, "rolled back to m4's base");
-        let rb = self.last("expression.restart_requested", "m4");
+        self.verdict("m2", cand4, "reject");
+        std::test::assert_eq_str(self.head(), cand1, "rolled back to m2's base");
+        let rb = self.last("expression.restart_requested", "m2");
         std::test::assert(std::str::contains(rb, "rollback " + cand1) && std::str::contains(rb, "after review reject"), rb);
 
         // ---- 3. widening effects crosses a hard boundary; the child cannot self-authorize

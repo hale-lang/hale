@@ -218,6 +218,7 @@ main locus App {
     // before it is let go.
     fn boot_org(repo: String, planned: Bool) {
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -231,6 +232,7 @@ main locus App {
     // The same over a record that refuses the first row of one kind.
     fn boot_refusing_org(repo: String, refuse_kind: String) {
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: refuse_kind },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -245,6 +247,7 @@ main locus App {
     // the first admission's exact append.
     fn boot_retiring_org(repo: String) {
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: Retiring { inner: dna::GitJournal { repo: repo } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -260,6 +263,7 @@ main locus App {
     // ("" refuses nothing).
     fn boot_owner_org(repo: String, me: String, org_id: String, refuse_kind: String) {
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: refuse_kind, refused: len(refuse_kind) == 0 },
             ownership: dna::Ownership { me: me, me_env: "", text: OWNERS },
             gateway: dna::MutationGateway {
@@ -381,7 +385,7 @@ main locus App {
         let f3 = self.org.journal.refresh();
         std::test::assert_eq_str(self.org.task_state("t3.s0.h1") + "|" + self.org.task_state("t3.s0.h2"), "handed|handed", "both stand handed");
         std::test::assert_eq_int(self.rows(j, "task.resumed", "") + self.rows(j, "task.planned", "") + self.rows(j, "task.pending", ""), 0, "no case was resumed, planned or pended as edit work");
-        std::test::assert_eq_int(self.org.pending_plans.len(), 0, "and no plan was asked");
+        std::test::assert_eq_int(self.org.pending_asks.len(), 0, "and no plan was asked");
         std::test::assert_eq_int(self.rows(j, "mutation.requested", ""), minted, "and no edit was started");
 
         // ---- t4: the same, the record refusing the first handed row

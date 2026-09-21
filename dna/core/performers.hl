@@ -13,6 +13,28 @@ interface Performer {
     fn perform(req: WorkRequest) -> WorkResult;
 }
 
+// What the engine asks of the system that performs its attempts (card
+// 18): the identity the admitted kind selects, one performance of one
+// attempt, and what the kind's adapter can say after a restart. The
+// `WorkSystem` serves it; the engine's default performs nothing, so a
+// runtime constructed with no system designates no routing policy of
+// its own (a routing policy is a program-global perspective, and only
+// the assembly's — or the program's — `WorkSystem` should name it).
+interface Performing {
+    fn identity_of(kind: String) -> String;
+    fn perform_as(kind: String, req: WorkRequest) -> WorkResult;
+    fn reconcile_as(kind: String, req: WorkRequest) -> Reconciliation;
+}
+locus NoPerformers {
+    params { asked: Int = 0; }
+    fn identity_of(kind: String) -> String { return ""; }
+    fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
+        self.asked = self.asked + 1;
+        return WorkResult { disposition: "failed", narrative: "no work system performs for this runtime", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+    fn reconcile_as(kind: String, req: WorkRequest) -> Reconciliation { return Reconciliation { }; }
+}
+
 // What an effect adapter can say, after a restart, about an attempt it
 // may have acted on before the outcome was saved (GH #646 card 12c):
 // whether it can tell at all, whether it acted, what it recorded when

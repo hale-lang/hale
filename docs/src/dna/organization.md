@@ -58,9 +58,10 @@ reads its brief — the charter, the purpose, the law as the genome
 holds it, and the practices the Board has ratified — and says what
 the ask is: which kind of thing it concerns (the organism, an
 appendage, a product, or a person's job), what class of change, on
-what target, one change or several. The record keeps that as
-`task.planned`, and the Mutation carries the class it named. A plan
-only splits and classifies; it never widens what you asked.
+what target, one change or several. The admission of the ask binds
+that word (`workflow.admitted`, its inputs), and the Mutation carries
+the class it named. A plan only splits and classifies; it never widens
+what you asked.
 
 On a cadence you set, the Leader walks the machinery rather than the
 work: it reads the record's signals — asks it could not plan, concerns

@@ -41,10 +41,15 @@ main locus App {
         return out;
     }
     run() {
-        // 1. one judgment task: two model calls, both accounted at their time
-        let t1 = self.core.ask(dna::Intent { id: "i1", outcome: "assess the storage migration", from: "test" },
-            dna::Knobs { routed: true, requires: "judgment" });
-        std::time::sleep(100ms);
+        // 1. one judgment task — an authored definition, one agent leaf (card
+        //    18: ordinary non-edit work enters through a definition): two
+        //    model calls, both accounted at their time
+        std::test::assert_eq_str(self.core.catalog.define("judge", 1, 1, "one judgment"), "", "judge");
+        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment" }, 1), "", "j");
+        let t1 = self.core.run_workflow(dna::WorkflowAsk { id: "i1", definition: "judge", revision: 1, from: "test" });
+        std::test::assert_eq_str(t1, "t1", "admitted: " + t1);
+        let mut tries = 0;
+        while tries < 300 && self.count("workflow.settled") == 0 { std::time::sleep(20ms); tries = tries + 1; }
         std::test::assert_eq_int(self.count("model.called"), 2, "two calls journaled");
         std::test::assert(std::str::contains(self.last_body("model.called"), "\"at\": "), "the evidence says when: " + self.last_body("model.called"));
         std::test::assert_eq_int(self.core.budget.spent_micros, 55, "5 + 50 accounted by the substrate");
@@ -52,11 +57,10 @@ main locus App {
         std::test::assert(self.core.budget.exhausted(1), "55 >= 20: the allowance is spent");
 
         // 2. further intent is refused with the reason; announced once
-        let r = self.core.ask(dna::Intent { id: "i2", outcome: "decide the rollout", from: "test" },
-            dna::Knobs { routed: true, requires: "judgment" });
+        let r = self.core.ask(dna::Intent { id: "i2", outcome: "decide the rollout", from: "test" });
         std::test::assert(std::str::starts_with(r, "refused: budget exhausted"), "refused for want of budget: " + r);
         std::test::assert(std::str::contains(r, "spent 55 of 20 micro-dollars for the record"), "the reason names the spend: " + r);
-        let r2 = self.core.ask(dna::Intent { id: "i3", outcome: "and again", from: "test" }, dna::Knobs { routed: true, requires: "judgment" });
+        let r2 = self.core.ask(dna::Intent { id: "i3", outcome: "and again", from: "test" });
         std::test::assert_eq_int(self.count("budget.exhausted"), 1, "announced once per window");
         std::test::assert_eq_int(self.count("intent.refused"), 2, "both asks refused in the record");
         std::test::assert_eq_int(self.count("task.born"), 1, "no Task born on an exhausted budget");

@@ -44,7 +44,7 @@ locus WorkflowRuntime {
     params {
         scope: String = "org";
         journal: Journal = MemJournal { };
-        work: WorkSystem = WorkSystem { };
+        work: Performing = NoPerformers { };
         p: WorkflowProjection = WorkflowProjection { };
         // The lease this scope's committer runs under (card 12b): a key,
         // this holder's name, the fencing token it was granted, and the
@@ -134,6 +134,9 @@ locus WorkflowRuntime {
     }
     // The clock moves; the lease is judged at the new time.
     fn tick(now: Int) { self.now = now; }
+    // card 18: the record this runtime commits to, when it is the
+    // assembly's own (a journal is an interface, handed after birth).
+    fn adopt(j: Journal) { self.journal = j; }
     fn fence() -> Fence {
         return Fence { key: self.lease_key, holder: self.holder, token: self.token, now: self.now };
     }
@@ -340,7 +343,8 @@ locus WorkflowRuntime {
         let t = self.p.task(q.task_id);
         ExecutionStateAnswered <- ExecutionState {
             task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
-            outstanding: self.p.outstanding_works(q.task_id), current_step: self.p.current_step(q.task_id)
+            outstanding: self.p.outstanding_in_tree(q.task_id), current_step: self.p.current_step(q.task_id),
+            cancelled_above: if len(t.parent_task) > 0 { recorded_fence(self.journal, t.parent_task, self.journal.revision()) } else { "" }
         };
     }
     // An attempt's outcome reported by the adapter that did its work
@@ -805,7 +809,10 @@ locus TaskRun {
             let n = self.cat.bound_at(i);
             if n.kind == "step" && n.parent == self.task_id { step_count = step_count + 1; }
             if n.kind == "work" && self.cat.bound_node(n.parent).parent == self.task_id {
-                leaves.push(leaf_of(n, self.task_id, map_get(self.kinds, n.member_key, "=")));
+                // card 18: the kind named for this exact Work (its bound id), else
+                // for its key — a program's shorthand for every Work of that key
+                let by_id = map_get(self.kinds, n.id, "=");
+                leaves.push(leaf_of(n, self.task_id, if len(by_id) > 0 { by_id } else { map_get(self.kinds, n.member_key, "=") }));
             }
             if n.kind == "task" && n.parent == self.task_id {
                 children.push(child_of(n, self.cat.bound_node(n.spawning_step).step_index));
@@ -1114,6 +1121,12 @@ locus WorkflowRun {
             terminate;
         }
         self.stage = "running";
+        // card 18 (review): an ancestor the record has cancelled cancels
+        // this execution too — read from the record here, at its own
+        // state question, since a fence published before this resident
+        // existed reached nobody; its cancellation is proposed, lands,
+        // and it drains like any cancelled execution
+        if len(s.cancelled_above) > 0 { self.cancel_asked = true; self.cancel_reason = std::str::clone(s.cancelled_above); }
         if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
         self.start_step(if s.current_step < self.step_count { s.current_step } else { 0 });
     }

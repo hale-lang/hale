@@ -19,7 +19,7 @@ locus ImpactWork {
     // Birth saw only an empty memory Journal. Binding here deliberately avoids
     // recovery over the retained fixture's original external worktree paths.
     fn bind(j: dna::Journal, receipts: dna::Receipts) { self.body.journal = j; self.body.review_journal.bind(j); self.body.verification.receipts = receipts; self.body.ownership.me = "impact-fixture"; }
-    fn ask() -> String { return self.body.ask(dna::Intent { id: "impact-native-request", from: "requester", to: "org", outcome: "A bounded human responsibility" }, dna::Knobs { steps: 1, fan: 1, routed: true, requires: "edit" }); }
+    fn ask() -> String { return self.body.ask(dna::Intent { id: "impact-native-request", from: "requester", to: "org", outcome: "A bounded human responsibility" }); }
 }
 locus OrganizationImpactApiCases {
     params { }

@@ -19,6 +19,7 @@ import "../core" as dna;
 main locus App {
     params {
         dna: dna::Dna = dna::Dna {
+            runs_engine: false, // the admission alone is under test
             work: dna::WorkSystem {
                 human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
                 selection: dna::HumanFirstSelection { }
@@ -34,6 +35,7 @@ main locus App {
         p: dna::WorkflowProjection = dna::WorkflowProjection { };
         // a body whose owner is called `ask`: it mints `ask:t<n>`
         asker: dna::Dna = dna::Dna {
+            runs_engine: false, // the admission alone is under test
             work: dna::WorkSystem {
                 human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
                 selection: dna::HumanFirstSelection { }
@@ -46,6 +48,7 @@ main locus App {
         // a body over a shared record that names no owner: it admits
         // nothing (GH #664), workflows included
         nobody: dna::Dna = dna::Dna {
+            runs_engine: false, // the admission alone is under test
             work: dna::WorkSystem {
                 human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
                 selection: dna::HumanFirstSelection { }
@@ -122,7 +125,7 @@ main locus App {
         std::test::assert_eq_int(self.rows("workflow.refused", "t1"), 1, "the refusal is in the record under the id it minted");
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), 0, "no admission");
         std::test::assert_eq_int(self.rows("task.born", ""), 0, "no summary");
-        std::test::assert_eq_int(self.dna.work.requests, 0, "and zero work requests");
+        std::test::assert_eq_int(self.dna.executions_asked, 0, "and no execution asked");
         std::test::assert_eq_int(self.rows("mutation.proposed", "") + self.rows("task.resumed", ""), 0, "nothing edited or resumed either");
         let why = dna::decode_refusal(self.body_of("workflow.refused", "t1"));
         std::test::assert(why.ok && std::str::contains(why.value.why, "nope") && why.value.limits.max_works == 99, "the refusal says why, under the limits applied: " + why.why + why.value.why);
@@ -133,7 +136,7 @@ main locus App {
         std::test::assert_eq_int(self.rows("workflow.admitted", "t2"), 1, "one admission");
         std::test::assert_eq_int(self.rows("task.born", "t2"), 1, "one summary");
         std::test::assert(self.seq_of("workflow.admitted", "t2") < self.seq_of("task.born", "t2"), "the admission precedes the summary");
-        std::test::assert_eq_int(self.dna.work.requests, 0, "nothing was dispatched: this card admits");
+        std::test::assert_eq_int(self.dna.executions_asked, 0, "nothing was dispatched: this card admits");
         let a = dna::decode_admission(self.body_of("workflow.admitted", "t2"));
         std::test::assert(a.ok, "the admission reads back: " + a.why);
         std::test::assert(a.value.request == "w1" && a.value.definition == "close-month" && a.value.revision == 1 && a.value.inputs == "{\"month\": \"2026-08\"}" && a.value.inputs_ref == "sha256:beef", "carrying the ask");
@@ -190,14 +193,14 @@ main locus App {
         self.dna.rehydrate();
         std::test::assert_eq_int(self.rows("task.pending", "t7") + self.rows("task.resumed", "t7"), 0, "t7 is not pended or resumed as legacy work");
         std::test::assert_eq_int(self.rows("mutation.proposed", ""), 0, "nothing was edited for it");
-        std::test::assert_eq_int(self.dna.work.requests, 0, "and no work was requested");
+        std::test::assert(self.dna.executions_asked > 0, "the restart asks the engine for the admitted roots, and nothing else (card 18): " + to_string(self.dna.executions_asked));
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w7", definition: "close-month", revision: 1 }), "t7", "the ask that made it, asked again, is t7");
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w8", definition: "close-month", revision: 1 }), "t8", "and the next id is minted past it, not over it");
         // with its summary written late, still not legacy work
         let late = self.dna.journal.append(self.dna.journal.revision(), "task.born", "t7", "w7: close-month@1 (workflow)");
         self.dna.rehydrate();
         std::test::assert_eq_int(self.rows("task.pending", "t7") + self.rows("task.resumed", "t7"), 0, "with its summary, t7 is still an admitted execution, not edit work");
-        std::test::assert_eq_int(self.dna.work.requests, 0, "and still nothing was requested");
+        std::test::assert(self.dna.executions_asked > 0, "and the engine is asked for it again, never legacy work: " + to_string(self.dna.executions_asked));
 
         // ---- the record is far ahead of this body's count: every id it
         //      would mint is taken, and the ask is refused on the record,
@@ -209,6 +212,7 @@ main locus App {
         }
         let refusals = self.rows("workflow.refused", "");
         let admitted = self.rows("workflow.admitted", "");
+        let asked_before = self.dna.executions_asked;
         let full = self.dna.admit_workflow(dna::WorkflowAsk { id: "w-full", definition: "close-month", revision: 1 });
         std::test::assert(std::str::contains(full, "no free id within 64"), "an ask that finds every id taken is refused: " + full);
         std::test::assert_eq_int(self.rows("workflow.refused", ""), refusals, "no Task was refused: none was reached");
@@ -216,7 +220,7 @@ main locus App {
         let r = dna::decode_ask_refusal(self.body_of("workflow.ask_refused", "w-full#1"));
         std::test::assert(r.ok && r.value.request == "w-full" && r.value.decision == 1 && std::str::contains(r.value.why, "no free id"), "as the versioned ask refusal: " + r.why + r.value.why);
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), admitted, "no admission was written for it");
-        std::test::assert_eq_int(self.dna.work.requests, 0, "and nothing was dispatched");
+        std::test::assert_eq_int(self.dna.executions_asked, asked_before, "and nothing was dispatched");
         // asked again: the scan that was exhausted minted past the taken
         // block, so the counter now stands beyond it and the ask is admitted
         // — a decision is a decision on the record as it was

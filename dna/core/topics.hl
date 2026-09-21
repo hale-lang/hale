@@ -9,19 +9,6 @@
 type IntentOffer { intent_id: String = ""; outcome: String = ""; from: String = ""; to: String = ""; }
 topic IntentOffered { payload: IntentOffer; subject: "dna.intent.offered"; }
 
-// A delegated child Task settled. Published by the Task pool owner
-// (Metabolism) on behalf of the spawning Step, keyed by the PARENT
-// task so only the waiting Step's tower hears it — supersystem
-// mediation, not sibling chatter (H9).
-type TaskSettlement {
-    task_id: String = "";
-    parent_task: String = "";
-    spawning_step: String = "";
-    disposition: String = "";
-    detail: String = "";
-}
-topic TaskSettled { payload: TaskSettlement; subject: "dna.task.settled"; keyed_by parent_task; }
-
 // GH #646 card 05: one transition of a workflow execution, proposed by the
 // resident that owns it to the one committer (the journal's owner), and the
 // committer's answer. `proposal_id` names the transition, not the message:
@@ -137,7 +124,9 @@ topic ChildAdmitRequested { payload: ChildAdmission; subject: "dna.child.admit";
 // the task, and which performer kind runs a leaf whose attempt is not
 // yet admitted — an admitted attempt's kind is the record's. A child
 // execution is not asked here: it is recovered through its parent.
-// Card 18 wires this to the public admission.
+// Card 18 wires it to the public admission: `Dna.ask` and
+// `Dna.run_workflow` ask here, and a restart asks again for every
+// admitted root not yet settled.
 type ExecutionAsk {
     scope: String = "";
     task_id: String = "";
@@ -212,8 +201,9 @@ type ExecutionState {
     admitted: Bool = false;
     disposition: String = "";
     reason: String = "";
-    outstanding: Int = 0; // Works with an admitted attempt and no settlement: a cancelled execution's undrained responsibilities
+    outstanding: Int = 0; // the responsibilities of a cancelled execution still undrained: Works with an admitted attempt and no settlement, and admitted descendant Tasks not yet settled
     current_step: Int = 0; // the first step the record has not completed
+    cancelled_above: String = ""; // the durable fence over the execution's ancestry (card 18, review: a restored child reads it from the record, not from a fence published before it existed)
 }
 topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the
@@ -405,12 +395,6 @@ type ReviewSettlement {
 }
 topic ReviewSettled { payload: ReviewSettlement; subject: "dna.review.settled"; }
 
-// Work routed to the assembly-owned WorkSystem (F.3/F.4/F.5 in
-// dna/FRICTION.md: a dynamic child cannot be handed an assembly
-// implementation, so the implementations own the Attempts and the
-// bus carries the request and the settlement, keyed by work id).
-topic WorkRequested { payload: WorkRequest; subject: "dna.work.requested"; }
-
 // GH #596 L: an ask, before it becomes work — the leader says what it
 // is. The assembly asks; the leader answers with a plan that only
 // splits and classifies, never widens; the assembly journals it as
@@ -466,15 +450,6 @@ topic TickRequested { payload: TickRequest; subject: "dna.tick.requested"; keyed
 topic OptimizeRequested { payload: OptimizeRequest; subject: "dna.optimize.requested"; keyed_by org; }
 topic OrgReviewed { payload: OrgReview; subject: "dna.org.reviewed"; keyed_by org; }
 topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; keyed_by org; }
-
-type WorkSettlement {
-    work_id: String = "";
-    disposition: String = "";
-    result: String = "";
-    attempts: Int = 0;
-    history: String = ""; // "a0:human:declined a1:agent:done "
-}
-topic WorkDone { payload: WorkSettlement; subject: "dna.work.done"; keyed_by work_id; }
 
 // A recorded model call (inside an Attempt; never a Work of its own):
 // the evidence list from #521 comment 1. Published by the backend

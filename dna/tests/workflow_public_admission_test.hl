@@ -1,0 +1,465 @@
+// dna/tests/workflow_public_admission_test.hl — the public admission
+// runs in the one engine (DNA workflow card 18).
+//
+// `Dna.ask` — intent through the membrane, a schedule's, an optimizer's
+// — admits a workflow (`workflow.admitted`, the one positive
+// discriminator, carrying the ask's identity and the leader's word) and
+// runs it in the engine the assembly owns for its scope: an edit leaf
+// the assembly's editor performs (card 15), a person's job a case the
+// assembly hands (card 16) and connects when completed (card 17). The
+// authored-definition API (`Dna.run_workflow`) runs what an application
+// defined (card 04) the same way. Nothing else admits work: the legacy
+// tower (Task / Workflow / Step / Work / Attempt), `Knobs` and the
+// routed exchange (`WorkRequested` / `WorkDone` / `TaskSettled`) are
+// gone, and so is the legacy recovery — a Task with no admission is
+// left where it is. A restart asks the engine again for every admitted
+// root not yet settled and plans nothing again. Inline and delayed
+// performers reach the same settlement.
+//
+// Review round 1: a performer kind is named for the exact Work (its
+// bound id), so two Works sharing a key across steps or workflows are
+// selected apart; a settled root is asked for again while a Work of its
+// tree is still owed a settlement (a cancellation settles the root
+// before its Works drained), and a drained record is asked for nothing.
+// (The host's answer to an ask — the execution whose admission names
+// that ask, never the next birth — is the host verb's, exercised by the
+// `dna_run` gate and by a probe that drives the membrane client from
+// outside this process.)
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const BASE: String = "type Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+const COMMENTED: String = "// A: counts the pings it hears.\ntype Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+const PLAN_PERSON: String = "kind: person\nclass: docs\ntarget: none\ncount: 1\nassignee: mara\nobligation: none\nmara handles it";
+
+// A record that refuses the rows of some kinds — about one entity and
+// what is under it, or about everything — while `hold` is set: the stop
+// that fell between a root's cancellation and its tree's draining.
+locus Held {
+    params { inner: dna::Journal = dna::MemJournal { }; hold: Bool = false; kinds: String = "work.settled"; entity: String = ""; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn refuses(kind: String, entity: String) -> Bool {
+        return self.hold && std::str::contains(" " + self.kinds + " ", " " + kind + " ") && (len(self.entity) == 0 || std::str::contains(entity, self.entity));
+    }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.refuses(kind, entity) { return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.refuses(kind, entity) { return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// A service performer that answers later: the fixture reports each
+// attempt's outcome itself, as a delayed performer would.
+locus Delayed {
+    params { calls: Int = 0; asked: String = ""; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no);
+        self.asked = self.asked + attempt + " ";
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: attempt };
+    }
+}
+
+main locus App {
+    params {
+        repo: String = "";
+        dna: dna::Dna = dna::Dna { };
+        lead: dna::Leader = dna::Leader {
+            name: "leader", org: "org", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: PLAN_PERSON },
+                deep: dna::FakeModel { name: "deep", answer: PLAN_PERSON }
+            }
+        };
+        outcomes: String = "";
+        plan_requests: Int = 0;
+    }
+    bus {
+        publish dna::IntentOffered;
+        publish dna::AttemptReported;
+        publish dna::WorkflowCancelRequested;
+        subscribe dna::WorkflowSettled as on_outcome;
+        subscribe dna::PlanRequested as on_plan_request;
+    }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    fn on_plan_request(p: dna::PlanRequest) { self.plan_requests = self.plan_requests + 1; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let j = self.dna.journal;
+        let moved = j.refresh();
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn body_of(kind: String, entity: String) -> String {
+        let j = self.dna.journal;
+        let moved = j.refresh();
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { return e.body; }
+            i = i + 1;
+        }
+        return "";
+    }
+    fn outcome_of(attempt_id: String) -> String {
+        let b = self.body_of("attempt.outcome", attempt_id);
+        if len(b) == 0 { return ""; }
+        let o = dna::decode_attempt_outcome(b);
+        return if o.ok { o.value.disposition } else { "unreadable" };
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_rows(kind: String, entity: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.rows(kind, entity) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // The assembly over the repository: its editor answers with the
+    // documented program; a `pre` review gate keeps the candidate in
+    // review; a delayed service performer for the authored definitions.
+    fn boot(repo: String, planned: Bool) {
+        self.dna = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: COMMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "readability +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            work: dna::WorkSystem { service: Delayed { } },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 12, review: "pre" } },
+            genome_seed: ".", planned: planned
+        };
+        // an authored definition: two steps, two service leaves each
+        std::test::assert_eq_str(self.dna.catalog.define("duo", 1, 2, "two steps, two assessments each"), "", "duo");
+        std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 0, "a", dna::WorkRequest { objective: "assess the storage", requires: "analysis" }, 1), "", "a");
+        std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 0, "b", dna::WorkRequest { objective: "assess the network", requires: "analysis" }, 1), "", "b");
+        std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 1, "c", dna::WorkRequest { objective: "assess the rollout", requires: "analysis" }, 1), "", "c");
+        std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 1, "d", dna::WorkRequest { objective: "assess the cost", requires: "analysis" }, 1), "", "d");
+    }
+    // The assembly over a record that holds Work settlements while asked to.
+    fn boot_held(repo: String, hold: Bool) { self.boot_holding(repo, hold, "work.settled", ""); }
+    // The delayed definitions, on whichever assembly is running now (a
+    // catalog is the assembly's own).
+    fn define_nest() {
+        std::test::assert_eq_str(self.dna.catalog.define("one", 1, 1, "one delayed assessment"), "", "one");
+        std::test::assert_eq_str(self.dna.catalog.leaf("one", 1, 0, "a", dna::WorkRequest { objective: "delayed", requires: "analysis" }, 1), "", "one a");
+        std::test::assert_eq_str(self.dna.catalog.define("nest", 1, 1, "a cancelled child"), "", "nest");
+        std::test::assert_eq_str(self.dna.catalog.child("nest", 1, 0, "k", "one", 1), "", "nest k");
+    }
+    fn boot_holding(repo: String, hold: Bool, kinds: String, entity: String) {
+        self.dna = dna::Dna {
+            journal: Held { inner: dna::GitJournal { repo: repo }, hold: hold, kinds: kinds, entity: entity },
+            work: dna::WorkSystem { service: Delayed { } },
+            genome_seed: "."
+        };
+    }
+    @unbounded
+    fn until_attempt_kind(attempt_id: String) -> String {
+        let mut tries = 0;
+        while tries < 400 {
+            let a = dna::decode_attempt(self.body_of("attempt.admitted", attempt_id));
+            if a.ok { return a.value.performer_kind; }
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
+        return "";
+    }
+    fn report(attempt_id: String) {
+        dna::AttemptReported <- dna::AttemptReport { scope: "org", attempt_id: attempt_id, result: dna::WorkResult { disposition: "done", result: "assessed", performer: "delayed", attempt_id: attempt_id } };
+    }
+    run() {
+        let repo = "/tmp/dna-public-" + to_string(std::process::pid());
+        let mk = sh("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1/.hale/dna\" \"$1/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '/.hale/\\n' > .gitignore\nsh\n" + repo);
+        std::test::assert(mk.code == 0, "a repository: " + mk.stderr);
+        std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
+        let c = sh("sh\n-c\ncd \"$1\" && git add -A && git commit -q -m base\nsh\n" + repo);
+        std::test::assert(c.code == 0, "the base commit: " + c.stderr);
+        self.boot(repo, false);
+
+        // ---- t1: intent through the membrane is an admitted workflow, run
+        //      in the assembly's own engine: one edit leaf, performed by the
+        //      assembly's editor, its candidate in review; the root settles
+        //      done through the engine, and no legacy row is written
+        dna::IntentOffered <- dna::IntentOffer { intent_id: "i1", outcome: "document locus A in main.hl", from: "test" };
+        self.until_rows("workflow.settled", "t1", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("intent.offered", "i1"), 1, "the intent offered");
+        let adm = dna::decode_admission(self.body_of("workflow.admitted", "t1"));
+        std::test::assert(adm.ok, "t1 admitted as a workflow: " + self.body_of("workflow.admitted", "t1"));
+        std::test::assert_eq_str(adm.value.request + "|" + adm.value.definition + "|" + adm.value.engine, "i1|ask-edit|wf1", "under the ask's identity, the edit definition, the engine");
+        std::test::assert_eq_str(std::json::find_string_field(adm.value.inputs, "objective") + "|" + std::json::find_string_field(adm.value.inputs, "class"), "document locus A in main.hl|application", "the ask bound into its inputs");
+        std::test::assert_eq_int(self.rows("task.born", "t1"), 1, "the summary the tooling lists");
+        let att = dna::decode_attempt(self.body_of("attempt.admitted", "t1/wf1/s0/e/a0"));
+        std::test::assert(att.ok && att.value.performer_kind == "edit" && att.value.request.objective == "document locus A in main.hl", "the edit leaf's attempt carries the ask's objective: " + att.value.request.objective);
+        std::test::assert(std::str::contains(self.body_of("mutation.requested", "m1"), "\"work_id\": \"t1/wf1/s0/e\""), "the Mutation is bound to the leaf's Work: " + self.body_of("mutation.requested", "m1"));
+        std::test::assert(std::str::contains(self.body_of("mutation.proposed", "m1"), "task t1 application:"), "under class application: " + self.body_of("mutation.proposed", "m1"));
+        std::test::assert_eq_int(self.rows("review.requested", "review:m1"), 1, "the candidate is in review");
+        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/e/a0"), "done", "the attempt is done: prepared for review");
+        std::test::assert_eq_int(self.rows("work.settled", "t1/wf1/s0/e") + self.rows("workflow.settled", "t1"), 2, "the Work and the root settled through the engine");
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done"), 1, "announced once: " + self.outcomes);
+        std::test::assert_eq_int(self.rows("task.pending", "") + self.rows("task.planned", "") + self.rows("task.resumed", "") + self.rows("task.done", "") + self.rows("task.failed", ""), 0, "no legacy row");
+        std::test::assert_eq_str(self.dna.ask(dna::Intent { id: "i1", outcome: "document locus A in main.hl", from: "test" }), "t1", "the same intent again is the same execution");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 1, "admitted once");
+        std::test::assert_eq_int(self.rows("intent.offered", "i1"), 1, "and offered no second time: the execution answers before any gate");
+        std::test::assert(std::str::contains(self.dna.status(), "\"executions_settled\": 1"), self.dna.status());
+
+        // ---- t2: the leader's word, once, bound into the admission: a
+        //      person's job is a case handed to whom the leader named, with
+        //      no second word asked when the case is admitted; the person's
+        //      completion settles the root through the engine
+        self.dna.planned = true;
+        dna::IntentOffered <- dna::IntentOffer { intent_id: "i2", outcome: "file the receipts", from: "test" };
+        self.until_rows("task.handed", "t2.s0.p", 1);
+        self.settle();
+        std::test::assert_eq_int(self.plan_requests, 1, "the leader was asked once, for the ask");
+        let adm2 = dna::decode_admission(self.body_of("workflow.admitted", "t2"));
+        std::test::assert(adm2.ok && adm2.value.definition == "ask-person" && adm2.value.request == "i2", "t2 admitted as a person's job");
+        std::test::assert_eq_str(std::json::find_string_field(adm2.value.inputs, "kind") + "|" + std::json::find_string_field(adm2.value.inputs, "assignee"), "person|mara", "the word bound");
+        let case = self.body_of("case.admitted", "t2.s0.p");
+        std::test::assert_eq_str(std::json::find_string_field(case, "assignee") + "|" + std::json::find_string_field(case, "by"), "mara|leader", "handed to mara on the leader's word: " + case);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 0, "the root waits for the person");
+        let j = self.dna.journal;
+        let done = j.append(j.revision(), "task.done", "t2.s0.p", "by mara: filed");
+        std::test::assert(done.ok, "mara reports it done");
+        let n = self.dna.redrive();
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(self.outcome_of("t2/wf1/s0/p/a0"), "done", "the completion is the attempt's outcome");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 1, "and the root settled");
+        std::test::assert_eq_int(self.plan_requests, 1, "still one plan");
+
+        // ---- t3: a restart. An admitted root not yet settled runs again
+        //      from its admission — no second admission, case or plan; a
+        //      record row with no admission (the shape from before) is left
+        //      where it is, noted once, never resumed as work
+        dna::IntentOffered <- dna::IntentOffer { intent_id: "i3", outcome: "call the supplier", from: "test" };
+        self.until_rows("task.handed", "t3.s0.p", 1);
+        self.settle();
+        let legacy = j.append(j.revision(), "task.born", "t9", "i9: a task of the shape from before");
+        let stray = j.append(j.revision(), "intent.offered", "i8", "an intent whose admission never landed");
+        let plans_before = self.plan_requests;
+        self.boot(repo, true);
+        self.settle();
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t3") + self.rows("case.admitted", "t3.s0.p"), 2, "admitted once, one case");
+        std::test::assert_eq_int(self.plan_requests, plans_before, "nothing planned again");
+        std::test::assert_eq_int(self.rows("task.pending", "t9") + self.rows("task.resumed", "t9") + self.rows("workflow.admitted", "t9"), 0, "the row from before is left where it is");
+        std::test::assert_eq_int(self.rows("intent.unrecovered", "i8"), 1, "the intent with no admission is noted");
+        std::test::assert(std::str::contains(self.dna.status(), "\"executions_asked\": 1"), "the restart asked the engine for the one open root: " + self.dna.status());
+        let done3 = j.append(j.revision(), "task.done", "t3.s0.p", "by mara: called");
+        let n3 = self.dna.redrive();
+        self.settle();
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", "t3"), 1, "the restarted execution settles on the completion");
+        std::test::assert_eq_int(self.rows("intent.unrecovered", "i8"), 1, "noted once");
+
+        // ---- t4: the authored-definition API, delayed: two steps of two
+        //      service leaves whose performer answers later; the second
+        //      step waits for the first's replies, and the root settles
+        //      once they all came — the same settlement an inline
+        //      performer reaches
+        self.dna.planned = false;
+        let r1 = self.dna.run_workflow(dna::WorkflowAsk { id: "r1", definition: "duo", revision: 1, from: "test" });
+        std::test::assert(std::str::starts_with(r1, "t"), "the authored workflow admitted: " + r1);
+        let adm4 = dna::decode_admission(self.body_of("workflow.admitted", r1));
+        std::test::assert(adm4.ok && adm4.value.definition == "duo" && adm4.value.request == "r1", "under its definition and the ask's identity");
+        let s0 = r1 + "/wf1/s0/";
+        let s1 = r1 + "/wf1/s1/";
+        self.until_rows("attempt.claimed", s0 + "b/a0", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", s1 + "c/a0"), 0, "the second step has not started before the replies");
+        self.report(s0 + "a/a0");
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", s1 + "c/a0"), 0, "nor after one of two");
+        self.report(s0 + "b/a0");
+        self.until_rows("attempt.claimed", s1 + "d/a0", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", r1), 0, "the second step waits in turn");
+        self.report(s1 + "c/a0");
+        self.report(s1 + "d/a0");
+        self.until_rows("workflow.settled", r1, 1);
+        self.settle();
+        std::test::assert_eq_str(dna::decode_workflow_outcome(self.body_of("workflow.settled", r1)).value.disposition, "done", "the delayed execution settled done");
+        std::test::assert_eq_int(self.count(self.outcomes, r1 + ":done"), 1, "announced once");
+        std::test::assert_eq_int(self.rows("attempt.outcome", ""), 7, "seven attempts, seven outcomes: " + to_string(self.rows("attempt.outcome", "")));
+        std::test::assert(self.dna.journal.verify_chain(), "the record's chain holds");
+
+        // ---- t6 (review): a kind is named for the exact Work, never for
+        //      a key. Two steps each with a member `x` — the first an
+        //      analysis, the second a person's — and a child workflow with
+        //      its own `x`: the second step's Work is admitted as a human's
+        //      and waits as a case; the child's `x` is the service's
+        std::test::assert_eq_str(self.dna.catalog.define("kid", 1, 1, "one assessment"), "", "kid");
+        std::test::assert_eq_str(self.dna.catalog.leaf("kid", 1, 0, "x", dna::WorkRequest { objective: "assess the child's part", requires: "analysis" }, 1), "", "kid x");
+        std::test::assert_eq_str(self.dna.catalog.define("same-key", 1, 2, "the same key in two steps and a child"), "", "same-key");
+        std::test::assert_eq_str(self.dna.catalog.leaf("same-key", 1, 0, "x", dna::WorkRequest { objective: "assess", requires: "analysis" }, 1), "", "s0 x");
+        std::test::assert_eq_str(self.dna.catalog.leaf("same-key", 1, 1, "x", dna::WorkRequest { objective: "a person decides", requires: "human" }, 1), "", "s1 x");
+        std::test::assert_eq_str(self.dna.catalog.child("same-key", 1, 1, "k", "kid", 1), "", "s1 k");
+        let r6 = self.dna.run_workflow(dna::WorkflowAsk { id: "r6", definition: "same-key", revision: 1, from: "test" });
+        std::test::assert(std::str::starts_with(r6, "t"), "admitted: " + r6);
+        let kinds6 = self.dna.kinds_of(r6);
+        std::test::assert(std::str::contains(kinds6, r6 + "/wf1/s0/x=service") && std::str::contains(kinds6, r6 + "/wf1/s1/x=human") && std::str::contains(kinds6, r6 + ".s1.k/wf1/s0/x=service"), "each Work's kind by its own id: " + kinds6);
+        std::test::assert_eq_str(self.until_attempt_kind(r6 + "/wf1/s0/x/a0"), "service", "the first step's x is the service's");
+        self.report(r6 + "/wf1/s0/x/a0");
+        std::test::assert_eq_str(self.until_attempt_kind(r6 + "/wf1/s1/x/a0"), "human", "the second step's x is a person's, not the first's service");
+        std::test::assert_eq_str(self.until_attempt_kind(r6 + ".s1.k/wf1/s0/x/a0"), "service", "and the child's x is the service's again");
+        self.until_rows("case.admitted", r6 + ".s1.x", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("case.admitted", r6 + ".s1.x"), 1, "the person's Work waits as a case");
+        std::test::assert_eq_int(self.rows("workflow.settled", r6), 0, "and the root waits on it");
+
+        // ---- t7 (review): a settled root is asked for again while a Work of
+        //      its tree is still owed a settlement. A delayed Work claimed,
+        //      the root cancelled, the cancellation durable and the Work's
+        //      settlement refused; the assembly restarted over the record
+        //      drains it — and the same for a cancelled child's Work; a
+        //      drained record is asked for nothing
+        self.boot_held(repo, true);
+        self.define_nest();
+        let r7 = self.dna.run_workflow(dna::WorkflowAsk { id: "r7", definition: "one", revision: 1, from: "test" });
+        let r8 = self.dna.run_workflow(dna::WorkflowAsk { id: "r8", definition: "nest", revision: 1, from: "test" });
+        self.until_rows("attempt.claimed", r7 + "/wf1/s0/a/a0", 1);
+        self.until_rows("attempt.claimed", r8 + ".s0.k/wf1/s0/a/a0", 1);
+        self.settle();
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: r7, reason: "stop" };
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: r8, reason: "stop" };
+        self.until_rows("workflow.settled", r7, 1);
+        self.until_rows("workflow.settled", r8, 1);
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(dna::decode_workflow_outcome(self.body_of("workflow.settled", r7)).value.disposition + "|" + dna::decode_workflow_outcome(self.body_of("workflow.settled", r8)).value.disposition, "cancelled|cancelled", "both cancellations durable");
+        std::test::assert_eq_int(self.rows("work.settled", r7 + "/wf1/s0/a") + self.rows("work.settled", r8 + ".s0.k/wf1/s0/a"), 0, "the refused settlements leave two responsibilities");
+        self.boot_held(repo, false);
+        self.until_rows("work.settled", r7 + "/wf1/s0/a", 1);
+        self.until_rows("work.settled", r8 + ".s0.k/wf1/s0/a", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", r7 + "/wf1/s0/a") + self.rows("work.settled", r8 + ".s0.k/wf1/s0/a"), 2, "the restarted assembly asked the engine for both cancelled roots, and it drained their Works — the child's too");
+        std::test::assert(std::str::contains(self.dna.status(), "\"executions_asked\": 3"), "asked for the two roots still owed a settlement, and t6's open case: " + self.dna.status());
+        self.boot_held(repo, false);
+        self.settle();
+        self.settle();
+        std::test::assert(std::str::contains(self.dna.status(), "\"executions_asked\": 1"), "drained, the two are asked for no more — only t6's open case: " + self.dna.status());
+        std::test::assert_eq_int(self.rows("work.settled", r7 + "/wf1/s0/a") + self.rows("work.settled", r8 + ".s0.k/wf1/s0/a"), 2, "and nothing was written for them again");
+
+        // ---- t7b (review): an admitted child is a responsibility before its
+        //      first attempt. The child's first attempt refused, the root
+        //      cancelled, the child's own cancellation refused; restarted,
+        //      the assembly asks for the root, the child is reborn under
+        //      its ancestor's cancellation — read from the record, not from
+        //      a fence it never heard — and settles cancelled; the finished
+        //      tree is then asked for nothing
+        self.boot_holding(repo, true, "attempt.admitted workflow.settled", ".s0.k");
+        self.define_nest();
+        let r9 = self.dna.run_workflow(dna::WorkflowAsk { id: "r9", definition: "nest", revision: 1, from: "test" });
+        std::test::assert(std::str::starts_with(r9, "t"), "admitted: " + r9);
+        let k9 = r9 + ".s0.k";
+        self.until_rows("workflow.admitted", k9, 1);
+        self.settle();
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", r9), 0, "r9 open");
+        std::test::assert_eq_int(self.rows("attempt.admitted", k9 + "/wf1/s0/a/a0"), 0, "the child's first attempt was refused");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: r9, reason: "stop" };
+        self.until_rows("workflow.settled", r9, 1);
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(dna::decode_workflow_outcome(self.body_of("workflow.settled", r9)).value.disposition, "cancelled", "the root's cancellation is durable");
+        std::test::assert_eq_int(self.rows("workflow.settled", k9), 0, "the child's refused cancellation leaves its admitted responsibility");
+        self.boot_held(repo, false);
+        self.until_rows("workflow.settled", k9, 1);
+        self.settle();
+        std::test::assert_eq_str(dna::decode_workflow_outcome(self.body_of("workflow.settled", k9)).value.disposition, "cancelled", "the restart settled the admitted child, before any attempt of its own");
+        std::test::assert_eq_int(self.rows("attempt.admitted", k9 + "/wf1/s0/a/a0"), 0, "and admitted no attempt under the cancelled ancestor");
+        self.boot_held(repo, false);
+        self.settle();
+        self.settle();
+        std::test::assert(std::str::contains(self.dna.status(), "\"executions_asked\": 1"), "finished, the tree is asked for no more — only t6's open case: " + self.dna.status());
+        std::test::assert_eq_int(self.rows("workflow.settled", k9), 1, "and nothing was written for it again");
+
+        // ---- t7c (review): a child whose Works all settled but whose own
+        //      settlement did not is a responsibility too. The child's Work
+        //      done, its settlement refused, the root cancelled; restarted,
+        //      the child settles under its cancelled ancestor and the tree
+        //      is finished
+        self.boot_holding(repo, true, "workflow.settled", ".s0.k");
+        self.define_nest();
+        let r10 = self.dna.run_workflow(dna::WorkflowAsk { id: "r10", definition: "nest", revision: 1, from: "test" });
+        std::test::assert(std::str::starts_with(r10, "t"), "admitted: " + r10);
+        let k10 = r10 + ".s0.k";
+        self.until_rows("attempt.claimed", k10 + "/wf1/s0/a/a0", 1);
+        self.settle();
+        self.report(k10 + "/wf1/s0/a/a0");
+        self.until_rows("work.settled", k10 + "/wf1/s0/a", 1);
+        self.settle();
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", k10 + "/wf1/s0/a"), 1, "the child's Work settled");
+        std::test::assert_eq_int(self.rows("workflow.settled", k10), 0, "its own settlement was refused");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: r10, reason: "stop" };
+        self.until_rows("workflow.settled", r10, 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", k10), 0, "still refused under the hold");
+        self.boot_held(repo, false);
+        self.until_rows("workflow.settled", k10, 1);
+        self.settle();
+        let d10 = dna::decode_workflow_outcome(self.body_of("workflow.settled", k10)).value.disposition;
+        std::test::assert(d10 == "cancelled" || d10 == "done", "the restart settled the child whose Works had settled: " + d10);
+        self.boot_held(repo, false);
+        self.settle();
+        self.settle();
+        std::test::assert(std::str::contains(self.dna.status(), "\"executions_asked\": 1"), "finished, asked for no more: " + self.dna.status());
+        std::test::assert_eq_int(self.rows("workflow.settled", k10), 1, "and nothing was written for it again");
+
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }

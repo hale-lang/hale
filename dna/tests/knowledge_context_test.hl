@@ -195,14 +195,28 @@ main locus App {
         //      the leader names the kind and the class, the record keeps
         //      the plan, and the Mutation carries the planned class
         self.dna.planned = true;
-        let t2 = self.dna.ask(dna::Intent { id: "i2", outcome: "document the pings in main.hl", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
-        std::time::sleep(1500ms);
-        let plan = self.last("task.planned", t2);
-        std::test::assert(len(plan) > 0, "the plan is in the record for " + t2);
-        std::test::assert(std::str::contains(plan, "\"kind\": \"appendage\"") && std::str::contains(plan, "\"change_class\": \"docs\"") && std::str::contains(plan, "\"parsed\": true"), "kind and class from the leader's answer: " + plan);
-        std::test::assert(std::str::contains(plan, "\"package\": \"sha256:pkgorg\"") && std::str::contains(plan, "\"by\": \"leader\""), "the plan names the package it read: " + plan);
+        let asked2 = self.dna.ask(dna::Intent { id: "i2", outcome: "document the pings in main.hl", from: "riley" });
+        std::test::assert_eq_str(asked2, "planning", "the leader's word comes first (card 18)");
+        let mut t2 = "";
+        let mut tries = 0;
+        while tries < 400 && len(t2) == 0 {
+            let mut k = 0;
+            while k < self.dna.journal.revision() {
+                let e = self.dna.journal.read(k);
+                if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == "i2" { t2 = e.entity; }
+                k = k + 1;
+            }
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
+        std::test::assert(len(t2) > 0, "the ask was admitted under the leader's word");
+        tries = 0;
+        while tries < 400 && len(self.last("workflow.settled", t2)) == 0 { std::time::sleep(20ms); tries = tries + 1; }
+        let plan = self.dna.ask_plan_of(t2);
+        std::test::assert(plan.parsed && plan.kind == "appendage" && plan.change_class == "docs", "kind and class from the leader's answer, bound in the admission: " + plan.kind + "/" + plan.change_class);
+        std::test::assert(plan.package == "sha256:pkgorg" && plan.by == "leader", "the plan names the package it read: " + plan.package);
         std::test::assert(std::str::contains(self.last("mutation.proposed", ""), "docs"), "the Mutation carries the planned class: " + self.last("mutation.proposed", ""));
-        let pev = self.last("model.called", t2 + "/plan");
+        let pev = self.last("model.called", "i2/plan");
         std::test::assert(std::str::contains(pev, "\"knowledge_bindings\": \"package:sha256:pkgorg sha256:design1\""), "the plan's evidence names the package: " + pev);
         dna::scratch_done(repo);
     }

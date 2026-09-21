@@ -13,7 +13,7 @@ locus TaskApiPlanner {
 locus TaskApiWork {
     params { body: dna::Dna = dna::Dna { planned: true, org_id: "task-api", initiative: false }; planner: TaskApiPlanner = TaskApiPlanner { }; }
     fn bind(j: dna::Journal, receipts: dna::Receipts) { self.body.journal = j; self.body.review_journal.bind(j); self.body.verification.receipts = receipts; self.body.ownership.me = "task-api"; }
-    fn ask(id: String, outcome: String) -> String { return self.body.ask(dna::Intent { id: id, from: "requester", to: "org", outcome: outcome }, dna::Knobs { steps: 1, fan: 1, routed: true, requires: "edit" }); }
+    fn ask(id: String, outcome: String) -> String { return self.body.ask(dna::Intent { id: id, from: "requester", to: "org", outcome: outcome }); }
 }
 locus TaskApiSeed {
     params { }
