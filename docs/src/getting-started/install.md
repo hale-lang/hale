@@ -125,14 +125,16 @@ plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
 **3. What a build can emit** — `hale --list-targets` is the
 authority. Native binaries for the platform `hale` itself runs on — a
 Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
-`wasm32` objects for the browser from either. Every other native
-triple is named and refused with a precise error rather than a wrong
-or broken binary: `x86_64-pc-windows-msvc` because Windows codegen does
-not exist yet ([GH #445](https://github.com/hale-lang/hale/issues/445)),
-and another host's triple — say `--target x86_64-unknown-linux-gnu` on
-a Mac — because cross-compilation does not exist yet
-([GH #970](https://github.com/hale-lang/hale/issues/970)). To produce
-Linux binaries from a Mac today, build inside a Linux container.
+`wasm32` objects for the browser from either. Another host's triple —
+say `--target x86_64-unknown-linux-gnu` on a Mac — gets as far as a
+relocatable object for that platform (`app.o`, an ELF x86-64 object
+in this case) and stops with a note: linking it needs the runtime and
+system libraries built for the target, which is the open half of
+[GH #970](https://github.com/hale-lang/hale/issues/970). To produce
+runnable Linux binaries from a Mac today, build inside a Linux
+container. `x86_64-pc-windows-msvc` is named and refused with a
+precise error, because Windows codegen does not exist yet
+([GH #445](https://github.com/hale-lang/hale/issues/445)).
 
 The rest of this section is about the *host* — where `hale` itself
 runs, and what changes about a program compiled there.
@@ -141,7 +143,7 @@ runs, and what changes about a program compiled there.
 |---|---|
 | **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
 | **Linux ARM64** (glibc) | Supported, prebuilt — the release matrix builds it on a native aarch64 runner (AWS Graviton, EKS arm64 nodes, Ampere). Same feature set as x86_64. |
-| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic (use a cooperative pool, or build on Linux). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). The prebuilt toolchain currently links Homebrew `llvm@18`'s libunwind and emitted binaries link Homebrew OpenSSL — machines without those Homebrew packages need them installed (`brew install llvm@18 openssl@3`); self-contained binaries are tracked upstream. Intel Macs run the arm64 build via Rosetta 2. |
+| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic when the build *targets* macOS (use a cooperative pool, or build for Linux — a Mac building `--target x86_64-unknown-linux-gnu` may place one). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). The prebuilt toolchain currently links Homebrew `llvm@18`'s libunwind and emitted binaries link Homebrew OpenSSL — machines without those Homebrew packages need them installed (`brew install llvm@18 openssl@3`); self-contained binaries are tracked upstream. Intel Macs run the arm64 build via Rosetta 2. |
 | **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler now *names* `x86_64-pc-windows-msvc` (`hale --list-targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
 | **wasm32** | `hale build --target wasm32` for the browser. |
 

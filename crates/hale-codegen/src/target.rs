@@ -84,11 +84,12 @@ pub enum TargetSupport {
     ObjectOnly,
     /// Named and described, but no codegen path exists yet.
     Planned,
-    /// A native target the compiler builds, but only on a host of that
-    /// target. Codegen stamps the module with the host triple and links
-    /// with the host `clang`, so accepting a foreign triple would emit a
-    /// host binary under the requested name (GH #969). Cross-compilation
-    /// is GH #970.
+    /// A native target that is not this host. Codegen emits a
+    /// relocatable object for it — the target's own triple, backend and
+    /// a generic CPU, the path wasm took first — and stops before the
+    /// link, which needs the lotus runtime and system libraries built
+    /// for the target (GH #970). Before that path existed a foreign
+    /// triple silently built the host (GH #969).
     ForeignHost,
 }
 
@@ -113,12 +114,12 @@ pub struct TargetFilenames {
 }
 
 /// A fully-identified compilation target.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetSpec {
     /// The canonical LLVM triple. This is the identity: it is what the
     /// module is stamped with, what the toolchain is asked for, and what
     /// distinguishes one cache entry from another.
-    pub triple: String,
+    pub triple: &'static str,
     pub arch: TargetArch,
     pub os: TargetOs,
     pub env: TargetEnv,
@@ -138,7 +139,7 @@ impl fmt::Display for TargetParseError {
             self.input,
             TargetSpec::known()
                 .iter()
-                .map(|t| t.triple.as_str())
+                .map(|t| t.triple)
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -148,9 +149,9 @@ impl fmt::Display for TargetParseError {
 impl std::error::Error for TargetParseError {}
 
 impl TargetSpec {
-    fn new(triple: &str, arch: TargetArch, os: TargetOs, env: TargetEnv) -> Self {
+    fn new(triple: &'static str, arch: TargetArch, os: TargetOs, env: TargetEnv) -> Self {
         TargetSpec {
-            triple: triple.to_string(),
+            triple,
             arch,
             os,
             env,
@@ -287,6 +288,13 @@ impl TargetSpec {
         self.os == TargetOs::Linux
     }
 
+    /// Whether the lotus runtime has the `async_io` pool backend here.
+    /// Mirrors the runtime's `LOTUS_HAVE_ASYNC_IO` (Linux, and wasm's
+    /// POSIX shim); the checker refuses `where async_io` elsewhere.
+    pub fn has_async_io(&self) -> bool {
+        matches!(self.os, TargetOs::Linux | TargetOs::None)
+    }
+
     /// POSIX shared memory lives in librt on Linux and in libc on macOS.
     pub fn needs_librt(&self) -> bool {
         self.os == TargetOs::Linux
@@ -338,7 +346,8 @@ impl TargetSpec {
     /// [`TargetSpec::support`] answers for the target alone; this is the
     /// answer a build acts on. The two differ for exactly one case: a
     /// native target that is not the host, which the target model can
-    /// name and the codegen cannot yet reach (GH #969).
+    /// name, and a build from here reaches only as far as an object
+    /// (GH #969, #970).
     pub fn support_from(&self, host: &TargetSpec) -> TargetSupport {
         match self.support() {
             TargetSupport::Supported if self.triple != host.triple => {
@@ -363,8 +372,8 @@ impl TargetSpec {
             TargetSupport::ObjectOnly => "object-only: emits a relocatable object, no link",
             TargetSupport::Planned => "planned: named and described, no codegen yet (GH #445)",
             TargetSupport::ForeignHost => {
-                "not buildable from this host: builds only on a host of this target; \
-                 cross-compilation is GH #970"
+                "cross, object-only from this host: emits a relocatable object, \
+                 no link (GH #970)"
             }
         };
         format!(
@@ -395,7 +404,7 @@ impl Default for TargetSpec {
 
 impl fmt::Display for TargetSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.triple)
+        f.write_str(self.triple)
     }
 }
 
@@ -466,14 +475,15 @@ mod tests {
 
     /// GH #969: a native triple that is not the host used to report
     /// `Supported`, and the build then emitted a host binary under it.
+    /// It is a cross target now, object-only from here (GH #970).
     #[test]
-    fn a_foreign_native_triple_is_not_buildable_from_this_host() {
+    fn a_foreign_native_triple_is_cross_from_this_host() {
         let mac = TargetSpec::parse("aarch64-apple-darwin").unwrap();
         let linux = TargetSpec::parse("x86_64-unknown-linux-gnu").unwrap();
         let linux_arm = TargetSpec::parse("aarch64-unknown-linux-gnu").unwrap();
         let mac_intel = TargetSpec::parse("x86_64-apple-darwin").unwrap();
 
-        // Each host builds itself and nothing else native — not even
+        // Each host links itself and nothing else native — not even
         // the other architecture of its own OS.
         assert_eq!(mac.support_from(&mac), TargetSupport::Supported);
         assert_eq!(linux.support_from(&mac), TargetSupport::ForeignHost);
@@ -486,7 +496,7 @@ mod tests {
         assert_eq!(linux.support(), TargetSupport::Supported);
 
         let d = linux.describe_from(&mac);
-        assert!(d.contains("not buildable from this host"), "{d}");
+        assert!(d.contains("object-only from this host"), "{d}");
         assert!(d.contains("#970"), "{d}");
         assert!(!d.contains("supported: builds and links"), "{d}");
     }
@@ -526,7 +536,7 @@ mod tests {
     #[test]
     fn every_known_triple_round_trips() {
         for t in TargetSpec::known() {
-            assert_eq!(TargetSpec::parse(&t.triple).unwrap(), t, "{}", t.triple);
+            assert_eq!(TargetSpec::parse(t.triple).unwrap(), t, "{}", t.triple);
             assert!(!t.describe().is_empty());
         }
     }
