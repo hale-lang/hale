@@ -30,6 +30,12 @@ main locus App {
             lib::Color::Blue -> "b",
         };
         println("picked=", picked);
+        // GH #885: an imported enum value prints under the
+        // DECLARATION's own name — `Color::Red`, exactly as the same
+        // enum prints inside its own seed — not the mangled symbol
+        // the import renamed the declaration to.
+        println("printed=", lib::Color::Red);
+        println("payload=", lib::reading());
     }
 }
 

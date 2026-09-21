@@ -257,7 +257,7 @@ impl ComponentModel {
                 let sid =
                     row["source"].as_i64().ok_or_else(|| {
                         format!(
-                            "{}: provenance.decls.{}.source                              must be a number",
+                            "{}: provenance.decls.{}.source must be a number",
                             label, decl
                         )
                     })?;
@@ -269,7 +269,8 @@ impl ComponentModel {
                 let p2 =
                     source_path.get(&sid).ok_or_else(|| {
                         format!(
-                            "{}: provenance.decls.{} names                              source {}, which is not in the                              sources table",
+                            "{}: provenance.decls.{} names source {}, which is \
+                             not in the sources table",
                             label, decl, sid
                         )
                     })?;
@@ -296,7 +297,7 @@ impl ComponentModel {
                 Some("subscribe") => false,
                 _ => {
                     return Err(format!(
-                        "{}: {}.verb outside the closed                          vocabulary",
+                        "{}: {}.verb outside the closed vocabulary",
                         label, at
                     ))
                 }

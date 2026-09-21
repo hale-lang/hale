@@ -179,6 +179,115 @@ fn no_test_mutates_the_process_environment() {
     );
 }
 
+/// Nor does any PRODUCTION source (GH #887).
+///
+/// The undefined behaviour is the same one the rule above removed
+/// from the suite, and it was still in shipped code: `hale model
+/// dump` planted `HALE_DUMP_MODEL`, `hale run --observe` planted
+/// `LOTUS_OBS`, and `hale node` planted `LOTUS_BUS_CONFIG`, each so
+/// that something downstream would read it back. `std::env::set_var`
+/// is UB in a process that has threads — the environment is one
+/// table with no lock and every concurrent `getenv` races it — and
+/// this CLI starts them: the language server, the observation
+/// reader, an iris session spawned on the very next line.
+///
+/// Each of the three had a real destination, and each now goes
+/// there: to the CHILD on its own `Command::env`, or to the
+/// in-process consumer as a process-global bit that is not the
+/// environment.
+///
+/// The scan covers `crates/*/src` — the shipped crates. `build.rs`
+/// and `tests/` are elsewhere (the latter has its own rule above).
+#[test]
+fn no_production_source_mutates_the_process_environment() {
+    // Populated only with a reason saying why the site is provably
+    // single-threaded at that point. An empty list is the goal state
+    // and the current one: the three sites GH #887 named each had a
+    // destination, so none of them needed the environment at all.
+    let exempt: BTreeSet<&'static str> = BTreeSet::new();
+
+    let mut offenders: Vec<String> = Vec::new();
+    let sources = crate_sources();
+    assert!(
+        sources.len() > 100,
+        "expected to scan every crate's src/, saw {} files",
+        sources.len()
+    );
+    for (rel, text) in &sources {
+        if exempt.contains(rel.as_str()) {
+            continue;
+        }
+        // The open paren, for the reason the test above gives: a
+        // bare `set_var` substring matches `unset_variable` too.
+        for (i, line) in text.lines().enumerate() {
+            if line.contains("set_var(") || line.contains("remove_var(") {
+                offenders.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these production sources mutate the process environment ({} \
+         found):\n{:#?}\n\n\
+         `std::env::set_var` is undefined behaviour once the process \
+         has threads, and these binaries start them. Pass the value \
+         to the CHILD it is meant for on its own \
+         `std::process::Command::env`, or to the in-process consumer \
+         as a parameter or a process-global that is not the \
+         environment. If a site is provably single-threaded, add it \
+         to this test's `exempt` set and say there why.",
+        offenders.len(),
+        offenders
+    );
+}
+
+/// Every `.rs` under `crates/*/src`, as (repo-relative path, text).
+fn crate_sources() -> Vec<(String, String)> {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop(); // crates/
+    root.pop(); // repo root
+    let mut out = Vec::new();
+    let Ok(crates) = std::fs::read_dir(root.join("crates")) else {
+        return out;
+    };
+    let mut roots: Vec<PathBuf> = crates
+        .flatten()
+        .map(|e| e.path().join("src"))
+        .filter(|p| p.is_dir())
+        .collect();
+    roots.sort();
+    for r in roots {
+        collect_rs(&r, &root, &mut out);
+    }
+    out.sort();
+    out
+}
+
+fn collect_rs(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    out: &mut Vec<(String, String)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut paths: Vec<PathBuf> =
+        entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for p in paths {
+        if p.is_dir() {
+            collect_rs(&p, root, out);
+        } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+            if let Ok(t) = std::fs::read_to_string(&p) {
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .to_string();
+                out.push((rel, t));
+            }
+        }
+    }
+}
+
 /// A scraper that matched nothing would make both checks above pass
 /// vacuously, which is exactly how the first registry-parity test
 /// shipped with a hole.

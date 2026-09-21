@@ -1017,6 +1017,59 @@ fn verify_json_reports_an_unreadable_input_too() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// GH #903: the ENTRY file of a build is the same class, and it was
+/// the last site on the import path that printed at the failure and
+/// handed its caller an EMPTY vector. `hale test --json` reports one
+/// row per fixture, so a test file that would not open came out as
+/// `"status":"fail"` with `"message":""` — a gate reading the rows
+/// saw a failure with nothing in it, while the sentence explaining it
+/// went to stderr.
+#[test]
+fn an_unreadable_test_entry_carries_its_message() {
+    let d = seed_dir("io903entry");
+    let f = d.join("x_test.hl");
+    std::fs::write(
+        &f,
+        "fn main() {\n    std::test::assert(true, \"ok\");\n}\n",
+    )
+    .unwrap();
+    if !make_unreadable(&f) {
+        eprintln!("skipped: this user can read a 0o000 file (root?)");
+        make_readable(&f);
+        let _ = std::fs::remove_dir_all(&d);
+        return;
+    }
+
+    let (stdout, _, code) = hale_cmd("test", &["--json"], &f);
+    assert_eq!(code, 1, "an unreadable fixture fails the run: {}", stdout);
+    let rows: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("--json is an array ({}): {}", e, stdout));
+    assert_eq!(rows.as_array().map(Vec::len), Some(1), "one row: {}", stdout);
+    assert_eq!(rows[0]["status"], "fail", "{}", stdout);
+    let msg = rows[0]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("could not read")
+            && msg.contains("x_test.hl")
+            && msg.contains("Permission denied"),
+        "the row must carry the failure it is reporting, not an \
+         empty string: {}",
+        stdout
+    );
+
+    // The text channel is the control: the same sentence, under the
+    // FAIL line, where it has always been readable.
+    let (stdout, _, code) = hale_cmd("test", &[], &f);
+    assert_eq!(code, 1, "{}", stdout);
+    assert!(
+        stdout.contains("FAIL") && stdout.contains("could not read"),
+        "text mode keeps the sentence: {}",
+        stdout
+    );
+
+    make_readable(&f);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // GH #860: the last empty-stream shape on the check path. An import
 // that names NOTHING printed `could not resolve import "..."` on
 // stderr and returned a bare failure — no record, exit 1 — because

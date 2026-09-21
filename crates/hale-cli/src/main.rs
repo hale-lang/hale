@@ -23,6 +23,7 @@ use std::fs;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hale_syntax::ast::Program;
 
@@ -37,6 +38,23 @@ mod sign;
 mod topology_graph;
 mod fleet_model;
 mod topology_law;
+
+/// GH #476 Change 2: did `hale model dump` ask for the canonical
+/// model? The command is a shim into the check pipeline, and the
+/// pipeline's dump section reads PROCESS argv (it is a
+/// top-level-command scope), so the demand cannot ride the rest-args
+/// the shim forwards.
+///
+/// GH #887: it used to travel as `HALE_DUMP_MODEL` in the
+/// environment. `std::env::set_var` is undefined behaviour in a
+/// process that has threads — the environment is one table with no
+/// lock, and every `getenv` in flight races it — and this CLI starts
+/// them (the LSP, the observation reader, a child's pipes). The
+/// demand is one process-global bit read by one in-process consumer,
+/// so it is one process-global bit: set by the shim before anything
+/// else runs, read where the flag is read, and (unlike the env var)
+/// not inherited by any child.
+static MODEL_DUMP_DEMANDED: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -225,8 +243,9 @@ fn main() -> ExitCode {
         }
         // The check pipeline's dump section reads PROCESS argv (it
         // is a top-level-command scope), so the flag cannot ride the
-        // rest-args; the shim marks the demand via env instead.
-        std::env::set_var("HALE_DUMP_MODEL", "1");
+        // rest-args the shim forwards; the shim marks the demand on
+        // the process instead.
+        MODEL_DUMP_DEMANDED.store(true, Ordering::Relaxed);
         let shim: Vec<String> = rest[1..].to_vec();
         return run_check_cli(&shim, false);
     }
@@ -349,16 +368,22 @@ fn main() -> ExitCode {
             }
         };
         if observe {
-            std::env::set_var("LOTUS_OBS", "1");
+            // GH #887: `LOTUS_OBS=1` is for the PROGRAM, and it used
+            // to be planted in this process's environment for the
+            // child to inherit. `set_var` is undefined behaviour once
+            // a process has threads, and `iris::spawn_session()` on
+            // the next line starts one — so it travels on the child's
+            // own `Command` instead, which is where it was always
+            // meant to arrive. Nothing in this process reads it.
             let session = iris::spawn_session();
-            let code = run_program(&target, &user_args, options);
+            let code = run_program(&target, &user_args, options, true);
             if let Some(mut s) = session {
                 let _ = s.kill();
                 let _ = s.wait();
             }
             return code;
         }
-        return run_program(&target, &user_args, options);
+        return run_program(&target, &user_args, options, false);
     }
 
     if args.len() < 3 {
@@ -3387,7 +3412,19 @@ fn parse_with_imports(
     let entry_source = match fs::read_to_string(entry) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("could not read {}: {}", entry.display(), e);
+            // GH #903: the last "print here, hand back nothing" site
+            // on the import path. It printed the sentence itself and
+            // returned an EMPTY vector, so every caller reported a
+            // failure with no message — `hale test --json` emitted a
+            // row whose `message` was the empty string. It travels as
+            // an `ImportDiag::Io` like every other unreadable file of
+            // the graph (GH #806), so the ONE rendering path prints
+            // the same sentence and the `--json` channels carry it.
+            errors.push(ImportDiag::Io(IoDiag::read(
+                entry,
+                &e,
+                format!("could not read {}: {}", entry.display(), e),
+            )));
             return Err(errors);
         }
     };
@@ -6224,14 +6261,16 @@ fn run_check_impl_labelled(
     // refusal rule as the artifact — a model of a program that does
     // not typecheck describes nothing.
     if argv.iter().any(|a| a == "--dump-model")
-        || std::env::var("HALE_DUMP_MODEL").as_deref() == Ok("1")
+        || MODEL_DUMP_DEMANDED.load(Ordering::Relaxed)
     {
         if let Some(d) = checked.iter().find(|d| {
             d.is_error()
                 && d.kind != hale_syntax::error::DiagKind::Claim
         }) {
             eprintln!(
-                "refusing to derive a model: `{}` does not typecheck,                  so its model is not a truthful description of any                  program. Fix the {} first.",
+                "refusing to derive a model: `{}` does not typecheck, \
+                 so its model is not a truthful description of \
+                 any program. Fix the {} first.",
                 target.display(),
                 d.kind_str()
             );
@@ -6244,7 +6283,8 @@ fn run_check_impl_labelled(
             // produced a value that is not a model. Loud, named, and
             // fatal — an invalid model must not print as one.
             eprintln!(
-                "internal error: derived model violates a model law:                  {:?} (this is a hale bug — please report it)",
+                "internal error: derived model violates a model law: \
+                 {:?} (this is a hale bug — please report it)",
                 e
             );
             return 2;
@@ -6751,6 +6791,8 @@ fn compile_and_exec(
     program: &Program,
     renames: &[(Vec<String>, String)],
     user_args: &[String],
+    // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
+    observe: bool,
     model_hash: u64,
     exec_digest: [u64; 4],
     obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
@@ -6784,6 +6826,9 @@ fn compile_and_exec(
     }
     let mut cmd = std::process::Command::new(&bin);
     cmd.args(user_args);
+    if observe {
+        cmd.env("LOTUS_OBS", "1");
+    }
     // The program is `hale run`'s foreground work, not a daemon it
     // launches: it holds this command's stdin/stdout/stderr, and
     // `hale` exists to wait for it and report how it ended. A `hale`
@@ -7228,9 +7273,18 @@ fn run_test(args: &[String]) -> ExitCode {
             if idx > 0 {
                 buf.push(',');
             }
+            // GH #867: the row's `file` is spelled by the rule every
+            // `--json` record's `file` is spelled by — canonical,
+            // absolute, symlinks resolved, no `..` (GH #822). The row
+            // says which test ran rather than where an error is, but
+            // a tool joining these rows to `check --json` records on
+            // `file` needs the two to agree, and this one carried the
+            // command line's spelling verbatim. The PASS/FAIL lines
+            // below keep that spelling: a human reads them beside the
+            // command they just typed.
             buf.push_str(&format!(
                 "{{\"file\":\"{}\",\"status\":\"{}\"",
-                json_escape(&o.file.display().to_string()),
+                json_escape(&diag_file_name(&o.file)),
                 if o.passed { "pass" } else { "fail" }
             ));
             if let Some(m) = &o.message {
@@ -7335,7 +7389,7 @@ fn run_replay(args: &[String]) -> ExitCode {
                 }
                 _ => {
                     eprintln!(
-                        "hale replay: --at takes N or consumer:N                          (positive)"
+                        "hale replay: --at takes N or consumer:N (positive)"
                     );
                     return ExitCode::from(2);
                 }
@@ -7910,6 +7964,11 @@ fn run_program(
     // fingerprinted into the execution identity below, so a
     // recording carries the options it was made under.
     options: hale_codegen::BuildOptions,
+    // GH #527 B3 / GH #887: `--observe` publishes the program's
+    // observation segment. It is the CHILD's setting, so it rides
+    // down to the `Command` that starts the child rather than being
+    // planted in this process's environment for it to inherit.
+    observe: bool,
 ) -> ExitCode {
     // Both single-file and directory targets resolve cross-seed
     // imports and thread the per-build path-rename table into
@@ -7959,6 +8018,7 @@ fn run_program(
             &program,
             &renames,
             user_args,
+            observe,
             model_hash,
             digest,
             obs_ids,
@@ -8131,6 +8191,7 @@ fn run_program(
         &program,
         &renames,
         user_args,
+        observe,
         model_hash,
         digest,
         obs_ids,
