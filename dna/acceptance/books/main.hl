@@ -166,7 +166,7 @@ fn capture(path: String) -> String {
     if followed && raised_already { return "ok: books: " + b.id + " was captured and followed up already, as " + evidence; }
     let mut asked_text = "";
     if !followed {
-        let asked = hale("dna\nask\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
+        let asked = hale("dna\ntask\ncreate\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
         if asked.code != 0 { return "retry: books: " + b.id + " filed as " + evidence + ", but its follow-through was not asked: " + std::str::trim(asked.stdout + asked.stderr); }
         asked_text = std::str::trim(asked.stdout + asked.stderr);
     }

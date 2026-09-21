@@ -140,9 +140,9 @@ fn the_surface_serves_the_record_and_a_verdict_from_the_form_lands_in_it() {
     let verdict = rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find(|v| v["kind"] == "review.verdict").unwrap_or_else(|| panic!("a verdict row:\n{rows}"));
     let body = verdict["body"].as_str().unwrap_or("");
     assert!(verdict["author"] == "riley" && body.contains("reviewer") && body.contains("not like this") && body.contains("reject"), "{verdict}");
-    let ask = http(port, "POST", "/api/ask", r#"{"outcome":"greet twice","to":""}"#).unwrap_or_default();
+    let ask = http(port, "POST", "/api/task/create", r#"{"outcome":"greet twice","to":""}"#).unwrap_or_default();
     assert!(ask.contains("requested in the record"), "{ask}");
-    let bad = http(port, "POST", "/api/ask", r#"{"outcome":""}"#).unwrap_or_default();
+    let bad = http(port, "POST", "/api/task/create", r#"{"outcome":""}"#).unwrap_or_default();
     assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
     stop(&mut ui);
     let _ = std::fs::remove_dir_all(&d);

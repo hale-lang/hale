@@ -171,9 +171,7 @@ fn main() {
         node_main(word(a, 0), root, flag(a, "--fleet"), if len(tick) > 0 { std::str::parse_int(tick) or 1000 } else { 1000 });
         return;
     }
-    if verb == "ask" {
-        ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"));
-    } else if verb == "verdict" {
+    if verb == "verdict" {
         ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"), flag(a, "--request-id"));
     } else if verb == "raise" {
         ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)));
@@ -181,15 +179,18 @@ fn main() {
         let sev = flag(a, "--severity");
         ans = concern_raise(root, word(a, 0), join_words(drop_first_word(a.words)), if len(sev) > 0 { std::str::parse_int(sev) or 1 } else { 1 });
     } else if verb == "task" {
+        // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
+        // the outcome is every word after the subverb (asking is one kind of task)
+        if word(a, 0) == "create" { ans = task_create_verb(root, join_words(drop_first_word(a.words)), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as")); }
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
-        if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note"), flag(a, "--evidence"), flag(a, "--exception"), flag(a, "--authorized-by")); }
+        else if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note"), flag(a, "--evidence"), flag(a, "--exception"), flag(a, "--authorized-by")); }
         else if word(a, 0) == "reassign" { ans = task_reassign_verb(root, seed, word(a, 1), flag(a, "--to"), flag(a, "--as")); }
         // GH #667: `hale dna task accept <id> [--as <who>] [--note …]`
         else if word(a, 0) == "accept" { ans = task_accept_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note")); }
         // GH #616: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest>`
         else if word(a, 0) == "authorize" { ans = task_authorize_verb(root, seed, word(a, 1), flag(a, "--exception"), flag(a, "--as")); }
         else if word(a, 0) == "decide" { ans = task_decide_verb(root, seed, word(a, 1), flag(a, "--decided-by"), flag(a, "--via"), flag(a, "--evidence"), flag(a, "--note"), flag(a, "--as")); }
-        else { ans = fail("task: `hale dna task done <id> [--as <who>] [--note <what was done>]`, `hale dna task reassign <id> --to <who> [--as <by>]`, `hale dna task accept <id> [--as <who>]` or `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--as <reporter>]`"); }
+        else { ans = fail("task: `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`, `hale dna task done <id> [--as <who>] [--note <what was done>]`, `hale dna task reassign <id> --to <who> [--as <by>]`, `hale dna task accept <id> [--as <who>]` or `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--as <reporter>]`"); }
     } else if verb == "effect" {
         // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
         if word(a, 0) == "resolve" { ans = effect_resolve_verb(root, seed, word(a, 1), flag(a, "--outcome"), flag(a, "--as"), flag(a, "--note")); }

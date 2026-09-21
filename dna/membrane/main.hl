@@ -1,5 +1,5 @@
 // dna/membrane — the membrane client: publishes ONE typed fact on the
-// organism's control topics and exits (GH #528 `hale dna ask`).
+// organism's control topics and exits (GH #528 `hale dna task create`).
 //
 //   membrane intent  '{"intent_id": "...", "outcome": "...", "from": "...", "to": "..."}'
 //   membrane verdict '{"review_id": "...", "subject_digest": "...", "verdict": "...", "reviewer": "...", "authority": "...", "comment": "..."}'

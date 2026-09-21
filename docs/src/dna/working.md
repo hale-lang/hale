@@ -17,10 +17,10 @@ Stop the host with Ctrl-C. The organization's memory is the record
 in git, and a review left pending is still pending next time, in
 every clone that syncs.
 
-## Ask
+## Create a task
 
 ```text
-$ hale dna ask document the chat server in main.hl
+$ hale dna task create document the chat server in main.hl
 task t1 born for intent i1a08c0786c5 [pending]
 ```
 
@@ -233,7 +233,7 @@ calls and cost — as a row in the record, for the Board.
 
 Everything above works from any clone with the remote. The record
 comes with `hale dna sync` (the host syncs every second on its own),
-`status`, `review <id>` and `history` read it offline, and `ask` and
+`status`, `review <id>` and `history` read it offline, and `task create` and
 a verdict go *into* it: the host beside the organization relays
 them, and the answer comes back the same way.
 

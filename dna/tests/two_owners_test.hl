@@ -230,7 +230,7 @@ main locus App {
         std::test::assert(!std::str::contains(curl("GET", service + "/ledger/lease?key=body", "").body, "\"present\": true"), "no lease is the one body's: " + curl("GET", service + "/ledger/lease?key=body", "").body);
         let epoch_a = std::json::find_int_field(la, "token");
         // ---- acme's body writes under its epoch: an ask for its own position lands
-        let asked = through(app, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nalice\nchase the late invoice");
+        let asked = through(app, service, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nchase the late invoice");
         std::test::assert_eq_int(asked.code, 0, "alice asks acme's body: " + asked.stdout + asked.stderr);
         let offered = wait_row(service, "\"kind\": \"intent.offered\"", POLLS);
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "the body's write landed under its lease: " + ledger(service));
@@ -267,10 +267,10 @@ main locus App {
         let stale = curl("POST", service + "/ledger/append", "{\"expected\": 0, \"exact\": false, \"kind\": \"task.born\", \"entity\": \"t-stale\", \"body\": \"late\", \"as\": \"\", \"request_id\": \"stale-1\", \"lease\": \"owner/acme\", \"token\": " + to_string(epoch_a) + "}");
         std::test::assert(stale.status == 403 && std::str::contains(stale.body, "fenced"), "a write at the old epoch is fenced: " + to_string(stale.status) + " " + stale.body);
         // ---- GH #669: north's head cannot act in acme's member's name, whatever it claims
-        let borrowed = through(other, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nalice\nsomething in alice's name");
+        let borrowed = through(other, service, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nsomething in alice's name");
         std::test::assert(borrowed.code != 0 && std::str::contains(borrowed.stdout + borrowed.stderr, "north's head cannot act in their name"), "the service knows whose head this is: " + borrowed.stdout + borrowed.stderr);
         // ---- north's body still writes
-        let asked_b = through(other, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/collections\n--as\nbob\ncall the agency");
+        let asked_b = through(other, service, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/collections\n--as\nbob\ncall the agency");
         std::test::assert_eq_int(asked_b.code, 0, "bob asks north's body: " + asked_b.stdout + asked_b.stderr);
         let offered_b = wait_row(service, "call the agency (from bob)", POLLS);
         std::test::assert(len(offered_b) > 0, "north's body still writes under its own lease: " + ledger(service));

@@ -166,7 +166,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     };
 
     // 3 + 4. a human asks; the intent births a durable Task
-    let (ok, ask) = run(&["dna", "ask", "document", "the", "chat", "server", "in", "main.hl"]);
+    let (ok, ask) = run(&["dna", "task", "create", "document", "the", "chat", "server", "in", "main.hl"]);
     let asked = ok && ask.contains("task t1 born");
     // 5–8. Workflow, Step, the editing Attempt under its grant, the
     //      worktree, the evidence, the boundary's Review
@@ -180,7 +180,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     // 11 + 12. expressed, observed, the pressure re-measured, retained
     let retained = wait_for(&app, 120, "mutation.retained", "m1");
     // rejection leaves genome and expression intact
-    let (ok5, ask2) = run(&["dna", "ask", "document", "the", "chat", "server", "in", "main.hl"]);
+    let (ok5, ask2) = run(&["dna", "task", "create", "document", "the", "chat", "server", "in", "main.hl"]);
     let requested2 = wait_for(&app, 120, "review.requested", "review:m2");
     let (ok6, verdict2) = run(&["dna", "review", "m2", "reject", "--as", "riley", "--comment", "once is enough"]);
     std::thread::sleep(Duration::from_millis(800));

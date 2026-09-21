@@ -199,7 +199,7 @@ north: bob
 A position not named takes its nearest named ancestor's owner. Each
 body says which owner it is (`git config dna.owner acme`) or `hale dna
 run` refuses to start it, and it admits intents only for positions its
-owner holds. `hale dna ask --to org/collections` from acme's clone does
+owner holds. `hale dna task create --to org/collections` from acme's clone does
 not go to acme's body: it goes into the record, where north's controller
 relays it, and `hale dna status` in acme's clone shows it as
 `[unadmitted]` with north's name until then. Changing the map is a

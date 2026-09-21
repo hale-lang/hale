@@ -138,7 +138,7 @@ move to a store without the record changing shape.
 
 ## The membrane over the record
 
-From a clone with no organization, `hale dna ask` appends
+From a clone with no organization, `hale dna task create` appends
 `intent.requested` and a verdict appends `review.verdict`, each in
 the appender's git identity. The host beside the organization relays
 unanswered rows onto the membrane once — every writer trusted by

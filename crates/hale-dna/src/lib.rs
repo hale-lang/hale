@@ -96,7 +96,7 @@ pub const FILES: &[EmbeddedFile] = core![
 pub const CORE_SEED: &str = "dna/core";
 
 /// The membrane client (`dna/membrane`): publishes one typed fact on
-/// the organism's control topics and exits. `hale dna ask` builds
+/// the organism's control topics and exits. `hale dna task create` builds
 /// and execs it from the toolchain cache beside the core it imports.
 pub const MEMBRANE_CLIENT: EmbeddedFile = EmbeddedFile {
     path: "dna/membrane/main.hl",
