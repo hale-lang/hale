@@ -320,6 +320,7 @@ locus Dna {
         refused_completions: CaseIds = CaseIds { }; // card 17: cases whose recorded completion the bound condition refused, noted once
         cases_completed: Int = 0; // card 17: cases whose completion was connected to their attempt
         completions_refused: Int = 0; // card 17: cases with a completion the bound condition refused, noted once
+        cases_examined: Int = 0; // card 17: the record revision the cases were last examined for their completion at — whichever path refreshed the journal since
         cases_admitted: Int = 0;
         reports_retried: Int = 0;
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
@@ -1125,8 +1126,13 @@ locus Dna {
         let wall = std::time::now();
         if wall - self.last_refresh >= 5 {
             self.last_refresh = wall;
-            // card 17: what a person completed since is observed here, live
-            if self.journal.refresh() { let completed = self.revisit_cases(); }
+            let moved = self.journal.refresh();
+            // card 17: what a person completed since the cases were last
+            // examined is observed here, live — by the revision examined,
+            // not by whether THIS refresh moved: another handler's refresh
+            // (a redelivery's) reads the record without examining every
+            // case, and must not stand for the examination
+            if self.journal.revision() > self.cases_examined { let completed = self.revisit_cases(); }
         }
         // GH #667: a transfer another owner's member accepted for this
         // owner becomes this owner's handed Task
@@ -1712,8 +1718,9 @@ locus Dna {
         return false;
     }
     // Every admitted case looked at for its completion: at a restart,
-    // when the record resumes, on `redrive`, and at the refresh that
-    // sees what a person completed. How many attempts were reported.
+    // when the record resumes, on `redrive`, and at the tick whose
+    // record has rows past the revision last examined here. How many
+    // attempts were reported.
     @unbounded
     fn revisit_cases() -> Int {
         let n = self.journal.revision();
@@ -1724,6 +1731,7 @@ locus Dna {
             if e.kind == "case.admitted" && self.revisit_case(e.entity) { reported = reported + 1; }
             i = i + 1;
         }
+        self.cases_examined = n;
         return reported;
     }
     // Every admitted case of this owner's has its compatibility rows: a

@@ -19,6 +19,14 @@
 // case handed after the relaxation closes under the new one. A decision
 // someone else made, reported by the assignee and accepted under the
 // bound practice, completes the case too.
+//
+// Review round 1: a redelivery's refresh does not stand for the
+// examination (the tick examines by the revision last examined, not
+// by whether its own refresh moved); a decision accepted under another
+// policy than the bound one, or under none, closes nothing; an
+// exception applies to the person on the completion row — reassigned
+// to its authorizer, the case does not close under their own
+// authorization.
 
 import "../core" as dna;
 
@@ -180,6 +188,26 @@ main locus App {
         let x = j.append(j.revision(), "completion.excepted", case_id, "{\"task\": \"" + case_id + "\", \"why\": \"" + why + "\", \"authorized_by\": \"" + authorized_by + "\", \"by\": \"" + by + "\", \"practice\": \"" + practice + "\"}");
         std::test::assert(x.ok, "excepted");
     }
+    // A decision reported and accepted, as the tooling writes it (GH #616).
+    fn decided(case_id: String, reporter: String, policy: String) {
+        let j = self.boot.rt.journal;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("reporter", reporter);
+        b.string_field("decider", "the client");
+        b.string_field("channel", "mail");
+        b.string_field("evidence", "sha256:" + self.receipts.store("the client's mail, filed"));
+        b.string_field("scope", case_id);
+        b.string_field("obligation", "expense-approval");
+        b.string_field("practice", "acceptance/expense-approval");
+        b.string_field("policy", policy);
+        b.bool_field("accepted", true);
+        b.string_field("why", "");
+        b.string_field("note", "");
+        b.end_object();
+        let x = j.append(j.revision(), "decision.reported", case_id, b.result());
+        std::test::assert(x.ok, "decided");
+    }
     fn done(case_id: String, by: String, note: String) {
         let j = self.boot.rt.journal;
         let x = j.append(j.revision(), "task.done", case_id, "by " + by + (if len(note) > 0 { ": " + note } else { "" }));
@@ -263,8 +291,13 @@ main locus App {
         let closed = dna_cli(repo, "task\ndone\nt1.s0.h1\n--as\nmara\n--evidence\n" + digest + "\n--note\nreceipt attached");
         std::test::assert(std::str::contains(closed, "task t1.s0.h1 done by mara: receipt attached — evidence " + digest + " linked"), "closed through the tooling: " + closed);
         std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h1/a0"), "", "not yet observed");
+        // a redelivery for the other, still-open case refreshes the
+        // record first: its reading is not the examination
+        let other = dna::decode_attempt(self.body_of("attempt.admitted", "t1/wf1/s0/h2/a0"));
+        std::test::assert(other.ok, "the other attempt is admitted");
+        self.org.on_case_requested(dna::CaseAsk { scope: "cases", attempt_id: "t1/wf1/s0/h2/a0", performer: "cases", request: other.value.request });
         self.observe();
-        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h1/a0"), "done", "the completion is the attempt's outcome, observed live");
+        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h1/a0"), "done", "the completion is the attempt's outcome, observed live at the tick after another handler's refresh");
         let out1 = dna::decode_attempt_outcome(self.body_of("attempt.outcome", "t1/wf1/s0/h1/a0"));
         std::test::assert(out1.ok && out1.value.evidence_ref == digest && out1.value.performer == "cases", "the outcome carries the evidence and answers as the human performer: " + out1.value.evidence_ref + "|" + out1.value.performer);
         std::test::assert_eq_int(self.rows("work.settled", "t1/wf1/s0/h1"), 1, "the Work settled");
@@ -336,9 +369,43 @@ main locus App {
         self.settle();
         self.settle();
         std::test::assert_eq_str(self.outcome_of("t2/wf1/s0/h1/a0") + "|" + self.outcome_of("t2/wf1/s0/h2/a0"), "done|done", "the later valid completions connect when the record resumes");
+        let out2 = dna::decode_attempt_outcome(self.body_of("attempt.outcome", "t2/wf1/s0/h2/a0"));
+        std::test::assert(out2.ok && std::str::contains(out2.value.result, "exception: receipt lost"), "closed under the exception: " + out2.value.result);
         std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 1, "the root settled");
         std::test::assert_eq_int(self.org.completions_refused, 2, "the refusals were noted once per case");
         std::test::assert_eq_int(self.org.cases_completed, 4, "four cases connected");
+
+        // ---- t2b: an exception applies to the person closing. dana
+        //      authorizes mara's exception (the tooling's own gate, under
+        //      the practice naming dana); the case reassigned to dana does
+        //      not close under dana's own authorization — the tooling
+        //      refuses it, and so does the reading of the record — while
+        //      dana closes with the evidence
+        self.admit("t2b");
+        self.ask("t2b");
+        self.until_rows("task.handed", "t2b.s0.h1", 1);
+        self.until_rows("task.handed", "t2b.s0.h2", 1);
+        self.settle();
+        let j = self.boot.rt.journal;
+        let authorized = dna_cli(repo, "task\nauthorize\nt2b.s0.h1\n--exception\nreceipt lost\n--as\ndana");
+        std::test::assert(std::str::contains(authorized, "exception authorized by dana"), "dana authorizes: " + authorized);
+        self.excepted("t2b.s0.h1", "receipt lost", "dana", "mara", strict);
+        let moved = j.append(j.revision(), "task.reassigned", "t2b.s0.h1", "{\"to\": \"dana\", \"by\": \"mara\"}");
+        let refused = dna_cli(repo, "task\ndone\nt2b.s0.h1\n--as\ndana\n--exception\nreceipt lost\n--authorized-by\ndana");
+        std::test::assert(std::str::contains(refused, "someone other than the person closing"), "the tooling refuses dana's self-authorized close: " + refused);
+        self.done("t2b.s0.h1", "dana", "closed under my own authorization");
+        let n2b = self.org.redrive();
+        self.settle();
+        std::test::assert_eq_int(n2b, 0, "nothing connects");
+        std::test::assert_eq_str(self.outcome_of("t2b/wf1/s0/h1/a0"), "", "reassigned to its authorizer, the case does not close under their own exception");
+        self.linked("t2b.s0.h1", digest, "dana", strict);
+        self.done("t2b.s0.h1", "dana", "receipt found");
+        self.done("t2b.s0.h2", "mara", "no receipt");
+        self.linked("t2b.s0.h2", digest, "mara", strict);
+        self.done("t2b.s0.h2", "mara", "receipt attached");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t2b/wf1/s0/h1/a0") + "|" + self.outcome_of("t2b/wf1/s0/h2/a0"), "done|done", "with the evidence, both close");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2b"), 1, "the root settled");
 
         // ---- t3: the condition is the one bound at hand-off. The practice
         //      relaxed after the hand-off relaxes nothing; the assembly
@@ -349,7 +416,6 @@ main locus App {
         self.until_rows("task.handed", "t3.s0.h1", 1);
         self.until_rows("task.handed", "t3.s0.h2", 1);
         self.settle();
-        let j = self.boot.rt.journal;
         let retired = j.append(j.revision(), "knowledge.retired", strict, "{\"digest\": \"" + strict + "\", \"by\": \"riley\"}");
         let relaxed = self.practice("acceptance/expense-approval", "An expense closes on the payer's word.\nevidence: optional\nreported decisions: allowed");
         self.done("t3.s0.h1", "mara", "paid");
@@ -386,14 +452,18 @@ main locus App {
         let agreed = dna_cli(repo, "task\ndone\nt4.s0.h1\n--as\nmara\n--note\nagreed the date");
         std::test::assert(std::str::contains(agreed, "human-reported, no evidence linked"), "a note closes it: " + agreed);
         self.done("t4.s0.h2", "eve", "mine");
-        let bad = j.append(j.revision(), "decision.reported", "t4.s0.h2", "{\"task\": \"t4.s0.h2\", \"reporter\": \"eve\", \"decider\": \"the client\", \"channel\": \"mail\", \"evidence\": \"" + digest + "\", \"practice\": \"acceptance/expense-approval\", \"accepted\": true}");
+        self.decided("t4.s0.h2", "eve", relaxed);
         self.observe();
         std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h1/a0") + "|" + self.outcome_of("t4/wf1/s0/h2/a0"), "done|", "the note closes one; the wrong person's note and a decision reported by someone else close nothing");
-        let good = j.append(j.revision(), "decision.reported", "t4.s0.h2", "{\"task\": \"t4.s0.h2\", \"reporter\": \"mara\", \"decider\": \"the client\", \"channel\": \"mail\", \"evidence\": \"" + digest + "\", \"practice\": \"acceptance/expense-approval\", \"accepted\": true}");
+        self.decided("t4.s0.h2", "mara", "");
+        self.decided("t4.s0.h2", "mara", strict);
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h2/a0"), "", "a decision accepted under no policy, or under another than the bound one, closes nothing");
+        self.decided("t4.s0.h2", "mara", relaxed);
         self.observe();
         std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h2/a0"), "done", "the assignee's reported decision, accepted, completes the case");
         let out4 = dna::decode_attempt_outcome(self.body_of("attempt.outcome", "t4/wf1/s0/h2/a0"));
-        std::test::assert(out4.ok && std::str::contains(out4.value.result, "decided by mara") && out4.value.evidence_ref == digest, "as a decision, with its evidence: " + out4.value.result);
+        std::test::assert(out4.ok && std::str::contains(out4.value.result, "decided by mara") && std::str::starts_with(out4.value.evidence_ref, "sha256:"), "as a decision, with its evidence: " + out4.value.result);
         std::test::assert_eq_int(self.rows("workflow.settled", "t4"), 1, "the root settled");
 
         // ---- t5: only the recorded owner connects a completion. Over a
@@ -420,7 +490,7 @@ main locus App {
         self.settle();
         std::test::assert_eq_str(self.outcome_of("acme:t5/wf1/s0/h1/a0") + "|" + self.outcome_of("acme:t5/wf1/s0/h2/a0"), "done|done", "the origin connects both");
         std::test::assert_eq_int(self.rows("workflow.settled", "acme:t5"), 1, "and the root settled");
-        std::test::assert_eq_int(self.count(self.outcomes, "t1:done") + self.count(self.outcomes, "t2:done") + self.count(self.outcomes, "t3:done") + self.count(self.outcomes, "t4:done") + self.count(self.outcomes, "acme:t5:done"), 5, "each root announced once: " + self.outcomes);
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done") + self.count(self.outcomes, "t2:done") + self.count(self.outcomes, "t2b:done") + self.count(self.outcomes, "t3:done") + self.count(self.outcomes, "t4:done") + self.count(self.outcomes, "acme:t5:done"), 6, "each root announced once: " + self.outcomes);
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
         let rm = sh("rm\n-rf\n" + repo);
     }

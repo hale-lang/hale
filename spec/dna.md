@@ -1643,20 +1643,29 @@ The completion is judged against what the admission bound — the
 assignee (moved by `task.reassigned`), whether evidence is required,
 which practice — never against a practice in force later: a practice
 relaxed after the hand-off relaxes nothing, while a case handed after
-the relaxation closes under the new one. A completion the bound
-condition refuses — not the assignee's, no evidence linked under the
-bound practice where it is required, an exception the person closing
-authorized themselves, a decision reported by someone other than the
-assignee — connects nothing and is noted once; a later valid one
-connects. The first valid completion is the outcome; a second is a
-duplicate and settles nothing twice. One case's completion advances
-nothing of another's.
+the relaxation closes under the new one; evidence linked under
+another practice is none, and a decision accepted under another
+policy than the bound one, or under none, is none. An exception
+applies to the person on the completion row: recorded in their name
+and authorized by someone other than them — a case reassigned to its
+exception's authorizer does not close under their own authorization.
+A completion the bound condition refuses — not the assignee's, no
+evidence linked under the bound practice where it is required, an
+exception that is not the closer's or that the closer authorized, a
+decision reported by someone other than the assignee — connects
+nothing and is noted once; a later valid one connects. The first
+valid completion is the outcome; a second is a duplicate and settles
+nothing twice. One case's completion advances nothing of another's.
 
 It is observed wherever the assembly reads the record: live, at the
-refresh of the organism's tick; when the record resumes; on
-`redrive`; at a restart of the assembly (which reads what the record
-holds); and at a restart of the execution, whose redelivery asks for
-the attempt again and is answered with the outcome the record holds.
+organism's tick, which examines the cases whenever the record has
+rows past the revision they were last examined at — by that
+revision, never by whether the tick's own refresh moved, since
+another handler (a redelivery's) reads the record without examining
+every case; when the record resumes; on `redrive`; at a restart of
+the assembly (which reads what the record holds); and at a restart
+of the execution, whose redelivery asks for the attempt again and is
+answered with the outcome the record holds.
 A case keeps its parent step waiting through a restart of the
 execution: nothing settles it but its completion. Only the recorded
 owner connects a completion — the Work runs in the origin's
