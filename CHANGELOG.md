@@ -8,6 +8,59 @@ behavior.
 
 ## Unreleased
 
+### Cross-compile for Linux from a Mac: `--target <linux triple>` links (GH #970, second step)
+
+A Linux gnu triple from any other host — `--target x86_64-unknown-linux-gnu`
+or `aarch64-unknown-linux-gnu` on a Mac, the other architecture on Linux —
+now builds an executable, not an object. The shape is the native link's
+with the host taken out.
+
+- **`zig cc` is the cross C toolchain.** It carries a libc for every Linux
+  target, and its linker is lld, so the runtime is compiled and the program
+  linked with `zig cc -target <arch>-linux-gnu.2.31` from wherever the
+  compiler runs. zig on PATH or `HALE_ZIG`; the glibc floor is 2.31
+  (`HALE_TARGET_GLIBC` overrides) — old enough for the LTS distributions in
+  service. `TargetSupport::Cross` names this tier; `--list-targets` reads
+  `cross from this host: builds and links with zig and a target sysroot`.
+- **A target sysroot supplies what lies beyond libc**: OpenSSL and zlib as
+  static archives, and the tree-sitter shim. `scripts/target-sysroot.sh
+  <triple>` builds one under `<cache>/hale/sysroot/<triple>` from pinned
+  source tarballs (OpenSSL 3.5 LTS, zlib 1.3), compiled with zig against
+  the same glibc floor, and cross-builds `libhale_ts_shim.a` from a
+  checkout; `HALE_TARGET_SYSROOT` names one kept elsewhere. From source
+  because a distribution's archives are compiled against its own glibc —
+  Ubuntu 24.04's libcrypto reaches for `__isoc23_strtol`, which 2.31 has
+  not got — so they either fail to link at the floor or drag it up to a
+  glibc the deployment machines lack. Static, so the emitted binary depends
+  on the target's glibc alone — a Mac cannot install a Linux libssl, and the
+  program has to run on a machine that never saw the sysroot.
+- **The runtime's AVX2 dispatch asks CPUID and XGETBV directly** instead
+  of `__builtin_cpu_supports`: the builtin reaches for libgcc's
+  `__cpu_model`, which zig's compiler-rt does not carry, and an x86-64
+  Linux binary linked from a Mac failed on that one symbol. Same tiers,
+  no support library.
+- **The runtime object cache is keyed by the compiler and its version**,
+  so an object `zig cc -target aarch64-linux-gnu` produced never serves a
+  build for another machine; the host `clang` keys as it always did, so
+  no cached object on disk is invalidated.
+- **CI runs a cross binary.** A `cross` job builds the sysroot the way a
+  user would (cached on its inputs), cross-compiles a cooperative-pool +
+  bus program for aarch64 on the x86_64 runner and runs it under
+  qemu-user-static; the macOS workflow does the Mac→Linux half up to the
+  ELF header.
+- **What is missing is named before the link.** No zig: the error says
+  so and how to install it. No sysroot: the error names the script and the
+  layout it expects. `std::ts` with no shim for the target: the GH #808
+  error, for the target. Sanitizers are host-only and refused for a cross
+  build; LTO is off for one.
+- A Darwin triple from anywhere else stays object-only: there is no Apple
+  SDK to link against off a Mac.
+
+Measured on an Apple Silicon Mac: 4.3 s for the first
+`aarch64-unknown-linux-gnu` build (the runtime compiles once per target),
+0.13 s after; the binary runs on arm64 Ubuntu 22.04 with `ldd` showing
+libc, libpthread, libdl and librt.
+
 ### A foreign native triple is a cross target, emitted as an object (GH #970, first step)
 
 The refusal below was the stopgap; this is the target model doing what

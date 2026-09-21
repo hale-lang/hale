@@ -252,3 +252,33 @@ jobs:
             && echo "ps -E shows a process its own environment on this runner" \
             || echo "ps -E does NOT show environments here: the fence reaches only a living organization's tree"
           cargo run -q -p hale-cli --bin hale -- test dna/tests/body_scan_test.hl
+
+      - name: Cache the Linux target sysroot (GH #970)
+        # Keyed on everything that goes into it: the script (OpenSSL
+        # and zlib pins), the ts-shim's inputs, and the zig the
+        # formula installs today.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/hale/sysroot/aarch64-unknown-linux-gnu
+          key: sysroot-aarch64-unknown-linux-gnu-macos14-${{ hashFiles('scripts/target-sysroot.sh', 'crates/hale-ts-shim/Cargo.toml', 'crates/hale-codegen/runtime/lotus_treesitter.rs', 'Cargo.lock') }}
+
+      - name: (g) GH #970 — a Mac builds a Linux binary
+        # The Mac→Linux half of the cross story: zig as the cross C
+        # toolchain, the target sysroot built the way a user would
+        # (cached on its inputs — OpenSSL from source is minutes), and
+        # the result checked by its header, since nothing here can run
+        # an aarch64 ELF. tests.yml's `cross` job runs one under qemu.
+        run: |
+          set -eux
+          brew install zig
+          zig version
+          rustup target add aarch64-unknown-linux-gnu
+          # A cached sysroot is one an earlier run built and checked;
+          # only build when the cache had none.
+          [ -f ~/.cache/hale/sysroot/aarch64-unknown-linux-gnu/lib/libssl.a ] \
+            || scripts/target-sysroot.sh aarch64-unknown-linux-gnu
+          cat ~/.cache/hale/sysroot/aarch64-unknown-linux-gnu/VERSIONS
+          cargo run -q -p hale-cli --bin hale -- build --target aarch64-unknown-linux-gnu /tmp/hlci/coop_bus.hl
+          file /tmp/hlci/coop_bus | tee /tmp/hlci/cross-file.out
+          grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/hlci/cross-file.out
+          test ! -e /tmp/hlci/coop_bus.o
