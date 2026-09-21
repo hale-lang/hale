@@ -359,6 +359,7 @@ locus Dna {
         // id); its outcome goes back for that exact attempt
         subscribe EditRequested as on_edit_requested where key == self.org_id;
         subscribe RecordResumed as on_record_resumed where key == self.org_id;
+        subscribe RunLives as on_run_life;
         publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
         publish OptimizeRequested;
@@ -683,7 +684,7 @@ locus Dna {
             let y = self.apply_reviewed(r.review_id, std::time::now());
             // card 15: an application that landed on the retry answers the
             // attempts waiting on this candidate
-            self.settle_waiting(r.review_id);
+            self.revisit_waiting();
             // and the record answers the verdict as it answers a first
             // one, so `hale dna review … approve` hears it: it waits on
             // `review.settled` or `review.refused` and nothing else, and
@@ -773,20 +774,20 @@ locus Dna {
             // post-review: it was applied under the grant; the human concurs
             if !live { let y = self.apply_reviewed(r.review_id, std::time::now()); }
             // card 15: the attempts waiting on this candidate hear its verdict
-            self.settle_waiting(r.review_id);
+            self.revisit_waiting();
             return;
         }
         if live {
             // post-review rejection: the applied candidate comes back out
             self.rollback_to_base(r.review_id, "review " + r.outcome + " by " + r.decided_by, std::time::now());
-            self.settle_waiting(r.review_id);
+            self.revisit_waiting();
             return;
         }
         let z = self.journal.append(self.journal.revision(), "mutation." + (if r.outcome == "revise" { "revise" } else { "rejected" }), r.review_id,
             "review " + r.outcome + " by " + r.decided_by + "; genome and expression untouched");
         if r.outcome != "revise" { self.settle_task_of(r.review_id, "failed", "review " + r.outcome + " after a restart"); }
         // card 15: the attempts waiting on this candidate hear its verdict
-        self.settle_waiting(r.review_id);
+        self.revisit_waiting();
         // the worktree was scratch; the Mutation, its candidate commit,
         // its Attempts and its evidence stay in the Journal
         let now = std::time::now();
@@ -1324,6 +1325,7 @@ locus Dna {
         // reports the record has been seen to hold since are released
         let moved = self.journal.refresh();
         self.release_recorded();
+        self.revisit_waiting();
         let req = e.request;
         if review_waiting(req.output_contract) {
             // the Work names the Work whose candidate it waits on; that
@@ -1443,9 +1445,12 @@ locus Dna {
         }
         return n;
     }
-    // The record is writable again: what it refused is put again.
+    // The record is writable again: what it refused is put again, and
+    // what waits is looked at again — a producer's held settlement lands
+    // now too, and its end announces itself when it does.
     fn on_record_resumed(r: RecordResume) {
         let n = self.retry_reports();
+        self.revisit_waiting();
     }
     // The disposition a Work settled on (`work.settled`), "" while it has
     // not.
@@ -1526,20 +1531,51 @@ locus Dna {
         }
         return out;
     }
-    // A review settled — or an application landed — on a Mutation
-    // answers the attempts waiting on exactly that candidate (card 15):
-    // each whose named producing Work's Mutation it is, once, and only
-    // when its state is an outcome; the others keep waiting.
+    // Every waiting attempt is evaluated again from the durable state of
+    // what it waits on (card 15): its producing Work's settlement, and
+    // the review and application of that Work's accepted attempt's
+    // candidate — prerequisites that land in either order, each landing
+    // an occasion to look again. A producer settled other than done
+    // fails its waiter: there is no candidate. Each waiter is answered
+    // once, when its state is an outcome; the others keep waiting.
     @unbounded
-    fn settle_waiting(mutation_id: String) {
+    fn revisit_waiting() {
+        if self.held_waiting() == 0 { return; }
+        let moved = self.journal.refresh();
         let mut i = 0;
         while i < self.waiting_edits.len() {
             let e = self.waiting_edits.get(i) or EditAsk { };
-            if len(e.attempt_id) > 0 && self.candidate_of(producer_of(e.request)) == mutation_id {
-                if self.report_review(e, mutation_id) { self.waiting_edits.set(i, EditAsk { }) or discard; }
+            if len(e.attempt_id) > 0 {
+                let producer = producer_of(e.request);
+                let settled = self.settlement_of(producer);
+                if len(settled) > 0 && settled != "done" {
+                    self.waiting_edits.set(i, EditAsk { }) or discard;
+                    self.report(e, "failed", producer + ": " + settled, "the producing Work settled " + settled + ": there is no candidate to wait on");
+                } else {
+                    let m = self.candidate_of(producer);
+                    if len(m) > 0 && self.report_review(e, m) { self.waiting_edits.set(i, EditAsk { }) or discard; }
+                }
             }
             i = i + 1;
         }
+    }
+    // How many attempts wait here (the form keeps released slots).
+    @unbounded
+    fn held_waiting() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.waiting_edits.len() {
+            let e = self.waiting_edits.get(i) or EditAsk { };
+            if len(e.attempt_id) > 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // A Work of the engine ended — settled, its row in the record: a
+    // producer some attempt waits on may have settled. Looked at when
+    // there is something waiting.
+    fn on_run_life(l: RunLife) {
+        if l.what == "dissolved" { self.revisit_waiting(); }
     }
     // Every responsibility the record refused to take (card 14) is driven
     // again: a held plan through `on_planned`, which finds its request
@@ -1550,6 +1586,7 @@ locus Dna {
     @unbounded
     fn redrive() -> Int {
         let mut n = self.retry_reports();
+        self.revisit_waiting();
         let edits = self.held_edits.len();
         let mut k = 0;
         while k < edits {

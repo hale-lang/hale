@@ -1544,8 +1544,14 @@ that Work's settlement accepted — a first attempt that failed to
 prepare and was retried is not it. A Work naming none fails at once,
 with why, since the dependency is explicit and never a Task-wide or
 Work-wide guess; one whose producer settled other than done fails,
-there being no candidate. The same resolution serves the first ask, a
-later notification and an ask again after a restart, which waits once. It is answered from that candidate's durable state
+there being no candidate. The producer's settlement and its
+candidate's review and application are prerequisites that land in
+either order, and each landing is an occasion to look again: a
+waiting attempt is evaluated afresh — by the same resolution — when
+any Work of the engine ends (`RunLives`), when a review settles, when
+the record resumes, on `redrive`, and whenever the assembly is asked;
+it is answered once, when its state is an outcome. The same resolution
+serves an ask again after a restart, which waits once. It is answered from that candidate's durable state
 alone: rejected or sent back is failed; approved and applied (or
 retained) is done; approved and rolled back is failed; approved but
 not applied — the apply gate refused, an application pending or

@@ -207,6 +207,14 @@ main locus App {
         std::test::assert_eq_str(self.cat.leaf("ship-retry", 1, 0, "e", dna::WorkRequest { objective: "retry the docs in main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 2), "", "retry e");
         std::test::assert_eq_str(self.cat.leaf("ship-retry", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "retry s");
         std::test::assert_eq_str(self.cat.leaf("ship-retry", 1, 1, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "retry w");
+        // a producer and its waiter in ONE step: the waiter waits on the
+        // producer's settlement as much as on its candidate's review
+        std::test::assert_eq_str(self.cat.define("ship-same", 1, 1, "a change and its wait, side by side"), "", "ship-same");
+        std::test::assert_eq_str(self.cat.leaf("ship-same", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "same e");
+        std::test::assert_eq_str(self.cat.leaf("ship-same", 1, 0, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "same w");
+        std::test::assert_eq_str(self.cat.define("ship-same-secret", 1, 1, "a change that fails, and its wait"), "", "ship-same-secret");
+        std::test::assert_eq_str(self.cat.leaf("ship-same-secret", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch", data_class: "confidential" }, 1), "", "same secret e");
+        std::test::assert_eq_str(self.cat.leaf("ship-same-secret", 1, 0, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "same secret w");
         // a waiter that names no producer
         std::test::assert_eq_str(self.cat.define("ship-blind", 1, 2, "a waiter naming nothing"), "", "ship-blind");
         std::test::assert_eq_str(self.cat.leaf("ship-blind", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "blind e");
@@ -687,6 +695,53 @@ main locus App {
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.applied", md), 1, "the second candidate applied");
         std::test::assert_eq_str(self.settled_as("t13/wf1/s1/w"), "done", "and the waiter followed the producing Work's successful attempt");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.applied", mc) + self.rows(self.boot.rt.journal, "review.requested", "review:" + mc), 0, "the failed first attempt's Mutation was never a candidate");
+
+        // ---- (re-review) the producer's settlement and its candidate's
+        //      application are prerequisites that land in either order: the
+        //      record refuses the producer's first settlement row, the
+        //      candidate is approved and applied meanwhile, and the waiter
+        //      — beside the producer in one step — stays; the record resumes,
+        //      the settlement lands, the producer's end announces it, and
+        //      the waiter is done without anyone asking again
+        self.boot = Boot {
+            rt: dna::WorkflowRuntime {
+                scope: "edits", journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: "work.settled" },
+                work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
+            },
+            owner: dna::Executions { scope: "edits" }
+        };
+        self.admit("t14", "ship-same");
+        self.ask("t14");
+        self.until_rows("attempt.outcome", "t14/wf1/s0/e/a0", 1);
+        self.settle();
+        let m14 = self.org.mutation_of_work("t14/wf1/s0/e");
+        std::test::assert(len(m14) > 0, "the candidate is prepared");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "review.requested", "review:" + m14), 1, "and in review");
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/e"), "", "the producer's settlement was refused by the record: held");
+        std::test::assert_eq_int(self.held_waiters(), 1, "its waiter waits");
+        self.verdict(m14, "approve");
+        self.until_rows("mutation.applied", m14, 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/w"), "", "applied, the waiter still waits: its producer has not settled");
+        dna::RecordResumed <- dna::RecordResume { scope: "edits", why: "the record is writable again" };
+        self.until_rows("work.settled", "t14/wf1/s0/e", 1);
+        self.until(false, "t14:done", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/e"), "done", "the producer's held settlement landed");
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/w"), "done", "and the waiter was done on it, nobody asking again");
+        std::test::assert_eq_int(self.org.redrive(), 0, "nothing was left for redrive");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.settled", "t14"), 1, "the workflow settled");
+
+        // ---- (re-review) a producer settling other than done fails its
+        //      waiter through the same path: there is no candidate
+        self.admit("t15", "ship-same-secret");
+        self.ask("t15");
+        self.until(false, "t15:failed", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t15/wf1/s0/e"), "failed", "the producer failed to prepare");
+        std::test::assert_eq_str(self.settled_as("t15/wf1/s0/w"), "failed", "and its waiter failed on that settlement");
+        let o15 = dna::decode_attempt_outcome(self.body_of(self.boot.rt.journal, "attempt.outcome", "t15/wf1/s0/w/a0"));
+        std::test::assert(o15.ok && std::str::contains(o15.value.narrative, "settled failed"), "with why: " + o15.value.narrative);
 
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
         let rm = sh("rm\n-rf\n" + repo);
