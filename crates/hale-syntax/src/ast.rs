@@ -2342,6 +2342,21 @@ pub enum TypeExpr {
 }
 
 impl TypeExpr {
+    /// The form's name for a diagnostic — "an array", "a tuple" — so a
+    /// refusal can name what it saw without Debug-formatting the node
+    /// (which prints spans, GH #906 / #911 B3).
+    pub fn form_name(&self) -> &'static str {
+        match self {
+            TypeExpr::Primitive(..) => "a primitive",
+            TypeExpr::Named { .. } => "a named type",
+            TypeExpr::Projection { .. } => "a projection",
+            TypeExpr::Array { .. } => "an array",
+            TypeExpr::Bounded { .. } => "a bounded array",
+            TypeExpr::Tuple(..) => "a tuple",
+            TypeExpr::Function { .. } => "a fn type",
+            TypeExpr::Perspective { .. } => "a perspective",
+        }
+    }
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Primitive(_, s) => *s,

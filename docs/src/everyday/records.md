@@ -122,6 +122,22 @@ Three small rules:
   not supported*; name a concrete instantiation instead (`type
   IntPair = Pair<Int>;`), which is allowed and stays transparent.
 
+A word on what may stand in those angle brackets. A generic record
+is compiled once per instantiation, under a name built from the
+arguments — `Pair<Int>` becomes `Pair_Int` — so each argument has
+to be something that can be spelled in a name. Any record of your
+own can, and so can every primitive but one:
+
+```text
+Int  Float  Bool  String  Duration  Decimal  Time
+Bytes  BytesView  BytesMut  StringView
+```
+
+`Uint` is the exception, because it has no representation of its
+own yet (it is recognised and lowered nowhere), so `Pair<Uint>` is
+refused at the argument with the supported list named — where you
+wrote it, not later from the backend. Use `Int`.
+
 ## Enums — one of several shapes
 
 An enum is a value that is exactly one of a set of named
@@ -172,5 +188,69 @@ and it pairs naturally with the typed bus at the next level.
 > the "this call failed" case specifically, prefer the
 > [`fallible`](../basics/fallible.md) channel — it's the
 > purpose-built tool and the compiler enforces handling.
+
+## Records with a type parameter
+
+A record can leave one of its field types open:
+
+```hale
+type Box<T> {
+    value: T = 0;
+}
+```
+
+`Box` on its own is a *template*, not a type — there is no `Box`
+to build. `Box<Int>` is the type, and the compiler makes one real
+record per set of arguments you use.
+
+The literal still spells the template name, and takes the
+arguments from whatever declares the type at that spot:
+
+```hale
+fn main() {
+    let b: Box<Int> = Box { value: 1 };   // the annotation says Int
+    println(b.value);
+}
+```
+
+A declared return type does the same job (`fn make() -> Box<Int> {
+return Box { value: 4 }; }`), as does a declared field — both at
+its default and at a literal that fills it (`Outer { inner: Box {
+value: 9 } }`).
+
+What does *not* work is leaving it to the compiler to guess:
+
+```hale,fragment
+let b = Box { value: 1 };     // error: `Box` is a generic type
+```
+
+The field value being an `Int` is not enough — nothing says `T` is
+`Int` rather than something an `Int` could become, so Hale asks you
+to write it. Getting the count wrong is an error too: `Box<Int,
+String>` reports *generic type `Box` takes 1 type argument, not 2*
+at the annotation.
+
+A **locus** can take type parameters the same way, and its
+`params` are substituted just like a record's fields:
+
+```hale
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+}
+
+fn main() {
+    let c: Cache<Int, String> = Cache { cap: 2 };
+    println(c.cap);
+}
+```
+
+Behind the scenes the compiler calls that instance's type
+`Cache_Int_String`, and you will see the name in a diagnostic. For
+a record you may write that name yourself — `Box_Int { value: 1 }`
+is the same type as `Box<Int>` — but for a locus it is the
+compiler's name only: build one through `Cache` with the arguments
+on the binding.
 
 Next: reading and writing the world — [Files](./files.md).

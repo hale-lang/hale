@@ -78,10 +78,29 @@ pub use crate::ty::Ty;
 
 /// Check a single program. Returns all diagnostics from
 /// resolution + type checking.
+///
+/// One `Program` is a WHOLE program — there is no sibling file the
+/// caller was not handed, because there is no bundle to be a part of
+/// — so this holds the whole-program rules
+/// ([`check_bundle_opts_whole_program`]): a bare callee and a bare
+/// identifier that name nothing are errors at their own span, as
+/// every command that compiles reports them (GH #911 B1, #846).
+///
+/// Before that this was [`check_bundle`], the PARTIAL-program entry,
+/// which left both rules off. The two callers that made it matter are
+/// the test harness — `build_executable` runs no checker, so a Rust
+/// test's `check_program` + build pair was checking to a weaker gate
+/// than the CLI applies to the same bytes — and
+/// `corpus_check_build_agreement`'s sweep, which decides "the checker
+/// accepts it" with this function and so recorded divergences the CLI
+/// never had.
+///
+/// A caller that deliberately holds a FRAGMENT (one file of a
+/// multi-file seed, a styleguide snippet) wants [`check_bundle`].
 pub fn check_program(program: &Program) -> Vec<Diag> {
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), program);
-    check_bundle(&Bundle::new(programs))
+    check_bundle_opts_whole_program(&Bundle::new(programs), false)
 }
 
 /// Check a bundle of programs (one logical compilation unit
@@ -156,18 +175,23 @@ pub fn check_bundle_opts(
 /// with a span instead of arriving as codegen's spanless `unknown
 /// identifier`.
 ///
-/// The F.18 callee rule stays OFF here. GH #779 closed the gap that
-/// made it unsafe — `BARE_BUILTIN_CALLEES` now covers every bare name
-/// codegen answers, enforced by
-/// `corpus_check_build_agreement::strict_check_refuses_nothing_the_build_accepts`
-/// — but the build path already refuses these calls in codegen, so
-/// turning the flag on here would only change which layer says so.
-/// That is a diagnostic change, separate from #779's gate fix.
+/// The F.18 callee rule is ON here too (GH #911 B1, #846). It used to
+/// be off, on the reasoning that codegen refuses these calls anyway so
+/// the flag would only change which layer says so — but that is the
+/// whole point: codegen says it with no file, line or caret, from a
+/// layer below the one that just approved the program, and `hale check
+/// <dir>` on the same bytes says it at the call's own span. Two
+/// answers to one question, and the useful one was the one the build
+/// did not give. `BARE_BUILTIN_CALLEES` is exact in both directions
+/// now (GH #779 for "a name codegen answers is exempt", GH #800 for "a
+/// name the rule exempts is one codegen answers"), both halves gated
+/// by `corpus_check_build_agreement`, so the rule refuses nothing the
+/// build accepts.
 pub fn check_bundle_opts_whole_program(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
-    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, false, true)
+    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, true, true)
 }
 
 /// The same check with the whole-program rules on: a call to a bare
@@ -907,6 +931,18 @@ mod tests {
     fn check(src: &str) -> Vec<Diag> {
         let p = parse_source(src).expect("parses");
         check_program(&p)
+    }
+
+    /// The single-FILE check: what `hale check <file>` runs on one
+    /// file of a multi-file seed. Since GH #911 B1 `check_program` is
+    /// the whole-program (strict) entry, so a test whose program
+    /// leans on a declaration another seed would supply — an import
+    /// alias it never declares — belongs here.
+    fn check_single_file(src: &str) -> Vec<Diag> {
+        let p = parse_source(src).expect("parses");
+        let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
+        programs.insert(String::new(), &p);
+        check_bundle(&Bundle::new(programs))
     }
 
     #[test]
@@ -2709,7 +2745,11 @@ mod tests {
             }
             fn main() { Pub { }; }
         "#;
-        let diags = check(src);
+        // `src::` is declared by no seed in this one-file program, so
+        // the whole-program rule (GH #911 B2) refuses it there — as it
+        // should. The send-LHS resolution this test pins is a
+        // single-file question.
+        let diags = check_single_file(src);
         assert!(
             diags.is_empty(),
             "expected cross-seed send to typecheck cleanly; got: {:?}",

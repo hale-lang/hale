@@ -659,11 +659,45 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+**Generic loci monomorphize the same way.** `locus Cache<K, V>` is
+a template; `Cache<Int, String>` names the monomorph
+`Cache_Int_String`, whose `params` are the template's with the
+arguments substituted. A field read on a monomorph locus value
+(`c.cap`) types as the substituted param, exactly as a monomorph
+struct's field read does.
+
+**Where the arguments come from.** A struct / locus literal spelled
+with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
+carries no type arguments of its own; it takes them from the
+declared type at the site. The sites that declare one are:
+
+- a `let` ascription — `let c: Cache<Int, String> = Cache { cap: 2 };`
+- a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
+- a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
+- a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
+
+Anywhere else — an un-annotated `let`, a literal in statement
+position — the arguments cannot be recovered, and the literal is a
+type error naming the template and the annotation to write. There
+is no inference from a literal's field values back to the
+parameters.
+
+A generic instantiation's argument COUNT must equal the template's
+parameter count: `Box<Int, String>` on `type Box<T>` is a type
+error at the annotation.
+
+The mangled monomorph name is spellable for a generic TYPE
+(`Box_Int { value: 1 }`, and through an alias — `type IntBox =
+Box<Int>; IntBox { ... }`). It is **not** spellable for a generic
+LOCUS: `Cache_Int_String { cap: 2 }` is a type error pointing at
+the template spelling.
+
 Generic params are declared with angle brackets:
 
 ```
 fn map<T, U>(xs: [T], f: fn(T) -> U) -> [U] { ... }
 type Stack<T> { items: [T]; }
+locus Cache<K, V> { params { cap: Int = 1; } }
 ```
 
 The constraint syntax `<T: Constraint>` admits:
@@ -680,6 +714,39 @@ Monomorphization: the compiler emits one machine-code instance
 per concrete generic instantiation (per F.1 commitment to
 runtime perf over compile-time perf). Compile times grow with
 generic surface; runtime is full-speed.
+
+### What may be a generic argument
+
+A monomorph has to be NAMED before it can be declared — `Box<Int>`
+is lowered as `Box_Int` — so each argument must contribute a token
+to that name. The primitive vocabulary is:
+
+```
+Int  Float  Bool  String  Duration  Decimal  Time
+Bytes  BytesView  BytesMut  StringView
+```
+
+`Uint` is the one primitive that may NOT be a generic argument: it
+is parser-recognized with no codegen representation in any storage
+position (see the table at the top of this document), so there is
+no monomorph to name. `hale check` refuses the instantiation at the
+argument's span and names the supported set:
+
+```
+main.hl:6:12: type error: `Uint` cannot be a generic argument: no
+monomorph name exists for it (supported: Int / Float / Bool /
+String / Duration / Decimal / Time / Bytes / BytesView / BytesMut
+/ StringView)
+```
+
+A non-primitive argument is a single-segment named type (a user
+`type`, or another generic instantiation, which mangles
+recursively). An array, tuple, `bounded[T; N]` or function type as
+an argument is refused at lowering; a qualified path is rewritten
+to a single segment by the import renames before the mangler sees
+it, which is why the checker's rule above is confined to
+primitives — the only argument form whose answer is the same in
+both layers.
 
 ## Type inference
 
@@ -744,16 +811,32 @@ needs a `Node` to hand over, and building one asks the same
 question again. The rule is over locus LITERALS in a default, and a
 literal's own supplied fields count — a default that spells out
 every param of the locus it builds expands no default of its own
-and is not a cycle. A **call** in a default (`next: Node = make()`)
-is not a containment edge: the checker cannot tell a factory that
-builds a fresh locus from an accessor handing back one somebody
-else owns, and lowering a call terminates either way (that program
-compiles, and recurses at run time like any other unbounded
-recursion). A cycle whose loci live in different files of one seed
+and is not a cycle.
+
+**A call that builds one counts (GH #870).** `next: Node = make()`
+with `fn make() -> Node { return Node { }; }` is the same ring
+spelled through a function, and the same error at the param
+("param `next` of `Node` defaults to `make()`, which builds a fresh
+`Node`; a locus cannot contain itself by value"). Lowering a call
+emits a call rather than inlining the callee, so that program used
+to compile and then overflow its own stack at run time instead —
+every `Node` `make` builds leaves ITS `next` to the same default,
+which calls `make` again. A fn counts when every value it hands
+back is freshly built: a literal of its declared locus, a call to
+another such fn, or a local binding of either. A call the compiler
+cannot see as fresh is **not** an edge and stays accepted — an
+accessor handing back a locus somebody else owns
+(`next: Node = registry.head()`), a method, a `std::` or cross-seed
+path, a carrier arm. That program may still recurse at run time;
+`@no_recursion` is the contract for unbounded recursion, and this
+rule only reports the rings it can prove.
+
+A cycle whose loci live in different files of one seed
 is reported when the seed is checked together, since a single file
 holds no declaration for its sibling's types. Codegen enforces the
-same rule for itself, as an `Unsupported` error, so a path that
-bypasses the checker terminates too.
+literal half of the rule for itself, as an `Unsupported` error, so a
+path that bypasses the checker terminates too — the call half needs
+no backstop, since lowering a call was never what recursed.
 
 ## `inferred` params
 
@@ -801,14 +884,22 @@ parser gives them their own syntax rather than a call, so they are
 never a bare callee. `__fmt`, the desugaring of `f"{x:spec}"`, is
 the compiler's own and is not written by hand.)
 
-When a **whole seed** is checked (`hale check <directory>`, which is
-what a build compiles and what the organization's gate runs), any
+In a **whole program** — every import resolved, which is `hale check
+<directory>` (the seed, and what the organization's gate runs), every
+command that compiles (`hale build` / `hale run` / `hale test` /
+`hale replay` compile exactly what they bundle) and `hale lsp` — any
 other bare callee is a type error — `call to X: no free fn, generic
 fn or fn-pointer binding with that name is in scope`, with a
-did-you-mean over the program's fns — rather than an `Unknown` that
-`hale build` refuses later. One file checked alone, or a partial
-program a harness assembles, keeps the permissive reading: it may
-call what a sibling file defines (dna/FRICTION.md F.18).
+did-you-mean over the program's fns. One file checked alone, or a
+partial program a harness assembles, keeps the permissive reading: it
+may call what a sibling file defines (dna/FRICTION.md F.18).
+
+The rule was on for the seed check alone until GH #911 B1, so the
+build path let the call through to codegen, which refused it as
+`unsupported in codegen v0: call to X: …` — from a layer below the one
+that had just approved the program, with no file, line or caret, and a
+did-you-mean drawn from compiler-internal symbols. The two layers gave
+two answers to one question; they now give the located one.
 
 The list is a contract in **both** directions, and neither is
 optional.

@@ -91,8 +91,8 @@ commands said about it.
 
 A refusal that comes from the *backend* rather than the front end
 reads the same way. Some things `hale check` accepts cannot be
-lowered — a generic argument the code generator has no name for, a
-toolchain piece the program needs and the build cannot find — and
+lowered — an array or a tuple as a generic argument, a toolchain
+piece the program needs and the build cannot find — and
 each of those is `path:line:col: codegen error: message`, with the
 line and the caret, from `build`, `run`, `test`, `bench` and
 `replay` alike. When such a refusal has no particular place in your

@@ -509,12 +509,15 @@ fn same_subject_race_and_nested_republish_replay_exactly() {
 #[test]
 fn module_contained_effects_and_bindings_are_refused() {
     let dir = workdir("modgate");
-    // Inline-module fns don't lower through codegen yet, so these
-    // programs never RUN — which is fine: the safety gate fires
-    // before the build, and it is deliberately ordered before
-    // identity admission so a program-inherent refusal is never
-    // masked by a recording mismatch. Any valid recording arms the
-    // test.
+    // A module introduces no namespace (spec/semantics.md,
+    // "Declarations inside `module { }`"): its declarations are
+    // reached by their BARE names, and `inner::danger` is a type
+    // error the whole-program check refuses first (GH #911 B2). The
+    // programs here spell the bare names so the type check passes
+    // and the assertion is about the GATE — which fires before the
+    // build, deliberately ahead of identity admission, so a
+    // program-inherent refusal is never masked by a recording
+    // mismatch. Any valid recording arms the test.
     let plain = dir.join("plain.hl");
     std::fs::write(&plain, JOURNALED).unwrap();
     let rec = record(&dir, &plain);
@@ -540,7 +543,7 @@ main locus App {
     params { s: Sink = Sink { }; }
     bus { publish "m.t" of type Tick; }
     run() {
-        inner::danger();
+        danger();
         "m.t" <- Tick { n: 1 };
     }
 }
@@ -576,7 +579,7 @@ module wired {
         run() { Wire <- Tick { n: 1 }; std::time::sleep(200ms); }
     }
 }
-fn main() { wired::App { }; }
+fn main() { App { }; }
 "#,
     )
     .unwrap();

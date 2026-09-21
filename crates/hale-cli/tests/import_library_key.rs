@@ -297,6 +297,175 @@ fn app_and_another_library_may_spell_it_differently() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// GH #820: the same single file, when ANOTHER import of the build
+/// takes the directory around it. The two identities are genuinely
+/// different libraries — one file against the whole seed — and
+/// `visited` is global, so whichever resolved second got only the
+/// files the first had not taken and one alias's names silently
+/// resolved to nothing. The ruling (2026-09-20, GH #911): refuse the
+/// FILE spelling, naming the library that holds the file and where
+/// that import is written.
+///
+/// The directory spelling resolves first here (the app's files merge
+/// alphabetically, so `main.hl`'s imports come before `other.hl`'s).
+#[test]
+fn a_file_of_a_directory_imported_library_is_refused() {
+    let d = seed(
+        "conflict",
+        &[
+            ("lib/main.hl", LIB_MAIN),
+            ("lib/helper.hl", LIB_HELPER),
+            (
+                "app/main.hl",
+                "import \"../lib\" as a;\n\
+                 \n\
+                 fn main() {\n\
+                 \x20   println(a::hello());\n\
+                 \x20   println(from_other());\n\
+                 }\n",
+            ),
+            (
+                "app/other.hl",
+                "import \"../lib/helper\" as h;\n\
+                 \n\
+                 fn from_other() -> String {\n\
+                 \x20   return h::helper_name();\n\
+                 }\n",
+            ),
+        ],
+    );
+    let app = d.join("app");
+    for cmd in [&["check", "."][..], &["build", "."][..]] {
+        let (ok, out) = hale(&app, cmd);
+        assert!(!ok, "{:?} must fail:\n{out}", cmd);
+        assert!(
+            out.contains(
+                "`../lib/helper` is already part of the library imported \
+                 as `a` at"
+            ),
+            "the message names the file spelling and the library that \
+             holds it:\n{out}"
+        );
+        // Located at the import that has to change — `other.hl`'s,
+        // under the path literal.
+        assert!(
+            out.contains("other.hl:1:8:"),
+            "located at the refused import:\n{out}"
+        );
+        // ... naming where the other one is written.
+        assert!(out.contains("main.hl:1;"), "names the first site:\n{out}");
+    }
+    let (ok, out) = hale(&app, &["check", "--json", "."]);
+    assert!(!ok, "{out}");
+    let line = out
+        .lines()
+        .find(|l| l.contains("is already part of the library"))
+        .unwrap_or_else(|| panic!("no json row for the conflict:\n{out}"));
+    assert!(line.contains("other.hl\""), "{line}");
+    assert!(line.contains("\"line\":1"), "{line}");
+    assert!(line.contains("\"col\":8"), "{line}");
+    assert!(line.contains("\"severity\":\"error\""), "{line}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The other resolution order: the single FILE resolves first and the
+/// directory arrives to find its files taken. The refusal is the same
+/// one, still located at the file spelling — that is the spelling
+/// being refused, and pointing at the directory import instead would
+/// name a line there is nothing wrong with.
+#[test]
+fn either_order_refuses_the_file_spelling() {
+    let d = seed(
+        "conflict_order",
+        &[
+            ("lib/main.hl", LIB_MAIN),
+            ("lib/helper.hl", LIB_HELPER),
+            (
+                "app/main.hl",
+                "import \"../lib/helper\" as h;\n\
+                 \n\
+                 fn main() {\n\
+                 \x20   println(h::helper_name());\n\
+                 \x20   println(from_other());\n\
+                 }\n",
+            ),
+            (
+                "app/other.hl",
+                "import \"../lib\" as a;\n\
+                 \n\
+                 fn from_other() -> String {\n\
+                 \x20   return a::hello();\n\
+                 }\n",
+            ),
+        ],
+    );
+    let app = d.join("app");
+    let (ok, out) = hale(&app, &["check", "."]);
+    assert!(!ok, "check must fail:\n{out}");
+    assert!(
+        out.contains(
+            "`../lib/helper` is already part of the library imported as \
+             `a` at"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("main.hl:1:8:"),
+        "the file spelling is in main.hl this time:\n{out}"
+    );
+    assert!(out.contains("other.hl:1;"), "names the first site:\n{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A TRANSITIVE conflict: the app takes the directory and a middle
+/// library takes one of its files. Two different importing seeds, so
+/// nothing here is about one seed's alias namespace — it is the
+/// library's identity, and the refusal is located in the middle
+/// library's own file.
+#[test]
+fn a_conflict_across_two_importers_is_refused() {
+    let d = seed(
+        "conflict_transitive",
+        &[
+            ("lib/main.hl", LIB_MAIN),
+            ("lib/helper.hl", LIB_HELPER),
+            (
+                "mid/main.hl",
+                "import \"../lib/helper\" as m;\n\
+                 \n\
+                 fn wrapped() -> String {\n\
+                 \x20   return m::helper_name();\n\
+                 }\n",
+            ),
+            (
+                "app/main.hl",
+                "import \"../lib\" as a;\n\
+                 import \"../mid\" as mid;\n\
+                 \n\
+                 fn main() {\n\
+                 \x20   println(a::hello());\n\
+                 \x20   println(mid::wrapped());\n\
+                 }\n",
+            ),
+        ],
+    );
+    let app = d.join("app");
+    let (ok, out) = hale(&app, &["check", "."]);
+    assert!(!ok, "check must fail:\n{out}");
+    assert!(
+        out.contains(
+            "`../lib/helper` is already part of the library imported as \
+             `a` at"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("mid/main.hl:1:8:"),
+        "located where the file spelling is written:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// The rule's boundary: only `main.hl` is a second name for its
 /// directory. A single file that is NOT a seed's entry file stays the
 /// single-file library of resolution-order rule 1 — it brings in that

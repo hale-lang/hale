@@ -24,6 +24,11 @@ standard library that need syscalls:
 target wasm { }
 ```
 
+It goes at the top level of the file. A `target` block inside a
+`module { }` is a parse error — it is a directive for the whole
+program, and putting it out of reach of everything that reads it
+would only look like it worked.
+
 Under `target wasm`, the portable stdlib works as usual
 (`std::str`, `std::bytes`, `std::json`, `std::math`, …), but the
 POSIX-backed namespaces (`std::io::tcp`, `std::process`,

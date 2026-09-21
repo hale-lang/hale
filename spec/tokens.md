@@ -635,6 +635,16 @@ else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`,
 `starts_with(s, p)` and `contains(s, p)` are similarly bare-name
 builtins, as is `check_closures()` at statement position.
 
+**A bare builtin call is the same call in either position.** In
+statement position the expression is evaluated and its value
+discarded, so `len(s);`, `Int(3);` and `min(1, 2);` are legal (if
+pointless) statements rather than a narrower vocabulary: a name the
+compiler answers in expression position it answers here too. The
+four printers and `check_closures()` return no value and so are
+statement-position-only; the `bounded[T; N]` intrinsics keep their
+own statement spellings, with `push` / `at` / `set` carrying an
+`or` disposition because they are fallible.
+
 #### Names a free `fn` may not take (GH #863, GH #880)
 
 These names are **claimed at the call site**, ahead of any user

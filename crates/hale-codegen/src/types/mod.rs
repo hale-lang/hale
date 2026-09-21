@@ -327,8 +327,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(CodegenTy::Perspective(name.name.clone()))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "type form {:?} in signature",
-                std::mem::discriminant(other)
+                "{} in a signature is not lowered",
+                other.form_name()
             ))),
         }
     }

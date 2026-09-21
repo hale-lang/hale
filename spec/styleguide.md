@@ -140,6 +140,10 @@ locus Onboard {
     run() { drive(self.dir, self.flavor); }
 }
 
+fn drive(dir: String, flavor: String) {
+    println("onboarding ", dir, " ", flavor);
+}
+
 fn main() {
     let mut dir = "fixture";
     if std::env::args_count() > 1 { dir = std::env::arg(1); }
