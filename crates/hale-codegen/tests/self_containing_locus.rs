@@ -160,17 +160,23 @@ fn a_fully_supplied_literal_in_its_own_default_runs() {
     assert!(stdout.contains("m=1"), "got: {:?}", stdout);
 }
 
-/// The pinned decision, from codegen's side: a param default that is
-/// a CALL returning the same locus is not an instantiation-path
+/// The division of labour, from codegen's side: a param default that
+/// is a CALL returning the same locus is not an instantiation-path
 /// re-entry, because lowering a call emits a call — `make`'s body is
 /// lowered once, as a function. So the COMPILER terminates and the
-/// build succeeds.
+/// build succeeds, and this half of the rule needs no backstop.
 ///
-/// The built program does not: `make()` builds a `Node` whose `next`
-/// default calls `make()` again, and it overflows its own stack at
-/// run time, like any other unbounded recursion (`@no_recursion` is
-/// the contract for that). Which is why this test builds it and stops
+/// The built program does not terminate: `make()` builds a `Node`
+/// whose `next` default calls `make()` again, and it overflows its
+/// own stack at run time. Which is why this test builds it and stops
 /// there, deliberately, rather than running it.
+///
+/// GH #870 is what now keeps an author from getting here: `hale
+/// check` refuses this program at the param, having asked whether
+/// `make` builds a fresh `Node` (see
+/// `hale-types/tests/self_containing_locus.rs`). `build_executable`
+/// still never runs the checker, so what this test pins is unchanged
+/// — the lowering's floor, which the call spelling never needed.
 #[test]
 fn a_factory_call_in_a_default_still_builds() {
     let src = r#"

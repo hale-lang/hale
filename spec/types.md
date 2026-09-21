@@ -744,16 +744,32 @@ needs a `Node` to hand over, and building one asks the same
 question again. The rule is over locus LITERALS in a default, and a
 literal's own supplied fields count — a default that spells out
 every param of the locus it builds expands no default of its own
-and is not a cycle. A **call** in a default (`next: Node = make()`)
-is not a containment edge: the checker cannot tell a factory that
-builds a fresh locus from an accessor handing back one somebody
-else owns, and lowering a call terminates either way (that program
-compiles, and recurses at run time like any other unbounded
-recursion). A cycle whose loci live in different files of one seed
+and is not a cycle.
+
+**A call that builds one counts (GH #870).** `next: Node = make()`
+with `fn make() -> Node { return Node { }; }` is the same ring
+spelled through a function, and the same error at the param
+("param `next` of `Node` defaults to `make()`, which builds a fresh
+`Node`; a locus cannot contain itself by value"). Lowering a call
+emits a call rather than inlining the callee, so that program used
+to compile and then overflow its own stack at run time instead —
+every `Node` `make` builds leaves ITS `next` to the same default,
+which calls `make` again. A fn counts when every value it hands
+back is freshly built: a literal of its declared locus, a call to
+another such fn, or a local binding of either. A call the compiler
+cannot see as fresh is **not** an edge and stays accepted — an
+accessor handing back a locus somebody else owns
+(`next: Node = registry.head()`), a method, a `std::` or cross-seed
+path, a carrier arm. That program may still recurse at run time;
+`@no_recursion` is the contract for unbounded recursion, and this
+rule only reports the rings it can prove.
+
+A cycle whose loci live in different files of one seed
 is reported when the seed is checked together, since a single file
 holds no declaration for its sibling's types. Codegen enforces the
-same rule for itself, as an `Unsupported` error, so a path that
-bypasses the checker terminates too.
+literal half of the rule for itself, as an `Unsupported` error, so a
+path that bypasses the checker terminates too — the call half needs
+no backstop, since lowering a call was never what recursed.
 
 ## `inferred` params
 

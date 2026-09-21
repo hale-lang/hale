@@ -3145,6 +3145,13 @@ fn check_nested_long_running_child(
 /// pair — not the locus alone — is what the construction re-enters.
 type ContainmentState = (String, Vec<String>);
 
+/// One edge out of a param default (GH #870): the state the default
+/// constructs, and the factory fn it went through — `None` when the
+/// default spells the literal itself. The graph is the same either
+/// way; the name is what the diagnostic shows the author, who is
+/// looking at a call, not at a literal.
+type ContainmentEdge = (ContainmentState, Option<String>);
+
 /// GH #813: a locus whose construction requires constructing one of
 /// its own kind.
 ///
@@ -3165,18 +3172,32 @@ type ContainmentState = (String, Vec<String>);
 /// trace is not a diagnostic, and the author's mistake is at a param.
 ///
 /// The graph is over BY-VALUE containment: an edge `L → M` where a
-/// param default of `L` *constructs* an `M`, i.e. an `M { … }` locus
-/// literal appears anywhere in the default's expression. A **call**
-/// in a default — `next: Node = make()` — is deliberately not an
-/// edge. Two reasons, and they agree: lowering a call emits a call
-/// rather than inlining the callee, so the compiler terminates on it
-/// and there is no crash to prevent; and the checker cannot tell a
-/// factory that builds a fresh locus from an accessor that hands back
-/// one somebody else already owns (codegen's `fresh_locus_factories`
-/// fixpoint is the whole-program analysis that can, and it is a
-/// codegen-side answer to a different question). A factory that does
-/// build a fresh one recurses at RUN time, like any other unbounded
-/// recursion, and `@no_recursion` is the contract for that.
+/// param default of `L` *constructs* an `M` — an `M { … }` locus
+/// literal anywhere in the default's expression, or (GH #870) a call
+/// to a fn that freshly constructs one.
+///
+/// The second half is the residue #813 left behind. `next: Node =
+/// make()` with `fn make() -> Node { return Node { }; }` compiled —
+/// lowering a call emits a call rather than inlining the callee, so
+/// nothing recursed at COMPILE time and there was no crash to
+/// prevent — and then overflowed the program's own stack at RUN time,
+/// because every `Node` `make` builds leaves ITS `next` to the same
+/// default, which calls `make` again. The ring is the same ring; only
+/// the spelling of one edge changed.
+///
+/// Telling that apart from an accessor handing back a `Node` somebody
+/// else already owns is a whole-program question, and
+/// `fresh_locus_factory_products` is the answer: codegen's
+/// `compute_fresh_locus_factories` classification, mirrored over the
+/// bundle rather than imported (hale-codegen depends on hale-types,
+/// so the dependency cannot run the other way; only the pure "what
+/// does this fn hand back" part is repeated, and it answers with each
+/// literal's supplied fields, which the ownership map has no use
+/// for). A call it cannot see as fresh — an accessor, a method, a
+/// `std::` or cross-seed path — takes no edge and stays accepted,
+/// exactly as before; a program like that recurses at RUN time only
+/// if the callee really does build one, which is what `@no_recursion`
+/// is the contract for.
 ///
 /// A node is (locus, supplied field names) rather than the locus
 /// alone: `A { n: 1, m: 2 }` written inside `A`'s own default for `m`
@@ -3214,6 +3235,9 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     if loci.is_empty() {
         return;
     }
+    // GH #870: which fns hand back a locus they freshly built, and
+    // what each call constructs. Computed once for the bundle.
+    let factories = fresh_locus_factory_products(bundle, &loci);
     // Classic gray/black DFS. `finished` is the black set: every
     // cycle reachable from a state was found while that state was
     // being explored, so re-entering it later has nothing to add —
@@ -3227,6 +3251,7 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             name,
             &[],
             &loci,
+            &factories,
             &mut path,
             &mut finished,
             &mut reported,
@@ -3238,11 +3263,13 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// One DFS step of the GH #813 containment walk. `supplied` is the
 /// set of field names the literal that got us here wrote out; every
 /// OTHER param of `locus` expands its default, and each locus literal
-/// inside that default is an edge.
+/// inside that default — plus (GH #870) each fresh-factory call — is
+/// an edge.
 fn walk_param_default_containment(
     locus: &str,
     supplied: &[String],
     loci: &BTreeMap<&str, &LocusDecl>,
+    factories: &BTreeMap<String, Vec<ContainmentState>>,
     path: &mut Vec<ContainmentState>,
     finished: &mut BTreeSet<ContainmentState>,
     reported: &mut BTreeSet<(u32, String)>,
@@ -3269,13 +3296,13 @@ fn walk_param_default_containment(
             let ParamInit::Value(e) = &pd.init else {
                 continue;
             };
-            let mut built: Vec<ContainmentState> = Vec::new();
-            collect_constructed_loci(e, loci, &mut built);
-            for child in built {
+            let mut built: Vec<ContainmentEdge> = Vec::new();
+            collect_constructed_loci(e, loci, factories, &mut built);
+            for (child, via) in built {
                 let Some(at) = path.iter().position(|s| *s == child) else {
                     walk_param_default_containment(
-                        &child.0, &child.1, loci, path, finished,
-                        reported, diags,
+                        &child.0, &child.1, loci, factories, path,
+                        finished, reported, diags,
                     );
                     continue;
                 };
@@ -3291,17 +3318,39 @@ fn walk_param_default_containment(
                 } else {
                     String::new()
                 };
+                // The two spellings of one edge: a literal in the
+                // default, or a call to a fn that builds one (GH
+                // #870). Same rule, same ring — what differs is what
+                // the author is looking at on that line.
+                let (how, why) = match &via {
+                    None => (
+                        format!("defaults to a `{}`", child.0),
+                        "every one the default builds needs another, \
+                         and no locus literal can end the chain"
+                            .to_string(),
+                    ),
+                    Some(f) => (
+                        format!(
+                            "defaults to `{}()`, which builds a fresh \
+                             `{}`",
+                            f, child.0,
+                        ),
+                        "every one the factory builds asks the same \
+                         default again, so the program compiles and \
+                         then recurses until its stack overflows"
+                            .to_string(),
+                    ),
+                };
                 let message = format!(
-                    "param `{}` of `{}` defaults to a `{}`; a locus \
-                     cannot contain itself by value{} — every one the \
-                     default builds needs another, and no locus \
-                     literal can end the chain. Drop the default and \
+                    "param `{}` of `{}` {}; a locus cannot contain \
+                     itself by value{} — {}. Drop the default and \
                      take the child from the caller (`{}: {};`), or \
                      hold a value rather than a locus.",
                     pd.name.name,
                     locus,
-                    child.0,
+                    how,
                     chain,
+                    why,
                     pd.name.name,
                     child.0,
                 );
@@ -3315,16 +3364,27 @@ fn walk_param_default_containment(
     finished.insert(state);
 }
 
-/// Every locus literal `M { … }` inside `e`, as (locus name, the
-/// field names it supplies). Nested literals count too — a literal
-/// inside a literal's field is constructed just as surely as the
-/// outer one. Only single-segment paths that name a locus in this
-/// bundle are edges; a `type` literal, a stdlib path and a sibling
-/// file's name are all skipped.
+/// Every locus `M` constructed while `e` is evaluated, as (locus
+/// name, the field names it supplies) plus the factory fn the default
+/// reached it through, if any.
+///
+/// Two spellings construct one:
+///
+///   * a locus literal `M { … }`. Nested literals count too — a
+///     literal inside a literal's field is constructed just as surely
+///     as the outer one. Only single-segment paths that name a locus
+///     in this bundle are edges; a `type` literal, a stdlib path and
+///     a sibling file's name are all skipped;
+///   * GH #870: a call to a fn `fresh_locus_factory_products`
+///     classified as freshly building one. The states it contributes
+///     are the literals that fn hands back, so `fn make() -> Node {
+///     return Node { n: 5 }; }` contributes `(Node, [n])` — the same
+///     node the literal `Node { n: 5 }` would.
 fn collect_constructed_loci(
     e: &Expr,
     loci: &BTreeMap<&str, &LocusDecl>,
-    out: &mut Vec<ContainmentState>,
+    factories: &BTreeMap<String, Vec<ContainmentState>>,
+    out: &mut Vec<ContainmentEdge>,
 ) {
     match e {
         Expr::Struct { path, inits, .. } => {
@@ -3337,67 +3397,312 @@ fn collect_constructed_loci(
                         .collect();
                     supplied.sort();
                     supplied.dedup();
-                    out.push((name.to_string(), supplied));
+                    out.push(((name.to_string(), supplied), None));
                 }
             }
             for i in inits {
-                collect_constructed_loci(&i.value, loci, out);
+                collect_constructed_loci(&i.value, loci, factories, out);
             }
         }
         Expr::Binary { left, right, .. } => {
-            collect_constructed_loci(left, loci, out);
-            collect_constructed_loci(right, loci, out);
+            collect_constructed_loci(left, loci, factories, out);
+            collect_constructed_loci(right, loci, factories, out);
         }
         Expr::Unary { operand, .. } => {
-            collect_constructed_loci(operand, loci, out)
+            collect_constructed_loci(operand, loci, factories, out)
         }
         Expr::Call { callee, args, .. } => {
-            collect_constructed_loci(callee, loci, out);
+            if let Some(f) = plain_callee_name(callee) {
+                if let Some(states) = factories.get(f) {
+                    for s in states {
+                        out.push((s.clone(), Some(f.to_string())));
+                    }
+                }
+            }
+            collect_constructed_loci(callee, loci, factories, out);
             for a in args {
-                collect_constructed_loci(a, loci, out);
+                collect_constructed_loci(a, loci, factories, out);
             }
         }
         Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            collect_constructed_loci(receiver, loci, out)
+            collect_constructed_loci(receiver, loci, factories, out)
         }
         Expr::Index { receiver, index, .. } => {
-            collect_constructed_loci(receiver, loci, out);
-            collect_constructed_loci(index, loci, out);
+            collect_constructed_loci(receiver, loci, factories, out);
+            collect_constructed_loci(index, loci, factories, out);
         }
         Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
             for p in parts {
-                collect_constructed_loci(p, loci, out);
+                collect_constructed_loci(p, loci, factories, out);
             }
         }
         Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
-            collect_constructed_loci(inner, loci, out)
+            collect_constructed_loci(inner, loci, factories, out)
         }
         Expr::ArrayRepeat { val, .. } => {
-            collect_constructed_loci(val, loci, out)
+            collect_constructed_loci(val, loci, factories, out)
         }
         Expr::Range { lo, hi, .. } => {
-            collect_constructed_loci(lo, loci, out);
-            collect_constructed_loci(hi, loci, out);
+            collect_constructed_loci(lo, loci, factories, out);
+            collect_constructed_loci(hi, loci, factories, out);
         }
         Expr::Approx { left, right, tolerance, .. } => {
-            collect_constructed_loci(left, loci, out);
-            collect_constructed_loci(right, loci, out);
-            collect_constructed_loci(tolerance, loci, out);
+            collect_constructed_loci(left, loci, factories, out);
+            collect_constructed_loci(right, loci, factories, out);
+            collect_constructed_loci(tolerance, loci, factories, out);
         }
         Expr::Or { inner, disposition, .. } => {
-            collect_constructed_loci(inner, loci, out);
+            collect_constructed_loci(inner, loci, factories, out);
             match disposition {
                 OrDisposition::Substitute(s) => {
-                    collect_constructed_loci(s, loci, out)
+                    collect_constructed_loci(s, loci, factories, out)
                 }
                 OrDisposition::Fail(p, _) => {
-                    collect_constructed_loci(p, loci, out)
+                    collect_constructed_loci(p, loci, factories, out)
                 }
                 _ => {}
             }
         }
         _ => {}
     }
+}
+
+/// The single-segment name a callee spells, or `None` for a method,
+/// a path, or anything computed. A qualified callee resolves through
+/// codegen's import-rename table, which the checker has no
+/// equivalent of, so it is not followed here.
+fn plain_callee_name(callee: &Expr) -> Option<&str> {
+    match callee {
+        Expr::Ident(i) => Some(i.name.as_str()),
+        Expr::Path(q) if q.segments.len() == 1 => {
+            Some(q.segments[0].name.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// GH #870: every fn in the bundle that hands back a locus it
+/// freshly BUILT, with the [`ContainmentState`]s a call to it
+/// constructs.
+///
+/// The classification is codegen's `compute_fresh_locus_factories`:
+/// a fn qualifies when every arm it returns is a literal of its
+/// declared locus, a call to another qualifying fn of that locus, or
+/// one local binding that was itself bound to either — a fixpoint,
+/// since the second and third forms are answers about other fns.
+/// Two deliberate differences from the codegen map:
+///
+///   * it answers with each literal's SUPPLIED FIELD NAMES, not just
+///     the locus. `Node { n: 5 }` expands every default but `n`, and
+///     the containment graph's nodes are (locus, supplied) pairs for
+///     exactly that reason. Ownership has no use for the names, so
+///     the codegen map does not carry them;
+///   * it drops the escape analysis codegen runs on a returned
+///     binding (`body_ok`). That asks who OWNS the value; the
+///     question here is only whether one was built, which the `let`
+///     already answered.
+///
+/// Everything it cannot follow makes a fn opaque rather than fresh,
+/// which costs a report and never invents one: a multi-segment
+/// return type or callee (a `std::` or cross-seed path), a carrier
+/// arm (`return if c { … } else { … }`), a returned binding written
+/// twice, and any statement form that could hide a `return` this walk
+/// does not model.
+fn fresh_locus_factory_products(
+    bundle: &Bundle<'_>,
+    loci: &BTreeMap<&str, &LocusDecl>,
+) -> BTreeMap<String, Vec<ContainmentState>> {
+    /// `M { … }` spelled as a single-segment path naming `locus`, as
+    /// the state it constructs.
+    fn literal_state(e: &Expr, locus: &str) -> Option<ContainmentState> {
+        let Expr::Struct { path, inits, .. } = e else { return None };
+        if path.segments.len() != 1 || path.segments[0].name != locus {
+            return None;
+        }
+        let mut supplied: Vec<String> =
+            inits.iter().map(|i| i.name.name.clone()).collect();
+        supplied.sort();
+        supplied.dedup();
+        Some((locus.to_string(), supplied))
+    }
+
+    /// What one returned expression hands back, or `None` if this
+    /// walk cannot see it as a fresh `locus`. `lets` is empty on the
+    /// recursive step: a binding is followed one level, since
+    /// chasing a chain of them needs flow sensitivity this walk does
+    /// not have.
+    fn arm_states(
+        e: &Expr,
+        locus: &str,
+        lets: &[(&str, &Expr)],
+        known: &BTreeMap<String, Vec<ContainmentState>>,
+    ) -> Option<Vec<ContainmentState>> {
+        if let Some(s) = literal_state(e, locus) {
+            return Some(vec![s]);
+        }
+        if let Expr::Call { callee, .. } = e {
+            let states = known.get(plain_callee_name(callee)?)?;
+            if states.iter().all(|(l, _)| l == locus) {
+                return Some(states.clone());
+            }
+            return None;
+        }
+        if let Expr::Ident(i) = e {
+            let bound: Vec<&Expr> = lets
+                .iter()
+                .filter(|(n, _)| *n == i.name)
+                .map(|(_, v)| *v)
+                .collect();
+            if bound.len() != 1 {
+                return None;
+            }
+            return arm_states(bound[0], locus, &[], known);
+        }
+        None
+    }
+
+    /// Every value a fn body can hand back, and every `let` in it.
+    /// `false` means the walk met a statement form that could carry a
+    /// `return` it does not model — an unseen one would make an
+    /// accessor look like a factory, so the fn is opaque instead.
+    ///
+    /// A nested block's tail counts as a value the body produces: a
+    /// locus literal evaluated anywhere in the callee is constructed
+    /// as surely as one it returns.
+    fn collect_returns<'a>(
+        b: &'a Block,
+        rets: &mut Vec<&'a Expr>,
+        lets: &mut Vec<(&'a str, &'a Expr)>,
+    ) -> bool {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(e), _) => rets.push(e),
+                Stmt::Let { name, value, .. } => {
+                    lets.push((name.name.as_str(), value))
+                }
+                Stmt::If(i) => {
+                    if !if_returns(i, rets, lets) {
+                        return false;
+                    }
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        match &arm.body {
+                            MatchArmBody::Block(bb) => {
+                                if !collect_returns(bb, rets, lets) {
+                                    return false;
+                                }
+                            }
+                            // An arm evaluated for its effect: a
+                            // match STATEMENT hands nothing back.
+                            MatchArmBody::Expr(_) => {}
+                        }
+                    }
+                }
+                Stmt::For { body, .. }
+                | Stmt::While { body, .. }
+                | Stmt::Block(body) => {
+                    if !collect_returns(body, rets, lets) {
+                        return false;
+                    }
+                }
+                Stmt::Return(None, _)
+                | Stmt::LetTuple { .. }
+                | Stmt::Assign { .. }
+                | Stmt::Expr(_)
+                | Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Fail { .. }
+                | Stmt::Yield(_)
+                | Stmt::Terminate(_)
+                | Stmt::Reperspective { .. }
+                | Stmt::Recovery { .. }
+                | Stmt::Violate { .. }
+                | Stmt::Send { .. } => {}
+                _ => return false,
+            }
+        }
+        if let Some(t) = &b.tail {
+            rets.push(t);
+        }
+        true
+    }
+
+    fn if_returns<'a>(
+        i: &'a IfStmt,
+        rets: &mut Vec<&'a Expr>,
+        lets: &mut Vec<(&'a str, &'a Expr)>,
+    ) -> bool {
+        if !collect_returns(&i.then_block, rets, lets) {
+            return false;
+        }
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => collect_returns(b, rets, lets),
+            Some(ElseBranch::ElseIf(nested)) => {
+                if_returns(nested, rets, lets)
+            }
+            None => true,
+        }
+    }
+
+    // A name declared twice keeps the first declaration, as the
+    // locus map above does: a bundle with two is ill-formed for
+    // another reason, and this pass is not the place to say so.
+    let mut fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in flat_decls(&program.items) {
+            if let TopDecl::Fn(f) = item {
+                fns.entry(f.name.name.as_str()).or_insert(f);
+            }
+        }
+    }
+    let mut out: BTreeMap<String, Vec<ContainmentState>> = BTreeMap::new();
+    loop {
+        let mut added = false;
+        for (name, f) in &fns {
+            if out.contains_key(*name) {
+                continue;
+            }
+            let locus = match f.ret.as_ref() {
+                Some(TypeExpr::Named { path, .. })
+                    if path.segments.len() == 1 =>
+                {
+                    path.segments[0].name.as_str()
+                }
+                _ => continue,
+            };
+            if !loci.contains_key(locus) {
+                continue;
+            }
+            let mut rets: Vec<&Expr> = Vec::new();
+            let mut lets: Vec<(&str, &Expr)> = Vec::new();
+            if !collect_returns(&f.body, &mut rets, &mut lets) {
+                continue;
+            }
+            let mut states: Vec<ContainmentState> = Vec::new();
+            let mut fresh = !rets.is_empty();
+            for r in &rets {
+                match arm_states(r, locus, &lets, &out) {
+                    Some(s) => states.extend(s),
+                    None => {
+                        fresh = false;
+                        break;
+                    }
+                }
+            }
+            if !fresh || states.is_empty() {
+                continue;
+            }
+            states.sort();
+            states.dedup();
+            out.insert((*name).to_string(), states);
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    out
 }
 
 /// F.31 Phase 5: pool identity. Each main-locus params field
