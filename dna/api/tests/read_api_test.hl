@@ -125,7 +125,7 @@ locus Cases {
             while j < 3 { f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), 405, "", "{\"as\":\"board\",\"verdict\":\"approve\"}"); j = j + 1; }
             i = i + 1;
         }
-        f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}"); f.error("POST", "/api/ask", 405, "", "{\"as\":\"board\"}");
+        f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}"); f.error("POST", "/api/task/create", 405, "", "{\"as\":\"board\"}");
         std::test::assert_eq_str(f.refs(), before, "all fourteen mutation requests preserve refs");
     }
     fn service_restart() {

@@ -24,7 +24,7 @@ interface Membrane {
     fn notifications() -> Int;
 }
 
-// The local human: intent enters through `hale dna ask`, review
+// The local human: intent enters through `hale dna task create`, review
 // requests and status leave through the terminal / Iris. The person
 // is outside the root; this locus owns the boundary.
 locus LocalHumanMembrane {
@@ -409,7 +409,7 @@ locus Dna {
         }
     }
     // GH #527 B6: intent crossing the membrane on the typed channel
-    // (`hale dna ask`, Iris) enters through the SAME gate as a local
+    // (`hale dna task create`, Iris) enters through the SAME gate as a local
     // `ask` — the membrane decides, the Metabolism births the Task,
     // the Journal records both. The organism's main binds this topic
     // on a unix socket; nothing about the decision lives in the

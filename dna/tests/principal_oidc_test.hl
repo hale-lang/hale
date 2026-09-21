@@ -191,7 +191,7 @@ main locus App {
         // ---- the session acts, whatever the form says
         let verdict = curl("POST", ui + "/api/verdict", cookie, "{\"id\":\"" + review_id + "\",\"verdict\":\"approve\",\"as\":\"mallory\",\"comment\":\"signed in\"}");
         std::test::assert_eq_int(verdict.status, 200, "the verdict is taken: " + verdict.body);
-        let asked = curl("POST", ui + "/api/ask", cookie, "{\"outcome\":\"document the gateway\",\"to\":\"\"}");
+        let asked = curl("POST", ui + "/api/task/create", cookie, "{\"outcome\":\"document the gateway\",\"to\":\"\"}");
         std::test::assert_eq_int(asked.status, 200, "the intent is taken: " + asked.body);
         let journal = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
         std::test::assert(!std::str::contains(journal, "mallory"), "the form's name reaches nothing");
@@ -212,7 +212,7 @@ main locus App {
         let rows_before = in_dir(app, "git\nrev-list\n--count\nrefs/dna/journal").stdout;
         let anonymous = curl("POST", ui + "/api/verdict", "", "{\"id\":\"" + review_id + "\",\"verdict\":\"reject\",\"as\":\"alice\"}");
         std::test::assert_eq_int(anonymous.status, 401, "a verdict without a session is refused");
-        std::test::assert_eq_int(curl("POST", ui + "/api/ask", "dna_session=forged", "{\"outcome\":\"x\"}").status, 401, "a forged session is no session");
+        std::test::assert_eq_int(curl("POST", ui + "/api/task/create", "dna_session=forged", "{\"outcome\":\"x\"}").status, 401, "a forged session is no session");
         std::test::assert_eq_str(in_dir(app, "git\nrev-list\n--count\nrefs/dna/journal").stdout, rows_before, "and the record did not move");
 
         // ---- an unmapped subject gets no session

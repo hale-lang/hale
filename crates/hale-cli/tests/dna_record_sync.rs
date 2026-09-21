@@ -1,6 +1,6 @@
 //! GH #566 F1 — the record across clones. One bare repository, the
 //! organism running in clone A, a person in clone B with no sockets:
-//! B's `hale dna ask` and its verdict are rows in the record, pushed;
+//! B's `hale dna task create` and its verdict are rows in the record, pushed;
 //! A's host pulls them, relays them onto the membrane, and pushes the
 //! organism's answers back; B reads them. Then, with nothing running,
 //! both clones append offline and `sync` reconciles them into one
@@ -98,7 +98,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     std::thread::sleep(Duration::from_millis(500));
 
     // B asks, with no organism and no sockets of its own
-    let (ok1, asked) = hale_in(&["dna", "ask", "write", "the", "changelog"], &b);
+    let (ok1, asked) = hale_in(&["dna", "task", "create", "write", "the", "changelog"], &b);
     // B decides the purpose review the same way
     let (ok2, decided) = hale_in(&["dna", "review", "purpose", "approve", "--as", "riley", "--comment", "ratified from afar"], &b);
     std::thread::sleep(Duration::from_secs(3));
@@ -128,9 +128,9 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
 
     // both clones append offline; sync makes one linear record
     let n0 = rows_a.len();
-    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "tidy", "the", "readme"], &a);
+    let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "tidy", "the", "readme"], &a);
     assert!(ok && out.contains("requested in the record"), "{out}");
-    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "rename", "the", "topic"], &b);
+    let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "rename", "the", "topic"], &b);
     assert!(ok && out.contains("requested in the record"), "{out}");
     // A's ask pushed first; B's ask found the remote ahead and re-appended
     // its own event on top before pushing (ask syncs as it appends), so
@@ -242,11 +242,11 @@ fn a_reconcile_never_rewinds_the_record_and_keeps_rows_appended_meanwhile() {
     // rows stay local); B appends four, each pushed: diverged.
     git(&["config", "remote.origin.pushurl", &d.join("nowhere.git").to_string_lossy()], &a);
     for i in 0..12 {
-        let (ok, out) = hale_in(&["dna", "ask", "--no-wait", &format!("local ask {i}")], &a);
+        let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", &format!("local ask {i}")], &a);
         assert!(ok, "{out}");
     }
     for i in 0..4 {
-        let (ok, out) = hale_in(&["dna", "ask", "--no-wait", &format!("remote ask {i}")], &b);
+        let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", &format!("remote ask {i}")], &b);
         assert!(ok, "{out}");
     }
     let (ok, out) = hale_in(&["dna", "sync"], &b);
@@ -293,7 +293,7 @@ fn a_reconcile_never_rewinds_the_record_and_keeps_rows_appended_meanwhile() {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
             for i in 0..3 {
-                let (ok, out) = hale_in(&["dna", "ask", "--no-wait", &format!("meanwhile ask {i}")], &a);
+                let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", &format!("meanwhile ask {i}")], &a);
                 assert!(ok, "{out}");
             }
         })

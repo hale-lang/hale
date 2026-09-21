@@ -115,10 +115,10 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
     std::thread::sleep(Duration::from_millis(500));
 
     // riley's ask is a signed commit the host verifies: relayed, a Task born
-    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "write", "the", "changelog"], &b);
+    let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "write", "the", "changelog"], &b);
     assert!(ok, "{out}");
     // mallory's is signed with a key nobody allowed: refused, never relayed
-    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "wire", "the", "money", "elsewhere"], &m);
+    let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "wire", "the", "money", "elsewhere"], &m);
     assert!(ok, "the row itself lands ({out}); admission is the host's");
     let dl = Instant::now() + Duration::from_secs(60);
     let mut seen = (false, false);
@@ -229,7 +229,7 @@ fn a_reconcile_refuses_to_resign_a_row_signed_elsewhere_and_keeps_every_local_ro
     assert_eq!(head(&b), rileys_row);
     assert!(git(&["cat-file", "-p", &rileys_row], &b).contains("gpgsig"), "riley's row is a signed commit");
     // the organism's clone appends and pushes: the remote is ahead of riley's base
-    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "tidy", "the", "readme"], &a);
+    let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "tidy", "the", "readme"], &a);
     assert!(ok, "{out}");
     let remote_before = remote_head();
     assert_ne!(remote_before, rileys_row);
@@ -264,7 +264,7 @@ fn a_reconcile_refuses_to_resign_a_row_signed_elsewhere_and_keeps_every_local_ro
     // a row never signed is rebuilt unsigned
     let unsigned_row = plumb_row(&b, None, "intent.requested", "i-floor", "{\"outcome\": \"sweep the floor\"}", "riley");
     assert!(!git(&["cat-file", "-p", &unsigned_row], &b).contains("gpgsig"), "unsigned");
-    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "water", "the", "plants"], &a);
+    let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "water", "the", "plants"], &a);
     assert!(ok, "{out}");
     let (ok, out) = hale_in(&["dna", "sync"], &b);
     assert!(ok && out.contains("re-appended 1 local event(s)"), "an unsigned row reconciles: {out}");

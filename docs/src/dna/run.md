@@ -163,7 +163,7 @@ The organization binds four typed topics on unix sockets under
 | topic | subject | who publishes |
 |---|---|---|
 | `ReviewVerdict` | `dna.review.verdict` | `hale dna review <id> <verdict>`, the page, iris; the host, relaying a `review.verdict` row |
-| `IntentOffered` | `dna.intent.offered` | `hale dna ask`, the page, iris; the host, relaying an `intent.requested` row |
+| `IntentOffered` | `dna.intent.offered` | `hale dna task create`, the page, iris; the host, relaying an `intent.requested` row |
 | `ExpressionObserved` | `dna.expression.observed` | the host, after an observation window |
 | `PressureRaised` | `dna.pressure.raised` | `hale dna pressure raise`, the page, a metrics relay |
 

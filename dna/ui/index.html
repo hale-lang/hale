@@ -62,13 +62,13 @@
     <pre id="fleet">…</pre>
   </section>
   <section>
-    <h2>Ask</h2>
-    <form id="ask">
+    <h2>New task</h2>
+    <form id="task-create">
       <textarea name="outcome" placeholder="what should happen"></textarea>
       <input name="to" placeholder="to (a locus, optional)" size="18">
-      <button type="submit">offer intent</button>
+      <button type="submit">create task</button>
     </form>
-    <div id="ask-answer" class="answer"></div>
+    <div id="task-create-answer" class="answer"></div>
     <h2 style="margin-top:14px">Pressure</h2>
     <form id="pressure">
       <input name="source" placeholder="source" size="14">
@@ -121,10 +121,10 @@
     var f = ev.target;
     post('/api/verdict', { id: open, verdict: f.verdict.value, as: f.as.value, comment: f.comment.value }).then(function (t) { $('verdict-answer').textContent = t; setTimeout(refresh, 1500); });
   };
-  $('ask').onsubmit = function (ev) {
+  $('task-create').onsubmit = function (ev) {
     ev.preventDefault();
     var f = ev.target;
-    post('/api/ask', { outcome: f.outcome.value, to: f.to.value }).then(function (t) { $('ask-answer').textContent = t; f.outcome.value = ''; setTimeout(refresh, 1500); });
+    post('/api/task/create', { outcome: f.outcome.value, to: f.to.value }).then(function (t) { $('task-create-answer').textContent = t; f.outcome.value = ''; setTimeout(refresh, 1500); });
   };
   $('pressure').onsubmit = function (ev) {
     ev.preventDefault();

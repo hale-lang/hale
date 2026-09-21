@@ -41,7 +41,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let (ok, stale) = hale(&["dna", "status"], &app);
     assert!(ok && stale.contains("vendor/dna was materialized from 0123456789abcdef — run `hale dna upgrade`"), "a stale vendor tree is named:\n{stale}");
     std::fs::write(&prov, real).unwrap();
-    let (ok, out) = hale(&["dna", "ask", "anything"], &app);
+    let (ok, out) = hale(&["dna", "task", "create", "anything"], &app);
     assert!(!ok && out.contains("not running"), "{out}");
     let (ok, out) = hale(&["dna", "history"], &app);
     assert!(ok && out.contains("application.attached") && out.contains("review.requested"), "{out}");
@@ -82,7 +82,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
     // ask: a Task is born, and the answer comes from the Journal
-    let (ok, out) = run(&["dna", "ask", "write", "the", "changelog"]);
+    let (ok, out) = run(&["dna", "task", "create", "write", "the", "changelog"]);
     let ask_out = out.clone();
     let asked = ok && out.contains("task t1 born");
     // review: the wrong authority is refused BY THE REVIEW, the right one settles it

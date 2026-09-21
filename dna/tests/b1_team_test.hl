@@ -395,7 +395,7 @@ main locus App {
         std::test::assert_eq_int(curl("GET", ui_b + "/api/board", "", "").status, 401, "and nothing without one");
 
         // ---- 4. alice asks through head A; the organism hands the job to bob
-        let asked = curl("POST", ui_a + "/api/ask", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
+        let asked = curl("POST", ui_a + "/api/task/create", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
         std::test::assert_eq_int(asked.status, 200, "alice's ask is taken: " + asked.body);
         // the head's own row first (GH #682: the durable fact before the
         // publish), in alice's name, then the organism's admission
@@ -462,12 +462,12 @@ main locus App {
         std::test::assert(!std::str::contains(ledger(service), "review.settled"), "a decision about what the organization is stays in the record, not the ledger");
 
         // ---- 8. identity is not borrowed
-        let borrowed = curl("POST", ui_b + "/api/ask", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
+        let borrowed = curl("POST", ui_b + "/api/task/create", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(borrowed.status, 200, "head B takes the ask: " + borrowed.body);
         let his = wait_row(service, "reconcile the payroll account", 240);
         std::test::assert(std::str::contains(his, "\"kind\": \"intent.requested\"") && std::str::contains(his, "\"author\": \"bob\"") && !std::str::contains(his, "\"author\": \"alice\""), "bob's ask is bob's, whatever the form said: " + his);
         std::test::assert_eq_str(std::json::find_string_field(row_body(his), "from"), "bob", "and the row names him: " + his);
-        let forged = curl("POST", ui_b + "/api/ask", "dna_session=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "{\"outcome\":\"raise everyone's pay\",\"to\":\"\"}");
+        let forged = curl("POST", ui_b + "/api/task/create", "dna_session=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "{\"outcome\":\"raise everyone's pay\",\"to\":\"\"}");
         std::test::assert_eq_int(forged.status, 401, "a cookie nobody was given is no one: " + forged.body);
         std::test::assert(!std::str::contains(ledger(service), "raise everyone's pay"), "and nothing reached the ledger for it");
 

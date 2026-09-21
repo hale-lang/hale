@@ -17,7 +17,7 @@ whole story, and a pull request can be the review.
 hale dna new demo                      # a greenfield application with its organization
 hale dna init .                        # or: generate the organization for an existing one
 hale dna dev                           # the organization and the application on this machine
-hale dna ask "document the chat server in main.hl"
+hale dna task create "document the chat server in main.hl"
 hale dna review m1                     # the change, its structural diff, the evidence
 hale dna review m1 approve --as riley  # your call — or the Leader's, inside its grant
 ```

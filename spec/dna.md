@@ -684,13 +684,13 @@ repository:
   (`Secure` when the callback is https) and lasts eight hours or until
   `/auth/logout`. With a session, a verdict acts as the member (`--as`,
   and `--authority board` when `dna.oidc.board` names them, `reviewer`
-  otherwise) and an intent is asked by them (`hale dna ask --as`), the
+  otherwise) and an intent is asked by them (`hale dna task create --as`), the
   row's author too; the form's own `as` field is ignored. The head never
   acts in its own name. It speaks plain HTTP: TLS is a reverse proxy in
   front of it. Rows arriving by sync remain admitted under `dna.trust`
   (GH #604 rule 6); a synced row claiming a rank is not a sign-in.
 - **The membrane over the record.** From a clone with no organism,
-  `hale dna ask` appends `intent.requested` (the body: outcome, from,
+  `hale dna task create` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
@@ -721,7 +721,7 @@ repository:
   The organism admits an intent once by its id — an intent offered
   again after its Task was born answers with that Task and journals
   nothing — and a repeated verdict at a settled Review is answered as
-  already settled. `hale dna ask`, `review`, `concern raise` and
+  already settled. `hale dna task create`, `review`, `concern raise` and
   `practice propose` beside a live organism write their row first
   (`intent.requested`, `review.verdict`, `concern.requested`,
   `practice.requested`, marked `via: membrane`) and then publish, so
@@ -747,7 +747,9 @@ repository:
   body names who asked — `<outcome> (from alice)`, a schedule, an
   optimizer — and a head's ask carries the person the head identified.
   A row is answered when a later row of the answering kind names its
-  entity. `hale dna ask --no-wait` appends and returns.
+  entity. `hale dna task create --no-wait` appends and returns, on either
+  path: beside a live organism once the row is appended and published,
+  from a clone with no organism once the row is appended and synced.
 
 `.hale/dna/` holds only what is not the record: the membrane sockets,
 the status projection, worktrees, scratch inputs to the toolchain.
@@ -1777,7 +1779,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   position its owner holds, refusing one offered to it for another's
   by name (`intent.refused`: "not this organization's to admit"). A
   head never offers such an intent to the body beside it: `hale dna
-  ask --to` writes it to the record for the owner's controller, the
+  task create --to` writes it to the record for the owner's controller, the
   host relays only `intent.requested` rows for positions its owner
   holds, and `status` lists the rest as `[unadmitted]` with the owner.
   Changing the map is a change to the organization approved by every
@@ -2442,7 +2444,7 @@ authority.
   key, which two Works of different steps or workflows may share — the
   editor's for an edit leaf, the human kind for a person's, else the
   routing policy's choice for the Work's own request under the Task
-  that owns it. The tooling's answer to an ask (`hale dna ask`) is the
+  that owns it. The tooling's answer to an ask (`hale dna task create`) is the
   execution whose admission names that ask as its request, never the
   next birth in the record, which may be another ask's. An answer that names
   no kind and no class leaves the defaults standing — class
@@ -2709,7 +2711,7 @@ seed, the fleet and its plan under `[dna]`) and execs the host:
 toolchain), `HALE_DNA_MEMBRANE` (the membrane client's binary) and
 `HALE_DNA_TOOLCHAIN` in the environment. The host owns the
 projections (`status`, `history`, `review`, `board`, `report`,
-`pressure`, `fleet`), the writers (`ask`, a verdict, `pressure raise`,
+`pressure`, `fleet`), the writers (`task create`, a verdict, `pressure raise`,
 `sync`, `deploy`, `rollback`, `github sync`), the supervision (`run`,
 `dev`) and the node agent (`hale node`). It reads the record through
 the core's `GitJournal`, appends in a person's or a node's name with
@@ -2810,7 +2812,7 @@ offline verb of `hale dna` in the project root and returning what it printed
 (`/api/board`), the pending Reviews and one Review's three views
 (`/api/reviews`, `/api/review/<id>`), the fleet (`/api/fleet`), the
 history (`/api/history[/<entity>]`), pressure (`/api/pressure`). A
-verdict (`POST /api/verdict`), an intent (`POST /api/ask`) and a
+verdict (`POST /api/verdict`), a task (`POST /api/task/create`) and a
 pressure signal (`POST /api/pressure`) are the CLI's own verbs sent
 and not waited for: onto the membrane when one is bound here, into
 the record otherwise, in the name the form gives. A path segment
