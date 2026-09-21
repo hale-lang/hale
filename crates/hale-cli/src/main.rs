@@ -123,7 +123,7 @@ fn main() -> ExitCode {
             } else {
                 ""
             };
-            println!("{}{}\n", t.describe(), marker);
+            println!("{}{}\n", t.describe_from(&host), marker);
         }
         return ExitCode::SUCCESS;
     }
@@ -8860,16 +8860,30 @@ fn parse_build_options(
                 // failing later inside the linker (GH #445).
                 let spec = hale_codegen::target::TargetSpec::parse(v)
                     .map_err(|e| format!("--target: {}", e))?;
-                if spec.support()
-                    == hale_codegen::target::TargetSupport::Planned
-                {
-                    return Err(format!(
-                        "--target: `{}` is not buildable yet\n\n{}\n\n\
-                         The target model knows this platform; the codegen \
-                         and runtime for it do not exist yet. Track GH #445.",
-                        spec.triple,
-                        spec.describe(),
-                    ));
+                let host = hale_codegen::target::TargetSpec::host();
+                match spec.support_from(&host) {
+                    hale_codegen::target::TargetSupport::Planned => {
+                        return Err(format!(
+                            "--target: `{}` is not buildable yet\n\n{}\n\n\
+                             The target model knows this platform; the codegen \
+                             and runtime for it do not exist yet. Track GH #445.",
+                            spec.triple,
+                            spec.describe_from(&host),
+                        ));
+                    }
+                    // GH #969: every native triple below becomes
+                    // `CompileTarget::Native`, which IS the host — so a
+                    // foreign one would build a host binary and report
+                    // success. Refuse it until cross-compilation exists.
+                    hale_codegen::target::TargetSupport::ForeignHost => {
+                        return Err(format!(
+                            "--target: `{}` is not buildable from this host ({})\n  \
+                             cross-compilation is not implemented yet; see GH #970",
+                            spec.triple, host.triple,
+                        ));
+                    }
+                    hale_codegen::target::TargetSupport::Supported
+                    | hale_codegen::target::TargetSupport::ObjectOnly => {}
                 }
                 opts.target = if spec.is_wasm() {
                     hale_codegen::CompileTarget::Wasm32

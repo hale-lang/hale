@@ -10,6 +10,10 @@
 //! moved the failure further from its cause. So these tests pin the
 //! refusal too: naming a target the compiler cannot build must produce a
 //! precise, early, actionable error.
+//!
+//! The same holds for a native triple that is not the host (GH #969):
+//! the compiler builds it, just not from here, and a build that quietly
+//! emitted a host binary under that name was the worst version of this.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -115,6 +119,92 @@ fn building_for_windows_fails_early_and_says_why() {
         !dir.join("t.exe").exists() && !dir.join("t").exists(),
         "a rejected target still produced an artifact"
     );
+}
+
+/// The native triples the compiler builds on some host, minus this one.
+/// Chosen at run time so the test means the same thing on every CI
+/// runner: whatever the host is, the others are foreign to it.
+fn foreign_native_triples() -> Vec<&'static str> {
+    let host = host_triple();
+    [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ]
+    .into_iter()
+    .filter(|t| *t != host)
+    .collect()
+}
+
+/// The host as the compiler itself reports it: the `(host)` block of
+/// `--list-targets`, so the test asks the binary rather than
+/// re-deriving the host with its own `cfg!`.
+fn host_triple() -> String {
+    let (stdout, _, _) = run(&["--list-targets"]);
+    stdout
+        .split("\n\n")
+        .find(|b| b.contains("(host)"))
+        .and_then(|b| b.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no (host) block in:\n{stdout}"))
+        .to_string()
+}
+
+/// GH #969: a foreign native triple used to parse, build a HOST binary
+/// under the requested name, and print `built:`. It must be refused at
+/// argument parsing, naming both triples and the cross-compile issue.
+#[test]
+fn building_for_a_foreign_native_triple_fails_early() {
+    let host = host_triple();
+    for triple in foreign_native_triples() {
+        let dir = case_dir("target_model_foreign");
+        let src = dir.join("t.hl");
+        std::fs::write(&src, "fn main() { println(\"hi\"); }\n").unwrap();
+
+        let (stdout, stderr, code) =
+            run(&["build", src.to_str().unwrap(), "--target", triple]);
+
+        assert_ne!(code, 0, "{triple}: a foreign target must not report success");
+        assert!(!stdout.contains("built:"), "{triple}: {stdout}");
+        assert!(stderr.contains("not buildable from this host"), "{stderr}");
+        assert!(stderr.contains(triple), "{stderr}");
+        assert!(stderr.contains(&host), "should name the host:\n{stderr}");
+        assert!(stderr.contains("970"), "should reference the issue:\n{stderr}");
+        assert!(
+            !dir.join("t").exists(),
+            "{triple}: a rejected target still produced an artifact"
+        );
+    }
+}
+
+/// Naming the host by its triple is the same build as `native`.
+#[test]
+fn the_host_triple_builds_like_native() {
+    let dir = case_dir("target_model_host_triple");
+    let src = dir.join("t.hl");
+    std::fs::write(&src, "fn main() { println(\"ok\"); }\n").unwrap();
+    let host = host_triple();
+
+    let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", &host]);
+    assert_eq!(code, 0, "host-triple build failed: {stderr}");
+    let out = Command::new(src.with_extension(""))
+        .output()
+        .expect("run built binary");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}
+
+/// The listing must not advertise a foreign native triple as buildable.
+#[test]
+fn list_targets_marks_foreign_native_triples() {
+    let (stdout, _, _) = run(&["--list-targets"]);
+    for triple in foreign_native_triples() {
+        let block = stdout
+            .split("\n\n")
+            .find(|b| b.starts_with(triple))
+            .unwrap_or_else(|| panic!("no {triple} block in:\n{stdout}"));
+        assert!(block.contains("not buildable from this host"), "{block}");
+        assert!(!block.contains("supported: builds and links"), "{block}");
+    }
 }
 
 #[test]
