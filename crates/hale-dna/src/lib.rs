@@ -180,6 +180,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/person_retirement.hl",
     "dna/operations/queries.hl",
     "dna/operations/task_command.hl",
+    "dna/operations/task_create_command.hl",
     "dna/operations/task_policy.hl",
     "dna/operations/task_projection.hl",
 ];

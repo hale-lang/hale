@@ -52,7 +52,7 @@ locus PersonRetirementCodec {
             && c.target_kind == "dna.person" && common.bounded(c.target_id, 256, true, false) && common.bounded(c.request_id, 128, true, false)
             && dna::digest_well_formed(c.subject_digest) && c.expected_assignee == "" && common.bounded(c.new_assignee, 256, false, false) && c.new_assignee != c.target_id
             && c.text == "" && c.rationale == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == "" && c.source_head == "" && c.dependency_source == ""
-            && c.dependency_digest == "" && c.record_head == "" && c.source_text == "";
+            && c.dependency_digest == "" && c.record_head == "" && c.source_text == "" && c.outcome == "" && c.to == "";
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
     fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {

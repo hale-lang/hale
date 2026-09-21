@@ -20,7 +20,7 @@ Product scope and remaining service work are tracked in
 ## Run
 
 For the browser and API together, `./iris/cockpit/start.sh PROJECT` builds this
-checkout's native API in temporary storage and serves its nine browser assets.
+checkout's native API in temporary storage and serves its ten browser assets.
 Use `--api BINARY` for an existing application-composed head. The launcher
 inherits private service configuration and preserves the project's authentication
 mode; it starts no application body or infrastructure. See the cockpit README
@@ -47,8 +47,8 @@ To serve the cockpit as well, pass its static directory as the third argument:
 ```
 
 Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/runtime.js`, `/application.js`,
-`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
-URLs never become filesystem paths. All nine assets must exist and be nonempty
+`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/task-create.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
+URLs never become filesystem paths. All ten assets must exist and be nonempty
 at startup. They are loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
@@ -403,6 +403,71 @@ modify source ownership, complete Tasks or control workflow execution. OIDC,
 signed trust, Ledger-backed administration and source-to-live ownership joins
 need their own supported service contract. Existing CLI Task commands are not
 made part of this provider by these routes.
+
+## Raising work
+
+`dna.task.create@1` is the cockpit's `hale dna ask`: it records the same
+`intent.requested` row the CLI writes, so the host beside the organism relays it
+and the organism admits it exactly as it admits a CLI ask. The row's entity is
+the intent id (`i` plus the lower-case hex of the current monotonic
+milliseconds, as the CLI mints it), its author is the acting principal, and its
+body is one flat JSON object whose first three keys are `outcome`, `from` (the
+principal) and `to`, followed by the command fields the other operations carry
+(`command_format: dna.task-create-command/1`, `command_id`, `command_payload`,
+`command_fingerprint`, `command_authority`, `command_authority_basis`,
+`command_record_head`). It carries no `via` and no `intent_id`: this head
+publishes nothing on the membrane, and the relay splices the id in before the
+last brace when it publishes.
+
+Every [native command head](practice_review/README.md) supports it; there is no
+policy grant. The authority is the authenticated principal, as with the CLI,
+and whether `to` is this organization's to admit is the organism's judgment,
+recorded as an `intent.refused` row. `/capabilities` exposes
+`task_create_commands` (`dna.task.create.v1`, `max_outcome_bytes` 8192,
+`max_identity_bytes` 256, `max_request_bytes` 32768) and `writes.task_create`,
+which contributes to `read_only`. Submit to the shared `POST /commands` route
+with the usual Origin, JSON and `X-Hale-Command: 1` requirements:
+
+```json
+{
+  "request_id": "create-1",
+  "operation": "dna.task.create",
+  "operation_version": "1",
+  "context": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "position_id": "org"},
+  "target": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "dna.record", "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "preconditions": {
+    "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "principal": {"mode": "local", "name": "riley"}
+  },
+  "arguments": {"outcome": "Confirm the supplier handover", "to": "org"}
+}
+```
+
+The target is the Record itself: the Task is minted by the organism after the
+ask is admitted, so the request can name only the application. `record_head`
+follows the `dna.organization.propose` precedent: the row lands at exactly the
+head the request was prepared against, or the request is refused with
+`stale_subject` (409) and must be prepared again against the current head.
+`outcome` is 1..8192 UTF-8 bytes with control bytes preserved; `to` is a
+position, 1..256 bytes. The whole request is bounded to 32768 encoded bytes.
+
+The receipt is `succeeded` once the row is appended (the ask is admitted; the
+organism's answer is a separate fact) or `outcome_unknown` when the append is
+uncertain. `subject_digest` is the Record head the request was prepared
+against. Its `task_create` object names the minted `intent_id`, the row's
+`event_id`, and re-derives the organism's answer from the Record on every read:
+`intent_state` is `requested` until the organism answers, then `offered`,
+`refused`, or `born` with `task_id` filled from the `task.born` row whose body
+starts with `<intent_id>: `. A born-but-unhanded Task is absent from
+`/dna/tasks`, so `GET /commands?request_id=...` is how the cockpit follows the
+ask; nothing else is re-read. After `ledger.adopted` new asks are refused
+(`commands_unsupported`) like every other operation here; recorded asks stay
+recoverable.
+
+Two asks minted in the same millisecond on one host would share an id and the
+organism admits one Task per id; this head steps an id its Record already holds
+to the next millisecond, which the CLI does not. A CLI ask beside a cockpit ask
+carries no command fields and is invisible to command lookup.
 
 ## Identity and content
 

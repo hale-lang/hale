@@ -34,6 +34,9 @@ type CommandRequest {
     source_text: String = "";
     expected_assignee: String = "";
     new_assignee: String = "";
+    // Raising work: the intent's outcome and the position it is for.
+    outcome: String = "";
+    to: String = "";
 }
 type CommandCapability {
     available: Bool = false;
@@ -43,6 +46,8 @@ type CommandCapability {
 }
 type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
 type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
+// The admitted ask and, re-derived on every read, the organism's answer to it.
+type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; }
 type OrganizationCommandCapabilities {
     configured: Bool = false;
     proposal: CommandCapability = CommandCapability { };
@@ -87,6 +92,7 @@ type CommandReceipt {
     organization: OrganizationCommandOutcome = OrganizationCommandOutcome { };
     task: TaskCommandOutcome = TaskCommandOutcome { };
     person: PersonRetirementOutcome = PersonRetirementOutcome { };
+    task_create: TaskCreateOutcome = TaskCreateOutcome { };
 }
 type CommandResult {
     ok: Bool = false;
@@ -197,7 +203,7 @@ locus CommandWire {
         return true;
     }
     fn known_operation(operation: String, version: String) -> Bool {
-        return version == "1" && (operation == "dna.practice.propose" || operation == "dna.review.verdict" || operation == "dna.organization.propose" || operation == "dna.task.reassign" || operation == "dna.person.retire");
+        return version == "1" && (operation == "dna.practice.propose" || operation == "dna.review.verdict" || operation == "dna.organization.propose" || operation == "dna.task.reassign" || operation == "dna.person.retire" || operation == "dna.task.create");
     }
     fn known_request(operation: String, version: String) -> Bool {
         return self.known_operation(operation, version);
@@ -217,7 +223,10 @@ locus CommandWire {
         let organization = operation == "dna.organization.propose";
         let task = operation == "dna.task.reassign";
         let person = operation == "dna.person.retire";
-        if person {
+        let create = operation == "dna.task.create";
+        if create {
+            if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "outcome to", 2) { return CommandRequest { }; }
+        } else if person {
             if !self.fields(conditions, "subject_digest principal", 2) || !self.fields(arguments, "to", 1) { return CommandRequest { }; }
         } else if task {
             if !self.fields(conditions, "subject_digest principal assignee", 3) || !self.fields(arguments, "to", 1) { return CommandRequest { }; }
@@ -229,7 +238,7 @@ locus CommandWire {
             if !self.fields(conditions, "subject_digest principal review_state", 3) || self.text(conditions, "review_state") != "pending" || !self.fields(arguments, "verdict comment", 2) { return CommandRequest { }; }
         }
         let kind = self.text(target, "kind");
-        if self.text(context, "position_id") != "org" || kind != if person { "dna.person" } else if task { "dna.task" } else if organization { "dna.organization.module" } else if practice { "dna.practice" } else { "dna.review" } { return CommandRequest { }; }
+        if self.text(context, "position_id") != "org" || kind != if create { "dna.record" } else if person { "dna.person" } else if task { "dna.task" } else if organization { "dna.organization.module" } else if practice { "dna.practice" } else { "dna.review" } { return CommandRequest { }; }
         if self.text(context, "application_id") != application_id || self.text(target, "application_id") != application_id || !self.bounded(application_id, 256, true, false) { return CommandRequest { }; }
         let expected = self.raw(conditions, "principal");
         if !self.fields(expected, "mode name", 2) { return CommandRequest { }; }
@@ -239,10 +248,15 @@ locus CommandWire {
         let request_id = self.text(body, "request_id");
         let target_id = self.text(target, "id");
         let base = self.raw(conditions, "base");
-        let digest = if organization { self.text(base, "module_digest") } else { self.text(conditions, "subject_digest") };
+        // A create is conditioned on the Record head it was prepared against;
+        // that head is its subject.
+        let digest = if organization { self.text(base, "module_digest") } else if create { self.text(conditions, "record_head") } else { self.text(conditions, "subject_digest") };
         if !self.bounded(request_id, 128, true, false) || !self.bounded(digest, 256, true, false) || !self.bounded(target_id, 256, true, false) { return CommandRequest { }; }
         let mut command = CommandRequest { valid: true, request_id: request_id, operation: operation, application_id: application_id, target_kind: kind, target_id: target_id, subject_digest: digest, expected_principal_mode: expected_mode, expected_principal_name: expected_name };
-        if person {
+        if create {
+            command.record_head = digest; command.outcome = self.text(arguments, "outcome"); command.to = self.text(arguments, "to");
+            if target_id != application_id || !self.bounded(command.outcome, 8192, true, true) || !self.bounded(command.to, 256, true, false) { return CommandRequest { }; }
+        } else if person {
             command.new_assignee = self.text(arguments, "to");
             if !dna::digest_well_formed(digest) || !self.is_text(self.raw(arguments, "to")) || !self.bounded(command.new_assignee, 256, false, false) || command.new_assignee == target_id { return CommandRequest { }; }
         } else if task {
@@ -344,8 +358,32 @@ locus CommandWire {
         b.string_field("reason", if !self.origin_valid(origin) { "Command submission has no configured origin." } else if !valid { "Task authority is unavailable." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Task capability is unavailable." });
         b.end_object(); return b.result();
     }
+    fn task_create_capability_json(capability: CommandCapability, origin: String) -> String {
+        let available = capability.available && self.origin_valid(origin);
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", "dna.task.create.v1"); b.bool_field("available", available); b.bool_field("authorized", available && capability.authorized);
+        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
+        b.string_field("max_outcome_bytes", "8192"); b.string_field("max_identity_bytes", "256"); b.string_field("max_request_bytes", "32768");
+        b.string_field("reason", if !self.origin_valid(origin) { "Command submission has no configured origin." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Task creation capability is unavailable." });
+        b.end_object(); return b.result();
+    }
     fn inactive_task(r: CommandReceipt) -> Bool {
         return r.task.state == "" && r.task.from == "" && r.task.to == "" && r.task.event_id == "";
+    }
+    fn inactive_task_create(r: CommandReceipt) -> Bool {
+        let t = r.task_create;
+        return t.intent_id == "" && t.intent_state == "" && t.task_id == "" && t.event_id == "";
+    }
+    // A create is admitted once its row is in the Record; the organism's
+    // answer is a later fact. `born` alone names a Task.
+    fn task_create_valid(r: CommandReceipt) -> Bool {
+        let t = r.task_create; let source = ops::OrganizationCommandCodec { }; let codec = ops::TaskCreateCommandCodec { };
+        if r.target_kind != "dna.record" || r.target_id != r.application_id || !self.bounded(r.subject_digest, 256, true, false)
+            || r.proposal_state != "" || r.verdict_value != "" || r.verdict_state != "" || r.candidate_digest != "" || r.review_id != ""
+            || r.review_state != "unavailable" || r.activation_state != "unknown" || r.activation_reason != "" { return false; }
+        if t.intent_state == "unknown" { return r.state == "outcome_unknown" && t.intent_id == "" && t.task_id == "" && t.event_id == ""; }
+        if t.intent_state != "requested" && t.intent_state != "offered" && t.intent_state != "refused" && t.intent_state != "born" { return false; }
+        return r.state == "succeeded" && codec.intent_id_valid(t.intent_id) && source.commit_id(t.event_id) && (if t.intent_state == "born" { self.bounded(t.task_id, 256, true, false) } else { t.task_id == "" });
     }
     fn inactive_person(r: CommandReceipt) -> Bool {
         return r.person.state == "" && r.person.from == "" && r.person.to == "" && r.person.event_id == "" && r.person.transferred == -1;
@@ -407,11 +445,14 @@ locus CommandWire {
         if !self.bounded(r.reason, 2048, false, true) || !self.bounded(r.activation_reason, 2048, false, true) { return false; }
         if r.state != "recorded" && r.state != "admitted" && r.state != "running" && r.state != "succeeded" && r.state != "refused" && r.state != "failed" && r.state != "outcome_unknown" { return false; }
         let practice = r.operation == "dna.practice.propose"; let organization = r.operation == "dna.organization.propose"; let task = r.operation == "dna.task.reassign";
-        let person = r.operation == "dna.person.retire";
+        let person = r.operation == "dna.person.retire"; let create = r.operation == "dna.task.create";
         if !person && !self.inactive_person(r) { return false; }
         if !task && !self.inactive_task(r) { return false; }
         if !organization && !self.inactive_organization(r) { return false; }
-        if person {
+        if !create && !self.inactive_task_create(r) { return false; }
+        if create {
+            if !self.task_create_valid(r) { return false; }
+        } else if person {
             if !self.person_valid(r) || (submitting && r.person.to != command.new_assignee) { return false; }
         } else if task {
             if !self.task_valid(r) || (submitting && (r.task.from != command.expected_assignee || r.task.to != command.new_assignee)) { return false; }
@@ -455,6 +496,8 @@ locus CommandWire {
             b.string_field("event_id", p.event_id); b.string_field("transferred", if p.transferred < 0 { "" } else { to_string(p.transferred) }); b.end_object();
         } else if r.operation == "dna.task.reassign" {
             let t = r.task; b.begin_object_field("task"); b.string_field("state", t.state); b.string_field("from", t.from); b.string_field("to", t.to); b.string_field("event_id", t.event_id); b.end_object();
+        } else if r.operation == "dna.task.create" {
+            let t = r.task_create; b.begin_object_field("task_create"); b.string_field("intent_id", t.intent_id); b.string_field("intent_state", t.intent_state); b.string_field("task_id", t.task_id); b.string_field("event_id", t.event_id); b.end_object();
         } else if r.operation == "dna.practice.propose" {
             b.begin_object_field("proposal"); b.string_field("state", r.proposal_state); b.string_field("candidate_digest", r.candidate_digest); b.string_field("review_id", r.review_id); b.end_object();
         } else if r.operation == "dna.organization.propose" {

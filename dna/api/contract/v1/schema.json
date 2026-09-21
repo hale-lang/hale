@@ -504,6 +504,9 @@
             },
             "person_retire": {
               "type": "boolean"
+            },
+            "task_create": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -547,6 +550,9 @@
         },
         "person_commands": {
           "$ref": "#/$defs/PersonCommandCapabilities"
+        },
+        "task_create_commands": {
+          "$ref": "#/$defs/TaskCreateCommandCapabilities"
         }
       },
       "required": [
@@ -584,6 +590,9 @@
                   "const": false
                 },
                 "person_retire": {
+                  "const": false
+                },
+                "task_create": {
                   "const": false
                 }
               }
@@ -796,6 +805,39 @@
             },
             "required": [
               "person_commands"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "writes": {
+                "properties": {
+                  "task_create": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "task_create"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "task_create_commands": {
+                "properties": {
+                  "available": {
+                    "const": true
+                  },
+                  "authorized": {
+                    "const": true
+                  }
+                }
+              }
+            },
+            "required": [
+              "task_create_commands"
             ]
           }
         }
@@ -2683,6 +2725,9 @@
             },
             {
               "$ref": "#/$defs/PersonCommandReceipt"
+            },
+            {
+              "$ref": "#/$defs/TaskCreateCommandReceipt"
             }
           ]
         }
@@ -2841,6 +2886,9 @@
         },
         {
           "$ref": "#/$defs/PersonCommandRequest"
+        },
+        {
+          "$ref": "#/$defs/TaskCreateCommandRequest"
         }
       ]
     },
@@ -10833,6 +10881,402 @@
           }
         }
       ]
+    },
+    "TaskCreateCommandTarget": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "dna.record"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "application_id",
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false,
+      "description": "Raising work targets the application's Record: the target id is the application id, since the Task is minted by the organism after the ask is admitted."
+    },
+    "TaskCreateCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.task.create"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/TaskCreateCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "record_head": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal"
+            }
+          },
+          "required": [
+            "record_head",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "minLength": 1
+            },
+            "to": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "outcome",
+            "to"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "The ask `hale dna ask` makes, raised from the cockpit: an outcome (natively at most 8192 UTF-8 bytes, control bytes preserved) for a position, conditioned on the Record head it was prepared against. The asker is the authenticated principal; the expected principal confers no authority. No caller-supplied intent id, from, via or Task id."
+    },
+    "TaskCreateCommandCapabilities": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "dna.task.create.v1"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "authorized": {
+          "type": "boolean"
+        },
+        "position_id": {
+          "const": "org"
+        },
+        "recovery": {
+          "const": "record_lifetime"
+        },
+        "max_outcome_bytes": {
+          "const": "8192"
+        },
+        "max_identity_bytes": {
+          "const": "256"
+        },
+        "max_request_bytes": {
+          "const": "32768"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "available",
+        "authorized",
+        "position_id",
+        "recovery",
+        "max_outcome_bytes",
+        "max_identity_bytes",
+        "max_request_bytes",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "TaskCreateCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.task.create"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/TaskCreateCommandTarget"
+        },
+        "subject_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "outcome_unknown"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "outcome": {
+              "const": ""
+            },
+            "subject_digest": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "outcome",
+            "subject_digest"
+          ],
+          "additionalProperties": false
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "task_create": {
+          "type": "object",
+          "properties": {
+            "intent_id": {
+              "type": "string"
+            },
+            "intent_state": {
+              "enum": [
+                "requested",
+                "offered",
+                "refused",
+                "born",
+                "unknown"
+              ]
+            },
+            "task_id": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "event_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "intent_id",
+            "intent_state",
+            "task_id",
+            "event_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "subject_digest",
+        "fingerprint",
+        "state",
+        "reason",
+        "review",
+        "activation",
+        "task_create"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "task_create": {
+                "properties": {
+                  "intent_state": {
+                    "enum": [
+                      "requested",
+                      "offered",
+                      "refused",
+                      "born"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "succeeded"
+              },
+              "task_create": {
+                "properties": {
+                  "intent_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "event_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "task_create": {
+                "properties": {
+                  "intent_state": {
+                    "enum": [
+                      "requested",
+                      "offered",
+                      "refused"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "task_create": {
+                "properties": {
+                  "task_id": {
+                    "const": ""
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "task_create": {
+                "properties": {
+                  "intent_state": {
+                    "const": "born"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "task_create": {
+                "properties": {
+                  "task_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "task_create": {
+                "properties": {
+                  "intent_state": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "outcome_unknown"
+              },
+              "task_create": {
+                "properties": {
+                  "intent_id": {
+                    "const": ""
+                  },
+                  "task_id": {
+                    "const": ""
+                  },
+                  "event_id": {
+                    "const": ""
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Raising work succeeds once its intent.requested row is in the Record; the subject digest is the Record head the request was prepared against. `task_create` re-derives the organism's answer on every read: requested until it answers, offered, refused, or born with the Task id. An uncertain append names no intent."
     },
     "PersonCommandTarget": {
       "type": "object",

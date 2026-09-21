@@ -22831,6 +22831,940 @@
     }
   },
   {
+    "name": "task-create-request",
+    "schema": "TaskCreateCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "preconditions": {
+        "record_head": "head-opaque-identity",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "Confirm the supplier handover\r\nKeep the signed schedule.",
+        "to": "org/support"
+      }
+    }
+  },
+  {
+    "name": "task-create-shared-command-request",
+    "schema": "CommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "preconditions": {
+        "record_head": "head-opaque-identity",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "Confirm the supplier handover\r\nKeep the signed schedule.",
+        "to": "org/support"
+      }
+    }
+  },
+  {
+    "name": "task-create-request-extra-actor",
+    "schema": "TaskCreateCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "preconditions": {
+        "record_head": "head-opaque-identity",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "Confirm",
+        "to": "org",
+        "from": "riley"
+      }
+    }
+  },
+  {
+    "name": "task-create-missing-position",
+    "schema": "TaskCreateCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "preconditions": {
+        "record_head": "head-opaque-identity",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "Confirm"
+      }
+    }
+  },
+  {
+    "name": "task-create-empty-outcome",
+    "schema": "TaskCreateCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "preconditions": {
+        "record_head": "head-opaque-identity",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "",
+        "to": "org"
+      }
+    }
+  },
+  {
+    "name": "task-create-wrong-target",
+    "schema": "TaskCreateCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.task",
+        "id": "org:t1"
+      },
+      "preconditions": {
+        "record_head": "head-opaque-identity",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "Confirm the supplier handover\r\nKeep the signed schedule.",
+        "to": "org/support"
+      }
+    }
+  },
+  {
+    "name": "task-create-subject-precondition",
+    "schema": "TaskCreateCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "create-key",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "preconditions": {
+        "subject_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "outcome": "Confirm the supplier handover\r\nKeep the signed schedule.",
+        "to": "org/support"
+      }
+    }
+  },
+  {
+    "name": "task-create-capability",
+    "schema": "TaskCreateCommandCapabilities",
+    "valid": true,
+    "value": {
+      "profile": "dna.task.create.v1",
+      "available": true,
+      "authorized": true,
+      "position_id": "org",
+      "recovery": "record_lifetime",
+      "max_outcome_bytes": "8192",
+      "max_identity_bytes": "256",
+      "max_request_bytes": "32768",
+      "reason": ""
+    }
+  },
+  {
+    "name": "task-create-capability-recipients",
+    "schema": "TaskCreateCommandCapabilities",
+    "valid": false,
+    "value": {
+      "profile": "dna.task.create.v1",
+      "available": true,
+      "authorized": true,
+      "position_id": "org",
+      "recovery": "record_lifetime",
+      "max_outcome_bytes": "8192",
+      "max_identity_bytes": "256",
+      "max_request_bytes": "32768",
+      "reason": "",
+      "recipients": []
+    }
+  },
+  {
+    "name": "task-create-capabilities",
+    "schema": "CapabilitiesResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "44"
+      },
+      "data": {
+        "application_id": "record-opaque-identity",
+        "read_only": false,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "reads": {
+          "practices": true,
+          "reviews": true,
+          "definitions": false,
+          "knowledge": false,
+          "workflows": true,
+          "tasks": true
+        },
+        "writes": {
+          "practice_propose": false,
+          "review_verdict": false,
+          "task_create": true
+        },
+        "task_create_commands": {
+          "profile": "dna.task.create.v1",
+          "available": true,
+          "authorized": true,
+          "position_id": "org",
+          "recovery": "record_lifetime",
+          "max_outcome_bytes": "8192",
+          "max_identity_bytes": "256",
+          "max_request_bytes": "32768",
+          "reason": ""
+        },
+        "runtime_observation": false,
+        "recursive_workflows": false,
+        "receipt_text": "record_visibility_only"
+      }
+    }
+  },
+  {
+    "name": "task-create-capabilities-denied",
+    "schema": "CapabilitiesResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "44"
+      },
+      "data": {
+        "application_id": "record-opaque-identity",
+        "read_only": true,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "reads": {
+          "practices": true,
+          "reviews": true,
+          "definitions": false,
+          "knowledge": false,
+          "workflows": true,
+          "tasks": true
+        },
+        "writes": {
+          "practice_propose": false,
+          "review_verdict": false,
+          "task_create": false
+        },
+        "task_create_commands": {
+          "profile": "dna.task.create.v1",
+          "available": true,
+          "authorized": false,
+          "position_id": "org",
+          "recovery": "record_lifetime",
+          "max_outcome_bytes": "8192",
+          "max_identity_bytes": "256",
+          "max_request_bytes": "32768",
+          "reason": ""
+        },
+        "runtime_observation": false,
+        "recursive_workflows": false,
+        "receipt_text": "record_visibility_only"
+      }
+    }
+  },
+  {
+    "name": "task-create-flag-without-profile",
+    "schema": "CapabilitiesResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "44"
+      },
+      "data": {
+        "application_id": "record-opaque-identity",
+        "read_only": false,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "reads": {
+          "practices": true,
+          "reviews": true,
+          "definitions": false,
+          "knowledge": false,
+          "workflows": true,
+          "tasks": true
+        },
+        "writes": {
+          "practice_propose": false,
+          "review_verdict": false,
+          "task_create": true
+        },
+        "runtime_observation": false,
+        "recursive_workflows": false,
+        "receipt_text": "record_visibility_only"
+      }
+    }
+  },
+  {
+    "name": "task-create-receipt",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "i1f4",
+        "intent_state": "requested",
+        "task_id": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "task-create-born-receipt",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "i1f4",
+        "intent_state": "born",
+        "task_id": "org:t1",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "task-create-refused-receipt",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "i1f4",
+        "intent_state": "refused",
+        "task_id": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "task-create-shared-command-response",
+    "schema": "CommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "44"
+      },
+      "data": {
+        "command_id": "command-scoped-create",
+        "request_id": "create-key",
+        "application_id": "record-opaque-identity",
+        "operation": "dna.task.create",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "application_id": "record-opaque-identity",
+          "position_id": "org"
+        },
+        "target": {
+          "application_id": "record-opaque-identity",
+          "kind": "dna.record",
+          "id": "record-opaque-identity"
+        },
+        "subject_digest": "head-opaque-identity",
+        "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "succeeded",
+        "reason": "",
+        "review": {
+          "state": "unavailable",
+          "outcome": "",
+          "subject_digest": ""
+        },
+        "activation": {
+          "state": "unknown",
+          "reason": ""
+        },
+        "task_create": {
+          "intent_id": "i1f4",
+          "intent_state": "requested",
+          "task_id": "",
+          "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    }
+  },
+  {
+    "name": "task-create-uncertain-receipt",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "outcome_unknown",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "",
+        "intent_state": "unknown",
+        "task_id": "",
+        "event_id": ""
+      }
+    }
+  },
+  {
+    "name": "task-create-uncertain-response",
+    "schema": "CommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "44"
+      },
+      "data": {
+        "command_id": "command-scoped-create",
+        "request_id": "create-key",
+        "application_id": "record-opaque-identity",
+        "operation": "dna.task.create",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "application_id": "record-opaque-identity",
+          "position_id": "org"
+        },
+        "target": {
+          "application_id": "record-opaque-identity",
+          "kind": "dna.record",
+          "id": "record-opaque-identity"
+        },
+        "subject_digest": "head-opaque-identity",
+        "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "outcome_unknown",
+        "reason": "",
+        "review": {
+          "state": "unavailable",
+          "outcome": "",
+          "subject_digest": ""
+        },
+        "activation": {
+          "state": "unknown",
+          "reason": ""
+        },
+        "task_create": {
+          "intent_id": "",
+          "intent_state": "unknown",
+          "task_id": "",
+          "event_id": ""
+        }
+      }
+    }
+  },
+  {
+    "name": "task-create-unknown-has-event",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "outcome_unknown",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "",
+        "intent_state": "unknown",
+        "task_id": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "task-create-unknown-success",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "",
+        "intent_state": "unknown",
+        "task_id": "",
+        "event_id": ""
+      }
+    }
+  },
+  {
+    "name": "task-create-born-without-task",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "i1f4",
+        "intent_state": "born",
+        "task_id": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "task-create-requested-with-task",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "i1f4",
+        "intent_state": "requested",
+        "task_id": "org:t1",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "task-create-requested-without-event",
+    "schema": "TaskCreateCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "command-scoped-create",
+      "request_id": "create-key",
+      "application_id": "record-opaque-identity",
+      "operation": "dna.task.create",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "record-opaque-identity",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "record-opaque-identity",
+        "kind": "dna.record",
+        "id": "record-opaque-identity"
+      },
+      "subject_digest": "head-opaque-identity",
+      "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "task_create": {
+        "intent_id": "i1f4",
+        "intent_state": "requested",
+        "task_id": "",
+        "event_id": ""
+      }
+    }
+  },
+  {
+    "name": "task-create-reassignment-branch",
+    "schema": "CommandResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "44"
+      },
+      "data": {
+        "command_id": "command-scoped-create",
+        "request_id": "create-key",
+        "application_id": "record-opaque-identity",
+        "operation": "dna.task.create",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "application_id": "record-opaque-identity",
+          "position_id": "org"
+        },
+        "target": {
+          "application_id": "record-opaque-identity",
+          "kind": "dna.record",
+          "id": "record-opaque-identity"
+        },
+        "subject_digest": "head-opaque-identity",
+        "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "succeeded",
+        "reason": "",
+        "review": {
+          "state": "unavailable",
+          "outcome": "",
+          "subject_digest": ""
+        },
+        "activation": {
+          "state": "unknown",
+          "reason": ""
+        },
+        "task_create": {
+          "intent_id": "i1f4",
+          "intent_state": "requested",
+          "task_id": "",
+          "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+        },
+        "task": {
+          "state": "applied",
+          "from": "alex",
+          "to": "blair",
+          "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    }
+  },
+  {
     "name": "person-retire-request",
     "schema": "PersonCommandRequest",
     "valid": true,

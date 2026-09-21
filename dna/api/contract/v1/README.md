@@ -644,6 +644,31 @@ This is a current read, not an assessment retained at the earlier Review decisio
 ### Exact recorded Task assignee
 
 Only `GET /dna/tasks` accepts optional `assignee` alongside the common exact-id/pagination/snapshot query. The decoded identity is nonempty, at most 256 UTF-8 bytes and contains no C0/DEL; duplicate, empty or malformed fields return 400. Filtering precedes counts and pagination, uses the latest recorded assignee and retains terminal-after-handoff history. `id` and `assignee` must both match or return the same 404 as an absent/protected Task. `TaskAdministration.assignee` is present only for a filtered response and echoes the requested exact identity; consumers also verify every returned row has that assignee. Unfiltered wire shape is unchanged. Assignment is not owner membership, source position or command authority.
+### Raising work: `dna.task.create@1`
+
+`TaskCreateCommandRequest` raises work the way `hale dna ask` does. Its
+`arguments` are `outcome` (natively at most 8192 UTF-8 bytes, control bytes
+preserved) and `to` (a position, 1..256 bytes); its `preconditions` are the
+expected `principal` and the `record_head` the request was prepared against.
+The target is the Record itself (`kind: dna.record`, `id` = application id):
+the Task is minted by the organism, not by this request. No intent id, asker,
+`via` or Task id is caller-supplied. The shared request identity namespace,
+exact-key lookup and the other operations' bytes are unchanged.
+
+`task_create_commands` advertises `dna.task.create.v1` with `writes.task_create`,
+which contributes to `read_only`. There is no policy grant: any authenticated
+principal may ask, as with the CLI, and whether the position is this
+organization's to admit is the organism's judgment.
+
+`TaskCreateCommandReceipt` succeeds once the `intent.requested` row is in the
+Record; a stale `record_head` is refused with `stale_subject`. `subject_digest`
+is that Record head. `task_create` names the minted `intent_id` and the row's
+`event_id`, and re-derives the organism's answer on every lookup:
+`intent_state` is `requested` until it answers, then `offered`, `refused`, or
+`born` with the `task_id`. An uncertain append is `outcome_unknown` with
+`intent_state: unknown` and no intent. A born-but-unhanded Task is not yet a
+handed-Task read; the receipt is how the cockpit follows it.
+
 # Person retirement contract
 
 The optional `person_commands` capability advertises `dna.person.retire.v1` and

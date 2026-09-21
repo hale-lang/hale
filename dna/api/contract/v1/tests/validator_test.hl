@@ -170,6 +170,47 @@ locus Cases {
         self.expect("PracticeCommandReceipt", receipt, false, "verdict completion is not a practice proposal receipt");
         self.expect("ReviewCommandReceipt", self.field(receipt, "verdict", ""), false, "Review settlement cannot replace this command's verdict result");
     }
+    fn task_create_cases() {
+        let request = self.example("task-create-request");
+        self.expect("TaskCreateCommandRequest", request, true, "exact raise-work envelope");
+        self.expect("CommandRequest", request, true, "shared request envelope accepts raising work");
+        self.expect("TaskCommandRequest", request, false, "raising work is not a reassignment");
+        let arguments = std::json::find_field_raw(request, "arguments");
+        let conditions = std::json::find_field_raw(request, "preconditions");
+        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "outcome", "\"\"")), false, "an outcome is required");
+        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "to", "\"\"")), false, "a position is required");
+        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "from", "\"caller-selected\"")), false, "the asker is the authenticated principal, never an argument");
+        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "intent_id", "\"i1f4\"")), false, "the intent id is minted by the service");
+        self.expect("TaskCreateCommandRequest", self.field(request, "preconditions", self.field(conditions, "record_head", "\"\"")), false, "the head precondition is required");
+        self.expect("TaskCreateCommandRequest", self.field(request, "preconditions", self.field(conditions, "record_head", "")), false, "the head precondition cannot be omitted");
+        self.expect("TaskCreateCommandRequest", self.field(request, "target", self.field(std::json::find_field_raw(request, "target"), "kind", "\"dna.task\"")), false, "a create targets the Record, not a Task");
+        self.expect("TaskCreateCommandRequest", self.field(request, "operation", "\"dna.task.reassign\""), false, "operation is constant");
+        let receipt = std::json::find_field_raw(self.example("task-create-shared-command-response"), "data");
+        self.expect("TaskCreateCommandReceipt", receipt, true, "requested receipt");
+        self.expect("TaskCommandReceipt", receipt, false, "raising work is not a reassignment receipt");
+        self.expect("PracticeCommandReceipt", receipt, false, "raising work is not a practice receipt");
+        let create = std::json::find_field_raw(receipt, "task_create");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "task_id", "\"org:t1\"")), false, "a requested ask names no Task");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"born\"")), false, "born needs a Task id");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"offered\"")), true, "offered is a later answer on the same receipt");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "event_id", "\"\"")), false, "an admitted ask has its Record event");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"unknown\"")), false, "unknown is not a succeeded command");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"pending\"")), false, "intent states are closed");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "state", "\"recorded\""), false, "an ask is admitted or unknown, never pending");
+        self.expect("TaskCreateCommandReceipt", self.field(receipt, "review", "{\"state\":\"pending\",\"outcome\":\"\",\"subject_digest\":\"\"}"), false, "no Review is opened by an ask");
+        let unknown = self.example("task-create-uncertain-receipt");
+        self.expect("TaskCreateCommandReceipt", self.field(unknown, "task_create", self.field(std::json::find_field_raw(unknown, "task_create"), "intent_id", "\"i1f4\"")), false, "no intent id without a recorded row");
+        let capability = self.example("task-create-capability");
+        self.expect("TaskCreateCommandCapabilities", self.field(capability, "recipients", "[]"), false, "raising work has no recipient list");
+        self.expect("TaskCreateCommandCapabilities", self.field(capability, "max_outcome_bytes", "8192"), false, "bounds are strings");
+        self.expect("TaskCreateCommandCapabilities", self.field(capability, "profile", "\"dna.task.reassign.v1\""), false, "profile is constant");
+        let capabilities = self.example("task-create-capabilities");
+        let data = std::json::find_field_raw(capabilities, "data");
+        self.expect("CapabilitiesResponse", self.field(capabilities, "data", self.field(data, "task_create_commands", "")), false, "a true write flag needs its profile");
+        self.expect("CapabilitiesResponse", self.field(capabilities, "data", self.field(data, "read_only", "true")), false, "a true write flag is not read only");
+        let profile = std::json::find_field_raw(data, "task_create_commands");
+        self.expect("CapabilitiesResponse", self.field(capabilities, "data", self.field(data, "task_create_commands", self.field(profile, "authorized", "false"))), false, "a true write flag needs an authorized profile");
+    }
     fn profile_cases() {
         self.custom("{\"type\":\"array\",\"maxItems\":1}", "[1]", true, "array at bound");
         self.custom("{\"type\":\"array\",\"maxItems\":1}", "[1,2]", false, "array exceeds bound");
@@ -312,4 +353,5 @@ fn main() {
     suite.knowledge_cases();
     suite.command_cases();
     suite.review_command_cases();
+    suite.task_create_cases();
 }
