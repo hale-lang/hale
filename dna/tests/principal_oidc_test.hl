@@ -126,7 +126,7 @@ main locus App {
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nhosted");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/hosted";
-        let port = 30000 + (std::process::pid() + 11) % 20000;
+        let port = dna::free_port(0);
         let ui = "http://127.0.0.1:" + to_string(port);
         let g1 = in_dir(app, "git\nconfig\nuser.name\nhead-operator");
         let g2 = in_dir(app, "git\nconfig\nuser.email\nhead@local");

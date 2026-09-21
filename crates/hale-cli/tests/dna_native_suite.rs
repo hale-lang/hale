@@ -588,6 +588,7 @@ fn dna_fixture_set_is_complete() {
             "schedule_cli_test.hl",
             "schedule_test.hl",
             "supersession_test.hl",
+            "support_test.hl",
             "task_decide_test.hl",
             "task_evidence_test.hl",
             "two_heads_test.hl",

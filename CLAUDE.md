@@ -54,6 +54,14 @@ or another checkout's DNA run on the same box, cannot fail it
 cargo test -p hale-cli --test dna_native_suite
 ```
 
+A DNA fixture never invents a port. `dna::free_port(index)` (in
+`dna/core/workspace.hl`, beside `run_tool` and `wait_scale`) binds
+a candidate on the loopback before handing it back, so a port
+another listener holds is stepped past instead of reaching the
+fixture as "the service never came up" (GH #873). Give each
+service of one fixture its own `index` — closing the probe frees
+the port again, so the same index answers the same port twice.
+
 The repo also tests the language *in* the language:
 
 ```sh

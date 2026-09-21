@@ -65,7 +65,7 @@ main locus App {
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nepoch");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/epoch";
-        let kport = 30000 + (std::process::pid() + 53) % 17000;
+        let kport = dna::free_port(0);
         let service = "http://127.0.0.1:" + to_string(kport);
         // a shared record whose service knows each owner's key (GH #669)
         std::io::fs::write_file(app + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice\nnorth: bob\nhost = acme\n") or discard;

@@ -154,6 +154,53 @@ fn wait_scale() -> Int {
 // `secs` seconds on a quiet machine, widened by `wait_scale()`.
 fn wait_secs(secs: Int) -> Int { return secs * wait_scale(); }
 
+// ---- a port a fixture's service can have (GH #873) -------------------
+
+// A loopback port nothing is listening on: bound here, closed, and
+// handed back.
+//
+// The fixtures used to compute `30000 + (pid + salt) % 17000` and trust
+// it. Nothing checked, so a collision with any other listener on the
+// box — a neighbouring slice's fixture, another checkout's DNA run, a
+// server of the developer's — reached the fixture as "the service never
+// came up", which is the shape #795 reported and #869 could not
+// reproduce. Here the bind IS the check: a candidate that cannot be
+// bound is not returned, and the search steps to the next one. Each
+// refusal's errno is on stderr from the bind itself
+// (`lotus_tcp_listen_socket: bind: Address already in use`), so a
+// fixture that ends up with no port says which ports it tried and why
+// each was refused.
+//
+// `index` separates the several ports one fixture needs: closing the
+// probe leaves the port free again, so two calls with the same index
+// answer the same port. Give each service its own (0, 1, 2, …) — the
+// starts are 512 apart, so one search would have to cross 512 bound
+// ports to reach another's answer.
+//
+// 30000..46999, the range the fixtures' own arithmetic chose: clear of
+// the fixed ports the OIDC fixtures bind. -1, with a line saying so,
+// when every candidate was in use.
+//
+// A window stays open between the close here and the service's own
+// bind — the Rust harness's `free_port()` has the same one. What this
+// removes is the fixture that never looked.
+fn free_port(index: Int) -> Int {
+    let span = 17000;
+    let start = (std::process::pid() * 64 + index * 512) % span;
+    let mut i = 0;
+    while i < 512 {
+        let port = 30000 + (start + i) % span;
+        let fd = std::io::tcp::__listen_socket("127.0.0.1", port);
+        if fd >= 0 {
+            std::io::tcp::__close_fd(fd);
+            return port;
+        }
+        i = i + 1;
+    }
+    println("dna::free_port: every port from ", 30000 + start, " on (512 candidates in 30000..46999) was refused at bind; each errno is above. The caller is handed -1.");
+    return -1;
+}
+
 // ---- workspaces ------------------------------------------------------
 
 type Worktree {

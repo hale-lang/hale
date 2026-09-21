@@ -322,11 +322,12 @@ main locus App {
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/team";
         let other = scratch + "/team-b";
+        // three ports this process has just proved it can bind, in
         // 30000..46999: clear of the issuer's port below, and of the
-        // fixed ports the other OIDC fixtures bind
-        let kport = 30000 + (std::process::pid() + 31) % 17000;
-        let p1 = 30000 + (std::process::pid() + 37) % 17000;
-        let p2 = 30000 + (std::process::pid() + 43) % 17000;
+        // fixed ports the other OIDC fixtures bind (GH #873)
+        let kport = dna::free_port(0);
+        let p1 = dna::free_port(1);
+        let p2 = dna::free_port(2);
         let service = "http://127.0.0.1:" + to_string(kport);
         let ui_a = "http://127.0.0.1:" + to_string(p1);
         let ui_b = "http://127.0.0.1:" + to_string(p2);
