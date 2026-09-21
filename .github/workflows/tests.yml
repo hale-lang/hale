@@ -570,14 +570,18 @@ jobs:
           shared-key: tests-x86_64-linux-llvm18
           save-if: false
 
-      - name: Install LLVM 18 + clang + qemu
+      - name: Install LLVM 18 + clang + qemu (+ the target's glibc for it)
+        # qemu-user runs the aarch64 ELF but not on its own: the binary
+        # asks for /lib/ld-linux-aarch64.so.1 and libc, which have to be
+        # the TARGET's. libc6-arm64-cross puts those under
+        # /usr/aarch64-linux-gnu, and `-L` points qemu there.
         run: |
           set -eux
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev zlib1g-dev \
-            qemu-user-static binfmt-support
+            qemu-user-static libc6-arm64-cross
 
       - name: Install zig ${{ env.ZIG_VERSION }}
         # The release tarball, pinned: zig is the cross C toolchain and
@@ -643,8 +647,7 @@ jobs:
           test ! -e /tmp/cross/hello.o
           # The second build links from cached runtime objects.
           time ./target/release/hale build --target "$CROSS_TRIPLE" /tmp/cross/hello.hl
-          # binfmt_misc hands an aarch64 ELF to qemu-aarch64-static.
-          out="$(/tmp/cross/hello)"
+          out="$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/cross/hello)"
           echo "program output: $out"
           echo "$out" | grep -q "worker got tick 7"
           echo "$out" | grep -q "cross main done"
