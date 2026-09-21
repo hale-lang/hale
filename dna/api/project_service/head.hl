@@ -266,7 +266,7 @@ fn start_long_child(cfg: HeadConfig, ctx: HeadContext, plan: Plan) -> Proc {
 
 // ---- settle ----------------------------------------------------------------
 
-// The journal's outcome hook: S3's parser for its operations, S2's for
+// The journal's outcome hook: the second file's parser for its operations, this file's for
 // its own (a create or init that exited 0 is attached here), and the
 // `record` evidence on every row-writing operation.
 locus HeadOutcomes {
@@ -284,7 +284,7 @@ locus HeadOutcomes {
 
 // Every `running` receipt that can be settled from its files is (§2.3):
 // runs from `run.{pid,exit,log}` and their deadlines, body and observer
-// children from their liveness and S3's readiness predicate.
+// children from their liveness and the operations file's readiness predicate.
 @unbounded
 fn settle_all(cfg: HeadConfig) {
     let j = HeadJournal { state_dir: cfg.state_dir };
@@ -348,8 +348,8 @@ fn child_state(view: ChildView) -> String {
     return "stopped";
 }
 
-// The `children` object when S3's stub answers `{}`: the two children
-// from their files, with the S3-owned fields at their defaults.
+// The `children` object when the operations file answers `{}`: the two children
+// from their files, with the operations file's fields at their defaults.
 fn children_fallback(cfg: HeadConfig, root: String, body: ChildView, observer: ChildView) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -752,7 +752,7 @@ locus Head {
         }
         let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg));
         if up.ok { self.api_ready_pid = child.pid; }
-        else if up.code == "connect_failed" { self.api_failed_pid = child.pid; }
+        else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
         return proxied_response(up);
     }
 

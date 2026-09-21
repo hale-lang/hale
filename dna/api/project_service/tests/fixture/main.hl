@@ -86,6 +86,7 @@ locus HeadFixture {
         project: String = "";
         port: Int = 0;
         api_port: Int = 0;
+        observer_port: Int = 0;
         identity: String = "";
         head: std::process::Child = std::process::Child { };
         journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-head-fixture" };
@@ -105,6 +106,7 @@ locus HeadFixture {
         self.make_record();
         if self.port == 0 { self.port = dna::free_port(1); }
         if self.api_port == 0 { self.api_port = dna::free_port(2); }
+        if self.observer_port == 0 { self.observer_port = dna::free_port(3); }
     }
     dissolve() {
         self.stop();
@@ -158,8 +160,8 @@ locus HeadFixture {
         std::test::assert(len(api_bin) > 0 && std::io::fs::file_exists(api_bin), "build dna/api and set absolute HALE_API_BIN");
         let hale = std::env::var("HALE_BIN");
         std::test::assert(std::str::starts_with(hale, "/"), "HALE_BIN must be absolute");
-        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_IRIS_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && unset HALE_IRIS_OBSERVER_ORIGIN LOTUS_OBS HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_KNOWLEDGE_READ_KEY HALE_DNA_KNOWLEDGE_COMMAND_KEY HALE_IRIS_ORG_DRAFTS && if [ -n \"$6\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$6\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
-        let argv = "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + project_arg;
+        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_IRIS_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && export HALE_IRIS_OBSERVER_ORIGIN=\"http://127.0.0.1:$6\" && unset LOTUS_OBS HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_KNOWLEDGE_READ_KEY HALE_DNA_KNOWLEDGE_COMMAND_KEY HALE_IRIS_ORG_DRAFTS && if [ -n \"$7\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$7\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
+        let argv = "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + to_string(self.observer_port) + "\n" + project_arg;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.

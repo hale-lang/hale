@@ -540,6 +540,14 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      - name: Warm the DNA toolchain cache
+        # The head fixtures and the browser fixtures create fresh projects
+        # with hale dna new under their own budgets; the first host build of
+        # this binary is paid once here, not inside one of them.
+        env:
+          HALE_DNA_DISCOVER: "off"
+        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
+
       - name: DNA read API contract and integration
         # The fixtures own their Git environment: no GIT_CONFIG_* here, and
         # the system config disabled, which definition_drafts_api_test asserts.
@@ -572,12 +580,6 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: iris/cockpit/package-lock.json
-
-      - name: Warm the DNA toolchain cache for the browser fixtures
-        # The browser fixtures create fresh projects with `hale dna new`
-        # under a per-process CPU budget; the first host build of this
-        # binary must not be the one that pays for it.
-        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
 
       - name: Iris cockpit browser integration
         working-directory: iris/cockpit

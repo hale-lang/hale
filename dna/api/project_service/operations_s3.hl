@@ -1,5 +1,5 @@
 // dna/api/project_service/operations_s3.hl — the sixteen operations lane
-// S3 owns in the cockpit head (GH #965, §2.7 of the head's contract):
+// of the cockpit head (GH #965, its contract's operation table):
 // the supervised local body (start, stop), the body on a server
 // (provision, start, stop, logs), secrets by source name, the models
 // probe, connections and handoffs, and the observer.
@@ -16,8 +16,8 @@
 // outcome is read from the run's record: the dispatcher hands
 // `s3_outcome` only the operation, the exit code and the log tail.
 //
-// Every helper here is `s3_`-prefixed: this file is the one S3 edits,
-// and the rest of the seed is S2's.
+// Every helper here is `s3_`-prefixed: this file holds these operations,
+// and the rest of the seed is the head itself.
 
 import "../../core" as dna;
 import "../../operations" as ops;
@@ -399,9 +399,10 @@ fn s3_plan_body_start(ctx: HeadContext, arguments: String) -> Plan {
         let r = dna::GitRecord { repo: ctx.active_root };
         if !r.set_setting("owner", owner) { return s3_invalid("git config dna.owner could not be written: " + r.why()); }
     }
-    // the knowledge store's DSN reaches the body only (§2.6)
-    let envs = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { "HALE_DNA_KNOWLEDGE_DSN=" + std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
-    return Plan { ok: true, kind: "body", argv: s3_body_argv(ctx, mode), cwd: ctx.active_root, envs: envs, deadline_secs: 600, external: false };
+    // the knowledge store's DSN reaches the body by inheritance from the
+    // head's environment (the head unsets it for every other child): a
+    // credential never travels as a word in a wrapper shell's argv
+    return Plan { ok: true, kind: "body", argv: s3_body_argv(ctx, mode), cwd: ctx.active_root, envs: "", deadline_secs: 600, external: false };
 }
 
 // Waits up to `max_ms` for `pid` to end.

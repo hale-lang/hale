@@ -16,11 +16,11 @@ import ".." as api;
 import "../../core" as dna;
 import "../../operations" as ops;
 
-// The nine S2 operations, and the four that are head-scoped (their
+// The nine project and forge operations, and the four that are head-scoped (their
 // `context.application_id` is empty and their target is the head).
 const OWN_OPERATIONS: String = " dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync ";
 const HEAD_SCOPED: String = " dna.project.create dna.project.init dna.project.attach dna.project.forget ";
-// Every operation of §2.7, S2's and S3's, in the order `GET /head` lists them.
+// Every operation of the head's contract, both files', in the order `GET /head` lists them.
 const ALL_OPERATIONS: String = "dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync dna.observer.start dna.observer.stop";
 // The operations whose verbs append Record rows: their outcome carries
 // the `record` evidence object.
@@ -319,7 +319,7 @@ fn plan_forge_sync(ctx: HeadContext) -> Plan {
     return Plan { ok: true, kind: "run", script: "exec \"$HALE_BIN\" dna github sync", cwd: ctx.active_root, envs: "GH_PROMPT_DISABLED=1\nGH_NO_UPDATE_NOTIFIER=1\n", deadline_secs: 180, external: true };
 }
 
-// The plan for one of S2's operations; the four inline ones have done
+// The plan for one of this file's operations; the four inline ones have done
 // their effect when this returns.
 fn own_plan(cfg: HeadConfig, ctx: HeadContext, command_id: String, operation: String, arguments: String) -> Plan {
     if operation == "dna.project.create" { return plan_create(cfg, arguments); }
@@ -363,7 +363,7 @@ fn sync_summary(log_tail: String) -> String {
     return first_line(log_tail);
 }
 
-// The outcome of a settled run of one of S2's operations. A create or
+// The outcome of a settled run of one of this file's operations. A create or
 // init that exited 0 is attached here: the finalize is the same
 // routine as an inline attach, and idempotent.
 fn own_outcome(cfg: HeadConfig, receipt: Receipt, exit_code: Int, log_tail: String) -> String {

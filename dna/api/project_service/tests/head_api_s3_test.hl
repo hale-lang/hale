@@ -24,9 +24,6 @@ import "../../../core" as dna;
 const HEAD: String = "/api/hale/v1/head";
 // The value that must never reach the head's state.
 const FILE_SECRET: String = "head-file-source-value-4c1d9e72";
-// The head's observer port when `HALE_IRIS_OBSERVER_ORIGIN` is unset,
-// which the fixture leaves it.
-const OBSERVER_PORT: Int = 8787;
 
 fn toolchain() -> String { return std::env::var("HALE_BIN"); }
 
@@ -193,7 +190,7 @@ locus S3HeadCases {
         self.f.json.is_bool(self.f.json.raw(children, "body"), "membrane_up", false);
         self.f.json.eq(self.f.json.raw(children, "body"), "mode", "");
         self.f.json.eq(self.f.json.raw(children, "observer"), "state", "stopped");
-        self.f.json.eq(self.f.json.raw(children, "observer"), "origin", "http://127.0.0.1:" + to_string(OBSERVER_PORT));
+        self.f.json.eq(self.f.json.raw(children, "observer"), "origin", "http://127.0.0.1:" + to_string(self.f.observer_port));
         self.state_of(state, "dna.body.local.start", true, "");
         self.state_of(state, "dna.body.local.stop", false, "body_not_running");
         self.state_of(state, "dna.observer.start", false, "membrane_down");
@@ -389,12 +386,6 @@ locus S3HeadCases {
     // The observer over the membrane: a child, 202, `succeeded` once
     // `GET /` answers on its origin; stopped inline.
     fn observer() {
-        let probe = std::io::tcp::connect("127.0.0.1", OBSERVER_PORT) or - 1;
-        if probe >= 0 {
-            std::io::tcp::__close_fd(probe);
-            eprintln("head S3 api: port ", OBSERVER_PORT, " is held by another listener; the observer case is skipped (the fixture leaves HALE_IRIS_OBSERVER_ORIGIN unset, so the head's observer port is its default)");
-            return;
-        }
         // fuse-hl into the shared cache first, so the child's thirty
         // seconds are the observer's boot and not a build
         let warm = dna::run_tool("timeout\n600\n" + toolchain() + "\niris\n--build-only");
@@ -409,7 +400,7 @@ locus S3HeadCases {
         let pid = self.f.json.integer(outcome, "pid");
         let origin = self.f.json.string(outcome, "origin");
         std::test::assert(pid > 0 && pid == self.f.child_pid("observer") && self.f.child_alive("observer"), "the observer child: " + outcome);
-        std::test::assert_eq_str(origin, "http://127.0.0.1:" + to_string(OBSERVER_PORT), "its origin");
+        std::test::assert_eq_str(origin, "http://127.0.0.1:" + to_string(self.f.observer_port), "its origin");
         let page = fixture::curl("GET", origin + "/", "", "");
         std::test::assert_eq_int(page.status, 200, "GET / on the observer: " + page.body);
         let state = self.f.head_state();
@@ -427,7 +418,7 @@ locus S3HeadCases {
         self.f.json.eq(stopped, "state", "succeeded");
         self.f.json.eq(self.f.json.raw(stopped, "run"), "kind", "inline");
         std::test::assert(!self.f.child_alive("observer"), "its process is gone");
-        std::test::assert((std::io::tcp::connect("127.0.0.1", OBSERVER_PORT) or - 1) < 0, "nothing listens on its port");
+        std::test::assert((std::io::tcp::connect("127.0.0.1", self.f.observer_port) or - 1) < 0, "nothing listens on its port");
         self.f.json.eq(self.f.json.raw(self.f.json.raw(self.f.head_state(), "children"), "observer"), "state", "exited");
         self.observer_ran = true;
     }
@@ -522,5 +513,5 @@ fn main() {
     cases.body_stop();
     cases.detail_after();
     cases.f.stop();
-    eprintln(if cases.observer_ran { "head S3 api cases passed" } else { "head S3 api cases passed (observer case skipped)" });
+    eprintln(if cases.observer_ran { "head S3 api cases passed" } else { "head S3 api cases passed" });
 }

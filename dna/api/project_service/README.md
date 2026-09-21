@@ -29,8 +29,8 @@ routes, envelopes and operations are described in
 |---|---|
 | `main.hl` | argv and exit codes, the state directory, `head.pid` / `head.url`, child re-adoption, the restore of the last activated project, the startup attach, the server |
 | `head.hl` | the handler: the four head routes, the proxy, settle-on-request, the API child's lifecycle, attach and detach |
-| `operations.hl` | S2's nine operations, the request-shape check, the row-writing list, the `record` evidence, the catalog credential scan |
-| `operations_s3.hl` | the sixteen body, secret, model, connection, handoff and observer operations (lane S3's file) |
+| `operations.hl` | the nine project and forge operations, the request-shape check, the row-writing list, the `record` evidence, the catalog credential scan |
+| `operations_s3.hl` | the sixteen body, secret, model, connection, handoff and observer operations (the second operations file) |
 | `journal.hl` | `HeadJournal` over `receipts.jsonl`: identity, fingerprint, replay, settle |
 | `registry.hl` | `Registry` over `projects.jsonl`: register, activate, deactivate, forget, restore |
 | `policy.hl` | the two per-project policies the head synthesizes when absent, and their decode checks |
