@@ -44,6 +44,34 @@ work, they are just slower and no longer buy anything:
 cargo test --release -p hale-codegen --test topic_phase2
 ```
 
+**`cargo test` has to agree with nextest.** CI runs the suite
+only through nextest, which gives every test its own process —
+so two shapes are invisible to it and land on whoever types
+`cargo test` instead:
+
+- libtest runs a binary's tests as **threads of one process**,
+  so anything process-wide that two tests in the same file
+  touch — the environment, the cwd, a fixed temp path — races.
+  Fix that at its cause: a per-test path from
+  `harness::unique_bin`, a knob on `BuildOptions` or on a
+  child's `Command::env`, or delete the shared thing. Never
+  `--test-threads=1`, and never a serializing attribute.
+- `cargo test --doc` compiles the code blocks in `///` and
+  `//!` comments as Rust — **including indented ones**, which
+  need no fence to become a doctest — and nextest does not run
+  doctests at all. A block that is not Rust (an ABI sketch, a
+  diagram, an `.hl` snippet) must be fenced and tagged `text`;
+  `ignore` only for real Rust that cannot stand alone, with the
+  reason beside it.
+
+The `parity` job in `.github/workflows/tests.yml` gates both:
+the workspace doctests, plus the test binaries that share
+process-wide state, run under libtest's threads.
+
+```sh
+cargo test --release --doc --workspace
+```
+
 The DNA domain proof runs the same way, and its **slices may run
 in parallel** — each slice's leftover-process guard blames only
 the processes its own fixtures started, so a neighbouring slice,
