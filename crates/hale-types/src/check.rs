@@ -595,6 +595,7 @@ pub fn check_bundle_scoped(
             return_ctx: None,
             wasm_target,
             target_has_async_io: bundle.target_has_async_io,
+            target_label: bundle.target_label,
             strict_callees,
             strict_idents,
             or_value_discarded: false,
@@ -7742,6 +7743,7 @@ struct Checker<'a> {
     /// The build target has the `async_io` pool backend — the bundle's
     /// [`Bundle::target_has_async_io`], never the host's (GH #970).
     target_has_async_io: bool,
+    target_label: &'static str,
     strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -9491,11 +9493,12 @@ impl<'a> Checker<'a> {
                                 c.span,
                                 format!(
                                     "placement entry `{}`: `async_io` pools \
-                                     aren't supported on macOS yet — use a \
+                                     aren't supported on {} yet — use a \
                                      cooperative pool (drop `where async_io`), \
-                                     or build on Linux. (A kqueue/poll backend \
-                                     is planned.)",
-                                    entry.field.name
+                                     or build for a glibc Linux target. (The \
+                                     backend is epoll + ucontext; a kqueue/poll \
+                                     one is planned.)",
+                                    entry.field.name, self.target_label
                                 ),
                             ));
                         }
