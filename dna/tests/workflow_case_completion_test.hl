@@ -23,7 +23,8 @@
 // Review round 1: a redelivery's refresh does not stand for the
 // examination (the tick examines by the revision last examined, not
 // by whether its own refresh moved); a decision accepted under another
-// policy than the bound one, or under none, closes nothing; an
+// policy than the bound one, or under none, or naming another case or
+// none as its scope, closes nothing; an
 // exception applies to the person on the completion row — reassigned
 // to its authorizer, the case does not close under their own
 // authorization.
@@ -189,7 +190,9 @@ main locus App {
         std::test::assert(x.ok, "excepted");
     }
     // A decision reported and accepted, as the tooling writes it (GH #616).
-    fn decided(case_id: String, reporter: String, policy: String) {
+    fn decided(case_id: String, reporter: String, policy: String) { self.decided_for(case_id, reporter, policy, case_id, true); }
+    // The same, naming `scope` as its scope — or no scope at all.
+    fn decided_for(case_id: String, reporter: String, policy: String, scope: String, named: Bool) {
         let j = self.boot.rt.journal;
         let b = std::json::Builder { };
         b.begin_object();
@@ -197,7 +200,7 @@ main locus App {
         b.string_field("decider", "the client");
         b.string_field("channel", "mail");
         b.string_field("evidence", "sha256:" + self.receipts.store("the client's mail, filed"));
-        b.string_field("scope", case_id);
+        if named { b.string_field("scope", scope); }
         b.string_field("obligation", "expense-approval");
         b.string_field("practice", "acceptance/expense-approval");
         b.string_field("policy", policy);
@@ -459,6 +462,13 @@ main locus App {
         self.decided("t4.s0.h2", "mara", strict);
         self.observe();
         std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h2/a0"), "", "a decision accepted under no policy, or under another than the bound one, closes nothing");
+        // the scope is this case, exactly: naming none, an empty one or
+        // another case, the decision closes nothing here
+        self.decided_for("t4.s0.h2", "mara", relaxed, "", false);
+        self.decided_for("t4.s0.h2", "mara", relaxed, "", true);
+        self.decided_for("t4.s0.h2", "mara", relaxed, "t4.s0.h1", true);
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h2/a0") + "|" + self.outcome_of("t4/wf1/s0/h1/a0"), "|done", "a decision naming no scope, an empty one or another case closes nothing here (and nothing again there)");
         self.decided("t4.s0.h2", "mara", relaxed);
         self.observe();
         std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h2/a0"), "done", "the assignee's reported decision, accepted, completes the case");

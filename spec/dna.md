@@ -1645,7 +1645,8 @@ which practice — never against a practice in force later: a practice
 relaxed after the hand-off relaxes nothing, while a case handed after
 the relaxation closes under the new one; evidence linked under
 another practice is none, and a decision accepted under another
-policy than the bound one, or under none, is none. An exception
+policy than the bound one, or under none, or naming another case or
+none as its scope, is none. An exception
 applies to the person on the completion row: recorded in their name
 and authorized by someone other than them — a case reassigned to its
 exception's authorizer does not close under their own authorization.

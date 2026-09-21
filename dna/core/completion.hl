@@ -15,7 +15,7 @@
 // (moved by `task.reassigned`), whether evidence is required, which
 // practice — never against a practice in force later: evidence linked
 // under another practice is none, a decision accepted under another
-// policy is none. A completion the bound condition refuses (not the
+// policy, or naming another case or none as its scope, is none. A completion the bound condition refuses (not the
 // assignee's, no evidence where it is required, an exception the person
 // closing authorized themselves — judged against the person on the
 // completion row, whoever the case was reassigned to since the
@@ -75,16 +75,20 @@ fn case_completion(j: Journal, case_id: String, admission: String) -> CaseComple
             } else if e.kind == "decision.reported" {
                 let reporter = std::json::find_string_field(e.body, "reporter");
                 let accepted = std::str::trim(std::json::find_field_raw(e.body, "accepted")) == "true";
-                // accepted under the bound policy, for this case — a
-                // decision accepted under a later, permissive practice
-                // closes nothing bound to the earlier one
+                // accepted under the bound policy, naming this case as its
+                // scope — a decision accepted under a later, permissive
+                // practice closes nothing bound to the earlier one, and one
+                // naming no case, or another, closes nothing here
                 let policy = std::json::find_string_field(e.body, "policy");
                 let scope = std::json::find_string_field(e.body, "scope");
-                let bound = accepted && policy == acceptance && len(policy) > 0 && (len(scope) == 0 || scope == case_id);
+                let bound = accepted && policy == acceptance && len(policy) > 0 && scope == case_id;
                 if accepted && !bound {
                     out.found = true;
                     out.refused = out.refused + 1;
-                    out.why = if len(policy) == 0 { "a decision accepted under no named policy" } else if policy != acceptance { "a decision accepted under " + policy + ", not under " + acceptance + " as bound at hand-off" } else { "a decision for " + scope + ", not for this case" };
+                    out.why = if len(policy) == 0 { "a decision accepted under no named policy" }
+                    else if policy != acceptance { "a decision accepted under " + policy + ", not under " + acceptance + " as bound at hand-off" }
+                    else if len(scope) == 0 { "a decision naming no case as its scope" }
+                    else { "a decision for " + scope + ", not for this case" };
                 } else if bound && (len(assignee) == 0 || same_party(reporter, assignee)) {
                     out.found = true;
                     out.valid = true;
