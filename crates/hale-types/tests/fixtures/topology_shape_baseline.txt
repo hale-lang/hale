@@ -96,7 +96,6 @@ crates/hale-cli/tests/imported_literal_fields.rs#4 f2c1228edb650960
 crates/hale-cli/tests/imported_type_annotation.rs#1 865d341109268295
 crates/hale-cli/tests/imported_type_annotation.rs#10 e92f54ce1b8f76b2
 crates/hale-cli/tests/imported_type_annotation.rs#11 1c8d5c8c7b6af6ab
-crates/hale-cli/tests/imported_type_annotation.rs#13 865d341109268295
 crates/hale-cli/tests/imported_type_annotation.rs#2 3e6b288af284a1c2
 crates/hale-cli/tests/imported_type_annotation.rs#3 865d341109268295
 crates/hale-cli/tests/imported_type_annotation.rs#4 1bd587d0d9d00665
@@ -514,7 +513,6 @@ crates/hale-codegen/tests/fixtures/examples/21-arrays/main.hl a8add338efe83746
 crates/hale-codegen/tests/fixtures/examples/22-moving-average/main.hl 4b8efb7eeae71669
 crates/hale-codegen/tests/fixtures/examples/23-ranges/main.hl d3bcd7844b6daf5b
 crates/hale-codegen/tests/fixtures/examples/24-default-params/main.hl 8fae866942aaecbc
-crates/hale-codegen/tests/fixtures/examples/25-imports/notional.hl 1544d50dd09a09f0
 crates/hale-codegen/tests/fixtures/examples/25-imports/types.hl af67c9605fa68550
 crates/hale-codegen/tests/fixtures/examples/26-tuples/main.hl 6857974dfd1094db
 crates/hale-codegen/tests/fixtures/examples/27-strings/main.hl cfdc286c77837eaa
@@ -583,7 +581,6 @@ crates/hale-codegen/tests/fixtures/examples/hello-world/main.hl 3da7113b0fcd2386
 crates/hale-codegen/tests/fixtures/examples/http-hello/main.hl da168cf567d77adb
 crates/hale-codegen/tests/fixtures/examples/io-demo/main.hl 2e55e671c01349f5
 crates/hale-codegen/tests/fixtures/examples/multi-file-seed/greet.hl 7be704260b632f4e
-crates/hale-codegen/tests/fixtures/examples/multi-file-seed/main.hl 59b52d815a9785d5
 crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl eb9e9d20ee149284
 crates/hale-codegen/tests/float_to_int_cast.rs#0 865d341109268295
 crates/hale-codegen/tests/float_to_int_cast.rs#1 865d341109268295
@@ -721,11 +718,7 @@ crates/hale-codegen/tests/generics.rs#12 10d51cb9d3c7c7f9
 crates/hale-codegen/tests/generics.rs#13 10d51cb9d3c7c7f9
 crates/hale-codegen/tests/generics.rs#14 9909d658a96fc23d
 crates/hale-codegen/tests/generics.rs#17 f2c1228edb650960
-crates/hale-codegen/tests/generics.rs#18 f2c1228edb650960
-crates/hale-codegen/tests/generics.rs#19 f2c1228edb650960
-crates/hale-codegen/tests/generics.rs#20 f2c1228edb650960
 crates/hale-codegen/tests/generics.rs#21 865d341109268295
-crates/hale-codegen/tests/generics.rs#23 f2c1228edb650960
 crates/hale-codegen/tests/generics.rs#3 edfde85fd3a0c1f3
 crates/hale-codegen/tests/generics.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/generics.rs#5 3089c600ae8dc10a
@@ -919,8 +912,6 @@ crates/hale-codegen/tests/module_decls.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/module_decls.rs#5 06275eefe8969f6c
 crates/hale-codegen/tests/module_decls.rs#6 8e9ab37deede98cd
 crates/hale-codegen/tests/module_decls.rs#9 f559439edf093aeb
-crates/hale-codegen/tests/multi_file_build.rs#1 59b52d815a9785d5
-crates/hale-codegen/tests/multi_file_build.rs#3 0a8aacc95650aae4
 crates/hale-codegen/tests/nested_long_lived_child.rs#0 477865f8b91baeea
 crates/hale-codegen/tests/nested_long_lived_child.rs#1 a79d0bb96c962178
 crates/hale-codegen/tests/nested_long_lived_child.rs#2 e700cea2b0470259
@@ -1191,7 +1182,6 @@ crates/hale-codegen/tests/string_builder.rs#5 865d341109268295
 crates/hale-codegen/tests/string_escapes.rs#0 865d341109268295
 crates/hale-codegen/tests/string_escapes.rs#1 865d341109268295
 crates/hale-codegen/tests/string_escapes.rs#2 f2c1228edb650960
-crates/hale-codegen/tests/string_escapes.rs#5 16591cb99457b47f
 crates/hale-codegen/tests/struct_layout_with_i128.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/struct_layout_with_i128.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
@@ -1426,10 +1416,6 @@ crates/hale-types/tests/fstring_diagnostics.rs#23 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#3 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#7 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#9 f2c1228edb650960
-crates/hale-types/tests/generic_call_check.rs#1 865d341109268295
-crates/hale-types/tests/generic_call_check.rs#2 865d341109268295
-crates/hale-types/tests/generic_call_check.rs#3 cbcdad7f0c82cc5e
-crates/hale-types/tests/generic_call_check.rs#5 865d341109268295
 crates/hale-types/tests/hot_path_alloc.rs#0 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#1 8b5c9b6ca27eb054
 crates/hale-types/tests/hot_path_alloc.rs#12 678daa9dc7711745

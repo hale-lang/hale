@@ -125,9 +125,9 @@ piece of work.
 
 ## Calling a name nothing declares
 
-`hale check <directory>` holds a call to the same standard as a
-read: the callee has to name something. A misspelled call is an
-error at the call, not a mystery from the backend later:
+A call is held to the same standard as a read: the callee has to
+name something. A misspelled call is an error at the call, not a
+mystery from the backend later:
 
 ```text
 main.hl:12:14: type error: call to `celcius_to_f`: no free fn,
@@ -182,8 +182,10 @@ intrinsic. See
 *[Collections](../everyday/collections.md)*.
 
 Like the unknown-identifier rule, this one wants the whole
-program, so it's on for `hale check <directory>`. One file of a
-multi-file project checked on its own stays permissive: it may
-well be calling something its sibling declares.
+program, so it's on for `hale check <directory>` and for every
+build — `build`, `run` and `test` compile exactly what they bundle,
+so the line you read is the same one `check` would have shown you.
+One file of a multi-file project checked on its own stays
+permissive: it may well be calling something its sibling declares.
 
 Next: [Control flow](./control-flow.md).

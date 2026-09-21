@@ -129,6 +129,10 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     };
     // Diagnostic fixtures are SUPPOSED to fail; their being
     // unbuildable is not a divergence.
+    //
+    // `check_program` holds the whole-program rules since GH #911 B1,
+    // so this reads the corpus exactly as `hale check <dir>` reads a
+    // seed — which is the comparison the ratchet is for.
     if hale_types::check_program(&program).iter().any(|d| d.is_error()) {
         return Verdict::Skipped("the checker rejects it");
     }
@@ -416,6 +420,21 @@ fn an_entry_point_less_program_is_built() {
     }
 }
 
+/// The check with the whole-program rules OFF — what a caller holding
+/// a fragment gets, and what `check_program` was before GH #911 B1.
+///
+/// One caller below needs it: a sweep whose subject is "the programs
+/// the strict rule refuses" cannot use the strict rule to decide which
+/// programs to consider.
+fn permissive_check(
+    program: &hale_syntax::ast::Program,
+) -> Vec<hale_syntax::Diag> {
+    let mut programs: BTreeMap<String, &hale_syntax::ast::Program> =
+        BTreeMap::new();
+    programs.insert(String::new(), program);
+    hale_types::check_bundle_opts(&hale_types::Bundle::new(programs), false)
+}
+
 /// The bare name in ``call to `X`: no free fn, generic fn or
 /// fn-pointer binding with that name is in scope``, if that is what
 /// this diagnostic is.
@@ -465,10 +484,15 @@ fn strict_check_refuses_nothing_the_build_accepts() {
         };
         // Diagnostic fixtures already fail the permissive check; the
         // strict rule's opinion of them is beside the point.
-        if hale_types::check_program(&program)
-            .iter()
-            .any(|d| d.is_error())
-        {
+        //
+        // PERMISSIVE on purpose, and load-bearing: this test asks
+        // "which programs does the strict rule refuse, and does the
+        // build accept any of them", so a prefilter that already holds
+        // the strict rule would skip exactly the programs the test
+        // exists to compile and pass forever on an empty set. That is
+        // why it cannot be `check_program`, which has held the
+        // whole-program rules since GH #911 B1.
+        if permissive_check(&program).iter().any(|d| d.is_error()) {
             continue;
         }
         if !has_entry_point(&program) {
@@ -515,6 +539,19 @@ fn strict_check_refuses_nothing_the_build_accepts() {
         swept > 200,
         "only {} check-clean buildable programs swept — the corpus walk \
          is broken, not the compiler",
+        swept
+    );
+
+    // And a walk that refuses NOTHING builds nothing, so it proves
+    // nothing. This is the vacuity the prefilter above can cause: hold
+    // the strict rule there and every program the rule would refuse is
+    // skipped before it is reached, leaving an empty set that passes
+    // forever.
+    assert!(
+        refused > 0,
+        "{} programs swept and the strict rule refused none of them — \
+         the prefilter is holding the rule this test exists to isolate, \
+         so nothing was built and nothing was proven",
         swept
     );
 

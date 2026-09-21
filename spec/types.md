@@ -801,14 +801,22 @@ parser gives them their own syntax rather than a call, so they are
 never a bare callee. `__fmt`, the desugaring of `f"{x:spec}"`, is
 the compiler's own and is not written by hand.)
 
-When a **whole seed** is checked (`hale check <directory>`, which is
-what a build compiles and what the organization's gate runs), any
+In a **whole program** — every import resolved, which is `hale check
+<directory>` (the seed, and what the organization's gate runs), every
+command that compiles (`hale build` / `hale run` / `hale test` /
+`hale replay` compile exactly what they bundle) and `hale lsp` — any
 other bare callee is a type error — `call to X: no free fn, generic
 fn or fn-pointer binding with that name is in scope`, with a
-did-you-mean over the program's fns — rather than an `Unknown` that
-`hale build` refuses later. One file checked alone, or a partial
-program a harness assembles, keeps the permissive reading: it may
-call what a sibling file defines (dna/FRICTION.md F.18).
+did-you-mean over the program's fns. One file checked alone, or a
+partial program a harness assembles, keeps the permissive reading: it
+may call what a sibling file defines (dna/FRICTION.md F.18).
+
+The rule was on for the seed check alone until GH #911 B1, so the
+build path let the call through to codegen, which refused it as
+`unsupported in codegen v0: call to X: …` — from a layer below the one
+that had just approved the program, with no file, line or caret, and a
+did-you-mean drawn from compiler-internal symbols. The two layers gave
+two answers to one question; they now give the located one.
 
 The list is a contract in **both** directions, and neither is
 optional.

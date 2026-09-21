@@ -33,11 +33,11 @@
 //! `hale-corpus` scrapes `r#"…"#` literals out of test sources and
 //! feeds every one that looks like a program to the corpus-wide
 //! properties — including `corpus_check_build_agreement`, which
-//! typechecks each one PERMISSIVELY and then builds it. A negative
-//! fixture for this rule is exactly the shape that sweep records as a
-//! new divergence, so writing these as raw strings would harvest the
-//! rule's own counterexamples into its own ratchet. Do not "tidy"
-//! them into raw strings.
+//! typechecks each one and then builds it, and the topology baseline,
+//! which stamps an artifact identity for each. A negative fixture for
+//! this rule has no business in either, so writing these as raw
+//! strings would harvest the rule's own counterexamples into the
+//! gates the rule is judged by. Do not "tidy" them into raw strings.
 
 use std::collections::BTreeMap;
 
@@ -182,19 +182,42 @@ fn the_diagnostic_is_a_located_type_error() {
 
 /// One file of a multi-file seed keeps the permissive reading: the
 /// type may be declared by a sibling this check was not handed.
-/// `check_program` is that caller — `hale check <file>`, a harness's
-/// partial program, a styleguide snippet.
+/// `check_bundle_opts` is that caller — `hale check <file>`, a
+/// harness's partial program, a styleguide snippet.
+///
+/// `check_program` was that caller too until GH #911 B1. It is not one
+/// any more: one `Program` has no sibling it could be missing, so it
+/// holds the whole-program rules and a caller that means "a fragment"
+/// says so by asking for the partial check. Both readings are pinned
+/// here, because the one thing that must not happen is for them to
+/// become the same reading by accident.
 #[test]
 fn one_file_checked_alone_stays_permissive() {
     let prog = parse_source(FIVE_POSITIONS).expect("parse failed");
-    let errors: Vec<String> = check_program(&prog)
-        .into_iter()
-        .filter(|d| d.is_error())
-        .map(|d| d.message)
-        .collect();
+    let mut programs: BTreeMap<String, &hale_syntax::ast::Program> =
+        BTreeMap::new();
+    programs.insert("main.hl".to_string(), &prog);
+    let errors: Vec<String> =
+        hale_types::check_bundle_opts(&Bundle::new(programs), false)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message)
+            .collect();
     assert!(
         errors.is_empty(),
         "a partial program keeps the Unknown tolerance: {errors:?}"
+    );
+
+    // And the whole-program entry refuses the same bytes, at the name.
+    let refused: Vec<String> = check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error() && d.message.starts_with("unknown type `"))
+        .map(|d| d.message)
+        .collect();
+    assert!(
+        !refused.is_empty(),
+        "`check_program` holds the whole-program rules (GH #911 B1) — a \
+         bare type name nothing declares is an error there"
     );
 }
 
