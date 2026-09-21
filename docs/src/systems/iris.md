@@ -17,6 +17,14 @@ open http://127.0.0.1:8787
 `hale iris` beside it for the program's lifetime. Nothing reaches
 the program's own argv; the flag is consumed by `hale run`.
 
+The session's lifetime is bounded by `hale`'s. Kill the `hale run`
+— `timeout`, a CI cancel, Ctrl-C — and the observer goes with it;
+there is never a session left listening that only you know to kill.
+It writes to its own pipe, which `hale` relays to its stderr, so
+the program's stdout stays the program's: `hale run --observe
+prog.hl | cat` gives you the program's output and returns when the
+program does.
+
 ## The commands
 
 ```

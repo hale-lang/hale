@@ -302,7 +302,9 @@ layout is the iris observation protocol — the canonical contract
 is `spec/runtime.md` § *Native observation emission*; iris is
 the reference consumer and ships in the binary — `hale run
 --observe prog.hl` runs the program with the segment published
-and an observer beside it (see [Iris](./iris.md)). Knobs:
+and an observer beside it (see [Iris](./iris.md)): one whose
+lifetime is bounded by that `hale`, and whose own output goes to
+stderr rather than into the program's stdout. Knobs:
 `LOTUS_OBS_RINGS` (default 8), `LOTUS_OBS_SLOTS` (default 4096).
 
 **Cross-process edges opt into the wire.** The `(origin, seq)`
