@@ -933,6 +933,18 @@ mod tests {
         check_program(&p)
     }
 
+    /// The single-FILE check: what `hale check <file>` runs on one
+    /// file of a multi-file seed. Since GH #911 B1 `check_program` is
+    /// the whole-program (strict) entry, so a test whose program
+    /// leans on a declaration another seed would supply — an import
+    /// alias it never declares — belongs here.
+    fn check_single_file(src: &str) -> Vec<Diag> {
+        let p = parse_source(src).expect("parses");
+        let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
+        programs.insert(String::new(), &p);
+        check_bundle(&Bundle::new(programs))
+    }
+
     #[test]
     fn ok_simple_locus() {
         let src = r#"
@@ -2733,7 +2745,11 @@ mod tests {
             }
             fn main() { Pub { }; }
         "#;
-        let diags = check(src);
+        // `src::` is declared by no seed in this one-file program, so
+        // the whole-program rule (GH #911 B2) refuses it there — as it
+        // should. The send-LHS resolution this test pins is a
+        // single-file question.
+        let diags = check_single_file(src);
         assert!(
             diags.is_empty(),
             "expected cross-seed send to typecheck cleanly; got: {:?}",
