@@ -62,6 +62,21 @@ fixture as "the service never came up" (GH #873). Give each
 service of one fixture its own `index` — closing the probe frees
 the port again, so the same index answers the same port twice.
 
+A fixture's scratch root comes from `dna::scratch_root("<what>")`
+and goes at the end through `dna::scratch_done(root)` (GH #909).
+`scratch_root` makes `/tmp/dna-<what>-<pid>` and records it with
+the slice that started the fixture, so a fixture killed before its
+end still has its root collected — the suite sweeps the roots
+carrying its own `HALE_DNA_SUITE_TAG` when the slice ends, however
+it ends, and never a root it did not stamp. To look at what a
+fixture built, run it under `HALE_DNA_KEEP_SCRATCH=1`: both the
+fixture and the sweep leave everything where it is, and the
+fixture says where.
+
+```sh
+HALE_DNA_KEEP_SCRATCH=1 hale test dna/tests/<name>_test.hl
+```
+
 The repo also tests the language *in* the language:
 
 ```sh

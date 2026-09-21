@@ -41,8 +41,7 @@ main locus App {
         std::time::sleep(150ms);
     }
     run() {
-        let repo = "/tmp/dna-super-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("super");
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
@@ -75,7 +74,7 @@ main locus App {
         self.approve(e2);
         std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 3, "E' ratified");
         std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, d, "and D retired: one version in force");
-        let rm = dna::run_tool("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

@@ -117,8 +117,7 @@ main locus App {
     }
     placement { srv: cooperative(pool = io); }
     run() {
-        let scratch = "/tmp/dna-principal-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("principal");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
@@ -230,7 +229,7 @@ main locus App {
         std::test::assert_eq_int(curl("GET", ui + "/api/board", cookie, "").status, 401, "the old session answers nothing");
 
         let stop = dna::run_tool("kill\n" + pid);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

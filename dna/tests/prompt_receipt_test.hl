@@ -71,8 +71,7 @@ main locus App {
         return out;
     }
     run() {
-        let scratch = "/tmp/dna-prompt-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("prompt");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nreceipts");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/receipts";
@@ -149,7 +148,7 @@ main locus App {
         let grep = in_dir(app, "sh\n-c\ngit for-each-ref --format='%(refname)' refs/dna/receipts/ | while read r; do git cat-file -p \"$r\"; done | grep -c 'account 4411' || true");
         std::test::assert_eq_str(dna::trim_nl(grep.stdout), "0", "no receipt anywhere in the record carries the customer text");
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

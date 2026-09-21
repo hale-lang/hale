@@ -185,8 +185,7 @@ main locus App {
         let c3 = in_dir(dir, "git\nconfig\ndna.owner.key\n" + key);
     }
     run() {
-        let scratch = "/tmp/dna-two-owners-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("two-owners");
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
@@ -279,6 +278,7 @@ main locus App {
         let k1 = dna::run_tool("kill\n" + pid_b);
         let rest = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do cd \"$d\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; done; true\nsh\n" + app + "\n" + other);
         let k2 = dna::run_tool("kill\n" + kpid);
+        dna::scratch_done(scratch);
     }
 }
 fn main() { App { }; }

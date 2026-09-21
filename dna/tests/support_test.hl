@@ -1,10 +1,12 @@
 // dna/tests/support_test.hl — what the other fixtures stand on: the
-// port a fixture's service may have (GH #873).
+// port a fixture's service may have (GH #873) and the scratch root it
+// works in (GH #909).
 //
 // Cheap by construction: nothing is scaffolded, built or booted here.
-// What it pins is the helper sixty other fixtures lean on, so a break
-// in it is one named failure instead of "the service never came up"
-// everywhere at once.
+// What it pins are the two helpers the other fixtures lean on — seven
+// take a port, forty-seven a scratch root — so a break in either is
+// one named failure instead of "the service never came up" everywhere
+// at once, or 2.2 GB of `/tmp`.
 
 import "../core" as dna;
 
@@ -29,6 +31,52 @@ main locus App {
         std::test::assert(next != a, "a port in use is not handed out: index 0 answered " + to_string(a) + " and, with it held, " + to_string(next));
         std::test::assert(next >= 30000 && next < 47000, "and what it stepped to is still in range: " + to_string(next));
         std::io::tcp::__close_fd(held);
+
+        // ---- GH #909: the scratch root is made, recorded and removed
+        let s = dna::scratch_root("support");
+        std::io::fs::write_file(s + "/what-the-fixture-built", "x") or discard;
+        std::test::assert((std::io::fs::list_dir_count(s) or - 1) == 1, "the root is made, and the fixture works in it: " + s);
+        // under a slice, the root is recorded so a fixture that dies
+        // before its end still gets it collected; by hand there is no
+        // slice and nobody sweeps
+        let reg = dna::scratch_registry();
+        let entry = reg + "/" + dna::scratch_name(s);
+        if len(reg) > 0 {
+            std::test::assert(std::io::fs::file_exists(entry), "the slice that started this fixture has the root recorded: " + entry);
+            std::test::assert_eq_str(std::io::fs::read_file(entry) or "", s, "and the entry holds the root's path, so the sweep never guesses one");
+        }
+        dna::scratch_done(s);
+        std::test::assert((std::io::fs::list_dir_count(s) or - 1) < 0, "the root goes when the fixture is done with it: " + s);
+        if len(reg) > 0 {
+            std::test::assert(!std::io::fs::file_exists(entry), "and its record with it, so the slice's sweep has nothing left to do: " + entry);
+        }
+
+        // A root can survive its own removal: a host or a body still on
+        // its way down writes the directory back underneath the `rm`,
+        // which is how `relayrepeat` left a skeleton behind a passing
+        // run. Then the record must STAY, so the slice's sweep — which
+        // runs once everything the fixture started is gone — takes what
+        // the fixture could not. A directory `rm` cannot empty stands
+        // in for the race here.
+        let again = dna::scratch_root("support-survivor");
+        let rec = reg + "/" + dna::scratch_name(again);
+        std::io::fs::mkdir(again + "/held") or discard;
+        let lock = dna::run_tool("chmod\n500\n" + again);
+        dna::scratch_done(again);
+        let survived = (std::io::fs::list_dir_count(again) or - 1) >= 0;
+        let recorded = std::io::fs::file_exists(rec);
+        // unlocked before anything can fail, so this fixture cannot be
+        // the one that leaves a root even the sweep may not remove
+        let unlock = dna::run_tool("chmod\n700\n" + again);
+        std::test::assert(survived, "the root this one cannot remove is still standing: " + again);
+        if len(reg) > 0 {
+            std::test::assert(recorded, "…so it stays on the slice's list for the sweep: " + rec);
+        }
+        dna::scratch_done(again);
+        std::test::assert((std::io::fs::list_dir_count(again) or - 1) < 0, "and goes when it can: " + again);
+        if len(reg) > 0 {
+            std::test::assert(!std::io::fs::file_exists(rec), "with its record: " + rec);
+        }
     }
 }
 

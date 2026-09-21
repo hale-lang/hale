@@ -138,6 +138,90 @@ fn unscoped_leftover_processes() -> Vec<String> {
     left
 }
 
+/// Where a fixture of this slice records the scratch root it made (GH
+/// #909): `/tmp/dna-suite-<tag>`, one file per root, holding that
+/// root's path. `dna::scratch_root` writes the entry and
+/// `dna::scratch_done` drops it, so what is still here when the slice
+/// ends is exactly the roots of fixtures that never reached their end
+/// — a failed assertion, a kill, a crash.
+///
+/// A literal `/tmp`, as the fixtures' own roots are and as
+/// [`dna_scratch_root`] above reads them out of a command line.
+fn scratch_registry(tag: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/dna-suite-{tag}"))
+}
+
+/// Whether a scratch root is kept for inspection instead of removed —
+/// `dna::keep_scratch()` on the fixture's side, one value deciding
+/// both, since a suite that swept up behind the fixture that honoured
+/// the knob would be no knob at all.
+fn keep_scratch() -> bool {
+    std::env::var("HALE_DNA_KEEP_SCRATCH").map_or(false, |v| !v.is_empty() && v != "0")
+}
+
+/// Remove the scratch roots THIS slice's fixtures recorded, and the
+/// registry with them; the roots removed, for the report.
+///
+/// Never a root this slice did not stamp: a neighbouring slice's
+/// registry carries a different tag, another checkout's DNA run on
+/// this box carries a different tag, and a directory a developer left
+/// under `/tmp/dna-` is in no registry at all. And never a path that
+/// is not shaped like a fixture's root — an entry is a path read off
+/// disk driving a recursive remove, so `/tmp/dna-<name>` directly
+/// under `/tmp`, with no `..` in it, is the whole of what is acted on.
+///
+/// `keep` is passed rather than read here so the regression below can
+/// exercise both answers without mutating this process's environment
+/// (GH #843).
+fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
+    if keep {
+        return Vec::new();
+    }
+    let reg = scratch_registry(tag);
+    let Ok(entries) = std::fs::read_dir(&reg) else { return Vec::new() };
+    let mut swept = Vec::new();
+    for e in entries.flatten() {
+        let Ok(root) = std::fs::read_to_string(e.path()) else { continue };
+        let root = root.trim().to_string();
+        if !root.starts_with("/tmp/dna-") || root.contains("..") || root.matches('/').count() != 2 {
+            continue;
+        }
+        if std::fs::remove_dir_all(&root).is_ok() {
+            swept.push(root);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&reg);
+    swept.sort();
+    swept
+}
+
+/// The slice's scratch roots, swept when the slice ends however it
+/// ends (GH #909). A `Drop`, like [`SliceKnowledgeDb`], so a fixture's
+/// failed assertion — which unwinds out of the slice — leaves the box
+/// as the slice found it too. Developer boxes are not ephemeral: the
+/// fixtures had left 953 directories totalling 2.2 GB on one.
+///
+/// It runs after the leftover-process guard on the way out, so a
+/// leaked process is still attributed to the root that owns it; a
+/// process whose root has gone reads its `cwd` back as `<path>
+/// (deleted)`, which [`dna_scratch_root`] already takes.
+struct SliceScratch {
+    tag: String,
+}
+
+impl Drop for SliceScratch {
+    fn drop(&mut self) {
+        let swept = sweep_scratch_roots(&self.tag, keep_scratch());
+        if !swept.is_empty() {
+            eprintln!(
+                "dna slice: swept {} scratch root(s) no fixture reclaimed (HALE_DNA_KEEP_SCRATCH=1 keeps them):\n  {}",
+                swept.len(),
+                swept.join("\n  ")
+            );
+        }
+    }
+}
+
 /// The DSN `dsn` with its database path replaced by `name`, query
 /// string and all: `postgres://dna:dna@host:5480/dna?sslmode=disable`
 /// with `dna_1234_s2_…` becomes
@@ -331,6 +415,9 @@ fn run_fixture_slice(slice: usize) {
     assert!(!files.is_empty(), "no DNA fixtures under dna/tests");
     let mine: Vec<&PathBuf> = files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).map(|(_, f)| f).collect();
     let tag = slice_tag(slice);
+    // Held to the end of the slice, and dropped on the way out of a
+    // failure too (GH #909).
+    let _scratch = SliceScratch { tag: tag.clone() };
     let db = SliceKnowledgeDb::create(slice);
     // Without one of its own — no postgres DSN, no `psql` — the
     // fixtures get exactly what this process was given.
@@ -487,6 +574,61 @@ fn the_leftover_guard_blames_only_its_own_slice() {
         "slice B left nothing running: neither slice A's leak nor a stranger's process may fail it, got:\n{}",
         left_b.join("\n")
     );
+}
+
+/// GH #909: a slice sweeps the scratch roots its own fixtures recorded
+/// and nothing else. Four cases stand side by side here — a root this
+/// slice stamped, a root a stranger stamped (another checkout's DNA run
+/// on this box), a root under the keep knob, and a registry entry
+/// naming a path that is not a fixture's root at all, which a sweep
+/// driven by a file on disk must refuse to act on.
+///
+/// Cheap by construction: no fixture runs, the roots are empty
+/// directories, and the decoy is the test's own so a broken guard can
+/// only destroy what this test made.
+#[test]
+fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
+    let pid = std::process::id();
+    let (mine, stranger, kept) = (format!("sweep909-mine-{pid}"), format!("sweep909-stranger-{pid}"), format!("sweep909-kept-{pid}"));
+    let root_of = |tag: &str| format!("/tmp/dna-{tag}");
+    // A path that is not a fixture's scratch root, reached from an
+    // entry in THIS slice's own registry: the guard, not the tag, is
+    // what has to refuse it.
+    let decoy = format!("/tmp/e1-909-decoy-{pid}");
+
+    let stamp = |tag: &str, entry: &str, holds: &str| {
+        let reg = scratch_registry(tag);
+        std::fs::create_dir_all(&reg).expect("a slice's scratch registry");
+        std::fs::write(reg.join(entry), holds).expect("a root's registry entry");
+    };
+    for tag in [&mine, &stranger, &kept] {
+        std::fs::create_dir_all(root_of(tag)).expect("a scratch root");
+        std::fs::write(format!("{}/what-the-fixture-built", root_of(tag)), "x").expect("something in it");
+        stamp(tag, &format!("dna-{tag}"), &root_of(tag));
+    }
+    std::fs::create_dir_all(&decoy).expect("the decoy");
+    stamp(&mine, "not-a-scratch-root", &decoy);
+    stamp(&mine, "traversal", &format!("{}/../e1-909-decoy-{pid}", root_of(&mine)));
+
+    let swept = sweep_scratch_roots(&mine, false);
+
+    assert_eq!(swept, vec![root_of(&mine)], "the slice sweeps its own root, and only its own");
+    assert!(!PathBuf::from(root_of(&mine)).exists(), "this slice's root is gone");
+    assert!(PathBuf::from(root_of(&stranger)).exists(), "a root another run stamped is untouched: it is in no registry of ours");
+    assert!(PathBuf::from(&decoy).exists(), "a registry entry naming something that is not a fixture's root is not acted on");
+    assert!(!scratch_registry(&mine).exists(), "and the registry goes with the roots it held");
+
+    // The keep knob, on the same registry shape: nothing removed, and
+    // the registry left for the next sweep that is allowed to.
+    assert!(sweep_scratch_roots(&kept, true).is_empty(), "HALE_DNA_KEEP_SCRATCH sweeps nothing");
+    assert!(PathBuf::from(root_of(&kept)).exists(), "the kept root is still there to look at");
+    assert!(scratch_registry(&kept).exists(), "with its registry entry");
+
+    // The stranger's own slice does sweep it — which is also this
+    // test's cleanup.
+    assert_eq!(sweep_scratch_roots(&stranger, false), vec![root_of(&stranger)], "the slice that stamped it is the one that sweeps it");
+    assert_eq!(sweep_scratch_roots(&kept, false), vec![root_of(&kept)]);
+    let _ = std::fs::remove_dir_all(&decoy);
 }
 
 #[test]

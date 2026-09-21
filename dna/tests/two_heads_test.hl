@@ -142,8 +142,7 @@ main locus App {
         return cookie_line[0..std::str::index_of(cookie_line, ";")];
     }
     run() {
-        let scratch = "/tmp/dna-two-heads-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("two-heads");
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
@@ -244,7 +243,7 @@ main locus App {
 
         let stop = dna::run_tool("kill\n" + pid);
         let stop2 = dna::run_tool("kill\n" + kpid2);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

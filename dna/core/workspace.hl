@@ -201,6 +201,82 @@ fn free_port(index: Int) -> Int {
     return -1;
 }
 
+// ---- where a fixture works (GH #909) ---------------------------------
+
+// A fixture's scratch root: `/tmp/dna-<what>-<pid>`, empty, and its
+// own. Anything left at that path from an earlier run that held this
+// pid goes first, so a fixture never reads a stranger's files.
+//
+// One place knows the shape, because three things read it: the
+// fixture, the suite's leftover-process guard (which attributes a
+// leaked process to the root in its command line, GH #872), and the
+// sweep below.
+fn scratch_root(what: String) -> String {
+    let dir = "/tmp/dna-" + what + "-" + to_string(std::process::pid());
+    let gone = run_tool("rm\n-rf\n" + dir);
+    std::io::fs::mkdir(dir) or discard;
+    scratch_register(dir);
+    return dir;
+}
+
+// Where the slice that started this fixture records the roots it is
+// responsible for: `/tmp/dna-suite-<HALE_DNA_SUITE_TAG>`, one file per
+// root. "" when nothing stamped this process — a fixture run by hand
+// belongs to no slice, and nobody sweeps after it.
+fn scratch_registry() -> String {
+    let tag = trim_nl(std::env::var("HALE_DNA_SUITE_TAG"));
+    if len(tag) == 0 { return ""; }
+    return "/tmp/dna-suite-" + tag;
+}
+
+// The entry in the registry for `dir`, named after the root and
+// holding the root's path. The sweep never has to reconstruct a path
+// from a name, and never touches a root it has no entry for: a
+// neighbouring slice's roots, and another checkout's, carry a
+// different tag or none.
+fn scratch_register(dir: String) {
+    let reg = scratch_registry();
+    if len(reg) == 0 { return; }
+    std::io::fs::mkdir(reg) or discard;
+    std::io::fs::write_file(reg + "/" + scratch_name(dir), dir) or discard;
+}
+
+// The fixture is done with `dir` and passed: the root goes, and its
+// registry entry with it. `HALE_DNA_KEEP_SCRATCH` keeps both and says
+// where the root is, which is the knob for looking at what a fixture
+// built.
+fn scratch_done(dir: String) {
+    if keep_scratch() {
+        println("kept (HALE_DNA_KEEP_SCRATCH): ", dir);
+        return;
+    }
+    let gone = run_tool("rm\n-rf\n" + dir);
+    let reg = scratch_registry();
+    if len(reg) == 0 { return; }
+    // A root can survive its own removal: a host or a body the fixture
+    // started is still on its way down and writes the directory back
+    // underneath the `rm` (`relayrepeat` left a 20K skeleton that way).
+    // The record stays for exactly that case, so the slice's sweep —
+    // which runs once everything the fixture started is gone — takes
+    // it. Dropping the record here regardless is what let one through.
+    if (std::io::fs::list_dir_count(dir) or - 1) >= 0 { return; }
+    std::io::fs::unlink(reg + "/" + scratch_name(dir)) or discard;
+}
+
+// Whether a scratch root is kept for inspection instead of removed.
+// Read by the fixtures AND by the suite's sweep, so one value decides
+// both: a knob that cleaned up behind the fixture that honoured it
+// would be no knob at all.
+fn keep_scratch() -> Bool {
+    let v = trim_nl(std::env::var("HALE_DNA_KEEP_SCRATCH"));
+    return len(v) > 0 && v != "0";
+}
+
+// A root's last path segment, which is what names its registry entry.
+fn scratch_name(dir: String) -> String {
+    return dir[(last_slash(dir) + 1)..len(dir)];
+}
+
 // ---- workspaces ------------------------------------------------------
 
 type Worktree {

@@ -38,8 +38,7 @@ fn rows(repo: String, kind: String) -> Int {
 
 main locus App {
     run() {
-        let scratch = "/tmp/dna-claimexpired-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("claimexpired");
         dna::reap_on_exit(scratch);
         let cache = scratch + "/cache";
         std::io::fs::mkdir(cache) or discard;
@@ -73,7 +72,7 @@ main locus App {
         std::test::assert(std::str::contains(forced.stdout, "body.claimed, forced") && std::str::contains(forced.stdout, gone), "and says whose lease it took: " + forced.stdout);
         std::test::assert(std::str::contains(r.cell("lease/body").text, "\n0"), "the lease is released in the record");
         std::test::assert_eq_int(rows(a, "body.claimed"), 1, "and the claim is a row, in the claimant's name");
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

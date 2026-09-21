@@ -72,7 +72,7 @@ main locus App {
         std::test::assert(r.ok, "seeded " + kind + " " + entity);
     }
     run() {
-        let repo = "/tmp/dna-rw-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("rw");
         self.repo = repo;
         std::io::fs::mkdir(repo) or discard;
         std::io::fs::mkdir(repo + "/app") or discard;
@@ -186,7 +186,7 @@ main locus App {
         let born = self.seq_of("task.born", t5);
         let planned = self.seq_of("task.planned", t5);
         std::test::assert(born >= 0 && planned > born, "the birth precedes the plan in the record");
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

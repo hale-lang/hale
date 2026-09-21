@@ -59,8 +59,7 @@ main locus App {
         core: dna::Dna = dna::Dna { planned: true, org_id: "epoch-placeholder" };
     }
     run() {
-        let scratch = "/tmp/dna-epoch-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("epoch");
         dna::reap_on_exit(scratch);
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nepoch");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
@@ -122,6 +121,7 @@ main locus App {
         let rows = curl("GET", service + "/ledger/rows?from=0", "").body;
         std::test::assert(std::str::contains(rows, "\"entity\": \"t1\"") && std::str::contains(rows, "\"entity\": \"t5\"") && std::str::contains(rows, "\"entity\": \"t7\"") && std::str::contains(rows, "\"entity\": \"i4\"") && !std::str::contains(rows, "\"entity\": \"i3\"") && !std::str::contains(rows, "\"entity\": \"t2\"") && !std::str::contains(rows, "\"entity\": \"t4\"") && !std::str::contains(rows, "\"entity\": \"t6\""), "exactly the admitted writes are rows: " + rows);
         let k = dna::run_tool("kill\n" + kpid);
+        dna::scratch_done(scratch);
     }
 }
 fn main() { App { }; }
