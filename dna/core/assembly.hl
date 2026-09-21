@@ -193,6 +193,37 @@ locus EditAsks { capacity { heap rows of EditAsk; } }
 // the record resumes, or on `redrive` — never by editing again.
 @form(vec)
 locus Reports { capacity { heap rows of AttemptReport; } }
+// Human attempts relayed from the workflow engine (card 16): the ones
+// awaiting the leader's word on who and under what obligation, and the
+// ones the record refused to admit, re-driven by `redrive`.
+@form(vec)
+locus CaseAsks { capacity { heap rows of CaseAsk; } }
+// card 16: the admitted cases whose compatibility rows the record refused
+@form(vec)
+locus HeldRows { capacity { heap rows of String; } }
+
+// The case a human Work's attempt is handed as (card 16): its own Task,
+// `<task>.s<i>.<key>` — the Work's step index and member key under its
+// Task, the child-Task form of §4 — stable across redeliveries, and
+// naming the exact parent Work by construction.
+// The part of an id after its last `/`, the whole id when it has none.
+@unbounded
+fn last_segment(id: String) -> String {
+    let mut start = 0;
+    let mut i = 0;
+    while i < len(id) {
+        if id[i..(i + 1)] == "/" { start = i + 1; }
+        i = i + 1;
+    }
+    return id[start..len(id)];
+}
+fn case_id_of(req: WorkRequest) -> String {
+    if len(req.step_id) == 0 || len(req.work_id) <= len(req.step_id) + 1 { return ""; }
+    let step = last_segment(req.step_id);
+    let key = req.work_id[(len(req.step_id) + 1)..len(req.work_id)];
+    if len(step) == 0 || len(key) == 0 || std::str::contains(key, "/") { return ""; }
+    return req.task_id + "." + step + "." + key;
+}
 
 // The Work whose candidate an `Applied` Work waits on (card 15): named
 // in the request's `target`, as `<step>/<key>` within the same workflow
@@ -208,6 +239,9 @@ fn producer_of(req: WorkRequest) -> String {
     if sl < 0 { return ""; }
     return req.work_id[0..(wf + 1 + sl)] + "/" + req.target;
 }
+
+// What a hand-off binds (card 16).
+type Handoff { assignee: String = ""; retired_assignee: String = ""; practice: String = ""; evidence_required: Bool = false; theirs: String = ""; }
 
 // The two output contracts an edit Work declares (card 15). `Patch` —
 // the default for an edit leaf — is "a candidate prepared for review":
@@ -278,6 +312,10 @@ locus Dna {
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
         pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
+        pending_cases: CaseAsks = CaseAsks { }; // card 16: human attempts awaiting the leader's word on who, and under what obligation
+        held_cases: CaseAsks = CaseAsks { }; // card 16: human attempts whose case the record refused to admit
+        held_rows: HeldRows = HeldRows { }; // card 16: admitted cases whose compatibility rows the record refused; completed on the recovery signals
+        cases_admitted: Int = 0;
         reports_retried: Int = 0;
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
         plans: Int = 0;
@@ -359,6 +397,10 @@ locus Dna {
         // id); its outcome goes back for that exact attempt
         subscribe EditRequested as on_edit_requested where key == self.org_id;
         subscribe RecordResumed as on_record_resumed where key == self.org_id;
+        // card 16: a human leaf of a workflow execution, relayed by the
+        // engine's human performer; the assembly admits its case and hands
+        // it, and the attempt stays out until the person reports it done
+        subscribe CaseRequested as on_case_requested where key == self.org_id;
         subscribe RunLives as on_run_life;
         publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
@@ -1266,6 +1308,19 @@ locus Dna {
     // rather than mutated. Bounded by the Tasks the membrane admits.
     @unbounded
     fn on_planned(p: Plan) {
+        // card 16: a human attempt awaiting the leader's word is handed
+        // as the case the leader described; nothing of the plan runs
+        let mut c = 0;
+        while c < self.pending_cases.len() {
+            let ask = self.pending_cases.get(c) or CaseAsk { };
+            if len(ask.attempt_id) > 0 && ask.request.task_id == p.task_id && ask.request.work_id == p.work_id {
+                self.pending_cases.set(c, CaseAsk { }) or discard;
+                self.plans = self.plans + 1;
+                self.hand_case(ask, p.assignee, p.obligation, "leader", p.narrative);
+                return;
+            }
+            c = c + 1;
+        }
         let mut i = 0;
         let mut found = -1;
         while i < self.pending_plans.len() {
@@ -1355,6 +1410,258 @@ locus Dna {
         if record_refused(out) { self.held_edits.push(e); return; }
         let m = self.mutation_of_attempt(e.attempt_id);
         self.report_prepared(e, m);
+    }
+    // A human leaf's attempt from the workflow engine (card 16): a case
+    // for a person, admitted once per attempt — `case.admitted <case>`,
+    // self-sufficient and versioned, before the rows the tooling of the
+    // day reads (`task.born`, `task.handed`) — and left pending: the
+    // parent Work is done only when the person reports the case done.
+    // Asked again (a redelivery, a later attempt of the Work), the case
+    // is found by its stable identity — the Work's — and its
+    // compatibility rows completed; no second case, no second word from
+    // the leader: the terms bound at admission stand. In an organism the
+    // leader plans for, the leader says who and under what obligation,
+    // as for a job today, once per case; else the case is unassigned.
+    @unbounded
+    fn on_case_requested(c: CaseAsk) {
+        let moved = self.journal.refresh();
+        let req = c.request;
+        let case_id = case_id_of(req);
+        if len(case_id) == 0 {
+            self.membrane.notify("case", "attempt " + c.attempt_id + " names no Work of a step: no case for it");
+            return;
+        }
+        if len(self.recorded_case(case_id)) > 0 || len(self.case_of_attempt(c.attempt_id)) > 0 {
+            let x = self.ensure_case_rows(case_id);
+            return;
+        }
+        if self.planned {
+            // a case already awaiting the leader's word is not asked for twice
+            let mut i = 0;
+            while i < self.pending_cases.len() {
+                let p = self.pending_cases.get(i) or CaseAsk { };
+                if len(p.attempt_id) > 0 && case_id_of(p.request) == case_id { return; }
+                i = i + 1;
+            }
+            self.pending_cases.push(c);
+            PlanRequested <- PlanRequest { org: self.org_id, task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
+            return;
+        }
+        self.hand_case(c, "", "", "", "");
+    }
+    // The case admitted and handed: the admission is the authoritative
+    // row, exact at the revision read, and only then the compatibility
+    // rows; an admission the record refuses holds the attempt for
+    // `redrive`. What the leader proposed (whom, under what obligation)
+    // is one thing; what binds is decided from the reading the append
+    // is exact at — who is admissible now, which practice is in force
+    // now, whose the assignee is — and a stale reading repeats the
+    // decision, not only the write: a retirement that landed between
+    // sends the case to the successor, never to the person retired.
+    // Assignee, obligation, acceptance practice and required evidence
+    // bind as a job's do today; a person of another owner's makes it a
+    // transfer, as today.
+    @unbounded
+    fn hand_case(c: CaseAsk, assignee_named: String, obligation: String, by: String, narrative: String) {
+        let req = c.request;
+        let case_id = case_id_of(req);
+        let mut tries = 0;
+        while tries < 6 {
+            tries = tries + 1;
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if self.has_row("case.admitted", case_id) { let x = self.ensure_case_rows(case_id); return; }
+            let terms = self.handoff_terms(assignee_named, obligation);
+            let body = self.case_body(c, case_id, terms, obligation, by, narrative);
+            let a = self.journal.append_exact(rev, "case.admitted", case_id, body);
+            if a.ok {
+                self.cases_admitted = self.cases_admitted + 1;
+                let x = self.ensure_case_rows(case_id);
+                return;
+            }
+            if a.error != "stale_revision" && a.error != "claimed" {
+                self.record_refusals = self.record_refusals + 1;
+                self.held_cases.push(c);
+                self.membrane.notify("record", "the case of " + req.work_id + " was not admitted by the record (" + a.error + "); held");
+                return;
+            }
+        }
+        self.held_cases.push(c);
+        self.membrane.notify("record", "the case of " + req.work_id + " was not admitted: the record moved too often; held");
+    }
+    // The admission of a case: versioned, self-sufficient, naming its
+    // origin (`owner`) and its disposition (`to`: the owner whose person
+    // takes it, "" for this owner's own).
+    fn case_body(c: CaseAsk, case_id: String, terms: Handoff, obligation: String, by: String, narrative: String) -> String {
+        let req = c.request;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.int_field("version", 1);
+        b.string_field("case_id", case_id);
+        b.string_field("task_id", req.task_id);
+        b.string_field("work_id", req.work_id);
+        b.string_field("attempt_id", c.attempt_id);
+        b.string_field("step_id", req.step_id);
+        b.string_field("objective", req.objective);
+        b.string_field("assignee", terms.assignee);
+        b.string_field("retired_assignee", terms.retired_assignee);
+        b.string_field("obligation", obligation);
+        b.string_field("acceptance", terms.practice);
+        b.bool_field("evidence_required", terms.evidence_required);
+        b.string_field("by", by);
+        b.string_field("narrative", if len(narrative) > 0 { "handed: " + narrative } else { "handed: a person's work" });
+        b.string_field("owner", self.ownership.me);
+        b.string_field("to", terms.theirs);
+        b.end_object();
+        return b.result();
+    }
+    // The compatibility rows of an admitted case, whichever are missing:
+    // `task.born <case>` and `task.handed <case>` (`task.transfer_requested`
+    // where the admission binds a transfer), as the tooling of the day
+    // reads them — written after the admission, and completed at a
+    // restart that fell between. The rows say what the admission
+    // recorded — its origin and its disposition — never what the body
+    // repairing them is: only the recorded owner writes them, and a
+    // transfer is the receiving owner's to hand once a member of theirs
+    // accepts it (`task.transfer_accepted`, `admit_transfers`). A row the
+    // record refuses holds the case for the recovery signals; the
+    // hand-off is announced once it is durable. True when the rows are.
+    @unbounded
+    fn ensure_case_rows(case_id: String) -> Bool {
+        let adm = self.recorded_case(case_id);
+        if len(adm) == 0 { return false; }
+        let origin = std::json::find_string_field(adm, "owner");
+        if origin != self.ownership.me { return false; }
+        let work = std::json::find_string_field(adm, "work_id");
+        // the tooling of the day reads a Task from its birth: the handed
+        // row follows the born row, or waits for the next completion
+        if !self.has_row("task.born", case_id) {
+            let x = self.journal.append(self.journal.revision(), "task.born", case_id, work + ": " + std::json::find_string_field(adm, "objective"));
+            if !x.ok { self.hold_rows(case_id, "task.born", x.error); return false; }
+        }
+        if self.has_row("task.handed", case_id) || self.has_row("task.transfer_requested", case_id) { self.release_rows(case_id); return true; }
+        let assignee = std::json::find_string_field(adm, "assignee");
+        let theirs = std::json::find_string_field(adm, "to");
+        let transfer = len(theirs) > 0;
+        let hb = std::json::Builder { };
+        hb.begin_object();
+        hb.string_field("work", work);
+        hb.string_field("assignee", assignee);
+        let retired = std::json::find_string_field(adm, "retired_assignee");
+        if len(retired) > 0 { hb.string_field("retired_assignee", retired); }
+        hb.string_field("obligation", std::json::find_string_field(adm, "obligation"));
+        hb.string_field("acceptance", std::json::find_string_field(adm, "acceptance"));
+        hb.bool_field("evidence_required", std::str::trim(std::json::find_field_raw(adm, "evidence_required")) == "true");
+        hb.string_field("by", std::json::find_string_field(adm, "by"));
+        hb.string_field("narrative", std::json::find_string_field(adm, "narrative"));
+        hb.string_field("case", case_id);
+        if transfer {
+            hb.string_field("owner", origin);
+            hb.string_field("to", theirs);
+        }
+        hb.end_object();
+        let kind = if transfer { "task.transfer_requested" } else { "task.handed" };
+        let y = self.journal.append(self.journal.revision(), kind, case_id, hb.result());
+        if !y.ok { self.hold_rows(case_id, kind, y.error); return false; }
+        self.release_rows(case_id);
+        if transfer {
+            self.membrane.notify("task", case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept");
+        } else {
+            self.membrane.notify("task", case_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
+        }
+        return true;
+    }
+    // An admitted case whose compatibility row the record refused: held,
+    // once, for `RecordResumed` and `redrive`.
+    @unbounded
+    fn hold_rows(case_id: String, kind: String, why: String) {
+        self.record_refusals = self.record_refusals + 1;
+        self.membrane.notify("record", "the " + kind + " row of case " + case_id + " was refused by the record (" + why + "); held");
+        let mut i = 0;
+        while i < self.held_rows.len() {
+            if (self.held_rows.get(i) or "") == case_id { return; }
+            i = i + 1;
+        }
+        self.held_rows.push(case_id);
+    }
+    @unbounded
+    fn release_rows(case_id: String) {
+        let mut i = 0;
+        while i < self.held_rows.len() {
+            if (self.held_rows.get(i) or "") == case_id { self.held_rows.set(i, "") or discard; }
+            i = i + 1;
+        }
+    }
+    // The held compatibility rows put again: how many cases completed.
+    @unbounded
+    fn retry_rows() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.held_rows.len() {
+            let case_id = self.held_rows.get(i) or "";
+            if len(case_id) > 0 && self.ensure_case_rows(case_id) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // What a hand-off binds (card 16, as a job's today): the assignee —
+    // a retired person's successor, or nobody — the acceptance practice
+    // in force for the obligation now, whether it closes only with
+    // evidence, and which owner the assignee belongs to.
+    fn handoff_terms(assignee_named: String, obligation: String) -> Handoff {
+        let gone = self.retired(assignee_named);
+        let assignee = if gone.retired { self.admissible(assignee_named) } else { assignee_named };
+        let practice = if len(obligation) > 0 { self.practice_in_force("acceptance/" + obligation) } else { "" };
+        let practice_text = if len(practice) > 0 { std::json::find_string_field(self.verification.receipts.read(practice[7..len(practice)]), "text") } else { "" };
+        let theirs = if self.ownership.shared() && len(assignee) > 0 { self.ownership.owner_of_person(assignee) } else { "" };
+        return Handoff {
+            assignee: assignee, retired_assignee: if gone.retired { assignee_named } else { "" },
+            practice: practice, evidence_required: acceptance_requires_evidence(practice_text),
+            theirs: if len(theirs) > 0 && theirs != self.ownership.me { theirs } else { "" }
+        };
+    }
+    // The admission of a case, "" when none.
+    @unbounded
+    fn recorded_case(case_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "case.admitted" && e.entity == case_id { return e.body; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // Whether a Task is a case: admitted as one. A case is a person's,
+    // never an executable root, never legacy edit work.
+    fn case_admitted(task_id: String) -> Bool { return len(self.recorded_case(task_id)) > 0; }
+    // The case admitted for an attempt, "" when none.
+    @unbounded
+    fn case_of_attempt(attempt_id: String) -> String {
+        if len(attempt_id) == 0 { return ""; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "case.admitted" && std::json::find_string_field(e.body, "attempt_id") == attempt_id { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // Every admitted case of this owner's has its compatibility rows: a
+    // restart that fell between the admission and either row completes
+    // them (card 16). Another owner's cases are theirs to complete; a
+    // transfer to this owner is handed by `admit_transfers` once
+    // accepted.
+    @unbounded
+    fn restore_cases() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "case.admitted" { let x = self.ensure_case_rows(e.entity); }
+            i = i + 1;
+        }
     }
     // The outcome of a prepare-candidate attempt, from the durable state
     // of the Mutation bound to it: prepared (in review, escalated,
@@ -1449,7 +1756,9 @@ locus Dna {
     // what waits is looked at again — a producer's held settlement lands
     // now too, and its end announces itself when it does.
     fn on_record_resumed(r: RecordResume) {
+        let moved = self.journal.refresh();
         let n = self.retry_reports();
+        let rows = self.retry_rows();
         self.revisit_waiting();
     }
     // The disposition a Work settled on (`work.settled`), "" while it has
@@ -1585,8 +1894,21 @@ locus Dna {
     // How many were driven.
     @unbounded
     fn redrive() -> Int {
+        let moved = self.journal.refresh();
         let mut n = self.retry_reports();
+        n = n + self.retry_rows();
         self.revisit_waiting();
+        let cases = self.held_cases.len();
+        let mut h = 0;
+        while h < cases {
+            let c = self.held_cases.get(h) or CaseAsk { };
+            if len(c.attempt_id) > 0 {
+                self.held_cases.set(h, CaseAsk { }) or discard;
+                self.on_case_requested(c);
+                n = n + 1;
+            }
+            h = h + 1;
+        }
         let edits = self.held_edits.len();
         let mut k = 0;
         while k < edits {
@@ -3013,6 +3335,7 @@ locus Dna {
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
+        self.restore_cases();
         self.pend_born_tasks();
         self.reconcile_effects();
         self.fail_in_flight();
@@ -3215,7 +3538,7 @@ locus Dna {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "task.born" && self.task_state(e.entity) == "" && !self.workflow_admitted(e.entity) {
+            if e.kind == "task.born" && self.task_state(e.entity) == "" && !self.workflow_admitted(e.entity) && !self.case_admitted(e.entity) {
                 let x = self.journal.append(self.journal.revision(), "task.pending", e.entity, "after a restart: born, and not yet pending when the organization stopped");
             }
             i = i + 1;
@@ -3237,7 +3560,8 @@ locus Dna {
             // card 07: a Task with an authoritative admission is a workflow
             // execution, never legacy edit work — with or without its
             // `task.born` summary, and whatever its legacy state says
-            if e.kind == "task.born" && !self.workflow_admitted(e.entity) {
+            // card 16: a case is a person's — handed, never edit work
+            if e.kind == "task.born" && !self.workflow_admitted(e.entity) && !self.case_admitted(e.entity) {
                 let id = e.entity;
                 let state = self.task_state(id);
                 if state == "pending" || state == "" {
