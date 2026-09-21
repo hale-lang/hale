@@ -2826,6 +2826,23 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
+The cockpit's head (`dna/api/project_service`, `iris/cockpit/start.sh
+[project]`) is the surface's counterpart for the operator's machine:
+one loopback process that serves the browser shell, keeps a registry
+of projects and a journal of receipts under a state directory, and
+proxies the Record's read and command routes to a per-project API
+child it starts and replaces. Its own operations — create, init,
+attach, detach, forget, sync, publish, forge, the local body, the
+remote body, secrets by source name, the model probe, connections,
+handoffs, the observer — are the CLI's verbs run detached with a
+pid, an exit code and a log as files, and each answers a receipt
+(`recorded → admitted|refused → running → succeeded|failed|outcome_unknown`)
+under a `command-<digest>` identity that replays on an identical
+retry and conflicts on a changed one. A run that passes its deadline
+is `outcome_unknown` when the verb reaches beyond this machine, never
+`failed`; the head appends nothing to any record itself. It is
+trusted-local and refuses an `oidc` project.
+
 What is deliberately not here yet: a fleet-level semantic diff (a
 Review's diff is the edited seed's; the deploy row names the instances
 it reaches), pressure raised from services' typed metrics (`hale dna

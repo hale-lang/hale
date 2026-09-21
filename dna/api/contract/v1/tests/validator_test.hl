@@ -247,6 +247,79 @@ locus Cases {
         self.expect("KnowledgeBasis", self.field(basis, "routing_version", "\"1\""), false, "adopted Ledger requires both captured fields");
         self.expect("KnowledgeBasis", self.field(basis, "visibility_ledger_head", "\"unpaired\""), false, "Record-only view has no Ledger claim");
     }
+    // The head's four paths and seven definitions (GH #965): the envelope
+    // is not a Record envelope, the request's arguments are closed (a
+    // secret request can never carry a value), the state set is fixed,
+    // and the OpenAPI describes the command headers, the count and the
+    // read-only recovery exactly as for the Record commands.
+    fn head_cases() {
+        self.expect("HeadResponse", self.example("head-detached"), true, "detached head state");
+        self.expect("HeadResponse", self.example("head-attached"), true, "attached head state");
+        let detached = self.example("head-detached");
+        self.expect("HeadResponse", self.field(detached, "source", "{\"record_id\":\"x\",\"record_head\":\"y\",\"record_revision\":\"1\"}"), false, "a head envelope is not a Record envelope");
+        let identity = std::json::find_field_raw(detached, "head");
+        self.expect("HeadResponse", self.field(detached, "head", self.field(identity, "profile", "\"dna.head.v2\"")), false, "the head profile is fixed");
+        self.expect("HeadResponse", self.field(detached, "head", self.field(identity, "principal", "{\"mode\":\"position\",\"name\":\"riley\"}")), false, "the head principal is an authenticated mode");
+        let state = std::json::find_field_raw(detached, "data");
+        self.expect("HeadState", self.field(state, "state", "\"attaching\""), false, "unknown head state");
+        self.expect("HeadState", self.field(state, "operations", "[]"), false, "every operation is listed");
+        self.expect("HeadProjectsResponse", self.example("head-projects-list"), true, "registry list");
+        self.expect("HeadProjectsResponse", self.example("head-project-detail"), true, "registry detail with projections");
+        let request = self.example("head-secret-by-source-request");
+        self.expect("HeadCommandRequest", request, true, "a secret names its source");
+        let arguments = std::json::find_field_raw(request, "arguments");
+        self.expect("HeadCommandRequest", self.field(request, "arguments", self.field(arguments, "value", "\"sk-never\"")), false, "a secret request never carries a value");
+        self.expect("HeadCommandRequest", self.field(request, "arguments", self.field(arguments, "source", "{\"kind\":\"stdin\",\"name\":\"X\"}")), false, "a source is a file or an env name");
+        self.expect("HeadCommandRequest", self.field(request, "operation_version", "1"), false, "operation version remains a string");
+        self.expect("HeadCommandRequest", self.field(request, "operation", "\"dna.project.delete\""), false, "unknown head operation");
+        self.expect("HeadCommandRequest", self.field(request, "request_id", "\"\""), false, "request identity cannot be empty");
+        self.expect("HeadCommandRequest", self.field(request, "actor", "\"caller-selected\""), false, "injected actor");
+        let context = std::json::find_field_raw(request, "context");
+        self.expect("HeadCommandRequest", self.field(request, "context", self.field(context, "head", "\"remote\"")), false, "the head context is local");
+        let receipt = self.example("head-command-succeeded");
+        let data = std::json::find_field_raw(receipt, "data");
+        self.expect("HeadCommandResponse", receipt, true, "succeeded receipt with record evidence");
+        self.expect("HeadCommandResponse", self.field(receipt, "data", self.field(data, "state", "\"published\"")), false, "publication is not a receipt state");
+        self.expect("HeadCommandResponse", self.field(receipt, "data", self.field(data, "run", "")), false, "a receipt always says how it ran, or null");
+        self.expect("HeadCommandResponse", self.field(receipt, "data", self.field(data, "run", "null")), true, "an inline receipt has no run");
+        self.expect("HeadCommandResponse", self.example("head-command-outcome-unknown"), true, "an external deadline is outcome_unknown");
+        self.expect("HeadCommandResponse", self.example("head-command-refused"), true, "a refusal is a receipt");
+        self.expect("HeadLogResponse", self.example("head-log-page"), true, "a log page");
+        let page = std::json::find_field_raw(self.example("head-log-page"), "data");
+        self.expect("HeadLogPage", self.field(page, "offset", "-1"), false, "offsets are non-negative");
+        // OpenAPI: the head command path mirrors the Record command path.
+        let files = wire_contract::ContractFiles { root: self.root };
+        let spec = std::io::fs::read_file(self.root + "/openapi.json") or raise;
+        let paths = std::json::find_field_raw(spec, "paths");
+        let head_path = "/api/hale/v1/head/commands";
+        let command = std::json::find_field_raw(paths, head_path);
+        let post = std::json::find_field_raw(command, "post");
+        let get = std::json::find_field_raw(command, "get");
+        std::test::assert(files.openapi(spec, self.schema).ok, files.openapi(spec, self.schema).error);
+        let no_origin = self.field(command, "post", self.field(post, "parameters", "[{\"name\":\"X-Hale-Command\",\"in\":\"header\",\"required\":true,\"schema\":{\"type\":\"string\",\"const\":\"1\"}}]"));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, no_origin)), self.schema).ok, "head command submission requires Origin");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, "/api/hale/v1/head/logs", "")), self.schema).ok, "the head path count is pinned");
+        let body = std::json::find_field_raw(post, "requestBody");
+        let get_body = self.field(command, "get", self.field(get, "requestBody", body));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, get_body)), self.schema).ok, "head recovery is a read without a command body");
+        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/CommandRequest\"}}}");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, self.field(command, "post", self.field(post, "requestBody", wrong_body)))), self.schema).ok, "the head request is its own envelope");
+        let projects_path = "/api/hale/v1/head/projects";
+        let projects = std::json::find_field_raw(paths, projects_path);
+        let projects_get = std::json::find_field_raw(projects, "get");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, projects_path, self.field(projects, "get", self.field(projects_get, "parameters", "[]")))), self.schema).ok, "the projects read declares its optional id");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, projects_path, self.field(projects, "post", post))), self.schema).ok, "head reads take no submission");
+        // The closed arguments are what keeps a value off the wire: opened,
+        // the fixture batch loses its negative and is refused.
+        let defs = std::json::find_field_raw(self.schema, "$defs");
+        let request_def = std::json::find_field_raw(defs, "HeadCommandRequest");
+        let properties = std::json::find_field_raw(request_def, "properties");
+        let arguments_def = std::json::find_field_raw(defs, "HeadCommandArguments");
+        let open_arguments = self.field(self.schema, "$defs", self.field(defs, "HeadCommandArguments", self.field(arguments_def, "additionalProperties", "")));
+        let opened = files.fixtures(self.fixtures, open_arguments);
+        std::test::assert(!opened.ok && std::str::contains(opened.error, "head-secret-request-with-value"), "open arguments admit a value: " + opened.error);
+        std::test::assert(len(properties) > 0 && len(request_def) > 0, "the head request definition is present");
+    }
     fn file_cases() {
         let files = wire_contract::ContractFiles { root: self.root };
         let result = files.check();
@@ -312,4 +385,5 @@ fn main() {
     suite.knowledge_cases();
     suite.command_cases();
     suite.review_command_cases();
+    suite.head_cases();
 }

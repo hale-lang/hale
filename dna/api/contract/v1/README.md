@@ -660,3 +660,42 @@ unknown outcome with no event/count. Native admission checks the full plan and
 publishes ordinary reassignment facts and retirement together. Empty successors
 require zero held Tasks. The local profile supports at most 32 transfers and
 requires updated Body/CLI writers; it does not claim a cross-store transaction.
+
+## Head
+
+The four `/api/hale/v1/head…` paths belong to the cockpit head (GH #965), the
+trusted-local project service in front of a per-project Record API. They use
+the `HeadEnvelope` shape — `api_version`, `head:{profile:"dna.head.v1",
+principal, active}` and `data` — not a Record `source`, because a head read has
+no Record identity of its own; a head envelope carrying `source` is rejected.
+`HeadResponse` is the head's state (detached or attached, the active project
+and its API child, the body and observer children, credentials **by name only**,
+the running receipt and every operation's availability); `HeadProjectsResponse`
+the registry with per-project detail fields on the exact `?id=` read;
+`HeadLogResponse` one bounded page of a run's or a child's log.
+
+`HeadCommandRequest` is one closed envelope for all twenty-five operations:
+`operation` is the fixed enumeration, `operation_version` the string `"1"`,
+`context.head` the constant `local`, `target` is `dna.head`/`local` for the
+four head-scoped operations and `dna.project`/`<application_id>` otherwise,
+and `arguments` is the closed superset of every operation's arguments — each
+operation admits only its own keys natively, and no operation admits `value`:
+a secret names a `SecretSource` (`file` or `env`, by name). `HeadCommandReceipt`
+folds the receipt journal: `recorded`, `admitted`, `refused`, `running`,
+`succeeded`, `failed` or `outcome_unknown`, with `run` (`run`, `body`,
+`observer` or `inline`; `null` before execution and on a refusal) and an
+operation-specific `outcome` that carries `record:{head_before,head_after,rows}`
+on row-writing operations. Submission answers 200 on a terminal receipt and 202
+otherwise; recovery is `GET …?request_id=` under the head's own principal.
+
+`openapi.json` pins 26 paths: the head command path mirrors the Record command
+path (required `Origin` and `X-Hale-Command` headers, a required
+`HeadCommandRequest` body, 202 declared on submission only, recovery without a
+body), the projects read declares one optional `id`, and the logs read
+`run`, `child` and `offset`. Fixtures cover a detached and an attached state,
+the registry list and detail, create, attach, sync, publish, secret-by-source
+and confirmed-probe requests, running, succeeded, refused and unknown-outcome
+receipts and a log page, plus the negatives: a secret request carrying a
+value, an unknown state, a head envelope with `source`, an injected `actor`
+and a numeric `operation_version`. Scripted conformance proves the wire shape,
+not the native head's durable admission or recovery.

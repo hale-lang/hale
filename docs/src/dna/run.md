@@ -219,3 +219,35 @@ if `dna.oidc.board` lists that name — and a subject you have not mapped
 gets no session at all. The head speaks plain HTTP; put TLS in front of
 it. Without `dna.principal`, the surface trusts whoever can reach it,
 as it always has.
+
+### The cockpit head
+
+`iris/cockpit/start.sh [project]` starts the cockpit's own head,
+`dna/api/project_service`: one loopback process the browser talks
+to, which serves the shell, keeps a registry of your projects, and
+proxies the Record reads and commands to a per-project API child.
+Given no project it starts detached, and the browser's Projects
+workspace is where you begin: create a project (`hale dna new`,
+run for you), initialize an existing checkout (`hale dna init`), or
+attach one that already has a record. Every button is a CLI verb
+the head runs **detached** under `timeout … sh -e` with its pid,
+exit code and log as files, and answers with a receipt that settles
+on your next request — so closing the browser or restarting the
+head interrupts nothing, and a verb that talks to a remote (a sync,
+a publish, a probe) reports `outcome_unknown` with its log when it
+passes its deadline, never a failure it cannot prove.
+
+The head keeps its files under
+`${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-~/.local/state}/hale/iris/head}`:
+the registry, the receipt journal, one directory per run, and the
+pid files of its children — the API child, a local body started
+with `hale dna run|dev … --no-iris`, and the observer (`hale iris
+--membrane`) it can start once the membrane is up. A body or observer
+the head started outlives it; the next head over the same directory
+re-adopts them. Secrets never enter the head: `dna.secret.set` names
+a *source* — a `0600` one-line file under
+`${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`, consumed once
+the verb succeeded, or an environment variable the run's shell reads —
+and the value is in no request, journal line or log. The head is
+trusted-local: it acts as `USER`, and a project whose
+`dna.principal` is `oidc` is refused at attach.
