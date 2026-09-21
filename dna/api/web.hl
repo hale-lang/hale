@@ -1,4 +1,4 @@
-// The optional browser shell is nine static files, loaded before listening.
+// The optional browser shell is ten static files, loaded before listening.
 // Observer metadata is trusted startup configuration, never a request URL or
 // credential. Exact origins reject trailing slashes; no network proxy exists.
 type ObserverOrigin { valid: Bool = false; value: String = ""; }

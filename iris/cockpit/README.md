@@ -122,7 +122,9 @@ keeps its own explicit connection and never establishes command authority.
 - **Work:** recorded workflow executions and a separate **Handed Tasks** view.
   Handed Tasks show the existing responsibility, acceptance requirements and
   assignment history; an explicitly authorized local profile can reassign a
-  supported open Task to an eligible person.
+  supported open Task to an eligible person. A native command head also lets
+  the signed-in principal raise work with the **New task** form, the
+  cockpit's `hale dna ask`; the organism's answer is a separate, later fact.
 - **Practices:** paged proposals and revisions, available document text,
   lifecycle, provenance, rationale, governing Review and superseded digest.
 - **Reviews:** exact subject, required authority and recorded decision, linked
@@ -673,6 +675,34 @@ a stale snapshot requires a refresh. Restricted or unavailable evidence clears
 the affected details. Person retirement, cross-owner transfers, hosted or Ledger
 administration, and joins from declared source ownership to live responsibility
 are outside this profile. The policy's owner label is not such a join.
+
+### New task
+
+On **Work / Handed Tasks**, a native command head shows the **New tasks
+enabled** badge and a **New task** form: an outcome (**What should happen**,
+1..8192 bytes) and a locus (**For locus**), with the whole organization
+(`org`) offered first and the working context's declared loci after it, as
+`hale dna ask` without `--to` addresses the organization. **Review new task**
+shows the exact ask in the signed-in principal's name; **Confirm new task**
+submits it once. There is no separate grant: the authority is the
+authenticated principal, as with the CLI.
+
+The receipt records the ask, not its answer. The service appends the same
+`intent.requested` row the CLI writes, at the Record head the form was
+prepared against (a moved head refuses the request, and the form must be
+prepared again). Whether the locus is this organization's to admit is the
+organism's judgment, recorded separately; **Check request status** re-reads it
+through GET only and shows the intent as `requested`, `offered`, `refused` or
+`born`, naming the Task once it is born. A born Task joins the handed Tasks
+only after the leader hands it to a person, so the request panel is where a
+raised ask is followed until then.
+
+Recovery metadata uses version 7 in the existing shared request slot, holding
+the request identity and the prepared Record head; no outcome text is
+persisted. An unresolved request blocks a different submission. See
+[Raising work](../../dna/api/README.md#raising-work) for the row, the wire
+shape and the receipt.
+
 # Person responsibility and retirement
 
 Selecting a declared member opens their exact recorded assignments. When the

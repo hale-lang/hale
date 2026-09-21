@@ -101,3 +101,8 @@ iris/**/upstream-repro/repro[0-9]*
 dna/api/api
 dna/api/contract/v1/check/check
 dna/api/tests/read_api_test
+# Composed command head, its seed and the scripted command provider that the
+# API and cockpit verification recipes build beside their sources.
+dna/api/practice_review/practice_review
+dna/api/tests/tasks_seed
+dna/api/tests/commands/commands
