@@ -165,6 +165,25 @@ locus EditRelay {
     }
 }
 
+// ---- the human relay (card 16) ----------------------------------------
+// A human leaf's attempt is a case for a person, which the assembly
+// admits and hands as it hands a job today; the relay publishes the
+// attempt under this scope and answers pending — the attempt stays out
+// until the case is reported done. Asked again — a redelivery — the
+// assembly finds the case admitted for the attempt and admits no second.
+locus HumanRelay {
+    params { scope: String = ""; name: String = "cases"; relayed: Int = 0; }
+    bus { publish CaseRequested; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.relayed = self.relayed + 1;
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no);
+        CaseRequested <- CaseAsk { scope: self.scope, attempt_id: attempt, performer: self.name, request: req };
+        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt };
+    }
+}
+
 locus ServicePerformer {
     params { name: String = "analysis-service"; calls: Int = 0; }
     fn kind() -> String { return "service"; }

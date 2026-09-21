@@ -476,3 +476,12 @@ topic EditRequested { payload: EditAsk; subject: "dna.edit.requested"; keyed_by 
 // attempt, and only it, and the Work answers its step as any Work does.
 type AttemptReport { scope: String = ""; attempt_id: String = ""; result: WorkResult = WorkResult { }; }
 topic AttemptReported { payload: AttemptReport; subject: "dna.attempt.reported"; keyed_by scope; }
+
+// ---- card 16: a human Work's case ---------------------------------------
+// A human leaf's attempt, handed to the assembly that owns the people,
+// the practices and the record: the performer of kind `human` publishes
+// it and answers pending; the assembly admits the Work's case — its own
+// handed Task, `<task>.s<i>.<key>` — and leaves the attempt pending until
+// the person reports the case done.
+type CaseAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
+topic CaseRequested { payload: CaseAsk; subject: "dna.case.requested"; keyed_by scope; }

@@ -778,6 +778,7 @@ record's.
 | `task.born` | ledger | the work an intent or a settled review made |
 | `task.planned` | ledger | the plan the Task will be worked under; with the `binding` of the Work and attempt that asked, and their request as asked (card 14) |
 | `task.handed` | ledger | handed to a person: assignee, obligation, acceptance |
+| `case.admitted` | ledger | a human Work's case, its own handed Task (card 16): parent Task, Work and attempt, objective, assignee, obligation, acceptance, required evidence — before its `task.born` / `task.handed` |
 | `task.reassigned` | ledger | the assignment moved to someone else |
 | `task.resumed` | ledger | re-entered after a restart, under the plan already recorded |
 | `task.<state>` | ledger | every other state a Task passes through, to `done` or `failed` |
@@ -1565,6 +1566,40 @@ it again. A published report is not a durable one: the assembly keeps
 every report until the record is seen to hold the attempt's outcome,
 and puts a kept one again when the record resumes or on `redrive` —
 the validated outcome re-persisted, never the edit performed again.
+
+## Workflow execution: human cases
+
+A human leaf of a workflow execution is a case for a person. The
+engine reaches the assembly through the `human` performer kind: the
+`HumanRelay` publishes the attempt (`CaseRequested`, keyed by the
+runtime's scope, the organism's id) and answers pending, and the
+attempt stays out until the person reports the case done. The
+assembly admits the case as its own handed Task, `<task>.s<i>.<key>`
+— the Work's step index and member key under its Task, the child-Task
+form of §4 — stable across redeliveries and naming its exact parent
+Work and attempt by construction. The admission (`case.admitted`,
+versioned and self-sufficient: parent Task, Work and attempt,
+objective, assignee, obligation, acceptance practice, required
+evidence, who said so) lands first, exact at the revision read, and
+only then the rows the tooling of the day reads — `task.born <case>`,
+then `task.handed <case>` (or `task.transfer_requested`, for another
+owner's person) — so `hale dna task done <case> --as <who>` addresses
+that case as it addresses a job today, and the same gate applies.
+Assignee, obligation, acceptance practice and required evidence bind
+as a job's do: in an organism the leader plans for, the leader says
+who and under what obligation; without one the case is unassigned. A
+retired assignee's successor, a transfer to another owner, and
+reassignment keep their semantics.
+
+The hand-off settles nothing: the parent Work stays pending, and the
+root is neither closed nor marked by it. Two human Works in one step
+are two cases, each completable on its own. An attempt asked again —
+a redelivery after a restart — finds the case admitted for it and
+admits no second. A restart that fell between the admission and
+either compatibility row completes them from the admission, in that
+order, and never plans, resumes or pends a case as edit work: a case
+is a person's, never an executable root, never legacy edit work. An
+admission the record refuses holds the attempt for `redrive`.
 
 ## Storage interfaces
 
