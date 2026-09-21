@@ -125,9 +125,9 @@ piece of work.
 
 ## Calling a name nothing declares
 
-`hale check <directory>` holds a call to the same standard as a
-read: the callee has to name something. A misspelled call is an
-error at the call, not a mystery from the backend later:
+A call is held to the same standard as a read: the callee has to
+name something. A misspelled call is an error at the call, not a
+mystery from the backend later:
 
 ```text
 main.hl:12:14: type error: call to `celcius_to_f`: no free fn,
@@ -144,6 +144,13 @@ anything: `len`, `to_string`, the two numeric casts `Int` /
 `bounded` collection intrinsics. Those are not magic names to
 memorise — you'll meet each one where it's useful — but they are
 why `len(s)` needs no import.
+
+A builtin call is the same call wherever you write it. `len(s)` in
+the middle of an expression and `len(s);` on a line of its own are
+one name with one meaning: the second evaluates it and throws the
+answer away. Discarding the answer is rarely what you meant, but
+it is not a different vocabulary, and the compiler no longer treats
+it as one.
 
 The list is short on purpose, and it is exact: a name that is not
 on it and not declared is refused here, at the call, rather than
@@ -172,9 +179,20 @@ through a receiver, `b.len()`, which no builtin claims, which is
 why the standard library's own ring buffer can declare `fn len()`.
 The exact set lives in `spec/tokens.md` § *Built-in identifiers*.
 
+The set is short because most builtins can be told apart from your
+function by *what you pass them*. The `bounded[T; N]` operations —
+`count`, `clear`, `truncate`, `push`, `at`, `set` — are recognized
+only when the first argument is a bounded receiver, so those names
+stay yours to declare, and a `fn count(xs: bounded[Int; 8])` of
+your own answers calls on a `bounded[Int; 8]` in preference to the
+intrinsic. See
+*[Collections](../everyday/collections.md)*.
+
 Like the unknown-identifier rule, this one wants the whole
-program, so it's on for `hale check <directory>`. One file of a
-multi-file project checked on its own stays permissive: it may
-well be calling something its sibling declares.
+program, so it's on for `hale check <directory>` and for every
+build — `build`, `run` and `test` compile exactly what they bundle,
+so the line you read is the same one `check` would have shown you.
+One file of a multi-file project checked on its own stays
+permissive: it may well be calling something its sibling declares.
 
 Next: [Control flow](./control-flow.md).

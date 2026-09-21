@@ -52,7 +52,10 @@
 //! appended ([`with_synthetic_main`]) and is built like any other.
 //!
 //! Slow (it lowers and links each one), so it is `#[ignore]`d like
-//! the oracle's sanitizer sweep and run explicitly in CI.
+//! the oracle's sanitizer sweep and run explicitly in CI. The
+//! programs are independent, so the sweep hands them out to worker
+//! threads and aggregates by index — see `sweep_threads`, and
+//! `HALE_CORPUS_SWEEP_THREADS=1` to walk it serially.
 //!
 //! ## The other direction (GH #779)
 //!
@@ -62,6 +65,7 @@
 //! builds the programs the strict rule refuses — a handful, not 1400.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hale_codegen::build_executable;
 use hale_syntax::ast::TopDecl;
@@ -125,6 +129,10 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     };
     // Diagnostic fixtures are SUPPOSED to fail; their being
     // unbuildable is not a divergence.
+    //
+    // `check_program` holds the whole-program rules since GH #911 B1,
+    // so this reads the corpus exactly as `hale check <dir>` reads a
+    // seed — which is the comparison the ratchet is for.
     if hale_types::check_program(&program).iter().any(|d| d.is_error()) {
         return Verdict::Skipped("the checker rejects it");
     }
@@ -147,6 +155,28 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     }
 }
 
+/// How many programs the sweep decides at once.
+///
+/// `HALE_CORPUS_SWEEP_THREADS=1` restores the serial walk, which is
+/// what to reach for when a failure needs to be read without
+/// interleaving — the verdicts are per-program and the aggregation
+/// is by index, so the two runs report identically.
+fn sweep_threads() -> usize {
+    if let Ok(v) = std::env::var("HALE_CORPUS_SWEEP_THREADS") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    // Capped like `corpus_oracle`'s pool: each worker runs a clang
+    // link, so the useful width is bounded well before the core
+    // count on a big machine, and CI runners have four.
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(4)
+}
+
 #[test]
 #[ignore = "compiles ~1500 programs; run explicitly (see corpus_oracle)"]
 fn every_check_clean_corpus_program_also_builds() {
@@ -157,9 +187,65 @@ fn every_check_clean_corpus_program_also_builds() {
     // than a hundred times.
     let mut failures: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
-    {
-        match sweep_verdict(&p.source, &format!("hale_cb_{}", checked)) {
+    // One program's verdict does not depend on another's, and
+    // `build_executable` is already driven from eight threads of one
+    // process by `corpus_oracle`: the LLVM `Context` is created per
+    // call, the object path derives from the caller's
+    // `harness::unique_bin` (pid + an atomic process-local counter),
+    // and the cached runtime objects are written to a per-call temp
+    // path and renamed into place precisely so concurrent same-process
+    // builds cannot clobber each other. So the sweep is handed out
+    // across workers rather than walked.
+    //
+    // The ORDER is preserved deliberately: each verdict is stored at
+    // its program's index and aggregated afterwards in corpus order,
+    // so `checked`, `built` and the ratchet's rendered list are
+    // byte-identical to the serial run. Nothing here may depend on
+    // completion order.
+    let programs =
+        hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok());
+    let next = AtomicUsize::new(0);
+    let n_workers = sweep_threads().min(programs.len().max(1));
+    let programs = &programs;
+    let per_worker: Vec<Vec<(usize, Verdict)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n_workers)
+            .map(|_| {
+                let next = &next;
+                scope.spawn(move || {
+                    let mut mine: Vec<(usize, Verdict)> = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(p) = programs.get(i) else { break };
+                        // The tag is the program's index rather than a
+                        // running count of checked programs: it only
+                        // names a temp file, and an index is unique
+                        // without a shared counter.
+                        mine.push((
+                            i,
+                            sweep_verdict(&p.source, &format!("hale_cb_{}", i)),
+                        ));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            // Re-raise a worker's panic as its own panic rather than
+            // burying the message in a join error.
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+
+    let mut verdicts: Vec<Option<Verdict>> =
+        (0..programs.len()).map(|_| None).collect();
+    for (i, v) in per_worker.into_iter().flatten() {
+        verdicts[i] = Some(v);
+    }
+
+    for (p, v) in programs.iter().zip(verdicts) {
+        let v = v.expect("every swept program is handed out exactly once");
+        match v {
             Verdict::Skipped(_) => continue,
             Verdict::Built => {
                 checked += 1;
@@ -334,6 +420,21 @@ fn an_entry_point_less_program_is_built() {
     }
 }
 
+/// The check with the whole-program rules OFF — what a caller holding
+/// a fragment gets, and what `check_program` was before GH #911 B1.
+///
+/// One caller below needs it: a sweep whose subject is "the programs
+/// the strict rule refuses" cannot use the strict rule to decide which
+/// programs to consider.
+fn permissive_check(
+    program: &hale_syntax::ast::Program,
+) -> Vec<hale_syntax::Diag> {
+    let mut programs: BTreeMap<String, &hale_syntax::ast::Program> =
+        BTreeMap::new();
+    programs.insert(String::new(), program);
+    hale_types::check_bundle_opts(&hale_types::Bundle::new(programs), false)
+}
+
 /// The bare name in ``call to `X`: no free fn, generic fn or
 /// fn-pointer binding with that name is in scope``, if that is what
 /// this diagnostic is.
@@ -383,10 +484,15 @@ fn strict_check_refuses_nothing_the_build_accepts() {
         };
         // Diagnostic fixtures already fail the permissive check; the
         // strict rule's opinion of them is beside the point.
-        if hale_types::check_program(&program)
-            .iter()
-            .any(|d| d.is_error())
-        {
+        //
+        // PERMISSIVE on purpose, and load-bearing: this test asks
+        // "which programs does the strict rule refuse, and does the
+        // build accept any of them", so a prefilter that already holds
+        // the strict rule would skip exactly the programs the test
+        // exists to compile and pass forever on an empty set. That is
+        // why it cannot be `check_program`, which has held the
+        // whole-program rules since GH #911 B1.
+        if permissive_check(&program).iter().any(|d| d.is_error()) {
             continue;
         }
         if !has_entry_point(&program) {
@@ -433,6 +539,19 @@ fn strict_check_refuses_nothing_the_build_accepts() {
         swept > 200,
         "only {} check-clean buildable programs swept — the corpus walk \
          is broken, not the compiler",
+        swept
+    );
+
+    // And a walk that refuses NOTHING builds nothing, so it proves
+    // nothing. This is the vacuity the prefilter above can cause: hold
+    // the strict rule there and every program the rule would refuse is
+    // skipped before it is reached, leaving an empty set that passes
+    // forever.
+    assert!(
+        refused > 0,
+        "{} programs swept and the strict rule refused none of them — \
+         the prefilter is holding the rule this test exists to isolate, \
+         so nothing was built and nothing was proven",
         swept
     );
 
@@ -690,6 +809,10 @@ const CLAIMED_BUILTIN_NAMES: &[&str] = &[
 /// receiver or a closure assertion is being evaluated. `count` is the
 /// load-bearing one: `dna/tests/books_slice_test.hl` declares a free
 /// `fn count(app, kind, entity, needle)` and calls it.
+///
+/// GH #892: "may take the name" has to mean at the bounded receiver
+/// too, or the six intrinsic names are only half free — see
+/// [`BOUNDED_INTRINSIC_NAMES`] and the third column of the probe.
 const UNCLAIMED_BUILTIN_NAMES: &[&str] = &[
     "B",
     "c",
@@ -706,6 +829,24 @@ const UNCLAIMED_BUILTIN_NAMES: &[&str] = &[
     "push",
     "at",
     "set",
+];
+
+/// The `bounded[T; N]` intrinsic names, each with the arity its
+/// intrinsic takes — the third column of the probe (GH #892).
+///
+/// These are the names whose codegen arms are GUARDED on the argument
+/// type rather than unconditional, so #880's two columns (declared,
+/// and declared-under-a-free-name) both passed for them while the one
+/// argument shape the guard admits still hijacked the declaration.
+/// Every name here must also be in [`UNCLAIMED_BUILTIN_NAMES`] —
+/// `the_bounded_intrinsics_are_probed_as_unclaimed` holds that.
+const BOUNDED_INTRINSIC_NAMES: &[(&str, usize)] = &[
+    ("count", 1),
+    ("clear", 1),
+    ("truncate", 2),
+    ("push", 2),
+    ("at", 2),
+    ("set", 3),
 ];
 
 /// The sentinel the probe's user body returns. A hijacked call
@@ -729,6 +870,33 @@ fn builtin_probe_source(decl: &str, arity: usize) -> String {
     format!(
         "fn {d}({params}) -> Int {{\n    return {s};\n}}\n\n\
          fn main() {{\n    println(\"v=\", {d}({args}));\n}}\n",
+        d = decl,
+        params = params,
+        args = args,
+        s = PROBE_SENTINEL,
+    )
+}
+
+/// The same probe, called with a BOUNDED RECEIVER — the one argument
+/// shape the guarded arms claim (GH #892).
+///
+/// The declaration takes the receiver's own `bounded[Int; 4]` as its
+/// first parameter, which is exactly the shape the shadow rule
+/// recognizes, and the remaining parameters fill out the intrinsic's
+/// arity so the declaration is the natural spelling a reader would
+/// reach for.
+fn bounded_probe_source(decl: &str, arity: usize) -> String {
+    let (params, args) = match arity {
+        1 => ("", ""),
+        2 => (", i: Int", ", 0"),
+        _ => (", i: Int, x: Int", ", 0, 9"),
+    };
+    format!(
+        "type ProbeBuf {{ vals: bounded[Int; 4]; }}\n\n\
+         fn {d}(xs: bounded[Int; 4]{params}) -> Int {{\n    \
+         return {s};\n}}\n\n\
+         fn main() {{\n    let b = ProbeBuf {{ }};\n    \
+         println(\"v=\", {d}(b.vals{args}));\n}}\n",
         d = decl,
         params = params,
         args = args,
@@ -797,6 +965,20 @@ fn build_and_run_probe(src: &str, tag: &str) -> Result<String, String> {
 ///     name and not the shape;
 ///   * an UNCLAIMED name checks, builds and prints the sentinel —
 ///     the rule must not widen onto a name that works today.
+///
+/// ## The fourth, on a bounded receiver (GH #892)
+///
+/// The three above call the declaration with `Int` arguments, which
+/// is precisely the argument shape the `bounded[T; N]` arms do NOT
+/// claim — so all three passed for `count` / `clear` / `truncate` /
+/// `push` / `at` / `set` while the argument shape those arms DO claim
+/// still took the call. `fn count(xs: bounded[Int; 8]) -> Int` beside
+/// `count(w.samples)` printed the live count, silently, in exactly
+/// the way #880's `abs` and `min` did.
+///
+/// So each of the six is probed a fourth time, declared over the
+/// receiver's own bounded type and called with it. Same sentinel,
+/// same meaning: its absence is the hijack.
 #[test]
 fn a_fn_named_after_a_bare_builtin_agrees_and_runs_its_own_body() {
     let want = format!("v={}", PROBE_SENTINEL);
@@ -890,18 +1072,74 @@ fn a_fn_named_after_a_bare_builtin_agrees_and_runs_its_own_body() {
         }
     }
 
+    // GH #892: the same declaration, handed the bounded receiver the
+    // guarded arms dispatch on.
+    for (i, (word, arity)) in BOUNDED_INTRINSIC_NAMES.iter().enumerate() {
+        let src = bounded_probe_source(word, *arity);
+        // Guards the vacuous pass, as above: the generated program
+        // must actually carry a bounded receiver.
+        assert!(
+            src.contains("bounded[Int; 4]") && src.contains("b.vals"),
+            "the bounded probe for `{}` lost its receiver:\n{}",
+            word,
+            src
+        );
+        match build_and_run_probe(&src, &format!("b{}_{}", i, arity)) {
+            Ok(stdout) if stdout.contains(&want) => {}
+            Ok(stdout) => failures.push(format!(
+                "  `fn {}({} arg(s), first one bounded)` built but \
+                 printed {:?}, not {:?} — the bounded intrinsic \
+                 answered the call instead of the declaration",
+                word, arity, stdout, want
+            )),
+            Err(why) => failures.push(format!(
+                "  `fn {}({} arg(s), first one bounded)` {} — a \
+                 declaration over its own receiver type is supposed \
+                 to answer the call",
+                word, arity, why
+            )),
+        }
+    }
+
     assert!(
         failures.is_empty(),
         "{} bare-builtin name(s) disagree between `hale check`, \
          `hale build` and what the built program actually runs \
-         (GH #863, GH #880):\n{}\n\n\
+         (GH #863, GH #880, GH #892):\n{}\n\n\
          The rule lives in `BUILTIN_CALL_FORMS` / \
          `reject_builtin_call_form_as_fn` in \
          `crates/hale-syntax/src/parser.rs`, with \
          `reject_builtin_over_user_fn` in \
-         `crates/hale-codegen/src/codegen.rs` as the backstop.",
+         `crates/hale-codegen/src/codegen.rs` as the backstop; the \
+         bounded-receiver column is \
+         `user_fn_shadows_bounded_intrinsic`, held in \
+         `crates/hale-codegen/src/form/bounded.rs` and in \
+         `crates/hale-types/src/check.rs`.",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The bounded column probes names the other columns call UNCLAIMED,
+/// so the two lists must agree — otherwise a name moved into
+/// `CLAIMED_BUILTIN_NAMES` would be asserted both refusable and
+/// runnable, and the failure would read as a compiler bug.
+#[test]
+fn the_bounded_intrinsics_are_probed_as_unclaimed() {
+    let unclaimed: BTreeSet<&str> =
+        UNCLAIMED_BUILTIN_NAMES.iter().copied().collect();
+    let stray: Vec<&str> = BOUNDED_INTRINSIC_NAMES
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| !unclaimed.contains(n))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "{:?} are probed on a bounded receiver but are not in \
+         `UNCLAIMED_BUILTIN_NAMES` — a free `fn` of that name is \
+         refused at the declaration, so the bounded probe cannot \
+         build it (GH #892).",
+        stray
     );
 }
 

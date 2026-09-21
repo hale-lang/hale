@@ -1,10 +1,8 @@
 name: tests
 
-# Runs the full workspace test suite on every push (to any branch)
-# and on every pull request targeting main. Pushing a feature
-# branch is enough to delegate a full test run — no PR required.
-# Linux-only at v1; the release workflow exercises macOS coverage
-# at tag time.
+# Runs the full workspace test suite on every pull request targeting
+# main and on every push to main. Linux-only at v1; the macos
+# workflow and the release workflow cover macOS.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
 # smarter scheduling: each test runs in its own process.
@@ -31,10 +29,25 @@ name: tests
 # of wall-clock — at the cost of compiling ~Nx instead of once (the
 # cargo cache keeps each warm build to ~3min). Wall-clock over CI
 # minutes, for branch-iteration velocity.
+#
+# Revisited 2026-09-20 with libLLVM linked dynamically: a warm
+# partition now spends ~4min building (workspace + its 560 test
+# binaries) and the nextest archive of the suite is 1.1GB. A build
+# job on a standard 4-core runner would take about as long as each
+# partition's own build, so the split still buys nothing unless
+# that one job moves to a larger (paid) runner. Six partitions
+# instead of four: CI minutes are free on a public repository, and
+# each partition's test phase is what shrinks.
 
+# One run per commit. A push to a PR branch used to trigger this
+# twice — once as `push` (every branch) and once as `pull_request`
+# — in two concurrency groups, so neither cancelled the other:
+# 140 of 140 pull_request runs over 2026-09-18..20 had a twin push
+# run on the same SHA. Push runs are for main only now; a branch
+# gets its run through its PR.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -50,6 +63,16 @@ permissions:
 
 env:
   LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+  # sccache in front of rustc, backed by the Actions cache. rust-cache
+  # (below) keeps dependency artifacts, but the workspace crates and
+  # all ~565 test crates recompile on every commit — 2.6-4.2min of
+  # each partition on 2026-09-20 — even when the commit touched no
+  # Rust at all. sccache keys each rustc invocation on its inputs, so
+  # a .hl-only or docs-only change compiles almost nothing, and a
+  # compiler change recompiles only the crates downstream of it.
+  # Linking is not cached; that is what the dynamic libLLVM is for.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   # Which jobs this diff can possibly affect.
@@ -73,6 +96,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       substrate: ${{ steps.classify.outputs.substrate }}
+      # The same verdict under the name the test partitions read it
+      # by: a prose-only diff runs `quick` and `docs` (below) and
+      # skips the six partitions. Prose IS tested — every ```hale
+      # block under docs/src must parse, every styleguide snippet
+      # must typecheck, `hale mcp` serves the embedded spec — but
+      # those tests live in hale-syntax, hale-types and one hale-cli
+      # binary, and `quick` + `docs` run exactly those.
+      code: ${{ steps.classify.outputs.substrate }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -120,15 +151,104 @@ jobs:
             echo "substrate=false" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    name: test ${{ matrix.partition }}/4
+  # The fast lane: everything that needs no LLVM, in about two
+  # minutes. hale-syntax, hale-types, hale-model, hale-stdlib and
+  # hale-corpus have no dependency on inkwell, so this job skips the
+  # LLVM install and the codegen build entirely and reports a parse,
+  # typecheck, model or corpus-baseline failure long before a
+  # partition has finished compiling. It runs on every diff; the
+  # partitions below run the same tests again as part of the whole.
+  quick:
+    name: quick (parse, typecheck, model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quick-x86_64-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo nextest run (LLVM-free crates)
+        run: |
+          cargo nextest run --release \
+            -p hale-syntax -p hale-types -p hale-model \
+            -p hale-stdlib -p hale-corpus
+
+  # A prose-only diff's only remaining exposure after `quick`: the
+  # `hale mcp` docs-search serves spec/*.md embedded at build time
+  # (hale-cli/build.rs), and its test asserts on that text. One
+  # binary, so one job, instead of six partitions.
+  docs:
+    name: docs (embedded spec)
+    needs: scope
+    if: needs.scope.outputs.code != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: false
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo nextest run (hale mcp over the embedded spec)
+        run: |
+          cargo nextest run --release \
+            -p hale-cli --test mcp \
+            --features hale-codegen/dynamic-llvm
+
+  # The partitions are by BINARY SET, not by test-name hash. Every
+  # file under a crate's tests/ is its own test binary — 565 across
+  # the workspace — and a hash partition over test names needs nearly
+  # all of them, so each of six partitions spent ~4min compiling and
+  # linking the whole set to run a sixth of it (2026-09-20, and
+  # sccache cannot help: it caches rlibs, never bin/test crate
+  # types). Three job families instead, each building only what it
+  # runs: `cli` (hale-cli and the crates beside it, minus the DNA
+  # fixture suite), `codegen` (hale-codegen's 334 binaries, split by
+  # FILE so each half compiles 167), and `dna` (the fixture suite on
+  # its own, so its slices can run four-wide). The LLVM-free crates
+  # are `quick`'s.
+  cli:
+    name: cli ${{ matrix.part }}/3
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       # Don't short-circuit other partitions on first failure —
       # we want to see the full failure picture across the suite.
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4]
+        part: [1, 2, 3]
     # GH #583 K1: the knowledge store's Postgres half runs against a
     # service container; `dna/tests/knowledge_store_test.hl` reads the
     # DSN and skips the half when it is unset (a laptop without one).
@@ -163,30 +283,35 @@ jobs:
 
       # Fixtures resolve via CARGO_MANIFEST_DIR against this checkout,
       # so build + run happen in-place with no path remap.
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
+      #
+      # No "Free disk space" step here any more: the test binaries
+      # link libLLVM dynamically (`hale-codegen/dynamic-llvm`, below),
+      # so the target dir is a few GB rather than tens, and the
+      # 1.5-3min of deleting preinstalled toolchains bought nothing.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Shared cache across the partitions (and reused run-to-run):
-      # all four restore the same key, so each partition's build is
-      # warm (~3min) rather than cold (~6.5min). One partition wins
-      # the save at job end; the others skip with a harmless warning.
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Shared cache across the partitions (and reused run-to-run).
+      # rust-cache keeps only the dependency artifacts — the workspace
+      # crates and their test binaries change on every commit and
+      # are rebuilt anyway — so the cache is a fraction of the size
+      # the raw `target` dir was (6.4GB, 2-3min to restore) and
+      # restores in seconds. Saved from main only, so a PR's cache
+      # writes cannot evict the one every other branch restores.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-tests-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-tests-x86_64-linux-llvm18-
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install LLVM 18 + clang
-        # llvm-sys links libLLVM.so.18 dynamically; clang-18 is also
-        # invoked at test time to link compiled `.hl` fixtures.
+        # llvm-18-dev provides both the static archives and
+        # libLLVM-18.so; the builds below link the shared one
+        # (`hale-codegen/dynamic-llvm`). clang-18 is also invoked at
+        # test time to link compiled `.hl` fixtures.
         run: |
           set -eux
           sudo apt-get update
@@ -206,13 +331,18 @@ jobs:
         # path-probe (no cargo dep edge forces it), so going straight
         # to `cargo test` misses it (`undefined reference to
         # lotus_ts_*`).
-        run: cargo build --release --workspace
+        #
+        # `--features hale-codegen/dynamic-llvm`: link the shared
+        # libLLVM rather than a static copy into every binary. The
+        # same flag on the nextest run below, or cargo would build
+        # the workspace twice under two feature sets.
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface
         # must be canonical. Partition 1 only — the check is
-        # whole-repo and takes <1s; running it 4× adds nothing.
-        if: matrix.partition == 1
+        # whole-repo and takes <1s; running it 3× adds nothing.
+        if: matrix.part == 1
         run: |
           # Whole repo, not an enumerated list. The list form silently
           # excluded tests/hale (the in-language suite), which drifted
@@ -220,17 +350,156 @@ jobs:
           # scope that goes stale every time a directory is added.
           ./target/release/hale fmt --check .
 
-      - name: cargo nextest run (partition ${{ matrix.partition }}/4)
-        # Build-and-run in one job (no separate archive job + upload/
-        # download round-trip): nextest compiles the test binaries
-        # reusing the build above + the cache, then runs this
-        # partition's subset. `hash:I/N` partitions by test name — a
-        # test always lands on the same partition, so a flake is
-        # reproducible to its partition.
+      - name: cargo nextest run (cli part ${{ matrix.part }}/3)
+        # Everything the other families do not own: hale-cli's 111
+        # binaries less the DNA fixture suite, plus hale-lsp,
+        # hale-iris and hale-dna. `hash:I/N` partitions by test name
+        # within that set — a test always lands on the same part, so
+        # a flake is reproducible to its part. `hale-cli/dynamic-llvm`
+        # is a passthrough to hale-codegen's feature: cargo only
+        # accepts `pkg/feature` for a selected package, and the same
+        # feature set as the build above keeps it from rebuilding.
         run: |
-          cargo nextest run \
-            --release --workspace \
-            --partition hash:${{ matrix.partition }}/4
+          cargo nextest run --release --workspace \
+            --exclude hale-codegen --exclude hale-syntax --exclude hale-types \
+            --exclude hale-model --exclude hale-stdlib --exclude hale-corpus \
+            --features hale-cli/dynamic-llvm \
+            -E 'not binary(dna_native_suite)' \
+            --partition hash:${{ matrix.part }}/3
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  codegen:
+    name: codegen ${{ matrix.half }}/2
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        half: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo build --release --workspace
+        # For `libhale_ts_shim.a` (see the cli job).
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: cargo nextest run (hale-codegen tests, half ${{ matrix.half }}/2)
+        # Split by FILE, not by test: each file under
+        # crates/hale-codegen/tests/ is its own binary, and naming
+        # half of them with `--test` is what makes cargo compile only
+        # that half. Half 1 also takes the lib's unit tests.
+        run: |
+          set -euo pipefail
+          tests=$(ls crates/hale-codegen/tests/*.rs | xargs -n1 basename | sed 's/\.rs$//' \
+            | sort | awk -v h=${{ matrix.half }} 'NR % 2 == h % 2' | sed 's/^/--test /')
+          lib=""; [ "${{ matrix.half }}" = "1" ] && lib="--lib"
+          echo "$(echo "$tests" | wc -l) test binaries in this half"
+          cargo nextest run --release -p hale-codegen --features dynamic-llvm $lib $tests
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  dna:
+    name: dna ${{ matrix.part }}/2
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2]
+    services:
+      knowledge-db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dna
+          POSTGRES_PASSWORD: dna
+          POSTGRES_DB: dna
+        ports:
+          - 5480:5432
+        options: >-
+          --health-cmd "pg_isready -U dna"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HALE_DNA_KNOWLEDGE_DSN: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: gc.auto
+      GIT_CONFIG_VALUE_0: "0"
+      GIT_CONFIG_KEY_1: receive.autogc
+      GIT_CONFIG_VALUE_1: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo build --release --workspace
+        # The fixtures run through the `hale` binary this builds.
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
+        # The suite alone on its runner: sixteen slice tests, hashed
+        # across two jobs, running four-wide (the `dna-fixtures`
+        # group in .config/nextest.toml) now that nothing else
+        # competes for the four cores.
+        run: |
+          cargo nextest run --release -p hale-cli --features dynamic-llvm \
+            --test dna_native_suite \
+            --partition hash:${{ matrix.part }}/2
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   # 2026-05-26 — TSAN regression coverage for the lockfree
   # substrate paths. F.32-1γ-v2 + the substrate-race-fixes work
@@ -256,22 +525,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Dependency artifacts only (see the test job); the sanitizer
+      # env vars reach clang at test time, not the Rust build, so
+      # this cache is the same shape as the test job's.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-tsan-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-tsan-x86_64-linux-llvm18-
+          shared-key: tsan-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install LLVM 18 + clang
         run: |
@@ -289,7 +556,7 @@ jobs:
         # the ts-shim by path-probe (no cargo dep edge forces
         # it, so `-p hale-codegen` alone misses the staticlib
         # and clang errors with `undefined reference to lotus_ts_*`).
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: LOTUS_TSAN=1 cargo test (form_hashmap_lockfree_tsan)
         # The TSAN tests are #[ignore]'d so the normal suite
@@ -303,7 +570,7 @@ jobs:
         env:
           LOTUS_TSAN: "1"
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test form_hashmap_lockfree_tsan \
             -- --ignored --test-threads=1 --nocapture
 
@@ -331,22 +598,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Dependency artifacts only (see the test job); the sanitizer
+      # env vars reach clang at test time, not the Rust build, so
+      # this cache is the same shape as the test job's.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-asan-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-asan-x86_64-linux-llvm18-
+          shared-key: asan-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install LLVM 18 + clang
         run: |
@@ -357,7 +622,7 @@ jobs:
             clang-18 libclang-18-dev zlib1g-dev
 
       - name: cargo build --release --workspace
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: check/build agreement over the embedded corpus
         # `hale check` accepting what `hale build` refuses is the
@@ -371,11 +636,13 @@ jobs:
         #
         # A ratchet against a recorded baseline: a NEW divergence
         # fails, and so does a FIXED one, so the list cannot rot.
-        # #[ignore]'d like the sweeps below since it compiles ~1300
-        # programs (~80s); --ignored opts in. Folded into this job to
-        # reuse the release build above.
+        # #[ignore]'d like the sweeps below since it compiles ~1500
+        # programs; --ignored opts in. The sweep runs on every core
+        # (#927: 6.7min serial on a 4-core runner, ~2min now;
+        # HALE_CORPUS_SWEEP_THREADS=1 restores the serial walk).
+        # Folded into this job to reuse the release build above.
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test corpus_check_build_agreement \
             -- --ignored --nocapture
 
@@ -388,7 +655,7 @@ jobs:
         env:
           LOTUS_ASAN: "1"
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test corpus_oracle \
             -- --ignored --test-threads=1 --nocapture
 
@@ -415,7 +682,7 @@ jobs:
           UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
           ASAN_OPTIONS: "detect_leaks=0"
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test bytes_pack_read \
             --test shm_ring_layout \
             --test shm_ring_layout_producer \
@@ -434,9 +701,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
 
       - name: Install LLVM 18 + clang + cmake
         run: |

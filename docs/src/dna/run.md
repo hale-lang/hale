@@ -45,6 +45,32 @@ hale dna run: membrane bound at …/.hale/dna
 hale dna run: the fleet `production` (…/fleet.plan.json) is the expression; `hale node <name>` runs its nodes
 ```
 
+## The organism is built once per content fingerprint
+
+An organization's seed is a handful of project files plus the whole
+vendored core, and emitting its IR takes a few seconds — the same few
+seconds on every start and every restart of an organism nobody has
+edited. So the host builds a seed **once per content fingerprint** and
+copies the binary after that. A warm start is the copy and the boot,
+not the build — measured from `hale dna run` to the membrane sockets
+appearing under `.hale/dna`, on one project on a quiet machine:
+
+```text
+first start, or after any edit    3.7s
+nothing changed since             0.15s
+```
+
+The fingerprint is over every file the build reads — the compiler
+lists them itself, `hale inputs <seed>` — plus the project's manifest
+and lock, the toolchain (version, and the `hale` binary's own size and
+mtime, so a compiler rebuilt in place is a different fingerprint),
+the environment variables that change codegen, and the seed's path.
+Edit anything under `dna/org`, or upgrade `vendor/dna`, and the next
+start builds. The binaries live in `$XDG_CACHE_HOME/hale/dna-build`
+(or `~/.cache/hale/dna-build`), 32 of them, least-recently-used
+pruned; deleting that directory costs one rebuild and nothing else.
+`HALE_DNA_NO_BUILD_CACHE=1` builds from scratch every time.
+
 ## One body per record
 
 A record admits one body at a time. Before the host builds or runs

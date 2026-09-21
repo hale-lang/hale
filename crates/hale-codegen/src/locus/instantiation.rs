@@ -117,15 +117,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         inits: &[StructInit],
         scope: &Scope<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        // m82: the let-binding above us may have signaled that
-        // this locus's dissolve should be deferred to the
-        // enclosing fn's scope-exit flush. Take the flag now —
-        // before any nested `lower_expr` calls below — so default
-        // / override expressions that themselves construct loci
-        // don't accidentally consume our flag and skip their own
-        // eager dissolve. Outermost instantiation owns it; nested
-        // ones see false.
-        let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
+        // GH #921 A2: the site the pre-pass indexed for this literal,
+        // taken on the same one-shot discipline as the flags below so
+        // a nested literal does not read its parent's. GH #921 A3
+        // commit 2: `declared_owner` is the same answer for a literal
+        // codegen SYNTHESISES — a prelude, a `reperspective` swap —
+        // which has no source expression for a table row to key on
+        // and so states its owner at the site instead.
+        let owner_site = std::mem::take(&mut self.owner_site);
+        //
+        // GH #921 A3, commit 7: F.39's rule, and no longer a shadow
+        // assertion. Every locus-producing expression is given an
+        // owner before lowering begins, so reaching an instantiation
+        // without one is a compiler defect — a node the pre-pass did
+        // not walk, or one codegen synthesised and did not declare an
+        // owner for. Refuse it, with the span, rather than emit a
+        // program whose teardown is decided by whatever ran last.
+        let site_owner: crate::ownership::Owner =
+            match std::mem::take(&mut self.declared_owner) {
+                Some(o) => o,
+                None => match owner_site {
+                    Some(crate::ownership::Site::Expr(id)) => self
+                        .owner_table
+                        .entry(id)
+                        .map(|e| e.owner.clone())
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "locus `{}` is instantiated at an \
+                                 expression the ownership pre-pass gave \
+                                 no owner (expression #{}). Every \
+                                 locus-producing expression is decided \
+                                 before lowering — see spec/decisions.md \
+                                 F.39 — so this is a compiler defect, not \
+                                 a program error.",
+                                locus_name, id.0
+                            ))
+                        })?,
+                    Some(crate::ownership::Site::Unindexed(sp)) => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` is instantiated at a node the \
+                             ownership pre-pass never numbered (bytes \
+                             {}..{}); a node codegen builds itself has to \
+                             carry the id of the source expression it \
+                             stands for, or declare its owner. See \
+                             spec/decisions.md F.39.",
+                            locus_name, sp.start.0, sp.end.0
+                        )));
+                    }
+                    Some(crate::ownership::Site::Synthesized(what)) => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` is instantiated at a synthesised \
+                             site ({}) that declares no owner. See \
+                             spec/decisions.md F.39.",
+                            locus_name, what
+                        )));
+                    }
+                    None => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` is instantiated at an \
+                             uninstrumented site: nothing handed \
+                             `lower_locus_instantiation` the expression \
+                             it is lowering. See spec/decisions.md F.39.",
+                            locus_name
+                        )));
+                    }
+                },
+            };
         // GH #253: high-water mark of the enclosing deferred-
         // dissolve frame. Every entry pushed past this point
         // during THIS call is a (transitive) child of this
@@ -143,14 +200,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (recursive `lower_locus_instantiation` calls below) see false.
         let is_bare_stmt =
             std::mem::take(&mut self.bare_locus_instantiation_stmt);
-        // Phase-2 (2): parent locus is constructing us as a field
-        // default / override. Suppress eager dissolve — the parent
-        // owns us and cascades dissolve from its own dispatch.
-        // See `instantiating_for_parent_field` doc on the Codegen
-        // struct. Same mem::take discipline as defer_for_let: only
-        // the outermost instantiation in the expression takes it.
-        let parent_owns_via_field =
-            std::mem::take(&mut self.instantiating_for_parent_field);
+        // GH #921 A3, commit 2: does the enclosing FRAME reclaim this
+        // instance at its scope-exit flush, or is it dissolved
+        // eagerly at the end of its own expression?
+        //
+        // `defer_next_locus_dissolve` carried that. It was armed by
+        // `Stmt::Let` (m82: the binding is the user-visible handle,
+        // so the instance lives until the handle's scope ends) and by
+        // both `Expr::Struct` arms of `lower_expr` (GH #711 / #812: a
+        // literal handed to a callee, or read for a field, is owned
+        // by the enclosing fn's scope and not torn down at the end of
+        // its own expression), and taken by "the next instantiation".
+        // The table says the same thing about the node itself:
+        // `Owner::Binding` for a `let` / `=` and `Owner::FrameTemp`
+        // for every other expression position, both of them this
+        // frame. A bare statement literal is the one expression the
+        // spec calls fire-and-forget — its value is discarded at the
+        // statement boundary — and that is a positional fact codegen
+        // already knows, so it stays where it is.
+        //
+        // An unindexed literal defers: later is the direction a
+        // missing decision may err in (the old leak), never earlier
+        // (a use-after-free). Commit 7 makes it an error outright.
+        let defer_for_let = !is_bare_stmt
+            && !matches!(
+                site_owner,
+                crate::ownership::Owner::Field { .. }
+                    | crate::ownership::Owner::Caller
+                    | crate::ownership::Owner::Placement(_)
+                    | crate::ownership::Owner::Borrowed(_)
+            );
+        // Phase-2 (2): the parent locus is constructing us as a
+        // field default / override, so it owns us — no eager
+        // dissolve, our struct lives in the owner's arena, and the
+        // owner's cascade reclaims us.
+        //
+        // GH #921 A3, commit 3: that is `Owner::Field` (or
+        // `Owner::Placement`, a field whose `placement { }` entry
+        // also pins it — the parent still owns the instance) on THIS
+        // node. `instantiating_for_parent_field` carried it, armed by
+        // the params-init loop for a field that can hold a locus and
+        // taken by the first locus literal lowered while it was set —
+        // which in `Holder { c: make(Cfg { }.seed()) }` is the
+        // RECEIVER, a temporary of the enclosing frame that is not the
+        // field's value at all. That is GH #896: the receiver was
+        // handed the field's ownership and the frame that built it
+        // stood back, so nobody reclaimed it. The table decided the
+        // receiver and the field's value separately when it walked the
+        // initialiser.
+        let parent_owns_via_field = matches!(
+            site_owner,
+            crate::ownership::Owner::Field { .. }
+                | crate::ownership::Owner::Placement(_)
+        );
         // F.31 (2026-05-23): consume any placement override the
         // caller set. The override is applied to a LOCAL clone of
         // `info` for this instantiation only — nested
@@ -168,8 +270,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lifecycle (which runs on the pthread). The deferred-
         // dissolve frame's flush handles pthread_join +
         // arena_destroy via the existing is_pinned_entry path.
-        let placement_override =
-            std::mem::take(&mut self.placement_for_next_locus_instantiation);
+        // GH #921 A3, commit 5: the placement a `placement { }`
+        // entry names belongs to the instance the entry names, and
+        // nothing else. The instantiation reads its OWN owner to
+        // claim it — `Owner::Placement(entry)` — instead of taking
+        // whatever the last setter left in a one-shot slot.
+        let placement_override = match (&site_owner, &self.placement_for_field)
+        {
+            (
+                crate::ownership::Owner::Placement(entry),
+                Some((field, class)),
+            ) if field == entry => Some(class.clone()),
+            _ => None,
+        };
         // Topology arena-on-node: consume the parallel NUMA-node
         // override (set for `pinned(node/l3)` fields) so the Fresh
         // arena create below binds this locus's arena to its node.
@@ -315,7 +428,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // must outlive the fn's subregion. The fat-pointer struct
         // itself is deep-copied into caller_arena by
         // emit_return_value_deep_copy.
-        let returns_this_locus = self
+        // GH #921 A3, commit 6: `returns_this_locus` answered TWO
+        // questions and the conflation is what #921 named. One is
+        // about STORAGE — "allocate where the caller can still see
+        // it" — and is a fact about the enclosing fn's declared
+        // return type, so it stays exactly as it was and stays
+        // conservative: any literal of the returned locus goes to the
+        // program-lifetime payload arena, whether or not this
+        // particular one reaches the caller. The other is about
+        // OWNERSHIP — "nobody here reclaims it" — and is the table's
+        // `Owner::Caller`, decided per node, so `let b = X { };` in a
+        // fn returning `X` that hands back something else is the
+        // frame's and is reclaimed at its flush instead of living to
+        // process exit.
+        let escapes_by_declared_return = self
             .current_user_fn_ret
             .as_ref()
             .and_then(|r| r.as_ref())
@@ -327,6 +453,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => false,
             })
             .unwrap_or(false);
+        let returns_this_locus =
+            matches!(site_owner, crate::ownership::Owner::Caller);
+        // A literal codegen builds for a program-lifetime slot — a
+        // `bindings { }` transport, adapter or codec — needs the same
+        // STORAGE and none of the ownership. It used to get both by
+        // spoofing `current_user_fn_ret` to its own locus (PR #918
+        // removed the spoof's ownership half for the transport by
+        // hand; the other two still had it, which is why an
+        // adapter's or codec's arena was never destroyed). Now it
+        // says which one it means.
+        let program_lifetime =
+            std::mem::take(&mut self.instantiating_program_lifetime);
         // 2026-05-24: consume the
         // `instantiating_into_payload_arena` flag. If set, our
         // PARENT is being m90-routed and we — as one of its
@@ -340,7 +478,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // alloc path as `returns_this_locus`).
         let routed_by_parent =
             std::mem::take(&mut self.instantiating_into_payload_arena);
-        let go_to_payload_arena = returns_this_locus || routed_by_parent;
+        let go_to_payload_arena = escapes_by_declared_return
+            || routed_by_parent
+            || program_lifetime;
         // Interest-based ownership #2 / #2b: same-tower bubble. When the
         // DIRECT enclosing locus does not accept us, but an ownership plan
         // resolved `(enclosing, I) -> A`, we stitch `I` to `A` instead of
@@ -2092,10 +2232,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // None (the recursive call will keep the locus's
             // own schedule_class — Cooperative under F.31).
             if is_main_locus {
-                self.placement_for_next_locus_instantiation = self
-                    .deployment.main_placement_map
+                self.placement_for_field = self
+                    .deployment
+                    .main_placement_map
                     .get(fname.as_str())
-                    .cloned();
+                    .cloned()
+                    .map(|c| (fname.clone(), c));
                 // F.31 Phase 4: parallel pool-name set. None when
                 // the field has no cooperative-pool entry (either
                 // pinned, default-pool main, or no placement).
@@ -2185,9 +2327,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             Some(cores[(i as usize) % cores.len()])
                         };
-                        self.placement_for_next_locus_instantiation = Some(
+                        self.placement_for_field = Some((
+                            fname.clone(),
                             ScheduleClass::Pinned(core.map(CoreSpec::Single)),
-                        );
+                        ));
                         self.numa_node_for_next_locus_instantiation = node;
                         // Replica keys: replica i's subscriptions
                         // register i as their `where key == replica`
@@ -2195,8 +2338,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // with the default index 0.
                         self.replica_index_for_next_locus_instantiation =
                             Some(i as u64);
-                        let prev_flag = self.instantiating_for_parent_field;
-                        self.instantiating_for_parent_field = true;
                         // The extra replica's self_ptr isn't stored in a
                         // field (replicas are non-addressable workers);
                         // it lives only in the deferred-dissolve frame.
@@ -2205,14 +2346,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.in_params_default = true;
                         let _ = self.lower_expr(&rep_expr, scope)?;
                         self.in_params_default = saved_ipd;
-                        self.instantiating_for_parent_field = prev_flag;
                     }
                     // Restore replica 0's overrides for the normal path
                     // below — the loop clobbered them.
-                    self.placement_for_next_locus_instantiation = self
-                        .deployment.main_placement_map
+                    self.placement_for_field = self
+                        .deployment
+                        .main_placement_map
                         .get(fname.as_str())
-                        .cloned();
+                        .cloned()
+                        .map(|c| (fname.clone(), c));
                     self.numa_node_for_next_locus_instantiation = node;
                 }
             }
@@ -2227,24 +2369,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Cleared after each lower_expr so it doesn't leak
             // past this field's evaluation.
             //
-            // F.29 follow-up (2026-05-19): after lower_expr, the
-            // flag's state tells us whether this field's value-
-            // expr produced a parent-owned locus literal:
-            // - `lower_locus_instantiation` consumes the flag via
-            //   `mem::take` when it enters the `parent_owns_via_field`
-            //   branch (true → false). So `owned_via_literal` is
-            //   `!self.instantiating_for_parent_field` after
-            //   lower_expr returns.
-            // - Non-literal exprs (variable ref, const, conditional
-            //   without a literal in the value-producing branch)
-            //   leave the flag at true, so `owned_via_literal` is
-            //   false. Const/Required don't invoke lower_expr at
-            //   all and short-circuit to false. We use this signal
-            //   to OR-set the matching bit in
-            //   `__locus_ref_owned_mask` below, so the cascade
-            //   knows which children to tear down at this parent's
-            //   dissolve vs. leave alone (they're owned by an
-            //   outer scope).
+            // F.29 follow-up (2026-05-19): `owned_via_literal`
+            // OR-sets the matching bit in `__locus_ref_owned_mask`
+            // below, so the cascade knows which children to tear
+            // down at this parent's dissolve and which to leave
+            // alone (they are owned by an outer scope). GH #921 A3
+            // commit 3 reads it from the owner table; it used to be
+            // inferred from whether `lower_locus_instantiation` had
+            // consumed the one-shot flag.
             // bounded[T; N] (2026-07-02): params fields
             // auto-initialize EMPTY (zeroed slot); explicit init is
             // rejected — the only mutation surface is the
@@ -2289,38 +2421,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 continue;
             }
-            // GH #871: arm the parent-owned flag only for a field
-            // that can actually HOLD the locus the flag hands over.
-            //
-            // The flag is consumed by the first locus literal
-            // lowered while it is set, and that literal is then
-            // parent-owned: no eager dissolve, its struct allocated
-            // in the owner's arena, and — the part that bites — never
-            // pushed onto a deferred-dissolve frame, because the
-            // owner's cascade is supposed to reach it. For an `Int`
-            // (or `String`, or any other non-locus) field the owner
-            // has nowhere to put it, so the cascade never can:
-            // `Lonely { n: Queries { j: Churner { } }.total() }` left
-            // the whole `Queries` tree alive at exit, while the same
-            // literal written as a statement or a `let` is reclaimed.
-            // Arming on the DECLARED FIELD TYPE keeps the transfer
-            // exactly where an owner exists; everywhere else the
-            // literal stays an ordinary expression-position temporary
-            // owned by the enclosing fn scope (GH #711 / #814).
-            let field_can_hold_locus = match info.fields.get(fname.as_str())
-            {
-                Some((_, ty)) => matches!(
-                    ty,
-                    CodegenTy::LocusRef(_)
-                        | CodegenTy::Interface(_)
-                        | CodegenTy::Perspective(_)
-                ),
-                // Can't happen (declare_locus_struct declares every
-                // param); keep the old behavior if it ever does.
-                None => true,
-            };
-            let prev_field_flag = self.instantiating_for_parent_field;
-            self.instantiating_for_parent_field = field_can_hold_locus;
+            // GH #871's rule — a transfer into a field only where
+            // the field can actually HOLD a locus, since for an `Int`
+            // (or `String`, or anything else) the owner has nowhere
+            // to put it and its cascade can never reach it — is the
+            // table's: `walk_field_init` gives `Owner::Field` only to
+            // a HOLDER field's initialiser, and everything else stays
+            // an expression-position temporary of the enclosing frame
+            // (GH #711 / #814). `Lonely { n: Queries { j: Churner { }
+            // }.total() }` left the whole `Queries` tree alive at
+            // exit before that rule existed.
             // 2026-05-24: if THIS locus is m90-routed to payload
             // arena, route each child literal there too. Child's
             // own `lower_locus_instantiation` consumes the flag
@@ -2379,66 +2489,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // hands back a locus somebody else holds — but it
                     // armed the flag all the same, and the ARGUMENT's
                     // result took it and went unreclaimed.
-                    let field_owns_locus_rhs = matches!(
-                        expr,
-                        Expr::Call { .. } | Expr::Or { .. }
-                    ) && self.fresh_temp_decision_lands_on(expr)
-                        && matches!(
-                            info.fields.get(fname.as_str()).map(|(_, t)| t),
-                            Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
-                        );
-                    // GH #836: the other half of that decision. The
-                    // gate above says the frame does not reclaim it;
-                    // this says WHO does. A fresh factory's result
-                    // transfers into the field, so the owner's
-                    // `__locus_ref_owned_mask` bit is set exactly as
-                    // a literal sets it and the F.29 cascade reaches
-                    // the child. Only a proven-fresh factory (the
-                    // GH #383 fixpoint) qualifies — a call that
-                    // hands back a locus somebody else holds leaves
-                    // the bit clear, as it always did.
-                    //
-                    // GH #853: `make_f(5) or make2()` is the same
-                    // field and the same bit once BOTH branches
-                    // transfer into it — the field holds one of two
-                    // values and owns whichever one was built.
-                    // `or_field_owner_locus` carries that decision
-                    // into `lower_or_expr`, which is where the
-                    // substitute would otherwise take the GH #402
-                    // frame temporary this bit must not double-own.
-                    let mut or_substitute_owned = None;
-                    let factory_owned_by_field = match info
-                        .fields
-                        .get(fname.as_str())
-                        .map(|(_, t)| t)
-                    {
-                        Some(CodegenTy::LocusRef(l)) => {
-                            let l = l.clone();
-                            let or_sub = self
-                                .or_substitute_transfers_into_field(expr, &l);
-                            if or_sub {
-                                or_substitute_owned = Some(l.clone());
-                            }
-                            or_sub || self.field_init_is_fresh_factory(expr, &l)
-                        }
-                        _ => false,
-                    };
-                    let prev_sft = self.suppress_fresh_temp;
-                    if field_owns_locus_rhs {
-                        self.suppress_fresh_temp = true;
-                    }
-                    let prev_ofo = self.or_field_owner_locus.take();
-                    self.or_field_owner_locus = or_substitute_owned;
-                    let r = self.lower_expr(expr, scope);
-                    self.or_field_owner_locus = prev_ofo;
-                    self.suppress_fresh_temp = prev_sft;
-                    let r = r?;
+                    // GH #921 A3, commit 1: the F.17 gate that used
+                    // to arm `suppress_fresh_temp` here is gone. The
+                    // pre-pass walked this initialiser and gave the
+                    // value — and every branch, arm and element under
+                    // it — `Owner::Field`, so the GH #402 hook
+                    // declines the frame temporary where the value is
+                    // lowered, for the node the field NAMES and no
+                    // other (GH #837).
+                    // GH #921 A3, commit 4: who reclaims this
+                    // field's value is one question with one answer —
+                    // the table's. Three predicates used to share it
+                    // (`field_init_is_fresh_factory` for GH #836's
+                    // bare factory, `or_substitute_transfers_into_
+                    // field` for GH #853's two-branch `or`, and
+                    // `field_init_fresh_factory_impl` for GH #895's
+                    // interface refinement), each comparing the
+                    // factory's DECLARED locus with the FIELD's —
+                    // which an interface-typed field does not have.
+                    // So `Queries { j: make_f(1) or make_churner() }`
+                    // got no bit, the frame stood back (F.17), and
+                    // the child's arena outlived the program: the
+                    // 35-cell `or <call>`-into-an-interface-field
+                    // family. The table asks nothing about the
+                    // field's type. `Owner::Field` on the value's own
+                    // node — through an `or`'s branches, a carrier's
+                    // arms, a composite's elements, all of which it
+                    // decided separately — IS the bit.
+                    let owned = self.owner_table.field_owns(expr);
+                    let r = self.lower_expr(expr, scope)?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
-                    let owned = !self.instantiating_for_parent_field
-                        || factory_owned_by_field;
-                    self.instantiating_for_parent_field = prev_field_flag;
                     let from_lit = matches!(
                         expr,
                         Expr::Literal(
@@ -2448,8 +2530,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     match default {
                         DefaultInit::Const(pv) => {
-                            self.instantiating_for_parent_field =
-                                prev_field_flag;
                             let r = self.const_param(pv);
                             // ParamValue has no Bytes variant — only
                             // String literals can land here as a
@@ -2471,57 +2551,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // the bare or the `or`-wrapped spelling
                             // (GH #793), for the node the default
                             // names and no other (GH #837)
-                            let field_owns_locus_rhs = matches!(
-                                e,
-                                Expr::Call { .. } | Expr::Or { .. }
-                            ) && self.fresh_temp_decision_lands_on(e)
-                                && matches!(
-                                    info.fields.get(fname.as_str()).map(|(_, t)| t),
-                                    Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
-                                );
-                            // GH #836, at the default site: a param
-                            // whose DEFAULT is a factory call is the
-                            // same transfer into the same field, so
-                            // it takes the same ownership bit.
-                            // GH #853, likewise: a DEFAULT that is an
-                            // `or <substitute>` transfers into the
-                            // same field on both branches.
-                            let mut or_substitute_owned = None;
-                            let factory_owned_by_field = match info
-                                .fields
-                                .get(fname.as_str())
-                                .map(|(_, t)| t)
-                            {
-                                Some(CodegenTy::LocusRef(l)) => {
-                                    let l = l.clone();
-                                    let or_sub = self
-                                        .or_substitute_transfers_into_field(
-                                            e, &l,
-                                        );
-                                    if or_sub {
-                                        or_substitute_owned = Some(l.clone());
-                                    }
-                                    or_sub
-                                        || self
-                                            .field_init_is_fresh_factory(e, &l)
-                                }
-                                _ => false,
-                            };
-                            let prev_sft = self.suppress_fresh_temp;
-                            if field_owns_locus_rhs {
-                                self.suppress_fresh_temp = true;
-                            }
-                            let prev_ofo = self.or_field_owner_locus.take();
-                            self.or_field_owner_locus = or_substitute_owned;
-                            let r = self.lower_expr(e, scope);
-                            self.or_field_owner_locus = prev_ofo;
-                            self.suppress_fresh_temp = prev_sft;
-                            let r = r?;
+                            // GH #921 A3, commit 1: as above — the
+                            // table gave this default's value
+                            // `Owner::Field`, so no flag is armed for
+                            // it here.
+                            // GH #921 A3, commit 4: the same one
+                            // question at the default site.
+                            let owned = self.owner_table.field_owns(e);
+                            let r = self.lower_expr(e, scope)?;
                             self.in_params_default = saved_ipd;
-                            let owned = !self.instantiating_for_parent_field
-                                || factory_owned_by_field;
-                            self.instantiating_for_parent_field =
-                                prev_field_flag;
                             let from_lit = matches!(
                                 e,
                                 Expr::Literal(
@@ -2532,8 +2570,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             (r.0, r.1, owned, from_lit)
                         }
                         DefaultInit::Required => {
-                            self.instantiating_for_parent_field =
-                                prev_field_flag;
                             return Err(CodegenError::Unsupported(format!(
                                 "locus `{}` instantiation: param `{}` is \
                                  required (no default) — supply it as \
@@ -2556,6 +2592,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // routing to "the immediate locus literal in this
             // params-init slot."
             self.instantiating_into_payload_arena = false;
+            // GH #921 A3, commit 5 (PR #919's note): and neither do
+            // the placement overrides outlive the field they were
+            // looked up for. A `placement { }`'d field initialised by
+            // anything but a locus literal leaves them untaken, and
+            // when it is the LAST field nothing further in this loop
+            // resets them — so a later instantiation, in this
+            // program or the next declaration lowered, could take a
+            // pinned thread the author wrote for something else.
+            self.placement_for_field = None;
+            self.cooperative_pool_for_next_locus_instantiation = None;
+            self.numa_node_for_next_locus_instantiation = None;
+            self.replica_index_for_next_locus_instantiation = None;
             let (slot_idx, declared_ty) = info
                 .fields
                 .get(fname)
@@ -2656,52 +2704,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name, fname, declared_ty, val_ty
                 )));
             }
-            // GH #895: the last field init a fresh factory could
-            // transfer into and be owned by nobody.
-            //
-            // `Queries { j: make_churner() }`, with `j: Counter` an
-            // interface and `make_churner()` declared `-> Churner`,
-            // is the GH #836 shape written against a CONTRACT-typed
-            // field. Both halves of that decision were already in
-            // place for it and neither could fire: the F.17 gate
-            // keeps the enclosing frame out of an `Interface` field's
-            // initialiser (`field_owns_locus_rhs`, above), and the
-            // GH #871 cascade tears down what
-            // `__owned_child_reclaim_<f>` names — but the bit between
-            // them is set by `field_init_is_fresh_factory`, which
-            // compares the factory's declared locus against the
-            // FIELD's, and an interface field has none. So the frame
-            // stood back, the owner had no bit, and the child's arena
-            // (plus every `@form` buffer under it) outlived the
-            // program.
-            //
-            // The impl's name is what closes it, and it is known
-            // twice over at this point: the factory DECLARES it, and
-            // the coercion above recorded what actually reached the
-            // slot. Claiming the field only when the two agree is
-            // what keeps the bit and the reclaim pointer inseparable
-            // — the store below is the same one a literal init makes,
-            // so the cascade gets `__reclaim_<Impl>` for exactly the
-            // impl this instantiation built, ctor-override included.
-            //
-            // A `perspective(P)` field is deliberately NOT here. The
-            // F.17 gate does not cover it, so a factory's result in
-            // that position already takes the GH #402 frame temporary
-            // and is already reclaimed once; claiming it for the
-            // owner as well would dissolve it twice.
-            let owned_via_literal = owned_via_literal
-                || (matches!(declared_ty, CodegenTy::Interface(_))
-                    && owned_child_impl.is_some()
-                    && owned_child_impl
-                        == match overrides.get(fname.as_str()) {
-                            Some(e) => self.field_init_fresh_factory_impl(e),
-                            None => match default {
-                                DefaultInit::Expr(e) => {
-                                    self.field_init_fresh_factory_impl(e)
-                                }
-                                _ => None,
-                            },
-                        });
             // Bus-arena reclaim follow-up (2026-05-21): when this
             // instantiation runs inside a method body, the
             // field-init expression's value may live in the

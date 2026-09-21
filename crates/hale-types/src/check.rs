@@ -315,6 +315,70 @@ fn collect_generic_types<'a>(
     }
 }
 
+/// GH #911 B5: collect generic LOCUS templates. The locus twin of
+/// `collect_generic_types` — `locus Cache<K, V> { ... }` is
+/// monomorphized exactly as `type Box<T> { ... }` is (one mangled
+/// name per (template, type args) tuple, synthesized by codegen from
+/// discovery), so the checker has to know both or it refuses
+/// instantiations the build lowers.
+fn collect_generic_loci<'a>(
+    items: &'a [TopDecl],
+    out: &mut BTreeMap<String, &'a LocusDecl>,
+) {
+    for item in items {
+        match item {
+            TopDecl::Locus(l) if !l.generics.is_empty() => {
+                out.insert(l.name.name.clone(), l);
+            }
+            TopDecl::Module(m) => collect_generic_loci(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// GH #911 B5: the declaration a mangled monomorph name (`Box_Int`,
+/// `Cache_Int_String`) comes from.
+///
+/// Generic types and generic loci monomorphize the same way, so
+/// resolving a mangled name is one function over both. What differs
+/// is which SITES codegen can rewrite a bare template name at —
+/// which is why the callers say whether a locus counts rather than
+/// the lookup deciding for them. The site-by-site table is in
+/// `crates/hale-codegen/tests/generic_monomorph_agreement.rs`.
+#[derive(Clone, Copy)]
+enum GenericTemplate<'a> {
+    Type(&'a TypeDecl),
+    Locus(&'a LocusDecl),
+}
+
+impl<'a> GenericTemplate<'a> {
+    fn name(self) -> &'a str {
+        match self {
+            GenericTemplate::Type(t) => t.name.name.as_str(),
+            GenericTemplate::Locus(l) => l.name.name.as_str(),
+        }
+    }
+
+    fn generics(self) -> &'a [GenericParam] {
+        match self {
+            GenericTemplate::Type(t) => &t.generics,
+            GenericTemplate::Locus(l) => &l.generics,
+        }
+    }
+
+    /// The declaration keyword, for a diagnostic.
+    fn kind(self) -> &'static str {
+        match self {
+            GenericTemplate::Type(_) => "type",
+            GenericTemplate::Locus(_) => "locus",
+        }
+    }
+
+    fn is_type(self) -> bool {
+        matches!(self, GenericTemplate::Type(_))
+    }
+}
+
 /// M3 stage 3 tranche 2: resolve one mangle token (`Int`, `Float`,
 /// a user type name, or a nested mangled monomorph) to a Ty. The
 /// codegen mangle joins tokens with `_`, so this stays permissive
@@ -516,6 +580,8 @@ pub fn check_bundle_scoped(
         let mut generic_types: BTreeMap<String, &TypeDecl> =
             BTreeMap::new();
         collect_generic_types(&program.items, &mut generic_types);
+        let mut generic_loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
+        collect_generic_loci(&program.items, &mut generic_loci);
         let mut cx = Checker {
             top,
             known: &known,
@@ -534,6 +600,7 @@ pub fn check_bundle_scoped(
             generic_params: Vec::new(),
             generic_fns,
             generic_types,
+            generic_loci,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
@@ -547,6 +614,9 @@ pub fn check_bundle_scoped(
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
     check_main_and_bindings(bundle, top, &mut diags);
+    // GH #911 (B6): and the entry point is top-level only, which the
+    // build path has always assumed and check did not say.
+    check_entry_point_placement(bundle, &mut diags);
     // Phase 3 routing-keys (2026-05-25): bundle-level checks
     //   - `on_unmatched: fallback` topics must have at least one
     //     `where key == _` subscriber program-wide.
@@ -813,7 +883,7 @@ fn collect_in_match(stmt: &MatchStmt, out: &mut Vec<(String, Span)>) {
 
 fn collect_in_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
     match expr {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             if path.segments.len() == 1 {
                 out.push((path.segments[0].name.clone(), *span));
             }
@@ -1246,7 +1316,7 @@ fn find_blocking_in_match(m: &MatchStmt) -> Option<(String, Span)> {
 
 fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
     match expr {
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             if let Expr::Path(qn) = callee.as_ref() {
                 let segs: Vec<&str> =
                     qn.segments.iter().map(|s| s.name.as_str()).collect();
@@ -1588,7 +1658,7 @@ fn find_blocking_deep_in_expr(
     bs: &BTreeSet<String>,
 ) -> Option<(String, Span)> {
     match expr {
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             match callee.as_ref() {
                 Expr::Path(qn) => {
                     let segs: Vec<&str> =
@@ -2053,7 +2123,7 @@ fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
 
 fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
     match e {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             for init in inits {
                 hot_walk_expr(&init.value, cx);
             }
@@ -2109,7 +2179,7 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
                 }
             }
         }
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             hot_walk_expr(callee, cx);
             for a in args {
                 hot_walk_expr(a, cx);
@@ -3145,6 +3215,13 @@ fn check_nested_long_running_child(
 /// pair — not the locus alone — is what the construction re-enters.
 type ContainmentState = (String, Vec<String>);
 
+/// One edge out of a param default (GH #870): the state the default
+/// constructs, and the factory fn it went through — `None` when the
+/// default spells the literal itself. The graph is the same either
+/// way; the name is what the diagnostic shows the author, who is
+/// looking at a call, not at a literal.
+type ContainmentEdge = (ContainmentState, Option<String>);
+
 /// GH #813: a locus whose construction requires constructing one of
 /// its own kind.
 ///
@@ -3165,18 +3242,32 @@ type ContainmentState = (String, Vec<String>);
 /// trace is not a diagnostic, and the author's mistake is at a param.
 ///
 /// The graph is over BY-VALUE containment: an edge `L → M` where a
-/// param default of `L` *constructs* an `M`, i.e. an `M { … }` locus
-/// literal appears anywhere in the default's expression. A **call**
-/// in a default — `next: Node = make()` — is deliberately not an
-/// edge. Two reasons, and they agree: lowering a call emits a call
-/// rather than inlining the callee, so the compiler terminates on it
-/// and there is no crash to prevent; and the checker cannot tell a
-/// factory that builds a fresh locus from an accessor that hands back
-/// one somebody else already owns (codegen's `fresh_locus_factories`
-/// fixpoint is the whole-program analysis that can, and it is a
-/// codegen-side answer to a different question). A factory that does
-/// build a fresh one recurses at RUN time, like any other unbounded
-/// recursion, and `@no_recursion` is the contract for that.
+/// param default of `L` *constructs* an `M` — an `M { … }` locus
+/// literal anywhere in the default's expression, or (GH #870) a call
+/// to a fn that freshly constructs one.
+///
+/// The second half is the residue #813 left behind. `next: Node =
+/// make()` with `fn make() -> Node { return Node { }; }` compiled —
+/// lowering a call emits a call rather than inlining the callee, so
+/// nothing recursed at COMPILE time and there was no crash to
+/// prevent — and then overflowed the program's own stack at RUN time,
+/// because every `Node` `make` builds leaves ITS `next` to the same
+/// default, which calls `make` again. The ring is the same ring; only
+/// the spelling of one edge changed.
+///
+/// Telling that apart from an accessor handing back a `Node` somebody
+/// else already owns is a whole-program question, and
+/// `fresh_locus_factory_products` is the answer: codegen's
+/// `compute_fresh_locus_factories` classification, mirrored over the
+/// bundle rather than imported (hale-codegen depends on hale-types,
+/// so the dependency cannot run the other way; only the pure "what
+/// does this fn hand back" part is repeated, and it answers with each
+/// literal's supplied fields, which the ownership map has no use
+/// for). A call it cannot see as fresh — an accessor, a method, a
+/// `std::` or cross-seed path — takes no edge and stays accepted,
+/// exactly as before; a program like that recurses at RUN time only
+/// if the callee really does build one, which is what `@no_recursion`
+/// is the contract for.
 ///
 /// A node is (locus, supplied field names) rather than the locus
 /// alone: `A { n: 1, m: 2 }` written inside `A`'s own default for `m`
@@ -3214,6 +3305,9 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     if loci.is_empty() {
         return;
     }
+    // GH #870: which fns hand back a locus they freshly built, and
+    // what each call constructs. Computed once for the bundle.
+    let factories = fresh_locus_factory_products(bundle, &loci);
     // Classic gray/black DFS. `finished` is the black set: every
     // cycle reachable from a state was found while that state was
     // being explored, so re-entering it later has nothing to add —
@@ -3227,6 +3321,7 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             name,
             &[],
             &loci,
+            &factories,
             &mut path,
             &mut finished,
             &mut reported,
@@ -3238,11 +3333,13 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// One DFS step of the GH #813 containment walk. `supplied` is the
 /// set of field names the literal that got us here wrote out; every
 /// OTHER param of `locus` expands its default, and each locus literal
-/// inside that default is an edge.
+/// inside that default — plus (GH #870) each fresh-factory call — is
+/// an edge.
 fn walk_param_default_containment(
     locus: &str,
     supplied: &[String],
     loci: &BTreeMap<&str, &LocusDecl>,
+    factories: &BTreeMap<String, Vec<ContainmentState>>,
     path: &mut Vec<ContainmentState>,
     finished: &mut BTreeSet<ContainmentState>,
     reported: &mut BTreeSet<(u32, String)>,
@@ -3269,13 +3366,13 @@ fn walk_param_default_containment(
             let ParamInit::Value(e) = &pd.init else {
                 continue;
             };
-            let mut built: Vec<ContainmentState> = Vec::new();
-            collect_constructed_loci(e, loci, &mut built);
-            for child in built {
+            let mut built: Vec<ContainmentEdge> = Vec::new();
+            collect_constructed_loci(e, loci, factories, &mut built);
+            for (child, via) in built {
                 let Some(at) = path.iter().position(|s| *s == child) else {
                     walk_param_default_containment(
-                        &child.0, &child.1, loci, path, finished,
-                        reported, diags,
+                        &child.0, &child.1, loci, factories, path,
+                        finished, reported, diags,
                     );
                     continue;
                 };
@@ -3291,17 +3388,39 @@ fn walk_param_default_containment(
                 } else {
                     String::new()
                 };
+                // The two spellings of one edge: a literal in the
+                // default, or a call to a fn that builds one (GH
+                // #870). Same rule, same ring — what differs is what
+                // the author is looking at on that line.
+                let (how, why) = match &via {
+                    None => (
+                        format!("defaults to a `{}`", child.0),
+                        "every one the default builds needs another, \
+                         and no locus literal can end the chain"
+                            .to_string(),
+                    ),
+                    Some(f) => (
+                        format!(
+                            "defaults to `{}()`, which builds a fresh \
+                             `{}`",
+                            f, child.0,
+                        ),
+                        "every one the factory builds asks the same \
+                         default again, so the program compiles and \
+                         then recurses until its stack overflows"
+                            .to_string(),
+                    ),
+                };
                 let message = format!(
-                    "param `{}` of `{}` defaults to a `{}`; a locus \
-                     cannot contain itself by value{} — every one the \
-                     default builds needs another, and no locus \
-                     literal can end the chain. Drop the default and \
+                    "param `{}` of `{}` {}; a locus cannot contain \
+                     itself by value{} — {}. Drop the default and \
                      take the child from the caller (`{}: {};`), or \
                      hold a value rather than a locus.",
                     pd.name.name,
                     locus,
-                    child.0,
+                    how,
                     chain,
+                    why,
                     pd.name.name,
                     child.0,
                 );
@@ -3315,16 +3434,27 @@ fn walk_param_default_containment(
     finished.insert(state);
 }
 
-/// Every locus literal `M { … }` inside `e`, as (locus name, the
-/// field names it supplies). Nested literals count too — a literal
-/// inside a literal's field is constructed just as surely as the
-/// outer one. Only single-segment paths that name a locus in this
-/// bundle are edges; a `type` literal, a stdlib path and a sibling
-/// file's name are all skipped.
+/// Every locus `M` constructed while `e` is evaluated, as (locus
+/// name, the field names it supplies) plus the factory fn the default
+/// reached it through, if any.
+///
+/// Two spellings construct one:
+///
+///   * a locus literal `M { … }`. Nested literals count too — a
+///     literal inside a literal's field is constructed just as surely
+///     as the outer one. Only single-segment paths that name a locus
+///     in this bundle are edges; a `type` literal, a stdlib path and
+///     a sibling file's name are all skipped;
+///   * GH #870: a call to a fn `fresh_locus_factory_products`
+///     classified as freshly building one. The states it contributes
+///     are the literals that fn hands back, so `fn make() -> Node {
+///     return Node { n: 5 }; }` contributes `(Node, [n])` — the same
+///     node the literal `Node { n: 5 }` would.
 fn collect_constructed_loci(
     e: &Expr,
     loci: &BTreeMap<&str, &LocusDecl>,
-    out: &mut Vec<ContainmentState>,
+    factories: &BTreeMap<String, Vec<ContainmentState>>,
+    out: &mut Vec<ContainmentEdge>,
 ) {
     match e {
         Expr::Struct { path, inits, .. } => {
@@ -3337,67 +3467,312 @@ fn collect_constructed_loci(
                         .collect();
                     supplied.sort();
                     supplied.dedup();
-                    out.push((name.to_string(), supplied));
+                    out.push(((name.to_string(), supplied), None));
                 }
             }
             for i in inits {
-                collect_constructed_loci(&i.value, loci, out);
+                collect_constructed_loci(&i.value, loci, factories, out);
             }
         }
         Expr::Binary { left, right, .. } => {
-            collect_constructed_loci(left, loci, out);
-            collect_constructed_loci(right, loci, out);
+            collect_constructed_loci(left, loci, factories, out);
+            collect_constructed_loci(right, loci, factories, out);
         }
         Expr::Unary { operand, .. } => {
-            collect_constructed_loci(operand, loci, out)
+            collect_constructed_loci(operand, loci, factories, out)
         }
         Expr::Call { callee, args, .. } => {
-            collect_constructed_loci(callee, loci, out);
+            if let Some(f) = plain_callee_name(callee) {
+                if let Some(states) = factories.get(f) {
+                    for s in states {
+                        out.push((s.clone(), Some(f.to_string())));
+                    }
+                }
+            }
+            collect_constructed_loci(callee, loci, factories, out);
             for a in args {
-                collect_constructed_loci(a, loci, out);
+                collect_constructed_loci(a, loci, factories, out);
             }
         }
         Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            collect_constructed_loci(receiver, loci, out)
+            collect_constructed_loci(receiver, loci, factories, out)
         }
         Expr::Index { receiver, index, .. } => {
-            collect_constructed_loci(receiver, loci, out);
-            collect_constructed_loci(index, loci, out);
+            collect_constructed_loci(receiver, loci, factories, out);
+            collect_constructed_loci(index, loci, factories, out);
         }
         Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
             for p in parts {
-                collect_constructed_loci(p, loci, out);
+                collect_constructed_loci(p, loci, factories, out);
             }
         }
         Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
-            collect_constructed_loci(inner, loci, out)
+            collect_constructed_loci(inner, loci, factories, out)
         }
         Expr::ArrayRepeat { val, .. } => {
-            collect_constructed_loci(val, loci, out)
+            collect_constructed_loci(val, loci, factories, out)
         }
         Expr::Range { lo, hi, .. } => {
-            collect_constructed_loci(lo, loci, out);
-            collect_constructed_loci(hi, loci, out);
+            collect_constructed_loci(lo, loci, factories, out);
+            collect_constructed_loci(hi, loci, factories, out);
         }
         Expr::Approx { left, right, tolerance, .. } => {
-            collect_constructed_loci(left, loci, out);
-            collect_constructed_loci(right, loci, out);
-            collect_constructed_loci(tolerance, loci, out);
+            collect_constructed_loci(left, loci, factories, out);
+            collect_constructed_loci(right, loci, factories, out);
+            collect_constructed_loci(tolerance, loci, factories, out);
         }
         Expr::Or { inner, disposition, .. } => {
-            collect_constructed_loci(inner, loci, out);
+            collect_constructed_loci(inner, loci, factories, out);
             match disposition {
                 OrDisposition::Substitute(s) => {
-                    collect_constructed_loci(s, loci, out)
+                    collect_constructed_loci(s, loci, factories, out)
                 }
                 OrDisposition::Fail(p, _) => {
-                    collect_constructed_loci(p, loci, out)
+                    collect_constructed_loci(p, loci, factories, out)
                 }
                 _ => {}
             }
         }
         _ => {}
     }
+}
+
+/// The single-segment name a callee spells, or `None` for a method,
+/// a path, or anything computed. A qualified callee resolves through
+/// codegen's import-rename table, which the checker has no
+/// equivalent of, so it is not followed here.
+fn plain_callee_name(callee: &Expr) -> Option<&str> {
+    match callee {
+        Expr::Ident(i) => Some(i.name.as_str()),
+        Expr::Path(q) if q.segments.len() == 1 => {
+            Some(q.segments[0].name.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// GH #870: every fn in the bundle that hands back a locus it
+/// freshly BUILT, with the [`ContainmentState`]s a call to it
+/// constructs.
+///
+/// The classification is codegen's `compute_fresh_locus_factories`:
+/// a fn qualifies when every arm it returns is a literal of its
+/// declared locus, a call to another qualifying fn of that locus, or
+/// one local binding that was itself bound to either — a fixpoint,
+/// since the second and third forms are answers about other fns.
+/// Two deliberate differences from the codegen map:
+///
+///   * it answers with each literal's SUPPLIED FIELD NAMES, not just
+///     the locus. `Node { n: 5 }` expands every default but `n`, and
+///     the containment graph's nodes are (locus, supplied) pairs for
+///     exactly that reason. Ownership has no use for the names, so
+///     the codegen map does not carry them;
+///   * it drops the escape analysis codegen runs on a returned
+///     binding (`body_ok`). That asks who OWNS the value; the
+///     question here is only whether one was built, which the `let`
+///     already answered.
+///
+/// Everything it cannot follow makes a fn opaque rather than fresh,
+/// which costs a report and never invents one: a multi-segment
+/// return type or callee (a `std::` or cross-seed path), a carrier
+/// arm (`return if c { … } else { … }`), a returned binding written
+/// twice, and any statement form that could hide a `return` this walk
+/// does not model.
+fn fresh_locus_factory_products(
+    bundle: &Bundle<'_>,
+    loci: &BTreeMap<&str, &LocusDecl>,
+) -> BTreeMap<String, Vec<ContainmentState>> {
+    /// `M { … }` spelled as a single-segment path naming `locus`, as
+    /// the state it constructs.
+    fn literal_state(e: &Expr, locus: &str) -> Option<ContainmentState> {
+        let Expr::Struct { path, inits, .. } = e else { return None };
+        if path.segments.len() != 1 || path.segments[0].name != locus {
+            return None;
+        }
+        let mut supplied: Vec<String> =
+            inits.iter().map(|i| i.name.name.clone()).collect();
+        supplied.sort();
+        supplied.dedup();
+        Some((locus.to_string(), supplied))
+    }
+
+    /// What one returned expression hands back, or `None` if this
+    /// walk cannot see it as a fresh `locus`. `lets` is empty on the
+    /// recursive step: a binding is followed one level, since
+    /// chasing a chain of them needs flow sensitivity this walk does
+    /// not have.
+    fn arm_states(
+        e: &Expr,
+        locus: &str,
+        lets: &[(&str, &Expr)],
+        known: &BTreeMap<String, Vec<ContainmentState>>,
+    ) -> Option<Vec<ContainmentState>> {
+        if let Some(s) = literal_state(e, locus) {
+            return Some(vec![s]);
+        }
+        if let Expr::Call { callee, .. } = e {
+            let states = known.get(plain_callee_name(callee)?)?;
+            if states.iter().all(|(l, _)| l == locus) {
+                return Some(states.clone());
+            }
+            return None;
+        }
+        if let Expr::Ident(i) = e {
+            let bound: Vec<&Expr> = lets
+                .iter()
+                .filter(|(n, _)| *n == i.name)
+                .map(|(_, v)| *v)
+                .collect();
+            if bound.len() != 1 {
+                return None;
+            }
+            return arm_states(bound[0], locus, &[], known);
+        }
+        None
+    }
+
+    /// Every value a fn body can hand back, and every `let` in it.
+    /// `false` means the walk met a statement form that could carry a
+    /// `return` it does not model — an unseen one would make an
+    /// accessor look like a factory, so the fn is opaque instead.
+    ///
+    /// A nested block's tail counts as a value the body produces: a
+    /// locus literal evaluated anywhere in the callee is constructed
+    /// as surely as one it returns.
+    fn collect_returns<'a>(
+        b: &'a Block,
+        rets: &mut Vec<&'a Expr>,
+        lets: &mut Vec<(&'a str, &'a Expr)>,
+    ) -> bool {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(e), _) => rets.push(e),
+                Stmt::Let { name, value, .. } => {
+                    lets.push((name.name.as_str(), value))
+                }
+                Stmt::If(i) => {
+                    if !if_returns(i, rets, lets) {
+                        return false;
+                    }
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        match &arm.body {
+                            MatchArmBody::Block(bb) => {
+                                if !collect_returns(bb, rets, lets) {
+                                    return false;
+                                }
+                            }
+                            // An arm evaluated for its effect: a
+                            // match STATEMENT hands nothing back.
+                            MatchArmBody::Expr(_) => {}
+                        }
+                    }
+                }
+                Stmt::For { body, .. }
+                | Stmt::While { body, .. }
+                | Stmt::Block(body) => {
+                    if !collect_returns(body, rets, lets) {
+                        return false;
+                    }
+                }
+                Stmt::Return(None, _)
+                | Stmt::LetTuple { .. }
+                | Stmt::Assign { .. }
+                | Stmt::Expr(_)
+                | Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Fail { .. }
+                | Stmt::Yield(_)
+                | Stmt::Terminate(_)
+                | Stmt::Reperspective { .. }
+                | Stmt::Recovery { .. }
+                | Stmt::Violate { .. }
+                | Stmt::Send { .. } => {}
+                _ => return false,
+            }
+        }
+        if let Some(t) = &b.tail {
+            rets.push(t);
+        }
+        true
+    }
+
+    fn if_returns<'a>(
+        i: &'a IfStmt,
+        rets: &mut Vec<&'a Expr>,
+        lets: &mut Vec<(&'a str, &'a Expr)>,
+    ) -> bool {
+        if !collect_returns(&i.then_block, rets, lets) {
+            return false;
+        }
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => collect_returns(b, rets, lets),
+            Some(ElseBranch::ElseIf(nested)) => {
+                if_returns(nested, rets, lets)
+            }
+            None => true,
+        }
+    }
+
+    // A name declared twice keeps the first declaration, as the
+    // locus map above does: a bundle with two is ill-formed for
+    // another reason, and this pass is not the place to say so.
+    let mut fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in flat_decls(&program.items) {
+            if let TopDecl::Fn(f) = item {
+                fns.entry(f.name.name.as_str()).or_insert(f);
+            }
+        }
+    }
+    let mut out: BTreeMap<String, Vec<ContainmentState>> = BTreeMap::new();
+    loop {
+        let mut added = false;
+        for (name, f) in &fns {
+            if out.contains_key(*name) {
+                continue;
+            }
+            let locus = match f.ret.as_ref() {
+                Some(TypeExpr::Named { path, .. })
+                    if path.segments.len() == 1 =>
+                {
+                    path.segments[0].name.as_str()
+                }
+                _ => continue,
+            };
+            if !loci.contains_key(locus) {
+                continue;
+            }
+            let mut rets: Vec<&Expr> = Vec::new();
+            let mut lets: Vec<(&str, &Expr)> = Vec::new();
+            if !collect_returns(&f.body, &mut rets, &mut lets) {
+                continue;
+            }
+            let mut states: Vec<ContainmentState> = Vec::new();
+            let mut fresh = !rets.is_empty();
+            for r in &rets {
+                match arm_states(r, locus, &lets, &out) {
+                    Some(s) => states.extend(s),
+                    None => {
+                        fresh = false;
+                        break;
+                    }
+                }
+            }
+            if !fresh || states.is_empty() {
+                continue;
+            }
+            states.sort();
+            states.dedup();
+            out.insert((*name).to_string(), states);
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    out
 }
 
 /// F.31 Phase 5: pool identity. Each main-locus params field
@@ -3866,7 +4241,7 @@ fn pinned_walk_stmt(s: &Stmt, cx: &mut PinnedLoopCx) {
 
 fn pinned_walk_expr(e: &Expr, cx: &mut PinnedLoopCx) {
     match e {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             for init in inits {
                 pinned_walk_expr(&init.value, cx);
             }
@@ -4539,7 +4914,7 @@ fn walk_match_pool(stmt: &MatchStmt, cx: &mut PoolCheckCx) {
 }
 
 fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
-    if let Expr::Call { callee, args, span } = expr {
+    if let Expr::Call { callee, args, span, .. } = expr {
         // F.31 Phase 5: flag `self.X.foo(args)` where the
         // field X's locus type is on a different pool than
         // the enclosing locus. Only the `Field` callee
@@ -5624,6 +5999,49 @@ fn check_phase3_fallback_subscribers(
                 name
             ),
         ));
+    }
+}
+
+/// GH #911 (B6): the entry point is TOP-LEVEL only.
+///
+/// A module is a namespace and not an analysis boundary, so nearly
+/// every declaration means the same thing one brace deeper (GH #825,
+/// GH #884). The entry point is the exception `spec/semantics.md`
+/// § "Declarations inside `module { }`" names: codegen looks for
+/// `fn main` in `program.items` and nowhere else — a module-nested
+/// one is not the program's entry point, and promoting it there
+/// would make codegen the only layer that thinks so.
+///
+/// What it was NOT is a reason for `check` to stay quiet. A seed whose
+/// only `fn main` sits inside a module checked clean and then failed
+/// to build with codegen's spanless `program has no `fn main()``, so
+/// the two layers disagreed about a program (the ruling on GH #911,
+/// 2026-09-20). They agree here instead, with the position of the
+/// declaration that has to move.
+fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn walk(items: &[TopDecl], module: Option<&str>, diags: &mut Vec<Diag>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) if f.name.name == "main" => {
+                    let Some(m) = module else { continue };
+                    diags.push(Diag::ty(
+                        f.name.span,
+                        format!(
+                            "the entry point must be top-level: a `fn \
+                             main` inside `module {}` does not start the \
+                             program — move it out of the module, or \
+                             rename it if it is an ordinary function",
+                            m
+                        ),
+                    ));
+                }
+                TopDecl::Module(m) => walk(&m.items, Some(&m.name.name), diags),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, None, diags);
     }
 }
 
@@ -7352,6 +7770,14 @@ struct Checker<'a> {
     /// codegen unit tests, which skip the checker, exercised
     /// them). Fields validate against the SUBSTITUTED types.
     generic_types: BTreeMap<String, &'a TypeDecl>,
+    /// GH #911 B5: generic LOCUS templates (name → decl). The same
+    /// table for `locus Cache<K, V> { ... }`, and for the same
+    /// reason: without it the checker refused every instantiation of
+    /// a generic locus while `hale build` lowered it, so the shape
+    /// was reachable only from codegen tests (which skip the
+    /// checker). A locus's `params` are its fields — the monomorph's
+    /// are the template's with the arguments substituted.
+    generic_loci: BTreeMap<String, &'a LocusDecl>,
     /// GH #255 phase 1: topic names with a declared transport
     /// binding (any `bindings { }` entry, bundle-wide). Gates
     /// `or wait` on publishes — the loss window it waits out
@@ -10455,10 +10881,19 @@ impl<'a> Checker<'a> {
                             // monomorph's own field validation
                             // already checked the arguments; this is
                             // the same value under two spellings.
+                            //
+                            // GH #911 B5: generic TYPES only.
+                            // `c: Cache<Int, String> = Cache { }` on
+                            // a generic LOCUS is refused at build
+                            // ("generic instantiation
+                            // `Cache_Int_String` not synthesized —
+                            // discovery missed the use site"), so
+                            // accepting it here would trade one
+                            // divergence for another.
                             let monomorph_of_template = self
                                 .resolve_generic_monomorph(w)
                                 .is_some_and(|(t, _)| {
-                                    t.name.name == *g
+                                    t.is_type() && t.name() == g.as_str()
                                 });
                             serves_or_iface || monomorph_of_template
                         }
@@ -11353,7 +11788,21 @@ impl<'a> Checker<'a> {
                         // body.
                         self.check_type_annotation(te);
                         let want = resolve_type_expr(te, self.known);
-                        if !want.assignable_from(&got) {
+                        // GH #911 B5: `let h: Holder<Int> = Holder { };`
+                        // — the annotation resolves to the mangled
+                        // monomorph `Holder_Int` while the literal
+                        // types as the template `Holder`. Codegen
+                        // rewrites the bare template name against
+                        // exactly this ascription and builds the
+                        // monomorph, for a generic locus as well as a
+                        // generic type; the checker refused both, so
+                        // neither shape was reachable outside the
+                        // codegen tests (which skip the checker).
+                        let monomorph = self
+                            .two_spellings_of_one_monomorph(
+                                &want, &got, true,
+                            );
+                        if !monomorph && !want.assignable_from(&got) {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -11366,7 +11815,16 @@ impl<'a> Checker<'a> {
                         }
                         want
                     }
-                    None => got,
+                    None => {
+                        // GH #911 B5: no annotation is no arguments.
+                        if matches!(value, Expr::Struct { .. }) {
+                            self.refuse_generic_literal_without_arguments(
+                                &got,
+                                value.span(),
+                            );
+                        }
+                        got
+                    }
                 };
                 self.locals.insert(
                     &name.name,
@@ -11526,7 +11984,17 @@ impl<'a> Checker<'a> {
                     // declared success return type when in a
                     // fallible body.
                     if let Some((expected_ret, _)) = &self.fallible_ctx {
-                        if !expected_ret.assignable_from(&got) {
+                        // GH #911 B5: the return slot is the other
+                        // site codegen rewrites a bare generic
+                        // template name at — `fn make() -> Box<Int> {
+                        // return Box { value: 4 }; }` builds and runs.
+                        let monomorph = self
+                            .two_spellings_of_one_monomorph(
+                                expected_ret,
+                                &got,
+                                true,
+                            );
+                        if !monomorph && !expected_ret.assignable_from(&got) {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -11548,7 +12016,18 @@ impl<'a> Checker<'a> {
                                 Ty::Prim(PrimType::Int)
                             )
                         );
-                        if !widening && !expected_ret.assignable_from(&got) {
+                        // GH #911 B5: the same return-slot rewrite as
+                        // the fallible branch above.
+                        let monomorph = self
+                            .two_spellings_of_one_monomorph(
+                                expected_ret,
+                                &got,
+                                true,
+                            );
+                        if !widening
+                            && !monomorph
+                            && !expected_ret.assignable_from(&got)
+                        {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -11712,8 +12191,19 @@ impl<'a> Checker<'a> {
                 if matches!(e, Expr::Or { .. }) {
                     self.or_value_discarded = true;
                 }
-                let _ = self.check_expr_addressed(e);
+                let got = self.check_expr_addressed(e);
                 self.or_value_discarded = false;
+                // GH #911 B5: `Cache { cap: 2 };` in statement
+                // position — the other site with no declared type to
+                // take the arguments from. (`App { };`, the ordinary
+                // main-locus instantiation, names no generic
+                // template and is untouched.)
+                if matches!(e, Expr::Struct { .. }) {
+                    self.refuse_generic_literal_without_arguments(
+                        &got,
+                        e.span(),
+                    );
+                }
             }
             Stmt::ShmWrite { topic, max, binding, body, span } => {
                 // The receiver must be a declared topic (its layout-bound
@@ -12807,21 +13297,60 @@ impl<'a> Checker<'a> {
                 if self.top.lookup(n).is_none() {
                     let (template, bindings) =
                         self.resolve_generic_monomorph(n)?;
-                    if let TypeDeclBody::Struct(tfields) =
-                        &template.body
-                    {
-                        return tfields
-                            .iter()
-                            .find(|f| f.name.name == name)
-                            .map(|f| {
-                                substitute_generic_ty(
-                                    &f.ty,
-                                    &bindings,
-                                    self.known,
-                                )
-                            });
+                    match template {
+                        GenericTemplate::Type(td) => {
+                            if let TypeDeclBody::Struct(tfields) = &td.body {
+                                return tfields
+                                    .iter()
+                                    .find(|f| f.name.name == name)
+                                    .map(|f| {
+                                        substitute_generic_ty(
+                                            &f.ty,
+                                            &bindings,
+                                            self.known,
+                                        )
+                                    });
+                            }
+                            return None;
+                        }
+                        // GH #911 B5: `c.cap` where
+                        // `c: Cache<Int, String>`. A locus's params
+                        // are its fields, and the monomorph's are
+                        // the template's with the arguments
+                        // substituted — the struct rule above, for
+                        // the locus half. Codegen reads the field
+                        // (the synthesized locus goes through the
+                        // ordinary locus passes); the checker
+                        // answered "no field `cap` on
+                        // `Cache_Int_String`" and refused a program
+                        // that builds and runs.
+                        GenericTemplate::Locus(ld) => {
+                            for m in &ld.members {
+                                let LocusMember::Params(pb) = m else {
+                                    continue;
+                                };
+                                for p in &pb.params {
+                                    if p.name.name != name {
+                                        continue;
+                                    }
+                                    // A param with no declared type
+                                    // takes it from its default, and
+                                    // that inference does not run
+                                    // here — stay permissive rather
+                                    // than invent one.
+                                    return Some(match &p.ty {
+                                        Some(te) => substitute_generic_ty(
+                                            te,
+                                            &bindings,
+                                            self.known,
+                                        ),
+                                        None => Ty::Unknown,
+                                    });
+                                }
+                            }
+                            return None;
+                        }
                     }
-                    return None;
                 }
                 match self.top.lookup(n)? {
                 TopSymbol::Type(info) => match &info.kind {
@@ -12924,6 +13453,61 @@ impl<'a> Checker<'a> {
             Ty::Unknown => Some(Ty::Unknown),
             _ => None,
         }
+    }
+
+    /// GH #892: does the program's OWN `fn NAME` answer this call,
+    /// ahead of the `bounded[T; N]` intrinsic of the same name?
+    ///
+    /// `count` / `clear` / `truncate` / `push` / `at` / `set` are
+    /// intrinsics only where the first argument IS a bounded
+    /// receiver, which is why they are absent from the parser's
+    /// `BUILTIN_CALL_FORMS` and a free `fn` of any of those names is
+    /// legal (`dna/tests/books_slice_test.hl` declares `fn count(app,
+    /// kind, entity, needle)` and calls it). On a bounded argument,
+    /// though, the intrinsic took the call from the declaration in
+    /// BOTH layers and said nothing: `fn count(xs: bounded[Int; 8])
+    /// -> Int` beside `count(w.samples)` typed as the intrinsic here
+    /// and ran the intrinsic there, and only because both answer
+    /// `Int` did the program check at all.
+    ///
+    /// The rule is lexical scope: **a declaration whose first
+    /// parameter is the receiver's own `bounded[T; N]` answers the
+    /// call**, at any arity that declaration accepts. Dispatch is
+    /// type-directed, so the shadow is decidable at the call site —
+    /// which is what makes this resolvable in the program's favour
+    /// where GH #880's flat-namespace names were not.
+    ///
+    /// Element type and capacity are part of the match, because the
+    /// Hale-source standard library is merged into this same global
+    /// fn namespace and calls the intrinsics on buffers of its own
+    /// (`bounded[String; 8]`, `bounded[Float; 32]`,
+    /// `bounded[Int; 33]`). A name-only shadow would retarget the
+    /// LIBRARY's calls at the user's declaration — the same capture
+    /// that made `print` a claimed name. Matching the receiver type
+    /// holds the shadow to the calls the author's own type reaches.
+    ///
+    /// Codegen holds the identical rule
+    /// (`user_fn_shadows_bounded_intrinsic` in
+    /// `crates/hale-codegen/src/form/bounded.rs`).
+    fn user_fn_shadows_bounded_intrinsic(
+        &self,
+        name: &str,
+        argc: usize,
+        recv_elem: &Ty,
+        recv_cap: u64,
+    ) -> bool {
+        let Some(TopSymbol::Fn(sig)) = self.top.lookup(name) else {
+            return false;
+        };
+        let Some((_, Ty::Bounded(param_elem, param_cap))) =
+            sig.params.first()
+        else {
+            return false;
+        };
+        param_elem.as_ref() == recv_elem
+            && *param_cap == recv_cap
+            && argc >= sig.required_params()
+            && argc <= sig.params.len()
     }
 
     /// A bare identifier in expression position.
@@ -13051,6 +13635,15 @@ impl<'a> Checker<'a> {
     /// from a `const` there. `hale check <dir>` and every build path
     /// hold the whole program and hold the rule.
     fn check_type_annotation(&mut self, te: &TypeExpr) {
+        // GH #911 B3 (#907): the generic-argument vocabulary is a
+        // property of the type expression, not of how much of the
+        // program this bundle holds, so it is decided before the
+        // strict-identifier gate below — see the function's own doc.
+        self.check_generic_arg_vocabulary(te);
+        // GH #911 B5: the argument COUNT is not a strictness — it is
+        // decided by the declaration, which a single file of a
+        // multi-file seed reads as well as the whole bundle does.
+        self.check_generic_arity(te);
         if !self.strict_idents {
             return;
         }
@@ -13062,6 +13655,10 @@ impl<'a> Checker<'a> {
                     self.check_type_annotation(arg);
                 }
                 if path.segments.len() != 1 {
+                    // GH #803: the QUALIFIED twin of this rule, whose
+                    // answer is the same in every position a path can
+                    // stand in and so is written once, below.
+                    self.check_qualified_path(path);
                     return;
                 }
                 let name = &path.segments[0].name;
@@ -13108,6 +13705,73 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #911 B3 (#907): a generic argument must be something
+    /// codegen can name a monomorph for.
+    ///
+    /// `type Holder { b: Box<Bytes>; }` passed `hale check` and died
+    /// at build, because minting `Box_Bytes` is codegen's business
+    /// and the checker had no opinion about which arguments it can
+    /// mint. Four of the five missing primitives got tokens
+    /// ([`crate::ty::GENERIC_ARG_PRIMS`]); `Uint` has no storage
+    /// representation to name at all, so it is refused HERE, at the
+    /// instantiation's span, with the supported set named.
+    ///
+    /// Deliberately NOT gated on `strict_idents`, unlike its caller:
+    /// this asks what a `PrimType` is, which the parser has already
+    /// decided and no absent sibling seed can change. A tool holding
+    /// one file of a multi-file seed is as entitled to the answer as
+    /// the build is.
+    ///
+    /// Deliberately narrow, too — only a PRIMITIVE argument. Codegen
+    /// also refuses an array / tuple / `bounded` / fn-type argument
+    /// and a qualified path, but a qualified path is single-segment by
+    /// the time the mangler sees it (the import renames collapse it),
+    /// so a checker that refused what the mangler refuses would
+    /// refuse programs `hale build` accepts — the GH #779 direction,
+    /// which is the worse one. Those forms stay codegen's to report.
+    fn check_generic_arg_vocabulary(&mut self, te: &TypeExpr) {
+        match te {
+            TypeExpr::Named { generic_args, .. } => {
+                for arg in generic_args {
+                    if let TypeExpr::Primitive(p, span) = arg {
+                        if crate::ty::generic_arg_mangle_token(*p).is_none() {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                crate::ty::generic_arg_refusal(*p),
+                            ));
+                        }
+                    }
+                    // A nested instantiation carries its own
+                    // arguments: `Box<Box<Uint>>` is the same refusal.
+                    self.check_generic_arg_vocabulary(arg);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => {
+                self.check_generic_arg_vocabulary(inner);
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.check_generic_arg_vocabulary(elem);
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.check_generic_arg_vocabulary(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.check_generic_arg_vocabulary(p);
+                }
+                if let Some(r) = ret {
+                    self.check_generic_arg_vocabulary(r);
+                }
+            }
+            // A primitive that is not itself a generic argument is
+            // whatever its own position allows; `perspective(P)` names
+            // a contract and takes no type arguments.
+            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
     /// GH #877: does this bare name end at something a type
     /// annotation may spell?
     ///
@@ -13145,7 +13809,13 @@ impl<'a> Checker<'a> {
         // `Box_Int` written out: the mangled monomorph name a
         // generic instantiation resolves to, which codegen
         // synthesizes from the template.
-        self.resolve_generic_monomorph(name).is_some()
+        //
+        // GH #911 B5: generic TYPES only. A generic LOCUS's monomorph
+        // name is not a spelling codegen accepts anywhere (see
+        // `check_struct_literal`), so admitting it as an annotation
+        // would admit a program the build refuses.
+        self.resolve_generic_monomorph(name)
+            .is_some_and(|(t, _)| t.is_type())
     }
 
     /// Nearest spelling to `name` among the things a type annotation
@@ -13187,6 +13857,214 @@ impl<'a> Checker<'a> {
                 .filter(|k| !k.starts_with("__")),
         );
         closest_bare_name(name, &cands).map(|h| h.to_string())
+    }
+
+    /// GH #803: the located refusal of a qualified path that resolves
+    /// to nothing, at the position the author wrote it.
+    ///
+    /// The resolver is where the tolerance lives (`resolve_type_expr`
+    /// maps an unknown path to `Ty::Unknown`), but it has no
+    /// diagnostic sink and some forty call sites — PR #851's note —
+    /// so the rule is emitted from the positions instead: every
+    /// annotation (`check_type_annotation`), a call / const / enum
+    /// variant (`Expr::Path`), and a struct or locus literal
+    /// (`check_struct_literal`). A `bindings { }` topic needs no site
+    /// of its own: `check_main_and_bindings` already refuses a topic
+    /// nothing declares, qualified or not.
+    fn check_qualified_path(&mut self, path: &QualifiedName) {
+        if let Some(msg) = self.unresolved_qualified(path) {
+            self.diags.push(Diag::ty(path.span, msg));
+        }
+    }
+
+    /// GH #803 (GH #911 B2): does this qualified path name something
+    /// no seed in the program declares? If so, what to say about it.
+    ///
+    /// The bare-TYPE rule above (#877) and the bare-IDENTIFIER rule
+    /// (#721) end at the same reasoning, and this is its last
+    /// spelling: in a program every import of which is resolved, a
+    /// name nothing declares is a typo, and a typo deserves a span.
+    /// `zz::f()` in a seed that imports nothing as `zz` passed `hale
+    /// check` and `hale verify` and then died in codegen as `path
+    /// call zz::f in expression position` — no location, a different
+    /// layer, and after the gate had said yes.
+    ///
+    /// Two answers, because the author made one of two mistakes:
+    ///
+    /// - the HEAD names nothing at all — not `std::`, not an import
+    ///   this build resolved, not a declaration of this program.
+    ///   Nothing can ever answer it.
+    /// - the head IS answered by an import and the name behind it is
+    ///   not one that library declares (`b::Greeting` where `b`
+    ///   provides `Greeting` under some other spelling, or not at
+    ///   all). PR #819's `import_library_key.rs` had to run every
+    ///   such case through `build` precisely because `check` could
+    ///   not see it.
+    ///
+    /// Permissive, each case for a reason:
+    ///
+    /// - `std::`, the bundled namespace no seed imports — the stdlib
+    ///   tables answer a `std::` path and report their own typos.
+    /// - an import this bundle never RESOLVED (GH #724: a consumer
+    ///   holding one seed without its libraries — the LSP's
+    ///   per-directory bundle). The declaration genuinely is not
+    ///   here, which is why every other qualified reference is
+    ///   tolerant in that situation too.
+    /// - a head that names a declaration: `Color::Red`, a wire
+    ///   struct's `Frame::seq`, a `type C2 = Color;` alias, a generic
+    ///   parameter. None of those is an import at all.
+    /// - one file of a multi-file seed (`strict_idents` off), whose
+    ///   `import` line may live in a sibling — #721's boundary, and
+    ///   the reason the flag rather than the CLI decides.
+    ///
+    /// Scoped per seed by GH #762 / #746 rather than here: a head
+    /// another seed declares and this one does not is that rule's,
+    /// reported by the CLI before the table can answer it.
+    fn unresolved_qualified(&self, path: &QualifiedName) -> Option<String> {
+        if !self.strict_idents || path.segments.len() < 2 {
+            return None;
+        }
+        let head = path.segments[0].name.as_str();
+        let name = path.segments[1].name.as_str();
+        if head == "std"
+            || self.unresolved_import_aliases.contains(head)
+            || self.type_name_is_declared(head)
+            || self.top.lookup(head).is_some()
+        {
+            return None;
+        }
+        // The rule must refuse nothing the build accepts, and codegen
+        // still lowers two unprefixed paths itself.
+        if UNPREFIXED_STDLIB_PATHS
+            .iter()
+            .any(|(ns, f)| *ns == head && *f == name)
+        {
+            return None;
+        }
+        // The names this build's imports registered under this head.
+        // A row for the name being written means the path resolves
+        // exactly as codegen resolves it, and there is nothing to say.
+        let mut provided: Vec<&str> = Vec::new();
+        for (key, _) in self.import_renames.iter() {
+            if key.first().map(|s| s.as_str()) != Some(head) {
+                continue;
+            }
+            match key.get(1) {
+                Some(n) if n == name => return None,
+                Some(n) => provided.push(n.as_str()),
+                None => {}
+            }
+        }
+        // GH #746 gives a CONTESTED alias a head of its own (`u` ->
+        // `u$0`) in the table and in its seed's own references; the
+        // author wrote `u`, so that is what the message says.
+        let alias = unscoped_alias(head);
+        if !provided.is_empty() {
+            provided.sort_unstable();
+            provided.dedup();
+            // Internal `__` names are reachable but are not the
+            // surface to advertise.
+            provided.retain(|n| !n.starts_with("__"));
+            let base = format!(
+                "`{}::{}` is not declared by the library imported as `{}`",
+                alias, name, alias
+            );
+            return Some(match nearest_qualified_segment(name, &provided) {
+                Some(hit) => {
+                    format!("{} — did you mean `{}::{}`?", base, alias, hit)
+                }
+                // No near spelling: what the library DOES provide is
+                // the next most useful thing to say, which is the
+                // shape codegen's twin message has for the same table
+                // (`unknown_qualified_name` in codegen.rs).
+                None if !provided.is_empty() => {
+                    let extra = provided.len().saturating_sub(8);
+                    let mut shown = provided[..provided.len().min(8)]
+                        .join(", ");
+                    if extra > 0 {
+                        shown.push_str(&format!(", … ({} more)", extra));
+                    }
+                    format!("{}; `{}` provides: {}", base, alias, shown)
+                }
+                None => base,
+            });
+        }
+        let written: Vec<&str> = std::iter::once(alias)
+            .chain(path.segments[1..].iter().map(|s| s.name.as_str()))
+            .collect();
+        let written = written.join("::");
+        // The stdlib lives under `std::`, and dropping the prefix is
+        // the canonical typo (`env::args_count`). When the prefix
+        // would resolve the path — in the surface table or in the
+        // Hale-source stdlib — say that instead, which is the answer
+        // codegen gives for the same mistake.
+        let prefixed: Vec<&str> = std::iter::once("std")
+            .chain(path.segments.iter().map(|s| s.name.as_str()))
+            .collect();
+        if crate::stdlib_surface::signature_for(&prefixed).is_some()
+            || crate::stdlib_bodies::mangled_locus_name(&prefixed).is_some()
+        {
+            return Some(format!(
+                "`{}` is unresolved — did you mean `std::{}`? The \
+                 stdlib lives under the `std::` prefix",
+                written, written
+            ));
+        }
+        let hint = self
+            .closest_path_head(head)
+            .map(|h| format!(" — did you mean `{}`?", h))
+            .unwrap_or_default();
+        Some(format!(
+            "`{}`: `{}` is not an import or a type of this seed{}",
+            written, alias, hint
+        ))
+    }
+
+    /// Nearest spelling to a qualified path's HEAD among the things a
+    /// head can be: the aliases this build's imports registered
+    /// first — a mistyped alias is the likely mistake — then the
+    /// program's own type-like names. Primitives are not candidates
+    /// (`Int::x` is not a path anyone means to write, and `zz` is
+    /// three edits from `Int`), and mangled symbols are unspellable
+    /// in source, so suggesting one would be advice that cannot be
+    /// taken.
+    fn closest_path_head(&self, head: &str) -> Option<String> {
+        let mut aliases: Vec<&str> = self
+            .import_renames
+            .iter()
+            .filter_map(|(key, _)| key.first())
+            .map(|h| unscoped_alias(h.as_str()))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        if let Some(hit) = nearest_qualified_segment(head, &aliases) {
+            return Some(hit);
+        }
+        let mut types: Vec<&str> = self
+            .known
+            .keys()
+            .map(|k| k.as_str())
+            .filter(|k| !k.starts_with("__"))
+            .collect();
+        types.extend(
+            self.top
+                .symbols
+                .iter()
+                .filter(|(_, s)| {
+                    matches!(
+                        s,
+                        TopSymbol::Locus(_)
+                            | TopSymbol::Type(_)
+                            | TopSymbol::Perspective(_)
+                            | TopSymbol::Interface(_)
+                    )
+                })
+                .map(|(k, _)| k.as_str())
+                .filter(|k| !k.starts_with("__")),
+        );
+        types.sort_unstable();
+        types.dedup();
+        nearest_qualified_segment(head, &types)
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -13237,6 +14115,12 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // GH #803: nothing above answered the path, and in a
+                // whole program nothing else will. This is the CALL
+                // position too — a `Expr::Call` with a path callee
+                // checks the callee through here — and the const and
+                // enum-variant positions.
+                self.check_qualified_path(qn);
                 Ty::Unknown
             }
             Expr::Path2 { .. } => Ty::Unknown,
@@ -13510,6 +14394,12 @@ impl<'a> Checker<'a> {
                 // arg. Probed speculatively — when arg0 isn't
                 // bounded, its diags are rolled back and the call
                 // falls through to the normal paths.
+                //
+                // GH #892: it also falls through when the program
+                // DECLARES the name over this receiver's own bounded
+                // type — lexical scope wins, and codegen's arms hold
+                // the same rule, so both layers resolve the call to
+                // the same fn.
                 if let Expr::Ident(id) = callee.as_ref() {
                     if matches!(
                         id.name.as_str(),
@@ -13519,7 +14409,19 @@ impl<'a> Checker<'a> {
                     {
                         let mark = self.diags.len();
                         let recv_ty = self.check_expr(&args[0]);
-                        if let Ty::Bounded(elem, _cap) = recv_ty {
+                        let shadowed = match &recv_ty {
+                            Ty::Bounded(elem, cap) => self
+                                .user_fn_shadows_bounded_intrinsic(
+                                    id.name.as_str(),
+                                    args.len(),
+                                    elem.as_ref(),
+                                    *cap,
+                                ),
+                            _ => false,
+                        };
+                        if let (false, Ty::Bounded(elem, _cap)) =
+                            (shadowed, recv_ty)
+                        {
                             let want_args = match id.name.as_str() {
                                 "push" | "at" | "truncate" => 2,
                                 "set" => 3,
@@ -13670,7 +14572,10 @@ impl<'a> Checker<'a> {
                                 _ => return Ty::Unit,
                             }
                         }
-                        // Not bounded: roll back speculative diags.
+                        // Not bounded, or the program's own fn owns
+                        // the name for this receiver type (GH #892):
+                        // roll back the speculative diags and let the
+                        // ordinary call paths resolve it.
                         self.diags.truncate(mark);
                     }
                 }
@@ -14423,7 +15328,7 @@ impl<'a> Checker<'a> {
                 let elem = self.check_expr_local(val);
                 Ty::Array(Box::new(elem), Some(*count))
             }
-            Expr::Struct { path, inits, span } => self.check_struct_literal(path, inits, *span),
+            Expr::Struct { path, inits, span, .. } => self.check_struct_literal(path, inits, *span),
             Expr::Block(b) => self.check_block_as_expr(b),
             Expr::If(s) => self.check_if_as_expr(s),
             // Gap C (2026-07-17): match in expression position types
@@ -15381,26 +16286,41 @@ impl<'a> Checker<'a> {
     }
 
     /// M3 stage 3 tranche 2: match a mangled monomorph name
-    /// (`Box_Int`, `Pair_Int_String`) against a generic type
+    /// (`Box_Int`, `Pair_Int_String`) against a generic
     /// template, producing the generic→Ty bindings. The mangle
     /// joins single tokens with `_`; template base names
     /// containing `_` are handled by prefix match. None when no
     /// template matches or the token count disagrees.
+    ///
+    /// GH #911 B5: generic LOCI are searched too (`Cache_Int_String`
+    /// against `locus Cache<K, V>`). The answer says which kind of
+    /// declaration it found, because a caller's site decides whether
+    /// a locus may appear there — see
+    /// [`Self::two_spellings_of_one_monomorph`].
     fn resolve_generic_monomorph(
         &self,
         name: &str,
-    ) -> Option<(&'a TypeDecl, BTreeMap<String, Ty>)> {
-        for (base, template) in &self.generic_types {
+    ) -> Option<(GenericTemplate<'a>, BTreeMap<String, Ty>)> {
+        let templates = self
+            .generic_types
+            .iter()
+            .map(|(base, t)| (base, GenericTemplate::Type(*t)))
+            .chain(
+                self.generic_loci
+                    .iter()
+                    .map(|(base, l)| (base, GenericTemplate::Locus(*l))),
+            );
+        for (base, template) in templates {
             let prefix = format!("{}_", base);
             let Some(rest) = name.strip_prefix(&prefix) else {
                 continue;
             };
             let toks: Vec<&str> = rest.split('_').collect();
-            if toks.len() != template.generics.len() {
+            if toks.len() != template.generics().len() {
                 continue;
             }
             let mut bindings: BTreeMap<String, Ty> = BTreeMap::new();
-            for (g, tok) in template.generics.iter().zip(toks.iter()) {
+            for (g, tok) in template.generics().iter().zip(toks.iter()) {
                 bindings.insert(
                     g.name.name.clone(),
                     mangle_token_to_ty(tok, self.known),
@@ -15409,6 +16329,160 @@ impl<'a> Checker<'a> {
             return Some((template, bindings));
         }
         None
+    }
+
+    /// GH #911 B5: are `want` and `got` the two spellings of ONE
+    /// monomorph — an annotation that resolved to the mangled name
+    /// (`Box_Int`, `Cache_Int_String`) and a literal that typed as
+    /// the generic TEMPLATE it instantiates (`Box`, `Cache`)?
+    ///
+    /// A literal spelled with the template name carries no type
+    /// arguments of its own; codegen takes them from the declared
+    /// type at the site and rewrites the path to the monomorph
+    /// (`resolve_generic_struct_path`). The checker has to allow the
+    /// same thing at the same sites or it refuses programs the build
+    /// lowers.
+    ///
+    /// `allow_loci` is a per-SITE answer, not a property of the
+    /// question. Codegen does the rewrite for a generic locus as
+    /// well as a generic type at a `let` ascription and a return
+    /// slot; at a locus param DEFAULT and at a locus literal's field
+    /// init only a generic TYPE resolves (a generic locus there dies
+    /// with "not synthesized — discovery missed the use site"), so
+    /// those two sites pass `false` and keep check agreeing with the
+    /// build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
+    /// holds the site-by-site evidence.
+    fn two_spellings_of_one_monomorph(
+        &self,
+        want: &Ty,
+        got: &Ty,
+        allow_loci: bool,
+    ) -> bool {
+        let (Ty::Named(w), Ty::Named(g)) = (want, got) else {
+            return false;
+        };
+        self.resolve_generic_monomorph(w).is_some_and(|(t, _)| {
+            (allow_loci || t.is_type()) && t.name() == g.as_str()
+        })
+    }
+
+    /// GH #911 B5: the generic template a literal's own path names,
+    /// if any. `Box { value: 1 }` types as `Ty::Named("Box")` — the
+    /// template, not a monomorph — and that is only lowerable where
+    /// a declared type supplies the arguments.
+    fn generic_template_named(&self, ty: &Ty) -> Option<GenericTemplate<'a>> {
+        let Ty::Named(n) = ty else { return None };
+        if let Some(t) = self.generic_types.get(n.as_str()) {
+            return Some(GenericTemplate::Type(*t));
+        }
+        self.generic_loci
+            .get(n.as_str())
+            .map(|l| GenericTemplate::Locus(*l))
+    }
+
+    /// GH #911 B5: refuse a generic literal at a site that declares
+    /// no type for it.
+    ///
+    /// `let b = Box { value: 1 };` and `Cache { cap: 2 };` checked
+    /// clean and then died at build with an unlocated
+    /// `expression form Discriminant(12)` / `struct literal
+    /// "Box": no locus or type by that name` — codegen has no
+    /// inference from the literal's fields back to `T`, so there is
+    /// nothing to infer the arguments from. The rule is therefore
+    /// "say them", and the error carries the line that has to change.
+    fn refuse_generic_literal_without_arguments(
+        &mut self,
+        ty: &Ty,
+        span: Span,
+    ) {
+        let Some(template) = self.generic_template_named(ty) else {
+            return;
+        };
+        let name = template.name();
+        let params: Vec<&str> = template
+            .generics()
+            .iter()
+            .map(|g| g.name.name.as_str())
+            .collect();
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`{}` is a generic {}: a literal spelled with the \
+                 template name takes its type arguments from the \
+                 declared type at the site, and this site declares \
+                 none — write them (`let x: {}<{}> = {} {{ ... }};`)",
+                name,
+                template.kind(),
+                name,
+                params.join(", "),
+                name
+            ),
+        ));
+    }
+
+    /// GH #911 B5: a generic instantiation's argument COUNT must
+    /// match the template's parameter count.
+    ///
+    /// `Box<Int, String>` used to resolve, silently, to the
+    /// monomorph name `Box_Int_String` — a name nothing declares —
+    /// and every use of the binding then failed for an unrelated
+    /// reason ("no field `value` on `Box_Int_String`") while
+    /// `hale build` refused the arity directly. Reported at the
+    /// annotation, and not gated on `strict_idents`: arity is
+    /// decided by the declaration, which one file of a multi-file
+    /// seed can see as well as the whole bundle can.
+    fn check_generic_arity(&mut self, te: &TypeExpr) {
+        match te {
+            TypeExpr::Named { path, generic_args, span } => {
+                for arg in generic_args {
+                    self.check_generic_arity(arg);
+                }
+                if path.segments.len() != 1 || generic_args.is_empty() {
+                    return;
+                }
+                let name = &path.segments[0].name;
+                let Some(template) =
+                    self.generic_template_named(&Ty::Named(name.clone()))
+                else {
+                    return;
+                };
+                let want = template.generics().len();
+                if generic_args.len() == want {
+                    return;
+                }
+                self.diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "generic {} `{}` takes {} type argument{}, not {}",
+                        template.kind(),
+                        name,
+                        want,
+                        if want == 1 { "" } else { "s" },
+                        generic_args.len()
+                    ),
+                ));
+            }
+            TypeExpr::Projection { inner, .. } => {
+                self.check_generic_arity(inner);
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.check_generic_arity(elem);
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.check_generic_arity(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.check_generic_arity(p);
+                }
+                if let Some(r) = ret {
+                    self.check_generic_arity(r);
+                }
+            }
+            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
     }
 
     fn check_struct_literal(
@@ -15511,6 +16585,14 @@ impl<'a> Checker<'a> {
                     }
                     return Ty::Unknown;
                 } else {
+                    // GH #803: a non-`std::` qualified literal the
+                    // rename table cannot answer. The tolerance below
+                    // stays — the inits are still checked, and the
+                    // literal is still `Unknown` — but in a whole
+                    // program the path itself is now reported, rather
+                    // than left for codegen's `unknown qualified name
+                    // `zz::T``.
+                    self.check_qualified_path(path);
                     for init in inits {
                         let _ = self.check_expr(&init.value);
                     }
@@ -15540,24 +16622,66 @@ impl<'a> Checker<'a> {
             if let Some((template, bindings)) =
                 self.resolve_generic_monomorph(name)
             {
-                if let TypeDeclBody::Struct(tfields) = &template.body {
-                    let fields: Vec<(String, Ty, bool)> = tfields
-                        .iter()
-                        .map(|f| {
-                            (
-                                f.name.name.clone(),
-                                substitute_generic_ty(
-                                    &f.ty,
-                                    &bindings,
-                                    self.known,
-                                ),
-                                f.default.is_some(),
-                            )
-                        })
-                        .collect();
-                    return self.check_literal_fields(
-                        name, &fields, "type", true, inits, span,
-                    );
+                match template {
+                    GenericTemplate::Type(td) => {
+                        if let TypeDeclBody::Struct(tfields) = &td.body {
+                            let fields: Vec<(String, Ty, bool)> = tfields
+                                .iter()
+                                .map(|f| {
+                                    (
+                                        f.name.name.clone(),
+                                        substitute_generic_ty(
+                                            &f.ty,
+                                            &bindings,
+                                            self.known,
+                                        ),
+                                        f.default.is_some(),
+                                    )
+                                })
+                                .collect();
+                            return self.check_literal_fields(
+                                name, &fields, "type", true, inits, span,
+                            );
+                        }
+                    }
+                    // GH #911 B5: the mangled name of a generic
+                    // LOCUS monomorph, written out. `hale build`
+                    // refuses it — the ownership pre-pass never
+                    // numbers a node spelled this way (F.39), with
+                    // or without the monomorph having been
+                    // discovered — so the checker refuses it too,
+                    // and says which spelling does work instead of
+                    // "unknown type".
+                    GenericTemplate::Locus(ld) => {
+                        let args: Vec<String> = ld
+                            .generics
+                            .iter()
+                            .map(|g| {
+                                bindings
+                                    .get(&g.name.name)
+                                    .map(|t| t.display())
+                                    .unwrap_or_else(|| "?".to_string())
+                            })
+                            .collect();
+                        let args = args.join(", ");
+                        let base = ld.name.name.clone();
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "`{}` is the compiler's name for the \
+                                 generic locus `{}<{}>`, not a spelling \
+                                 you can instantiate — build it through \
+                                 the template name with the type \
+                                 arguments on the binding \
+                                 (`let x: {}<{}> = {} {{ ... }};`)",
+                                name, base, args, base, args, base
+                            ),
+                        ));
+                        for init in inits {
+                            let _ = self.check_expr(&init.value);
+                        }
+                        return Ty::Unknown;
+                    }
                 }
             }
         }
@@ -15745,8 +16869,29 @@ impl<'a> Checker<'a> {
                     } else {
                         false
                     };
+                    // GH #911 B5: `Outer { inner: Box { value: 9 } }`
+                    // where `inner: Box<Int>` — the field's declared
+                    // type resolved to the mangled monomorph, the
+                    // literal typed as the template.
+                    // `populate_user_type_fields` rewrites the bare
+                    // name against the declared field type, so a
+                    // TYPE literal's field init builds and runs.
+                    //
+                    // TYPE literals only, and generic types only.
+                    // Codegen's locus-literal path has no such
+                    // rewrite (it rewrites a param DEFAULT, not a
+                    // field init at the literal), and
+                    // `L { b: Box { value: 8 } }` dies at build — so
+                    // a locus literal keeps the plain mismatch below,
+                    // the same call PR #531's review made for
+                    // perspective designation.
+                    let monomorph_field = kind_label == "type"
+                        && self.two_spellings_of_one_monomorph(
+                            want, &got, false,
+                        );
                     if !interface_satisfied
                         && !perspective_designated
+                        && !monomorph_field
                         && !want.assignable_from(&got)
                     {
                         self.diags.push(Diag::ty(
@@ -16193,6 +17338,21 @@ pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     hale_syntax::parser::FMT_BUILTIN,
 ];
 
+/// GH #803: the qualified paths codegen answers WITHOUT the `std::`
+/// prefix — the qualified twin of [`BARE_BUILTIN_CALLEES`], and the
+/// same obligation: the unresolvable-path rule must refuse nothing
+/// the build accepts.
+///
+/// These two are a legacy spelling from before the stdlib moved under
+/// `std::`, still lowered by `lower_path_call` (statement position)
+/// and `lower_path_call_expr` (`monotonic`) in `codegen.rs` and still
+/// written by the embedded test corpus. Every OTHER unprefixed
+/// stdlib-looking path is refused by codegen, which is why the rule
+/// reports it — with codegen's own "did you mean `std::…`" when the
+/// prefix would resolve it.
+pub const UNPREFIXED_STDLIB_PATHS: &[(&str, &str)] =
+    &[("time", "sleep"), ("time", "monotonic")];
+
 /// Nearest name by edit distance, for the "did you mean" hint; `None`
 /// when nothing is within a short distance.
 fn closest_bare_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
@@ -16216,4 +17376,28 @@ fn closest_bare_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> 
         .filter(|(d, _)| *d <= 3)
         .min_by_key(|(d, c)| (*d, c.to_string()))
         .map(|(_, c)| c)
+}
+
+/// GH #803: the name to suggest for one SEGMENT of a qualified path —
+/// a substring match first (`recv` for `recv_into`, which a plain
+/// edit distance misses), then a spelling within one or two edits.
+///
+/// Codegen's `unknown_qualified_name` (codegen.rs) chooses by these
+/// same two rules over the same rename table, so the check-time
+/// message and the build-time one suggest the same name for the same
+/// mistake. The looser `closest_bare_name` above is right for a BARE
+/// name, where the candidate set is the program's own vocabulary; a
+/// path segment is matched against a library's exports, where a
+/// three-edit "match" is noise (`nope` is three edits from `Mood`).
+fn nearest_qualified_segment(name: &str, candidates: &[&str]) -> Option<String> {
+    let lc = name.to_lowercase();
+    let substring_hit = candidates.iter().find(|c| {
+        let c_lc = c.to_lowercase();
+        (lc.len() >= 3 && c_lc.contains(&lc))
+            || (c_lc.len() >= 3 && lc.contains(&c_lc))
+    });
+    if let Some(hit) = substring_hit {
+        return Some((*hit).to_string());
+    }
+    crate::stdlib_surface::nearest_name(name, candidates.iter().copied())
 }

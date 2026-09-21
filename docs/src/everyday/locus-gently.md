@@ -61,6 +61,19 @@ writing one in a locus body is an error at the `const` keyword.
 A constant that each instance should carry is a `params` field
 with a default.
 
+Another habit that doesn't carry over: a default cannot build the
+locus it belongs to. `params { next: Node = Node { }; }` looks like
+a linked list, but it is a locus that cannot exist — the `Node` the
+default builds leaves ITS `next` to the same default, forever, and
+no call site can end the chain either, because `Node { next: ... }`
+needs a `Node` to hand over. Hale reports that at the param. It
+reports the same thing when the default calls a function that
+builds one (`next: Node = make_node();`) and when the loop goes
+around through another locus (`Alpha` builds a `Beta` that builds
+an `Alpha`). Holding a *different* locus is the ordinary shape and
+is fine; to hold one of its own kind, take it from the caller —
+`next: Node;`, with no default.
+
 ## `type` vs `locus`
 
 You met `type` for plain records earlier. The line between them:
@@ -164,8 +177,18 @@ is reported on identically — the hot-path lint reaches into it,
 a bus topic declared in it routes, a library's module-nested type
 is reachable across an `import` as `lib::Point`, and two modules
 declaring the same name is the same duplicate-name error as two
-top-level ones. The one thing a module does *not* hold is the
-program's entry point: `fn main` has to be at the top level.
+top-level ones.
+
+Two things a module does *not* hold, and it says so rather than
+quietly doing nothing with them:
+
+- The program's **entry point**. `fn main` has to be at the top
+  level, and a `fn main` inside a module is an error: *the entry
+  point must be top-level* — move it out, or rename it if it was
+  meant to be an ordinary function.
+- A **`target wasm { }`** block, which is a build directive for the
+  whole program rather than a declaration: *`target` is a
+  program-level declaration; move it to the top level.*
 
 If you want a namespace, the namespace locus above is the tool.
 

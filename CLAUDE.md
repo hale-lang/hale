@@ -76,6 +76,23 @@ LOTUS_ASAN=1 cargo test --release -p hale-codegen \
     --test corpus_oracle -- --ignored --test-threads=1
 ```
 
+Locus ownership has a generated matrix rather than hand-written
+cases: `crates/hale-codegen/tests/ownership_matrix.rs` builds every
+position × type × context (945 cells) and runs four oracles on each
+— `dissolve()` tag counts, `LOTUS_ARENA_RESIDENCY=1`, an ASan run,
+and the inline-vs-`let` differential. The default is a ~90-cell
+sample (~16 s); `HALE_MATRIX=full` runs all 945 (~100 s) and belongs
+in a nightly job:
+
+```sh
+cargo test --release -p hale-codegen --test ownership_matrix
+HALE_MATRIX=full cargo test --release -p hale-codegen --test ownership_matrix
+```
+
+The cells that fail today are named in its `KNOWN_OPEN` table and
+are asserted to FAIL, so the matrix is green on `main`; when a fix
+closes one, the cell goes green and the table entry has to go.
+
 An ASan build turns the arena's chunk recycling OFF
 (`LOTUS_NO_CHUNK_POOL`, defaulted on by the sanitizer cflags —
 GH #816). Without that, `lotus_arena_destroy` hands a dying

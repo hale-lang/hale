@@ -211,6 +211,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     return None;
                                 }
                                 Some(Expr::Struct {
+                                    id: hale_syntax::ast::NodeId::NONE,
                                     path: path.clone(),
                                     inits: Vec::new(),
                                     span: p.name.span,
@@ -299,12 +300,20 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                             path,
                                             inits,
                                             span,
+                                            id,
                                         } => match self
                                             .resolve_generic_struct_path(
                                                 path, ascribed,
                                             ) {
                                             Some(new_path) => {
+                                                // GH #921 A2: the rewrite
+                                                // renames the path and
+                                                // changes nothing else, so
+                                                // this is the SAME source
+                                                // expression and keeps its
+                                                // id.
                                                 Expr::Struct {
+                                                    id: *id,
                                                     path: new_path,
                                                     inits: inits.clone(),
                                                     span: *span,

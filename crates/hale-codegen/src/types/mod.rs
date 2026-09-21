@@ -327,8 +327,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(CodegenTy::Perspective(name.name.clone()))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "type form {:?} in signature",
-                std::mem::discriminant(other)
+                "{} in a signature is not lowered",
+                other.form_name()
             ))),
         }
     }
@@ -947,7 +947,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // field's declared CodegenTy as the target.
             let rewritten;
             let expr_to_lower: &Expr = match expr {
-                Expr::Struct { path, inits, span } => {
+                Expr::Struct { path, inits, span, id } => {
                     match self
                         .resolve_generic_struct_path_for_codegen_ty(
                             path,
@@ -955,7 +955,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                     {
                         Some(new_path) => {
+                            // GH #921 A2: same source expression,
+                            // renamed path — it keeps its id.
                             rewritten = Expr::Struct {
+                                id: *id,
                                 path: new_path,
                                 inits: inits.clone(),
                                 span: *span,

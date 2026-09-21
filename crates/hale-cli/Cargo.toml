@@ -28,3 +28,9 @@ toml = "0.8"
 # adds no second crypto provider to the system.
 openssl = "0.10"
 libc = "0.2"
+
+[features]
+# Passthrough to hale-codegen's feature of the same name (link the
+# shared libLLVM). Cargo accepts `pkg/feature` only for a selected
+# package, and CI's cli/dna jobs select hale-cli, not hale-codegen.
+dynamic-llvm = ["hale-codegen/dynamic-llvm"]

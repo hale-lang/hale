@@ -474,7 +474,7 @@ fn scan_expr(
                 .or_else(|| scan_expr(right, all_fns, map, any_unknown))
         }
         Expr::Unary { operand, .. } => scan_expr(operand, all_fns, map, any_unknown),
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             // Args evaluated first.
             for a in args {
                 if let Some(imp) = scan_expr(a, all_fns, map, any_unknown) {

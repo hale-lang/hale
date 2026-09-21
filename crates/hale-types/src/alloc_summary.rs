@@ -2687,7 +2687,7 @@ impl<'a> Walker<'a> {
 
     fn walk_expr(&mut self, expr: &Expr, depth: u32, escape: Escape) {
         match expr {
-            Expr::Struct { path, inits, span } => {
+            Expr::Struct { path, inits, span, .. } => {
                 // The *qualified* path (joined) — a local struct is
                 // single-segment ("Quote"), a stdlib one carries its full
                 // path ("std::io::tcp::Listener") so consumers can match it
@@ -2777,7 +2777,7 @@ impl<'a> Walker<'a> {
                 self.walk_expr(right, depth, Escape::Local);
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
-            Expr::Call { callee, args, span } => {
+            Expr::Call { callee, args, span, .. } => {
                 self.record_call(callee, *span, depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.

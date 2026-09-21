@@ -509,12 +509,15 @@ fn same_subject_race_and_nested_republish_replay_exactly() {
 #[test]
 fn module_contained_effects_and_bindings_are_refused() {
     let dir = workdir("modgate");
-    // Inline-module fns don't lower through codegen yet, so these
-    // programs never RUN — which is fine: the safety gate fires
-    // before the build, and it is deliberately ordered before
-    // identity admission so a program-inherent refusal is never
-    // masked by a recording mismatch. Any valid recording arms the
-    // test.
+    // A module introduces no namespace (spec/semantics.md,
+    // "Declarations inside `module { }`"): its declarations are
+    // reached by their BARE names, and `inner::danger` is a type
+    // error the whole-program check refuses first (GH #911 B2). The
+    // programs here spell the bare names so the type check passes
+    // and the assertion is about the GATE — which fires before the
+    // build, deliberately ahead of identity admission, so a
+    // program-inherent refusal is never masked by a recording
+    // mismatch. Any valid recording arms the test.
     let plain = dir.join("plain.hl");
     std::fs::write(&plain, JOURNALED).unwrap();
     let rec = record(&dir, &plain);
@@ -540,7 +543,7 @@ main locus App {
     params { s: Sink = Sink { }; }
     bus { publish "m.t" of type Tick; }
     run() {
-        inner::danger();
+        danger();
         "m.t" <- Tick { n: 1 };
     }
 }
@@ -576,7 +579,7 @@ module wired {
         run() { Wire <- Tick { n: 1 }; std::time::sleep(200ms); }
     }
 }
-fn main() { wired::App { }; }
+fn main() { App { }; }
 "#,
     )
     .unwrap();
@@ -1718,6 +1721,20 @@ fn direct_dispatch_match_names_the_unexercised_queued_schedule() {
          blob:\n{}",
         stdout
     );
+    // GH #842: those ten are in-process flat payloads, recorded as
+    // metadata only — the comparator checked declared size and
+    // publish identity, never a byte of contents. The line has to
+    // say so rather than read like a byte-for-byte match.
+    let payload_line = coverage_line(&stdout, "payloads");
+    assert!(
+        payload_line
+            .contains("(sizes and identities; contents not canonicalised)")
+            && !payload_line.contains("canonical bytes identical"),
+        "metadata-only payloads must not be reported as compared by \
+         content: `{}`\n{}",
+        payload_line,
+        stdout
+    );
     // The schedule that was NOT is named as not exercised, and says
     // direct dispatch is why — not a bare "0 consumes".
     let queued = coverage_line(&stdout, "queued consumes");
@@ -2032,6 +2049,16 @@ fn json_coverage_carries_the_same_counts_and_flags() {
          carry the same count: `{}`\n{}",
         payloads,
         human_out
+    );
+    // GH #842: and the same split the human line states — every one
+    // of these blobs is metadata only, none was compared by content.
+    let n = coverage_count(&human_out, "payloads");
+    assert!(
+        payloads.contains(&format!("\"metadata_only\":{}", n))
+            && payloads.contains("\"contents_canonicalised\":0"),
+        "--json must say how many payloads were compared by content \
+         and how many by size and identity only: `{}`",
+        payloads
     );
     let queued = json_category(json, "queued_consumes");
     assert!(

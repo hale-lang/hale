@@ -2342,6 +2342,21 @@ pub enum TypeExpr {
 }
 
 impl TypeExpr {
+    /// The form's name for a diagnostic — "an array", "a tuple" — so a
+    /// refusal can name what it saw without Debug-formatting the node
+    /// (which prints spans, GH #906 / #911 B3).
+    pub fn form_name(&self) -> &'static str {
+        match self {
+            TypeExpr::Primitive(..) => "a primitive",
+            TypeExpr::Named { .. } => "a named type",
+            TypeExpr::Projection { .. } => "a projection",
+            TypeExpr::Array { .. } => "an array",
+            TypeExpr::Bounded { .. } => "a bounded array",
+            TypeExpr::Tuple(..) => "a tuple",
+            TypeExpr::Function { .. } => "a fn type",
+            TypeExpr::Perspective { .. } => "a perspective",
+        }
+    }
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Primitive(_, s) => *s,
@@ -2690,6 +2705,47 @@ pub enum RecoveryModifier {
     Until(Expr),
 }
 
+/// GH #921: a stable identity for the two expression shapes that can
+/// PRODUCE a locus — a struct literal and a call.
+///
+/// Codegen lowers CLONES of every declaration (`locus_decls`,
+/// `user_fn_decls`, the per-instantiation `LocusInfo` clone), so a
+/// node's address is not its identity and a span is not either: the
+/// stdlib is parsed in its own coordinate space and overlaps user file
+/// ranges. An id carried by the node survives every clone, which is
+/// what the ownership pre-pass (`hale_codegen::ownership`, F.39) keys
+/// its side table on.
+///
+/// Ids are handed out by that pre-pass over the merged, desugared
+/// program; every other consumer of the AST sees [`NodeId::NONE`] and
+/// is unaffected. Two clones of one generic template share an id, and
+/// so do the before / after of an in-place rewrite that preserves it —
+/// both are the same source expression, which is exactly what the id
+/// means.
+///
+/// `PartialEq` deliberately ignores the id: `Expr: PartialEq` is used
+/// across the frontend to compare SHAPES, and an identity that made
+/// two structurally equal expressions unequal would silently change
+/// those answers.
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId(pub u32);
+
+impl NodeId {
+    /// No identity: a node the pre-pass never numbered, or one
+    /// synthesized after it ran.
+    pub const NONE: NodeId = NodeId(u32::MAX);
+
+    pub fn is_none(self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
+impl PartialEq for NodeId {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Literal, Span),
@@ -2712,6 +2768,9 @@ pub enum Expr {
         callee: Box<Expr>,
         args: Vec<Expr>,
         span: Span,
+        /// GH #921: see [`NodeId`]. `NodeId::NONE` everywhere but the
+        /// program the ownership pre-pass numbered.
+        id: NodeId,
     },
     Field {
         receiver: Box<Expr>,
@@ -2734,6 +2793,9 @@ pub enum Expr {
         path: QualifiedName,
         inits: Vec<StructInit>,
         span: Span,
+        /// GH #921: see [`NodeId`]. `NodeId::NONE` everywhere but the
+        /// program the ownership pre-pass numbered.
+        id: NodeId,
     },
     Block(Block),
     If(Box<IfStmt>),

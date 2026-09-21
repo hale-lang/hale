@@ -144,7 +144,7 @@ reports coverage per category rather than one number:
 ```text
 replay matches the recording (26 ring records). Compared, by category:
   public bus events:     20 across 1 consumer (publish + deliver, subject-aligned)
-  payloads:              10 (canonical bytes identical; raw ABI payloads matched by declared size)
+  payloads:              10 (sizes and identities; contents not canonicalised)
   queued consumes:       not exercised: no queued consumer deliveries were recorded; dispatch was direct (valid — a synchronous delivery has no queue order to enforce), so no queued delivery order was verified
   async schedule steps:  not exercised: no async pool scheduling steps were recorded
   journal reads:         not exercised: no time, randomness or env reads were journaled
@@ -161,6 +161,18 @@ exists to close: a successful `--diff` establishes exactly the
 categories it lists as compared, and nothing about the ones it
 marks not exercised.
 
+The payload line says *what* was compared, because that depends on
+the blobs. A payload published in-process as a flat struct is
+recorded as **metadata only** — its declared size and publish
+identity — since a snapshot of its bytes would carry heap pointers
+and uninitialised padding. The comparator checks exactly those two
+things for it, so the report reads `sizes and identities; contents
+not canonicalised`, and a flipped field inside such a payload is not
+a divergence `--diff` can see today. Bytes that arrived over the
+wire are canonical and read `canonical bytes identical`; a recording
+with both counts each. A per-topic canonical encoding for in-process
+payloads is a separate, planned item.
+
 Pin the publisher to its own core and the same ten publishes fill
 the queued category in — `queued consumes: 10 across 1 consumer` —
 while an `async_io` pool adds its recorded scheduling steps. A
@@ -171,7 +183,9 @@ matched.
 For tooling, `--diff --json` prints the same verdict as one JSON
 object: `result` (`match` or `diverged`), `ring_records`,
 `recorded_prefix_only`, and per category `compared`, `count`,
-`consumers`, and `not_exercised_because`. Coverage reporting changes
+`consumers`, and `not_exercised_because` — plus, for `payloads`, the
+same split as `contents_canonicalised` and `metadata_only`. Coverage
+reporting changes
 nothing about pass or fail — a divergence in any compared category
 still fails the command, and a diverged verdict carries its reason
 without per-category counts, since the comparison stopped at the

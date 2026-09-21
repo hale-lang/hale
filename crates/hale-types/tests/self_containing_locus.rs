@@ -10,14 +10,18 @@
 //! question again. So the declaration is the error.
 //!
 //! The graph is over BY-VALUE containment: an edge `L → M` when a
-//! param default of `L` constructs an `M`. Two things it is
-//! deliberately NOT, both pinned below:
+//! param default of `L` constructs an `M` — a literal, or (GH #870) a
+//! call to a fn that freshly builds one. #813's rule stopped at
+//! literals, so `next: Node = make()` compiled and overflowed the
+//! PROGRAM's stack instead of the compiler's; #870 closed that with
+//! codegen's fresh-factory classification, mirrored over the bundle.
 //!
-//!   * a **call** in a default (`next: Node = make()`) — lowering a
-//!     call emits a call rather than inlining the callee, so the
-//!     compiler terminates on it, and the checker cannot tell a
-//!     factory that builds a fresh locus from an accessor handing
-//!     back one somebody else owns;
+//! Two things the graph is deliberately NOT, both pinned below:
+//!
+//!   * a call the classification cannot see as fresh — an accessor
+//!     handing back a locus somebody else owns, a method, a `std::`
+//!     or cross-seed path. Nothing is invented from a call's
+//!     spelling;
 //!   * a literal that supplies **every** param (`A { n: 1, m: 2 }`
 //!     inside `A`'s own default) — it expands no default, so it
 //!     terminates. The graph's nodes are (locus, supplied field
@@ -160,24 +164,53 @@ fn a_shared_child_is_not_a_cycle() {
     assert!(containment(&ds).is_empty(), "no report: {:?}", ds);
 }
 
-/// **The pinned decision.** A param default that is a CALL returning
-/// the same locus is not a containment edge.
+/// GH #870, the residue #813 left: a param default that CALLS a fresh
+/// factory of its own locus is the same ring, spelled through a
+/// function.
 ///
-/// What the code does: the program checks clean and `hale build`
-/// finishes, because lowering a call emits a call — the callee's body
-/// is lowered once, as a function, not inlined into the literal. The
-/// built program then recurses at RUN time (`make()` builds a `Node`,
-/// whose `next` default calls `make()` again) and overflows its own
-/// stack, which is what any unbounded recursion does and what
-/// `@no_recursion` is the contract for.
+/// #813's rule stopped at literals, and this program compiled —
+/// lowering a call emits a call rather than inlining the callee, so
+/// nothing recursed at compile time — and then overflowed the
+/// PROGRAM's stack (exit 139): every `Node` `make` builds leaves ITS
+/// `next` to the same default, which calls `make` again. No call site
+/// can end that chain either, for #813's reason.
 ///
-/// Reporting it here would mean deciding whether the callee builds a
-/// fresh locus or hands back one somebody else already owns — the
-/// accessor/factory question codegen answers with a whole-program
-/// fixpoint (`fresh_locus_factories`) for an ownership decision, not
-/// a question this per-param rule can answer from a call's spelling.
+/// What the edge needs is the accessor/factory question — does this
+/// call build a fresh `Node` or hand back one somebody else owns —
+/// which `fresh_locus_factory_products` answers with codegen's
+/// `compute_fresh_locus_factories` classification, mirrored over the
+/// bundle.
 #[test]
-fn a_factory_call_in_a_default_is_not_a_cycle() {
+fn a_factory_call_in_a_default_is_reported() {
+    let src = r#"
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = make();
+            }
+        }
+        fn make() -> Node { return Node { }; }
+        fn main() { let node = Node { n: 1 }; println("n=", node.n); }
+    "#;
+    let ds = diags(src);
+    let hits = containment(&ds);
+    assert_eq!(hits.len(), 1, "exactly one report: {:?}", ds);
+    assert!(
+        hits[0].contains(
+            "param `next` of `Node` defaults to `make()`, which builds \
+             a fresh `Node`"
+        ),
+        "the report names the param, the factory and what it builds: {}",
+        hits[0]
+    );
+}
+
+/// The same edge where the factory's literal supplies a field. The
+/// node it constructs is `(Node, [n])` — the state a literal
+/// `Node { n: 5 }` would reach — and the ring closes one step later,
+/// at the default that calls `make` again.
+#[test]
+fn a_factory_whose_literal_supplies_a_field_is_reported() {
     let src = r#"
         locus Node {
             params {
@@ -187,6 +220,119 @@ fn a_factory_call_in_a_default_is_not_a_cycle() {
         }
         fn make() -> Node { return Node { n: 5 }; }
         fn main() { let node = Node { n: 1 }; println("n=", node.n); }
+    "#;
+    let ds = diags(src);
+    assert_eq!(containment(&ds).len(), 1, "one report: {:?}", ds);
+}
+
+/// Freshness is transitive, because the classification is a fixpoint:
+/// `outer` returns a call to `inner`, which returns the literal.
+#[test]
+fn a_factory_that_returns_another_factorys_call_is_reported() {
+    let src = r#"
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = outer();
+            }
+        }
+        fn inner() -> Node { return Node { }; }
+        fn outer() -> Node { return inner(); }
+        fn main() { let node = Node { n: 1 }; println("n=", node.n); }
+    "#;
+    let ds = diags(src);
+    assert_eq!(containment(&ds).len(), 1, "one report: {:?}", ds);
+}
+
+/// A returned BINDING is followed one level, which is how most
+/// factories are actually written.
+#[test]
+fn a_factory_that_returns_a_binding_is_reported() {
+    let src = r#"
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = make();
+            }
+        }
+        fn make() -> Node { let fresh = Node { }; return fresh; }
+        fn main() { let node = Node { n: 1 }; println("n=", node.n); }
+    "#;
+    let ds = diags(src);
+    assert_eq!(containment(&ds).len(), 1, "one report: {:?}", ds);
+}
+
+/// A two-type ring where BOTH edges are factory calls: one report,
+/// naming the ring, exactly as the literal spelling gets.
+#[test]
+fn a_two_type_cycle_through_factories_is_reported_with_its_ring() {
+    let src = r#"
+        locus Alpha {
+            params { tag: Int = 0; beta: Beta = make_beta(); }
+        }
+        locus Beta {
+            params { tag: Int = 0; alpha: Alpha = make_alpha(); }
+        }
+        fn make_beta() -> Beta { return Beta { }; }
+        fn make_alpha() -> Alpha { return Alpha { }; }
+        fn main() { let a = Alpha { tag: 1 }; println("tag=", a.tag); }
+    "#;
+    let ds = diags(src);
+    let hits = containment(&ds);
+    assert_eq!(hits.len(), 1, "one report per cycle: {:?}", ds);
+    assert!(
+        hits[0].contains("`Beta` → `Alpha` → `Beta`"),
+        "the report spells the ring out: {}",
+        hits[0]
+    );
+}
+
+/// **The pinned boundary.** A call the classification cannot see as
+/// fresh takes no edge, so a default that takes its child from an
+/// ACCESSOR stays accepted — the answer #870 asks for.
+///
+/// `pick` hands back a `Node` the `Depot` holds; it builds none of
+/// its own, so as far as this rule can tell constructing a `Node`
+/// does not construct a `Node`. This program builds and runs — it
+/// prints `declared`, because nothing in it constructs a `Node` at
+/// all.
+///
+/// Acceptance is nevertheless the permissive answer rather than a
+/// promise. Had `main` built a `Node`, `pick`'s `Depot` would have
+/// built one whose `next` default calls `pick` again, and the
+/// recursion would be real — the rule reports the rings it can
+/// prove, and `@no_recursion` is the contract for the rest. What
+/// matters here is that the checker does not invent a ring out of a
+/// call's spelling.
+#[test]
+fn an_accessor_call_in_a_default_is_not_a_cycle() {
+    let src = r#"
+        locus Depot {
+            params { node: Node = Node { n: 7 }; }
+        }
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = pick();
+            }
+        }
+        fn pick() -> Node { let d = Depot { }; return d.node; }
+        fn main() { println("declared"); }
+    "#;
+    let ds = diags(src);
+    assert!(containment(&ds).is_empty(), "no report: {:?}", ds);
+}
+
+/// The control the issue asks for on the other side: a fresh factory
+/// of a DIFFERENT locus is the ordinary parent/child shape. This one
+/// builds and runs — `Tree`'s default builds one `Leaf` and stops.
+#[test]
+fn a_factory_of_a_different_locus_is_fine() {
+    let src = r#"
+        locus Leaf { params { n: Int = 0; } }
+        locus Tree { params { tag: Int = 0; leaf: Leaf = make_leaf(); } }
+        fn make_leaf() -> Leaf { return Leaf { n: 2 }; }
+        fn main() { let t = Tree { }; println("n=", t.leaf.n); }
     "#;
     let ds = diags(src);
     assert!(containment(&ds).is_empty(), "no report: {:?}", ds);
