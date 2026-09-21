@@ -12979,9 +12979,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #241: user-reachable — carry the arg's span.
             other => Err(CodegenError::UnsupportedAt(
                 format!(
-                    "type form `{:?}` as a generic argument (v0 \
-                     supports primitives and named types)",
-                    other
+                    "{} as a generic argument (v0 supports primitives \
+                     and named types)",
+                    other.form_name()
                 ),
                 other.span(),
             )),

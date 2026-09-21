@@ -1274,22 +1274,23 @@ fn an_import_of_a_directory_with_no_hl_files_is_one_record() {
 
 /// A program `hale check` accepts and codegen refuses, with the
 /// refusal carrying the offending generic argument's own span:
-/// `Bytes` is not one of the primitives v0 can mangle into a generic
-/// instantiation's name. Line 6, column 12 is `Bytes` in `Box<Bytes>`.
+/// An array is not a type v0 can mangle into a generic instantiation's
+/// name (GH #911 B3 made every primitive one, so `Bytes` no longer
+/// serves). Line 6, column 12 is `[` in `Box<[Int; 2]>`.
 ///
 /// (An ordinary string literal, not a raw one, on purpose:
 /// `hale-corpus` harvests `r#"…"#` program literals out of the test
 /// sources, and a program that checks clean and will not build would
 /// land in the committed check/build divergence list for no gain.)
 const UNSUPPORTED_GENERIC_ARG: &str = "type Box<T> {\n    \
-     item: T;\n}\n\ntype Holder {\n    b: Box<Bytes>;\n}\n\n\
+     item: T;\n}\n\ntype Holder {\n    b: Box<[Int; 2]>;\n}\n\n\
      fn main() {\n    println(\"boxed\");\n}\n";
 
 /// The bench twin: same declarations, same line 6, but a `bench_*`
 /// fn instead of a `main` (the runner synthesizes the driver and
 /// refuses a bench file that brings its own `main`).
 const UNSUPPORTED_GENERIC_ARG_BENCH: &str = "type Box<T> {\n    \
-     item: T;\n}\n\ntype Holder {\n    b: Box<Bytes>;\n}\n\n\
+     item: T;\n}\n\ntype Holder {\n    b: Box<[Int; 2]>;\n}\n\n\
      fn bench_nothing() {\n    println(\"\");\n}\n";
 
 /// The located prefix — `file:line:col` — of the one codegen error,
@@ -1357,7 +1358,7 @@ fn build_run_and_test_locate_one_codegen_error_identically() {
     {
         assert_no_debug_formatting(what, out);
         assert!(
-            out.contains("b: Box<Bytes>;") && out.contains('^'),
+            out.contains("b: Box<[Int; 2]>;") && out.contains('^'),
             "{what} must cut the snippet and caret from the source \
              too:\n{out}"
         );
