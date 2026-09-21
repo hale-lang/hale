@@ -145,6 +145,44 @@ a vendored directory with no `.hl` files in it, a checkout that
 did not finish — the report names that directory instead. The
 import was found; reading what it named is what failed.
 
+## When the name after the alias names nothing
+
+An `import` that resolves does not make every `alias::Name` you go
+on to write real. The compiler answers the path itself, where you
+wrote it:
+
+```text
+/tmp/app/main.hl:4:13: type error: `zz::f`: `zz` is not an import or a type of this seed
+/tmp/app/main.hl:6:13: type error: `b::Greeting` is not declared by the library imported as `b`; `b` provides: Config, Route, serve
+```
+
+The first is a head that is nothing at all — no `import … as zz;`
+in this seed, and no type of your own called `zz`: a typo, or an
+import you meant to add. The second is your own alias with a name
+the library does not declare; when a spelling is close the message
+says "did you mean", and when none is it lists what the library
+provides.
+
+Both hold in every position a path can stand in — a type
+annotation, a call, a `Name { }` literal, a const, an enum variant
+— and a `bindings { }` entry naming a topic nothing declares has
+always reported itself the same way. `build`, `run` and `test`
+print the same finding, so a gate that runs `hale check` and a
+build that runs later agree about the program.
+
+A third shape belongs here: a stdlib call with the `std::` prefix
+left off. `env::args_count()` is not an import of anything, and the
+message says what it is — "`env::args_count` is unresolved — did you
+mean `std::env::args_count`?" — at the call rather than at the end of
+a build. (`time::sleep` and `time::monotonic` are the exception the
+compiler still answers unprefixed; they are old spellings, and
+`std::time::` is the one to write.)
+
+The *when* is the one above again: this needs the whole program.
+`hale check <one file>` stays quiet about a qualified path, because
+the `import` line that would answer it may be in a file you did not
+hand it. `hale check .` and every build path see the whole seed.
+
 ## The catalog
 
 **Persistence & data**
