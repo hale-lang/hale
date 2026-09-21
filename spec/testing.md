@@ -220,6 +220,13 @@ empty, so an environment failure and a crash were the same thing to
 a gate). The text rendering is unchanged, and so is every command
 without a machine-readable channel.
 
+The ENTRY file of a build is in that set too. A `*_test.hl` that
+will not open is a `hale test --json` row with `"status":"fail"`
+whose `message` is the `could not read <path>: <os error>` sentence,
+not an empty string (2026-09-20, GH #903; that one site still
+printed at the failure and handed its caller nothing, so the row
+reporting it carried no reason and the explanation went to stderr).
+
 The **position** is not command-scoped. Every command that resolves
 imports — `build`, `run`, `test`, `bench`, `replay`, as well as
 `check` and `verify` — reports a diagnostic from an imported file as

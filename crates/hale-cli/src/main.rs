@@ -3350,7 +3350,19 @@ fn parse_with_imports(
     let entry_source = match fs::read_to_string(entry) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("could not read {}: {}", entry.display(), e);
+            // GH #903: the last "print here, hand back nothing" site
+            // on the import path. It printed the sentence itself and
+            // returned an EMPTY vector, so every caller reported a
+            // failure with no message — `hale test --json` emitted a
+            // row whose `message` was the empty string. It travels as
+            // an `ImportDiag::Io` like every other unreadable file of
+            // the graph (GH #806), so the ONE rendering path prints
+            // the same sentence and the `--json` channels carry it.
+            errors.push(ImportDiag::Io(IoDiag::read(
+                entry,
+                &e,
+                format!("could not read {}: {}", entry.display(), e),
+            )));
             return Err(errors);
         }
     };
