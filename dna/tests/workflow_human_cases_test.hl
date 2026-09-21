@@ -316,7 +316,7 @@ main locus App {
         let adm1 = self.body_of(j, "case.admitted", "t1.s0.h1");
         std::test::assert_eq_str(std::json::find_string_field(adm1, "work_id") + "|" + std::json::find_string_field(adm1, "attempt_id") + "|" + std::json::find_string_field(adm1, "task_id"), "t1/wf1/s0/h1|t1/wf1/s0/h1/a0|t1", "the admission names the exact parent Work and attempt");
         std::test::assert_eq_str(std::json::find_string_field(adm1, "assignee") + "|" + std::json::find_string_field(adm1, "obligation") + "|" + std::json::find_string_field(adm1, "by"), "mara|expense-approval|leader", "and whom the leader named, under what obligation");
-        std::test::assert_eq_int(std::json::find_int_field(adm1, "version"), 1, "versioned");
+        std::test::assert_eq_int(std::json::find_int_field(adm1, "version"), 2, "versioned");
         let handed1 = self.body_of(j, "task.handed", "t1.s0.h1");
         std::test::assert_eq_str(std::json::find_string_field(handed1, "assignee") + "|" + std::json::find_string_field(handed1, "obligation") + "|" + std::json::find_string_field(handed1, "work"), "mara|expense-approval|t1/wf1/s0/h1", "the handed row binds as a job's does today");
         let f1 = self.org.journal.refresh(); // the assembly reads fresh at its own entry points; the probe reads its view directly
@@ -343,7 +343,7 @@ main locus App {
         std::test::assert_eq_int(self.org.plans, 2, "a later attempt reuses the case without asking the leader again");
         // each case completes on its own, as the CLI reports it: the other
         // stays handed, the root stays open
-        let done = j.append(j.revision(), "task.done", "t1.s0.h1", "{\"by\": \"mara\", \"note\": \"filed\"}");
+        let done = j.append(j.revision(), "task.done", "t1.s0.h1", "by mara: filed");
         std::test::assert(done.ok, "the first case is reported done: " + done.error);
         self.settle();
         let f2 = self.org.journal.refresh();

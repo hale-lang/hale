@@ -198,9 +198,11 @@ locus Reports { capacity { heap rows of AttemptReport; } }
 // ones the record refused to admit, re-driven by `redrive`.
 @form(vec)
 locus CaseAsks { capacity { heap rows of CaseAsk; } }
-// card 16: the admitted cases whose compatibility rows the record refused
+// Case ids: the admitted cases whose compatibility rows the record
+// refused (card 16); the cases whose completion the bound condition
+// refused, noted once (card 17)
 @form(vec)
-locus HeldRows { capacity { heap rows of String; } }
+locus CaseIds { capacity { heap rows of String; } }
 
 // The case a human Work's attempt is handed as (card 16): its own Task,
 // `<task>.s<i>.<key>` — the Work's step index and member key under its
@@ -314,7 +316,10 @@ locus Dna {
         pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
         pending_cases: CaseAsks = CaseAsks { }; // card 16: human attempts awaiting the leader's word on who, and under what obligation
         held_cases: CaseAsks = CaseAsks { }; // card 16: human attempts whose case the record refused to admit
-        held_rows: HeldRows = HeldRows { }; // card 16: admitted cases whose compatibility rows the record refused; completed on the recovery signals
+        held_rows: CaseIds = CaseIds { }; // card 16: admitted cases whose compatibility rows the record refused; completed on the recovery signals
+        refused_completions: CaseIds = CaseIds { }; // card 17: cases whose recorded completion the bound condition refused, noted once
+        cases_completed: Int = 0; // card 17: cases whose completion was connected to their attempt
+        completions_refused: Int = 0; // card 17: cases with a completion the bound condition refused, noted once
         cases_admitted: Int = 0;
         reports_retried: Int = 0;
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
@@ -1118,7 +1123,11 @@ locus Dna {
         // organism holds; read what arrived (a git journal is re-read
         // from its ref at most every 5s of wall time)
         let wall = std::time::now();
-        if wall - self.last_refresh >= 5 { self.last_refresh = wall; let moved = self.journal.refresh(); }
+        if wall - self.last_refresh >= 5 {
+            self.last_refresh = wall;
+            // card 17: what a person completed since is observed here, live
+            if self.journal.refresh() { let completed = self.revisit_cases(); }
+        }
         // GH #667: a transfer another owner's member accepted for this
         // owner becomes this owner's handed Task
         if self.ownership.shared() { self.admit_transfers(); }
@@ -1433,6 +1442,9 @@ locus Dna {
         }
         if len(self.recorded_case(case_id)) > 0 || len(self.case_of_attempt(c.attempt_id)) > 0 {
             let x = self.ensure_case_rows(case_id);
+            // asked again after its person completed it (a restart's
+            // redelivery): the outcome is reported now (card 17)
+            let done = self.revisit_case(case_id);
             return;
         }
         if self.planned {
@@ -1490,14 +1502,17 @@ locus Dna {
         self.membrane.notify("record", "the case of " + req.work_id + " was not admitted: the record moved too often; held");
     }
     // The admission of a case: versioned, self-sufficient, naming its
-    // origin (`owner`) and its disposition (`to`: the owner whose person
-    // takes it, "" for this owner's own).
+    // origin (`owner`), its disposition (`to`: the owner whose person
+    // takes it, "" for this owner's own) and the performer whose attempt
+    // it is (version 2, card 17: the report of its completion answers as
+    // that performer).
     fn case_body(c: CaseAsk, case_id: String, terms: Handoff, obligation: String, by: String, narrative: String) -> String {
         let req = c.request;
         let b = std::json::Builder { };
         b.begin_object();
-        b.int_field("version", 1);
+        b.int_field("version", 2);
         b.string_field("case_id", case_id);
+        b.string_field("performer", c.performer);
         b.string_field("task_id", req.task_id);
         b.string_field("work_id", req.work_id);
         b.string_field("attempt_id", c.attempt_id);
@@ -1648,6 +1663,69 @@ locus Dna {
         }
         return "";
     }
+    // Card 17: a case completed by its person — `task.done` in their
+    // name, or a decision reported and accepted — is the outcome of the
+    // attempt it was admitted for: reported to the runtime as an edit's
+    // outcome is (card 15), judged by the bound terms of the ADMISSION,
+    // never by a practice in force later, settled once by the runtime's
+    // own barrier (an outcome the record holds changes nothing), and
+    // kept until the record is seen to hold it. Only the recorded owner
+    // connects it: the Work runs in the origin's execution. A completion
+    // the bound condition refuses is noted once and connects nothing; a
+    // later valid one connects. True when the attempt's outcome was
+    // reported now.
+    @unbounded
+    fn revisit_case(case_id: String) -> Bool {
+        let adm = self.recorded_case(case_id);
+        if len(adm) == 0 { return false; }
+        if std::json::find_string_field(adm, "owner") != self.ownership.me { return false; }
+        let attempt = std::json::find_string_field(adm, "attempt_id");
+        if len(attempt) == 0 || self.has_row("attempt.outcome", attempt) { return false; }
+        let c = case_completion(self.journal, case_id, adm);
+        if c.valid {
+            let how = "case " + case_id + " " + c.how + " by " + c.by
+                + (if len(c.evidence) > 0 { " (evidence " + c.evidence + ")" } else if len(c.exception) > 0 { " (exception: " + c.exception + ")" } else { "" });
+            if !self.reported(attempt) {
+                self.cases_completed = self.cases_completed + 1;
+                self.membrane.notify("case", how + "; attempt " + attempt + " is done");
+            }
+            self.report_attempt(self.org_id, attempt, WorkResult {
+                disposition: "done", result: how, narrative: how, evidence: c.evidence,
+                performer: std::json::find_string_field(adm, "performer"), attempt_id: attempt
+            });
+            return true;
+        }
+        if c.found && !self.noted_refusal(case_id) {
+            self.completions_refused = self.completions_refused + 1;
+            self.refused_completions.push(case_id);
+            self.membrane.notify("case", "case " + case_id + " has a completion its bound condition refuses (" + c.why + "); the attempt " + attempt + " stays out");
+        }
+        return false;
+    }
+    @unbounded
+    fn noted_refusal(case_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.refused_completions.len() {
+            if (self.refused_completions.get(i) or "") == case_id { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // Every admitted case looked at for its completion: at a restart,
+    // when the record resumes, on `redrive`, and at the refresh that
+    // sees what a person completed. How many attempts were reported.
+    @unbounded
+    fn revisit_cases() -> Int {
+        let n = self.journal.revision();
+        let mut reported = 0;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "case.admitted" && self.revisit_case(e.entity) { reported = reported + 1; }
+            i = i + 1;
+        }
+        return reported;
+    }
     // Every admitted case of this owner's has its compatibility rows: a
     // restart that fell between the admission and either row completes
     // them (card 16). Another owner's cases are theirs to complete; a
@@ -1708,16 +1786,30 @@ locus Dna {
     @unbounded
     fn report(e: EditAsk, disposition: String, result: String, narrative: String) {
         self.edits_reported = self.edits_reported + 1;
-        let r = AttemptReport {
-            scope: e.scope, attempt_id: e.attempt_id,
-            result: WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id }
-        };
+        self.report_attempt(e.scope, e.attempt_id, WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id });
+    }
+    // An attempt's outcome, reported to the runtime of its scope (an edit
+    // leaf's, card 15; a case's completion, card 17). A published report
+    // is not a durable one: kept, once, until the record is seen to hold
+    // the outcome — now, when the runtime settled it in place, or on the
+    // next resume or redrive.
+    @unbounded
+    fn report_attempt(scope: String, attempt_id: String, result: WorkResult) {
+        let r = AttemptReport { scope: scope, attempt_id: attempt_id, result: result };
         AttemptReported <- r;
-        // a published report is not a durable one: kept until the record
-        // is seen to hold the outcome — now, when the runtime settled it
-        // in place, or on the next resume or redrive
         let moved = self.journal.refresh();
-        if !self.has_row("attempt.outcome", e.attempt_id) { self.pending_reports.push(r); }
+        if !self.has_row("attempt.outcome", attempt_id) && !self.reported(attempt_id) { self.pending_reports.push(r); }
+    }
+    // Whether a report for the attempt is kept, its outcome not yet seen.
+    @unbounded
+    fn reported(attempt_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.pending_reports.len() {
+            let r = self.pending_reports.get(i) or AttemptReport { };
+            if r.attempt_id == attempt_id { return true; }
+            i = i + 1;
+        }
+        return false;
     }
     // Every held report whose outcome the record holds is released.
     @unbounded
@@ -1759,6 +1851,7 @@ locus Dna {
         let moved = self.journal.refresh();
         let n = self.retry_reports();
         let rows = self.retry_rows();
+        let cases = self.revisit_cases();
         self.revisit_waiting();
     }
     // The disposition a Work settled on (`work.settled`), "" while it has
@@ -1897,6 +1990,7 @@ locus Dna {
         let moved = self.journal.refresh();
         let mut n = self.retry_reports();
         n = n + self.retry_rows();
+        n = n + self.revisit_cases();
         self.revisit_waiting();
         let cases = self.held_cases.len();
         let mut h = 0;
@@ -3327,6 +3421,7 @@ locus Dna {
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
         self.restore_cases();
+        let completed = self.revisit_cases();
         self.pend_born_tasks();
         self.reconcile_effects();
         self.fail_in_flight();

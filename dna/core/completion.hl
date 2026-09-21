@@ -1,0 +1,104 @@
+// dna/core/completion.hl — a case's completion, read from the record
+// (DNA workflow card 17).
+//
+// A human Work's case (card 16) is completed by a person, through the
+// tooling of the day: `hale dna task done <case> --as <who>` writes
+// `task.done <case>` in their name — after `completion.linked` (the
+// evidence) or `completion.excepted` (an exception someone else
+// authorized) where the bound acceptance condition wants evidence — or
+// a decision someone else made is reported and accepted under the bound
+// practice (`decision.reported`, GH #616). The assembly connects that
+// accepted fact to the workflow: the first valid completion of the case
+// is the outcome of the attempt the case was admitted for.
+//
+// Validity is judged against what the ADMISSION bound — the assignee
+// (moved by `task.reassigned`), whether evidence is required, which
+// practice — never against a practice in force later. A completion the
+// bound condition refuses (not the assignee's, no evidence where it is
+// required, an exception the person closing authorized themselves) is
+// no completion; a later valid one is. A second valid completion is a
+// duplicate: the attempt settles once.
+
+type CaseCompletion {
+    found: Bool = false; // some completion row stands for the case
+    valid: Bool = false; // the first one the bound condition accepts
+    by: String = ""; // who completed it
+    how: String = ""; // "done" (the person's own report) | "decided" (a decision reported and accepted)
+    evidence: String = ""; // the receipt digest linked, "" when none
+    exception: String = ""; // the authorized exception it closed under, "" when none
+    why: String = ""; // why the last refused completion was refused, "" when none was
+    refused: Int = 0; // completion rows the bound condition refused
+}
+
+// Who a `task.done` row names: `by <who>[: <note>]`, as the tooling
+// writes it. "" for a body of any other shape.
+fn completion_by(body: String) -> String {
+    if !std::str::starts_with(body, "by ") { return ""; }
+    let rest = body[3..len(body)];
+    let colon = std::str::index_of(rest, ":");
+    return std::str::trim(if colon < 0 { rest } else { rest[0..colon] });
+}
+
+// The case's completion as the record holds it, judged against the
+// admission's bound terms. Bounded by the record.
+@unbounded
+fn case_completion(j: Journal, case_id: String, admission: String) -> CaseCompletion {
+    let mut assignee = std::json::find_string_field(admission, "assignee");
+    let evidence_required = std::str::trim(std::json::find_field_raw(admission, "evidence_required")) == "true";
+    let acceptance = std::json::find_string_field(admission, "acceptance");
+    let mut out = CaseCompletion { };
+    let mut evidence = "";
+    let mut exception = "";
+    let n = j.revision();
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        if e.entity == case_id {
+            if e.kind == "task.reassigned" {
+                assignee = std::json::find_string_field(e.body, "to");
+            } else if e.kind == "completion.linked" {
+                // evidence linked under the bound practice, the same one
+                if std::json::find_string_field(e.body, "practice") == acceptance { evidence = std::json::find_string_field(e.body, "evidence"); }
+            } else if e.kind == "completion.excepted" {
+                let by = std::json::find_string_field(e.body, "by");
+                let authorizer = std::json::find_string_field(e.body, "authorized_by");
+                if std::json::find_string_field(e.body, "practice") == acceptance && len(authorizer) > 0 && !same_party(by, authorizer) { exception = std::json::find_string_field(e.body, "why"); }
+            } else if e.kind == "decision.reported" {
+                let reporter = std::json::find_string_field(e.body, "reporter");
+                let accepted = std::str::trim(std::json::find_field_raw(e.body, "accepted")) == "true";
+                if accepted && (len(assignee) == 0 || same_party(reporter, assignee)) {
+                    out.found = true;
+                    out.valid = true;
+                    out.by = reporter;
+                    out.how = "decided";
+                    out.evidence = std::json::find_string_field(e.body, "evidence");
+                    return out;
+                }
+                if accepted {
+                    out.found = true;
+                    out.refused = out.refused + 1;
+                    out.why = "a decision reported by " + reporter + ", not by the assignee " + assignee;
+                }
+            } else if e.kind == "task.done" {
+                let by = completion_by(e.body);
+                out.found = true;
+                let refusal = if len(by) == 0 { "the completion names nobody (`by <who>`)" }
+                else if len(assignee) > 0 && !same_party(by, assignee) { "completed by " + by + ", not by the assignee " + assignee }
+                else if evidence_required && len(evidence) == 0 && len(exception) == 0 { "closes only with its evidence under " + acceptance + " as bound at hand-off, and none is linked (nor an exception authorized)" }
+                else { "" };
+                if len(refusal) == 0 {
+                    out.valid = true;
+                    out.by = by;
+                    out.how = "done";
+                    out.evidence = evidence;
+                    out.exception = exception;
+                    return out;
+                }
+                out.refused = out.refused + 1;
+                out.why = refusal;
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}

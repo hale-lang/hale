@@ -1,0 +1,429 @@
+// dna/tests/workflow_case_completion_test.hl — the workflow resumes from
+// an accepted human completion (DNA workflow card 17).
+//
+// A human Work's case (card 16) is completed by its person through the
+// tooling of the day — `hale dna task done <case> --as <who>`, with the
+// evidence its bound acceptance condition wants — and that accepted
+// fact becomes the outcome of the attempt the case was admitted for:
+// reported to the runtime as an edit's outcome is, settled once by the
+// runtime's own barrier, whether the completion is observed live (the
+// refresh that sees it), after the record resumes, on `redrive`, or at
+// a restart of the assembly or of the execution. A case keeps its
+// parent step waiting through a restart of the execution; a valid
+// completion advances it once; a completion that is not the assignee's,
+// or lacks the evidence the bound condition requires, or was excepted
+// by the person closing it, connects nothing — and a later valid one
+// connects; a duplicate settles nothing twice; the other case's
+// completion advances nothing of this one. The condition is the one
+// bound at hand-off: a practice relaxed after does not relax it, and a
+// case handed after the relaxation closes under the new one. A decision
+// someone else made, reported by the assignee and accepted under the
+// bound practice, completes the case too.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(app: String, args: String) -> String {
+    let r = in_dir(app, toolchain() + "\ndna\n" + args);
+    return r.stdout + r.stderr;
+}
+
+const APP: String = "fn main() { println(\"app\"); }\n";
+const PLAN: String = "kind: person\nclass: docs\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-approval\nmara handles it";
+const OWNERS: String = "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n";
+
+locus Boot {
+    params {
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
+        owner: dna::Executions = dna::Executions { };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        boot: Boot = Boot { };
+        org: dna::Dna = dna::Dna { };
+        receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/dna-completion" };
+        lead: dna::Leader = dna::Leader {
+            name: "leader", org: "cases", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: PLAN },
+                deep: dna::FakeModel { name: "deep", answer: PLAN }
+            }
+        };
+        outcomes: String = "";
+    }
+    bus {
+        subscribe dna::WorkflowSettled as on_outcome;
+        publish dna::ExecutionAsked;
+        publish dna::RecordResumed; // the record writable again, by the probe
+    }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let j = self.boot.rt.journal;
+        let moved = j.refresh();
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn body_of(kind: String, entity: String) -> String {
+        let j = self.boot.rt.journal;
+        let moved = j.refresh();
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { return e.body; }
+            i = i + 1;
+        }
+        return "";
+    }
+    fn outcome_of(attempt_id: String) -> String {
+        let b = self.body_of("attempt.outcome", attempt_id);
+        if len(b) == 0 { return ""; }
+        let o = dna::decode_attempt_outcome(b);
+        return if o.ok { o.value.disposition } else { "unreadable" };
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_rows(kind: String, entity: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.rows(kind, entity) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    fn define() {
+        std::test::assert_eq_str(self.cat.define("duo", 1, 1, "two people's jobs"), "", "duo");
+        std::test::assert_eq_str(self.cat.leaf("duo", 1, 0, "h1", dna::WorkRequest { objective: "file the receipts" }, 1), "", "h1");
+        std::test::assert_eq_str(self.cat.leaf("duo", 1, 0, "h2", dna::WorkRequest { objective: "call the supplier" }, 1), "", "h2");
+    }
+    fn admit(task_id: String) {
+        let j = self.boot.rt.journal;
+        let x = self.cat.expand(task_id, "duo", 1, self.limits);
+        std::test::assert(x.ok, task_id + " expands: " + x.why);
+        let r = j.append(j.revision(), "workflow.admitted", task_id, dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: "duo", revision: 1, request: "ask-" + task_id,
+            recipe: self.cat.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        }));
+        std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
+    }
+    fn ask(task_id: String) {
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "cases", task_id: task_id, kinds: "h1=human h2=human" };
+    }
+    // A practice proposed and ratified, as the record keeps one; its digest.
+    fn practice(name: String, text: String) -> String {
+        let j = self.boot.rt.journal;
+        let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: text, author: "org", name: name }, "org");
+        let digest = "sha256:" + self.receipts.store(doc);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("kind", "practice");
+        b.string_field("author", "org");
+        b.string_field("target", "org");
+        b.string_field("name", name);
+        b.end_object();
+        let x = j.append(j.revision(), "knowledge.proposed", digest, b.result());
+        let y = j.append(j.revision(), "knowledge.ratified", digest, "{\"decided_by\": \"riley\"}");
+        std::test::assert(x.ok && y.ok, "the practice " + name + " is ratified");
+        return digest;
+    }
+    // The rows the tooling writes, written directly where the tooling
+    // would refuse to (a completion the bound condition refuses never
+    // reaches the record through `hale dna task done`; the engine reads
+    // the record, not the tooling).
+    fn linked(case_id: String, evidence: String, by: String, practice: String) {
+        let j = self.boot.rt.journal;
+        let x = j.append(j.revision(), "completion.linked", case_id, "{\"task\": \"" + case_id + "\", \"evidence\": \"" + evidence + "\", \"by\": \"" + by + "\", \"practice\": \"" + practice + "\"}");
+        std::test::assert(x.ok, "linked");
+    }
+    fn excepted(case_id: String, why: String, authorized_by: String, by: String, practice: String) {
+        let j = self.boot.rt.journal;
+        let x = j.append(j.revision(), "completion.excepted", case_id, "{\"task\": \"" + case_id + "\", \"why\": \"" + why + "\", \"authorized_by\": \"" + authorized_by + "\", \"by\": \"" + by + "\", \"practice\": \"" + practice + "\"}");
+        std::test::assert(x.ok, "excepted");
+    }
+    fn done(case_id: String, by: String, note: String) {
+        let j = self.boot.rt.journal;
+        let x = j.append(j.revision(), "task.done", case_id, "by " + by + (if len(note) > 0 { ": " + note } else { "" }));
+        std::test::assert(x.ok, "done");
+    }
+    fn boot_org(repo: String) {
+        self.org = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "cases"
+        };
+    }
+    // An owner's assembly over the shared ledger (acme: alice; north: bob).
+    fn boot_owner_org(repo: String, me: String) {
+        self.org = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            ownership: dna::Ownership { me: me, me_env: "", text: OWNERS },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "cases"
+        };
+    }
+    fn boot_runtime(repo: String) {
+        self.boot = Boot {
+            rt: dna::WorkflowRuntime {
+                scope: "cases", journal: dna::GitJournal { repo: repo },
+                work: dna::WorkSystem { human: dna::HumanRelay { scope: "cases", name: "cases" }, human_reconciler: dna::IdempotentReplay { } }
+            },
+            owner: dna::Executions { scope: "cases" }
+        };
+    }
+    // The refresh that sees what a person completed: the organism's tick.
+    fn observe() {
+        self.org.last_refresh = 0;
+        self.org.tick(0);
+        self.settle();
+    }
+    run() {
+        let repo = "/tmp/dna-completion-" + to_string(std::process::pid());
+        let mk = sh("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1/app\" \"$1/org\" \"$1/dna\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '[deps]\\n' > hale.toml && printf '/.hale/\\n' > .gitignore\nsh\n" + repo);
+        std::test::assert(mk.code == 0, "a repository: " + mk.stderr);
+        std::io::fs::write_file(repo + "/app/main.hl", APP) or discard;
+        std::io::fs::write_file(repo + "/org/main.hl", "fn main() { }\n") or discard;
+        let c = sh("sh\n-c\ncd \"$1\" && git add -A && git commit -q -m genome\nsh\n" + repo);
+        std::test::assert(c.code == 0, "the genome: " + c.stderr);
+        self.define();
+        self.receipts = dna::GitReceipts { repo: repo };
+        self.boot_runtime(repo);
+        let strict = self.practice("acceptance/expense-approval", "An expense closes with its receipt.\nevidence: required\nexceptions by: dana");
+        self.boot_org(repo);
+
+        // ---- t1: through the tooling of the day. The evidence the bound
+        //      condition wants; the completion observed live, the other
+        //      case untouched, the root waiting; the execution restarted
+        //      still waits; the other completion settles the root once;
+        //      a duplicate settles nothing twice
+        self.admit("t1");
+        self.ask("t1");
+        self.until_rows("task.handed", "t1.s0.h1", 1);
+        self.until_rows("task.handed", "t1.s0.h2", 1);
+        self.settle();
+        let adm = self.body_of("case.admitted", "t1.s0.h1");
+        std::test::assert_eq_str(std::json::find_string_field(adm, "acceptance") + "|" + std::json::find_field_raw(adm, "evidence_required"), strict + "|true", "the case binds the strict practice");
+        let note_only = dna_cli(repo, "task\ndone\nt1.s0.h1\n--as\nmara\n--note\npaid by card");
+        std::test::assert(std::str::contains(note_only, "closes only with its evidence"), "the tooling refuses a note alone: " + note_only);
+        std::test::assert_eq_int(self.rows("task.done", "t1.s0.h1"), 0, "nothing closed");
+        let wrote = sh("sh\n-c\nprintf '%s' \"$1\" > \"$2\"\nsh\nTaxi, 14 March, 23.40\n" + repo + "/receipt.txt");
+        let filed = dna_cli(repo, "receipt\nfile\n" + repo + "/receipt.txt\n--as\nmara");
+        let at = std::str::index_of(filed, "sha256:");
+        std::test::assert(at >= 0, "filed: " + filed);
+        let digest = filed[at..(at + 71)];
+        let closed = dna_cli(repo, "task\ndone\nt1.s0.h1\n--as\nmara\n--evidence\n" + digest + "\n--note\nreceipt attached");
+        std::test::assert(std::str::contains(closed, "task t1.s0.h1 done by mara: receipt attached — evidence " + digest + " linked"), "closed through the tooling: " + closed);
+        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h1/a0"), "", "not yet observed");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h1/a0"), "done", "the completion is the attempt's outcome, observed live");
+        let out1 = dna::decode_attempt_outcome(self.body_of("attempt.outcome", "t1/wf1/s0/h1/a0"));
+        std::test::assert(out1.ok && out1.value.evidence_ref == digest && out1.value.performer == "cases", "the outcome carries the evidence and answers as the human performer: " + out1.value.evidence_ref + "|" + out1.value.performer);
+        std::test::assert_eq_int(self.rows("work.settled", "t1/wf1/s0/h1"), 1, "the Work settled");
+        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h2/a0"), "", "the other case's attempt is untouched");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 0, "the root waits for the other case");
+        std::test::assert_eq_int(self.org.cases_completed, 1, "one case connected");
+        // the execution restarted: the case keeps its step waiting, no
+        // second case, no second outcome, no second plan
+        let plans = self.org.plans;
+        self.boot_runtime(repo);
+        self.ask("t1");
+        self.settle();
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 0, "restarted, the root still waits");
+        std::test::assert_eq_int(self.rows("case.admitted", ""), 2, "no second case");
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t1/wf1/s0/h1/a0"), 1, "no second outcome");
+        std::test::assert_eq_int(self.org.plans, plans, "no second plan");
+        // the other case completed while the execution is down: the
+        // restarted execution asks for the attempt again, and the
+        // completion the record holds is its outcome — nothing else
+        // observes it
+        self.boot = Boot { };
+        self.settle();
+        let closed2 = dna_cli(repo, "task\ndone\nt1.s0.h2\n--as\nmara\n--evidence\n" + digest);
+        std::test::assert(std::str::contains(closed2, "task t1.s0.h2 done by mara"), "the other case closed: " + closed2);
+        self.boot_runtime(repo);
+        self.ask("t1");
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h2/a0"), "done", "the redelivery after the restart connects the completion");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 1, "the root settled");
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done"), 1, "announced once: " + self.outcomes);
+        std::test::assert_eq_int(self.org.cases_completed, 2, "two cases connected");
+        // a duplicate completion
+        self.done("t1.s0.h2", "mara", "again");
+        self.observe();
+        let n = self.org.redrive();
+        self.settle();
+        std::test::assert_eq_int(n, 0, "nothing to drive");
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t1/wf1/s0/h2/a0"), 1, "a duplicate settles nothing twice");
+        std::test::assert_eq_int(self.org.cases_completed + self.rows("workflow.settled", "t1"), 3, "and connects nothing again");
+
+        // ---- t2: what the bound condition refuses connects nothing — not
+        //      the assignee's, no evidence where required, an exception
+        //      the person closing authorized themselves — and the later
+        //      valid completion connects (evidence; an exception someone
+        //      else authorized)
+        self.admit("t2");
+        self.ask("t2");
+        self.until_rows("task.handed", "t2.s0.h1", 1);
+        self.until_rows("task.handed", "t2.s0.h2", 1);
+        self.settle();
+        self.linked("t2.s0.h1", digest, "mara", strict);
+        self.done("t2.s0.h1", "eve", "mine");
+        self.done("t2.s0.h2", "mara", "no receipt");
+        let driven = self.org.redrive();
+        self.settle();
+        std::test::assert_eq_int(driven, 0, "redrive connects neither");
+        std::test::assert_eq_str(self.outcome_of("t2/wf1/s0/h1/a0") + "|" + self.outcome_of("t2/wf1/s0/h2/a0"), "|", "neither connects");
+        std::test::assert_eq_int(self.org.completions_refused, 2, "both noted as refused");
+        self.excepted("t2.s0.h2", "receipt lost", "mara", "mara", strict);
+        self.done("t2.s0.h2", "mara", "lost it");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t2/wf1/s0/h2/a0"), "", "an exception the person closing authorized is none");
+        self.done("t2.s0.h1", "mara", "receipt attached");
+        self.excepted("t2.s0.h2", "receipt lost", "dana", "mara", strict);
+        self.done("t2.s0.h2", "mara", "dana excepted it");
+        dna::RecordResumed <- dna::RecordResume { scope: "cases" };
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(self.outcome_of("t2/wf1/s0/h1/a0") + "|" + self.outcome_of("t2/wf1/s0/h2/a0"), "done|done", "the later valid completions connect when the record resumes");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 1, "the root settled");
+        std::test::assert_eq_int(self.org.completions_refused, 2, "the refusals were noted once per case");
+        std::test::assert_eq_int(self.org.cases_completed, 4, "four cases connected");
+
+        // ---- t3: the condition is the one bound at hand-off. The practice
+        //      relaxed after the hand-off relaxes nothing; the assembly
+        //      restarted connects what the record holds; a reassigned case
+        //      completes in the new assignee's name
+        self.admit("t3");
+        self.ask("t3");
+        self.until_rows("task.handed", "t3.s0.h1", 1);
+        self.until_rows("task.handed", "t3.s0.h2", 1);
+        self.settle();
+        let j = self.boot.rt.journal;
+        let retired = j.append(j.revision(), "knowledge.retired", strict, "{\"digest\": \"" + strict + "\", \"by\": \"riley\"}");
+        let relaxed = self.practice("acceptance/expense-approval", "An expense closes on the payer's word.\nevidence: optional\nreported decisions: allowed");
+        self.done("t3.s0.h1", "mara", "paid");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t3/wf1/s0/h1/a0"), "", "the relaxed practice does not relax a case handed under the strict one");
+        self.linked("t3.s0.h1", digest, "mara", relaxed);
+        self.done("t3.s0.h1", "mara", "receipt attached, under the new practice");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t3/wf1/s0/h1/a0"), "", "evidence linked under another practice is none under the bound one");
+        self.linked("t3.s0.h1", digest, "mara", strict);
+        self.done("t3.s0.h1", "mara", "receipt attached");
+        self.boot_org(repo);
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(self.outcome_of("t3/wf1/s0/h1/a0"), "done", "the assembly restarted connects the completion the record holds");
+        let x = j.append(j.revision(), "task.reassigned", "t3.s0.h2", "{\"to\": \"nia\", \"by\": \"mara\"}");
+        self.linked("t3.s0.h2", digest, "nia", strict);
+        self.done("t3.s0.h2", "nia", "took it over");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t3/wf1/s0/h2/a0"), "done", "the new assignee's completion connects");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t3"), 1, "the root settled");
+
+        // ---- t4: a case handed after the relaxation closes under the new
+        //      one — on a note; and a decision someone else made, reported
+        //      by the assignee and accepted under the bound practice,
+        //      completes the other; one reported by someone else does not
+        self.admit("t4");
+        self.ask("t4");
+        self.until_rows("task.handed", "t4.s0.h1", 1);
+        self.until_rows("task.handed", "t4.s0.h2", 1);
+        self.settle();
+        let adm4 = self.body_of("case.admitted", "t4.s0.h1");
+        std::test::assert_eq_str(std::json::find_string_field(adm4, "acceptance") + "|" + std::json::find_field_raw(adm4, "evidence_required"), relaxed + "|false", "bound to the relaxed practice");
+        let agreed = dna_cli(repo, "task\ndone\nt4.s0.h1\n--as\nmara\n--note\nagreed the date");
+        std::test::assert(std::str::contains(agreed, "human-reported, no evidence linked"), "a note closes it: " + agreed);
+        self.done("t4.s0.h2", "eve", "mine");
+        let bad = j.append(j.revision(), "decision.reported", "t4.s0.h2", "{\"task\": \"t4.s0.h2\", \"reporter\": \"eve\", \"decider\": \"the client\", \"channel\": \"mail\", \"evidence\": \"" + digest + "\", \"practice\": \"acceptance/expense-approval\", \"accepted\": true}");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h1/a0") + "|" + self.outcome_of("t4/wf1/s0/h2/a0"), "done|", "the note closes one; the wrong person's note and a decision reported by someone else close nothing");
+        let good = j.append(j.revision(), "decision.reported", "t4.s0.h2", "{\"task\": \"t4.s0.h2\", \"reporter\": \"mara\", \"decider\": \"the client\", \"channel\": \"mail\", \"evidence\": \"" + digest + "\", \"practice\": \"acceptance/expense-approval\", \"accepted\": true}");
+        self.observe();
+        std::test::assert_eq_str(self.outcome_of("t4/wf1/s0/h2/a0"), "done", "the assignee's reported decision, accepted, completes the case");
+        let out4 = dna::decode_attempt_outcome(self.body_of("attempt.outcome", "t4/wf1/s0/h2/a0"));
+        std::test::assert(out4.ok && std::str::contains(out4.value.result, "decided by mara") && out4.value.evidence_ref == digest, "as a decision, with its evidence: " + out4.value.result);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t4"), 1, "the root settled");
+
+        // ---- t5: only the recorded owner connects a completion. Over a
+        //      shared ledger, acme's case completed is nothing to north's
+        //      assembly; acme's connects it
+        self.boot_owner_org(repo, "acme");
+        self.admit("acme:t5");
+        self.ask("acme:t5");
+        self.until_rows("task.handed", "acme:t5.s0.h1", 1);
+        self.until_rows("task.handed", "acme:t5.s0.h2", 1);
+        self.settle();
+        std::test::assert_eq_str(std::json::find_string_field(self.body_of("case.admitted", "acme:t5.s0.h1"), "owner"), "acme", "acme's case");
+        self.boot_owner_org(repo, "north");
+        self.settle();
+        self.done("acme:t5.s0.h1", "mara", "agreed");
+        self.done("acme:t5.s0.h2", "mara", "agreed");
+        self.observe();
+        let north = self.org.redrive();
+        self.settle();
+        std::test::assert_eq_int(north + self.org.cases_completed, 0, "north connects nothing of acme's");
+        std::test::assert_eq_str(self.outcome_of("acme:t5/wf1/s0/h1/a0") + "|" + self.outcome_of("acme:t5/wf1/s0/h2/a0"), "|", "no outcome from another owner");
+        self.boot_owner_org(repo, "acme");
+        self.settle();
+        self.settle();
+        std::test::assert_eq_str(self.outcome_of("acme:t5/wf1/s0/h1/a0") + "|" + self.outcome_of("acme:t5/wf1/s0/h2/a0"), "done|done", "the origin connects both");
+        std::test::assert_eq_int(self.rows("workflow.settled", "acme:t5"), 1, "and the root settled");
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done") + self.count(self.outcomes, "t2:done") + self.count(self.outcomes, "t3:done") + self.count(self.outcomes, "t4:done") + self.count(self.outcomes, "acme:t5:done"), 5, "each root announced once: " + self.outcomes);
+        std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }
