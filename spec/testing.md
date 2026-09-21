@@ -253,6 +253,15 @@ resolver reached it (`/abs/app/../lib/second.hl`), and the target's
 own files were named exactly as the command line spelled them, `..`
 and all (2026-09-20, GH #822).
 
+`hale test --json`'s rows follow the same rule for the same reason.
+A row says which test RAN rather than where an error is, but a tool
+joining those rows to `check --json` records on `file` needs one
+string per file, and the row used to echo the command line — so
+`hale test ../app/x_test.hl` and a `check` of the same seed named
+that file differently (2026-09-20, GH #867). The human-readable
+`ok <path>` / `FAIL <path>` lines keep the spelling the command
+line used: they are read beside the command that produced them.
+
 Nor is the **kind** of failure. A refusal raised by CODEGEN rather
 than by the front end — a construct the checker accepts and the
 backend does not support, a missing toolchain component the program

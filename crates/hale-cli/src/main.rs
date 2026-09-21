@@ -7060,9 +7060,18 @@ fn run_test(args: &[String]) -> ExitCode {
             if idx > 0 {
                 buf.push(',');
             }
+            // GH #867: the row's `file` is spelled by the rule every
+            // `--json` record's `file` is spelled by — canonical,
+            // absolute, symlinks resolved, no `..` (GH #822). The row
+            // says which test ran rather than where an error is, but
+            // a tool joining these rows to `check --json` records on
+            // `file` needs the two to agree, and this one carried the
+            // command line's spelling verbatim. The PASS/FAIL lines
+            // below keep that spelling: a human reads them beside the
+            // command they just typed.
             buf.push_str(&format!(
                 "{{\"file\":\"{}\",\"status\":\"{}\"",
-                json_escape(&o.file.display().to_string()),
+                json_escape(&diag_file_name(&o.file)),
                 if o.passed { "pass" } else { "fail" }
             ));
             if let Some(m) = &o.message {
