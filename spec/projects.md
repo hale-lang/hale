@@ -578,6 +578,31 @@ file and subscribed from a sibling reported "unknown topic" under
 multi-file seed merges before checking, exactly like the
 import-bearing path.)
 
+### What `hale run` starts, `hale run` ends
+
+`hale run` is a foreground wrapper, and everything it starts is
+bounded by it: the compiled program, and under `--observe` the iris
+session beside it and the `hale build` that materializes the
+observer. On Linux each of them is spawned with a parent-death
+signal (`PR_SET_PDEATHSIG`, SIGTERM) and stays in `hale`'s process
+group, so killing `hale` alone — `timeout`, a CI cancel, a SIGKILL
+— ends them too, and a group-directed signal (a shell's Ctrl-C,
+`timeout` without `--foreground`) still reaches them as it always
+did. Nothing is left running that only a human knows to kill.
+
+The observed session also gets its OWN stdout and stderr, which
+`hale` relays to its stderr. The program's stdout is the command's
+output: an observer must not interleave its chatter into it, and —
+the reason this is a rule rather than a preference — a caller
+reading that stdout through a pipe must see EOF when `hale` exits.
+Until 2026-09-20 (GH #905) it did not: the session inherited the
+descriptor, so `hale run --observe prog.hl | cat` never returned.
+`hale` reaps the `hale iris` it started, but fuse-hl UNDER that
+`hale iris` was left running with the pipe's write end and nothing
+was left to close it — the program ending was enough to hang the
+caller, and a `hale` killed before it could reap anything left the
+whole session behind.
+
 ## Git-based dependency fetching (`hale fetch`)
 
 A project may declare git dependencies in an `hale.toml`

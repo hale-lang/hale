@@ -314,7 +314,11 @@ fn main() -> ExitCode {
         // by the child) and an iris session runs beside it for the
         // program's lifetime. The flag is consumed here; nothing
         // reaches the program's argv. Accepted immediately after
-        // the target too, the spelling that shipped in B3.
+        // the target too, the spelling that shipped in B3. The
+        // session writes to its own pipe and dies with this process
+        // whatever kills it (GH #905) — the program's stdout stays
+        // the command's output, and there is no orphan left holding
+        // it open.
         let mut observe = before.iter().any(|f| f == "--observe");
         if !observe && user_args.first().map(String::as_str) == Some("--observe") {
             observe = true;
@@ -6683,6 +6687,62 @@ fn render_diag_json(
     )
 }
 
+/// Bind a child's life to ours (GH #905).
+///
+/// `hale run` is a foreground wrapper: the program it compiled, the
+/// iris session `--observe` puts beside it, the `hale build` that
+/// materializes the observer, fuse-hl under `hale iris`. None of them
+/// has a reason to outlive the `hale` that asked for it, and when one
+/// does it is not merely a stray — it inherited our descriptors, so a
+/// caller reading our stdout through a pipe waits on the orphan's copy
+/// of the write end long after we are gone. `timeout`, a CI cancel or
+/// any SIGKILL aimed at `hale` used to leave exactly that: a hung
+/// caller and a process nobody knows to kill.
+///
+/// Two layers, neither of which the child has to cooperate with:
+///
+///   * `PR_SET_PDEATHSIG` — the kernel signals the child the moment
+///     the thread that forked it dies, whatever killed us, SIGKILL
+///     included. The `getppid` check closes the window where we die
+///     between the fork and the `prctl`, in which the setting would
+///     be armed against a death that already happened. It compares
+///     against OUR pid rather than testing for pid 1, so a `hale`
+///     legitimately parented by an init in a container is not read
+///     as an orphan.
+///   * the process GROUP, which we deliberately leave alone: no
+///     `setsid`, no `setpgid`, so a group-directed kill (a shell's
+///     Ctrl-C, `timeout` without `--foreground`) reaches the child
+///     the same way it reaches us.
+///
+/// Every caller waits on the child it starts on the thread that
+/// started it, so the forking thread cannot exit early and retire
+/// the signal under a child that should still be running.
+pub(crate) fn dies_with_us(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let us = std::process::id() as libc::pid_t;
+        // SAFETY: the closure runs between fork and exec in the
+        // child. `prctl`, `getppid` and `_exit` are async-signal-safe
+        // and allocate nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != us {
+                    libc::_exit(0);
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Compile `program` to a temporary native binary and execute it,
 /// forwarding `user_args` as the program's trailing argv. This is
 /// the whole of `hale run` — the same codegen backend as `hale
@@ -6722,7 +6782,15 @@ fn compile_and_exec(
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
-    let status = std::process::Command::new(&bin).args(user_args).status();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(user_args);
+    // The program is `hale run`'s foreground work, not a daemon it
+    // launches: it holds this command's stdin/stdout/stderr, and
+    // `hale` exists to wait for it and report how it ended. A `hale`
+    // killed out from under it leaves it running against a caller
+    // that cannot see its output end — GH #905.
+    dies_with_us(&mut cmd);
+    let status = cmd.status();
     let _ = std::fs::remove_file(&bin);
     match status {
         Ok(s) => {

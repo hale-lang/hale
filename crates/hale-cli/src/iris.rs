@@ -19,7 +19,9 @@
 //!   hale iris --build-only              materialize + build, print the binary
 //!
 //! `hale run --observe <target>` sets `LOTUS_OBS=1` on the program and
-//! launches `hale iris` beside it for the program's lifetime.
+//! launches `hale iris` beside it for the program's lifetime — with
+//! its own stdout, and never outliving the `hale` that started it
+//! (GH #905).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -58,13 +60,10 @@ pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) ->
     }
     let me = std::env::current_exe().map_err(|e| format!("hale iris: cannot locate the hale binary: {e}"))?;
     eprintln!("hale iris: building {what} ({} @ {})", seed, root.display());
-    let status = Command::new(&me)
-        .arg("build")
-        .arg(root.join(seed))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .status()
-        .map_err(|e| format!("hale iris: build failed to start: {e}"))?;
+    let mut build = Command::new(&me);
+    build.arg("build").arg(root.join(seed)).stdin(Stdio::null()).stdout(Stdio::null());
+    crate::dies_with_us(&mut build);
+    let status = build.status().map_err(|e| format!("hale iris: build failed to start: {e}"))?;
     if !status.success() {
         return Err(format!("hale iris: building {} failed ({status})", seed));
     }
@@ -109,6 +108,12 @@ fn exec(bin: &Path, args: &[String], envs: &[(String, String)]) -> ExitCode {
     for (k, v) in envs {
         cmd.env(k, v);
     }
+    // fuse-hl is our child, not a peer: `hale iris` is a supervisor
+    // that only waits. Without this, killing `hale iris` (which is
+    // what `hale run --observe` does when the program ends, and what
+    // a parent-death signal does when it is killed) left fuse-hl
+    // running and holding every descriptor it inherited — GH #905.
+    crate::dies_with_us(&mut cmd);
     match cmd.status() {
         Ok(st) => match st.code() {
             Some(c) => ExitCode::from(c.clamp(0, 255) as u8),
@@ -302,13 +307,47 @@ fn write_pair_diff(a: &str, b: &str) -> Result<String, String> {
 
 /// `hale run --observe`: an iris session for the program's lifetime.
 /// Returns the child so the caller can reap it after the program.
+///
+/// The session is strictly ancillary to the run, so (GH #905):
+///
+///   * it does not outlive us — see [`crate::dies_with_us`];
+///   * it does not write to OUR stdout. The program's stdout is the
+///     command's output, and a caller consuming it through a pipe
+///     must see EOF when we exit. An observer sharing that
+///     descriptor both interleaves its chatter into the program's
+///     output and, orphaned, holds the pipe open forever. It gets
+///     its own pipe instead, which we relay to stderr — the session
+///     still says what it is doing, on the stream diagnostics belong
+///     on. The relay is a second, portable layer under the
+///     parent-death signal: when we die the read end closes, so the
+///     session's writes fail even where `prctl` does not exist.
 pub fn spawn_session() -> Option<std::process::Child> {
     let me = std::env::current_exe().ok()?;
-    match Command::new(me).arg("iris").stdin(Stdio::null()).spawn() {
-        Ok(c) => Some(c),
+    let mut cmd = Command::new(me);
+    cmd.arg("iris").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::dies_with_us(&mut cmd);
+    match cmd.spawn() {
+        Ok(mut c) => {
+            if let Some(out) = c.stdout.take() {
+                relay_to_stderr(out);
+            }
+            if let Some(err) = c.stderr.take() {
+                relay_to_stderr(err);
+            }
+            Some(c)
+        }
         Err(e) => {
             eprintln!("hale run --observe: could not launch hale iris: {e}");
             None
         }
     }
+}
+
+/// Copy one of the session's streams to ours until it ends. The
+/// thread is detached: it retires at EOF, which the session's death
+/// guarantees, and the process exiting under it is the other way out.
+fn relay_to_stderr<R: std::io::Read + Send + 'static>(mut src: R) {
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut src, &mut std::io::stderr());
+    });
 }
