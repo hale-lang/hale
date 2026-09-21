@@ -21,8 +21,12 @@ export function isolatedEnvironment() {
 export function boundedNative(command, args, { build = false, lock = true } = {}) {
   if (process.platform !== 'linux') return { command, args };
   const memory = build ? 2_147_483_648 : 536_870_912;
+  // A build compiles the toolchain's host or a whole API tree, about a
+  // CPU-minute from a cold cache on a fast machine and several on a CI
+  // runner; a service or a fixture process keeps the short budget.
+  const cpu = build ? 900 : 30;
   const bounded = { command: '/usr/bin/prlimit', args: [
-    `--as=${memory}:${memory}`, '--core=0:0', '--cpu=30:30', '--', command, ...args,
+    `--as=${memory}:${memory}`, '--core=0:0', `--cpu=${cpu}:${cpu}`, '--', command, ...args,
   ] };
   // Serialize bounded native commands, but never retain this lock for an
   // HTTP service's lifetime: its browser client may need a fixture mutation.

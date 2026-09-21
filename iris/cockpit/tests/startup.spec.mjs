@@ -28,7 +28,7 @@ const test = base.extend({
     const generated = boundedNative(env.HALE_BIN, ['dna', 'new', root], { build: true });
     const children = [];
     try {
-      await execute(generated.command, generated.args, { env, timeout: 90000, maxBuffer: 2097152 });
+      await execute(generated.command, generated.args, { env, timeout: 300000, maxBuffer: 2097152 });
       const git = args => execute('git', ['-C', root, ...args], { env, timeout: 5000 }).then(r => r.stdout.trim());
       // Organization inspection is explicitly committed-source inspection.
       await git(['add', '--', '.gitignore', 'hale.toml', 'hale.lock', 'main.hl', 'tests', 'dna']);
@@ -42,12 +42,13 @@ const test = base.extend({
         else { childEnv.TMPDIR = path.join(scratch, 'build temporary'); await mkdir(childEnv.TMPDIR); }
         // Bound the real compiler/API tree without holding the native build lock
         // for the HTTP process lifetime. No application body is run or observed.
-        const memory = build ? 2147483648 : 536870912;
-        const child = spawn('/usr/bin/prlimit', [`--as=${memory}:${memory}`, '--cpu=30:30', '--core=0:0', '--', launcher, ...options], { env: childEnv, cwd: scratch, stdio: ['ignore', 'pipe', 'pipe'] });
+        const bounded = boundedNative(launcher, options, { build, lock: false });
+        const child = spawn(bounded.command, bounded.args, { env: childEnv, cwd: scratch, stdio: ['ignore', 'pipe', 'pipe'] });
         children.push(child); let log = ''; let failure;
         child.on('error', error => { failure = error; });
         child.stdout.on('data', chunk => { log = (log + chunk).slice(-262144); }); child.stderr.on('data', chunk => { log = (log + chunk).slice(-262144); });
-        const deadline = Date.now() + 45000;
+        // A launcher that builds the API tree needs the build budget's wall time.
+        const deadline = Date.now() + (build ? 600000 : 45000);
         while (Date.now() < deadline && child.exitCode === null && !failure) {
           try {
             const response = await fetch(origin + '/api/hale/v1/applications', { signal: AbortSignal.timeout(1000) });
@@ -62,7 +63,7 @@ const test = base.extend({
     } finally { for (const child of children) await stop(child); await rm(scratch, { recursive: true, force: true }); }
   },
 });
-test.setTimeout(120000);
+test.setTimeout(900000);
 
 test('One-command startup builds native Iris for a fresh DNA project without changing it', async ({ page, project }, testInfo) => {
   const before = await project.state(); const service = await project.start({ build: true, drafts: true });

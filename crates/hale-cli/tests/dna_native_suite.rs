@@ -429,7 +429,19 @@ fn run_fixture_slice(slice: usize) {
     let mut timings: Vec<FixtureTiming> = Vec::with_capacity(mine.len());
     let mut failure = None;
     for f in &mine {
-        match run_one_fixture(f, &tag, dsn.as_deref()) {
+        // Progress on stderr as it happens: a slice that nextest kills
+        // at its deadline shows what it had captured, so the fixture
+        // that ate the minutes is named rather than the slice alone.
+        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        eprintln!("slice {slice}: {name} starting");
+        let started = std::time::Instant::now();
+        let outcome = run_one_fixture(f, &tag, dsn.as_deref());
+        eprintln!(
+            "slice {slice}: {name} {} after {:.1}s",
+            if outcome.is_ok() { "passed" } else { "failed" },
+            started.elapsed().as_secs_f64()
+        );
+        match outcome {
             // A fixture failure stops the slice, as it always has: the
             // fixtures after it would run against whatever the failing
             // one left behind.

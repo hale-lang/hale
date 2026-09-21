@@ -69,7 +69,7 @@ export const test = base.extend({
     process.once('exit', exitCleanup);
     try {
       if (organization === 'generated') {
-        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env, timeout: 90_000, maxBuffer: 2_097_152 }, { build: true });
+        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
       }
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env, timeout: 30_000 });
       const data = JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8'));

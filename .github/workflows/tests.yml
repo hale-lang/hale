@@ -564,6 +564,12 @@ jobs:
           cache: npm
           cache-dependency-path: iris/cockpit/package-lock.json
 
+      - name: Warm the DNA toolchain cache for the browser fixtures
+        # The browser fixtures create fresh projects with `hale dna new`
+        # under a per-process CPU budget; the first host build of this
+        # binary must not be the one that pays for it.
+        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
+
       - name: Iris cockpit browser integration
         working-directory: iris/cockpit
         run: |
