@@ -29,6 +29,7 @@
 //! not run) and then codegen, because half of the bug is that the two
 //! disagreed.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use hale_codegen::{build_executable, build_executable_with_imports, mangle};
@@ -314,11 +315,22 @@ fn qualified_paths_inside_a_module_body_resolve_across_an_import() {
         "lib-module-decls",
         "lib",
     );
-    let errors: Vec<String> = hale_types::check_program(&merged)
-        .into_iter()
-        .filter(|d| d.is_error())
-        .map(|d| d.message.clone())
-        .collect();
+    // Check the merged program the way the CLI does: one merged
+    // `Program` plus the rename table on the bundle. The whole-program
+    // qualifier rule (GH #911 B2) resolves `lib::Row` through that
+    // table; without it the import-stripped merge has no `lib` and
+    // the strict entry refuses every qualified path, which is a fact
+    // about this harness, not about the program.
+    let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
+    programs.insert(String::new(), &merged);
+    let mut bundle = hale_types::Bundle::new(programs);
+    bundle.import_renames = renames.clone();
+    let errors: Vec<String> =
+        hale_types::check_bundle_opts_whole_program(&bundle, false)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.clone())
+            .collect();
     assert!(errors.is_empty(), "check refused it: {:?}", errors);
 
     let bin = harness::unique_bin("hale_module_xseed");
