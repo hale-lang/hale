@@ -422,8 +422,17 @@ pub struct Category {
     /// nothing about it.
     pub not_exercised: Option<&'static str>,
     /// What "identical" means for this category, when that needs
-    /// saying.
-    pub detail: Option<&'static str>,
+    /// saying. Owned because the payload detail is derived from the
+    /// recording (GH #842): which blobs carry bytes and which carry
+    /// metadata only is a fact about THIS recording, not a constant.
+    pub detail: Option<String>,
+    /// Payloads only: how many blobs carry canonical bytes that were
+    /// compared byte-for-byte.
+    pub contents_canonicalised: Option<usize>,
+    /// Payloads only: how many blobs are metadata-only (declared
+    /// size + publish identity) — an in-process flat payload's ABI
+    /// snapshot is never stored, so its CONTENTS were not compared.
+    pub metadata_only: Option<usize>,
 }
 
 impl Category {
@@ -462,6 +471,26 @@ impl Coverage {
             rec.public_streams.iter().map(|(_, s)| s.len()).sum();
         let steps: usize =
             rec.async_steps.iter().map(|(_, s)| s.len()).sum();
+        // GH #842: an in-process flat payload records METADATA ONLY
+        // (flag bit 1) — an ABI snapshot would carry heap pointers and
+        // uninitialised padding — so `diff` compares its declared size
+        // and publish identity, never its contents. Saying "compared"
+        // for those overclaimed; the detail names what was compared,
+        // per the mix this recording actually carries.
+        let raw_payloads =
+            rec.payloads.iter().filter(|p| p.flags & 2 != 0).count();
+        let canonical_payloads = rec.payloads.len() - raw_payloads;
+        let payload_detail = match (canonical_payloads, raw_payloads) {
+            (_, 0) => "canonical bytes identical".to_string(),
+            (0, _) => {
+                "sizes and identities; contents not canonicalised".to_string()
+            }
+            (c, r) => format!(
+                "{} canonical bytes identical; {} by size and identity \
+                 only, contents not canonicalised",
+                c, r
+            ),
+        };
         let categories = vec![
             Category {
                 name: "public bus events",
@@ -471,7 +500,9 @@ impl Coverage {
                 not_exercised: (public == 0).then_some(
                     "no publish or deliver events were recorded",
                 ),
-                detail: Some("publish + deliver, subject-aligned"),
+                detail: Some("publish + deliver, subject-aligned".to_string()),
+                contents_canonicalised: None,
+                metadata_only: None,
             },
             Category {
                 name: "payloads",
@@ -482,10 +513,9 @@ impl Coverage {
                     "no payload blobs were recorded, so no payload \
                      bytes or declared sizes were compared",
                 ),
-                detail: Some(
-                    "canonical bytes identical; raw ABI payloads \
-                     matched by declared size",
-                ),
+                detail: Some(payload_detail),
+                contents_canonicalised: Some(canonical_payloads),
+                metadata_only: Some(raw_payloads),
             },
             Category {
                 name: "queued consumes",
@@ -498,7 +528,9 @@ impl Coverage {
                      delivery has no queue order to enforce), so no \
                      queued delivery order was verified",
                 ),
-                detail: Some("per consumer, in recorded order"),
+                detail: Some("per consumer, in recorded order".to_string()),
+                contents_canonicalised: None,
+                metadata_only: None,
             },
             Category {
                 name: "async schedule steps",
@@ -519,7 +551,9 @@ impl Coverage {
                 } else {
                     None
                 },
-                detail: Some("start / resume / expire, per consumer"),
+                detail: Some("start / resume / expire, per consumer".to_string()),
+                contents_canonicalised: None,
+                metadata_only: None,
             },
             Category {
                 name: "journal reads",
@@ -530,7 +564,9 @@ impl Coverage {
                     "no time, randomness or env reads were \
                      journaled",
                 ),
-                detail: Some("kind, args, withheld state, value"),
+                detail: Some("kind, args, withheld state, value".to_string()),
+                contents_canonicalised: None,
+                metadata_only: None,
             },
         ];
         Coverage {
@@ -565,7 +601,7 @@ impl Coverage {
                         ),
                         None => String::new(),
                     };
-                    let detail = match c.detail {
+                    let detail = match &c.detail {
                         Some(d) => format!(" ({})", d),
                         None => String::new(),
                     };
@@ -604,6 +640,14 @@ impl Coverage {
             }
             if let Some(why) = c.not_exercised {
                 o.insert("not_exercised_because".into(), why.into());
+            }
+            // GH #842: payloads say how many were compared by content
+            // and how many by size and identity only.
+            if let Some(n) = c.contents_canonicalised {
+                o.insert("contents_canonicalised".into(), n.into());
+            }
+            if let Some(n) = c.metadata_only {
+                o.insert("metadata_only".into(), n.into());
             }
             cats.insert(c.key.to_string(), o.into());
         }
