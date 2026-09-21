@@ -67,6 +67,10 @@ pub enum TargetOs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetEnv {
     Gnu,
+    /// musl: a Linux binary linked static, running on any Linux with
+    /// no libc to match (GH #970). Only ever a cross target — no host
+    /// is a musl one here.
+    Musl,
     Msvc,
     None,
 }
@@ -179,6 +183,18 @@ impl TargetSpec {
                 TargetArch::Aarch64,
                 TargetOs::Linux,
                 TargetEnv::Gnu,
+            ),
+            Self::new(
+                "x86_64-unknown-linux-musl",
+                TargetArch::X86_64,
+                TargetOs::Linux,
+                TargetEnv::Musl,
+            ),
+            Self::new(
+                "aarch64-unknown-linux-musl",
+                TargetArch::Aarch64,
+                TargetOs::Linux,
+                TargetEnv::Musl,
             ),
             Self::new(
                 "x86_64-apple-darwin",
@@ -295,10 +311,27 @@ impl TargetSpec {
     }
 
     /// Whether the lotus runtime has the `async_io` pool backend here.
-    /// Mirrors the runtime's `LOTUS_HAVE_ASYNC_IO` (Linux, and wasm's
-    /// POSIX shim); the checker refuses `where async_io` elsewhere.
+    /// Mirrors the runtime's `LOTUS_HAVE_ASYNC_IO` (glibc Linux, and
+    /// wasm's POSIX shim); the checker refuses `where async_io`
+    /// elsewhere. musl declares `<ucontext.h>` and implements none of
+    /// it, so the coroutine backend has nothing to stand on there.
     pub fn has_async_io(&self) -> bool {
-        matches!(self.os, TargetOs::Linux | TargetOs::None)
+        match self.os {
+            TargetOs::Linux => self.env != TargetEnv::Musl,
+            TargetOs::None => true,
+            TargetOs::MacOs | TargetOs::Windows => false,
+        }
+    }
+
+    /// The platform as a diagnostic names it: "macOS", "musl Linux".
+    pub fn platform_label(&self) -> &'static str {
+        match (self.os, self.env) {
+            (TargetOs::Linux, TargetEnv::Musl) => "musl Linux",
+            (TargetOs::Linux, _) => "Linux",
+            (TargetOs::MacOs, _) => "macOS",
+            (TargetOs::Windows, _) => "Windows",
+            (TargetOs::None, _) => "wasm32",
+        }
     }
 
     /// POSIX shared memory lives in librt on Linux and in libc on macOS.
@@ -377,9 +410,10 @@ impl TargetSpec {
     }
 
     /// The target as `zig cc -target` spells it, for the targets a cross
-    /// build links through zig (GH #970): the Linux gnu ones, whose libc
-    /// zig ships. The glibc version is appended by the caller. `None` is
-    /// a target zig is not the toolchain for here — Darwin needs an SDK,
+    /// build links through zig (GH #970): the Linux ones, whose libc —
+    /// glibc or musl — zig ships. A glibc version is appended by the
+    /// caller for the gnu targets; musl has none to pin. `None` is a
+    /// target zig is not the toolchain for here — Darwin needs an SDK,
     /// Windows a runtime that does not exist (GH #445).
     pub fn zig_target(&self) -> Option<&'static str> {
         match (self.arch, self.os, self.env) {
@@ -389,8 +423,20 @@ impl TargetSpec {
             (TargetArch::X86_64, TargetOs::Linux, TargetEnv::Gnu) => {
                 Some("x86_64-linux-gnu")
             }
+            (TargetArch::Aarch64, TargetOs::Linux, TargetEnv::Musl) => {
+                Some("aarch64-linux-musl")
+            }
+            (TargetArch::X86_64, TargetOs::Linux, TargetEnv::Musl) => {
+                Some("x86_64-linux-musl")
+            }
             _ => None,
         }
+    }
+
+    /// A musl target is linked static: the point of it is a binary that
+    /// runs on any Linux, with no libc on the machine to match.
+    pub fn is_musl(&self) -> bool {
+        self.env == TargetEnv::Musl
     }
 
     /// A one-line human description as seen from this host, used by
@@ -562,6 +608,42 @@ mod tests {
             assert_eq!(wasm.support_from(&host), TargetSupport::ObjectOnly);
             assert_eq!(win.support_from(&host), TargetSupport::Planned);
         }
+    }
+
+    /// GH #970: musl is a cross target from every host, gnu and Darwin
+    /// alike, spelled for zig without a glibc version.
+    #[test]
+    fn musl_is_cross_from_every_host_and_static() {
+        for (triple, zig) in [
+            ("x86_64-unknown-linux-musl", "x86_64-linux-musl"),
+            ("aarch64-unknown-linux-musl", "aarch64-linux-musl"),
+        ] {
+            let t = TargetSpec::parse(triple).unwrap();
+            assert!(t.is_musl() && t.is_linux() && t.is_posix(), "{triple}");
+            assert_eq!(t.zig_target(), Some(zig));
+            assert_eq!(t.support(), TargetSupport::Supported);
+            for host in ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"] {
+                let host = TargetSpec::parse(host).unwrap();
+                assert_eq!(t.support_from(&host), TargetSupport::Cross, "{triple} from {host}");
+                assert!(t.links_from(&host));
+            }
+            assert_eq!(t.filenames().executable, "");
+        }
+        assert!(!TargetSpec::parse("x86_64-unknown-linux-gnu").unwrap().is_musl());
+    }
+
+    /// The async_io backend is glibc Linux's (and wasm's shim): musl and
+    /// macOS have none, and the diagnostic names them.
+    #[test]
+    fn async_io_follows_the_libc() {
+        let t = |s: &str| TargetSpec::parse(s).unwrap();
+        assert!(t("x86_64-unknown-linux-gnu").has_async_io());
+        assert!(t("aarch64-unknown-linux-gnu").has_async_io());
+        assert!(t("wasm32").has_async_io());
+        assert!(!t("x86_64-unknown-linux-musl").has_async_io());
+        assert!(!t("aarch64-apple-darwin").has_async_io());
+        assert_eq!(t("x86_64-unknown-linux-musl").platform_label(), "musl Linux");
+        assert_eq!(t("aarch64-apple-darwin").platform_label(), "macOS");
     }
 
     #[test]

@@ -127,8 +127,10 @@ authority. Native binaries for the platform `hale` itself runs on — a
 Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
 `wasm32` objects for the browser from either. A **Linux** triple from
 any other host — `--target x86_64-unknown-linux-gnu` or
-`aarch64-unknown-linux-gnu` on a Mac, or the other architecture on
-Linux — is cross-compiled and linked here; see
+`aarch64-unknown-linux-gnu` on a Mac, the other architecture on
+Linux, or a **musl** triple (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`: a static binary that runs on any Linux)
+from anywhere — is cross-compiled and linked here; see
 [Cross-compiling for Linux](#cross-compiling-for-linux) below. A macOS
 triple from anywhere else gets as far as a relocatable object for that
 platform (`app.o`) and stops with a note — there is no Apple SDK to
@@ -166,7 +168,13 @@ hale build --target x86_64-unknown-linux-gnu app.hl    # ELF x86-64, runs on any
 ```
 
 The emitted binary depends on the target's glibc and nothing else —
-OpenSSL and zlib are linked in. `hale run` and `hale test` refuse a
+OpenSSL and zlib are linked in. For a binary that depends on *nothing*,
+build for musl: `hale build --target x86_64-unknown-linux-musl app.hl`
+(after `scripts/target-sysroot.sh x86_64-unknown-linux-musl`) is one
+static file that runs on any Linux — Alpine, a `scratch` container, an
+old glibc — with no libc to match. One carve-out: `async_io` pools are
+refused for musl at check time (its libc has no `ucontext`, which the
+coroutine backend needs), as they are for macOS. `hale run` and `hale test` refuse a
 foreign target (nothing it builds runs here); `LOTUS_ASAN` and the
 other sanitizers are host-only. Without zig or the sysroot the build
 fails before linking and says which one is missing. `HALE_TARGET_GLIBC`

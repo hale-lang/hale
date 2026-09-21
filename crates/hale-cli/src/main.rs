@@ -8448,6 +8448,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
     bundle.target_has_async_io = options.target.spec().has_async_io();
+    bundle.target_label = options.target.spec().platform_label();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);

@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+### musl targets: a static Linux binary from any host (GH #970, third step)
+
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` join the
+target model. Both are cross targets from every host — no host is a
+musl one here — linked through zig like the gnu triples, `-static`, so
+the emitted binary is one file that runs on any Linux: Alpine, a
+`scratch` container, a machine with an older glibc than any floor.
+`scripts/target-sysroot.sh <musl triple>` builds OpenSSL and zlib for
+musl the same way; there is no glibc version to pin, and the `VERSIONS`
+file says `musl (static)`. `TargetEnv::Musl`, `TargetSpec::is_musl`.
+One carve-out, the macOS one: musl declares `<ucontext.h>` and
+implements none of it, so the `async_io` coroutine backend is off for it
+(`LOTUS_HAVE_ASYNC_IO` now asks for glibc, not just Linux) and the check
+refuses `where async_io` naming the target — the diagnostic says "aren't
+supported on musl Linux yet" (`TargetSpec::platform_label`,
+`Bundle::target_label`). A vendored libucontext could lift it later.
+CI's `cross` job builds both and runs them: the aarch64 one under qemu
+with no target libc at all, the x86_64 one directly on the gnu runner —
+a static binary is foreign to a glibc host in name only.
+
 ### Cross-compile for Linux from a Mac: `--target <linux triple>` links (GH #970, second step)
 
 A Linux gnu triple from any other host — `--target x86_64-unknown-linux-gnu`

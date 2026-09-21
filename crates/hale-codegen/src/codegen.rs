@@ -2604,17 +2604,18 @@ fn cross_cc(
             target.triple, zig
         )));
     };
-    let glibc = std::env::var("HALE_TARGET_GLIBC")
-        .ok()
-        .filter(|g| !g.is_empty())
-        .unwrap_or_else(|| "2.31".to_string());
+    // musl has no version to pin: the binary is static and carries it.
+    let spelled = if target.is_musl() {
+        zig_target.to_string()
+    } else {
+        let glibc = std::env::var("HALE_TARGET_GLIBC")
+            .ok()
+            .filter(|g| !g.is_empty())
+            .unwrap_or_else(|| "2.31".to_string());
+        format!("{zig_target}.{glibc}")
+    };
     Ok((
-        vec![
-            zig,
-            "cc".to_string(),
-            "-target".to_string(),
-            format!("{zig_target}.{glibc}"),
-        ],
+        vec![zig, "cc".to_string(), "-target".to_string(), spelled],
         version,
     ))
 }
@@ -2768,6 +2769,12 @@ fn link_cross(
 
     let mut cmd = Command::new(&cc[0]);
     cmd.args(&cc[1..]).arg(user_obj).args(&rt_objs);
+    // A musl binary is static — one file that runs on any Linux. zig
+    // defaults musl to static already; saying so keeps it true if that
+    // default ever moves.
+    if target.is_musl() {
+        cmd.arg("-static");
+    }
     if target.needs_librt() {
         cmd.arg("-lrt");
     }
@@ -10349,7 +10356,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the host, which meant a macOS-hosted build of a Linux
                 // artifact would have silently dropped the enable call.
                 if self.deployment.async_io_pools.contains(name)
-                    && self.target.is_linux()
+                    && self.target.has_async_io()
                 {
                     self.builder
                         .build_call(
