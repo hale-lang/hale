@@ -343,7 +343,7 @@ locus WorkflowRuntime {
         let t = self.p.task(q.task_id);
         ExecutionStateAnswered <- ExecutionState {
             task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
-            outstanding: self.p.outstanding_works(q.task_id), current_step: self.p.current_step(q.task_id)
+            outstanding: self.p.outstanding_in_tree(q.task_id), current_step: self.p.current_step(q.task_id)
         };
     }
     // An attempt's outcome reported by the adapter that did its work
@@ -808,7 +808,10 @@ locus TaskRun {
             let n = self.cat.bound_at(i);
             if n.kind == "step" && n.parent == self.task_id { step_count = step_count + 1; }
             if n.kind == "work" && self.cat.bound_node(n.parent).parent == self.task_id {
-                leaves.push(leaf_of(n, self.task_id, map_get(self.kinds, n.member_key, "=")));
+                // card 18: the kind named for this exact Work (its bound id), else
+                // for its key — a program's shorthand for every Work of that key
+                let by_id = map_get(self.kinds, n.id, "=");
+                leaves.push(leaf_of(n, self.task_id, if len(by_id) > 0 { by_id } else { map_get(self.kinds, n.member_key, "=") }));
             }
             if n.kind == "task" && n.parent == self.task_id {
                 children.push(child_of(n, self.cat.bound_node(n.spawning_step).step_index));

@@ -391,7 +391,7 @@ main locus App {
         std::test::assert(std::str::contains(requested, "\"author\": \"alice\"") && std::str::contains(row_body(requested), "chase the late invoice"), "the ask is a row of the ledger in alice's name before anything acts on it: " + ledger(service));
         let offered = wait_row(service, "\"kind\": \"intent.offered\"", 240);
         std::test::assert(std::str::contains(offered, "chase the late invoice"), "and the organism admitted it: " + ledger(service));
-        std::test::assert_eq_int(count_rows(ledger(service), "\"kind\": \"task.born\""), 1, "once, though the head both wrote and published it");
+        std::test::assert_eq_int(count_rows(ledger(service), "\"kind\": \"workflow.admitted\""), 1, "once, though the head both wrote and published it (card 18: the ask is an admitted workflow)");
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "and it names who asked, the person head A identified, not the form's `as`: " + offered);
         std::test::assert(!std::str::contains(record(app), "chase the late invoice"), "and not of the record: the day's work is the ledger's");
         // the plan: a person's job, bob's, and the hand-off that follows it
@@ -399,8 +399,8 @@ main locus App {
         std::test::assert(len(handed) > 0, "the organism planned the ask and handed it on: " + ledger(service));
         let tid = std::json::find_string_field(handed, "entity");
         std::test::assert_eq_str(std::json::find_string_field(row_body(handed), "assignee"), "bob", "handed to bob, as the plan named: " + handed);
-        let planned = row_with(ledger(service), "\"kind\": \"task.planned\"");
-        std::test::assert_eq_str(std::json::find_string_field(row_body(planned), "kind"), "person", "planned as a person's job, not a change to source: " + planned);
+        let admitted = row_with(ledger(service), "\"kind\": \"workflow.admitted\"");
+        std::test::assert_eq_str(std::json::find_string_field(row_body(admitted), "definition"), "ask-person", "planned as a person's job, not a change to source, the word bound in the admission: " + admitted);
 
         // ---- 5. only the assignee closes it, from their own clone
         let not_hers = through(app, service, toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nalice\n--note\npaid");

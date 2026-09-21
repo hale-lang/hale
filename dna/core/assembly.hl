@@ -2231,6 +2231,9 @@ locus Dna {
         // answers again (the admission carries the ask's own identity)
         let again = self.workflow_admission_of(i.id, self.journal.revision());
         if len(again) > 0 { return again; }
+        // and one whose leader's word is still out is in planning: offered
+        // again meanwhile it is neither gated nor journaled a second time
+        if self.in_planning(i.id) { return "planning"; }
         let gate = self.membrane.offer(i);
         if gate != "accepted" {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
@@ -2264,12 +2267,6 @@ locus Dna {
         // admission binds that word; without a leader the ask is an
         // application change, as before
         if self.planned {
-            let mut i2 = 0;
-            while i2 < self.pending_asks.len() {
-                let p = self.pending_asks.get(i2) or Intent { };
-                if p.id == i.id { return "planning"; }
-                i2 = i2 + 1;
-            }
             // the intent is this resident's to keep: what a handler's arena
             // handed in dies with the handler
             self.pending_asks.push(Intent { id: std::str::clone(i.id), outcome: std::str::clone(i.outcome), from: std::str::clone(i.from), to: std::str::clone(i.to) });
@@ -2277,6 +2274,17 @@ locus Dna {
             return "planning";
         }
         return self.admit_ask(i, Plan { kind: "app", change_class: "application" }, false);
+    }
+    // Whether an ask is awaiting the leader's word.
+    @unbounded
+    fn in_planning(intent_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.pending_asks.len() {
+            let p = self.pending_asks.get(i) or Intent { };
+            if len(p.id) > 0 && p.id == intent_id { return true; }
+            i = i + 1;
+        }
+        return false;
     }
     // The ask admitted under the leader's word (or none): a person's job
     // is a one-leaf workflow for a person, anything else a one-leaf
@@ -2332,7 +2340,11 @@ locus Dna {
         self.executions_asked = self.executions_asked + 1;
         ExecutionAsked <- ExecutionAsk { scope: self.org_id, task_id: task_id, kinds: self.kinds_of(task_id) };
     }
-    // "<key>=<kind>" per leaf of the root's own workflow, space-separated.
+    // "<work id>=<kind>" per leaf of the whole bound tree — the root's
+    // workflow and every child's — space-separated: the kind is named for
+    // the exact Work (its bound id), never for a key, which two Works of
+    // different steps or workflows may share. The selection request is
+    // the Work's own, under the Task that owns it.
     @unbounded
     fn kinds_of(task_id: String) -> String {
         let adm = self.recorded_admission(task_id);
@@ -2344,15 +2356,27 @@ locus Dna {
         while i < self.catalog.bound.len() {
             let n = self.catalog.bound.get(i) or BoundNode { };
             if n.kind == "work" {
-                let req = bound_request(n, task_id, n.parent);
+                let req = bound_request(n, self.task_of_bound(n), n.parent);
                 let kind = if std::str::contains(n.requires, "edit") { "edit" }
                 else if std::str::contains(n.requires, "human") || std::str::contains(n.requires, "person") { "human" }
                 else { self.work.selection.select(req, 0, "") };
-                out = out + (if len(out) > 0 { " " } else { "" }) + n.member_key + "=" + kind;
+                out = out + (if len(out) > 0 { " " } else { "" }) + n.id + "=" + kind;
             }
             i = i + 1;
         }
         return out;
+    }
+    // The Task a bound Work belongs to: its Step's Task, as the recipe binds
+    // them ("" when the recipe does not hold the Step).
+    @unbounded
+    fn task_of_bound(w: BoundNode) -> String {
+        let mut i = 0;
+        while i < self.catalog.bound.len() {
+            let n = self.catalog.bound.get(i) or BoundNode { };
+            if n.kind == "step" && n.id == w.parent { return n.parent; }
+            i = i + 1;
+        }
+        return "";
     }
     // The admission of a Task, decoded; not ok when none.
     @unbounded
@@ -2382,9 +2406,14 @@ locus Dna {
             parsed: std::str::trim(std::json::find_field_raw(x, "planned")) == "true"
         };
     }
-    // Every admitted root of this owner's that has not settled is asked
+    // Every admitted root of this owner's that is not finished is asked
     // of the engine again after a restart; the engine restores each from
-    // its admission and the record's facts (card 13).
+    // its admission and the record's facts (card 13). Finished is
+    // settled AND drained: a cancelled root settles before its admitted
+    // Works have, and the engine's recovery (cards 12a, 13) is what
+    // drains them — so a settled root with a Work of its tree still
+    // owed a settlement is asked for again, and a drained record is
+    // asked for nothing and written nothing.
     @unbounded
     fn resume_executions() {
         let n = self.journal.revision();
@@ -2393,10 +2422,42 @@ locus Dna {
             let e = self.journal.read(i);
             if e.kind == "workflow.admitted" && owned_by(self.ownership.me, e.entity) {
                 let a = decode_admission(e.body);
-                if a.ok && len(a.value.parent_task) == 0 && !self.has_row("workflow.settled", e.entity) { self.start_execution(e.entity); }
+                if a.ok && len(a.value.parent_task) == 0 && (!self.has_row("workflow.settled", e.entity) || !self.drained(e.entity)) { self.start_execution(e.entity); }
             }
             i = i + 1;
         }
+    }
+    // Whether every Work of a root's tree — its own workflow's and every
+    // child's, found by their admissions' `parent_task` — that admitted
+    // an attempt has settled. Bounded by the record.
+    @unbounded
+    fn drained(root: String) -> Bool {
+        let n = self.journal.revision();
+        // the tasks of the tree: the root and every admission under it
+        let mut tasks = " " + root + " ";
+        let mut grew = true;
+        while grew {
+            grew = false;
+            let mut i = 0;
+            while i < n {
+                let e = self.journal.read(i);
+                if e.kind == "workflow.admitted" && !std::str::contains(tasks, " " + e.entity + " ") {
+                    let parent = std::json::find_string_field(e.body, "parent_task");
+                    if len(parent) > 0 && std::str::contains(tasks, " " + parent + " ") { tasks = tasks + e.entity + " "; grew = true; }
+                }
+                i = i + 1;
+            }
+        }
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.admitted" {
+                let a = decode_attempt(e.body);
+                if a.ok && std::str::contains(tasks, " " + a.value.task_id + " ") && !self.has_row("work.settled", a.value.work_id) { return false; }
+            }
+            i = i + 1;
+        }
+        return true;
     }
     // A root's workflow settled: the ask is answered as far as the
     // organism goes; the membrane hears it.

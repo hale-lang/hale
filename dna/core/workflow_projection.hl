@@ -336,6 +336,36 @@ locus WorkflowProjection {
         }
         return n;
     }
+    // The Works still owed a settlement anywhere in a task's tree — its
+    // own and every descendant task's (card 18, review: a cancelled
+    // parent whose step holds only a child member owes the child's
+    // Works, and drains them through that step, born fenced, which asks
+    // the child again). Bounded by the tree.
+    @unbounded
+    fn outstanding_in_tree(task_id: String) -> Int {
+        let mut tasks = " " + task_id + " ";
+        let mut grew = true;
+        while grew {
+            grew = false;
+            let mut i = 0;
+            while i < self.tree.len() {
+                let n = self.tree.get(i) or BoundNode { };
+                if n.kind == "task" && len(n.parent) > 0 && std::str::contains(tasks, " " + n.parent + " ") && !std::str::contains(tasks, " " + n.id + " ") {
+                    tasks = tasks + n.id + " ";
+                    grew = true;
+                }
+                i = i + 1;
+            }
+        }
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if std::str::contains(tasks, " " + w.task_id + " ") && len(w.disposition) == 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
     // The index of the first step of a task the record has not completed,
     // in the recipe's order: where an execution still open resumes.
     @unbounded

@@ -2401,7 +2401,15 @@ authority.
   model's prose is not a path — else class `application` at the ask's
   own target; card 15 reports its outcome). Class `organization` for a
   child that is not the organism is a contradiction and is refused
-  before anything is admitted (`intent.refused`). An answer that names
+  before anything is admitted (`intent.refused`). The execution is
+  asked of the engine with the performer kind of every leaf of the
+  whole bound tree, named for the exact Work — its bound id, never its
+  key, which two Works of different steps or workflows may share — the
+  editor's for an edit leaf, the human kind for a person's, else the
+  routing policy's choice for the Work's own request under the Task
+  that owns it. The tooling's answer to an ask (`hale dna ask`) is the
+  execution whose admission names that ask as its request, never the
+  next birth in the record, which may be another ask's. An answer that names
   no kind and no class leaves the defaults standing — class
   `application`, the ask's own target — and the admission says it did
   not parse. Without a leader the ask is an application change. An
@@ -2413,9 +2421,17 @@ authority.
   execution's admission before anything runs; a birth the record
   refuses stops there (`intent.refused`, `workflow.refused`), and
   nothing has run. On restart the substrate asks its engine again for
-  every admitted root of its own not yet settled (`ExecutionAsked`),
-  and the engine restores each from its admission and the record's
-  facts (card 13) — under the word bound at admission, never replanned;
+  every admitted root of its own that is not finished — settled AND
+  drained: a cancellation settles the root before its admitted Works
+  have settled, and a root whose tree (its own workflow's Works and
+  every child's, by their admissions' `parent_task`) still owes a
+  settlement is asked for again, so the engine's own recovery drains
+  it (cards 12a, 13: the Works still owed anywhere in the tree are
+  counted, and a cancelled parent whose step holds only a child
+  member drains the child through that step, born fenced); a drained
+  record is asked for nothing and written nothing. The engine restores
+  each from its admission and the record's facts — under the word
+  bound at admission, never replanned;
   an attempt whose outcome is recorded is answered from it and never
   runs again; a case handed stays a person's and waits. A Mutation's
   recovery is derived from every row it has, from its first — its
