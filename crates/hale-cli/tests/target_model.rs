@@ -58,6 +58,8 @@ fn list_targets_names_every_platform_and_its_tier() {
     for triple in [
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
         "x86_64-apple-darwin",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
@@ -131,6 +133,8 @@ fn foreign_native_triples() -> Vec<&'static str> {
     [
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
         "x86_64-apple-darwin",
         "aarch64-apple-darwin",
     ]
@@ -343,7 +347,8 @@ main locus App {
 fn main() { App { }; }
 "#;
     let foreign = foreign_native_triples();
-    let linux = foreign.iter().find(|t| t.contains("linux")).unwrap();
+    let linux = foreign.iter().find(|t| t.contains("linux-gnu")).unwrap();
+    let musl = foreign.iter().find(|t| t.contains("linux-musl")).unwrap();
     let darwin = foreign.iter().find(|t| t.contains("darwin")).unwrap();
 
     let dir = case_dir("target_model_async_io");
@@ -368,6 +373,11 @@ fn main() { App { }; }
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", darwin]);
     assert_ne!(code, 0, "{darwin} has no async_io, the check accepted it");
     assert!(stderr.contains("aren't supported on macOS"), "{stderr}");
+
+    // musl declares ucontext and implements none of it: no backend.
+    let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", musl]);
+    assert_ne!(code, 0, "{musl} has no async_io, the check accepted it");
+    assert!(stderr.contains("aren't supported on musl Linux"), "{stderr}");
 }
 
 /// Naming the host by its triple is the same build as `native`.

@@ -32,6 +32,10 @@
 #
 #   scripts/target-sysroot.sh aarch64-unknown-linux-gnu
 #   scripts/target-sysroot.sh x86_64-unknown-linux-gnu
+#   scripts/target-sysroot.sh x86_64-unknown-linux-musl    # static binaries
+#
+# A musl sysroot is the same recipe against zig's musl: no glibc floor
+# to pin, and the binary hale links against it is static.
 #
 # Needs: zig (brew install zig), curl, perl and make (OpenSSL's build).
 # `HALE_TARGET_SYSROOT=<dir>` names another output directory, and is
@@ -49,16 +53,22 @@ ZLIB_SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
 
 triple=${1:-}
 case "$triple" in
-  aarch64-unknown-linux-gnu) zig_target=aarch64-linux-gnu; openssl_target=linux-aarch64 ;;
-  x86_64-unknown-linux-gnu)  zig_target=x86_64-linux-gnu;  openssl_target=linux-x86_64 ;;
-  "") echo "usage: $0 <aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu>" >&2; exit 2 ;;
-  *)  echo "$0: no sysroot recipe for \`$triple\` (Linux gnu targets only)" >&2; exit 2 ;;
+  aarch64-unknown-linux-gnu)  zig_target=aarch64-linux-gnu;  openssl_target=linux-aarch64 ;;
+  x86_64-unknown-linux-gnu)   zig_target=x86_64-linux-gnu;   openssl_target=linux-x86_64 ;;
+  aarch64-unknown-linux-musl) zig_target=aarch64-linux-musl; openssl_target=linux-aarch64 ;;
+  x86_64-unknown-linux-musl)  zig_target=x86_64-linux-musl;  openssl_target=linux-x86_64 ;;
+  "") echo "usage: $0 <x86_64|aarch64>-unknown-linux-<gnu|musl>" >&2; exit 2 ;;
+  *)  echo "$0: no sysroot recipe for \`$triple\` (Linux gnu and musl targets only)" >&2; exit 2 ;;
 esac
 
 # The glibc the emitted binary asks for. Old enough for the LTS
 # distributions in service (Debian 11, Ubuntu 20.04; RHEL 8's 2.28 is
-# the one it excludes). Codegen pins the same version.
-glibc=${HALE_TARGET_GLIBC:-2.31}
+# the one it excludes). Codegen pins the same version. musl has no
+# version to pin: the binary is static and carries its libc.
+case "$zig_target" in
+  *-musl) glibc=""; zig_spelled=$zig_target ;;
+  *)      glibc=${HALE_TARGET_GLIBC:-2.31}; zig_spelled=$zig_target.$glibc ;;
+esac
 
 for tool in zig curl perl make; do
   command -v "$tool" >/dev/null || { echo "$0: \`$tool\` is needed (zig: brew install zig / https://ziglang.org/download)" >&2; exit 1; }
@@ -82,7 +92,7 @@ while [ "\$n" -gt 0 ]; do
   a=\$1; shift; n=\$((n - 1))
   case "\$a" in --target=*) ;; *) set -- "\$@" "\$a" ;; esac
 done
-exec zig cc -target $zig_target.$glibc "\$@"
+exec zig cc -target $zig_spelled "\$@"
 EOF
 chmod +x "$out/bin/cc"
 export CC="$out/bin/cc" AR="zig ar" RANLIB="zig ranlib"
@@ -150,7 +160,7 @@ fi
 
 {
   echo "target   $triple"
-  echo "glibc    $glibc"
+  echo "libc     ${glibc:+glibc }${glibc:-musl (static)}"
   echo "zig      $(zig version)"
   echo "openssl  $OPENSSL_VERSION"
   echo "zlib     $ZLIB_VERSION"

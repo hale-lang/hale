@@ -57,6 +57,9 @@ pub struct Bundle<'a> {
     /// target's (GH #970) — a Mac building for Linux may place an
     /// `async_io` pool, and a Linux host building for macOS may not.
     pub target_has_async_io: bool,
+    /// The target's platform as the `async_io` diagnostic names it
+    /// ("macOS", "musl Linux"). Set beside `target_has_async_io`.
+    pub target_label: &'static str,
 }
 
 /// One file's slice of the bundle-global offset space.
@@ -87,6 +90,7 @@ impl<'a> Bundle<'a> {
             sources: Vec::new(),
             // The host is the target unless a build says otherwise.
             target_has_async_io: !cfg!(target_os = "macos"),
+            target_label: if cfg!(target_os = "macos") { "macOS" } else { "Linux" },
         }
     }
 }

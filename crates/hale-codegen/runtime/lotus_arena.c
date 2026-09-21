@@ -109,12 +109,15 @@
 #endif /* __wasm__ */
 
 /* async_io pool backend availability. The per-pool epoll fd + eventfd
- * wake channel + ucontext coroutines exist on Linux and behind the wasm
- * POSIX shim (which stubs the syscalls); they are ABSENT on macOS / other
- * BSDs. When unavailable, the async_io functions below become inert stubs
- * and `where async_io` is rejected at compile time — the cooperative and
- * classic-pinned pool backends stay available everywhere. */
-#if defined(__linux__) || defined(__wasm__)
+ * wake channel + ucontext coroutines exist on glibc Linux and behind the
+ * wasm POSIX shim (which stubs the syscalls); they are ABSENT on macOS /
+ * other BSDs, and on musl, which declares <ucontext.h> but implements
+ * none of it (GH #970: a static musl binary linked from another host
+ * failed on getcontext/makecontext/swapcontext alone). When unavailable,
+ * the async_io functions below become inert stubs and `where async_io`
+ * is rejected at compile time — the cooperative and classic-pinned pool
+ * backends stay available everywhere. */
+#if (defined(__linux__) && defined(__GLIBC__)) || defined(__wasm__)
 #define LOTUS_HAVE_ASYNC_IO 1
 #else
 #define LOTUS_HAVE_ASYNC_IO 0

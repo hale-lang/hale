@@ -628,15 +628,18 @@ jobs:
   # the one group member left out by name: it is 380-415s on its own
   # and has two jobs of its own above.
   # GH #970: the cross build, end to end. A foreign Linux triple links
-  # here through zig and a target sysroot; this job builds the sysroot
-  # the way a user would (`scripts/target-sysroot.sh`, cached on its
-  # inputs — OpenSSL from source is minutes), cross-compiles for
-  # aarch64 from the x86_64 runner, and RUNS the result under
-  # qemu-user-static, so "it links" is not the claim — "it runs on the
-  # target" is. The macOS workflow does the Mac→Linux half up to the
-  # ELF header; this is the only place an emitted cross binary executes.
+  # here through zig and a target sysroot; this job builds the sysroots
+  # the way a user would (`scripts/target-sysroot.sh`, cached on their
+  # inputs — OpenSSL from source is a minute each), cross-compiles from
+  # the x86_64 runner, and RUNS the results, so "it links" is not the
+  # claim — "it runs on the target" is: aarch64 gnu under
+  # qemu-user-static with the target's glibc, aarch64 musl under qemu
+  # alone (static), and x86_64 musl directly on the runner — a static
+  # binary is foreign to a glibc host in name only. The macOS workflow
+  # does the Mac→Linux half up to the ELF header; this is the only place
+  # an emitted cross binary executes.
   cross:
-    name: cross (x86_64 → aarch64-linux, runs under qemu)
+    name: cross (x86_64 → aarch64 gnu + musl, x86_64 musl; runs them)
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -646,10 +649,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (+ the target's std for the ts-shim)
+      - name: Install Rust toolchain (+ each target's std for the ts-shim)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-unknown-linux-gnu
+          targets: aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -682,19 +685,23 @@ jobs:
             | tar -xJ -C "$HOME"
           echo "$HOME/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
 
-      - name: Cache the target sysroot
+      - name: Cache the target sysroots
         id: sysroot
         uses: actions/cache@v4
         with:
-          path: ~/.cache/hale/sysroot/${{ env.CROSS_TRIPLE }}
-          key: sysroot-${{ env.CROSS_TRIPLE }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/target-sysroot.sh', 'crates/hale-ts-shim/Cargo.toml', 'crates/hale-codegen/runtime/lotus_treesitter.rs', 'Cargo.lock') }}
+          path: ~/.cache/hale/sysroot
+          key: sysroots-gnu+musl-zig${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/target-sysroot.sh', 'crates/hale-ts-shim/Cargo.toml', 'crates/hale-codegen/runtime/lotus_treesitter.rs', 'Cargo.lock') }}
 
       - name: cargo build --release --workspace
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
-      - name: Build the target sysroot (OpenSSL, zlib, ts-shim for ${{ env.CROSS_TRIPLE }})
+      - name: Build the target sysroots (OpenSSL, zlib, ts-shim per target)
         if: steps.sysroot.outputs.cache-hit != 'true'
-        run: scripts/target-sysroot.sh "$CROSS_TRIPLE"
+        run: |
+          set -eux
+          for t in aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+            scripts/target-sysroot.sh "$t"
+          done
 
       - name: Cross-build and run under qemu
         run: |
@@ -739,6 +746,22 @@ jobs:
           time ./target/release/hale build --target "$CROSS_TRIPLE" /tmp/cross/hello.hl
           out="$(qemu-aarch64-static -L /usr/aarch64-linux-gnu /tmp/cross/hello)"
           echo "program output: $out"
+          echo "$out" | grep -q "worker got tick 7"
+          echo "$out" | grep -q "cross main done"
+
+          # musl, aarch64: static, so qemu needs no target libc at all.
+          ./target/release/hale build --target aarch64-unknown-linux-musl /tmp/cross/hello.hl
+          file /tmp/cross/hello | tee /tmp/cross/file.out
+          grep -q 'ELF 64-bit LSB.*ARM aarch64.*statically linked' /tmp/cross/file.out
+          out="$(qemu-aarch64-static /tmp/cross/hello)"
+          echo "$out" | grep -q "cross main done"
+
+          # musl, x86_64: a cross target from this gnu host in name only —
+          # the static binary runs right here.
+          ./target/release/hale build --target x86_64-unknown-linux-musl /tmp/cross/hello.hl
+          file /tmp/cross/hello | tee /tmp/cross/file.out
+          grep -q 'ELF 64-bit LSB.*x86-64.*statically linked' /tmp/cross/file.out
+          out="$(/tmp/cross/hello)"
           echo "$out" | grep -q "worker got tick 7"
           echo "$out" | grep -q "cross main done"
 
