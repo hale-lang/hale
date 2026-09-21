@@ -682,6 +682,7 @@ fn dna_fixture_set_is_complete() {
             "books_slice_test.hl",
             "budget_test.hl",
             "concern_identity_test.hl",
+            "concern_restart_test.hl",
             "deployment_test.hl",
             "editing_test.hl",
             "effect_outcomes_test.hl",
