@@ -23,6 +23,7 @@ use std::fs;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hale_syntax::ast::Program;
 
@@ -37,6 +38,23 @@ mod sign;
 mod topology_graph;
 mod fleet_model;
 mod topology_law;
+
+/// GH #476 Change 2: did `hale model dump` ask for the canonical
+/// model? The command is a shim into the check pipeline, and the
+/// pipeline's dump section reads PROCESS argv (it is a
+/// top-level-command scope), so the demand cannot ride the rest-args
+/// the shim forwards.
+///
+/// GH #887: it used to travel as `HALE_DUMP_MODEL` in the
+/// environment. `std::env::set_var` is undefined behaviour in a
+/// process that has threads — the environment is one table with no
+/// lock, and every `getenv` in flight races it — and this CLI starts
+/// them (the LSP, the observation reader, a child's pipes). The
+/// demand is one process-global bit read by one in-process consumer,
+/// so it is one process-global bit: set by the shim before anything
+/// else runs, read where the flag is read, and (unlike the env var)
+/// not inherited by any child.
+static MODEL_DUMP_DEMANDED: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -225,8 +243,9 @@ fn main() -> ExitCode {
         }
         // The check pipeline's dump section reads PROCESS argv (it
         // is a top-level-command scope), so the flag cannot ride the
-        // rest-args; the shim marks the demand via env instead.
-        std::env::set_var("HALE_DUMP_MODEL", "1");
+        // rest-args the shim forwards; the shim marks the demand on
+        // the process instead.
+        MODEL_DUMP_DEMANDED.store(true, Ordering::Relaxed);
         let shim: Vec<String> = rest[1..].to_vec();
         return run_check_cli(&shim, false);
     }
@@ -314,36 +333,57 @@ fn main() -> ExitCode {
         // by the child) and an iris session runs beside it for the
         // program's lifetime. The flag is consumed here; nothing
         // reaches the program's argv. Accepted immediately after
-        // the target too, the spelling that shipped in B3.
+        // the target too, the spelling that shipped in B3. The
+        // session writes to its own pipe and dies with this process
+        // whatever kills it (GH #905) — the program's stdout stays
+        // the command's output, and there is no orphan left holding
+        // it open.
         let mut observe = before.iter().any(|f| f == "--observe");
         if !observe && user_args.first().map(String::as_str) == Some("--observe") {
             observe = true;
             user_args.remove(0);
         }
-        // Anything else before the target is a flag `hale run` does
-        // not have. Naming it beats compiling the program and
-        // silently doing nothing with it — `run` builds with the
-        // default options, so a `hale build` flag accepted here
-        // would be a flag that reads as honored and is not.
-        if let Some(bad) = before.iter().find(|f| *f != "--observe") {
-            eprintln!("unknown `hale run` flag: {}", bad);
-            eprintln!(
-                "(`hale run` takes --observe before the target; \
-                 everything after the target is the program's argv)"
-            );
-            return ExitCode::from(2);
-        }
+        // GH #904: everything else before the target is a BUILD
+        // option, parsed by the parser `hale build` uses and
+        // honored. `run` used to compile with `BuildOptions::
+        // default()` no matter what was passed, so a build flag was
+        // first read as the target, then (GH #900) named and
+        // refused — and the documented spot-check `hale run
+        // prog.hl` could exercise neither a dev build nor an FFI
+        // program. One parser, so `build` and `run` cannot drift.
+        let build_flags: Vec<String> = before
+            .iter()
+            .filter(|f| *f != "--observe")
+            .cloned()
+            .collect();
+        let options = match parse_exec_build_options("run", &build_flags) {
+            Ok(o) => o,
+            Err(msg) => {
+                eprintln!("{}", msg);
+                eprintln!(
+                    "(`hale run` takes its flags before the target; \
+                     everything after the target is the program's argv)"
+                );
+                return ExitCode::from(2);
+            }
+        };
         if observe {
-            std::env::set_var("LOTUS_OBS", "1");
+            // GH #887: `LOTUS_OBS=1` is for the PROGRAM, and it used
+            // to be planted in this process's environment for the
+            // child to inherit. `set_var` is undefined behaviour once
+            // a process has threads, and `iris::spawn_session()` on
+            // the next line starts one — so it travels on the child's
+            // own `Command` instead, which is where it was always
+            // meant to arrive. Nothing in this process reads it.
             let session = iris::spawn_session();
-            let code = run_program(&target, &user_args);
+            let code = run_program(&target, &user_args, options, true);
             if let Some(mut s) = session {
                 let _ = s.kill();
                 let _ = s.wait();
             }
             return code;
         }
-        return run_program(&target, &user_args);
+        return run_program(&target, &user_args, options, false);
     }
 
     if args.len() < 3 {
@@ -381,6 +421,8 @@ fn usage() {
     eprintln!("    hale model diff <a> <b>       semantic diff of two --dump-topology artifacts (--json|--text)");
     eprintln!("    hale fleet check|dump|sign    compose topology artifacts across binaries (also attest|keygen)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
+    eprintln!("        [--observe] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
+    eprintln!("        (flags before the target; after it is the program's own argv)");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
     eprintln!("        [--diff: report first divergence, fail on any; per-category coverage on a match]");
@@ -520,8 +562,23 @@ own flags go BEFORE it. Everything after the target is the PROGRAM's
 argv: `std::env::arg` sees what a built binary run directly would
 see.
 
-  --observe    run the program with LOTUS_OBS=1 and an iris session
-               beside it, for its lifetime
+  --observe                        run the program with LOTUS_OBS=1
+                                   and an iris session beside it,
+                                   for its lifetime
+
+The build options are `hale build`'s, with the same meanings, and
+they are part of the execution identity a recording carries: a run
+recorded under `--dev` replays only under `hale replay --dev`.
+
+  --target-cpu <native|baseline>   backend CPU tuning
+  --dev                            LLVM O1 instead of the O3 default
+  --link <name>                    link a system library (repeatable)
+  --csrc <file.c>                  compile and link a C source
+                                   (repeatable)
+  --target <native>                `run` execs what it builds, so a
+                                   target this host cannot execute
+                                   (wasm32) is refused; build it
+                                   with `hale build --target`
 ",
         "build" => "\
 hale build <file.hl | dir> [flags]   parse + typecheck + emit a native binary
@@ -594,6 +651,11 @@ refused unless the matching flag accepts the gap.
                             this compile
   --allow-truncated         replay the recorded prefix of a
                             crash-truncated recording
+
+`replay` recompiles the program, so it takes `hale build`'s options
+too — and must be given the ones the recording was made under, since
+they are part of the execution identity admission checks:
+`--target-cpu`, `--dev`, `--link`, `--csrc`, `--target`.
 ",
         "test" => "\
 hale test [file | dir]        compile + run every `*_test.hl` (default: cwd)
@@ -3350,7 +3412,19 @@ fn parse_with_imports(
     let entry_source = match fs::read_to_string(entry) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("could not read {}: {}", entry.display(), e);
+            // GH #903: the last "print here, hand back nothing" site
+            // on the import path. It printed the sentence itself and
+            // returned an EMPTY vector, so every caller reported a
+            // failure with no message — `hale test --json` emitted a
+            // row whose `message` was the empty string. It travels as
+            // an `ImportDiag::Io` like every other unreadable file of
+            // the graph (GH #806), so the ONE rendering path prints
+            // the same sentence and the `--json` channels carry it.
+            errors.push(ImportDiag::Io(IoDiag::read(
+                entry,
+                &e,
+                format!("could not read {}: {}", entry.display(), e),
+            )));
             return Err(errors);
         }
     };
@@ -4039,11 +4113,33 @@ fn locate_span(
     None
 }
 
+/// GH #856: the note a stdlib-origin span renders as, in place of a
+/// `file:line:col` it has no right to. The embedded stdlib parses at
+/// base 0 in its own space, so its offsets collide with the seed's:
+/// past the seed's end the window test placed such a span nowhere,
+/// and INSIDE a seed file's window it named that file at a position
+/// belonging to neither. A stdlib span is never a seed location, and
+/// the renderers say where it really is instead.
+fn stdlib_note(span: hale_syntax::Span) -> String {
+    hale_types::stdlib_bodies::stdlib_span_note(span)
+}
+
 fn render_located(
     d: &hale_syntax::Diag,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
 ) -> String {
+    // A stdlib-origin primary has no seed file to be rendered in —
+    // the witness leaf of a violated effect assertion is the usual
+    // one. It reads as a note beside the finding it belongs to,
+    // which the emitter pushed immediately before it.
+    if d.origin == hale_syntax::SpanOrigin::Stdlib {
+        return format!(
+            "    note: {} ({})",
+            d.message,
+            stdlib_note(d.span)
+        );
+    }
     let off = d.span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
         if hale_syntax::file_owns_offset(*base, *len, off) {
@@ -4052,14 +4148,23 @@ fn render_located(
                     d.render_located(&diag_file_name(path), src, *base);
                 // Secondary locations, each resolved through the
                 // file table — a related span may live in a
-                // DIFFERENT file than the primary.
-                for (rspan, label) in &d.related {
+                // DIFFERENT file than the primary, or (GH #856) in
+                // no file of the seed at all.
+                for r in &d.related {
+                    if r.origin == hale_syntax::SpanOrigin::Stdlib {
+                        out.push_str(&format!(
+                            "\n    note: {} ({})",
+                            r.label,
+                            stdlib_note(r.span)
+                        ));
+                        continue;
+                    }
                     if let Some((rf, rl, rc)) =
-                        locate_span(*rspan, file_bases, sources)
+                        locate_span(r.span, file_bases, sources)
                     {
                         out.push_str(&format!(
                             "\n    note: {} at {}:{}:{}",
-                            label, rf, rl, rc
+                            r.label, rf, rl, rc
                         ));
                     }
                 }
@@ -6156,14 +6261,16 @@ fn run_check_impl_labelled(
     // refusal rule as the artifact — a model of a program that does
     // not typecheck describes nothing.
     if argv.iter().any(|a| a == "--dump-model")
-        || std::env::var("HALE_DUMP_MODEL").as_deref() == Ok("1")
+        || MODEL_DUMP_DEMANDED.load(Ordering::Relaxed)
     {
         if let Some(d) = checked.iter().find(|d| {
             d.is_error()
                 && d.kind != hale_syntax::error::DiagKind::Claim
         }) {
             eprintln!(
-                "refusing to derive a model: `{}` does not typecheck,                  so its model is not a truthful description of any                  program. Fix the {} first.",
+                "refusing to derive a model: `{}` does not typecheck, \
+                 so its model is not a truthful description of \
+                 any program. Fix the {} first.",
                 target.display(),
                 d.kind_str()
             );
@@ -6176,7 +6283,8 @@ fn run_check_impl_labelled(
             // produced a value that is not a model. Loud, named, and
             // fatal — an invalid model must not print as one.
             eprintln!(
-                "internal error: derived model violates a model law:                  {:?} (this is a hale bug — please report it)",
+                "internal error: derived model violates a model law: \
+                 {:?} (this is a hale bug — please report it)",
                 e
             );
             return 2;
@@ -6536,23 +6644,36 @@ fn render_diag_json(
     let mut file = String::new();
     let mut line = 0usize;
     let mut col = 0usize;
-    for (base, path, len) in file_bases {
-        if hale_syntax::file_owns_offset(*base, *len, off) {
-            if let Some(src) = sources.get(path) {
-                let (l, c) = d
-                    .span
-                    .shifted(base.wrapping_neg())
-                    .line_col(src);
-                // GH #822: the `file` field is the join key
-                // downstream tooling matches on, so it is the same
-                // string the text renderer prints.
-                file = diag_file_name(path);
-                line = l;
-                col = c;
+    // GH #856: a stdlib-origin span is not an offset into any file
+    // of this seed, so the windows are not consulted for it at all.
+    // The record keeps the positionless shape (`""`, 0, 0) an
+    // unplaceable finding has always had, and the stdlib file and
+    // line ride in the message as a note.
+    let in_stdlib = d.origin == hale_syntax::SpanOrigin::Stdlib;
+    if !in_stdlib {
+        for (base, path, len) in file_bases {
+            if hale_syntax::file_owns_offset(*base, *len, off) {
+                if let Some(src) = sources.get(path) {
+                    let (l, c) = d
+                        .span
+                        .shifted(base.wrapping_neg())
+                        .line_col(src);
+                    // GH #822: the `file` field is the join key
+                    // downstream tooling matches on, so it is the
+                    // same string the text renderer prints.
+                    file = diag_file_name(path);
+                    line = l;
+                    col = c;
+                }
+                break;
             }
-            break;
         }
     }
+    let message = if in_stdlib {
+        format!("{} ({})", d.message, stdlib_note(d.span))
+    } else {
+        d.message.clone()
+    };
     let severity = if d.is_error() { "error" } else { "warning" };
     // Secondary locations ride along as a `related` array (absent
     // when empty, so existing consumers see an unchanged shape).
@@ -6562,15 +6683,30 @@ fn render_diag_json(
         let entries: Vec<String> = d
             .related
             .iter()
-            .filter_map(|(rspan, label)| {
+            .filter_map(|r| {
+                // A stdlib-origin secondary has no seed position to
+                // put in `file`/`line`/`col`, and a consumer joining
+                // on those fields must not be handed a seed file
+                // that has nothing to do with it (GH #856): the
+                // entry carries the note and no location.
+                if r.origin == hale_syntax::SpanOrigin::Stdlib {
+                    return Some(format!(
+                        "{{\"file\":\"\",\"line\":0,\"col\":0,\"note\":\"{}\"}}",
+                        esc(&format!(
+                            "{} ({})",
+                            r.label,
+                            stdlib_note(r.span)
+                        ))
+                    ));
+                }
                 let (rf, rl, rc) =
-                    locate_span(*rspan, file_bases, sources)?;
+                    locate_span(r.span, file_bases, sources)?;
                 Some(format!(
                     "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"note\":\"{}\"}}",
                     esc(&rf),
                     rl,
                     rc,
-                    esc(label)
+                    esc(&r.label)
                 ))
             })
             .collect();
@@ -6586,9 +6722,65 @@ fn render_diag_json(
         col,
         severity,
         d.kind_str(),
-        &d.message,
+        &message,
         &related,
     )
+}
+
+/// Bind a child's life to ours (GH #905).
+///
+/// `hale run` is a foreground wrapper: the program it compiled, the
+/// iris session `--observe` puts beside it, the `hale build` that
+/// materializes the observer, fuse-hl under `hale iris`. None of them
+/// has a reason to outlive the `hale` that asked for it, and when one
+/// does it is not merely a stray — it inherited our descriptors, so a
+/// caller reading our stdout through a pipe waits on the orphan's copy
+/// of the write end long after we are gone. `timeout`, a CI cancel or
+/// any SIGKILL aimed at `hale` used to leave exactly that: a hung
+/// caller and a process nobody knows to kill.
+///
+/// Two layers, neither of which the child has to cooperate with:
+///
+///   * `PR_SET_PDEATHSIG` — the kernel signals the child the moment
+///     the thread that forked it dies, whatever killed us, SIGKILL
+///     included. The `getppid` check closes the window where we die
+///     between the fork and the `prctl`, in which the setting would
+///     be armed against a death that already happened. It compares
+///     against OUR pid rather than testing for pid 1, so a `hale`
+///     legitimately parented by an init in a container is not read
+///     as an orphan.
+///   * the process GROUP, which we deliberately leave alone: no
+///     `setsid`, no `setpgid`, so a group-directed kill (a shell's
+///     Ctrl-C, `timeout` without `--foreground`) reaches the child
+///     the same way it reaches us.
+///
+/// Every caller waits on the child it starts on the thread that
+/// started it, so the forking thread cannot exit early and retire
+/// the signal under a child that should still be running.
+pub(crate) fn dies_with_us(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let us = std::process::id() as libc::pid_t;
+        // SAFETY: the closure runs between fork and exec in the
+        // child. `prctl`, `getppid` and `_exit` are async-signal-safe
+        // and allocate nothing.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != us {
+                    libc::_exit(0);
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cmd;
+    }
 }
 
 /// Compile `program` to a temporary native binary and execute it,
@@ -6599,6 +6791,8 @@ fn compile_and_exec(
     program: &Program,
     renames: &[(Vec<String>, String)],
     user_args: &[String],
+    // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
+    observe: bool,
     model_hash: u64,
     exec_digest: [u64; 4],
     obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
@@ -6607,6 +6801,11 @@ fn compile_and_exec(
     // location exactly as `hale build` reports it.
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
+    // GH #904: the options `hale run` was given, already
+    // fingerprinted into `exec_digest` by the caller. They were
+    // `BuildOptions::default()` here whatever the command line
+    // said.
+    options: hale_codegen::BuildOptions,
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
@@ -6617,7 +6816,7 @@ fn compile_and_exec(
         model_hash: Some(model_hash),
         exec_digest: Some(exec_digest),
         obs_entity_ids,
-        ..Default::default()
+        ..options
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
         program, &bin, renames, &options,
@@ -6625,7 +6824,18 @@ fn compile_and_exec(
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
-    let status = std::process::Command::new(&bin).args(user_args).status();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(user_args);
+    if observe {
+        cmd.env("LOTUS_OBS", "1");
+    }
+    // The program is `hale run`'s foreground work, not a daemon it
+    // launches: it holds this command's stdin/stdout/stderr, and
+    // `hale` exists to wait for it and report how it ended. A `hale`
+    // killed out from under it leaves it running against a caller
+    // that cannot see its output end — GH #905.
+    dies_with_us(&mut cmd);
+    let status = cmd.status();
     let _ = std::fs::remove_file(&bin);
     match status {
         Ok(s) => {
@@ -6688,13 +6898,31 @@ fn compile_and_exec(
 /// same way (they did not: the build path never computed a digest
 /// at all — GH #476 Change 8 review).
 fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
-    format!(
+    let mut fp = format!(
         "target={:?};cpu={:?};dev={};debug={}",
         o.target,
         o.target_cpu,
         o.dev_profile,
         o.debug.is_some()
-    )
+    );
+    // GH #904: the FFI surface is part of what the executable IS —
+    // two builds of one source that link different C are different
+    // programs. Appended only when non-empty, so every recording
+    // stamped before this (no `--link` / `--csrc`, which is every
+    // recording `hale run` could make) keeps the identity it
+    // carries.
+    if !o.link_libs.is_empty() {
+        fp.push_str(&format!(";link={}", o.link_libs.join(",")));
+    }
+    if !o.csrc_files.is_empty() {
+        let files: Vec<String> = o
+            .csrc_files
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        fp.push_str(&format!(";csrc={}", files.join(",")));
+    }
+    fp
 }
 
 fn model_identity(
@@ -7045,9 +7273,18 @@ fn run_test(args: &[String]) -> ExitCode {
             if idx > 0 {
                 buf.push(',');
             }
+            // GH #867: the row's `file` is spelled by the rule every
+            // `--json` record's `file` is spelled by — canonical,
+            // absolute, symlinks resolved, no `..` (GH #822). The row
+            // says which test ran rather than where an error is, but
+            // a tool joining these rows to `check --json` records on
+            // `file` needs the two to agree, and this one carried the
+            // command line's spelling verbatim. The PASS/FAIL lines
+            // below keep that spelling: a human reads them beside the
+            // command they just typed.
             buf.push_str(&format!(
                 "{{\"file\":\"{}\",\"status\":\"{}\"",
-                json_escape(&o.file.display().to_string()),
+                json_escape(&diag_file_name(&o.file)),
                 if o.passed { "pass" } else { "fail" }
             ));
             if let Some(m) = &o.message {
@@ -7102,6 +7339,11 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut allow_truncated = false;
     let mut feed = false;
     let mut allow_unmatched_feed = false;
+    // GH #904: the `hale build` options, in `replay`'s own hand —
+    // a recording made under `hale run --dev` is admitted by `hale
+    // replay --dev` and by nothing else, so the flag set has to be
+    // reachable here too.
+    let mut build_flags: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -7147,11 +7389,21 @@ fn run_replay(args: &[String]) -> ExitCode {
                 }
                 _ => {
                     eprintln!(
-                        "hale replay: --at takes N or consumer:N                          (positive)"
+                        "hale replay: --at takes N or consumer:N (positive)"
                     );
                     return ExitCode::from(2);
                 }
             }
+        } else if VALUE_FLAGS.contains(&a) {
+            // A build option whose value is the next argv entry.
+            build_flags.push(a.to_string());
+            if let Some(v) = args.get(i + 1) {
+                build_flags.push(v.clone());
+            }
+            i += 2;
+        } else if a == "--dev" {
+            build_flags.push(a.to_string());
+            i += 1;
         } else if a.starts_with('-') {
             eprintln!("hale replay: unknown flag `{}`", a);
             return ExitCode::from(2);
@@ -7181,6 +7433,17 @@ fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    // GH #904: one `BuildOptions`, from `hale build`'s parser, for
+    // the fingerprint AND the compile below — a replay recompiles
+    // the program, so it admits against what IT builds.
+    let build_options =
+        match parse_exec_build_options("replay", &build_flags) {
+            Ok(o) => o,
+            Err(msg) => {
+                eprintln!("{}", msg);
+                return ExitCode::from(2);
+            }
+        };
     let (rec_path, prog) = match (rec_arg, prog) {
         (Some(r), Some(p)) => (r, p),
         _ => {
@@ -7189,7 +7452,8 @@ fn run_replay(args: &[String]) -> ExitCode {
                  [--diff [--json]] \
                  [--at <n> | --at <consumer-id>:<ordinal>] \
                  [--allow-live-effects] [--allow-unverified-model] \
-                 [--allow-truncated] [--feed] [--allow-unmatched-feed]"
+                 [--allow-truncated] [--feed] [--allow-unmatched-feed] \
+                 [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <f.c>]"
             );
             return ExitCode::from(2);
         }
@@ -7270,8 +7534,7 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let options_fp =
-        options_fingerprint(&hale_codegen::BuildOptions::default());
+    let options_fp = options_fingerprint(&build_options);
     let (plan_digest, obs_ids) = model_identity(&bundle);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
@@ -7480,7 +7743,7 @@ fn run_replay(args: &[String]) -> ExitCode {
         model_hash: Some(model_hash),
         exec_digest: Some(digest),
         obs_entity_ids: obs_ids.clone(),
-        ..Default::default()
+        ..build_options
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
         &program, &bin, &renames, &options,
@@ -7693,7 +7956,20 @@ fn run_replay(args: &[String]) -> ExitCode {
     ExitCode::from(code)
 }
 
-fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
+fn run_program(
+    target: &Path,
+    user_args: &[String],
+    // GH #904: the build options this `run` was given — the same
+    // set, from the same parser, that `hale build` takes. They are
+    // fingerprinted into the execution identity below, so a
+    // recording carries the options it was made under.
+    options: hale_codegen::BuildOptions,
+    // GH #527 B3 / GH #887: `--observe` publishes the program's
+    // observation segment. It is the CHILD's setting, so it rides
+    // down to the `Command` that starts the child rather than being
+    // planted in this process's environment for it to inherit.
+    observe: bool,
+) -> ExitCode {
     // Both single-file and directory targets resolve cross-seed
     // imports and thread the per-build path-rename table into
     // codegen — `run` and `build` agree (WS3.3). A single file
@@ -7734,8 +8010,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let options_fp =
-            options_fingerprint(&hale_codegen::BuildOptions::default());
+        let options_fp = options_fingerprint(&options);
         let (plan_digest, obs_ids) = model_identity(&bundle);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
@@ -7743,11 +8018,13 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             &program,
             &renames,
             user_args,
+            observe,
             model_hash,
             digest,
             obs_ids,
             &file_bases,
             &sources,
+            options,
         );
     }
 
@@ -7906,8 +8183,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let options_fp =
-        options_fingerprint(&hale_codegen::BuildOptions::default());
+    let options_fp = options_fingerprint(&options);
     let (plan_digest, obs_ids) = model_identity(&bundle);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
@@ -7915,11 +8191,13 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         &program,
         &renames,
         user_args,
+        observe,
         model_hash,
         digest,
         obs_ids,
         &file_bases,
         &path_sources,
+        options,
     )
 }
 
@@ -8172,7 +8450,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let mut options = match parse_build_options(flags) {
+    let mut options = match parse_build_options("build", flags) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -8321,13 +8599,12 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
     if !no_dbg {
-        // #8 dev profile (2026-07-02): `hale build --dev` (or
-        // HALE_DEV=1) trades runtime speed for build latency —
-        // LLVM O1 instead of the O3 release default. Profiled: the
-        // front-end is ~35 ms even on the largest apps; LLVM is
-        // 97% of build wall time.
-        options.dev_profile = std::env::args().any(|a| a == "--dev")
-            || std::env::var("HALE_DEV").is_ok();
+        // (`--dev` / HALE_DEV — LLVM O1 instead of the O3 release
+        // default — is set by `parse_build_options` since GH #904.
+        // It was read from `env::args()` here, inside this branch,
+        // so `LOTUS_NO_DEBUGINFO=1 hale build --dev` silently built
+        // at O3 and no other caller of the parser saw the flag at
+        // all.)
         options.debug = Some(hale_codegen::DebugSources {
             files: file_bases
                 .iter()
@@ -8501,10 +8778,20 @@ fn split_target_args(
 /// GH #861: takes the flags the splitter found on BOTH sides of the
 /// target. It used to read `std::env::args()` from index 3, which is
 /// what made a flag before the target unreachable.
+///
+/// GH #904: `cmd` is the subcommand whose flags these are — `build`,
+/// `run` or `replay`, all three of which compile through here — so
+/// an unknown flag is reported against the command the user typed.
 fn parse_build_options(
+    cmd: &str,
     args: &[String],
 ) -> Result<hale_codegen::BuildOptions, String> {
     let mut opts = hale_codegen::BuildOptions::default();
+    // #8 dev profile: `HALE_DEV=1` is the environment spelling of
+    // `--dev` below. Read here, with the flag, so every command that
+    // compiles honors it identically (GH #904; `run` honored
+    // neither).
+    opts.dev_profile = std::env::var("HALE_DEV").is_ok();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -8611,19 +8898,69 @@ fn parse_build_options(
                 i += 2;
             }
             // #8 dev profile (2026-07-02): LLVM O1 instead of the
-            // O3 release default — build-latency mode. Consumed in
-            // run_build via env::args (options finalization);
-            // recognized here so the arg parser doesn't reject it.
+            // O3 release default — build-latency mode. Set HERE
+            // since GH #904: `run_build` re-derived it from
+            // `env::args()` inside the debug-info branch, so the
+            // flag was invisible to every other caller of this
+            // parser (and a no-op under LOTUS_NO_DEBUGINFO=1).
             "--dev" => {
+                opts.dev_profile = true;
                 i += 1;
             }
             other => {
                 return Err(format!(
-                    "unknown `hale build` flag: {}",
-                    other
+                    "unknown `hale {}` flag: {}",
+                    cmd, other
                 ));
             }
         }
+    }
+    Ok(opts)
+}
+
+/// GH #904: the flags `hale build` takes that describe the BUILD
+/// rather than the program — a report on stderr, a budget gate, a
+/// wasm entry point. `run` and `replay` compile in order to execute,
+/// and honor none of them, so they are refused by name instead of
+/// being accepted and quietly dropped (the whole complaint of #904).
+const BUILD_ONLY_FLAGS: &[&str] = &[
+    "--locality-report",
+    "--target-cache",
+    "--strict",
+    "--wrap-main",
+];
+
+/// GH #904: the build options of a command that compiles AND THEN
+/// EXECUTES — `hale run` and `hale replay`. Exactly `hale build`'s
+/// parser, so the three cannot drift, minus the build-reporting
+/// flags above and minus a target this host cannot exec.
+///
+/// `run` used to take no build option at all: it compiled with
+/// `BuildOptions::default()` and fingerprinted the DEFAULTS into the
+/// execution identity, so `--dev`, `--target-cpu`, `--link` and
+/// `--csrc` were unreachable from the documented spot-check, and a
+/// recording said it was made under options it was not.
+fn parse_exec_build_options(
+    cmd: &str,
+    flags: &[String],
+) -> Result<hale_codegen::BuildOptions, String> {
+    if let Some(bad) =
+        flags.iter().find(|f| BUILD_ONLY_FLAGS.contains(&f.as_str()))
+    {
+        return Err(format!(
+            "hale {cmd}: `{bad}` is a `hale build` flag — it reports \
+             on a build, and `{cmd}` compiles in order to run. \
+             `{cmd}` takes the options that change the emitted \
+             binary: --dev, --target-cpu, --link, --csrc"
+        ));
+    }
+    let opts = parse_build_options(cmd, flags)?;
+    if matches!(opts.target, hale_codegen::CompileTarget::Wasm32) {
+        return Err(format!(
+            "hale {cmd}: --target wasm32 emits an artifact this host \
+             cannot execute — build it with `hale build --target \
+             wasm32` and run it in a host that can"
+        ));
     }
     Ok(opts)
 }

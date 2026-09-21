@@ -183,6 +183,12 @@ ahead of the general one. This is the idiomatic way to model
 "the message is one of these kinds, each with its own data" —
 and it pairs naturally with the typed bus at the next level.
 
+Printing one gives you the spelling you wrote: `println(l)` on a
+`Light` prints `Light::Red`, and a variant with a payload prints
+`Event::Tick(3)`. An enum that came from a library prints the same
+way — under the name its *declaration* uses, without the alias you
+imported it as.
+
 > Enums fill the role of `Option<T>` / `Result<T, E>` from other
 > languages when you want a closed set of outcomes as data. For
 > the "this call failed" case specifically, prefer the

@@ -302,7 +302,9 @@ layout is the iris observation protocol — the canonical contract
 is `spec/runtime.md` § *Native observation emission*; iris is
 the reference consumer and ships in the binary — `hale run
 --observe prog.hl` runs the program with the segment published
-and an observer beside it (see [Iris](./iris.md)). Knobs:
+and an observer beside it (see [Iris](./iris.md)): one whose
+lifetime is bounded by that `hale`, and whose own output goes to
+stderr rather than into the program's stdout. Knobs:
 `LOTUS_OBS_RINGS` (default 8), `LOTUS_OBS_SLOTS` (default 4096).
 
 **Cross-process edges opt into the wire.** The `(origin, seq)`
@@ -341,7 +343,14 @@ hale replay run.halerec app.hl --diff --json      # ...that verdict, machine-rea
 hale replay run.halerec app.hl --at 65:12 # SIGSTOP at consumer 65's 12th consume
 hale replay run.halerec app.hl --allow-truncated  # crashed run → replay the prefix
 hale replay run.halerec app.hl --feed     # inject the ingress tape into changed code
+hale replay run.halerec app.hl --dev      # the build options the recording was made under
 ```
+
+`replay` recompiles the program, so it takes `hale build`'s options
+— as `hale run` does — and needs the ones the recording was made
+under: they are part of the execution identity, so a recording from
+`hale run --dev` is refused by a default `hale replay` and admitted
+by `hale replay --dev`.
 
 The full story — admission by executable identity, the
 safe-by-default effect gate (`--allow-live-effects`), env-value

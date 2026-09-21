@@ -206,7 +206,17 @@ A type is printable when it is:
 - a scalar primitive — `Int`, `Float`, `Bool`, `Decimal`,
   `Duration`, `Time` — or `String` / `StringView`;
 - an enum (rendered `Enum::Variant`, or `Enum::Variant(a, b)`
-  when the variant carries a payload);
+  when the variant carries a payload). `Enum` is the
+  **declaration's own name**, whether the value's type was declared
+  in this seed or reached through an `import`: an imported
+  `Color::Red` renders `Color::Red`, not the import alias and never
+  the mangled symbol the declaration was renamed to (2026-09-20,
+  GH #885; before it, every print path rendered
+  `__lib_<alias>_<stem>_Color::Red` — a name that appears nowhere
+  in the author's program). The alias is deliberately absent: it is
+  per-importing-file (`spec/projects.md` § *Scoped imports*), and
+  the rendering is a property of the value, not of the file that
+  printed it;
 - a `type` record whose fields are **all** printable, rendered
   `Name { field: v, other: w }` in declaration order;
 - a tuple of printable elements, rendered `(a, b)`;

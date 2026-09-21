@@ -29,6 +29,16 @@ fn is_green(c: Color) -> Bool {
     };
 }
 
+// GH #885: a payload-carrying enum, so the consumer can print one
+// of each kind. The two renderings are built by different codegen
+// sites (a names array vs a per-variant switch), and both spelled
+// the declaration's MANGLED name into the text.
+type Reading = enum { Empty, Value(Int) };
+
+fn reading() -> Reading {
+    return Reading::Value(7);
+}
+
 perspective Routing {
     fn pick() -> String;
 }

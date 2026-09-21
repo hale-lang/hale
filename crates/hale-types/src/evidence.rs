@@ -886,9 +886,7 @@ pub fn derive_certificate_evidence(
     let loc = move |pos: u32| -> Option<(u32, u32)> {
         sources
             .iter()
-            .filter(|f| {
-                pos >= f.base && pos < f.base.saturating_add(f.len + 1)
-            })
+            .filter(|f| hale_syntax::file_owns_offset(f.base, f.len, pos))
             .max_by_key(|f| f.base)
             .map(|f| (f.id, pos - f.base))
     };

@@ -648,7 +648,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // expression position; defensive here.
                 OrDisposition::Wait(_) => {
                     return Err(CodegenError::Unsupported(
-                        "`or wait` is only legal on a bus send to a                          transport-bound topic"
+                        "`or wait` is only legal on a bus send to a \
+                         transport-bound topic"
                             .to_string(),
                     ));
                 }

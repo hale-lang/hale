@@ -220,6 +220,13 @@ empty, so an environment failure and a crash were the same thing to
 a gate). The text rendering is unchanged, and so is every command
 without a machine-readable channel.
 
+The ENTRY file of a build is in that set too. A `*_test.hl` that
+will not open is a `hale test --json` row with `"status":"fail"`
+whose `message` is the `could not read <path>: <os error>` sentence,
+not an empty string (2026-09-20, GH #903; that one site still
+printed at the failure and handed its caller nothing, so the row
+reporting it carried no reason and the explanation went to stderr).
+
 The **position** is not command-scoped. Every command that resolves
 imports — `build`, `run`, `test`, `bench`, `replay`, as well as
 `check` and `verify` — reports a diagnostic from an imported file as
@@ -245,6 +252,15 @@ recorded under while `build`, `run` and `test` printed it as the
 resolver reached it (`/abs/app/../lib/second.hl`), and the target's
 own files were named exactly as the command line spelled them, `..`
 and all (2026-09-20, GH #822).
+
+`hale test --json`'s rows follow the same rule for the same reason.
+A row says which test RAN rather than where an error is, but a tool
+joining those rows to `check --json` records on `file` needs one
+string per file, and the row used to echo the command line — so
+`hale test ../app/x_test.hl` and a `check` of the same seed named
+that file differently (2026-09-20, GH #867). The human-readable
+`ok <path>` / `FAIL <path>` lines keep the spelling the command
+line used: they are read beside the command that produced them.
 
 Nor is the **kind** of failure. A refusal raised by CODEGEN rather
 than by the front end — a construct the checker accepts and the

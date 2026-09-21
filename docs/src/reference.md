@@ -72,6 +72,16 @@ build app.hl --dev` are the same command, as they already were for
 everything after it is the program's own argv, which is why `hale run
 --observe app.hl` puts the flag in front.
 
+`run` takes `build`'s options as well — `--dev`, `--target-cpu`,
+`--link`, `--csrc` — and builds what `build` would build with them, so
+`hale run --csrc glue.c app.hl` runs an `@ffi` program. They are part
+of the execution identity a recording carries, and `hale replay` takes
+the same set: a run recorded under `--dev` replays under `hale replay
+--dev`, and a default replay refuses it. The flags that report on a
+build rather than change it (`--locality-report`, `--target-cache`,
+`--strict`, `--wrap-main`) belong to `build` alone and are refused by
+name.
+
 `check` and `verify` follow every `import`, so a parse failure anywhere
 in the import graph — a library you import, or one it imports — fails
 them both, reported at that file's own line and column. Neither ever
@@ -112,3 +122,22 @@ seed's own, or one reached through an `import` — is a record with
 error in `"message"`. It carries `"line":0` and `"col":0`, since a
 file that never opened has no text to point into. In text mode you
 read the same sentence you always did, on stderr.
+
+Some findings point into the **standard library** rather than into
+your source. When a `@no_alloc` fn reaches an allocation, the
+allocation is often several calls deep inside a stdlib locus — and
+the stdlib is Hale source the compiler reads on its own terms, not a
+file of your project. Those locations are named, never placed:
+
+```
+main.hl:2:4: type error: effect assertion violated: `ship` must not reach `alloc`, …
+    fn ship(s: std::io::tcp::Stream) {
+       ^^^^
+    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:118:18)
+```
+
+The finding itself sits on the line you have to change; the note says
+where in the library the effect actually happens, and `--json` carries
+that note in the record's `message` with an empty `file` and no line.
+Your editor gets the finding and nothing else — there is no range in
+the file you have open for a position in another one.

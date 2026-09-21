@@ -106,6 +106,13 @@ hale test -run concat   # only files whose name matches a substring
 hale test --json        # machine-readable results (one record per file)
 ```
 
+Each `--json` record carries `file`, `status`, `elapsed_ms` and — on
+a failure — `message`. The `file` is that test's **canonical** path
+(absolute, symlinks resolved, no `..`), whatever spelling you typed,
+so records from `hale test --json` and `hale check --json` join on
+it; the `ok` / `FAIL` lines you read on a terminal keep the spelling
+you typed.
+
 `hale test` compiles each discovered file to a native binary and runs
 it, reporting which passed and which failed. It's the same binary that
 `hale build` produces — there's no separate test runtime.

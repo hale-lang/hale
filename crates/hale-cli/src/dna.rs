@@ -34,6 +34,7 @@
 //! second in-process pipeline.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -122,8 +123,30 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
 }
 
 fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
+    host_exec_env(verb, dir, args, &[])
+}
+
+/// `host_exec` with settings for the host's own environment.
+///
+/// GH #887: a verb that has to configure the host used to
+/// `std::env::set_var` and let the exec'd image inherit it. Mutating
+/// the environment is undefined behaviour in a process that has
+/// threads — one table, no lock, every concurrent `getenv` racing it
+/// — so the settings travel on the `Command` that becomes the host,
+/// beside the four `host_command` already sets. `exec` replaces the
+/// image with exactly this `Command`'s environment, so what arrives
+/// is unchanged.
+fn host_exec_env(
+    verb: &str,
+    dir: &Path,
+    args: &[String],
+    env: &[(&str, &OsStr)],
+) -> ExitCode {
     let run = || -> Result<i32, String> {
         let (mut cmd, _) = host_command(verb, dir)?;
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         // exec in place: the pid that ran `hale dna <verb>` IS the host,
         // so a signal to it — a supervisor's, a test's — reaches the host
         // rather than an orphaned child that keeps ticking (dozens of
@@ -194,8 +217,12 @@ pub fn node(args: &[String]) -> ExitCode {
         eprintln!("hale node: cannot write {}: {e}", conf.display());
         return ExitCode::from(1);
     }
-    std::env::set_var("LOTUS_BUS_CONFIG", &conf);
-    host_exec("node", &repo, &rest)
+    host_exec_env(
+        "node",
+        &repo,
+        &rest,
+        &[("LOTUS_BUS_CONFIG", conf.as_os_str())],
+    )
 }
 
 /// The `[project]` positional a verb takes: the first arg that is not a
