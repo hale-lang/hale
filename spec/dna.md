@@ -828,7 +828,7 @@ record's.
 | `receipt.redacted` | ledger | the body removed, the digest kept |
 | `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
-| `concern.proposed` | record | three raises became a proposal |
+| `concern.proposed` | record | three raises became a proposal — at the raise that crosses the threshold, or at the birth that finds a source over it and unproposed |
 | `pressure.raised` | ledger | a signal from a source, counted |
 | `pressure.remeasured` | ledger | the declared fitness signals, measured again after the change |
 | `appendage.proposed` | record | an organ the organization proposes for itself |
@@ -1595,6 +1595,27 @@ record; the genome's own git in `workspace.hl`, `verification.hl`,
 `MemRecord` is the one for fixtures. `hale dna init` and `upgrade` seed
 the record through the host (`record-seed`, `design-upgrade`): the
 driver keeps no record code of its own.
+
+**A reload never shortens what a reader holds (GH #748).** The chain
+only grows — a reconcile builds beside the ref and swaps in one whole
+chain, so the ref never points at a record missing a row it held a
+moment before — and a reader is held to the same rule. A chain that
+reads back shorter than the rows a `GitJournal` already holds, or
+empty, or with no head at all, is a read of the record that failed,
+never a shorter record: `git` unable to run under load, the repository
+unreachable for a moment, a tool that could not be forked. Every read
+is made *before* a row is dropped, and one that comes back short
+leaves the rows, the head and the text as they were, counts itself
+(`reads_refused`, with `last_error` naming the read), and answers
+`refresh()` with "nothing moved" — so the next refresh tries again,
+and an append whose reload could not read the chain ends as the i/o
+failure it is rather than re-offering a stale head two hundred times.
+The view a reader holds is therefore stale at worst. It used to be
+emptied first and refilled from those reads, so one failed read left
+an organism holding no record at all, in silence, and everything it
+derives from a scan of its own record began again from nothing: how
+often a source has raised a concern, which Review is open, which Task
+is in flight.
 
 Every external dependency of the DNA is declared the same way, one
 interface in the core with one implementation over the real thing and
@@ -2370,7 +2391,18 @@ authority.
   path — a concern by the tower rule — through `propose_knowledge`,
   with `concern.proposed <source>` naming the digest, once. A source
   with no parent (no `/`) is refused with `knowledge.refused
-  concern:<source>`.
+  concern:<source>`. **Which occurrence a concern is counted from the
+  record**, never from a number the organism keeps, so a restart
+  continues the count where the record left it; a count that starts
+  again is a record read short, not a restart (GH #748). The raise
+  that crosses the threshold is also the raise that proposes, so an
+  organism that stopped between the two left a source over the
+  threshold with no `concern.proposed` of its own, owed a proposal
+  that nothing but a further concern would make — and a source that
+  has said its piece three times may never say it a fourth. At birth
+  every such source is proposed once, by the same rule (`rehydrate`);
+  a source with no parent was refused where it was raised and is not
+  refused again.
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
   effect classes and claims) into the store by kind and name, the

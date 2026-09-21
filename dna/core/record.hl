@@ -850,27 +850,66 @@ locus GitJournal {
         loaded: Int = 0;
         retries: Int = 0; // appends that lost a CAS race and re-appended at the new tail
         io_errors: Int = 0;
+        // reloads that came back with fewer rows than this journal holds:
+        // a read of the record that failed, never a shorter record (#748)
+        reads_refused: Int = 0;
         last_error: String = "";
     }
     birth() {
         self.record.repo = self.repo;
-        self.load();
+        let loaded = self.load();
     }
     fn chain() -> String {
         if std::str::starts_with(self.ref_name, "refs/dna/") { return self.ref_name[9..len(self.ref_name)]; }
         return self.ref_name;
     }
     fn scratch() -> String { return self.repo + "/.hale/dna"; }
-    // Rehydrate from the chain: the text is the events, the ids are the chain.
+    // Rehydrate from the chain: the text is the events, the ids are the
+    // chain. True when the rows here are the chain's; false when a read
+    // failed and they are what they were.
+    //
+    // Every read is made BEFORE a row is dropped, and a read that comes
+    // back short leaves the rows, the head and the text as they were.
+    // The record is append-only — a reconcile rebuilds every local row
+    // onto the remote's head rather than rewinding the chain, exactly so
+    // that no reader ever sees it lose rows (GH #603) — so a chain that
+    // reads back shorter, or empty, is a read that failed: `git` unable
+    // to run under load, the repository unreachable for a moment, a tool
+    // that could not be forked. This used to empty the rows first and
+    // refill them from those reads, so one failed read left the organism
+    // holding no record at all, in silence. Everything it derives from a
+    // scan of its own record restarted from nothing: how often a source
+    // has raised a concern, which Review is open, which Task is in
+    // flight. A concern raised twice was raised once again, its count
+    // never reached the threshold, and it never became a proposal
+    // (GH #748). A stale view is recoverable; an empty one is not.
     @effects(is: { journal_io })
-    fn load() {
+    fn load() -> Bool {
+        let head = self.record.head(self.chain());
+        if head == "" {
+            // a chain that held rows has not become one with no rows
+            if self.rows.len() > 0 { self.read_failed("the chain's head could not be read"); return false; }
+            self.head_sha = "";
+            self.text = "";
+            self.root_sha = "";
+            self.loaded = 0;
+            return true;
+        }
+        let text = self.record.text_at(head);
+        let shas = self.record.ids(self.chain());
+        if len(text) == 0 || len(shas) == 0 {
+            self.read_failed("the chain at " + head + " could not be read");
+            return false;
+        }
+        if count_lines(text) < self.rows.len() {
+            self.read_failed("the chain at " + head + " read back as " + to_string(count_lines(text)) + " row(s) where this journal holds " + to_string(self.rows.len()));
+            return false;
+        }
         while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
         while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
         self.loaded = 0;
-        self.head_sha = self.record.head(self.chain());
-        if self.head_sha == "" { self.text = ""; self.root_sha = ""; return; }
-        self.text = self.record.text_at(self.head_sha);
-        let shas = self.record.ids(self.chain());
+        self.head_sha = head;
+        self.text = text;
         let first_nl = std::str::index_of(shas, "\n");
         self.root_sha = if first_nl < 0 { shas } else { shas[0..first_nl] };
         let mut rest = self.text;
@@ -897,15 +936,22 @@ locus GitJournal {
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
             if snl < 0 { srest = ""; } else { srest = srest[(snl + 1)..len(srest)]; }
         }
+        return true;
+    }
+    // A read of the record that came back short: counted and named, and
+    // nothing here is changed by it, so the next refresh tries again.
+    fn read_failed(why: String) {
+        self.reads_refused = self.reads_refused + 1;
+        self.last_error = why;
     }
     // Another writer (the CLI, a host) may have advanced the chain: reload
-    // when it moved. True when it had.
+    // when it moved. True when it had — and so, when the rows here are
+    // now the chain's. A read that failed moved nothing.
     @effects(is: { journal_io })
     fn refresh() -> Bool {
         let now = self.record.head(self.chain());
         if now == self.head_sha { return false; }
-        self.load();
-        return true;
+        return self.load() && self.head_sha == now;
     }
     fn revision() -> Int { return self.rows.len(); }
     // The record's identity: the sha of its first commit, the same in
@@ -960,9 +1006,17 @@ locus GitJournal {
                 self.last_error = a.error;
                 return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
             }
-            // the chain moved under us: reload and retry at the tail
+            // the chain moved under us: reload and retry at the tail. A
+            // reload that could not read the chain is not a tail to
+            // retry at — going round would re-offer the same stale head
+            // two hundred times — so it ends the append as the i/o
+            // failure it is (GH #748).
             self.retries = self.retries + 1;
-            self.load();
+            if !self.load() {
+                self.io_errors = self.io_errors + 1;
+                self.last_error = "the chain could not be re-read after a lost race: " + self.last_error;
+                return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+            }
             attempt = attempt + 1;
         }
         self.io_errors = self.io_errors + 1;
@@ -985,7 +1039,7 @@ locus GitJournal {
             return AppendResult { error: "io", expected: expected, actual: seq };
         }
         self.retries = self.retries + 1;
-        self.load();
+        let loaded = self.load();
         return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
     }
 }
