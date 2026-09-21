@@ -80,7 +80,7 @@ main locus App {
         std::test::assert(r.ok, "seeded " + kind + " " + entity + ": " + r.error);
     }
     run() {
-        let repo = "/tmp/dna-concern-restart-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("concern-restart");
         self.repo = repo;
         std::io::fs::mkdir(repo) or discard;
         std::io::fs::mkdir(repo + "/.hale") or discard;
@@ -155,7 +155,7 @@ main locus App {
         std::test::assert_eq_int(self.rows("concern.proposed", MAILER), 1, "a restart over a proposed concern proposes nothing");
         std::test::assert_eq_int(self.rows("concern.proposed", WORKER), 1, "for either source");
 
-        let gone = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 
