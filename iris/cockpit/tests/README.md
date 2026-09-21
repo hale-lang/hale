@@ -139,7 +139,7 @@ source roundtrip, governed publication, activation or real DNA command recovery.
 
 ## Runtime observation without DNA
 
-`runtime.spec.mjs` uses a static host with the same nine assets and configured
+`runtime.spec.mjs` uses a static host with the same ten assets and configured
 observer metadata/CSP. It creates no DNA Record or service. Scripted HTTP
 observations cover explicit connection, credential/referrer omission, literal
 text, bounded/unsafe input, process departures, topic-shape ambiguity,
@@ -769,6 +769,37 @@ environment, applies the existing native process bounds and stops every owned
 process group. Retained evidence includes native Record facts, requests, binary
 hashes and process exits. This gate does not cover person retirement commands,
 cross-owner transfer, hosted or Ledger administration, or a source-ownership join.
+
+### Raising work
+
+`task-create.spec.mjs` is the standalone contract for `web/task-create.js`, the
+"New task" form (`window.IrisTaskCreate`): exact validation of an outcome for a
+locus, the whole organization first and declared working-context loci after it,
+byte bounds, literal markup, denied sessions, DOM-tampered choices and the
+pending/corrected preparation flow. The module sends no request and stores
+nothing. `task-create-read.spec.mjs` exercises the full app with scripted
+capability, Task and command envelopes: identity storage before the one POST,
+the exact `dna.task.create` envelope with the captured `record_head`, the
+organism's answer followed through lookup (`requested` then `born` with its Task
+id), a refusal as a completed request, lost-response GET-only reload recovery,
+inconsistent capabilities, malformed receipts and the shared unresolved slot.
+Both run binary-free from `iris/cockpit`:
+
+```sh
+node node_modules/@playwright/test/cli.js test \
+  --config tests/playwright.config.mjs task-create.spec.mjs task-create-read.spec.mjs
+```
+
+`native-task-create-browser.spec.mjs` reuses `native-task-harness.mjs` and the
+same two binaries and environment as the native Task lane. It raises a task from
+the real cockpit through the real composed API into a fresh Git Record and
+proves one POST, a real receipt, and exactly one `intent.requested` row whose
+entity is the receipt's intent id, whose author is the principal, and whose body
+begins with the bytes `hale dna ask` writes for the same outcome/from/to before
+the command fields; then GET-only recovery across an API restart and a
+stale-head refusal. No relay or organism runs in this lane, so the ask stays
+`requested`; offer, refusal and birth are the organism's later facts and a
+follow-up case. Without both binary paths the lane skips visibly.
 
 ### Declared members and recorded assignments
 

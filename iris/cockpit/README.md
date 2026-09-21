@@ -2,7 +2,7 @@
 
 A browser cockpit for ordinary Hale application controls and runtime observation,
 plus DNA organization, workflow definitions, Knowledge, practices and reviews.
-The frontend is nine static files, served beside the native Hale API or by an
+The frontend is ten static files, served beside the native Hale API or by an
 independent static host. It has no
 build step, runtime package dependencies, database connection or domain engine.
 
@@ -61,7 +61,7 @@ The native API can also be invoked directly:
 
 Open <http://127.0.0.1:8792/>. The API binds to loopback. Omitting the final
 webroot argument preserves the API-only service. The webroot is this static asset
-directory, not the DNA project or its Record. Only the nine named assets and
+directory, not the DNA project or its Record. Only the ten named assets and
 the observer connection metadata described below are served; the service is
 not a general file server.
 
@@ -413,7 +413,7 @@ or running-state claim follows from successful catalog validation.
 ## Development and verification
 
 Edit `web/index.html`, `web/styles.css`, `web/runtime.js`, `web/application.js`,
-`web/definition-draft.js`, `web/organization-draft.js`, `web/knowledge-draft.js`, `web/task-administration.js` and `web/app.js`, restart the API to load
+`web/definition-draft.js`, `web/organization-draft.js`, `web/knowledge-draft.js`, `web/task-administration.js`, `web/task-create.js` and `web/app.js`, restart the API to load
 the changed assets, then reload the browser.
 There are no external scripts, fonts or asset services. JavaScript renders
 native content as text. A connection without a compatible command provider cannot submit domain changes.

@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   expect(review.organization_source).toBe(true);
   expect(review.subject_digest).toBe(impact.data.source.candidate_commit);
   native = { impactText, reviewsText, impact, reviews, review, app: impact.source.record_id };
-  const assets = new Set(['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js']);
+  const assets = new Set(['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'task-create.js']);
   server = createServer(async (request, response) => {
     const name = new URL(request.url, 'http://localhost').pathname.slice(1) || 'index.html';
     if (!assets.has(name)) { response.writeHead(404); response.end(); return; }
