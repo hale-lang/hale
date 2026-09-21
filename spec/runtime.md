@@ -2082,12 +2082,25 @@ is named as such: its deliveries are compared, as public bus
 events, and its payloads are compared with them — a
 direct-dispatched publish records its payload blob like any other
 (above), so `payloads` is a compared category for such a
-workload, not an unexercised one. Coverage is derived from the recording the comparator
+workload, not an unexercised one. The payload line says *what* was
+compared, per the blobs the recording carries (GH #842): an
+in-process flat payload's blob is metadata only (flag bit 1,
+above), so for those the comparator checks declared size and
+publish identity and never the contents, and the report reads
+`payloads: N (sizes and identities; contents not canonicalised)`;
+wire captures are canonical bytes and read `canonical bytes
+identical`; a recording carrying both counts each. A flipped field
+inside an in-process payload is therefore NOT a divergence
+`--diff` can see today — the per-topic canonical codec that would
+make it one is a separate feature item (GH #947), not part of this
+report. Coverage is derived from the recording the comparator
 walks and gated on the same async-capability bit, so the report
 cannot claim a category `diff` skipped. `--json` (strict replay
 with `--diff`) prints the same verdict machine-readably —
 `result`, `ring_records`, `recorded_prefix_only`, and per category
-`compared`, `count`, `consumers`, `not_exercised_because`. Success
+`compared`, `count`, `consumers`, `not_exercised_because`, and for
+`payloads` the same split as `contents_canonicalised` and
+`metadata_only`. Success
 semantics are unchanged: a divergence in any compared category
 still fails, and a diverged verdict carries the reason with no
 per-category counts (the comparison stopped at the first

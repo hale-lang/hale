@@ -1721,6 +1721,20 @@ fn direct_dispatch_match_names_the_unexercised_queued_schedule() {
          blob:\n{}",
         stdout
     );
+    // GH #842: those ten are in-process flat payloads, recorded as
+    // metadata only — the comparator checked declared size and
+    // publish identity, never a byte of contents. The line has to
+    // say so rather than read like a byte-for-byte match.
+    let payload_line = coverage_line(&stdout, "payloads");
+    assert!(
+        payload_line
+            .contains("(sizes and identities; contents not canonicalised)")
+            && !payload_line.contains("canonical bytes identical"),
+        "metadata-only payloads must not be reported as compared by \
+         content: `{}`\n{}",
+        payload_line,
+        stdout
+    );
     // The schedule that was NOT is named as not exercised, and says
     // direct dispatch is why — not a bare "0 consumes".
     let queued = coverage_line(&stdout, "queued consumes");
@@ -2035,6 +2049,16 @@ fn json_coverage_carries_the_same_counts_and_flags() {
          carry the same count: `{}`\n{}",
         payloads,
         human_out
+    );
+    // GH #842: and the same split the human line states — every one
+    // of these blobs is metadata only, none was compared by content.
+    let n = coverage_count(&human_out, "payloads");
+    assert!(
+        payloads.contains(&format!("\"metadata_only\":{}", n))
+            && payloads.contains("\"contents_canonicalised\":0"),
+        "--json must say how many payloads were compared by content \
+         and how many by size and identity only: `{}`",
+        payloads
     );
     let queued = json_category(json, "queued_consumes");
     assert!(

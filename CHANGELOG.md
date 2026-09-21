@@ -8,6 +8,13 @@ behavior.
 
 ## Unreleased
 
+### replay: the coverage report says what it compared for in-process payloads (GH #842)
+
+- **`payloads: N (sizes and identities; contents not canonicalised)`.** An in-process flat payload is recorded as metadata only (flag bit 1: declared size + publish identity — an ABI snapshot would carry heap pointers and uninitialised padding), on every path, queued and direct. `--diff` compares exactly those two things for it and never its contents, so a flipped `Int` field in such a payload was not a divergence — yet the report said `compared` with a detail that read like a byte-for-byte match. The detail is now derived from the recording's blobs: metadata-only blobs read as above, wire captures read `canonical bytes identical`, and a recording carrying both counts each.
+- **`--json` carries the same split**: the `payloads` category gains `contents_canonicalised` and `metadata_only`, so a consumer gating on `compared` can also see how many payloads were compared by content. Pass/fail semantics are unchanged.
+- The per-topic canonical codec that would make in-process payload contents comparable is a separate feature item, GH #947, by ruling.
+- `spec/runtime.md` (`--diff` coverage paragraph, `--json` field list) and the book's *Record & replay* chapter state the rule; `replay_cli` pins the wording and the JSON split on a direct-dispatch recording whose ten payloads are all metadata-only.
+
 ### check: an unresolvable qualified name is a located error (GH #911 B2, #803)
 
 - **A qualified path that resolves to nothing is refused at the path, in a whole program.** `zz::f()` in a seed that imports nothing as `zz` passed `hale check` and `hale verify` and then died in codegen as `path call zz::f in expression position` — no location, a different layer, and after the gate had said yes. So did `zz::T { }` (`unknown qualified name`), `zz::E::V` (`unresolved path`) and `zz::T` in a signature (`qualified type zz::T not in stdlib path-renames table`); `let t: zz::T = 1;` was not refused by either layer, since an `Unknown` annotation constrains nothing. The checker holds the rule now, in every position a path can stand in: an annotation (`check_type_annotation`, which is every annotation position including the one in a body), a call, a const and an enum variant (`Expr::Path`, which is where a call's path callee is checked), and a struct or locus literal (`check_struct_literal`). A `bindings { }` entry needed no site of its own — a topic nothing declares has always been a located error there, qualified or not.
