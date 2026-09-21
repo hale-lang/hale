@@ -1537,11 +1537,15 @@ attempt is performed once, the Mutation it produces is bound to it
 escalated or released, failed when preparation failed before a
 candidate; a later verdict changes nothing about it. `Applied` (or
 `Approved`) is the candidate approved and applied: the Work performs
-nothing and waits on one exact candidate — the Mutation bound (card
-14) to the Work its request names in `target`, as `<step>/<key>`
-within the workflow (`s0/e`) or a whole Work id; a Work naming none
-fails at once, with why, since the dependency is explicit and never a
-Task-wide guess. It is answered from that candidate's durable state
+nothing and waits on one exact candidate: the Work its request names
+in `target`, as `<step>/<key>` within the workflow (`s0/e`) or a
+whole Work id, resolved to the Mutation bound (card 14) to the attempt
+that Work's settlement accepted — a first attempt that failed to
+prepare and was retried is not it. A Work naming none fails at once,
+with why, since the dependency is explicit and never a Task-wide or
+Work-wide guess; one whose producer settled other than done fails,
+there being no candidate. The same resolution serves the first ask, a
+later notification and an ask again after a restart, which waits once. It is answered from that candidate's durable state
 alone: rejected or sent back is failed; approved and applied (or
 retained) is done; approved and rolled back is failed; approved but
 not applied — the apply gate refused, an application pending or

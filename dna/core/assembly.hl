@@ -1334,9 +1334,17 @@ locus Dna {
                 self.report(e, "failed", "", "an Applied Work names, in its target, the Work whose candidate it waits on; none is named");
                 return;
             }
-            let m = self.mutation_of_work(producer);
+            // the candidate is the Mutation of the attempt the producer
+            // settled on — never its first attempt's, which may have failed
+            let settled = self.settlement_of(producer);
+            if len(settled) > 0 && settled != "done" {
+                self.report(e, "failed", producer + ": " + settled, "the producing Work settled " + settled + ": there is no candidate to wait on");
+                return;
+            }
+            let m = self.candidate_of(producer);
             if len(m) > 0 && self.report_review(e, m) { return; }
-            self.waiting_edits.push(e);
+            // asked again — a redelivery — it waits once
+            if !self.already_waiting(e.attempt_id) { self.waiting_edits.push(e); }
             return;
         }
         let seen = self.mutation_of_attempt(e.attempt_id);
@@ -1439,6 +1447,54 @@ locus Dna {
     fn on_record_resumed(r: RecordResume) {
         let n = self.retry_reports();
     }
+    // The disposition a Work settled on (`work.settled`), "" while it has
+    // not.
+    @unbounded
+    fn settlement_of(work_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "work.settled" && e.entity == work_id {
+                let o = decode_work_outcome(e.body);
+                if o.ok { out = o.value.disposition; }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The candidate a producing Work stands behind (card 15): the
+    // Mutation bound (card 14) to the attempt its settlement accepted —
+    // a first attempt that failed and was retried is not it. "" while
+    // the Work has not settled, or its accepted attempt bound none.
+    @unbounded
+    fn candidate_of(work_id: String) -> String {
+        if len(work_id) == 0 { return ""; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut attempt = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "work.settled" && e.entity == work_id {
+                let o = decode_work_outcome(e.body);
+                if o.ok { attempt = o.value.attempt_id; }
+            }
+            i = i + 1;
+        }
+        return self.mutation_of_attempt(attempt);
+    }
+    // Whether an attempt is already waiting here.
+    @unbounded
+    fn already_waiting(attempt_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.waiting_edits.len() {
+            let e = self.waiting_edits.get(i) or EditAsk { };
+            if e.attempt_id == attempt_id { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
     // The Mutation bound to an attempt (card 14), by the attempt's id in
     // the Mutation's own request row; "" when none.
     @unbounded
@@ -1479,7 +1535,7 @@ locus Dna {
         let mut i = 0;
         while i < self.waiting_edits.len() {
             let e = self.waiting_edits.get(i) or EditAsk { };
-            if len(e.attempt_id) > 0 && self.mutation_of_work(producer_of(e.request)) == mutation_id {
+            if len(e.attempt_id) > 0 && self.candidate_of(producer_of(e.request)) == mutation_id {
                 if self.report_review(e, mutation_id) { self.waiting_edits.set(i, EditAsk { }) or discard; }
             }
             i = i + 1;
