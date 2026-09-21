@@ -43,6 +43,34 @@ main locus App {
         }
         return out;
     }
+    // card 18: the execution admitted under the intent's identity, waited for.
+    @unbounded
+    fn admitted(intent: String) -> String {
+        let mut tries = 0;
+        while tries < 400 {
+            let id = self.admitted_now(intent);
+            if len(id) > 0 { return id; }
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn admitted_now(intent: String) -> String {
+        let moved = self.one.journal.refresh();
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == intent { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn until_settled(task_id: String) {
+        let mut tries = 0;
+        while tries < 600 && len(self.last(self.one.journal, "workflow.settled", task_id)) == 0 { std::time::sleep(20ms); tries = tries + 1; }
+    }
     run() {
         let repo = dna::scratch_root("route");
         self.repo = repo;
@@ -78,10 +106,12 @@ main locus App {
         };
 
         // ---- an organism plan is an organization change: the org seed, the Board
-        let t1 = self.one.ask(dna::Intent { id: "i1", outcome: "document the organism's main.hl; leave the application unchanged", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
-        std::time::sleep(2000ms);
-        let plan = self.last(self.one.journal, "task.planned", t1);
-        std::test::assert(std::str::contains(plan, "\"kind\": \"organism\"") && std::str::contains(plan, "\"change_class\": \"docs\"") && std::str::contains(plan, "\"class_applied\": \"organization\""), "the kind decides the class applied: " + plan);
+        let asked = self.one.ask(dna::Intent { id: "i1", outcome: "document the organism's main.hl; leave the application unchanged", from: "riley" });
+        std::test::assert_eq_str(asked, "planning", "the leader's word comes first (card 18)");
+        let t1 = self.admitted("i1");
+        self.until_settled(t1);
+        let plan = self.one.ask_plan_of(t1);
+        std::test::assert(plan.parsed && plan.kind == "organism" && plan.change_class == "organization", "the kind decides the class applied, bound in the admission: " + plan.kind + "/" + plan.change_class);
         let proposed = self.last(self.one.journal, "mutation.proposed", "m1");
         std::test::assert(std::str::starts_with(proposed, "task " + t1 + " organization:"), "an organization change: " + proposed);
         let req = self.last(self.one.journal, "review.requested", "review:m1");
@@ -102,11 +132,11 @@ main locus App {
                 deep: dna::FakeModel { name: "deep", answer: "kind: appendage\nclass: organization\ntarget: main.hl\ncount: 1\nA contradiction." }
             }
         };
-        let t2 = self.one.ask(dna::Intent { id: "i2", outcome: "reorganize", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        let asked2 = self.one.ask(dna::Intent { id: "i2", outcome: "reorganize", from: "riley" });
         std::time::sleep(1000ms);
-        let refused = self.last(self.one.journal, "task.refused", t2);
-        std::test::assert(std::str::contains(refused, "child that is not the organism (kind appendage)"), "refused: " + refused);
-        std::test::assert(std::str::contains(self.last(self.one.journal, "task.failed", t2), "refused"), "and the Task failed: " + self.last(self.one.journal, "task.failed", t2));
+        let refused = self.last(self.one.journal, "intent.refused", "i2");
+        std::test::assert(std::str::contains(refused, "child that is not the organism (kind appendage)"), "refused before anything is admitted: " + refused);
+        std::test::assert_eq_str(self.admitted_now("i2"), "", "no execution admitted for it");
         std::test::assert_eq_str(self.last(self.one.journal, "mutation.proposed", "m2"), "", "nothing was proposed, no editor placed");
         dna::scratch_done(repo);
     }

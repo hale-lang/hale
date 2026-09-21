@@ -183,9 +183,9 @@ thing to wire in.
 
 ## Workflow definitions are versioned
 
-A Task binds the Workflow definition revision it was born with
-(`Metabolism.workflow_revision`). Evolving the definition
-(`evolve_workflow`) changes future adoption only: an active Task
-finishes under its own revision — `Settled.revision` says which —
-and the next Task adopts the new one. Adoption and migration stay
+An execution binds the workflow definition and revision it was
+admitted under (`workflow.admitted`: definition, revision, the bound
+recipe). Defining a new revision in the catalog changes future
+adoption only: an active execution finishes under its own recipe, and
+the next admission adopts the new one. Adoption and migration stay
 two different, auditable things.

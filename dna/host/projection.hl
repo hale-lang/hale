@@ -207,6 +207,9 @@ locus Projection {
                     } else { t.waiting = std::json::find_string_field(e.body, "why"); }
                 }
                 else if e.kind == "task.reassigned" && len(t.id) > 0 { t.assignee = std::json::find_string_field(e.body, "to"); t.detail = e.body; }
+                // card 18: an admitted execution's root is settled by its
+                // workflow — the terminal state is the engine's own row
+                else if e.kind == "workflow.settled" && len(t.id) > 0 { t.state = std::json::find_string_field(e.body, "disposition"); t.detail = std::json::find_string_field(e.body, "reason"); }
                 else if std::str::starts_with(e.kind, "task.") && e.kind != "task.resumed" && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
             }
             i = i + 1;

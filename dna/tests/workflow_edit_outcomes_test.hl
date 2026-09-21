@@ -285,6 +285,7 @@ main locus App {
         // performer under the scope that is this organism's id; the two
         // read and write one record through two instances of its journal
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -413,35 +414,6 @@ main locus App {
         std::test::assert_eq_int(self.boot.rt.stray_reports, 2, "a report naming two attempts, and one naming none inside, are strays");
         std::test::assert_eq_int(self.rows(j, "attempt.outcome", ""), outcomes, "and the record is untouched by them");
 
-        // ---- a legacy routed edit request naming an admitted execution's
-        //      Task runs the legacy path — a Mutation of the Task's — but
-        //      settles nothing: the Task has a legacy pending row and an
-        //      admission, and its root is the workflow's alone
-        self.admit("t5", "ship");
-        let b5 = j.append(j.revision(), "task.born", "t5", "i5: document main.hl");
-        let p5 = j.append(j.revision(), "task.pending", "t5", "routed");
-        std::test::assert(b5.ok && p5.ok, "t5 has its legacy rows beside its admission");
-        let mutated = self.rows(j, "mutation.requested", "");
-        // (the request is handed to the assembly's handler directly, as a
-        // routed Work's would arrive: publishing the unkeyed `WorkRequested`
-        // struct from this fixture faults in the bus's payload arena — a
-        // substrate matter, not this card's)
-        self.org.on_work_requested(dna::WorkRequest { task_id: "t5", work_id: "t5/legacy/w0", objective: "document main.hl", target: "main.hl", requires: "edit" });
-        self.settle();
-        self.settle();
-        std::test::assert_eq_int(self.rows(j, "mutation.requested", ""), mutated + 1, "the legacy path mutated");
-        std::test::assert_eq_str(self.org.task_state("t5"), "pending", "and settled nothing: an admitted execution's root is its workflow's");
-        std::test::assert_eq_int(self.rows(j, "task.done", "t5") + self.rows(j, "task.failed", "t5"), 0, "no Task row was written for it");
-        // and a verdict on that Mutation settles the Task no more than the Work did
-        let m5 = self.org.mutation_of_work("t5/legacy/w0");
-        std::test::assert(len(m5) > 0, "the legacy request's Mutation is bound to its Work");
-        self.until_rows("review.requested", "review:" + m5, 1);
-        self.verdict(m5, "reject");
-        self.until_rows("mutation.rejected", m5, 1);
-        self.settle();
-        std::test::assert_eq_str(self.org.task_state("t5"), "pending", "a rejection settles an admitted execution's Task no more than its Work did");
-        std::test::assert_eq_int(self.rows(j, "task.failed", "t5"), 0, "no Task row was written for the verdict either");
-
         // ---- (review) Applied needs the application, not the approval: an
         //      approval whose apply the gate refuses — the destination is
         //      dirty — leaves the waiter waiting; approved again once the
@@ -452,7 +424,7 @@ main locus App {
         let r6 = self.reply("t6/wf1/s0/s/a0");
         self.until(true, "t6/wf1/s1/w:born", 1);
         self.settle();
-        let m6 = self.org.mutation_of_work("t6/wf1/s0/e");
+        let m6 = self.org.candidate_of("t6/wf1/s0/e");
         std::test::assert(len(m6) > 0, "t6's candidate");
         let current = std::io::fs::read_file(repo + "/app/main.hl") or "";
         std::io::fs::write_file(repo + "/app/main.hl", "// a local, uncommitted change\n" + current) or discard;
@@ -481,12 +453,12 @@ main locus App {
         self.until_rows("work.settled", "t7/wf1/s0/e", 1);
         self.until(true, "t7/wf1/s1/w:born", 1);
         self.settle();
-        let m7a = self.org.mutation_of_work("t7/wf1/s0/e");
+        let m7a = self.org.candidate_of("t7/wf1/s0/e");
         self.verdict(m7a, "approve");
         self.until_rows("work.settled", "t7/wf1/s2/e", 1);
         self.until(true, "t7/wf1/s3/w:born", 1);
         self.settle();
-        let m7b = self.org.mutation_of_work("t7/wf1/s2/e");
+        let m7b = self.org.candidate_of("t7/wf1/s2/e");
         std::test::assert(len(m7b) > 0 && m7b != m7a, "the second candidate is its own Mutation");
         std::test::assert_eq_int(self.rows(j, "mutation.applied", m7a), 1, "the first candidate applied");
         std::test::assert_eq_str(self.settled_as("t7/wf1/s1/w"), "done", "and its waiter is done");
@@ -557,8 +529,8 @@ main locus App {
         self.until_rows("work.settled", "t10/wf1/s1/e2", 1);
         self.until(true, "t10/wf1/s2/w2:born", 1);
         self.settle();
-        let m10a = self.org.mutation_of_work("t10/wf1/s0/e1");
-        let m10b = self.org.mutation_of_work("t10/wf1/s1/e2");
+        let m10a = self.org.candidate_of("t10/wf1/s0/e1");
+        let m10b = self.org.candidate_of("t10/wf1/s1/e2");
         std::test::assert(len(m10a) > 0 && len(m10b) > 0 && m10a != m10b, "two candidates, each its own Mutation");
         std::test::assert_eq_int(self.held_waiters(), 2, "both waiters wait");
         self.verdict(m10a, "approve");
@@ -581,7 +553,7 @@ main locus App {
         self.ask("t11");
         self.until_rows("work.settled", "t11/wf1/s0/e", 1);
         self.settle();
-        let m11 = self.org.mutation_of_work("t11/wf1/s0/e");
+        let m11 = self.org.candidate_of("t11/wf1/s0/e");
         self.verdict(m11, "approve");
         self.until_rows("mutation.applied", m11, 1);
         let rb = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "mutation.rolled_back", m11, "the restarted expression was observed unhealthy; rolled back to base");
@@ -600,6 +572,7 @@ main locus App {
         // (the organism's editor is replaced by one whose first edit call is
         // refused: its in-memory waiters — the pair's second — are let go)
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -645,6 +618,7 @@ main locus App {
         //      record asks it again — the same candidate, waiting once; the
         //      verdict answers it
         self.org = dna::Dna {
+            runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
@@ -714,7 +688,7 @@ main locus App {
         self.ask("t14");
         self.until_rows("attempt.outcome", "t14/wf1/s0/e/a0", 1);
         self.settle();
-        let m14 = self.org.mutation_of_work("t14/wf1/s0/e");
+        let m14 = self.org.mutation_of_attempt("t14/wf1/s0/e/a0");
         std::test::assert(len(m14) > 0, "the candidate is prepared");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "review.requested", "review:" + m14), 1, "and in review");
         std::test::assert_eq_str(self.settled_as("t14/wf1/s0/e"), "", "the producer's settlement was refused by the record: held");

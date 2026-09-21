@@ -175,14 +175,11 @@ fn short_sha(sha: String) -> String {
 // (card 14): not an outcome — nothing ran.
 fn record_refused(out: String) -> Bool { return std::str::contains(out, ": refused: the record would not take the Mutation's request"); }
 
-// Routed Work waiting for the leader's plan (GH #596 L): one row per
-// ask in flight, released when its plan arrives.
+// Intents whose ask awaits the leader's word before its admission
+// (card 18; GH #596 L): one row per ask in flight, released when its
+// plan arrives.
 @form(vec)
-locus PendingWork { capacity { heap rows of WorkRequest; } }
-// Plans the record refused to take (card 14): held with their pending
-// request, re-driven by `redrive`.
-@form(vec)
-locus HeldPlans { capacity { heap rows of Plan; } }
+locus PendingAsks { capacity { heap rows of Intent; } }
 // Edit attempts relayed from the workflow engine (card 15): the ones
 // waiting on a review's outcome, and the ones the record refused to
 // start, re-driven by `redrive`.
@@ -261,7 +258,16 @@ locus Dna {
         leases: Coordination = MemLeases { };
         knowledge: Knowledge = Knowledge { };
         work: WorkSystem = WorkSystem { };
-        metabolism: Metabolism = Metabolism { };
+        // card 18: the one engine. The assembly owns the committer and
+        // the execution owner of its scope (the organism's id), over its
+        // own record and performers, born with it; `runs_engine: false`
+        // for a program that assembles them itself in the same scope
+        runs_engine: Bool = true;
+        runtime: WorkflowRuntime = WorkflowRuntime { };
+        executions: Executions = Executions { };
+        minted: Int = 0; // durable Task ids continue from the record
+        executions_asked: Int = 0; // roots started or resumed through `ExecutionAsked`
+        executions_settled: Int = 0; // roots whose workflow settled, heard
         boundary: AutonomyBoundary = AutonomyBoundary { child: "app" };
         // GH #596, layering: the grant above the child's — the
         // organism's, the Board's to widen. A child's grant is read
@@ -307,9 +313,7 @@ locus Dna {
         // false, routed edit Work is a Mutation of class `application`,
         // as before — fixtures with no leader keep that.
         planned: Bool = false;
-        pending_plans: PendingWork = PendingWork { };
-        held_plans: HeldPlans = HeldPlans { }; // card 14: a plan whose binding the record refused, kept with its request
-        held_direct: PendingWork = PendingWork { }; // card 14: a direct edit request whose Mutation's request row the record refused
+        pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
@@ -360,6 +364,15 @@ locus Dna {
     accept(r: Review) { self.reviews_open = self.reviews_open + 1; }
     release (r: Review) { self.reviews_open = self.reviews_open - 1; }
     birth() {
+        // card 18: the ask definitions — one edit leaf, one person's job —
+        // and the engine of this scope, over this record and these performers
+        self.define_asks();
+        self.work.bind_scope(self.org_id);
+        if self.runs_engine {
+            self.runtime = WorkflowRuntime { scope: self.org_id, work: self.work };
+            self.runtime.adopt(self.journal);
+            self.executions = Executions { scope: self.org_id };
+        }
         self.rehydrate();
         // GH #610: the optimize pass is a schedule, not a special case
         if self.optimize_every_ms > 0 {
@@ -395,9 +408,11 @@ locus Dna {
         // GH #529 D7: Work that changes source comes back to the
         // assembly (its editor, its gateway); a root Task's settlement
         // is journaled here; persistent pressure proposes, never grows.
-        subscribe WorkRequested as on_work_requested;
         subscribe TaskPlanned as on_planned where key == self.org_id;
         publish PlanRequested;
+        // card 18: an admitted ask runs in the one engine of this scope
+        publish ExecutionAsked;
+        subscribe WorkflowSettled as on_workflow_settled;
         // card 15: an edit leaf of a workflow execution, relayed by the
         // engine's edit performer (the runtime's scope is this organism's
         // id); its outcome goes back for that exact attempt
@@ -411,11 +426,9 @@ locus Dna {
         publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
         publish OptimizeRequested;
-        subscribe TaskSettled as on_task_settled;
         subscribe PressureRaised as on_pressure;
         subscribe ConcernRaised as on_concern;
         subscribe PracticeRequested as on_practice_requested;
-        publish WorkDone;
         // GH #566 F2: a Review is announced as a typed fact, so a position
         // in the org (the Leader) can decide it inside its grant
         publish ReviewRequested;
@@ -833,7 +846,6 @@ locus Dna {
         }
         let z = self.journal.append(self.journal.revision(), "mutation." + (if r.outcome == "revise" { "revise" } else { "rejected" }), r.review_id,
             "review " + r.outcome + " by " + r.decided_by + "; genome and expression untouched");
-        if r.outcome != "revise" { self.settle_task_of(r.review_id, "failed", "review " + r.outcome + " after a restart"); }
         // card 15: the attempts waiting on this candidate hear its verdict
         self.revisit_waiting();
         // the worktree was scratch; the Mutation, its candidate commit,
@@ -1054,7 +1066,6 @@ locus Dna {
             let z = self.gateway.remove(self.journal, o.mutation_id, lease.token, now);
             // GH #604: after a restart the Work that would settle the
             // Task is gone; the Task settles from its Mutation's outcome
-            self.settle_task_of(o.mutation_id, "done", "retained after a restart");
             return;
         }
         self.rollback_to_base(o.mutation_id, o.outcome, now);
@@ -1147,9 +1158,15 @@ locus Dna {
             // an occurrence claimed before a restart and never born: admitted
             // now, under the intent it was claimed with, once
             if len(s.pending_intent) > 0 && s.action != "optimize" {
-                let pt = self.ask(Intent { id: s.pending_intent, outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                let pt = self.ask(Intent { id: s.pending_intent, outcome: s.ask, from: "schedule:" + s.id });
                 if std::str::starts_with(pt, "refused") {
                     let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, pt);
+                } else if pt == "planning" {
+                    // card 18: the leader's word is out; the intent stays
+                    // pending and is asked again at the next tick, which
+                    // finds the admission once it landed
+                    i = i + 1;
+                    continue;
                 } else {
                     s.task = pt;
                     let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + s.pending_intent + "\", \"task\": \"" + pt + "\", \"at\": " + to_string(s.last_at) + "}");
@@ -1181,8 +1198,11 @@ locus Dna {
                         self.optimize();
                     }
                 } else {
-                    // overlap: never while the last Task it fired is open — the skip is a row
-                    let st = if len(s.task) > 0 { self.task_state(s.task) } else { "done" };
+                    // overlap: never while the last Task it fired is open — the skip is a row.
+                    // card 18: an admitted execution is open until its workflow settled
+                    let st = if len(s.task) == 0 { "done" }
+                    else if self.workflow_admitted(s.task) { if self.has_row("workflow.settled", s.task) { "done" } else { "pending" } }
+                    else { self.task_state(s.task) };
                     if len(s.task) > 0 && st != "done" && st != "failed" {
                         let x = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, "{\"task\": \"" + s.task + "\", \"state\": \"" + (if len(st) == 0 { "pending" } else { st }) + "\", \"at\": " + to_string(wall) + "}");
                     } else {
@@ -1195,9 +1215,13 @@ locus Dna {
                         if claim.ok {
                             s.fired = s.fired + 1;
                             s.last_at = wall;
-                            let t = self.ask(Intent { id: intent, outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                            let t = self.ask(Intent { id: intent, outcome: s.ask, from: "schedule:" + s.id });
                             if std::str::starts_with(t, "refused") {
                                 let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
+                            } else if t == "planning" {
+                                // card 18: admitted once the leader's word lands;
+                                // the next tick asks again and records it
+                                s.pending_intent = intent;
                             } else {
                                 s.task = t;
                                 let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + intent + "\", \"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
@@ -1315,7 +1339,7 @@ locus Dna {
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "org.reviewed", self.org_id, b.result());
         if len(r.proposal) > 0 {
-            let id = self.ask(Intent { id: "opt" + to_string(self.optimizations), outcome: r.proposal, from: r.by }, Knobs { routed: true, requires: "edit" });
+            let id = self.ask(Intent { id: "opt" + to_string(self.optimizations), outcome: r.proposal, from: r.by });
         }
     }
     // A planned ask becomes a Mutation under the class and target the
@@ -1336,46 +1360,20 @@ locus Dna {
             }
             c = c + 1;
         }
+        // card 18: an ask awaiting the leader's word is admitted under it:
+        // what the ask is (a person's job, an organism change, an
+        // application change), bound into its admission
         let mut i = 0;
-        let mut found = -1;
-        while i < self.pending_plans.len() {
-            let w = self.pending_plans.get(i) or WorkRequest { };
-            if w.task_id == p.task_id && w.work_id == p.work_id { found = i; }
+        while i < self.pending_asks.len() {
+            let intent = self.pending_asks.get(i) or Intent { };
+            if len(intent.id) > 0 && intent.id == p.task_id && p.work_id == "ask" {
+                self.pending_asks.set(i, Intent { }) or discard;
+                self.plans = self.plans + 1;
+                let id = self.admit_ask(intent, p, true);
+                return;
+            }
             i = i + 1;
         }
-        if found < 0 { return; }
-        let req = self.pending_plans.get(found) or WorkRequest { };
-        self.pending_plans.set(found, WorkRequest { }) or discard;
-        self.plans = self.plans + 1;
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("kind", p.kind);
-        b.string_field("change_class", p.change_class);
-        b.string_field("class_applied", if p.kind == "organism" { "organization" } else { p.change_class });
-        b.string_field("target", p.target);
-        b.string_field("assignee", p.assignee);
-        b.string_field("obligation", p.obligation);
-        b.int_field("count", p.count);
-        b.string_field("narrative", p.narrative);
-        b.string_field("package", p.package);
-        b.string_field("by", p.by);
-        b.bool_field("parsed", p.parsed);
-        // card 14: which exact Work and attempt asked for this plan, with
-        // the request as asked — the Task-level row, with its binding
-        b.field("binding", encode_binding(binding_of(req)));
-        b.end_object();
-        let j = self.journal.append(self.journal.revision(), "task.planned", req.task_id, b.result());
-        if !j.ok {
-            // the binding is not durable: nothing proceeds on it. The
-            // request keeps its place and the plan is held with it, for
-            // `redrive`; a restart plans the Task again, since no plan landed
-            self.record_refusals = self.record_refusals + 1;
-            self.pending_plans.set(found, req) or discard;
-            self.held_plans.push(p);
-            self.membrane.notify("record", "the plan of " + req.work_id + " was not taken by the record (" + j.error + "); held, nothing started");
-            return;
-        }
-        self.execute_plan(req, p);
     }
     // An edit leaf's attempt from the workflow engine (card 15). Under
     // the prepare-candidate contract the attempt is performed once — the
@@ -1421,7 +1419,19 @@ locus Dna {
         }
         let seen = self.mutation_of_attempt(e.attempt_id);
         if len(seen) > 0 { self.report_prepared(e, seen); return; }
-        let out = self.mutate_for(req, "application", req.objective, req.target, std::time::now());
+        // card 18: an ask's leaf edits under the leader's word bound into
+        // the admission — the class (an organism change is class
+        // `organization`, the Board's), and the target when it names a
+        // file the genome has under the seed the class edits; a model's
+        // prose is not a path. An application-authored leaf edits as
+        // class `application`, at the request's own target
+        let plan = self.ask_plan_of(req.task_id);
+        let class = if plan.parsed { if plan.kind == "organism" { "organization" } else if len(plan.change_class) > 0 { plan.change_class } else { "application" } } else { "application" };
+        let seed = if class == "organization" { self.org_seed } else { self.genome_seed };
+        let under = self.gateway.repo.root() + "/" + (if seed == "." { "" } else { seed + "/" }) + plan.target;
+        let planned_target = plan.parsed && len(plan.target) > 0 && !std::str::contains(plan.target, " ") && std::io::fs::file_exists(under);
+        let target = if planned_target { plan.target } else { req.target };
+        let out = self.mutate_for(req, class, req.objective, target, std::time::now());
         if record_refused(out) { self.held_edits.push(e); return; }
         let m = self.mutation_of_attempt(e.attempt_id);
         self.report_prepared(e, m);
@@ -1451,6 +1461,13 @@ locus Dna {
             // asked again after its person completed it (a restart's
             // redelivery): the outcome is reported now (card 17)
             let done = self.revisit_case(case_id);
+            return;
+        }
+        // card 18: an ask the leader called a person's job carries whom and
+        // under what obligation in its admission: no second word is asked
+        let plan = self.ask_plan_of(req.task_id);
+        if plan.parsed && plan.kind == "person" {
+            self.hand_case(c, plan.assignee, plan.obligation, "leader", plan.narrative);
             return;
         }
         if self.planned {
@@ -2022,142 +2039,7 @@ locus Dna {
             }
             k = k + 1;
         }
-        let plans = self.held_plans.len();
-        let mut i = 0;
-        while i < plans {
-            let p = self.held_plans.get(i) or Plan { };
-            if len(p.work_id) > 0 {
-                self.held_plans.set(i, Plan { }) or discard;
-                self.on_planned(p);
-                n = n + 1;
-            }
-            i = i + 1;
-        }
-        let direct = self.held_direct.len();
-        i = 0;
-        while i < direct {
-            let r = self.held_direct.get(i) or WorkRequest { };
-            if len(r.work_id) > 0 {
-                self.held_direct.set(i, WorkRequest { }) or discard;
-                self.on_work_requested(r);
-                n = n + 1;
-            }
-            i = i + 1;
-        }
         return n;
-    }
-    // The plan's execution, apart from receiving it: reached from
-    // `on_planned` with a live Work, and from `resume_work` after a
-    // restart with the plan read back from the record (GH #604 rule 2:
-    // a restart never regenerates a plan). The request is the Work's
-    // own — as asked, or as the record holds it (card 14) — never
-    // rebuilt from the Task.
-    @unbounded
-    fn execute_plan(req: WorkRequest, p: Plan) {
-        if p.kind == "person" {
-            // GH #596 W: a person's job. The Work is done as far as the
-            // organism is concerned — it handed the Task on — and the
-            // Task stays HANDED in the record until the person reports
-            // it done (`hale dna task done <id> --as <who>`).
-            let handed = "handed: not a software change — " + p.narrative;
-            WorkDone <- WorkSettlement { work_id: req.work_id, disposition: "done", result: handed, attempts: 0, history: "a0:leader:handed " };
-            // GH #604 rule 4: the row names the assignee the plan named,
-            // so completion can be checked against them at admission.
-            let hb = std::json::Builder { };
-            hb.begin_object();
-            // GH #604 rule 5: retirement stops admission. A job planned for a
-            // person who retired goes to the successor their retirement named
-            // (unassigned when it named none), and the row says for whom it
-            // was planned.
-            let gone = self.retired(p.assignee);
-            let assignee = if gone.retired { self.admissible(p.assignee) } else { p.assignee };
-            hb.string_field("work", req.work_id);
-            hb.string_field("assignee", assignee);
-            if gone.retired { hb.string_field("retired_assignee", p.assignee); }
-            // GH #616: which acceptance practice a reported decision answers to
-            hb.string_field("obligation", p.obligation);
-            // GH #604: the acceptance condition is bound here, at hand-off —
-            // the practice in force for the obligation now — so a later
-            // change of practice never changes the contract of a case handed
-            let practice = if len(p.obligation) > 0 { self.practice_in_force("acceptance/" + p.obligation) } else { "" };
-            let practice_text = if len(practice) > 0 { std::json::find_string_field(self.verification.receipts.read(practice[7..len(practice)]), "text") } else { "" };
-            hb.string_field("acceptance", practice);
-            hb.bool_field("evidence_required", acceptance_requires_evidence(practice_text));
-            hb.string_field("by", "leader");
-            hb.string_field("narrative", handed);
-            // GH #667: a job for another owner's member is a transfer inside
-            // the one ledger, settled only on that owner's acceptance; the
-            // Task waits as `transfer_requested`, and their controller hands
-            // it once a member of theirs accepts
-            let theirs = if self.ownership.shared() && len(assignee) > 0 { self.ownership.owner_of_person(assignee) } else { "" };
-            let transfer = len(theirs) > 0 && theirs != self.ownership.me;
-            if transfer {
-                hb.string_field("owner", self.ownership.me);
-                hb.string_field("to", theirs);
-            }
-            hb.end_object();
-            let x = self.journal.append(self.journal.revision(), if transfer { "task.transfer_requested" } else { "task.handed" }, req.task_id, hb.result());
-            if transfer {
-                self.membrane.notify("task", req.task_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept");
-            } else {
-                self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
-            }
-            return;
-        }
-        // The governed child comes from the KIND, and the class is
-        // assessed under that child's policy (the stack review's
-        // finding 1: a plan of kind `organism` with class `docs` gave
-        // the editor the application's grant, changed the application,
-        // and asked the leader's authority for a change to the
-        // organism). An organism change is class `organization`
-        // whatever its nature — the Board's — and a class of
-        // `organization` for a child that is not the organism is a
-        // combination the gate refuses before any editor is placed.
-        let class = if p.kind == "organism" { "organization" } else { p.change_class };
-        if p.kind != "organism" && class == "organization" {
-            let why = "plan names an organization change for a child that is not the organism (kind " + p.kind + "); refused";
-            let z = self.journal.append(self.journal.revision(), "task.refused", req.task_id, why);
-            WorkDone <- WorkSettlement { work_id: req.work_id, disposition: "failed", result: why, attempts: 0, history: "a0:leader:refused " };
-            if self.task_state(req.task_id) == "pending" {
-                let x = self.journal.append(self.journal.revision(), "task.failed", req.task_id, req.work_id + " by leader: " + why);
-            }
-            return;
-        }
-        // The plan's target is taken only when it names a file the
-        // genome has under the seed the class edits; a model's prose
-        // ("main.hl (Gateway locus)") is not a path, and used as one it
-        // became an empty read, an apology written into a file of that
-        // name, and a candidate carrying it. Else the ask's own target,
-        // and the editor locates from the objective.
-        let seed = if class == "organization" { self.org_seed } else { self.genome_seed };
-        let under = self.gateway.repo.root() + "/" + (if seed == "." { "" } else { seed + "/" }) + p.target;
-        let planned_target = len(p.target) > 0 && !std::str::contains(p.target, " ") && std::io::fs::file_exists(under);
-        let target = if planned_target { p.target } else { req.target };
-        let out = self.mutate_for(req, class, req.objective, target, std::time::now());
-        if record_refused(out) {
-            // not an outcome (card 14): the Mutation's request row was not
-            // taken, nothing ran, and the Work keeps its plan and its place
-            self.pending_plans.push(req);
-            self.held_plans.push(p);
-            return;
-        }
-        let ok = std::str::contains(out, ": review") || std::str::contains(out, ": release");
-        WorkDone <- WorkSettlement {
-            work_id: req.work_id,
-            disposition: if ok { "done" } else { "failed" },
-            result: out,
-            attempts: 1,
-            history: "a0:editor:" + (if ok { "done" } else { "failed" }) + " "
-        };
-        // F.15, as on the direct path: the Work that asked settled
-        // PENDING while the plan was made; the durable Task is settled
-        // here, in the Journal, by the assembly that did its Work — a
-        // legacy Task's; an admitted execution's root is its workflow's
-        // to settle (card 15)
-        if self.task_state(req.task_id) == "pending" && !self.workflow_admitted(req.task_id) {
-            let x = self.journal.append(self.journal.revision(), "task." + (if ok { "done" } else { "failed" }), req.task_id,
-                req.work_id + " by " + self.editor.identity() + ": " + out);
-        }
     }
     // Bounded by the humans offering intent; each birth is a Task the
     // Metabolism owns and settles.
@@ -2168,42 +2050,7 @@ locus Dna {
         // Intent through the membrane asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
-        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to }, Knobs { routed: true, requires: "edit" });
-    }
-    // Source-editing Work (GH #529 D7 steps 5-6): the editor's Attempt
-    // inside a worktree, under its grant, then the whole pipeline to
-    // the Review; the Work settles with the mutation's id and where it
-    // stopped. Bounded by the Tasks the membrane admits.
-    @unbounded
-    fn on_work_requested(req: WorkRequest) {
-        if !std::str::contains(req.requires, "edit") { return; }
-        if self.planned {
-            self.pending_plans.push(req);
-            PlanRequested <- PlanRequest { org: self.org_id, task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
-            return;
-        }
-        let out = self.mutate_for(req, "application", req.objective, req.target, std::time::now());
-        if record_refused(out) {
-            // not an outcome (card 14): the request is held for `redrive`
-            self.held_direct.push(req);
-            return;
-        }
-        let ok = std::str::contains(out, ": review") || std::str::contains(out, ": release");
-        WorkDone <- WorkSettlement {
-            work_id: req.work_id,
-            disposition: if ok { "done" } else { "failed" },
-            result: out,
-            attempts: 1,
-            history: "a0:editor:" + (if ok { "done" } else { "failed" }) + " "
-        };
-        // F.15: behind an off-thread bus the Work that asked is gone and
-        // its Task settled PENDING; the durable Task is settled here, in
-        // the Journal, by the assembly that did its Work — a legacy
-        // Task's; an admitted execution's root is its workflow's (card 15)
-        if self.task_state(req.task_id) == "pending" && !self.workflow_admitted(req.task_id) {
-            let x = self.journal.append(self.journal.revision(), "task." + (if ok { "done" } else { "failed" }), req.task_id,
-                req.work_id + " by " + self.editor.identity() + ": " + out);
-        }
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to });
     }
     // GH #604 rule 5: whether `who` retired, and to whom their work goes.
     @unbounded
@@ -2252,23 +2099,6 @@ locus Dna {
             i = i + 1;
         }
         return out;
-    }
-    // A root Task settled asynchronously (its Work was routed): the
-    // Journal records it once. Bounded by the Tasks born.
-    @unbounded
-    fn on_task_settled(t: TaskSettlement) {
-        if t.parent_task != "" { return; }
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            // born, planned and pending are not settlements: a routed
-            // Task is journaled pending at birth, and with the leader's
-            // plan in between its settlement now lands after that row
-            if e.entity == t.task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" && e.kind != "task.pending" { return; }
-            i = i + 1;
-        }
-        let x = self.journal.append(self.journal.revision(), "task." + t.disposition, t.task_id, t.detail);
     }
     // Pressure is measured, journaled, and — when it persists — answered
     // with a PROPOSAL for an organ, never with one (GH #529 D7 extension
@@ -2393,11 +2223,13 @@ locus Dna {
     // Intent enters through the membrane and births a durable Task;
     // its birth and its settlement are Journal events (the causal
     // authority), the live locus is the expression.
-    fn ask(i: Intent, k: Knobs) -> String {
+    @unbounded
+    fn ask(i: Intent) -> String {
         // GH #682: an intent offered twice — a head's publish and the host's
         // relay of the same durable row, or a re-delivery after a publish
-        // that was lost — is admitted once: the Task born for it answers again
-        let again = self.task_of_intent(i.id);
+        // that was lost — is admitted once: the execution admitted for it
+        // answers again (the admission carries the ask's own identity)
+        let again = self.workflow_admission_of(i.id, self.journal.revision());
         if len(again) > 0 { return again; }
         let gate = self.membrane.offer(i);
         if gate != "accepted" {
@@ -2426,37 +2258,167 @@ locus Dna {
         let offered_body = if i.from == "" { i.outcome } else { i.outcome + " (from " + i.from + ")" };
         let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, offered_body);
         if !born.ok { return "refused: journal " + born.error; }
-        // GH #604 rule 1: the durable fact precedes the act. The id is
-        // minted, the birth is journaled (naming its intent, so a reader
-        // can walk intent -> task), and only then is the Task born; a
-        // birth the record refuses stops here, and nothing has run.
-        // GH #666: the birth is the claim on the id, and the store's unique
-        // constraint decides a first claim; a loser mints the next id
-        let mut id = self.metabolism.next_id();
-        let mut r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
-        let mut remints = 0;
-        while !r.ok && r.error == "claimed" && remints < 5 {
-            remints = remints + 1;
-            id = self.metabolism.next_id();
-            r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
+        // card 18 (GH #596 L): in an organism the leader plans for, the
+        // leader says what the ask is before it is admitted — a person's
+        // job, an organism change, an application change — and the
+        // admission binds that word; without a leader the ask is an
+        // application change, as before
+        if self.planned {
+            let mut i2 = 0;
+            while i2 < self.pending_asks.len() {
+                let p = self.pending_asks.get(i2) or Intent { };
+                if p.id == i.id { return "planning"; }
+                i2 = i2 + 1;
+            }
+            // the intent is this resident's to keep: what a handler's arena
+            // handed in dies with the handler
+            self.pending_asks.push(Intent { id: std::str::clone(i.id), outcome: std::str::clone(i.outcome), from: std::str::clone(i.from), to: std::str::clone(i.to) });
+            PlanRequested <- PlanRequest { org: self.org_id, task_id: i.id, work_id: "ask", objective: i.outcome, target: "", requires: "edit", data_class: "internal" };
+            return "planning";
         }
-        if !r.ok {
-            let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, "the record refused the birth: " + r.error);
-            self.membrane.notify("journal", "append failed; " + i.id + " not admitted");
-            return "refused: journal " + r.error;
+        return self.admit_ask(i, Plan { kind: "app", change_class: "application" }, false);
+    }
+    // The ask admitted under the leader's word (or none): a person's job
+    // is a one-leaf workflow for a person, anything else a one-leaf
+    // workflow for the editor, the word bound into the admission's
+    // inputs — the class, the target, whom, under what obligation — so
+    // the leaf that runs it reads the same plan after any restart, and
+    // nothing is planned twice. An organization change for a child that
+    // is not the organism is refused before anything is admitted. The
+    // leader's word (`planned`) is honoured as the legacy path honoured
+    // it: a person's job by its kind, whatever the class line said; an
+    // answer that named no kind and no class leaves the defaults standing
+    // (`parsed` false), and the admission says so.
+    fn admit_ask(i: Intent, p: Plan, planned: Bool) -> String {
+        let class = if p.kind == "organism" { "organization" } else if len(p.change_class) > 0 { p.change_class } else { "application" };
+        if planned && p.kind != "organism" && p.kind != "person" && class == "organization" {
+            let why = "refused: plan names an organization change for a child that is not the organism (kind " + p.kind + ")";
+            let z = self.journal.append(self.journal.revision(), "intent.refused", i.id, why);
+            return why;
         }
-        let born_id = self.metabolism.offer_as(id, i, k);
-        let s = self.metabolism.find(id);
-        // settled already (in-tower performers answer synchronously);
-        // routed Work settles later and `on_task_settled` journals it.
-        // A Task the leader handed to a person is settled as far as the
-        // metabolism goes — the organism's part is over — but stays
-        // HANDED in the record until the person reports it done (GH
-        // #604 rule 4): no settlement row here.
-        if s.id != "" && self.task_state(id) != "handed" {
-            let r2 = self.journal.append(self.journal.revision(), "task." + s.disposition, id, s.detail);
-        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("objective", i.outcome);
+        b.string_field("from", i.from);
+        b.string_field("kind", if planned { p.kind } else { "app" });
+        b.string_field("class", class);
+        b.string_field("target", p.target);
+        b.string_field("assignee", p.assignee);
+        b.string_field("obligation", p.obligation);
+        b.string_field("narrative", p.narrative);
+        b.string_field("package", p.package);
+        b.string_field("by", if planned { p.by } else { "" });
+        b.bool_field("planned", planned);
+        b.bool_field("parsed", planned && p.parsed);
+        b.end_object();
+        let definition = if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
+        return self.run_workflow(WorkflowAsk { id: i.id, definition: definition, revision: 1, inputs: b.result(), from: i.from, to: i.to });
+    }
+    // The authored-definition API (card 18): a workflow the application
+    // defined (card 04), admitted (card 07) and started in the one engine
+    // of this scope. The id, or why not.
+    fn run_workflow(a: WorkflowAsk) -> String {
+        let id = self.admit_workflow(a);
+        if std::str::starts_with(id, "refused") || len(id) == 0 { return id; }
+        self.start_execution(id);
         return id;
+    }
+    // An admitted root asked of the engine, with the performer kind of
+    // every leaf the recipe bound: an edit leaf's is the editor, a person's
+    // the human performer, any other the routing policy's choice for it.
+    // A restart asks again for every admitted root not yet settled (card
+    // 13: the engine restores it from its admission).
+    fn start_execution(task_id: String) {
+        self.executions_asked = self.executions_asked + 1;
+        ExecutionAsked <- ExecutionAsk { scope: self.org_id, task_id: task_id, kinds: self.kinds_of(task_id) };
+    }
+    // "<key>=<kind>" per leaf of the root's own workflow, space-separated.
+    @unbounded
+    fn kinds_of(task_id: String) -> String {
+        let adm = self.recorded_admission(task_id);
+        if !adm.ok { return ""; }
+        let gap = self.catalog.decode_bound(adm.value.recipe);
+        if len(gap) > 0 { return ""; }
+        let mut out = "";
+        let mut i = 0;
+        while i < self.catalog.bound.len() {
+            let n = self.catalog.bound.get(i) or BoundNode { };
+            if n.kind == "work" {
+                let req = bound_request(n, task_id, n.parent);
+                let kind = if std::str::contains(n.requires, "edit") { "edit" }
+                else if std::str::contains(n.requires, "human") || std::str::contains(n.requires, "person") { "human" }
+                else { self.work.selection.select(req, 0, "") };
+                out = out + (if len(out) > 0 { " " } else { "" }) + n.member_key + "=" + kind;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The admission of a Task, decoded; not ok when none.
+    @unbounded
+    fn recorded_admission(task_id: String) -> DecodedAdmission {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.admitted" && e.entity == task_id { return decode_admission(e.body); }
+            i = i + 1;
+        }
+        return DecodedAdmission { };
+    }
+    // The leader's word bound into an ask's admission (card 18), read
+    // back as the plan the leaf runs under; `parsed` false when the ask
+    // was not planned, or the Task is not an ask's.
+    fn ask_plan_of(task_id: String) -> Plan {
+        let adm = self.recorded_admission(task_id);
+        if !adm.ok || len(adm.value.inputs) == 0 { return Plan { }; }
+        let x = adm.value.inputs;
+        return Plan {
+            org: self.org_id, task_id: task_id, work_id: "ask",
+            kind: std::json::find_string_field(x, "kind"), change_class: std::json::find_string_field(x, "class"),
+            target: std::json::find_string_field(x, "target"), assignee: std::json::find_string_field(x, "assignee"),
+            obligation: std::json::find_string_field(x, "obligation"), narrative: std::json::find_string_field(x, "narrative"),
+            package: std::json::find_string_field(x, "package"), by: std::json::find_string_field(x, "by"),
+            parsed: std::str::trim(std::json::find_field_raw(x, "planned")) == "true"
+        };
+    }
+    // Every admitted root of this owner's that has not settled is asked
+    // of the engine again after a restart; the engine restores each from
+    // its admission and the record's facts (card 13).
+    @unbounded
+    fn resume_executions() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.admitted" && owned_by(self.ownership.me, e.entity) {
+                let a = decode_admission(e.body);
+                if a.ok && len(a.value.parent_task) == 0 && !self.has_row("workflow.settled", e.entity) { self.start_execution(e.entity); }
+            }
+            i = i + 1;
+        }
+    }
+    // A root's workflow settled: the ask is answered as far as the
+    // organism goes; the membrane hears it.
+    fn on_workflow_settled(w: WorkflowSettlement) {
+        self.executions_settled = self.executions_settled + 1;
+        self.membrane.notify("task", w.task_id + " settled " + w.disposition + (if len(w.reason) > 0 { ": " + w.reason } else { "" }));
+    }
+    // The next durable id of this owner's, minted before anything is born
+    // so the record can hold the birth before the act (GH #604 rule 1).
+    fn next_id() -> String {
+        self.minted = self.minted + 1;
+        return own_prefix(self.ownership.me) + "t" + to_string(self.minted);
+    }
+    // The ask definitions, defined once: an application change (one edit
+    // leaf, prepared for review) and a person's job (one human leaf).
+    // Their leaves bind no objective of their own: the ask's is bound at
+    // admission.
+    fn define_asks() {
+        let d1 = self.catalog.define("ask-edit", 1, 1, "an ask: one change, prepared for review");
+        let l1 = self.catalog.leaf("ask-edit", 1, 0, "e", WorkRequest { requires: "edit", output_contract: "Patch" }, 1);
+        let d2 = self.catalog.define("ask-person", 1, 1, "an ask: a person's job");
+        let l2 = self.catalog.leaf("ask-person", 1, 0, "p", WorkRequest { requires: "human" }, 1);
     }
     // GH #646 workflow card 07: admit a defined workflow. The durable
     // fact precedes everything (GH #604 rule 1): the id is minted, the
@@ -2505,7 +2467,7 @@ locus Dna {
             // kept; one that was taken meanwhile is skipped.
             let mut skipped = 0;
             while (len(id) == 0 || self.task_id_taken(id, rev)) && skipped < 64 {
-                id = self.metabolism.next_id();
+                id = self.next_id();
                 skipped = skipped + 1;
             }
             if self.task_id_taken(id, rev) {
@@ -2513,6 +2475,10 @@ locus Dna {
             }
             let x = self.catalog.expand(id, a.definition, a.revision, self.admission_limits);
             if !x.ok { return self.refuse_task(id, rev, a, x.why); }
+            // card 18: a leaf that binds no objective of its own takes the
+            // ask's, from the inputs, before the recipe is bound
+            let objective = if len(a.inputs) > 0 { std::json::find_string_field(a.inputs, "objective") } else { "" };
+            if len(objective) > 0 { self.catalog.bind_objective(objective); }
             let body = encode_admission(AdmittedWorkflow {
                 task_id: id, definition: a.definition, revision: a.revision,
                 inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id,
@@ -2532,7 +2498,10 @@ locus Dna {
                 self.membrane.notify("journal", "append failed; workflow " + a.id + " not admitted");
                 return self.refuse_task(id, rev, a, "the record refused the admission: " + r.error);
             }
-            // the record moved under the decision: it is taken again
+            // the record moved under the decision: it is taken again — and
+            // an id the store's unique claim refused (GH #666: another
+            // body's birth) is not tried again; the next is minted
+            if r.error == "claimed" { id = ""; }
         }
         return self.refuse_ask(a, "the record moved under the admission " + to_string(tries) + " times");
     }
@@ -2775,21 +2744,6 @@ locus Dna {
         }
         return false;
     }
-    // GH #682: the Task already born for an intent, "" when none. A refusal
-    // is not remembered: a schedule offers its pending intent again once the
-    // reason (a budget, a grant) has passed.
-    @unbounded
-    fn task_of_intent(intent_id: String) -> String {
-        if len(intent_id) == 0 { return ""; }
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "task.born" && std::str::starts_with(e.body, intent_id + ": ") { return e.entity; }
-            i = i + 1;
-        }
-        return "";
-    }
     // GH #667: every `task.transfer_requested` naming this owner that a
     // member of this owner accepted (`task.transfer_accepted`) and this
     // controller has not yet handed is handed now, to the assignee the
@@ -2843,7 +2797,6 @@ locus Dna {
     // GH #666: the owner this body mints and claims for, handed to the
     // metabolism and the gateway once the ownership map is read.
     fn bind_owner() {
-        self.metabolism.namespace = self.ownership.me;
         self.gateway.namespace = self.ownership.me;
     }
     // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
@@ -3434,16 +3387,17 @@ locus Dna {
             }
             i = i + 1;
         }
-        self.metabolism.resume(tasks);
+        if tasks > self.minted { self.minted = tasks; }
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
         self.restore_cases();
         let completed = self.revisit_cases();
-        self.pend_born_tasks();
         self.reconcile_effects();
         self.fail_in_flight();
         self.note_unrecovered_intents();
-        self.resume_work();
+        // card 18: every admitted root not yet settled runs again in the
+        // one engine, from its admission
+        self.resume_executions();
         self.propose_persistent_concerns();
     }
     // GH #748: the raise that crosses the concern threshold is also the
@@ -3533,7 +3487,7 @@ locus Dna {
         }
     }
     // GH #604 rule 1, the shape from before it: an `intent.offered` with
-    // no `task.born` naming it was admitted and lost, or never admitted —
+    // no admission naming it (card 18) was admitted and lost, or never admitted —
     // the record cannot tell which, and work may already have run. It
     // is not re-offered; the record says so, and the asker asks again.
     @unbounded
@@ -3548,7 +3502,7 @@ locus Dna {
                 let mut k = i + 1;
                 while k < n {
                     let s = self.journal.read(k);
-                    if s.kind == "task.born" && std::str::starts_with(s.body, e.entity + ": ") { born = true; }
+                    if s.kind == "workflow.admitted" && std::json::find_string_field(s.body, "request") == e.entity { born = true; }
                     if s.kind == "intent.unrecovered" && s.entity == e.entity { noted = true; }
                     k = k + 1;
                 }
@@ -3578,165 +3532,6 @@ locus Dna {
             i = i + 1;
         }
         return if len(exact) > 0 { exact } else { summary };
-    }
-    // card 14: the Mutation a Work asked for, by the Work's id in the
-    // Mutation's own request row; "" when none.
-    @unbounded
-    fn mutation_of_work(work_id: String) -> String {
-        if len(work_id) == 0 { return ""; }
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "mutation.requested" && decode_binding(e.body).work_id == work_id { return e.entity; }
-            i = i + 1;
-        }
-        return "";
-    }
-    // card 14: a Mutation of the Task that no Work is bound to — a row
-    // from before this card, or one whose request row names no Work —
-    // is the Task's alone, as it always was: nothing of the Task resumes
-    // past it. "" when every Mutation of the Task is a Work's.
-    @unbounded
-    fn unbound_mutation_of(task_id: String) -> String {
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "mutation.proposed" && std::str::starts_with(e.body, "task " + task_id + " ") {
-                let mut is_bound = false;
-                let mut k = 0;
-                while k < n {
-                    let r = self.journal.read(k);
-                    if r.kind == "mutation.requested" && r.entity == e.entity && binds_work(decode_binding(r.body)) { is_bound = true; }
-                    k = k + 1;
-                }
-                if !is_bound { return e.entity; }
-            }
-            i = i + 1;
-        }
-        return "";
-    }
-    // F.15 by the assembly, when the Work that would have settled the
-    // Task is gone (a restart between the proposal and the outcome):
-    // the Task settles in the record from its Mutation's outcome.
-    fn settle_task_of(mutation_id: String, disposition: String, detail: String) {
-        let t = self.task_of_mutation(mutation_id);
-        if len(t) == 0 || id_number(t, "t") < 0 { return; }
-        // card 15: an admitted execution has one root terminal writer, its
-        // workflow; a Mutation's outcome reaches it through the Work that
-        // asked, never by settling the Task here
-        if self.workflow_admitted(t) { return; }
-        if self.task_state(t) != "pending" { return; }
-        let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
-    }
-    // A Task whose restart fell between its `task.born` and its
-    // `task.pending` is unsettled all the same: the record says so first,
-    // so every settlement (each requires `pending`) can end it — its plan
-    // resumed, or its in-flight Mutation's outcome (the second review of
-    // #618). Bounded by the Tasks born.
-    @unbounded
-    fn pend_born_tasks() {
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "task.born" && self.task_state(e.entity) == "" && !self.workflow_admitted(e.entity) && !self.case_admitted(e.entity) {
-                let x = self.journal.append(self.journal.revision(), "task.pending", e.entity, "after a restart: born, and not yet pending when the organization stopped");
-            }
-            i = i + 1;
-        }
-    }
-    // GH #604 rule 2: a Task born and not settled re-enters the tower
-    // after a restart from its last durable state. With a plan in the
-    // record it proceeds under that plan — never replanned; without one
-    // it is planned now, for the first time. A Task whose Mutation is
-    // beyond proposal is left to that Mutation's outcome (its Review is
-    // rehydrated; `settle_task_of` settles it), and a handed Task is a
-    // person's, waiting.
-    @unbounded
-    fn resume_work() {
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            // card 07: a Task with an authoritative admission is a workflow
-            // execution, never legacy edit work — with or without its
-            // `task.born` summary, and whatever its legacy state says
-            // card 16: a case is a person's — handed, never edit work
-            if e.kind == "task.born" && !self.workflow_admitted(e.entity) && !self.case_admitted(e.entity) {
-                let id = e.entity;
-                let state = self.task_state(id);
-                if state == "pending" || state == "" {
-                    // The Task's Mutations are found by the Task and the Work
-                    // they name, anywhere in the journal: read as record +
-                    // ledger, a Mutation (the record's) comes before the
-                    // birth it answers (the ledger's), and a scan forward
-                    // from the birth missed it (DNA workflow card 02). The
-                    // plans are the ledger's, like the birth, and follow it.
-                    let colon = std::str::index_of(e.body, ": ");
-                    let objective = if colon < 0 { e.body } else { e.body[(colon + 2)..len(e.body)] };
-                    // A Mutation of the Task that no Work is bound to — from
-                    // before card 14 — is the Task's alone: nothing of the
-                    // Task resumes past it, and its outcome settles the Task.
-                    if len(self.unbound_mutation_of(id)) == 0 {
-                        // card 14: each Work the record planned for this Task
-                        // resumes under its own plan — the last plan row for
-                        // that Work — with the request it was asked with, as
-                        // recorded; not when the Work's own Mutation is in the
-                        // record, whose outcome settles it. A plan from before
-                        // this card binds no Work: it is the Task's one Work,
-                        // resumed as `<task>/resumed`, as before.
-                        let mut planned = 0;
-                        let mut k = i + 1;
-                        while k < n {
-                            let s = self.journal.read(k);
-                            if s.kind == "task.planned" && s.entity == id {
-                                let wid = planned_work_of(id, s.body);
-                                let mut later = false;
-                                let mut m = k + 1;
-                                while m < n {
-                                    let t = self.journal.read(m);
-                                    if t.kind == "task.planned" && t.entity == id && planned_work_of(id, t.body) == wid { later = true; }
-                                    m = m + 1;
-                                }
-                                if !later {
-                                    planned = planned + 1;
-                                    if len(self.mutation_of_work(wid)) == 0 {
-                                        let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, under the plan in the record for " + wid + "; not replanned");
-                                        let b = decode_binding(s.body);
-                                        let mut req = WorkRequest { task_id: id, work_id: wid, objective: objective };
-                                        if binds_work(b) { req = request_of_binding(b); }
-                                        self.execute_plan(req, Plan {
-                                            org: self.org_id, task_id: id, work_id: wid,
-                                            kind: std::json::find_string_field(s.body, "kind"),
-                                            change_class: std::json::find_string_field(s.body, "change_class"),
-                                            target: std::json::find_string_field(s.body, "target"),
-                                            count: std::json::find_int_field(s.body, "count"),
-                                            narrative: std::json::find_string_field(s.body, "narrative"),
-                                            package: std::json::find_string_field(s.body, "package"),
-                                            by: std::json::find_string_field(s.body, "by"),
-                                            assignee: std::json::find_string_field(s.body, "assignee"),
-                                            obligation: std::json::find_string_field(s.body, "obligation"),
-                                            parsed: true
-                                        });
-                                    }
-                                }
-                            }
-                            k = k + 1;
-                        }
-                        // a Task resumed before is resumed again: a restart that
-                        // stopped between its `task.resumed` and the dispatch left
-                        // it unfinished, and only its settlement ends it
-                        if planned == 0 {
-                            let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, before any plan; planned now for the first time");
-                            self.on_work_requested(WorkRequest { task_id: id, work_id: id + "/resumed", objective: objective, target: "", requires: "edit" });
-                        }
-                    }
-                }
-            }
-            i = i + 1;
-        }
     }
     // The Mutation proposed for a Task, by the Task it names; "" when none.
     @unbounded
@@ -3786,7 +3581,6 @@ locus Dna {
                 // an outcome — or an earlier failure — after them is the
                 // Mutation's own state, and this fails nothing twice
                 if last == "requested" || last == "proposed" || (last == "worktree" && !removed) || last == "located" {
-                    self.settle_task_of(id, "failed", "in flight when the organization stopped");
                     let x = self.journal.append(self.journal.revision(), "mutation.failed", id, "in flight (" + last + ") when the organization stopped; nothing resumes an attempt");
                     let y = self.gateway.workspaces.remove(id);
                 }
@@ -3816,11 +3610,9 @@ locus Dna {
         b.int_field("rehydrated", self.rehydrated);
         b.int_field("applied", self.applied);
         b.int_field("restarts_requested", self.restarts_requested);
-        b.int_field("workflow_revision", self.metabolism.workflow_revision);
         b.int_field("journal_revision", self.journal.revision());
-        b.int_field("tasks_settled", self.metabolism.settled_count());
-        b.int_field("work_requests", self.work.requests);
-        b.int_field("attempts", self.work.attempts_made);
+        b.int_field("executions_asked", self.executions_asked);
+        b.int_field("executions_settled", self.executions_settled);
         b.string_field("routing", self.work.policy());
         b.string_field("review_policy", self.review_policy.name());
         b.string_field("deployment", self.deployment.kind());

@@ -29,6 +29,28 @@ main locus App {
         // pointed at the project in run(); never at the working directory
         j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-retired" };
     }
+    // card 18: an ask is admitted once the leader's word lands; the
+    // execution admitted under the intent's identity, "" when none yet.
+    @unbounded
+    fn admitted(intent: String) -> String {
+        let mut tries = 0;
+        while tries < 300 {
+            let mut i = 0;
+            while i < self.one.journal.revision() {
+                let e = self.one.journal.read(i);
+                if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == intent { return e.entity; }
+                i = i + 1;
+            }
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn until_handed(case: String) {
+        let mut tries = 0;
+        while tries < 300 && len(self.last("task.handed", case)) == 0 { std::time::sleep(20ms); tries = tries + 1; }
+    }
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -54,14 +76,16 @@ main locus App {
         std::test::assert_eq_str(self.one.admissible("ana"), "", "a chain that comes back on itself is unassigned");
 
         // a fresh job planned for noor goes to dev
-        let t = self.one.ask(dna::Intent { id: "i1", outcome: "call the supplier about the pallets", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
-        std::time::sleep(300ms);
+        let a1 = self.one.ask(dna::Intent { id: "i1", outcome: "call the supplier about the pallets", from: "riley" });
+        let t = self.admitted("i1") + ".s0.p";
+        self.until_handed(t);
         let handed = self.last("task.handed", t);
         std::test::assert(std::json::find_string_field(handed, "assignee") == "dev" && std::json::find_string_field(handed, "retired_assignee") == "noor", "handed to the successor, not the retired person: " + handed);
         // dev retires too, to mara: the next job planned for noor goes to mara
         let r5 = self.one.journal.append(self.one.journal.revision(), "person.retired", "dev", "{\"by\": \"riley\", \"to\": \"mara\", \"transferred\": 0}");
-        let t2 = self.one.ask(dna::Intent { id: "i2", outcome: "call the supplier about the crates", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
-        std::time::sleep(300ms);
+        let a2 = self.one.ask(dna::Intent { id: "i2", outcome: "call the supplier about the crates", from: "riley" });
+        let t2 = self.admitted("i2") + ".s0.p";
+        self.until_handed(t2);
         let handed2 = self.last("task.handed", t2);
         std::test::assert(std::json::find_string_field(handed2, "assignee") == "mara" && std::json::find_string_field(handed2, "retired_assignee") == "noor", "a retired successor passes the work on: " + handed2);
 

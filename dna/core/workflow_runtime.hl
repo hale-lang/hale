@@ -44,7 +44,7 @@ locus WorkflowRuntime {
     params {
         scope: String = "org";
         journal: Journal = MemJournal { };
-        work: WorkSystem = WorkSystem { };
+        work: Performing = NoPerformers { };
         p: WorkflowProjection = WorkflowProjection { };
         // The lease this scope's committer runs under (card 12b): a key,
         // this holder's name, the fencing token it was granted, and the
@@ -134,6 +134,9 @@ locus WorkflowRuntime {
     }
     // The clock moves; the lease is judged at the new time.
     fn tick(now: Int) { self.now = now; }
+    // card 18: the record this runtime commits to, when it is the
+    // assembly's own (a journal is an interface, handed after birth).
+    fn adopt(j: Journal) { self.journal = j; }
     fn fence() -> Fence {
         return Fence { key: self.lease_key, holder: self.holder, token: self.token, now: self.now };
     }

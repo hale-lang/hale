@@ -15,7 +15,8 @@
 
 import "../core" as dna;
 
-// A journal that answers the first `task.born` under `acme:t1` as a
+// A journal that answers the first birth under `acme:t1` (card 18: the
+// admission) as a
 // claim already taken — what the store says when another writer's row
 // got there first — and holds everything else.
 locus ClaimedOnce {
@@ -24,7 +25,7 @@ locus ClaimedOnce {
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
-        if kind == "task.born" && entity == "acme:t1" && self.refused == 0 {
+        if (kind == "task.born" || kind == "workflow.admitted") && entity == "acme:t1" && self.refused == 0 {
             self.refused = 1;
             return dna::AppendResult { error: "claimed", expected: expected, actual: self.inner.revision() };
         }
@@ -51,7 +52,8 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
-            ownership: dna::Ownership { text: "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n", me: "acme", me_env: "" }
+            ownership: dna::Ownership { text: "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n", me: "acme", me_env: "" },
+            org_id: "acme"
         };
         // a body that names no owner over the same map
         nobody: dna::Dna = dna::Dna {
@@ -62,7 +64,8 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
-            ownership: dna::Ownership { text: "org = acme\norg/collections = north\n", me_env: "" }
+            ownership: dna::Ownership { text: "org = acme\norg/collections = north\n", me_env: "" },
+            org_id: "nobody"
         };
         // acme's body over a store that has `acme:t1` claimed already
         contended: dna::Dna = dna::Dna {
@@ -74,7 +77,8 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
-            ownership: dna::Ownership { text: "org = acme\nacme: alice\n", me: "acme", me_env: "" }
+            ownership: dna::Ownership { text: "org = acme\nacme: alice\n", me: "acme", me_env: "" },
+            org_id: "contended"
         };
         // north's body, over the same map
         north: dna::Dna = dna::Dna {
@@ -85,11 +89,26 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
-            ownership: dna::Ownership { text: "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n", me: "north", me_env: "" }
+            ownership: dna::Ownership { text: "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n", me: "north", me_env: "" },
+            org_id: "north"
         };
         // a Review over a change to the map, approved by both owners
         both: dna::Review = dna::Review { review_id: "m1", subject_digest: "d1", required_authority: "board", author: "editor", approvers: "acme=alice,carol north=bob" };
         veto: dna::Review = dna::Review { review_id: "m2", subject_digest: "d2", required_authority: "board", author: "editor", approvers: "acme=alice north=bob" };
+    }
+    @unbounded
+    fn until(j: dna::Journal, kind: String, entity: String) {
+        let mut tries = 0;
+        while tries < 400 {
+            let mut i = 0;
+            while i < j.revision() {
+                let e = j.read(i);
+                if e.kind == kind && e.entity == entity { return; }
+                i = i + 1;
+            }
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
     }
     fn last(j: dna::Journal, kind: String) -> String {
         let mut i = j.revision() - 1;
@@ -140,39 +159,46 @@ main locus App {
         std::test::assert(dna::effect_family("acme:apply:c0ffee") == "apply" && dna::effect_family("apply:c0ffee") == "apply" && dna::effect_family("rollback:acme:m2:base1") == "rollback", "a key's family, prefixed or not");
         std::test::assert(dna::effect_subject("acme:apply:c0ffee") == "c0ffee" && dna::effect_subject("apply:c0ffee") == "c0ffee" && dna::effect_subject("rollback:acme:m2:base1") == "acme:m2:base1", "…and its subject");
         // ---- admission
-        let mine = self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }, dna::Knobs { routed: true });
+        let mine = self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" });
         std::test::assert_eq_str(mine, "acme:t1", "an intent for acme's position is admitted by acme's body, under acme's id: " + mine);
         // GH #682: the same intent offered again (the host's relay of the row a
         // head also published, or a re-delivery) is admitted once
         let rows_before = self.acme.journal.revision();
-        std::test::assert_eq_str(self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }, dna::Knobs { routed: true }), "acme:t1", "offered again by id: the Task born for it answers");
+        std::test::assert_eq_str(self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }), "acme:t1", "offered again by id: the Task born for it answers");
         std::test::assert_eq_int(self.acme.journal.revision(), rows_before, "and nothing more is journaled");
-        let theirs = self.acme.ask(dna::Intent { id: "i2", outcome: "call the collections agency", from: "alice", to: "org/collections" }, dna::Knobs { routed: true });
+        let theirs = self.acme.ask(dna::Intent { id: "i2", outcome: "call the collections agency", from: "alice", to: "org/collections" });
         std::test::assert_eq_str(theirs, "refused: not this organization's to admit — `org/collections` is owned by north, not acme", "an intent for north's position is refused by name");
         std::test::assert(std::str::contains(self.last(self.acme.journal, "intent.refused"), "owned by north"), "the refusal is a row: " + self.last(self.acme.journal, "intent.refused"));
-        let unnamed = self.nobody.ask(dna::Intent { id: "i3", outcome: "anything", from: "alice", to: "" }, dna::Knobs { routed: true });
+        let unnamed = self.nobody.ask(dna::Intent { id: "i3", outcome: "anything", from: "alice", to: "" });
         std::test::assert(std::str::contains(unnamed, "this body names no owner"), "a body that names no owner admits nothing over a shared record: " + unnamed);
         // ---- a taken claim: the loser mints the next id
-        let again = self.contended.ask(dna::Intent { id: "i9", outcome: "file the return", from: "alice", to: "" }, dna::Knobs { routed: true });
+        let again = self.contended.ask(dna::Intent { id: "i9", outcome: "file the return", from: "alice", to: "" });
         std::test::assert_eq_str(again, "acme:t2", "the first id was claimed elsewhere; the birth lands under the next: " + again);
         std::test::assert_eq_str(self.last(self.contended.journal, "intent.refused"), "", "…and nothing was refused");
-        std::test::assert(std::str::contains(self.last(self.contended.journal, "task.born"), "file the return"), "the birth is a row under the re-minted id");
+        std::test::assert(std::str::contains(self.last(self.contended.journal, "workflow.admitted"), "\"request\": \"i9\"") && std::str::contains(self.last(self.contended.journal, "workflow.admitted"), "file the return"), "the birth is the admission under the re-minted id (card 18)");
         // ---- the count restores from this owner's births alone
         self.acme.journal.append(self.acme.journal.revision(), "task.born", "north:t9", "i: theirs");
         self.acme.journal.append(self.acme.journal.revision(), "task.born", "acme:t5", "i: ours, from before");
         self.acme.rehydrate();
-        std::test::assert_eq_str(self.acme.metabolism.next_id(), "acme:t6", "after a restart the next id follows acme's own highest, not north's");
+        std::test::assert_eq_str(self.acme.next_id(), "acme:t6", "after a restart the next id follows acme's own highest, not north's");
         // ---- a job for north's member is offered, not handed
-        self.acme.execute_plan(dna::WorkRequest { task_id: "acme:t7", objective: "chase the agency" }, dna::Plan { kind: "person", assignee: "bob", narrative: "bob calls them", by: "leader" });
+        // card 18: a person's job enters as an ask the leader called one; the
+        // case the engine's human leaf becomes is handed — or offered
+        let t7 = self.acme.admit_ask(dna::Intent { id: "i7", outcome: "chase the agency", from: "riley" }, dna::Plan { kind: "person", assignee: "bob", narrative: "bob calls them", by: "leader", parsed: true }, true);
+        std::test::assert_eq_str(t7, "acme:t7", "admitted: " + t7);
+        let c7 = t7 + ".s0.p";
+        self.until(self.acme.journal, "task.transfer_requested", c7);
         let offered = self.last(self.acme.journal, "task.transfer_requested");
-        std::test::assert(std::str::contains(offered, "\"owner\": \"acme\"") && std::str::contains(offered, "\"to\": \"north\"") && std::str::contains(offered, "\"assignee\": \"bob\""), "the job is offered to north for bob: " + offered);
-        std::test::assert(!std::str::contains(self.last(self.acme.journal, "task.handed"), "acme:t7"), "…and not handed by acme");
-        self.acme.execute_plan(dna::WorkRequest { task_id: "acme:t8", objective: "close the books" }, dna::Plan { kind: "person", assignee: "alice", narrative: "alice closes them", by: "leader" });
+        std::test::assert(std::str::contains(offered, "\"owner\": \"acme\"") && std::str::contains(offered, "\"to\": \"north\"") && std::str::contains(offered, "\"assignee\": \"bob\""), "the job for north's member is offered to north: " + offered);
+        std::test::assert(!std::str::contains(self.last(self.acme.journal, "task.handed"), c7), "…and not handed by acme");
+        let t8 = self.acme.admit_ask(dna::Intent { id: "i8", outcome: "close the books", from: "riley" }, dna::Plan { kind: "person", assignee: "alice", narrative: "alice closes them", by: "leader", parsed: true }, true);
+        let c8 = t8 + ".s0.p";
+        self.until(self.acme.journal, "task.handed", c8);
         std::test::assert(std::str::contains(self.last(self.acme.journal, "task.handed"), "\"assignee\": \"alice\""), "a job for acme's own member is handed as ever");
         // north's controller hands it only once one of its members accepted
-        self.north.journal.append(self.north.journal.revision(), "task.transfer_requested", "acme:t7", offered);
+        self.north.journal.append(self.north.journal.revision(), "task.transfer_requested", c7, offered);
         std::test::assert_eq_int(self.north.admit_transfers(), 0, "nothing to hand before an acceptance");
-        self.north.journal.append(self.north.journal.revision(), "task.transfer_accepted", "acme:t7", "{\"owner\": \"north\", \"from\": \"acme\", \"by\": \"bob\", \"assignee\": \"bob\", \"note\": \"\"}");
+        self.north.journal.append(self.north.journal.revision(), "task.transfer_accepted", c7, "{\"owner\": \"north\", \"from\": \"acme\", \"by\": \"bob\", \"assignee\": \"bob\", \"note\": \"\"}");
         std::test::assert_eq_int(self.north.admit_transfers(), 1, "accepted: handed once");
         let handed = self.last(self.north.journal, "task.handed");
         std::test::assert(std::str::contains(handed, "\"assignee\": \"bob\"") && std::str::contains(handed, "\"by\": \"north\"") && std::str::contains(handed, "\"transferred_from\": \"acme\"") && std::str::contains(handed, "\"accepted_by\": \"bob\""), "north hands it to bob in its own name, saying where it came from: " + handed);
