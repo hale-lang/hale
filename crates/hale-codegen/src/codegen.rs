@@ -20117,6 +20117,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("value_to_string inside a function body");
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i32_t = self.context.i32_type();
+        // GH #885: the same demangling the no-payload names array
+        // does — the two are the whole enum-rendering surface, and
+        // every print path (println/print, f-string, to_string,
+        // `String + x`) reaches one of them through `value_to_string`.
+        let display = self.enum_display_name(enum_name);
 
         // Entry block is whatever the caller is in. Load the tag
         // there, then jump to a dispatch block that switches.
@@ -20152,8 +20157,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .context
                 .append_basic_block(func, &format!("enum.ts.v{}", idx));
             self.builder.position_at_end(case_bb);
-            let mut acc =
-                self.global_string(&format!("{}::{}", enum_name, vinfo.name));
+            let mut acc = self
+                .global_string(&format!("{}::{}", display, vinfo.name));
             if !vinfo.field_tys.is_empty() {
                 let open_paren = self.global_string("(");
                 acc = self
@@ -32240,6 +32245,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         mangled.to_string()
     }
 
+    /// GH #885: the name an enum value PRINTS under.
+    ///
+    /// An imported declaration is mangled (`__lib_<alias>_<stem>_E`),
+    /// and the render path spelled that name straight into the text,
+    /// so `println(sample::Color::Red)` produced
+    /// `__lib_lib_types_Color::Red` — a symbol that appears nowhere in
+    /// the author's program, from every print path.
+    ///
+    /// The answer is the DECLARATION's own name (`Color::Red`), which
+    /// is what `spec/semantics.md` § *Rendering values as text*
+    /// specifies (`Enum::Variant`) and what the same enum renders as
+    /// in its own seed. Not the alias: an alias is per-importing-file
+    /// scenery (GH #746 even scopes it), so `alias::Color::Red` would
+    /// make one value's rendering depend on which file did the
+    /// printing. Same reverse table the diagnostics and the
+    /// observation manifest demangle through — imports first, then
+    /// the stdlib's static `PATH_RENAMES` — and only `__` names,
+    /// which are the ones no author can have written.
+    pub(crate) fn enum_display_name(&self, mangled: &str) -> String {
+        if !mangled.starts_with("__") {
+            return mangled.to_string();
+        }
+        for (segs, m) in &self.import_renames {
+            if m == mangled {
+                if let Some(last) = segs.last() {
+                    return last.clone();
+                }
+            }
+        }
+        for (segs, m) in hale_stdlib::PATH_RENAMES {
+            if *m == mangled {
+                if let Some(last) = segs.last() {
+                    return last.to_string();
+                }
+            }
+        }
+        mangled.to_string()
+    }
+
     pub(crate) fn global_string(&mut self, s: &str) -> PointerValue<'ctx> {
         let g = self
             .builder
@@ -32566,8 +32610,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let mut entries: Vec<inkwell::values::PointerValue<'ctx>> = Vec::new();
+        // GH #885: an IMPORTED enum prints under its declaration's
+        // own name, not the mangled symbol its declaration was
+        // renamed to.
+        let display = self.enum_display_name(enum_name);
         for v in &info.variants {
-            let label = format!("{}::{}", enum_name, v.name);
+            let label = format!("{}::{}", display, v.name);
             entries.push(self.global_string(&label));
         }
         let array_ty = ptr_t.array_type(entries.len() as u32);
