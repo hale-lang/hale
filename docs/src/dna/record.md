@@ -24,6 +24,19 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
   the new tail; `seq` is the position in the record, never a promise
   made before the append. A lost race is retried until the row lands,
   not given up on. Two people answering at once lose nothing.
+- **A reader's view of the record only ever grows.** The chain never
+  loses a row (a reconcile swaps in a whole chain rather than rewinding
+  the ref), so a read that comes back with fewer rows than the reader
+  holds — or with no chain at all — is a read that failed, not a
+  shorter record: `git` unable to run on a loaded machine, the
+  repository out of reach for a moment. The reader keeps what it had,
+  counts the failure, says "nothing moved", and tries again at its next
+  refresh. This matters more than it sounds: how often a source has
+  raised a concern, which Review is open and which Task is in flight
+  are not numbers the organization keeps but counts it makes by reading
+  its own record, so an organization that let one failed read empty its
+  view would start every one of them again from nothing — and say
+  nothing about it.
 - **Authorship is git's.** The organization's events carry its
   configured author; a person's facts — a verdict, an intent through
   the CLI, a host's crash accounting, a node's reports — carry the

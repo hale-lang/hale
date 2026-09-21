@@ -1,0 +1,162 @@
+// dna/tests/concern_restart_test.hl — GH #748: a concern's occurrence is
+// the record's own count, and nothing short of the record losing rows
+// may restart it.
+//
+// How often a source has raised a concern is not a number the organism
+// keeps: it is counted, at every concern, from the `concern.raised` rows
+// in its own record. So two things have to hold, and both are here.
+//
+//   - A reload of the record never shortens what the organism holds.
+//     The record is append-only (the reconcile of GH #603 rebuilds every
+//     local row rather than rewinding the chain), so a chain that comes
+//     back shorter — or empty — is a read that failed, never a shorter
+//     record: `git` losing a race with a repack, a fork refused under
+//     load, the repository unreachable for a moment. The view used to be
+//     emptied first and refilled from those reads, so one failed read
+//     left the organism with no record at all: the next concern from a
+//     source that had raised two was its first, the count never reached
+//     the threshold, and the concern never became a proposal.
+//   - A restart continues the count, because the count is the record's.
+//     What a restart cannot do by itself is finish work the record shows
+//     was owed: a source whose concerns crossed the threshold while the
+//     organism was stopped is proposed when it comes back.
+
+import "../core" as dna;
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const WORKER: String = "org/app/worker";
+const MAILER: String = "org/app/mailer";
+
+main locus App {
+    params {
+        repo: String = "";
+        // a second reader of the same record, for the rows a stopped
+        // organism left and for the load contract itself
+        j: dna::GitJournal = dna::GitJournal { };
+        one: dna::Dna = dna::Dna { };
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { out = std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return out;
+    }
+    // which occurrence the last concern from `entity` was answered as
+    fn occurrence(entity: String) -> Int {
+        return std::json::find_int_field(self.last("concern.raised", entity), "occurrence");
+    }
+    fn raise(entity: String, request: String) {
+        self.one.on_concern(dna::Concern { source: entity, what: "mail backlog behind fulfilment", severity: 2, request: request });
+    }
+    // one organism over the record in `self.repo`; called again where a
+    // restart belongs
+    fn born() {
+        self.one = dna::Dna {
+            journal: dna::GitJournal { repo: self.repo, author: "dna" },
+            verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: self.repo + "/.hale/dna/evidence" }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
+            deployment: dna::NoDeployment { },
+            org_id: "cr"
+        };
+    }
+    fn put(kind: String, entity: String, body: String) {
+        let r = self.j.append(self.j.revision(), kind, entity, body);
+        std::test::assert(r.ok, "seeded " + kind + " " + entity + ": " + r.error);
+    }
+    run() {
+        let repo = "/tmp/dna-concern-restart-" + to_string(std::process::pid());
+        self.repo = repo;
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/main.hl", "fn main() { println(\"app\"); }\n") or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "git init: " + init.stderr);
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        self.j = dna::GitJournal { repo: repo, author: "dna" };
+        self.born();
+
+        // ---- two concerns from one worker, counted from the record
+        self.raise(WORKER, "c1");
+        std::test::assert_eq_int(self.occurrence(WORKER), 1, "the first concern is the first: " + self.last("concern.raised", WORKER));
+        self.raise(WORKER, "c2");
+        std::test::assert_eq_int(self.occurrence(WORKER), 2, "the second is the second: " + self.last("concern.raised", WORKER));
+        std::test::assert_eq_int(self.rows("concern.proposed", WORKER), 0, "two is under the threshold");
+
+        // ---- the record cannot be read for a moment
+        let held = self.one.journal.revision();
+        let jmoved = self.j.refresh();
+        let jheld = self.j.revision();
+        let jhead = self.j.head();
+        std::test::assert(jheld >= 2 && len(jhead) == 40, "the second reader holds the same record: " + to_string(jheld));
+        let away = repo + ".away";
+        let hide = sh("mv\n" + repo + "\n" + away);
+        std::test::assert_eq_int(hide.code, 0, "the record is unreachable: " + hide.stderr);
+        let moved = self.one.journal.refresh();
+        let jfailed = self.j.refresh();
+        let back = sh("mv\n" + away + "\n" + repo);
+        std::test::assert_eq_int(back.code, 0, "and reachable again: " + back.stderr);
+        std::test::assert(!moved && !jfailed, "a read that failed is not a chain that moved");
+        std::test::assert_eq_int(self.one.journal.revision(), held, "the organism still holds every row of its own record");
+        std::test::assert_eq_int(self.j.revision(), jheld, "and so does the second reader");
+        std::test::assert_eq_str(self.j.head(), jhead, "at the head it read it at");
+        std::test::assert(self.j.reads_refused >= 1, "the failed read is counted, not taken for a shorter record");
+        std::test::assert(std::str::contains(self.j.last_error, "could not be read"), "and says so: " + self.j.last_error);
+
+        // ---- so the third concern is the third, and earns its proposal
+        self.raise(WORKER, "c3");
+        std::test::assert_eq_int(self.occurrence(WORKER), 3, "the third concern is the third: " + self.last("concern.raised", WORKER));
+        std::test::assert_eq_int(self.rows("concern.raised", WORKER), 3, "three concerns, one per request");
+        std::test::assert_eq_int(self.rows("concern.proposed", WORKER), 1, "and the third is proposed as knowledge");
+
+        // ---- a source whose concerns crossed the threshold while the
+        //      organism was stopped: three raises in the record, and no
+        //      proposal — the organism stopped between the two
+        let caught_up = self.j.refresh();
+        self.put("concern.raised", MAILER, dna::concern_body("post is delivered twice", 2, 1, "m1"));
+        self.put("concern.raised", MAILER, dna::concern_body("post is delivered twice", 2, 2, "m2"));
+        self.put("concern.raised", MAILER, dna::concern_body("post is delivered twice", 2, 3, "m3"));
+
+        // ---- it comes back
+        self.born();
+        std::test::assert_eq_int(self.rows("concern.proposed", MAILER), 1, "the concern it owed is proposed when it comes back");
+        let proposed = self.last("knowledge.proposed", "");
+        std::test::assert(std::str::contains(proposed, "\"author\": \"" + MAILER + "\"") && std::str::contains(proposed, "\"target\": \"org/app\"") && std::str::contains(proposed, "\"class\": \"concern\""), "by its source, bound to its parent: " + proposed);
+        std::test::assert(std::str::contains(self.last("concern.proposed", MAILER), "3 raise(s)"), "after the raises the record holds: " + self.last("concern.proposed", MAILER));
+        std::test::assert(std::str::contains(self.last("review.requested", ""), "post is delivered twice"), "and the Board's Review says what the concern said: " + self.last("review.requested", ""));
+        std::test::assert_eq_int(self.rows("concern.proposed", WORKER), 1, "one already proposed is not proposed again");
+
+        // ---- and the count continues across the restart
+        self.raise(WORKER, "c4");
+        std::test::assert_eq_int(self.occurrence(WORKER), 4, "the fourth concern is the fourth: " + self.last("concern.raised", WORKER));
+        self.raise(MAILER, "m4");
+        std::test::assert_eq_int(self.occurrence(MAILER), 4, "and the rows a stopped organism left are counted too");
+
+        // ---- a second restart proposes nothing again
+        self.born();
+        std::test::assert_eq_int(self.rows("concern.proposed", MAILER), 1, "a restart over a proposed concern proposes nothing");
+        std::test::assert_eq_int(self.rows("concern.proposed", WORKER), 1, "for either source");
+
+        let gone = sh("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }

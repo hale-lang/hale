@@ -177,11 +177,19 @@ $ hale dna concern raise org/trio/worker mail backlog behind fulfilment --severi
 concern raised by org/trio/worker: mail backlog behind fulfilment
 ```
 
-Each is `concern.raised` in the record. Three from one source and it
-becomes a proposal — by that source, bound to its parent, a concern
-by the tower rule — and lands in your queue for ratification. A
-source with no parent has nothing to bind to and is refused, saying
-so.
+Each is `concern.raised` in the record, carrying which raise it is
+(`occurrence`). Three from one source and it becomes a proposal — by
+that source, bound to its parent, a concern by the tower rule — and
+lands in your queue for ratification. A source with no parent has
+nothing to bind to and is refused, saying so.
+
+The count is the record's, not a number the organization keeps, so
+restarting it changes nothing: the fourth concern is still the
+fourth. What a restart *does* pick up is a proposal left owed — the
+raise that reaches three is also the raise that proposes, so an
+organization stopped between the two comes back to a source over the
+threshold with nothing proposed for it, which no further concern may
+ever arrive to fix. It proposes each of those once, at birth.
 
 ## What it adds up to
 
