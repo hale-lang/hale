@@ -127,8 +127,6 @@ crates/hale-cli/tests/replay_cli.rs#17 b86d0dae062a149a
 crates/hale-cli/tests/replay_cli.rs#2 e17bb979621ac088
 crates/hale-cli/tests/replay_cli.rs#3 ae3b10bc0d84db2a
 crates/hale-cli/tests/replay_cli.rs#4 82b3daf3d74e79e4
-crates/hale-cli/tests/replay_cli.rs#5 a664959899b59a2c
-crates/hale-cli/tests/replay_cli.rs#6 ca2f585ef8f64e58
 crates/hale-cli/tests/replay_cli.rs#7 78922a4aa4ea28c6
 crates/hale-cli/tests/replay_cli.rs#8 ff3b32fa4150221e
 crates/hale-cli/tests/replay_cli.rs#9 e4c2a028e4502903
@@ -415,12 +413,10 @@ crates/hale-codegen/tests/cross_locus_from_method.rs#5 0a57b3f72f13b86d
 crates/hale-codegen/tests/cross_locus_from_method.rs#6 4dc3ef9029ded8d0
 crates/hale-codegen/tests/cross_locus_from_method.rs#7 fcd7b15eda245808
 crates/hale-codegen/tests/cross_seed_imports.rs#0 19c45840adcf5be3
-crates/hale-codegen/tests/cross_seed_imports.rs#1 7ba49c53bd84fd5d
 crates/hale-codegen/tests/cross_seed_imports.rs#2 89a7431e3e28532a
 crates/hale-codegen/tests/cross_seed_imports.rs#3 f2c1228edb650960
 crates/hale-codegen/tests/cross_seed_imports.rs#4 d4e741f73d4026f0
 crates/hale-codegen/tests/cross_seed_imports.rs#5 7d5cf57defcf548e
-crates/hale-codegen/tests/cross_seed_imports.rs#7 f2c1228edb650960
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#0 0bf5244b2cba771c
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#1 0bf5244b2cba771c
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#2 a3ae8b631fccba11
@@ -791,7 +787,6 @@ crates/hale-codegen/tests/interface_return.rs#0 3f45c0738d5f7ed6
 crates/hale-codegen/tests/interface_return.rs#1 7d560203c2c14fdb
 crates/hale-codegen/tests/interface_return.rs#2 2fda2ba302d481ef
 crates/hale-codegen/tests/io_error_fallible.rs#1 d561350ec81ea74d
-crates/hale-codegen/tests/io_error_fallible.rs#11 865d341109268295
 crates/hale-codegen/tests/io_error_fallible.rs#12 865d341109268295
 crates/hale-codegen/tests/io_error_fallible.rs#2 865d341109268295
 crates/hale-codegen/tests/io_error_fallible.rs#3 dd75dd154acf19a1
@@ -932,7 +927,6 @@ crates/hale-codegen/tests/module_decls.rs#3 865d341109268295
 crates/hale-codegen/tests/module_decls.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/module_decls.rs#5 06275eefe8969f6c
 crates/hale-codegen/tests/module_decls.rs#6 8e9ab37deede98cd
-crates/hale-codegen/tests/module_decls.rs#9 f559439edf093aeb
 crates/hale-codegen/tests/nested_long_lived_child.rs#0 477865f8b91baeea
 crates/hale-codegen/tests/nested_long_lived_child.rs#1 a79d0bb96c962178
 crates/hale-codegen/tests/nested_long_lived_child.rs#2 e700cea2b0470259
@@ -1500,7 +1494,6 @@ crates/hale-types/tests/model_builder.rs#12 14a24ece9d3c61e7
 crates/hale-types/tests/model_builder.rs#13 2327a382bb6673fa
 crates/hale-types/tests/model_builder.rs#15 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#18 f7bc90fa5e60e4b6
-crates/hale-types/tests/model_builder.rs#22 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#25 16638d003fd75bff
 crates/hale-types/tests/model_builder.rs#3 13c7bdc059e6600b
 crates/hale-types/tests/model_builder.rs#5 052aed15dd1f7840
