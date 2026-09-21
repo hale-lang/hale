@@ -50,8 +50,7 @@ main locus App {
     }
     run() {
         // ---- the genome: a repository with one commit and its baseline
-        let repo = "/tmp/dna-mut-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("mut");
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
@@ -180,6 +179,7 @@ main locus App {
         std::test::assert(std::str::contains(self.row_body("mutation.refused", "m2"), "the genome moved since the review"), "refused: " + self.row_body("mutation.refused", "m2"));
         std::test::assert_eq_str(dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout), moved_head, "HEAD is the maintainer's commit, not a merge");
         std::test::assert_eq_str(self.row_body("mutation.applied", "m2"), "", "nothing was applied");
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

@@ -44,7 +44,7 @@ main locus App {
         return out;
     }
     run() {
-        let repo = "/tmp/dna-route-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("route");
         self.repo = repo;
         std::io::fs::mkdir(repo) or discard;
         std::io::fs::mkdir(repo + "/app") or discard;
@@ -108,7 +108,7 @@ main locus App {
         std::test::assert(std::str::contains(refused, "child that is not the organism (kind appendage)"), "refused: " + refused);
         std::test::assert(std::str::contains(self.last(self.one.journal, "task.failed", t2), "refused"), "and the Task failed: " + self.last(self.one.journal, "task.failed", t2));
         std::test::assert_eq_str(self.last(self.one.journal, "mutation.proposed", "m2"), "", "nothing was proposed, no editor placed");
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

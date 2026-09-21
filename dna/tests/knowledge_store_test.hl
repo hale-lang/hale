@@ -199,6 +199,10 @@ main locus App {
         } else {
             eprintln("knowledge_store_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");
         }
+        // the receipts directory is a fixed path (a param default, so it
+        // cannot carry this process's pid): removed here, not registered
+        // with the slice, since another run may be inside it
+        let rm = dna::run_tool("rm\n-rf\n/tmp/dna-know-receipts");
     }
 }
 

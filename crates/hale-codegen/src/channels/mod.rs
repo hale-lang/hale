@@ -87,10 +87,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// no `__caller_arena` plumbing, no per-call subregion, no
     /// deep-copy in the exit epilogue. The runtime ABI is:
     ///
-    ///     <Locus>.<method>(self_ptr,
-    ///                      <user_params...>,
-    ///                      [out_val: T* if T != Unit],
-    ///                      out_err: E*) -> i1
+    /// ```text
+    /// <Locus>.<method>(self_ptr,
+    ///                  <user_params...>,
+    ///                  [out_val: T* if T != Unit],
+    ///                  out_err: E*) -> i1
+    /// ```
     ///
     /// `Stmt::Return e;` stores `e` into a local `ret_alloca`,
     /// keeps the path indicator at 0, and br's to the unified

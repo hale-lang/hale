@@ -35,8 +35,7 @@ main locus App {
         return false;
     }
     run() {
-        let repo = "/tmp/dna-jc-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("jc");
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
@@ -68,7 +67,7 @@ main locus App {
             std::test::assert(self.has_body("org row " + to_string(i)), "org row " + to_string(i) + " is in the record");
             i = i + 1;
         }
-        let rm = dna::run_tool("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 fn main() { App { }; }

@@ -66,8 +66,7 @@ main locus App {
         std::test::assert(std::json::find_string_field(handed2, "assignee") == "mara" && std::json::find_string_field(handed2, "retired_assignee") == "noor", "a retired successor passes the work on: " + handed2);
 
         // ---- through the CLI: no reassignment to a retired person
-        let scratch = "/tmp/dna-retired-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("retired");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nret");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/ret";
@@ -82,7 +81,7 @@ main locus App {
         std::test::assert(bad_successor.code != 0 && std::str::contains(bad_successor.stdout + bad_successor.stderr, "noor retired"), "no retired successor: " + bad_successor.stdout + bad_successor.stderr);
         let moved = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\ndev\n--as\nriley");
         std::test::assert(moved.code == 0 && std::str::contains(moved.stdout, "task t9 reassigned from mara to dev by riley"), "to someone who works here: " + moved.stdout + moved.stderr);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

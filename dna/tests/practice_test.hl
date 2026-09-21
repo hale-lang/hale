@@ -71,8 +71,7 @@ main locus App {
         std::test::assert_eq_str(self.script.complete(dna::ModelRequest { role: "optimize", prompt: "SIGNALS" }).output, "proposal: none", "and then the next rule does");
 
         // ---- through the CLI, with no organization here: a row for the host to relay
-        let scratch = "/tmp/dna-practice-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("practice");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/books";
@@ -106,7 +105,8 @@ main locus App {
         std::test::assert(std::str::contains(listed, "acceptance/expense-receipt [requested by riley, not yet heard by the organization]"), "listed as not yet heard: " + listed);
         std::test::assert(std::str::contains(listed, "design/principles ") && std::str::contains(listed, "[awaiting the Board (k:"), "the seeded design practices, awaiting the Board: " + listed);
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch + "\n/tmp/dna-practice-receipts");
+        dna::scratch_done(scratch);
+        let rm = dna::run_tool("rm\n-rf\n/tmp/dna-practice-receipts");
     }
 }
 

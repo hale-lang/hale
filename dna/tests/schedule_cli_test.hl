@@ -62,8 +62,7 @@ main locus App {
         return n;
     }
     run() {
-        let scratch = "/tmp/dna-schedcli-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("schedcli");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nsched");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/sched";
@@ -124,7 +123,7 @@ main locus App {
 
         let bad_sub = dna_cli(app, "schedule\nstop\nweekly");
         std::test::assert(std::str::contains(bad_sub, "schedule pause <id>"), "an unknown subcommand says what exists: " + bad_sub);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

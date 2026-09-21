@@ -31,7 +31,7 @@ fn stub(path: String, text: String) {
 
 main locus App {
     run() {
-        let scratch = "/tmp/dna-provision-" + to_string(std::process::pid());
+        let scratch = dna::scratch_root("provision");
         let fake = scratch + "/fake";
         let home = fake + "/home";
         let r0 = dna::run_tool("mkdir\n-p\n" + fake + "/bin\n" + home + "/.hale/bin");
@@ -94,7 +94,7 @@ main locus App {
         let started = in_dir(app, fake, toolchain() + "\ndna\nbody\nstart");
         std::test::assert(started.code == 0 && std::str::contains(started.stdout, "active"), "and it starts again: " + started.stdout + started.stderr);
 
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

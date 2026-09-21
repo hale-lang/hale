@@ -40,8 +40,7 @@ main locus App {
         v: dna::HaleVerification = dna::HaleVerification { };
     }
     run() {
-        let root = "/tmp/dna-verify-" + to_string(std::process::pid());
-        std::io::fs::mkdir(root) or discard;
+        let root = dna::scratch_root("verify");
         std::io::fs::mkdir(root + "/genome") or discard;
         std::io::fs::mkdir(root + "/wt") or discard;
         std::io::fs::write_file(root + "/genome/main.hl", BASE) or discard;
@@ -97,6 +96,7 @@ main locus App {
         std::test::assert_eq_int(bad.magnitude.loci, 0, "default magnitude");
         std::test::assert(std::str::contains(bad.steps, "check=1"), "the exit code is in the steps: " + bad.steps);
         std::test::assert(std::str::contains(bad.steps, "diff=-1"), "diff did not run: " + bad.steps);
+        dna::scratch_done(root);
     }
 }
 fn main() { App { }; }

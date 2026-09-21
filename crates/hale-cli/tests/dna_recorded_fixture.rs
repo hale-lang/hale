@@ -48,6 +48,29 @@ fn wait_row(app: &Path, what: &str, secs: u64, pred: impl Fn(&Row) -> bool) -> b
     trace::wait_until(what.to_string(), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().any(&pred))
 }
 
+/// The same, for a stage that is several rows rather than one, so a
+/// wait for the last of them is not a wait for a different event.
+fn wait_rows(app: &Path, what: &str, secs: u64, n: usize, pred: impl Fn(&Row) -> bool) -> bool {
+    trace::wait_until(what.to_string(), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().filter(|r| pred(r)).count() >= n)
+}
+
+/// The process the organization is running as, as the host wrote it.
+/// A stage that stalls says whether it is still the one that started,
+/// so "the organism restarted" is answered where it is asked (GH #748).
+fn org_pid(app: &Path) -> String {
+    std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default().trim().to_string()
+}
+
+/// Which occurrence each of a source's concerns was answered as, in the
+/// order the record holds them.
+fn concern_occurrences(app: &Path, source: &str) -> Vec<i64> {
+    journal(app)
+        .iter()
+        .filter(|(_, k, e, _)| k == "concern.raised" && e == source)
+        .map(|(_, _, _, b)| serde_json::from_str::<serde_json::Value>(b).ok().and_then(|v| v["occurrence"].as_i64()).unwrap_or(0))
+        .collect()
+}
+
 fn dump(app: &Path) -> String {
     journal(app).iter().map(|(q, k, e, b)| format!("{q} {k} {e} {}", b.chars().take(160).collect::<String>())).collect::<Vec<_>>().join("\n")
 }
@@ -218,8 +241,34 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     //         node puts each into the record; the host relays; the
     //         organization proposes it as knowledge for org/trio; the
     //         Board ratifies the exact digest; the service tails it
-    if !wait_row(&app, "concern.proposed org/trio/worker", 240, |(_, k, e, _)| k == "concern.proposed" && e == "org/trio/worker") {
-        f.fail("the worker's concern did not become a proposal");
+    //
+    //         Each stage waits for ITS OWN condition (GH #795's rule):
+    //         the node putting three concerns into the record, the
+    //         organization answering each, and the proposal the third
+    //         earns. One wait for the last of them reported every
+    //         earlier stall as "no proposal", 240 seconds later.
+    let org_at_boot = org_pid(&app);
+    if !wait_rows(&app, "concern.requested org/trio/worker x3", 240, 3, |(_, k, e, _)| k == "concern.requested" && e == "org/trio/worker") {
+        let now = org_pid(&app);
+        f.fail(&format!("the worker's three concerns did not reach the record (the organization: pid {org_at_boot} at boot, {now} now)"));
+    }
+    if !wait_rows(&app, "concern.raised org/trio/worker x3", 120, 3, |(_, k, e, _)| k == "concern.raised" && e == "org/trio/worker") {
+        let now = org_pid(&app);
+        f.fail(&format!("the organization did not answer every one of the worker's concerns (pid {org_at_boot} at boot, {now} now)"));
+    }
+    // Which occurrence each was answered as is the count in the
+    // organization's own record: 1, 2, 3. A count that starts again is
+    // an organization that read its record short (GH #748) — the
+    // proposal below would then never come, and this is where that is
+    // reported, by name, instead of two minutes later as a timeout.
+    let occurrences = concern_occurrences(&app, "org/trio/worker");
+    if occurrences.len() < 3 || occurrences[0..3] != [1, 2, 3] {
+        let now = org_pid(&app);
+        f.fail(&format!("the organization counted the worker's concerns {occurrences:?}, not 1, 2, 3 (pid {org_at_boot} at boot, {now} now)"));
+    }
+    if !wait_row(&app, "concern.proposed org/trio/worker", 120, |(_, k, e, _)| k == "concern.proposed" && e == "org/trio/worker") {
+        let now = org_pid(&app);
+        f.fail(&format!("the worker's concern did not become a proposal (pid {org_at_boot} at boot, {now} now)"));
     }
     let rows = journal(&app);
     let requested = rows.iter().filter(|(_, k, e, _)| k == "concern.requested" && e == "org/trio/worker").count();
