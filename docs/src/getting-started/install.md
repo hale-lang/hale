@@ -125,16 +125,53 @@ plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
 **3. What a build can emit** — `hale --list-targets` is the
 authority. Native binaries for the platform `hale` itself runs on — a
 Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
-`wasm32` objects for the browser from either. Another host's triple —
-say `--target x86_64-unknown-linux-gnu` on a Mac — gets as far as a
-relocatable object for that platform (`app.o`, an ELF x86-64 object
-in this case) and stops with a note: linking it needs the runtime and
-system libraries built for the target, which is the open half of
-[GH #970](https://github.com/hale-lang/hale/issues/970). To produce
-runnable Linux binaries from a Mac today, build inside a Linux
-container. `x86_64-pc-windows-msvc` is named and refused with a
-precise error, because Windows codegen does not exist yet
+`wasm32` objects for the browser from either. A **Linux** triple from
+any other host — `--target x86_64-unknown-linux-gnu` or
+`aarch64-unknown-linux-gnu` on a Mac, or the other architecture on
+Linux — is cross-compiled and linked here; see
+[Cross-compiling for Linux](#cross-compiling-for-linux) below. A macOS
+triple from anywhere else gets as far as a relocatable object for that
+platform (`app.o`) and stops with a note — there is no Apple SDK to
+link against off a Mac. `x86_64-pc-windows-msvc` is named and refused
+with a precise error, because Windows codegen does not exist yet
 ([GH #445](https://github.com/hale-lang/hale/issues/445)).
+
+### Cross-compiling for Linux
+
+The everyday case: develop on a Mac, deploy to Linux servers. A Hale
+program always links the lotus C runtime, OpenSSL, zlib and (for
+`std::ts`) a tree-sitter staticlib, so unlike a pure-Go binary it needs
+a C toolchain and those libraries *for the target*. Two pieces supply
+them ([GH #970](https://github.com/hale-lang/hale/issues/970)):
+
+1. **zig**, as the C compiler and linker. `zig cc -target
+   x86_64-linux-gnu.2.31` carries its own glibc headers and stubs for
+   every Linux target, so nothing has to be installed for the target's
+   libc. `brew install zig` (or a release from ziglang.org); `HALE_ZIG`
+   names the binary if it is not on `PATH`.
+2. **A target sysroot**: OpenSSL and zlib for the target, as static
+   archives, plus the tree-sitter shim. `scripts/target-sysroot.sh
+   <triple>` builds one into `~/.cache/hale/sysroot/<triple>/` — both
+   libraries from pinned source tarballs, compiled with zig against the
+   same glibc floor (a minute or two, once per target) — and cross-builds
+   `libhale_ts_shim.a` when run from a checkout with `rustup target add
+   <triple>` done. Needs `curl`, `perl` and `make` besides zig.
+   `HALE_TARGET_SYSROOT` points at one kept elsewhere.
+
+Then:
+
+```sh
+scripts/target-sysroot.sh x86_64-unknown-linux-gnu     # once
+hale build --target x86_64-unknown-linux-gnu app.hl    # ELF x86-64, runs on any glibc ≥ 2.31
+```
+
+The emitted binary depends on the target's glibc and nothing else —
+OpenSSL and zlib are linked in. `hale run` and `hale test` refuse a
+foreign target (nothing it builds runs here); `LOTUS_ASAN` and the
+other sanitizers are host-only. Without zig or the sysroot the build
+fails before linking and says which one is missing. `HALE_TARGET_GLIBC`
+picks a different glibc floor (the script and the compiler read the
+same variable).
 
 The rest of this section is about the *host* — where `hale` itself
 runs, and what changes about a program compiled there.

@@ -84,12 +84,18 @@ pub enum TargetSupport {
     ObjectOnly,
     /// Named and described, but no codegen path exists yet.
     Planned,
-    /// A native target that is not this host. Codegen emits a
-    /// relocatable object for it — the target's own triple, backend and
-    /// a generic CPU, the path wasm took first — and stops before the
-    /// link, which needs the lotus runtime and system libraries built
-    /// for the target (GH #970). Before that path existed a foreign
-    /// triple silently built the host (GH #969).
+    /// A native target that is not this host, linked here all the same
+    /// (GH #970): the lotus runtime is compiled and the program linked
+    /// with `zig cc`, which carries a libc for every Linux target, plus
+    /// a target sysroot for what lies beyond libc — OpenSSL, zlib, the
+    /// tree-sitter shim (`scripts/target-sysroot.sh`). Linux gnu
+    /// targets only, today.
+    Cross,
+    /// A native target that is not this host and has no cross toolchain
+    /// here. Codegen emits a relocatable object for it — the target's
+    /// own triple, backend and a generic CPU, the path wasm took first —
+    /// and stops before the link (GH #970). Before that path existed a
+    /// foreign triple silently built the host (GH #969).
     ForeignHost,
 }
 
@@ -351,9 +357,39 @@ impl TargetSpec {
     pub fn support_from(&self, host: &TargetSpec) -> TargetSupport {
         match self.support() {
             TargetSupport::Supported if self.triple != host.triple => {
-                TargetSupport::ForeignHost
+                if self.zig_target().is_some() {
+                    TargetSupport::Cross
+                } else {
+                    TargetSupport::ForeignHost
+                }
             }
             s => s,
+        }
+    }
+
+    /// Whether a build from `host` ends in an executable, as opposed to
+    /// a relocatable object.
+    pub fn links_from(&self, host: &TargetSpec) -> bool {
+        matches!(
+            self.support_from(host),
+            TargetSupport::Supported | TargetSupport::Cross
+        )
+    }
+
+    /// The target as `zig cc -target` spells it, for the targets a cross
+    /// build links through zig (GH #970): the Linux gnu ones, whose libc
+    /// zig ships. The glibc version is appended by the caller. `None` is
+    /// a target zig is not the toolchain for here — Darwin needs an SDK,
+    /// Windows a runtime that does not exist (GH #445).
+    pub fn zig_target(&self) -> Option<&'static str> {
+        match (self.arch, self.os, self.env) {
+            (TargetArch::Aarch64, TargetOs::Linux, TargetEnv::Gnu) => {
+                Some("aarch64-linux-gnu")
+            }
+            (TargetArch::X86_64, TargetOs::Linux, TargetEnv::Gnu) => {
+                Some("x86_64-linux-gnu")
+            }
+            _ => None,
         }
     }
 
@@ -371,6 +407,10 @@ impl TargetSpec {
             TargetSupport::Supported => "supported: builds and links",
             TargetSupport::ObjectOnly => "object-only: emits a relocatable object, no link",
             TargetSupport::Planned => "planned: named and described, no codegen yet (GH #445)",
+            TargetSupport::Cross => {
+                "cross from this host: builds and links with zig and a target \
+                 sysroot (scripts/target-sysroot.sh; GH #970)"
+            }
             TargetSupport::ForeignHost => {
                 "cross, object-only from this host: emits a relocatable object, \
                  no link (GH #970)"
@@ -483,19 +523,29 @@ mod tests {
         let linux_arm = TargetSpec::parse("aarch64-unknown-linux-gnu").unwrap();
         let mac_intel = TargetSpec::parse("x86_64-apple-darwin").unwrap();
 
-        // Each host links itself and nothing else native — not even
-        // the other architecture of its own OS.
+        // A host is `Supported` only for itself. A Linux gnu target is
+        // `Cross` from anywhere else — zig carries its libc — including
+        // the other architecture of a Linux host. A Darwin target from
+        // anywhere else is object-only: no SDK here.
         assert_eq!(mac.support_from(&mac), TargetSupport::Supported);
-        assert_eq!(linux.support_from(&mac), TargetSupport::ForeignHost);
-        assert_eq!(linux_arm.support_from(&mac), TargetSupport::ForeignHost);
+        assert_eq!(linux.support_from(&mac), TargetSupport::Cross);
+        assert_eq!(linux_arm.support_from(&mac), TargetSupport::Cross);
         assert_eq!(mac_intel.support_from(&mac), TargetSupport::ForeignHost);
         assert_eq!(linux.support_from(&linux), TargetSupport::Supported);
+        assert_eq!(linux_arm.support_from(&linux), TargetSupport::Cross);
         assert_eq!(mac.support_from(&linux), TargetSupport::ForeignHost);
+
+        assert!(linux.links_from(&mac) && !mac_intel.links_from(&mac));
+        assert_eq!(linux_arm.zig_target(), Some("aarch64-linux-gnu"));
+        assert_eq!(mac.zig_target(), None);
 
         // The target-intrinsic tier is unchanged.
         assert_eq!(linux.support(), TargetSupport::Supported);
 
         let d = linux.describe_from(&mac);
+        assert!(d.contains("cross from this host: builds and links"), "{d}");
+        assert!(d.contains("target-sysroot"), "{d}");
+        let d = mac_intel.describe_from(&mac);
         assert!(d.contains("object-only from this host"), "{d}");
         assert!(d.contains("#970"), "{d}");
         assert!(!d.contains("supported: builds and links"), "{d}");

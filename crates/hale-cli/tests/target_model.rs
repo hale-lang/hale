@@ -152,6 +152,36 @@ fn host_triple() -> String {
         .to_string()
 }
 
+/// The tier line `--list-targets` prints for `triple`, from this host.
+fn tier_of(triple: &str) -> String {
+    let (stdout, _, _) = run(&["--list-targets"]);
+    stdout
+        .split("\n\n")
+        .find(|b| b.starts_with(triple))
+        .unwrap_or_else(|| panic!("no {triple} block in:\n{stdout}"))
+        .lines()
+        .last()
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+/// The foreign native triples this host LINKS for (the Linux gnu ones,
+/// through zig) and the ones it only emits an object for (Darwin, from
+/// anywhere else), as the compiler itself sorts them.
+fn cross_triples() -> Vec<&'static str> {
+    foreign_native_triples()
+        .into_iter()
+        .filter(|t| tier_of(t).starts_with("cross from this host"))
+        .collect()
+}
+fn object_only_triples() -> Vec<&'static str> {
+    foreign_native_triples()
+        .into_iter()
+        .filter(|t| tier_of(t).starts_with("cross, object-only"))
+        .collect()
+}
+
 /// What an object file says it is, read from its header: the format and
 /// the machine. Enough to tell a host object from a target one without
 /// any tool on PATH.
@@ -184,12 +214,15 @@ fn expected_identity(triple: &str) -> (&'static str, &'static str) {
 
 /// GH #969: a foreign native triple used to parse, build a HOST binary
 /// under the requested name, and print `built:`. GH #970: it is its own
-/// target now, taken as far as wasm first went — a relocatable object
-/// for the TARGET's format and architecture, named as an object, with
-/// no executable beside it and a note saying the link is still to come.
+/// target now. One this host has no toolchain to link for (Darwin,
+/// from anywhere else) is taken as far as wasm first went — a
+/// relocatable object for the TARGET's format and architecture, named
+/// as an object, with no executable beside it and a note saying so.
 #[test]
 fn a_foreign_native_triple_emits_an_object_for_that_target() {
-    for triple in foreign_native_triples() {
+    let triples = object_only_triples();
+    assert!(!triples.is_empty(), "every host has a Darwin triple foreign to it");
+    for triple in triples {
         let dir = case_dir("target_model_foreign");
         let src = dir.join("t.hl");
         std::fs::write(&src, "fn main() { println(\"hi\"); }\n").unwrap();
@@ -212,6 +245,58 @@ fn a_foreign_native_triple_emits_an_object_for_that_target() {
         );
         assert!(stderr.contains("relocatable object"), "{stderr}");
         assert!(stderr.contains("970"), "should reference the issue:\n{stderr}");
+    }
+}
+
+/// A Linux gnu triple foreign to this host is LINKED here, through
+/// `zig cc` and a target sysroot (GH #970). Where both are present the
+/// result is an executable for the target — the header says ELF, the
+/// target's machine, and an executable type, and there is no `.o`
+/// left as if the build had stopped short. Where either is missing the
+/// build fails naming exactly that and how to get it, never with a
+/// linker's undefined symbols and never with a host binary.
+#[test]
+fn a_cross_triple_links_or_names_what_is_missing() {
+    let triples = cross_triples();
+    assert!(!triples.is_empty(), "every host has a Linux triple foreign to it");
+    for triple in triples {
+        let dir = case_dir("target_model_cross");
+        let src = dir.join("t.hl");
+        std::fs::write(&src, "fn main() { println(\"hi\"); }\n").unwrap();
+
+        let (stdout, stderr, code) =
+            run(&["build", src.to_str().unwrap(), "--target", triple]);
+
+        assert!(
+            !dir.join("t.o").exists(),
+            "{triple}: a cross build must not stop at an object"
+        );
+        if code == 0 {
+            let bin = dir.join("t");
+            let bytes = std::fs::read(&bin)
+                .unwrap_or_else(|e| panic!("{triple}: no executable at {}: {e}", bin.display()));
+            assert_eq!(
+                object_identity(&bytes),
+                Some(expected_identity(triple)),
+                "{triple}: the executable is not the target's"
+            );
+            // e_type: ET_EXEC (2) or ET_DYN (3, a PIE) — not a
+            // relocatable (1).
+            let e_type = u16::from_le_bytes([bytes[16], bytes[17]]);
+            assert!(matches!(e_type, 2 | 3), "{triple}: e_type {e_type}");
+            assert!(!stderr.contains("relocatable object"), "{stderr}");
+        } else {
+            assert!(!stdout.contains("built:"), "{triple}: {stdout}");
+            assert!(
+                stderr.contains("zig") || stderr.contains("target-sysroot"),
+                "{triple}: a cross build without its toolchain must say \
+                 which piece is missing:\n{stderr}"
+            );
+            assert!(
+                !stderr.contains("undefined symbol"),
+                "{triple}: the failure reached the linker:\n{stderr}"
+            );
+        }
     }
 }
 
@@ -266,7 +351,19 @@ fn main() { App { }; }
     std::fs::write(&src, PROG).unwrap();
 
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", linux]);
-    assert_eq!(code, 0, "{linux} has async_io, the check refused it: {stderr}");
+    // The check must pass it. The build may still fail later, at the
+    // cross link, on a host without zig or a sysroot — that failure is
+    // past the check and names its own cause.
+    assert!(
+        !stderr.contains("aren't supported on macOS"),
+        "{linux} has async_io, the check refused it: {stderr}"
+    );
+    if code != 0 {
+        assert!(
+            stderr.contains("zig") || stderr.contains("target-sysroot"),
+            "{linux}: failed for a reason other than the cross toolchain:\n{stderr}"
+        );
+    }
 
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", darwin]);
     assert_ne!(code, 0, "{darwin} has no async_io, the check accepted it");
@@ -289,17 +386,24 @@ fn the_host_triple_builds_like_native() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
 }
 
-/// The listing must not advertise a foreign native triple as linkable.
+/// The listing must say what a foreign native triple is from here — a
+/// cross target linked through zig, or one only emitted as an object —
+/// and never call it plainly supported.
 #[test]
 fn list_targets_marks_foreign_native_triples() {
-    let (stdout, _, _) = run(&["--list-targets"]);
     for triple in foreign_native_triples() {
-        let block = stdout
-            .split("\n\n")
-            .find(|b| b.starts_with(triple))
-            .unwrap_or_else(|| panic!("no {triple} block in:\n{stdout}"));
-        assert!(block.contains("object-only from this host"), "{block}");
-        assert!(!block.contains("supported: builds and links"), "{block}");
+        let tier = tier_of(triple);
+        assert!(tier.starts_with("cross"), "{triple}: {tier}");
+        assert!(!tier.contains("supported: builds and links"), "{triple}: {tier}");
+        assert!(tier.contains("970"), "{triple}: {tier}");
+    }
+    // Both kinds exist from every host: the Linux gnu triples link
+    // (zig carries their libc), the Darwin ones do not (no SDK here).
+    for t in cross_triples() {
+        assert!(t.contains("linux"), "{t} should not be a cross target");
+    }
+    for t in object_only_triples() {
+        assert!(t.contains("darwin"), "{t} should link through zig");
     }
 }
 

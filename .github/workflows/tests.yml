@@ -537,6 +537,122 @@ jobs:
   # for one of those joins the gate by itself. `dna_native_suite` is
   # the one group member left out by name: it is 380-415s on its own
   # and has two jobs of its own above.
+  # GH #970: the cross build, end to end. A foreign Linux triple links
+  # here through zig and a target sysroot; this job builds the sysroot
+  # the way a user would (`scripts/target-sysroot.sh`, cached on its
+  # inputs — OpenSSL from source is minutes), cross-compiles for
+  # aarch64 from the x86_64 runner, and RUNS the result under
+  # qemu-user-static, so "it links" is not the claim — "it runs on the
+  # target" is. The macOS workflow does the Mac→Linux half up to the
+  # ELF header; this is the only place an emitted cross binary executes.
+  cross:
+    name: cross (x86_64 → aarch64-linux, runs under qemu)
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ZIG_VERSION: 0.16.0
+      CROSS_TRIPLE: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (+ the target's std for the ts-shim)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: false
+
+      - name: Install LLVM 18 + clang + qemu
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev \
+            qemu-user-static binfmt-support
+
+      - name: Install zig ${{ env.ZIG_VERSION }}
+        # The release tarball, pinned: zig is the cross C toolchain and
+        # its version is part of the runtime object cache key.
+        run: |
+          set -eux
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ -C "$HOME"
+          echo "$HOME/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Cache the target sysroot
+        id: sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/hale/sysroot/${{ env.CROSS_TRIPLE }}
+          key: sysroot-${{ env.CROSS_TRIPLE }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('scripts/target-sysroot.sh', 'crates/hale-ts-shim/Cargo.toml', 'crates/hale-codegen/runtime/lotus_treesitter.rs', 'Cargo.lock') }}
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: Build the target sysroot (OpenSSL, zlib, ts-shim for ${{ env.CROSS_TRIPLE }})
+        if: steps.sysroot.outputs.cache-hit != 'true'
+        run: scripts/target-sysroot.sh "$CROSS_TRIPLE"
+
+      - name: Cross-build and run under qemu
+        run: |
+          set -eux
+          zig version
+          cat ~/.cache/hale/sysroot/"$CROSS_TRIPLE"/VERSIONS
+          mkdir -p /tmp/cross
+          cat > /tmp/cross/hello.hl <<'HL'
+          type Tick { n: Int; }
+
+          locus Sub {
+              bus { subscribe "tick" as on_tick of type Tick; }
+              fn on_tick(t: Tick) {
+                  println("worker got tick ", t.n);
+              }
+          }
+
+          main locus App {
+              params {
+                  sub: Sub = Sub { };
+              }
+              placement {
+                  sub: cooperative(pool = jobs);
+              }
+              bus { publish "tick" of type Tick; }
+              run() {
+                  "tick" <- Tick { n: 7 };
+                  std::time::sleep(200ms);
+                  println("cross main done");
+              }
+          }
+
+          fn main() {
+              App { };
+          }
+          HL
+          ./target/release/hale build --target "$CROSS_TRIPLE" /tmp/cross/hello.hl
+          file /tmp/cross/hello | tee /tmp/cross/file.out
+          grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/cross/file.out
+          test ! -e /tmp/cross/hello.o
+          # The second build links from cached runtime objects.
+          time ./target/release/hale build --target "$CROSS_TRIPLE" /tmp/cross/hello.hl
+          # binfmt_misc hands an aarch64 ELF to qemu-aarch64-static.
+          out="$(/tmp/cross/hello)"
+          echo "program output: $out"
+          echo "$out" | grep -q "worker got tick 7"
+          echo "$out" | grep -q "cross main done"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
   parity:
     name: parity (cargo test + doctests)
     needs: scope

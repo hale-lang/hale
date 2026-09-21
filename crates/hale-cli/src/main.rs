@@ -8476,13 +8476,14 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // Output naming is a property of the target, not a special case
     // spelled at this one call site (GH #445).
     let output = {
-        // A foreign native target ends at its relocatable object
-        // (GH #970), so it is named as one.
-        let names = options.target.spec().filenames();
-        let ext = if options.target.is_foreign() {
-            names.object
-        } else {
+        // A foreign native target with no cross toolchain here ends at
+        // its relocatable object (GH #970), so it is named as one.
+        let spec = options.target.spec();
+        let names = spec.filenames();
+        let ext = if spec.links_from(&hale_codegen::target::TargetSpec::host()) {
             names.executable
+        } else {
+            names.object
         };
         if ext.is_empty() {
             output
@@ -8653,12 +8654,14 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         Ok(()) => {
             eprintln!("built: {}", output.display());
             if let hale_codegen::CompileTarget::Foreign(spec) = options.target {
-                eprintln!(
-                    "note: a relocatable object for {}, not an executable — \
-                     linking for a platform other than this host's is not \
-                     implemented yet (GH #970)",
-                    spec.triple
-                );
+                if !spec.links_from(&hale_codegen::target::TargetSpec::host()) {
+                    eprintln!(
+                        "note: a relocatable object for {}, not an executable — \
+                         this host has no toolchain to link for that platform \
+                         (GH #970)",
+                        spec.triple
+                    );
+                }
             }
             ExitCode::SUCCESS
         }
@@ -8889,19 +8892,19 @@ fn parse_build_options(
                             spec.describe_from(&host),
                         ));
                     }
-                    hale_codegen::target::TargetSupport::ForeignHost
+                    hale_codegen::target::TargetSupport::Cross
+                    | hale_codegen::target::TargetSupport::ForeignHost
                     | hale_codegen::target::TargetSupport::Supported
                     | hale_codegen::target::TargetSupport::ObjectOnly => {}
                 }
                 // GH #969: a native triple that is not the host must not
                 // become `Native`, which IS the host — that built a host
                 // binary under the target's name. It is its own target
-                // (GH #970), emitted as an object for now.
+                // (GH #970): linked through zig where the target has a
+                // cross toolchain here, emitted as an object otherwise.
                 opts.target = if spec.is_wasm() {
                     hale_codegen::CompileTarget::Wasm32
-                } else if spec.support_from(&host)
-                    == hale_codegen::target::TargetSupport::ForeignHost
-                {
+                } else if spec.triple != host.triple {
                     hale_codegen::CompileTarget::Foreign(spec)
                 } else {
                     hale_codegen::CompileTarget::Native
