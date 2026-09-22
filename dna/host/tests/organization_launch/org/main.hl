@@ -1,0 +1,33 @@
+// Disposable actual Organization for the prepared host acceptance fixture.
+import "../../vendor/core" as dna;
+main locus Org {
+    params {
+        title: String = "Original";
+        core: dna::Dna = dna::Dna {
+            journal: dna::GitJournal { repo: "." },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+            membrane: dna::Board { },
+            gateway: dna::MutationGateway {
+                leases: dna::GitLeases { repo: "." },
+                workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: "." }
+            }
+        };
+    }
+    bindings {
+        dna::PracticeRequested: unix(".hale/dna/hale-dna.practice.requested.sock", role: listen);
+        dna::KnowledgeNodeRequested: unix(".hale/dna/hale-dna.knowledge.node.requested.sock", role: listen);
+        dna::KnowledgeBindingRequested: unix(".hale/dna/hale-dna.knowledge.binding.requested.sock", role: listen);
+        dna::KnowledgeEdgeRequested: unix(".hale/dna/hale-dna.knowledge.edge.requested.sock", role: listen);
+        dna::ReviewVerdict: unix(".hale/dna/hale-dna.review.verdict.sock", role: listen);
+        dna::IntentOffered: unix(".hale/dna/hale-dna.intent.offered.sock", role: listen);
+        dna::ExpressionObserved: unix(".hale/dna/hale-dna.expression.observed.sock", role: listen);
+        dna::PressureRaised: unix(".hale/dna/hale-dna.pressure.raised.sock", role: listen);
+        dna::ConcernRaised: unix(".hale/dna/hale-dna.concern.raised.sock", role: listen);
+    }
+    run() {
+        if self.title == "Prepared" && std::io::fs::file_exists(".hale/dna/fixture-crash") { std::process::exit(17); }
+        while true { std::time::sleep(100ms); }
+    }
+}
+fn main() { Org { }; }

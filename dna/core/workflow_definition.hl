@@ -208,13 +208,14 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
 // from outside wants a real parser in front of it.
 @unbounded
 fn json_whole(text: String) -> Bool {
+    let size = len(text);
     let mut open = ""; // the containers still open, innermost last
     let mut in_string = false;
     let mut escaped = false;
     let mut started = false;
     let mut closed = false;
     let mut i = 0;
-    while i < len(text) {
+    while i < size {
         let b = std::str::byte_at_unchecked(text, i);
         i = i + 1;
         if in_string {

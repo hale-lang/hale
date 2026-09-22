@@ -1,0 +1,263 @@
+// Complete bounded operational read over one captured Record. This is not an
+// apply permission, position attribution, or a writer/admission fence.
+import "../core" as dna;
+
+type OrganizationImpactAssessment {
+    available: Bool = false;
+    details_visible: Bool = false;
+    state: String = "unavailable";
+    code: String = "impact_source_unavailable";
+    record_head: String = "";
+    revision: Int = 0;
+    workflow_tasks: Int = 0;
+    open_workflow_tasks: Int = 0;
+    open_works: Int = 0;
+    outstanding_attempts: Int = 0;
+    legacy_tasks: Int = 0;
+    open_legacy_tasks: Int = 0;
+    handed_tasks: Int = 0;
+    unresolved_intents: Int = 0;
+    schedules: Int = 0;
+    pending_effects: Int = 0;
+    unknown_effects: Int = 0;
+}
+type OrganizationImpactDiagnostic { ok: Bool = false; visible: Bool = true; }
+type OrganizationImpactEntry {
+    family: String = "";
+    id: String = "";
+    state: String = "";
+    body: String = "";
+    seq: Int = -1;
+    human: Bool = false;
+}
+@form(vec)
+locus OrganizationImpactEntries { capacity { heap rows of OrganizationImpactEntry; } }
+
+locus OrganizationImpact {
+    params { j: dna::Journal; visibility: Queries; }
+    fn string(body: String, key: String) -> String { let syntax = OrganizationJson { }; return syntax.decode(std::json::find_field_raw(body, key)); }
+    fn wf(kind: String) -> Bool {
+        return dna::word_in(kind, "workflow.admitted workflow.refused workflow.settled step.registered step.activated step.completed step.failed attempt.admitted attempt.outcome work.settled");
+    }
+    fn restriction(kind: String) -> Bool { return dna::word_in(kind, "receipt.classified receipt.withheld receipt.redacted receipt.filed"); }
+    fn relevant(kind: String) -> Bool {
+        return dna::memory_of(kind) == "ledger" || std::str::starts_with(kind, "workflow.") || std::str::starts_with(kind, "step.") || std::str::starts_with(kind, "attempt.") || std::str::starts_with(kind, "work.");
+    }
+    fn index(rows: OrganizationImpactEntries, family: String, id: String) -> Int {
+        let mut i = 0; while i < rows.len() { let r = rows.get(i) or OrganizationImpactEntry { }; if r.family == family && r.id == id { return i; } i = i + 1; } return -1;
+    }
+    fn failure(code: String, head: String, revision: Int, visible: Bool) -> OrganizationImpactAssessment {
+        return OrganizationImpactAssessment { code: code, details_visible: visible, record_head: head, revision: revision };
+    }
+    fn visible(id: String) -> Bool { return len(id) == 0 || self.visibility.receipt_status(id) == "available"; }
+    fn references(body: String) -> Bool {
+        let keys = "context_digest inputs_ref result_ref evidence_ref acceptance evidence practice receipt digest work task diff_text diff_json source_digest organization_source_digest module_digest candidate_commit base_commit"; let mut i = 0;
+        while i < dna::word_count(keys) { if !self.visible(self.string(body, dna::nth_word(keys, i))) { return false; } i = i + 1; }
+        let class = self.string(body, "data_class");
+        return len(class) == 0 || class == "internal" || class == "public";
+    }
+    fn object(body: String) -> Bool { let syntax = OrganizationJson { }; return std::str::starts_with(body, "{") && syntax.valid(body); }
+    fn task(rows: OrganizationImpactEntries, e: dna::Event) -> String {
+        let at = self.index(rows, "task", e.entity);
+        if e.kind == "task.born" {
+            if at >= 0 || len(e.body) == 0 { return "impact_source_invalid"; }
+            rows.push(OrganizationImpactEntry { family: "task", id: e.entity, state: "active", body: e.body, seq: e.seq }); return "";
+        }
+        if at < 0 { return "impact_source_invalid"; }
+        let mut t = rows.get(at) or OrganizationImpactEntry { };
+        let terminal = dna::word_in(t.state, "done failed refused cancelled decided");
+        if dna::word_in(e.kind, "task.pending task.planned task.resumed") {
+            if terminal { return "impact_source_invalid"; }
+        } else if e.kind == "task.handed" || e.kind == "task.transfer_requested" {
+            if terminal || !self.object(e.body) { return "impact_source_invalid"; }
+            t.state = if e.kind == "task.handed" { "handed" } else { "transfer_requested" }; t.human = true;
+            if e.kind == "task.transfer_requested" { t.body = e.body; }
+        } else if e.kind == "task.transfer_accepted" {
+            let fields = AuthorityPolicyCodec { };
+            if t.state != "transfer_requested" || !self.object(e.body) || !fields.fields(e.body, "owner from by assignee note", 5) { return "impact_source_invalid"; }
+            let names = "owner from by assignee note"; let mut k = 0;
+            while k < dna::word_count(names) { if !std::str::starts_with(std::json::find_field_raw(e.body, dna::nth_word(names, k)), "\"") { return "impact_source_invalid"; } k = k + 1; }
+            if self.string(t.body, "to") == "" || self.string(t.body, "owner") == "" || self.string(t.body, "assignee") == ""
+                || self.string(e.body, "owner") != self.string(t.body, "to") || self.string(e.body, "from") != self.string(t.body, "owner")
+                || self.string(e.body, "assignee") != self.string(t.body, "assignee") || self.string(e.body, "by") == "" { return "impact_source_invalid"; }
+            // The native acceptance names its recipient as owner, not to.
+            // Acceptance is still responsibility until the receiving Body hands it.
+            t.state = "transfer_accepted"; t.human = true;
+        } else if e.kind == "task.reassigned" {
+            if t.state != "handed" || !self.object(e.body) || self.string(e.body, "to") == "" { return "impact_source_invalid"; }
+        } else if e.kind == "decision.reported" {
+            if t.state != "handed" || !self.object(e.body) { return "impact_source_invalid"; }
+            let accepted = std::json::find_field_raw(e.body, "accepted");
+            if accepted != "true" && accepted != "false" { return "impact_source_invalid"; }
+            if accepted == "true" { t.state = "decided"; }
+        } else if dna::word_in(e.kind, "completion.linked completion.excepted exception.authorized") {
+            if t.state != "handed" || !self.object(e.body) { return "impact_source_invalid"; }
+        } else if dna::word_in(e.kind, "task.done task.failed task.refused task.cancelled") {
+            if terminal || len(e.body) == 0 { return "impact_source_invalid"; }
+            // Read the existing recorded disposition; never adjudicate its prose.
+            t.state = e.kind[5..len(e.kind)];
+        } else { return "impact_unsupported_history"; }
+        rows.set(at, t) or discard; return "";
+    }
+    fn schedule(rows: OrganizationImpactEntries, e: dna::Event) -> String {
+        let at = self.index(rows, "schedule", e.entity);
+        if e.kind == "schedule.declared" {
+            if !self.object(e.body) { return "impact_source_invalid"; }
+            let interval = std::json::find_field_raw(e.body, "every_ms"); let every = std::json::find_int_field(e.body, "every_ms"); let cron = self.string(e.body, "cron");
+            if interval != to_string(every) || (every <= 0 && len(cron) == 0) || (every > 0 && len(cron) > 0) || (len(cron) > 0 && dna::cron_check(cron) != "") { return "impact_source_invalid"; }
+            if at < 0 { rows.push(OrganizationImpactEntry { family: "schedule", id: e.entity, state: "declared", seq: e.seq }); }
+            return "";
+        }
+        if e.kind == "schedule.refused" { return if len(e.body) > 0 { "" } else { "impact_source_invalid" }; }
+        if !dna::word_in(e.kind, "schedule.paused schedule.resumed schedule.fired schedule.admitted schedule.skipped") { return "impact_unsupported_history"; }
+        if at < 0 { return "impact_source_invalid"; }
+        if (e.kind == "schedule.fired" || e.kind == "schedule.admitted") && !self.object(e.body) { return "impact_source_invalid"; }
+        // A declaration is future responsibility even when paused or last fired.
+        return "";
+    }
+    fn effect(rows: OrganizationImpactEntries, e: dna::Event) -> String {
+        let at = self.index(rows, "effect", e.entity);
+        if e.kind == "effect.requested" {
+            if at >= 0 { let have = rows.get(at) or OrganizationImpactEntry { }; return if have.body == e.body { "" } else { "impact_source_invalid" }; }
+            rows.push(OrganizationImpactEntry { family: "effect", id: e.entity, state: "pending", body: e.body, seq: e.seq }); return "";
+        }
+        if e.kind != "effect.result" { return "impact_unsupported_history"; }
+        if at < 0 { return "impact_source_invalid"; }
+        let mut have = rows.get(at) or OrganizationImpactEntry { };
+        if std::str::starts_with(e.body, "unknown") { have.state = "unknown"; }
+        else if std::str::starts_with(e.body, "ok") || std::str::starts_with(e.body, "failed") { have.state = "done"; }
+        else { return "impact_unsupported_history"; }
+        rows.set(at, have) or discard; return "";
+    }
+    // These are bounded historical diagnostics, never current ownership or a
+    // substitute for operational admission fencing. No diagnostic settles work.
+    fn diagnostic(e: dna::Event) -> OrganizationImpactDiagnostic {
+        let fields = AuthorityPolicyCodec { }; let text = GovernanceCommandCodec { }; let source = OrganizationCommandCodec { };
+        if e.kind == "body.claimed" {
+            if !self.object(e.body) || !fields.fields(e.body, "token forced by", 3)
+                || std::json::find_field_raw(e.body, "forced") != "false" || self.string(e.body, "by") != "host" { return OrganizationImpactDiagnostic { }; }
+            let token = std::json::find_int_field(e.body, "token");
+            return OrganizationImpactDiagnostic { ok: token > 0 && std::json::find_field_raw(e.body, "token") == to_string(token) };
+        }
+        if e.kind != "pressure.remeasured" { return OrganizationImpactDiagnostic { }; }
+        let mut req = dna::Event { seq: -1 }; let mut applied = dna::Event { seq: -1 }; let mut observed = dna::Event { seq: -1 };
+        let mut disposition = ""; let mut visible = true; let mut i = 0;
+        while i < e.seq {
+            let row = self.j.read(i);
+            if row.kind == "review.requested" && row.entity == "review:" + e.entity {
+                if req.seq >= 0 || !self.object(row.body) || self.string(row.body, "mutation_id") != e.entity { return OrganizationImpactDiagnostic { }; }
+                req = row;
+            }
+            if row.entity == e.entity {
+                if std::str::starts_with(row.kind, "mutation.") && row.kind != "mutation.worktree" && row.kind != "mutation.candidate" { disposition = row.kind; }
+                if row.kind == "mutation.applied" {
+                    if applied.seq >= 0 { return OrganizationImpactDiagnostic { }; }
+                    applied = row;
+                }
+                if row.kind == "expression.observed" && applied.seq >= 0 {
+                    if observed.seq >= 0 { return OrganizationImpactDiagnostic { }; }
+                    observed = row;
+                }
+            }
+            i = i + 1;
+        }
+        if req.seq < 0 || applied.seq <= req.seq || observed.seq <= applied.seq || disposition != "mutation.applied"
+            || self.string(req.body, "candidate_commit") != applied.body || !source.commit_id(applied.body) { return OrganizationImpactDiagnostic { }; }
+        let task_raw = std::json::find_field_raw(req.body, "task_id"); let fitness_raw = std::json::find_field_raw(req.body, "fitness_signals");
+        if !std::str::starts_with(task_raw, "\"") || !std::str::starts_with(fitness_raw, "\"") || !std::str::starts_with(observed.body, "healthy ") { return OrganizationImpactDiagnostic { }; }
+        let rest = observed.body[8..len(observed.body)]; let end = std::str::index_of(rest, " ");
+        if end < 1 || !text.bounded(rest[0..end], 256, true, false) { return OrganizationImpactDiagnostic { }; }
+        let task = self.string(req.body, "task_id"); let fitness = self.string(req.body, "fitness_signals");
+        if e.body != "task " + task + " fitness " + fitness + ": healthy " + rest[(end + 1)..len(rest)] { return OrganizationImpactDiagnostic { }; }
+        if task != "" {
+            let mut born = false; i = 0;
+            while i < req.seq { let row = self.j.read(i); if row.entity == task && (row.kind == "task.born" || row.kind == "workflow.admitted") { born = true; } i = i + 1; }
+            if !born { return OrganizationImpactDiagnostic { }; }
+        }
+        visible = self.visible(req.digest) && self.visible(req.entity) && self.references(req.body)
+            && self.visible(applied.digest) && self.visible(applied.entity) && self.visible(applied.body)
+            && self.visible(observed.digest) && self.visible(observed.entity) && self.visible(rest[0..end]) && self.visible(task);
+        return OrganizationImpactDiagnostic { ok: true, visible: visible };
+    }
+    fn legacy(rows: OrganizationImpactEntries, e: dna::Event) -> String {
+        if std::str::starts_with(e.kind, "task.") || std::str::starts_with(e.kind, "decision.") || std::str::starts_with(e.kind, "completion.") || std::str::starts_with(e.kind, "exception.") { return self.task(rows, e); }
+        if std::str::starts_with(e.kind, "schedule.") { return self.schedule(rows, e); }
+        if std::str::starts_with(e.kind, "effect.") { return self.effect(rows, e); }
+        if e.kind == "intent.offered" {
+            if self.index(rows, "intent", e.entity) >= 0 || len(e.body) == 0 { return "impact_source_invalid"; }
+            rows.push(OrganizationImpactEntry { family: "intent", id: e.entity, state: "offered", seq: e.seq }); return "";
+        }
+        if e.kind == "intent.refused" || e.kind == "intent.unrecovered" { return if len(e.body) > 0 { "" } else { "impact_source_invalid" }; }
+        return "impact_unsupported_history";
+    }
+    fn assess() -> OrganizationImpactAssessment {
+        let head = self.j.head(); let revision = self.j.revision();
+        if revision < 0 || revision > 2048 { return self.failure("impact_read_limit", head, revision, true); }
+        if !self.j.verify_chain() || self.visibility.j.head() != head || self.visibility.j.revision() != revision { return self.failure("impact_source_invalid", head, revision, true); }
+        let p = dna::WorkflowProjection { }; let rows = OrganizationImpactEntries { }; let mut out = OrganizationImpactAssessment { details_visible: true, record_head: head, revision: revision };
+        let mut i = 0; let mut bytes = 0; let mut operational_bytes = 0; let mut facts = 0;
+        while i < revision {
+            let e = self.j.read(i); bytes = bytes + len(e.body);
+            if e.seq != i || len(e.kind) == 0 || len(e.digest) == 0 { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
+            if len(e.body) > 65536 || bytes > 2097152 { return self.failure("impact_read_limit", head, revision, out.details_visible); }
+            if e.kind == "ledger.adopted" { return self.failure("impact_source_unavailable", head, revision, out.details_visible); }
+            if self.relevant(e.kind) && !self.restriction(e.kind) {
+                if len(e.entity) == 0 { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
+                facts = facts + 1; operational_bytes = operational_bytes + len(e.body);
+                if facts > 512 || operational_bytes > 524288 { return self.failure("impact_read_limit", head, revision, out.details_visible); }
+                if !self.visible(e.digest) || !self.visible(e.entity) || !self.references(e.body) { out.details_visible = false; }
+                if self.wf(e.kind) {
+                    let accepted = dna::replay(p, e.kind, e.entity, e.body);
+                    if !accepted.ok { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
+                    if p.node_count() > 256 { return self.failure("impact_read_limit", head, revision, out.details_visible); }
+                } else if e.kind == "body.claimed" || e.kind == "pressure.remeasured" {
+                    let diagnostic = self.diagnostic(e);
+                    if !diagnostic.ok { return self.failure("impact_unsupported_history", head, revision, out.details_visible); }
+                    if !diagnostic.visible { out.details_visible = false; }
+                } else {
+                    let code = self.legacy(rows, e); if len(code) > 0 { return self.failure(code, head, revision, out.details_visible); }
+                    if rows.len() > 512 { return self.failure("impact_read_limit", head, revision, out.details_visible); }
+                }
+            }
+            i = i + 1;
+        }
+        out.workflow_tasks = p.task_count(); i = 0;
+        while i < p.task_count() { let t = p.tasks.get(i) or dna::TaskView { }; if t.disposition == "" { out.open_workflow_tasks = out.open_workflow_tasks + 1; } i = i + 1; }
+        i = 0; while i < p.work_count() {
+            let w = p.works.get(i) or dna::WorkView { };
+            if w.disposition == "" { out.open_works = out.open_works + 1; }
+            if len(w.attempt_id) > 0 && w.attempt_disposition == "" { out.outstanding_attempts = out.outstanding_attempts + 1; }
+            i = i + 1;
+        }
+        i = 0; while i < p.node_count() {
+            let n = p.tree.get(i) or dna::BoundNode { };
+            if !self.visible(n.id) || !self.visible(n.context_digest) || (n.kind == "work" && n.data_class != "internal" && n.data_class != "public") { out.details_visible = false; }
+            // Binding strings lack a typed receipt-reference grammar here.
+            if len(n.knowledge_bindings) > 0 { out.details_visible = false; }
+            i = i + 1;
+        }
+        i = 0; while i < rows.len() {
+            let r = rows.get(i) or OrganizationImpactEntry { };
+            if r.family == "task" && (p.task(r.id).task_id == "" || r.human) {
+                out.legacy_tasks = out.legacy_tasks + 1;
+                if !dna::word_in(r.state, "done failed refused cancelled decided") { out.open_legacy_tasks = out.open_legacy_tasks + 1; }
+                if r.state == "handed" { out.handed_tasks = out.handed_tasks + 1; }
+            } else if r.family == "schedule" { out.schedules = out.schedules + 1; }
+            else if r.family == "effect" {
+                if r.state == "pending" { out.pending_effects = out.pending_effects + 1; }
+                if r.state == "unknown" { out.unknown_effects = out.unknown_effects + 1; }
+            } else if r.family == "intent" {
+                let mut resolved = false; let mut k = r.seq + 1;
+                while k < revision { let e = self.j.read(k); if (e.kind == "task.born" && std::str::starts_with(e.body, r.id + ": ")) || (e.kind == "intent.refused" && e.entity == r.id) { resolved = true; } k = k + 1; }
+                if !resolved { out.unresolved_intents = out.unresolved_intents + 1; }
+            }
+            i = i + 1;
+        }
+        if self.j.head() != head || self.j.revision() != revision { return self.failure("impact_source_changed", head, revision, out.details_visible); }
+        out.available = true;
+        let obligations = out.open_workflow_tasks + out.open_works + out.outstanding_attempts + out.open_legacy_tasks + out.unresolved_intents + out.schedules + out.pending_effects + out.unknown_effects;
+        out.state = if obligations > 0 { "obligations_observed" } else { "none_observed" };
+        out.code = if !out.details_visible { "impact_visibility_unavailable" } else if obligations > 0 { "impact_obligations_observed" } else { "impact_none_observed" };
+        return out;
+    }
+}

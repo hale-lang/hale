@@ -31,7 +31,7 @@ fn run_failed(e: IoError) -> std::process::ProcessOutput {
     return std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: e.kind };
 }
 
-fn dna(args: String) -> String {
+fn run_dna(args: String) -> String {
     let out = std::process::run(hale_bin() + "\ndna\n" + args) or run_failed(err);
     if out.code == 0 { return out.stdout; }
     return out.stdout + out.stderr;
@@ -254,20 +254,20 @@ locus Ui {
             return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", body: body };
         }
         if std::http::is_route(ctx, "GET", "/api/status") {
-            return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: dna("status\n--json") };
+            return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: run_dna("status\n--json") };
         }
-        if std::http::is_route(ctx, "GET", "/api/board") { return text(dna("board")); }
-        if std::http::is_route(ctx, "GET", "/api/fleet") { return text(dna("fleet")); }
-        if std::http::is_route(ctx, "GET", "/api/pressure") { return text(dna("pressure")); }
-        if std::http::is_route(ctx, "GET", "/api/reviews") { return text(dna("review")); }
+        if std::http::is_route(ctx, "GET", "/api/board") { return text(run_dna("board")); }
+        if std::http::is_route(ctx, "GET", "/api/fleet") { return text(run_dna("fleet")); }
+        if std::http::is_route(ctx, "GET", "/api/pressure") { return text(run_dna("pressure")); }
+        if std::http::is_route(ctx, "GET", "/api/reviews") { return text(run_dna("review")); }
         if std::http::is_route(ctx, "GET", "/api/review/:id") {
-            return text(dna("review\n" + clean(std::http::path_param(ctx.params, "id"))));
+            return text(run_dna("review\n" + clean(std::http::path_param(ctx.params, "id"))));
         }
-        if std::http::is_route(ctx, "GET", "/api/history") { return text(dna("history")); }
+        if std::http::is_route(ctx, "GET", "/api/history") { return text(run_dna("history")); }
         if std::http::is_route(ctx, "GET", "/api/history/:entity") {
-            return text(dna("history\n" + clean(std::http::path_param(ctx.params, "entity"))));
+            return text(run_dna("history\n" + clean(std::http::path_param(ctx.params, "entity"))));
         }
-        // the forms: a verdict, an intent, a pressure signal — each is
+        // the forms: a verdict, a task, a pressure signal — each is
         // the CLI's own verb, sent and not waited for
         if std::http::is_route(ctx, "POST", "/api/verdict") {
             let b = req.body;
@@ -280,24 +280,24 @@ locus Ui {
             if len(who) > 0 { args = args + "\n--as\n" + who; }
             if len(signed_in) > 0 { args = args + "\n--authority\n" + self.authority_of(signed_in); }
             if len(comment) > 0 { args = args + "\n--comment\n" + comment; }
-            return text(dna(args));
+            return text(run_dna(args));
         }
-        if std::http::is_route(ctx, "POST", "/api/ask") {
+        if std::http::is_route(ctx, "POST", "/api/task/create") {
             let b = req.body;
             let outcome = std::json::find_string_field(b, "outcome");
             let to = clean(std::json::find_string_field(b, "to"));
             if len(outcome) == 0 { return std::http::Response { status: 400, body: "say what should happen" }; }
-            let mut args = "ask\n--no-wait";
+            let mut args = "task\ncreate\n--no-wait";
             if len(to) > 0 { args = args + "\n--to\n" + to; }
             if len(signed_in) > 0 { args = args + "\n--as\n" + signed_in; }
-            return text(dna(args + "\n" + outcome));
+            return text(run_dna(args + "\n" + outcome));
         }
         if std::http::is_route(ctx, "POST", "/api/pressure") {
             let b = req.body;
             let source = clean(std::json::find_string_field(b, "source"));
             let what = std::json::find_string_field(b, "what");
             if len(source) == 0 || len(what) == 0 { return std::http::Response { status: 400, body: "a source and what it saw" }; }
-            return text(dna("pressure\nraise\n" + source + "\n" + what));
+            return text(run_dna("pressure\nraise\n" + source + "\n" + what));
         }
         return std::http::Response { status: 404, body: "not found" };
     }

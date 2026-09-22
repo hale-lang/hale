@@ -1,0 +1,75 @@
+// Canonical read-projection conformance fixtures. These authored stage rows
+// test matching/privacy only; the separate native lifecycle test owns effects.
+import ".." as ops;
+import "../../core" as dna;
+
+locus PracticeReceiptFixture {
+    params { expected: String = ""; document: String = ""; }
+    fn kind() -> String { return "practice-provenance-fixture"; }
+    fn read(digest: String) -> String { return if digest == self.expected { self.document } else { "" }; }
+    fn store(text: String) -> String { self.expected = dna::hex_digest(text); self.document = text; return self.expected; }
+    fn erase(digest: String) -> Bool { self.document = ""; return true; }
+}
+locus PracticeProvenanceCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        std::test::assert(j.append_exact(j.revision(), kind, entity, body).ok, "projection fixture " + kind);
+    }
+    fn check(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "org", "{}");
+        let text = std::bytes::BytesBuilder { }; text.append_str("Exact reason é 🧭\r\n"); text.append_u8(1);
+        let reason = std::str::from_bytes(text.snapshot());
+        let context = ops::GovernanceContext { application_id: if mode == "foreign" { "foreign-app" } else { j.read(0).digest }, principal_mode: "local", principal_name: "alice" };
+        let command = ops::KnowledgeCommand { request_id: "private-browser-key", operation: "dna.knowledge.node.propose", application_id: context.application_id,
+            target_id: "org", record_head: j.head(), node_kind: "practice", name: "practice/provenance", text: "Keep exact native practice text.", author: "org", target: "org", rationale: reason };
+        let common = ops::KnowledgeCommandCodec { }; let codec = ops::KnowledgeNodeCommandCodec { }; let native = dna::KnowledgeNodeRequestCodec { };
+        let mut request = dna::KnowledgeNodeRequest { request_id: common.identity(context, command.request_id), operation: command.operation, kind: command.node_kind,
+            name: command.name, text: command.text, author: command.author, target: command.target, by: context.principal_name, because: command.rationale };
+        request.candidate_digest = dna::digest_of(native.document(request));
+        let grant = ops::KnowledgeGrant { allowed: true, mode: "review", authority: "board", basis: "explicit-projection-fixture" };
+        let fact = codec.fact(context, command, grant, request);
+        std::test::assert(len(fact) > 0, "canonical admission fixture");
+        self.append(j, "knowledge.node.requested", request.request_id, if mode == "invalid" { std::str::replace(fact, "\"authority\":\"board\"", "\"authority\":\"\"") } else { fact });
+        let admission = j.read(j.revision() - 1);
+        self.append(j, "knowledge.node.started", request.request_id, if mode == "started" { "{}" } else { native.started(request) });
+        let proposed = std::json::Builder { }; proposed.begin_object(); proposed.string_field("digest", request.candidate_digest); proposed.string_field("review_id", dna::knowledge_review_id(request.candidate_digest));
+        proposed.string_field("kind", "practice"); proposed.string_field("name", command.name); proposed.string_field("author", "org"); proposed.string_field("target", "org"); proposed.string_field("class", "initiative"); proposed.end_object();
+        self.append(j, "knowledge.proposed", request.candidate_digest, proposed.result());
+        let review = std::json::Builder { }; review.begin_object(); review.string_field("subject_digest", request.candidate_digest); review.string_field("knowledge_digest", request.candidate_digest);
+        review.string_field("author", "org"); review.string_field("target", "org"); review.string_field("required_authority", "board"); review.string_field("kind", "practice"); review.end_object();
+        self.append(j, "review.requested", "review:" + dna::knowledge_review_id(request.candidate_digest), review.result());
+        if mode != "missing" { self.append(j, "knowledge.node.proposed", request.request_id, if mode == "ack" { "{}" } else { native.proposed(request) }); }
+        if mode == "conflict" { self.append(j, "knowledge.edge.requested", request.request_id, "{}"); }
+        if mode == "private" { self.append(j, "receipt.withheld", request.candidate_digest, "{}"); }
+        if mode == "support" { self.append(j, "receipt.withheld", admission.digest, "{}"); }
+        if mode == "legacy" { self.append(j, "practice.proposed", "legacy-scoped-id", "{\"digest\":\"" + request.candidate_digest + "\",\"by\":\"legacy-person\",\"because\":\"legacy reason\"}"); }
+        let doc = native.document(request); let receipts = PracticeReceiptFixture { expected: ops::raw_digest(request.candidate_digest), document: if mode == "receipt" { doc + " " } else { doc } };
+        let queries = ops::Queries { j: j, receipts: receipts }; let found = queries.practice_of(request.candidate_digest);
+        std::test::assert_eq_int(queries.practice_count(), 1, "named catalog membership unchanged");
+        if mode == "valid" {
+            std::test::assert_eq_str(found.request_id, request.request_id, "scoped native identity");
+            std::test::assert(found.request_id != command.request_id, "no private raw request UUID");
+            std::test::assert_eq_str(found.requester, "alice", "recorded requester from admitted fields");
+            std::test::assert_eq_str(found.because, reason, "exact Unicode CRLF control rationale");
+            std::test::assert(found.text_available && found.state == "pending", "provenance does not assert adoption");
+        } else if mode == "legacy" {
+            std::test::assert(found.request_id == "legacy-scoped-id" && found.requester == "legacy-person" && found.because == "legacy reason", "legacy provenance precedence unchanged");
+        } else { std::test::assert(found.request_id == "" && found.requester == "" && found.because == "", "no guessed provenance for " + mode); }
+    }
+    fn legacy_kind(mode: String) {
+        let j = dna::MemJournal { }; let kind = if mode == "retirement" { "retirement" } else { "practice" };
+        let doc = dna::knowledge_document(dna::Idea { kind: kind, name: "acceptance/legacy", text: "Existing acceptance condition", author: "org" }, "org");
+        let digest = dna::digest_of(doc); let receipts = PracticeReceiptFixture { expected: ops::raw_digest(digest), document: if mode == "hash" { doc + " " } else { doc } };
+        self.append(j, "knowledge.proposed", digest, "{\"name\":\"acceptance/legacy\"" + (if mode == "explicit" { ",\"kind\":\"idea\"" } else if mode == "empty" { ",\"kind\":\"\"" } else { "" }) + "}");
+        self.append(j, "knowledge.ratified", digest, "{}");
+        let verification = dna::HaleVerification { receipts: receipts }; let body = dna::Dna { planned: true, journal: j, verification: verification };
+        std::test::assert_eq_str(body.practice_in_force("acceptance/legacy"), if mode == "valid" { digest } else { "" }, "hash-checked legacy missing-kind boundary " + mode);
+    }
+    fn run_cases() {
+        let names = "valid invalid started missing ack foreign conflict private support legacy receipt"; let mut i = 0;
+        while i < dna::word_count(names) { self.check(dna::nth_word(names, i)); i = i + 1; }
+        self.legacy_kind("valid"); self.legacy_kind("retirement"); self.legacy_kind("hash"); self.legacy_kind("explicit"); self.legacy_kind("empty");
+        eprintln("PASS Practice recorded provenance and legacy in-force kind boundaries");
+    }
+}
+fn main() { let cases = PracticeProvenanceCases { }; cases.run_cases(); }

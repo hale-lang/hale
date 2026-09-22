@@ -1,0 +1,58 @@
+// Exact Task command variant. Its effect fact is also its durable admission;
+// shared governance identity prevents reuse across Practice/Review/source/Task.
+import "../core" as dna;
+type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
+type TaskCommandFact { valid: Bool = false; context: GovernanceContext = GovernanceContext { }; command: GovernanceCommand = GovernanceCommand { }; grant: GovernanceGrant = GovernanceGrant { }; head: String = ""; }
+locus TaskCommandCodec {
+    params { }
+    fn known(operation: String, version: String) -> Bool { return operation == "dna.task.reassign" && version == "1"; }
+    fn valid(context: GovernanceContext, c: GovernanceCommand) -> Bool {
+        let common = GovernanceCommandCodec { };
+        return self.known(c.operation, c.operation_version) && common.context_valid(context) && c.application_id == context.application_id && c.position_id == "org"
+            && c.target_kind == "dna.task" && common.bounded(c.target_id, 256, true, false) && common.bounded(c.request_id, 128, true, false)
+            && dna::digest_well_formed(c.subject_digest) && common.bounded(c.expected_assignee, 256, true, false) && common.bounded(c.new_assignee, 256, true, false)
+            && c.expected_assignee != c.new_assignee && c.text == "" && c.rationale == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == ""
+            && c.source_head == "" && c.dependency_source == "" && c.dependency_digest == "" && c.record_head == "" && c.source_text == "" && c.outcome == "" && c.to == "";
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let common = GovernanceCommandCodec { }; b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(common.quote(value)); }
+    fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {
+        if !self.valid(context, c) { return ""; } let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.task-command/1\"");
+        self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
+        self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
+        self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id); self.field(b, "subject_digest", c.subject_digest);
+        self.field(b, "expected_assignee", c.expected_assignee); self.field(b, "new_assignee", c.new_assignee); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
+    fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        if len(document) > 8192 || !syntax.valid(document) || !fields.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_kind target_id subject_digest expected_assignee new_assignee", "")
+            || common.string(document, "format") != "dna.task-command/1" || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
+        let c = GovernanceCommand { application_id: common.string(document, "application_id"), request_id: common.string(document, "request_id"), operation: common.string(document, "operation"), operation_version: common.string(document, "operation_version"),
+            position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"), target_id: common.string(document, "target_id"), subject_digest: common.string(document, "subject_digest"), expected_assignee: common.string(document, "expected_assignee"), new_assignee: common.string(document, "new_assignee") };
+        return if self.valid(context, c) { c } else { GovernanceCommand { } };
+    }
+    fn fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) -> String {
+        let common = GovernanceCommandCodec { }; if !self.valid(context, c) { return ""; }
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"command_format\":\"dna.task-command/1\""); self.field(b, "command_id", common.identity(context, c.request_id));
+        self.field(b, "command_payload", self.canonical(context, c)); self.field(b, "command_fingerprint", self.fingerprint(context, c));
+        self.field(b, "command_authority", grant.authority); self.field(b, "command_authority_basis", grant.basis); self.field(b, "command_record_head", head);
+        self.field(b, "from", c.expected_assignee); self.field(b, "to", c.new_assignee); self.field(b, "by", context.principal_name); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_fact(e: dna::Event) -> TaskCommandFact {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        if e.kind != "task.reassigned" || len(e.body) > 32768 || !syntax.valid(e.body) || !fields.fields(e.body, "command_format command_id command_payload command_fingerprint command_authority command_authority_basis command_record_head from to by", "") { return TaskCommandFact { }; }
+        let payload = common.string(e.body, "command_payload"); if len(payload) > 8192 || !syntax.valid(payload) { return TaskCommandFact { }; }
+        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+        let c = self.decode(context, payload); let grant = GovernanceGrant { allowed: true, authority: common.string(e.body, "command_authority"), basis: common.string(e.body, "command_authority_basis") }; let head = common.string(e.body, "command_record_head");
+        if !self.valid(context, c) || e.entity != c.target_id || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false)
+            || head != e.prev || e.body != self.fact(context, c, grant, head) { return TaskCommandFact { }; }
+        return TaskCommandFact { valid: true, context: context, command: c, grant: grant, head: head };
+    }
+    fn project(a: GovernanceAdmission) -> GovernanceReceipt {
+        let c = a.command; let context = a.context;
+        return GovernanceReceipt { command_id: a.command_id, request_id: c.request_id, application_id: context.application_id, operation: c.operation, operation_version: c.operation_version,
+            principal_mode: context.principal_mode, principal_name: context.principal_name, position_id: c.position_id, target_kind: c.target_kind, target_id: c.target_id,
+            subject_digest: c.subject_digest, fingerprint: a.fingerprint, proposal_state: "", state: if a.unknown { "outcome_unknown" } else { "succeeded" },
+            task: TaskCommandOutcome { state: if a.unknown { "unknown" } else { "applied" }, from: c.expected_assignee, to: c.new_assignee, event_id: if a.unknown { "" } else { a.event_id } } };
+    }
+}

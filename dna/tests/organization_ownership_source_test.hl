@@ -1,0 +1,198 @@
+// Real fixed-file ownership proposals and native affected-owner Review. This
+// does not claim live ownership handover, a publication fence or Ledger support.
+import "../core" as dna;
+import "../operations" as ops;
+import "../organization_source" as source;
+
+const PROGRAM: String = "main locus Org { params { title: String = \"Ownership example\"; } }\nfn main() { Org { }; }\n";
+const BEFORE: String = "org = acme\norg/support = north\nacme: alice, carol\nnorth: bob\nhost = acme\n";
+const AFTER: String = "# Exact reviewed scope handover\r\norg = acme\r\norg/support = south\r\nacme: alice, carol\r\nnorth: bob\r\nsouth: dora\r\nhost = acme\r\n";
+
+locus OwnershipJournal {
+    params { inner: dna::GitJournal = dna::GitJournal { }; block_ack: Bool = false; faults: Int = 0; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.block_ack && kind == "organization.source.proposed" { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.block_ack && kind == "organization.source.proposed" { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+}
+
+fn drive(repo: String, j: OwnershipJournal, request: dna::OrganizationSourceRequest, deliver: Bool) {
+    let facts = ops::StrictOrganizationSourceFacts { };
+    let inputs = source::OrganizationPublicationInputs { root: repo, source_owner: "acme" };
+    let leases = dna::GitLeases { repo: repo };
+    let workspaces = dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" };
+    let repository = dna::LocalGit { repo: repo };
+    let gateway = dna::MutationGateway { leases: leases, workspaces: workspaces, repo: repository };
+    let receipts = dna::GitReceipts { repo: repo };
+    let verification = dna::HaleVerification { receipts: receipts, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" };
+    let policy = dna::OrgPolicy { }; let membrane = dna::Board { };
+    // Deliberately no cached ownership map: quorum must come from the captured
+    // base/candidate files, not this live object's text or HEAD.
+    let ownership = dna::Ownership { me: "acme", me_env: "" };
+    let body = dna::Dna { journal: j, ownership: ownership, organization_source_facts: facts,
+        organization_source_inputs: inputs, organization_source_apply_inputs: inputs,
+        gateway: gateway, verification: verification, review_policy: policy, membrane: membrane };
+    if deliver { body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request.request_id }); }
+    let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(request);
+    let review = codec.fact(j, "review.requested", "review:" + id);
+    if review.kind == "review.requested" {
+        let candidate = dna::native_json_string(review.body, "candidate_commit");
+        std::test::assert(body.organization_source_review_matches(request, candidate, review.body), "exact retained quorum accepted by Body");
+        let changed = std::str::replace(review.body, "north=bob south=dora", "south=dora");
+        std::test::assert(!body.organization_source_review_matches(request, candidate, changed), "missing affected owner cannot be restored as a valid Review");
+    }
+}
+
+main locus App {
+    params { root: String = ""; }
+    fn tool(argv: String) -> String {
+        let out = dna::run_tool(argv); std::test::assert_eq_int(out.code, 0, "fixture command: " + out.stderr); return dna::trim_nl(out.stdout);
+    }
+    fn write(path: String, text: String) { std::io::fs::write_file(path, text) or raise; }
+    fn git(repo: String, argv: String) -> String { return self.tool("git\n-C\n" + repo + "\n" + argv); }
+    fn repo(label: String) -> String {
+        let repo = self.root + "/" + label;
+        self.tool("mkdir\n-p\n" + repo + "/dna/org");
+        self.write(repo + "/dna/org/main.hl", PROGRAM); self.write(repo + "/dna/org/owners", BEFORE);
+        self.write(repo + "/.gitignore", "/.hale/\n/vendor/\n");
+        self.git(repo, "init\n-q\n-b\nmain"); self.git(repo, "config\nuser.name\nOwnership example"); self.git(repo, "config\nuser.email\nowners@example.invalid");
+        self.git(repo, "config\ndna.principal\nlocal"); self.git(repo, "config\ndna.trust\nlocal");
+        self.git(repo, "add\n-A"); self.git(repo, "commit\n-q\n-m\nInitial declared ownership");
+        let record = dna::GitRecord { repo: repo };
+        std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "fixture" }, false, "").ok, "actual Record genesis");
+        return repo;
+    }
+    fn policy(application: String, ownership: Bool) -> ops::OrganizationAuthorityPolicy {
+        let q = std::json::Builder { }; let grants = std::bytes::BytesBuilder { }; let names = "alice bob dora eve"; let mut i = 0;
+        while i < 4 {
+            if i > 0 { grants.append_str(","); }
+            grants.append_str("{\"mode\":\"local\",\"name\":" + q.quote(dna::nth_word(names, i)) + ",\"authority\":\"board\",\"organization_propose\":true,\"organization_review\":true,\"recover\":true" + (if ownership { ",\"organization_ownership_propose\":true" } else { "" }) + "}"); i = i + 1;
+        }
+        let text = "{\"format\":\"dna.organization-authority/1\",\"application_id\":" + q.quote(application) + ",\"grants\":[" + std::str::from_bytes(grants.snapshot()) + "]}";
+        let codec = ops::OrganizationAuthorityPolicyCodec { }; let result = codec.decode(text, application, "local");
+        std::test::assert(result.valid, "fixed source authority policy"); return result;
+    }
+    fn command(repo: String, key: String) -> ops::GovernanceCommand {
+        let record = dna::GitRecord { repo: repo }; let reader = source::OrganizationSource { root: repo, allow_drafts: true }; let base = reader.read();
+        std::test::assert(base.ok, "actual committed source: " + base.code);
+        return ops::GovernanceCommand { request_id: key, operation: "dna.organization.ownership.propose", application_id: record.identity(),
+            target_kind: "dna.organization.module", target_id: "dna/org/owners", subject_digest: dna::digest_of(BEFORE), source_head: base.source_head,
+            dependency_source: base.dependency_source, dependency_digest: base.dependency_digest, record_head: record.head("journal"), source_text: AFTER, rationale: "Move support ownership with both affected owners' Review." };
+    }
+    fn request(repo: String, c: ops::GovernanceCommand) -> dna::OrganizationSourceRequest {
+        let record = dna::GitRecord { repo: repo }; let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+        let authority = ops::FixedOrganizationAuthority { policy: self.policy(context.application_id, true) };
+        let inputs = source::OrganizationPublicationInputs { root: repo, source_owner: "acme" };
+        let service = ops::GovernanceCommands { record: record, organization_ownership_enabled: true, organization_authority: authority, organization_inputs: inputs, organization_owner: "acme" };
+        let result = service.submit(context, c); std::test::assert(result.ok, "native ownership admission: " + result.code);
+        let j = dna::GitJournal { repo: repo }; let codec = ops::OrganizationCommandCodec { }; let fact = codec.decode_fact(j.read(j.revision() - 1));
+        std::test::assert(fact.valid && fact.request.source_module == "dna/org/owners", "authenticated operation pins native fixed module");
+        let disabled = ops::GovernanceCommands { record: record, organization_authority: authority };
+        std::test::assert(disabled.lookup(context, c.request_id).ok, "new service recovers exact request with writes disabled");
+        let mut other = c; other.operation = "dna.organization.propose"; other.target_id = "dna/org/main.hl";
+        std::test::assert_eq_str(disabled.submit(context, other).code, "request_conflict", "same caller key cannot cross module profiles");
+        return fact.request;
+    }
+    fn count(j: dna::Journal, kind: String, id: String) -> Int {
+        let mut n = 0; let mut i = 0;
+        while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { n = n + 1; } i = i + 1; } return n;
+    }
+    fn decide(repo: String, j: OwnershipJournal, r: dna::OrganizationSourceRequest, who: String, expected: String, terminal: Bool) {
+        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r); let row = codec.fact(j, "review.requested", "review:" + id);
+        let context = ops::GovernanceContext { application_id: r.application_id, principal_mode: "local", principal_name: who };
+        let record = dna::GitRecord { repo: repo }; let authority = ops::FixedOrganizationAuthority { policy: self.policy(r.application_id, true) };
+        let service = ops::GovernanceCommands { record: record, organization_authority: authority, organization_reviews_enabled: true };
+        let c = ops::GovernanceCommand { request_id: "decision-" + who, operation: "dna.review.verdict", application_id: r.application_id,
+            target_kind: "dna.review", target_id: id, subject_digest: dna::native_json_string(row.body, "candidate_commit"), expected_review_state: "pending", verdict: "approve", comment: "Approve this exact ownership candidate." };
+        let admitted = service.submit(context, c);
+        if expected != "" { std::test::assert_eq_str(admitted.code, expected, "native reviewer permission: " + who); return; }
+        std::test::assert(admitted.ok, "native Review command admitted: " + admitted.code); let moved = j.refresh();
+        let common = ops::GovernanceCommandCodec { }; let facts = ops::StrictOrganizationSourceFacts { };
+        let review = dna::Review { journal: j, organization_source_request: r, organization_source_facts: facts, review_id: id,
+            subject_digest: c.subject_digest, required_authority: dna::native_json_string(row.body, "required_authority"), author: r.by, approvers: dna::native_json_string(row.body, "approvers") };
+        let verdict = dna::Verdict { command_id: common.identity(context, c.request_id), review_id: id, subject_digest: c.subject_digest,
+            reviewer: who, authority: "board", verdict: "approve", comment: c.comment };
+        let decision = review.command_decide(verdict);
+        std::test::assert(std::json::find_bool_field(decision, "accepted"), "exact tagged native Review accepted");
+        std::test::assert(std::json::find_bool_field(decision, "settled") == terminal, "all affected owners required across Review restart");
+        let recovered = service.lookup(context, c.request_id); std::test::assert(recovered.ok, "decision recovery after native result");
+    }
+    fn proposal(recovery: Bool) {
+        let repo = self.repo(if recovery { "recovery" } else { "proposal" }); let c = self.command(repo, "ownership-source"); let r = self.request(repo, c);
+        let j = OwnershipJournal { inner: dna::GitJournal { repo: repo }, block_ack: recovery };
+        drive(repo, j, r, true);
+        if recovery { std::test::assert(j.faults > 0, "proposal acknowledgement fault reached actual native path"); }
+        let fresh = OwnershipJournal { inner: dna::GitJournal { repo: repo } }; drive(repo, fresh, r, false);
+        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r); let proposal = codec.fact(fresh, "organization.source.proposed", r.request_id);
+        std::test::assert_eq_str(proposal.kind, "organization.source.proposed", "native proposal created/recovered");
+        let candidate = dna::native_json_string(proposal.body, "candidate_commit");
+        std::test::assert_eq_str(self.git(repo, "show\n" + candidate + ":dna/org/main.hl"), dna::trim_nl(PROGRAM), "Hale module is unchanged");
+        let map = dna::run_tool("git\n-C\n" + repo + "\nshow\n" + candidate + ":dna/org/owners"); std::test::assert_eq_str(map.stdout, AFTER, "exact CRLF ownership bytes retained");
+        let row = codec.fact(fresh, "review.requested", "review:" + id);
+        std::test::assert_eq_str(dna::native_json_string(row.body, "approvers"), "north=bob south=dora", "real old/new files determine affected-owner quorum");
+        std::test::assert_eq_int(self.count(fresh, "review.requested", "review:" + id), 1, "one immutable Review across restart");
+        std::test::assert_eq_int(self.count(fresh, "mutation.candidate", id), 1, "one candidate across restart");
+        self.decide(repo, fresh, r, "alice", "forbidden", false); self.decide(repo, fresh, r, "eve", "forbidden", false);
+        self.decide(repo, fresh, r, "bob", "", false); drive(repo, fresh, r, false);
+        self.decide(repo, fresh, r, "dora", "", true); drive(repo, fresh, r, false);
+        std::test::assert_eq_str(self.git(repo, "rev-parse\nHEAD"), r.source_head, "approval does not claim ownership activation");
+        std::test::assert_eq_int(self.count(fresh, "mutation.applied", id), 0, "no source application without operational handover");
+        std::test::assert_eq_int(self.count(fresh, "expression.restart_requested", id), 0, "no source restart fabricated");
+        let inputs = source::OrganizationPublicationInputs { root: repo, source_owner: "acme" };
+        self.write(repo + "/dna/org/owners", "org = attacker\nattacker: eve\n");
+        let pinned = inputs.ownership_quorum(r, candidate);
+        std::test::assert(pinned.ok && pinned.approvers == "north=bob south=dora", "later live map never changes retained quorum");
+        std::test::assert(!inputs.current(r).ok, "dirty live owners blocks further source progress");
+        eprintln(if recovery { "PASS recovery" } else { "PASS proposal" });
+    }
+    fn profile() {
+        let repo = self.repo("profile"); let c = self.command(repo, "codec"); let record = dna::GitRecord { repo: repo };
+        let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+        let j = dna::GitJournal { repo: repo }; let old = ops::FixedOrganizationAuthority { policy: self.policy(context.application_id, false) };
+        std::test::assert(old.authorize(context, "dna.organization.propose", false, j).allowed, "old main-module grant preserved");
+        std::test::assert(!old.authorize(context, c.operation, false, j).allowed, "old grant never implies ownership permission");
+        let service = ops::GovernanceCommands { record: record, organization_enabled: true, organization_authority: old };
+        std::test::assert(!service.supported(c.operation, "1"), "main-module composition never implies ownership writes");
+        let codec = ops::OrganizationCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { };
+        let grant = ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture" }; let r = codec.request(context, c, grant, "acme");
+        std::test::assert(native.ownership(r) && native.module_for(r) == "dna/org/owners", "fixed owner module selected");
+        let mut wrong = c; wrong.target_id = "dna/org/main.hl"; std::test::assert(!codec.valid(context, wrong), "operation cannot substitute main module");
+        wrong = c; wrong.target_id = "../owners"; std::test::assert(!codec.valid(context, wrong), "no caller-supplied paths");
+        let mut legacy = c; legacy.operation = "dna.organization.propose"; legacy.target_id = "dna/org/main.hl";
+        let main_request = codec.request(context, legacy, grant, "acme");
+        std::test::assert(!std::str::contains(native.canonical(main_request), "source_module"), "legacy canonical bytes have no new field");
+        let syntax = source::OwnershipSourceSyntax { };
+        std::test::assert(syntax.source_error(AFTER) == "" && syntax.source_error("org = acme\norg/ = north\n") != "", "ownership syntax preserves normalized identity checks");
+        std::test::assert_eq_str(dna::ownership_approvers("org = acme\nacme: old\n", "org = acme\nacme: new\n"), "acme=new", "candidate membership remains the native policy");
+        std::test::assert_eq_str(dna::ownership_approvers("org = acme\n", "org = other\n"), "acme= other=", "missing members retain unsatisfiable owner quorum");
+        eprintln("PASS profile");
+    }
+    run {
+        let selected = std::env::arg_or(2, "profile");
+        if selected == "profile" { self.profile(); }
+        else if selected == "proposal" { self.proposal(false); }
+        else if selected == "recovery" { self.proposal(true); }
+        else { std::test::assert(false, "known ownership scenario"); }
+    }
+}
+// Under `hale test` no root is given: the fixture makes its own scratch
+// and removes it; by hand, `<root> [profile|proposal|recovery]` as before.
+fn main() {
+    let given = std::env::arg(1);
+    if len(given) > 0 { App { root: given }; return; }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-ownership.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, "ownership fixture scratch: " + made.stderr);
+    let root = dna::trim_nl(made.stdout);
+    App { root: root };
+    let removed = dna::run_tool("rm\n-rf\n" + root);
+    std::test::assert_eq_int(removed.code, 0, "ownership fixture removed its scratch");
+}

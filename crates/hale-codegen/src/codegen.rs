@@ -1109,6 +1109,15 @@ pub fn build_executable_with_options(
     // with `check`, which answers the same question in one hop from
     // its own expanded table.
     crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
+    // GH #735: an omitted `run` is an empty `run`, so a flow child is
+    // reclaimed when its (empty) run completes on both spellings. On
+    // the MERGED program, so a bundled stdlib locus is treated as a
+    // user one: pass A2 declares lifecycle methods from whichever
+    // declaration of a name it keeps, and a user seed that spells a
+    // stdlib locus's name (the stdlib's own seeds, harvested into
+    // the corpus) would otherwise carry a `run` its bundled twin
+    // lacked, and the body lowering would find no declaration.
+    hale_syntax::desugar::desugar_omitted_run(&mut merged);
 
     // GH #921 A2: the ownership pre-pass, over the merged and
     // desugared program and before anything borrows it. It numbers
@@ -18385,6 +18394,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_arena_override = saved_override_for_returned;
                 self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
+                // GH #713: `let` copies a struct value. A struct read
+                // from a PLACE — a field, a local, an element — lowers
+                // to the pointer of that storage, so the binding used
+                // to be a view: `let saved = self.row; self.row = Row
+                // { };` emptied `saved`, and `let mut copy = original;
+                // copy.x = …` wrote the original. The ruling of
+                // 2026-09-20 finishes the String single-owner rule for
+                // structs: the binding is a copy in this frame's
+                // arena (the method scratch, or the caller's arena for
+                // a binding the fn hands back), Strings and Bytes
+                // inside cloned, nested structs copied, locus handles
+                // left as handles. A literal or a call result is fresh
+                // already and is bound as it is.
+                if matches!(ty, CodegenTy::TypeRef(_))
+                    && Self::expr_is_place(value_to_lower)
+                {
+                    let dest = self.current_arena_ptr()?;
+                    val = self.emit_return_value_deep_copy(val, &ty, dest)?;
+                }
                 // GH #383: a let-bound call to a proven-fresh locus
                 // factory is owned by THIS binding, so it dissolves
                 // at this scope's exit like any let-bound locus.
@@ -18845,7 +18873,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let (slot_ptr, slot_ty, slot_name) =
                             self.resolve_lvalue_chain(target, scope)?;
                         return self.finish_lvalue_assign(
-                            slot_ptr, slot_ty, slot_name, op, value, scope,
+                            slot_ptr, slot_ty, slot_name, op, value, scope, true,
                         );
                     }
                     let field_name = match &target.tail[0] {
@@ -19036,7 +19064,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (slot_ptr, slot_ty, slot_name) =
                         self.resolve_lvalue_chain(target, scope)?;
                     return self.finish_lvalue_assign(
-                        slot_ptr, slot_ty, slot_name, op, value, scope,
+                        slot_ptr, slot_ty, slot_name, op, value, scope, false,
                     );
                 };
 
@@ -19084,6 +19112,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
                     v
                 };
+                // GH #992: `x = <place>` on a struct-typed local copies
+                // as `let x = <place>` does (GH #713). Storing the
+                // place's pointer made the local a view of the source,
+                // so a write through it reached the source, and a
+                // write made through the local before the assignment
+                // survived it. The same for an element of a local
+                // array, `arr[i] = <place>`. A literal or a call
+                // result is fresh and is stored as it is.
+                let local_value_slot = target.head.name != "self"
+                    && (target.tail.is_empty()
+                        || (target.tail.len() == 1
+                            && matches!(target.tail[0], LValueSeg::Index(_))));
+                let new_val = if local_value_slot
+                    && matches!(op, AssignOp::Eq)
+                    && matches!(slot_ty, CodegenTy::TypeRef(_))
+                    && Self::expr_is_place(value)
+                {
+                    let dest = self.current_arena_ptr()?;
+                    self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?
+                } else {
+                    new_val
+                };
                 // `self.X = expr` for a heap-typed field gets the
                 // in-place anchor + memcpy treatment from
                 // emit_self_field_inplace_assign — bounds the
@@ -19096,6 +19146,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && target.tail.len() == 1
                     && matches!(target.tail[0], LValueSeg::Field(_))
                 {
+                    // GH #967: a handle written into a contract-typed
+                    // field (`interface` / `perspective(P)`) is a
+                    // BORROW — F.39's rule for a name in a field
+                    // initialiser, applied to assignment. The child
+                    // the field owned until now is reclaimed here
+                    // (break-before-make, as WS1#4 does for a locus
+                    // literal), and the field's owned bit and reclaim
+                    // slot are cleared so the holder's cascade leaves
+                    // the borrowed impl to its own owner. Without
+                    // this the slot kept naming the DEFAULT's
+                    // `__reclaim_<Impl>` and the cascade tore down
+                    // whatever the field pointed at — the assembly
+                    // reclaiming a journal it was handed.
+                    if matches!(op, AssignOp::Eq)
+                        && matches!(
+                            slot_ty,
+                            CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                        )
+                    {
+                        if let LValueSeg::Field(f) = &target.tail[0] {
+                            self.emit_contract_field_borrow(&f.name)?;
+                        }
+                    }
                     self.emit_self_field_inplace_assign(
                         slot_ptr, new_val, &slot_ty,
                     )?;
@@ -33710,6 +33783,125 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// GH #967: `self.<contract field> = <handle>`. Runs the teardown
+    /// of the child the field owns (gated on the F.29 owned bit and
+    /// the GH #871 reclaim slot, so a field that already held a
+    /// borrow releases nothing), then marks the field borrowed: the
+    /// owned bit cleared, the reclaim slot nulled. The caller stores
+    /// the handle afterwards. A field with no owned bit (a locus with
+    /// no locus-carrying params) has nothing to release.
+    fn emit_contract_field_borrow(
+        &mut self,
+        fname: &str,
+    ) -> Result<(), CodegenError> {
+        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "contract-field assignment outside a locus method"
+                    .to_string(),
+            )
+        })?;
+        let info =
+            self.user_loci.get(&cs.locus_name).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no locus `{}` for contract-field assignment",
+                    cs.locus_name
+                ))
+            })?;
+        let (field_idx, field_ty) =
+            cs.fields.get(fname).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no field `{}` on locus self",
+                    fname
+                ))
+            })?;
+        let via_fat_pointer = matches!(field_ty, CodegenTy::Interface(_));
+        self.emit_owned_contract_child_reclaim(
+            &info,
+            cs.self_ptr,
+            &cs.locus_name,
+            fname,
+            field_idx,
+            via_fat_pointer,
+        )?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        if let Some(&bit_pos) = info.locus_ref_bit_per_field.get(fname) {
+            let i64_t = self.context.i64_type();
+            let mask_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    info.locus_ref_owned_mask_field_idx,
+                    &format!("{}.{}.borrow.mask.ptr", cs.locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let prev = self
+                .builder
+                .build_load(
+                    i64_t,
+                    mask_ptr,
+                    &format!("{}.{}.borrow.mask", cs.locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let cleared = self
+                .builder
+                .build_and(
+                    prev,
+                    i64_t.const_int(!(1u64 << bit_pos), false),
+                    &format!("{}.{}.borrow.mask.cleared", cs.locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(mask_ptr, cleared)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(&slot_idx) = info.owned_child_reclaim_field_idxs.get(fname)
+        {
+            let slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    slot_idx,
+                    &format!(
+                        "{}.{}.__owned_child_reclaim.borrow.ptr",
+                        cs.locus_name, fname
+                    ),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(slot, ptr_t.const_null())
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// A struct read from a PLACE — a binding, a field, an element —
+    /// lowers to the pointer of that storage; a literal or a call
+    /// result is fresh. The `let` (GH #713) and assignment (GH #992,
+    /// #993) rules copy the first shape and bind the second as it is.
+    pub(crate) fn expr_is_place(e: &Expr) -> bool {
+        matches!(e, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. })
+    }
+
+    /// The tail of an lvalue assignment the chain walker resolved:
+    /// `self.a.b = v` and `local.a = v` alike. `root_is_self` says
+    /// which. A self-rooted slot is locus storage and takes the
+    /// in-place path (anchored in `self.__arena`, single-owner,
+    /// String bytes overwritten when the new value fits). A slot
+    /// under a LOCAL root is the frame's own value and never that:
+    /// GH #993 — a `let` copy of a struct (GH #713) shares a String
+    /// blob that already lives in the frame's arena with the binding
+    /// it was copied from, so an in-place overwrite through the copy
+    /// (`bad.id = "…"`, routed here with `self.__arena` as the arena)
+    /// rewrote the bytes the source, and every other local sharing
+    /// them, still read. A local's String or Bytes field is REPLACED:
+    /// the new value cloned into the frame's arena, the slot's
+    /// pointer stored over. A local's struct field takes a copy of a
+    /// place (as `let` does) or the fresh value itself, again by
+    /// pointer. Nothing under a local root is ever mutated in place,
+    /// so what two locals share is never observable.
     fn finish_lvalue_assign(
         &mut self,
         slot_ptr: PointerValue<'ctx>,
@@ -33718,6 +33910,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         op: &AssignOp,
         value: &Expr,
         scope: &Scope<'ctx>,
+        root_is_self: bool,
     ) -> Result<BlockEnd, CodegenError> {
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
         let new_val = if matches!(op, AssignOp::Eq) {
@@ -33751,6 +33944,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
             v
         };
+        if !root_is_self {
+            match &slot_ty {
+                // Every operator: `+=` builds a fresh String, and the
+                // in-place path would still write it into the locus
+                // arena rather than the frame's.
+                CodegenTy::String | CodegenTy::Bytes => {
+                    let dest = self.current_arena_ptr()?;
+                    let owned =
+                        self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?;
+                    self.builder
+                        .build_store(slot_ptr, owned)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(BlockEnd::Open);
+                }
+                CodegenTy::TypeRef(_) if matches!(op, AssignOp::Eq) => {
+                    let v = if Self::expr_is_place(value) {
+                        let dest = self.current_arena_ptr()?;
+                        self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?
+                    } else {
+                        new_val
+                    };
+                    self.builder
+                        .build_store(slot_ptr, v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(BlockEnd::Open);
+                }
+                _ => {}
+            }
+        }
         self.emit_self_field_inplace_assign(slot_ptr, new_val, &slot_ty)?;
         Ok(BlockEnd::Open)
     }

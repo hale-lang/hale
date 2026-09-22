@@ -3270,6 +3270,26 @@ param owns a factory's result exactly as an `interface`-typed one
 does, and a carrier or composite `let` RHS inside a loop is reclaimed
 per ITERATION like every other loop-bound locus.
 
+**The lifetime of a borrow is checked (GH #730, 2026-09-22).** The
+`Borrowed` row says the holder never reclaims; `spec/semantics.md`
+§ "A borrow outlives its holder" says who must, and `hale check`
+refuses the positions where nothing does — a frame's `let` or a
+handler's payload into a child of `self`, a field of `self` into a
+returned literal — with the witness call site when a parameter
+carries the handle in. Decided from position over the owner
+structure, no annotation, whole program, a witness in every refusal.
+
+**Assignment follows initialisation (GH #967, 2026-09-21).** The
+`Borrowed` row is a rule about a NAME reaching a field, not about the
+statement it reaches it in: `self.<contract field> = <handle>` in a
+method stores a borrow too — the child the field owned is reclaimed
+at the store, the field's owned bit and reclaim slot are cleared, and
+the holder's cascade leaves the handle to its owner
+(`spec/semantics.md` § *Reassigning a locus-typed field*, the
+contract-typed paragraph). Until then that store was outside the
+table's reach — the mask bit and the GH #871 slot kept the default's
+identity — and an assembly reclaimed the journal it was handed.
+
 **Why.** Every teardown leak and use-after-free fixed in the 2026-09-20
 sweep (#711/#812, #750, #789, #793, #815, #836, #837, #853, #871,
 #883, #890, #893, #895) was one of seven one-shot flags in

@@ -1,0 +1,31 @@
+import "../core" as dna;
+
+type KnowledgeEdgePreparation { ok: Bool = false; code: String = "stale_subject"; request: dna::KnowledgeEdgeRequest = dna::KnowledgeEdgeRequest { }; }
+
+locus KnowledgeEdgeAdmission {
+    params { }
+    fn prepare(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant, record: GovernanceRecord, j: GovernanceJournal) -> KnowledgeEdgePreparation {
+        let codec = KnowledgeEdgeCommandCodec { }; let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeEdgeCodec { };
+        if !codec.known(c.operation) || !common.valid(context, c) { return KnowledgeEdgePreparation { code: "invalid_command" }; }
+        if !common.grant_valid(grant) || grant.mode != "review" { return KnowledgeEdgePreparation { code: "forbidden" }; }
+        let commands = if len(record.location()) > 0 { KnowledgeCommands { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeCommands { record: record } };
+        let active = c.operation == "dna.knowledge.edge.link";
+        if !commands.endpoint(j, c.from_id, active) || !commands.endpoint(j, c.to_id, active) { return KnowledgeEdgePreparation { }; }
+        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
+        let direct = StrictKnowledgeDirectEdgeFacts { };
+        let mut request = dna::KnowledgeEdgeRequest {
+            application_id: context.application_id, request_id: common.identity(context, c.request_id), command_fingerprint: common.fingerprint(context, c),
+            authority: grant.authority, authority_basis: grant.basis, operation: c.operation,
+            edge_id: common.edge_id(c.from_id, c.to_id, c.rel), from_id: c.from_id, to_id: c.to_id, rel: c.rel,
+            by: context.principal_name, because: c.rationale
+        };
+        let endpoints = native.endpoints(j, receipts, request, j.revision());
+        if !endpoints.ok || !endpoints.ratified || (active && !endpoints.active) { return KnowledgeEdgePreparation { }; }
+        let basis = native.basis(j, receipts, direct, request, j.revision());
+        if !basis.ok { return KnowledgeEdgePreparation { code: "command_history_invalid" }; }
+        request.edge_basis = basis.event_id;
+        request.candidate_digest = dna::digest_of(native.document(request));
+        if !native.valid(request) { return KnowledgeEdgePreparation { code: "invalid_command" }; }
+        return KnowledgeEdgePreparation { ok: true, code: "", request: request };
+    }
+}

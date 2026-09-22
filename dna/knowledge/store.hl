@@ -41,13 +41,23 @@ interface KnowledgeStore {
     // The next record seq to apply (0 = nothing applied yet).
     fn watermark() -> Int;
     fn set_watermark(seq: Int) -> Bool;
+    // The projection is derived and rebuildable: drop every projected row
+    // and every projection stamp, so the next apply starts from row 0. The
+    // record's identity and the store's scope stay. A reconcile that
+    // re-appended rows beneath a stamped prefix is the reason this exists.
+    fn rebuild() -> Bool;
     // Idempotent by id: a second write with the same id updates in place.
     fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool;
     // The idea is no longer accepted (a ratified supersession retired
     // it): it leaves every package but stays readable by id.
     fn retire(id: String, seq: Int) -> Bool;
     fn bind(b: dna::KnowledgeBinding) -> Bool;
+    // Exact idea/target/author tuple; absent is an idempotent success.
+    fn unbind(b: dna::KnowledgeBinding) -> Bool;
     fn link(e: dna::KnowledgeEdge) -> Bool;
+    // Ensure this exact directed tuple is absent. Missing is an idempotent
+    // success; only an actual removal changes the graph generation.
+    fn unlink(e: dna::KnowledgeEdge) -> Bool;
     // One idea by id (`present` false when absent).
     fn idea(id: String) -> Stored;
     // Ids of accepted ideas bound to `target` or any of its ancestors
@@ -92,6 +102,196 @@ type Stored {
     ratified_seq: Int = 0;
 }
 
+// A separate structural surface keeps existing projection-only stores valid.
+// Cursors are the last visible tuple, with each native key kept separately.
+// A failed page invalidates everything already offered to its sink.
+type GraphQuery {
+    kind: String = "nodes";
+    id: String = "";
+    target: String = "";
+    after_first: String = "";
+    after_second: String = "";
+    after_third: String = "";
+    limit: Int = 25;
+}
+interface KnowledgeReadPolicy { fn visible(id: String) -> Bool; }
+interface GraphSink {
+    fn node(row: Stored) -> Bool;
+    fn edge(row: dna::KnowledgeEdge) -> Bool;
+    fn binding(row: dna::KnowledgeBinding) -> Bool;
+}
+type GraphProjection {
+    ok: Bool = false;
+    watermark: Int = 0;
+    head: String = "";
+    live_watermark: Int = 0;
+    pending_watermark: Int = 0;
+    pending_head: String = "";
+}
+
+type GraphPage {
+    ok: Bool = false;
+    error: String = "";
+    record: String = "";
+    generation: Int = 0;
+    watermark: Int = 0;
+    // Last proven applied Record prefix, distinct from the live watermark
+    // while an event or catch-up is being applied. Zero/empty is unproven.
+    projection_watermark: Int = 0;
+    projection_head: String = "";
+    // A target is recorded before any projection writes. Its presence
+    // withholds public reads even if a failed event left the live mark behind.
+    projection_pending_watermark: Int = 0;
+    projection_pending_head: String = "";
+    // Exact requested identity exists and is visible, independent of target
+    // relevance or cursor position. False for a collection without an id.
+    subject_present: Bool = false;
+    has_more: Bool = false;
+    last_first: String = "";
+    last_second: String = "";
+    last_third: String = "";
+}
+interface GraphStore {
+    fn read_graph(query: GraphQuery, policy: KnowledgeReadPolicy, sink: GraphSink) -> GraphPage;
+    // -1 means the authoritative generation could not be read.
+    fn graph_generation() -> Int;
+    fn projection_basis() -> GraphProjection;
+    // Compare the complete observed basis, including live progress, before
+    // writes. The caller proves both stamped and pending Record ancestry.
+    fn begin_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool;
+    // Compare stamped/pending pairs and complete only the fully applied target.
+    // An identical checkpoint succeeds without changing generation.
+    fn checkpoint_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool;
+}
+
+type GraphKey { first: String = ""; second: String = ""; third: String = ""; index: Int = 0; }
+@form(vec)
+locus GraphKeys { capacity { heap rows of GraphKey; } }
+type GraphTarget { id: String = ""; }
+@form(hashmap)
+locus GraphTargets { capacity { pool rows of GraphTarget indexed_by id; } }
+
+locus GraphRules {
+    params { }
+    fn projection_valid(basis: GraphProjection) -> Bool {
+        if !basis.ok || basis.watermark < 0 || basis.live_watermark < basis.watermark || basis.pending_watermark < 0 || len(basis.head) > 4096 || len(basis.pending_head) > 4096 { return false; }
+        if (basis.watermark == 0) != (len(basis.head) == 0) || (basis.pending_watermark == 0) != (len(basis.pending_head) == 0) { return false; }
+        // A legacy unstamped store can still be inspected natively. It is
+        // never admitted by begin: clean progress must equal its stamp.
+        return basis.pending_watermark == 0 || (basis.pending_watermark > basis.watermark && basis.pending_watermark >= basis.live_watermark);
+    }
+    fn projection_begin_valid(previous: GraphProjection, watermark: Int, head: String) -> Bool {
+        if !self.projection_valid(previous) || watermark <= previous.watermark || watermark < previous.live_watermark || watermark < previous.pending_watermark || len(head) == 0 || len(head) > 4096 { return false; }
+        return previous.pending_watermark > 0 || previous.live_watermark == previous.watermark;
+    }
+    fn validate(q: GraphQuery) -> String {
+        if q.kind != "nodes" && q.kind != "edges" && q.kind != "bindings" { return "invalid_query"; }
+        if q.limit < 1 || q.limit > 100 { return "invalid_query"; }
+        if q.kind == "edges" && (len(q.id) == 0 || len(q.target) > 0) { return "invalid_query"; }
+        if q.kind == "nodes" && (len(q.after_second) > 0 || len(q.after_third) > 0) { return "invalid_query"; }
+        if len(q.after_first) == 0 && (len(q.after_second) > 0 || len(q.after_third) > 0) { return "invalid_query"; }
+        if len(q.id) > 4096 || len(q.target) > 4096 || len(q.after_first) > 4096 || len(q.after_second) > 4096 || len(q.after_third) > 4096 { return "read_limit"; }
+        return "";
+    }
+    // Compare UTF-8 bytes, never joined or normalized strings. This agrees
+    // with Postgres COLLATE "C", including embedded separators/newlines.
+    fn compare(a: String, b: String) -> Int {
+        let mut n = 0;
+        while n < len(a) && n < len(b) {
+            let x = std::str::byte_at_unchecked(a, n);
+            let y = std::str::byte_at_unchecked(b, n);
+            if x < y { return -1; }
+            if x > y { return 1; }
+            n = n + 1;
+        }
+        if len(a) < len(b) { return -1; }
+        if len(a) > len(b) { return 1; }
+        return 0;
+    }
+    fn compare_key(a: GraphKey, b: GraphKey) -> Int {
+        let first = self.compare(a.first, b.first);
+        if first != 0 { return first; }
+        let second = self.compare(a.second, b.second);
+        if second != 0 { return second; }
+        return self.compare(a.third, b.third);
+    }
+    fn key_ok(k: GraphKey) -> Bool { return len(k.first) <= 4096 && len(k.second) <= 4096 && len(k.third) <= 4096; }
+    fn after(k: GraphKey, q: GraphQuery) -> Bool {
+        return len(q.after_first) == 0 || self.compare_key(k, GraphKey { first: q.after_first, second: q.after_second, third: q.after_third }) > 0;
+    }
+    fn node_bytes(i: dna::Idea) -> Int { return len(i.id) + len(i.kind) + len(i.text) + len(i.author) + len(i.provenance) + len(i.name) + len(i.supersedes) + 32; }
+    fn edge_bytes(e: dna::KnowledgeEdge) -> Int { return len(e.from) + len(e.to) + len(e.rel); }
+    fn binding_bytes(b: dna::KnowledgeBinding) -> Int { return len(b.idea) + len(b.target) + len(b.author) + len(b.class); }
+    fn applies(bound: String, target: String) -> Bool { return bound == target || dna::is_ancestor(bound, target); }
+    fn stored(row: String) -> Stored {
+        return Stored { present: true, idea: dna::Idea {
+            id: std::json::find_string_field(row, "id"), kind: std::json::find_string_field(row, "kind"),
+            text: std::json::find_string_field(row, "text"), author: std::json::find_string_field(row, "author"),
+            provenance: std::json::find_string_field(row, "provenance"), revision: std::json::find_int_field(row, "revision"),
+            accepted: std::json::find_bool_field(row, "accepted"), name: std::json::find_string_field(row, "name"),
+            supersedes: std::json::find_string_field(row, "supersedes") }, ratified_seq: std::json::find_int_field(row, "ratified_seq") };
+    }
+    fn key(row: String, kind: String) -> GraphKey {
+        if kind == "nodes" { return GraphKey { first: std::json::find_string_field(row, "id") }; }
+        if kind == "edges" { return GraphKey { first: std::json::find_string_field(row, "src"), second: std::json::find_string_field(row, "dst"), third: std::json::find_string_field(row, "rel") }; }
+        return GraphKey { first: std::json::find_string_field(row, "idea"), second: std::json::find_string_field(row, "target"), third: std::json::find_string_field(row, "author") };
+    }
+    fn emit(row: String, kind: String, sink: GraphSink) -> Bool {
+        if kind == "nodes" { return sink.node(self.stored(row)); }
+        if kind == "edges" { return sink.edge(dna::KnowledgeEdge { from: std::json::find_string_field(row, "src"), to: std::json::find_string_field(row, "dst"), rel: std::json::find_string_field(row, "rel") }); }
+        return sink.binding(dna::KnowledgeBinding { idea: std::json::find_string_field(row, "idea"), target: std::json::find_string_field(row, "target"), author: std::json::find_string_field(row, "author"), class: std::json::find_string_field(row, "class") });
+    }
+    // One ordered candidate per round trip avoids the driver's unbounded
+    // row concatenation. Values, cursors and the remaining byte budget are
+    // parameters. Both raw and JSON-escaped bytes are guarded on the server,
+    // before the row can cross the wire; an empty payload means read_limit.
+    fn sql(kind: String) -> String {
+        let prefix = "WITH candidate AS MATERIALIZED (";
+        let mut select = "";
+        let mut bytes = "";
+        if kind == "nodes" {
+            select = "SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq, name, supersedes FROM knowledge_ideas i WHERE ($1 = '' OR i.id = $1) AND ($2 = '' OR (i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($2 = b.target OR left($2, length(b.target) + 1) = b.target || '/')))) AND ($3 = '' OR i.id COLLATE \"C\" > $3 COLLATE \"C\") ORDER BY i.id COLLATE \"C\" LIMIT 1";
+            bytes = "octet_length(id) + octet_length(kind) + octet_length(text) + octet_length(author) + octet_length(provenance) + octet_length(name) + octet_length(supersedes) + 32";
+        } else if kind == "edges" {
+            select = "SELECT src, dst, rel FROM knowledge_edges WHERE (src = $1 OR dst = $1) AND ($2 = '') AND ($3 = '' OR (src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\") > ($3 COLLATE \"C\", $4 COLLATE \"C\", $5 COLLATE \"C\")) ORDER BY src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\" LIMIT 1";
+            bytes = "octet_length(src) + octet_length(dst) + octet_length(rel)";
+        } else {
+            select = "SELECT idea, target, author, class FROM knowledge_bindings WHERE ($1 = '' OR idea = $1) AND ($2 = '' OR $2 = target OR left($2, length(target) + 1) = target || '/') AND ($3 = '' OR (idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\") > ($3 COLLATE \"C\", $4 COLLATE \"C\", $5 COLLATE \"C\")) ORDER BY idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\" LIMIT 1";
+            bytes = "octet_length(idea) + octet_length(target) + octet_length(author) + octet_length(class)";
+        }
+        // Keep $4/$5 typed even in the node statement.
+        return prefix + select + "), encoded AS MATERIALIZED (SELECT CASE WHEN (" + bytes + ") <= $6::bigint THEN row_to_json(candidate)::text ELSE '' END AS payload FROM candidate WHERE $4::text IS NOT NULL AND $5::text IS NOT NULL) SELECT CASE WHEN octet_length(payload) <= $6::bigint THEN payload ELSE '' END FROM encoded";
+    }
+}
+
+// A request-scoped bounded selection for the unordered memory projection.
+// Only keys and source indices are retained; idea bodies are emitted once.
+locus GraphSelection {
+    params { keys: GraphKeys = GraphKeys { }; scanned: Int = 0; bytes: Int = 0; }
+    fn account(size: Int) -> Bool {
+        self.scanned = self.scanned + 1;
+        if self.scanned > 10000 || size > 8388608 - self.bytes { return false; }
+        self.bytes = self.bytes + size;
+        return true;
+    }
+    fn offer(key: GraphKey, limit: Int) {
+        let rules = GraphRules { };
+        let mut at = 0;
+        while at < self.keys.len() {
+            if rules.compare_key(key, self.keys.get(at) or GraphKey { }) < 0 { break; }
+            at = at + 1;
+        }
+        if at > limit { return; }
+        if self.keys.len() < limit + 1 { self.keys.push(GraphKey { }); }
+        let mut end = self.keys.len() - 1;
+        while end > at {
+            self.keys.set(end, self.keys.get(end - 1) or GraphKey { }) or discard;
+            end = end - 1;
+        }
+        self.keys.set(at, key) or discard;
+    }
+}
+
 // ---- in memory ----------------------------------------------------------
 
 @form(vec)
@@ -117,6 +317,11 @@ locus Mem {
         signal_rows: SignalRows = SignalRows { };
         structure: StructureRows = StructureRows { };
         mark: Int = 0;
+        graph_version: Int = 0;
+        projection_mark: Int = 0;
+        projection_head: String = "";
+        projection_pending_mark: Int = 0;
+        projection_pending_head: String = "";
         record_id: String = "";
     }
     fn kind() -> String { return "memory"; }
@@ -128,8 +333,55 @@ locus Mem {
     fn reopen() -> Bool { return true; }
     fn forget_error() { }
     fn last_error() -> String { return ""; }
+    fn graph_generation() -> Int { return self.graph_version; }
+    fn projection_basis() -> GraphProjection {
+        let basis = GraphProjection { ok: true, watermark: self.projection_mark, head: self.projection_head, live_watermark: self.mark, pending_watermark: self.projection_pending_mark, pending_head: self.projection_pending_head };
+        let rules = GraphRules { };
+        return if rules.projection_valid(basis) { basis } else { GraphProjection { } };
+    }
+    fn projection_matches(previous: GraphProjection) -> Bool {
+        return self.projection_mark == previous.watermark && self.projection_head == previous.head && self.projection_pending_mark == previous.pending_watermark && self.projection_pending_head == previous.pending_head;
+    }
+    fn begin_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
+        let rules = GraphRules { };
+        if !rules.projection_begin_valid(previous, watermark, head) || !self.projection_matches(previous) || self.mark != previous.live_watermark { return false; }
+        if self.projection_pending_mark == watermark && self.projection_pending_head == head { return true; }
+        self.projection_pending_mark = watermark;
+        self.projection_pending_head = head;
+        self.graph_version = self.graph_version + 1;
+        return true;
+    }
+    fn checkpoint_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
+        let rules = GraphRules { };
+        if !rules.projection_valid(previous) || watermark < 1 || len(head) == 0 || len(head) > 4096 { return false; }
+        if self.mark != watermark || !self.projection_matches(previous) { return false; }
+        if self.projection_pending_mark == 0 { return self.projection_mark == watermark && self.projection_head == head; }
+        if self.projection_pending_mark != watermark || self.projection_pending_head != head { return false; }
+        self.projection_mark = watermark;
+        self.projection_head = head;
+        self.projection_pending_mark = 0;
+        self.projection_pending_head = "";
+        self.graph_version = self.graph_version + 1;
+        return true;
+    }
     fn watermark() -> Int { return self.mark; }
     fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
+    fn rebuild() -> Bool {
+        while self.ideas.len() > 0 { let gone = self.ideas.pop() or dna::Idea { }; }
+        while self.seqs.len() > 0 { let gone = self.seqs.pop() or 0; }
+        while self.embeds.len() > 0 { let gone = self.embeds.pop() or ""; }
+        while self.bindings.len() > 0 { let gone = self.bindings.pop() or dna::KnowledgeBinding { }; }
+        while self.edges.len() > 0 { let gone = self.edges.pop() or dna::KnowledgeEdge { }; }
+        while self.signal_rows.len() > 0 { let gone = self.signal_rows.pop() or Signal { }; }
+        while self.structure.len() > 0 { let gone = self.structure.pop() or Structure { }; }
+        self.mark = 0;
+        self.projection_mark = 0;
+        self.projection_head = "";
+        self.projection_pending_mark = 0;
+        self.projection_pending_head = "";
+        self.graph_version = self.graph_version + 1;
+        return true;
+    }
     @unbounded
     fn index_of(id: String) -> Int {
         let mut i = 0;
@@ -146,6 +398,7 @@ locus Mem {
         while i < self.ideas.len() {
             let x = self.ideas.get(i) or dna::Idea { };
             if x.id == id {
+                self.graph_version = self.graph_version + 1;
                 self.ideas.set(i, dna::Idea { id: x.id, kind: x.kind, text: x.text, author: x.author, provenance: "retired", revision: seq, accepted: false, name: x.name, supersedes: x.supersedes }) or discard;
                 return true;
             }
@@ -154,14 +407,15 @@ locus Mem {
         return true;
     }
     fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
+        self.graph_version = self.graph_version + 1;
         let at = self.index_of(i.id);
         if at < 0 {
-            self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted });
+            self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted, name: i.name, supersedes: i.supersedes });
             self.seqs.push(ratified_seq);
             self.embeds.push(embed_text(i.text));
             return true;
         }
-        self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted }) or discard;
+        self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted, name: i.name, supersedes: i.supersedes }) or discard;
         self.seqs.set(at, ratified_seq) or discard;
         self.embeds.set(at, embed_text(i.text)) or discard;
         return true;
@@ -171,10 +425,31 @@ locus Mem {
         let mut i = 0;
         while i < self.bindings.len() {
             let x = self.bindings.get(i) or dna::KnowledgeBinding { };
-            if x.idea == b.idea && x.target == b.target && x.author == b.author { return true; }
+            if x.idea == b.idea && x.target == b.target && x.author == b.author {
+                if x.class == b.class { return true; }
+                self.graph_version = self.graph_version + 1;
+                self.bindings.set(i, dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class }) or discard;
+                return true;
+            }
             i = i + 1;
         }
+        self.graph_version = self.graph_version + 1;
         self.bindings.push(dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class });
+        return true;
+    }
+    @unbounded
+    fn unbind(b: dna::KnowledgeBinding) -> Bool {
+        let mut i = 0;
+        while i < self.bindings.len() {
+            let x = self.bindings.get(i) or dna::KnowledgeBinding { };
+            if x.idea == b.idea && x.target == b.target && x.author == b.author {
+                let last = self.bindings.len() - 1;
+                if i != last { self.bindings.set(i, self.bindings.get(last) or dna::KnowledgeBinding { }) or discard; }
+                let removed = self.bindings.pop() or dna::KnowledgeBinding { };
+                self.graph_version = self.graph_version + 1; return true;
+            }
+            i = i + 1;
+        }
         return true;
     }
     @unbounded
@@ -185,13 +460,113 @@ locus Mem {
             if x.from == e.from && x.to == e.to && x.rel == e.rel { return true; }
             i = i + 1;
         }
+        self.graph_version = self.graph_version + 1;
         self.edges.push(dna::KnowledgeEdge { from: e.from, to: e.to, rel: e.rel });
+        return true;
+    }
+    @unbounded
+    fn unlink(e: dna::KnowledgeEdge) -> Bool {
+        let mut i = 0;
+        while i < self.edges.len() {
+            let x = self.edges.get(i) or dna::KnowledgeEdge { };
+            if x.from == e.from && x.to == e.to && x.rel == e.rel {
+                // Graph reads sort by the native tuple, not storage order.
+                // Compact with the last row so repeated unlink/relink reuses
+                // vector capacity and leaves no tombstones in counts or scans.
+                let last = self.edges.len() - 1;
+                if i != last { self.edges.set(i, self.edges.get(last) or dna::KnowledgeEdge { }) or discard; }
+                let removed = self.edges.pop() or dna::KnowledgeEdge { };
+                self.graph_version = self.graph_version + 1;
+                return true;
+            }
+            i = i + 1;
+        }
         return true;
     }
     fn idea(id: String) -> Stored {
         let at = self.index_of(id);
         if at < 0 { return Stored { }; }
         return Stored { present: true, idea: self.ideas.get(at) or dna::Idea { }, ratified_seq: self.seqs.get(at) or 0 };
+    }
+    fn graph_identity(at: Int) -> String { return (self.ideas.get(at) or dna::Idea { }).id; }
+    fn graph_node(at: Int, sink: GraphSink) -> Bool {
+        return sink.node(Stored { present: true, idea: self.ideas.get(at) or dna::Idea { }, ratified_seq: self.seqs.get(at) or 0 });
+    }
+    fn read_graph(query: GraphQuery, policy: KnowledgeReadPolicy, sink: GraphSink) -> GraphPage {
+        let rules = GraphRules { };
+        let invalid = rules.validate(query);
+        if len(invalid) > 0 { return GraphPage { error: invalid }; }
+        let generation = self.graph_version;
+        let mark = self.mark;
+        let record = self.record_id;
+        let stamped = self.projection_basis();
+        if !stamped.ok { return GraphPage { error: "read_failed" }; }
+        let selection = GraphSelection { };
+        let targets = GraphTargets { };
+        let mut subject_present = false;
+        if query.kind != "nodes" && len(query.id) > 0 {
+            // Relationship reads must not materialize/encode a node body to
+            // prove its existence. The unordered memory source requires a
+            // complete identity-only pass, charged to the same 10k/8MiB
+            // budget as relationship rows. Hidden and missing ids receive
+            // the same scan treatment and cannot bypass a limit failure.
+            let mut subject = 0;
+            while subject < self.ideas.len() {
+                let identity = self.graph_identity(subject);
+                if !selection.account(len(identity)) { return GraphPage { error: "read_limit" }; }
+                if identity == query.id { subject_present = true; }
+                subject = subject + 1;
+            }
+            subject_present = subject_present && policy.visible(query.id);
+        }
+        if query.kind == "nodes" && len(query.target) > 0 {
+            let mut b = 0;
+            while b < self.bindings.len() {
+                let row = self.bindings.get(b) or dna::KnowledgeBinding { };
+                if !selection.account(rules.binding_bytes(row)) { return GraphPage { error: "read_limit" }; }
+                if rules.applies(row.target, query.target) { targets.set(GraphTarget { id: row.idea }); }
+                b = b + 1;
+            }
+        }
+        let total = if query.kind == "nodes" { self.ideas.len() } else if query.kind == "edges" { self.edges.len() } else { self.bindings.len() };
+        let mut at = 0;
+        while at < total {
+            let mut key = GraphKey { index: at };
+            let mut eligible = false;
+            if query.kind == "nodes" {
+                let row = self.ideas.get(at) or dna::Idea { };
+                if !selection.account(rules.node_bytes(row)) { return GraphPage { error: "read_limit" }; }
+                key.first = row.id;
+                eligible = (len(query.id) == 0 || query.id == row.id) && (len(query.target) == 0 || (row.accepted && (targets.get(row.id) or GraphTarget { }).id == row.id));
+            } else if query.kind == "edges" {
+                let row = self.edges.get(at) or dna::KnowledgeEdge { };
+                if !selection.account(rules.edge_bytes(row)) { return GraphPage { error: "read_limit" }; }
+                key.first = row.from; key.second = row.to; key.third = row.rel;
+                eligible = row.from == query.id || row.to == query.id;
+            } else {
+                let row = self.bindings.get(at) or dna::KnowledgeBinding { };
+                if !selection.account(rules.binding_bytes(row)) { return GraphPage { error: "read_limit" }; }
+                key.first = row.idea; key.second = row.target; key.third = row.author;
+                eligible = (len(query.id) == 0 || query.id == row.idea) && (len(query.target) == 0 || rules.applies(row.target, query.target));
+            }
+            if !rules.key_ok(key) { return GraphPage { error: "read_limit" }; }
+            if len(key.first) == 0 { return GraphPage { error: "read_failed" }; }
+            if query.kind == "nodes" && len(query.id) > 0 && query.id == key.first && policy.visible(key.first) { subject_present = true; }
+            if eligible && rules.after(key, query) && policy.visible(key.first) {
+                if query.kind != "edges" || policy.visible(key.second) { selection.offer(key, query.limit); }
+            }
+            at = at + 1;
+        }
+        let mut page = GraphPage { ok: true, record: record, generation: generation, watermark: mark, projection_watermark: stamped.watermark, projection_head: stamped.head, projection_pending_watermark: stamped.pending_watermark, projection_pending_head: stamped.pending_head, subject_present: subject_present, has_more: selection.keys.len() > query.limit };
+        let mut n = 0;
+        while n < selection.keys.len() && n < query.limit {
+            let key = selection.keys.get(n) or GraphKey { };
+            let accepted = if query.kind == "nodes" { self.graph_node(key.index, sink) } else if query.kind == "edges" { sink.edge(self.edges.get(key.index) or dna::KnowledgeEdge { }) } else { sink.binding(self.bindings.get(key.index) or dna::KnowledgeBinding { }) };
+            if !accepted { return GraphPage { error: "read_limit" }; }
+            page.last_first = key.first; page.last_second = key.second; page.last_third = key.third;
+            n = n + 1;
+        }
+        return page;
     }
     @unbounded
     fn context_ids(target: String, budget: Int) -> String {
@@ -317,8 +692,9 @@ locus Mem {
 
 // ---- Postgres -----------------------------------------------------------
 //
-// One connection, the schema migrated at open. Every write is an upsert
-// keyed by the idea's digest, so applying the record twice converges.
+// One connection, the schema migrated at open. Idea writes are keyed by
+// digest and relationship effects by exact tuple. Ordered Record replay
+// converges, including later unlink effects that supersede earlier links.
 
 fn tab_field(line: String, n: Int) -> String {
     let mut rest = line;
@@ -360,10 +736,13 @@ locus Pq {
         opened: Bool = false;
         error: String = "";
         record_id: String = "";
+        projection_claim: Bool = false;
+        projection_claim_key: String = "";
     }
     fn kind() -> String { return "postgres"; }
     fn scope(record: String) {
         if record == self.record_id { return; }
+        self.close();
         self.record_id = record;
         // a different record is a different schema: the connection
         // must be opened again to select it
@@ -392,6 +771,9 @@ locus Pq {
     }
     fn open() -> Bool {
         if self.opened { return true; }
+        // A failed migration or scope change may have left a live session.
+        // Never replace its socket while retaining a session advisory claim.
+        self.close();
         let st = self.conn.open();
         if !st.ok { return self.fail("open", st.err); }
         // pgvector ranks inside the bound (K3); the extension ships with the
@@ -416,6 +798,8 @@ locus Pq {
         let ddl = "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
             + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
             + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
+            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';"
+            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS supersedes text NOT NULL DEFAULT '';"
             + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
             + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));"
             + "CREATE TABLE IF NOT EXISTS knowledge_structure (kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL, PRIMARY KEY (kind, name));"
@@ -439,6 +823,27 @@ locus Pq {
                 if !claim.ok { return self.fail("scope", claim.err); }
             }
         }
+        // Match the public bytewise tuple order with database indexes, so
+        // advancing a keyset does not repeatedly sort the whole projection.
+        let indexes = self.conn.exec("CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_order ON knowledge_ideas (id COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_edges_order ON knowledge_edges (src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_bindings_order ON knowledge_bindings (idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\")");
+        if !indexes.ok { return self.fail("graph indexes", indexes.err); }
+        // Only the transaction that first claims the protocol initializes its
+        // metadata. An older populated projection cannot prove that no partial
+        // event escaped its old stamp, even at live watermark zero. Preserve
+        // its rows/live progress but require an explicit projection rebuild.
+        // Reopen never recreates missing metadata or clears a known pending
+        // suffix: corruption and incomplete migrations remain unavailable.
+        let protocol = self.conn.query_one("WITH claimed AS (INSERT INTO knowledge_meta (key, value) SELECT 'graph_projection_protocol', CASE WHEN EXISTS (SELECT 1 FROM knowledge_ideas) OR EXISTS (SELECT 1 FROM knowledge_bindings) OR EXISTS (SELECT 1 FROM knowledge_edges) OR EXISTS (SELECT 1 FROM knowledge_structure) OR EXISTS (SELECT 1 FROM knowledge_signals) OR EXISTS (SELECT 1 FROM knowledge_meta WHERE (key IN ('watermark', 'graph_projection_watermark') AND value <> '0') OR (key = 'graph_projection_head' AND value <> '') OR key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head')) THEN 'rebuild_required' ELSE '1' END ON CONFLICT (key) DO NOTHING RETURNING key), initialized AS (INSERT INTO knowledge_meta (key, value) SELECT defaults.key, CASE defaults.key WHEN 'watermark' THEN coalesce((SELECT value FROM knowledge_meta WHERE key = 'watermark'), '0') WHEN 'graph_generation' THEN (coalesce((SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation'), -1) + 1)::text ELSE defaults.value END FROM claimed CROSS JOIN (VALUES ('watermark', '0'), ('graph_generation', '0'), ('graph_projection_watermark', '0'), ('graph_projection_head', ''), ('graph_projection_pending_watermark', '0'), ('graph_projection_pending_head', '')) AS defaults(key, value) ON CONFLICT (key) DO UPDATE SET value = CASE WHEN knowledge_meta.key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head') THEN knowledge_meta.value ELSE EXCLUDED.value END RETURNING key) SELECT count(*) FROM initialized");
+        if !protocol.ok { return self.fail("projection protocol migration", protocol.err); }
+        let generation_ddl = "CREATE OR REPLACE FUNCTION " + sch + ".knowledge_graph_changed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN UPDATE " + sch + ".knowledge_meta SET value = ((value::bigint) + 1)::text WHERE key = ''graph_generation''; IF NOT FOUND THEN RAISE EXCEPTION ''knowledge graph generation missing''; END IF; RETURN NULL; END';"
+            + "CREATE OR REPLACE TRIGGER knowledge_ideas_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_ideas FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+            + "CREATE OR REPLACE TRIGGER knowledge_edges_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_edges FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+            + "CREATE OR REPLACE TRIGGER knowledge_bindings_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_bindings FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+            + "CREATE OR REPLACE TRIGGER knowledge_ideas_truncate_generation AFTER TRUNCATE ON knowledge_ideas FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+            + "CREATE OR REPLACE TRIGGER knowledge_edges_truncate_generation AFTER TRUNCATE ON knowledge_edges FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+            + "CREATE OR REPLACE TRIGGER knowledge_bindings_truncate_generation AFTER TRUNCATE ON knowledge_bindings FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();";
+        let tracked = self.conn.exec(generation_ddl);
+        if !tracked.ok { return self.fail("graph migration", tracked.err); }
         self.opened = true;
         return true;
     }
@@ -449,12 +854,199 @@ locus Pq {
         return true;
     }
     fn reopen() -> Bool {
+        self.close();
+        return self.open();
+    }
+    fn close() {
+        // PostgreSQL releases this session's advisory locks on disconnect,
+        // including when an error made the unlock reply indeterminate.
         self.conn.close();
         self.opened = false;
-        return self.open();
+        self.projection_claim = false;
+        self.projection_claim_key = "";
     }
     fn last_error() -> String { return self.error; }
     fn forget_error() { self.error = ""; }
+    fn graph_generation() -> Int {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "graph generation: store is not idle and open"; return -1; }
+        let row = self.conn.query_one("SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation'");
+        if !row.ok { self.note("graph generation", row.err); return -1; }
+        let generation = std::str::parse_int(row.data) or - 1;
+        if generation < 0 { self.error = "graph generation: invalid generation"; }
+        return generation;
+    }
+    fn projection_basis() -> GraphProjection {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection basis: store is not idle and open"; return GraphProjection { }; }
+        let row = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_watermark') AS watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS head, (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS live_watermark, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_pending_watermark') AS pending_watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_pending_head') AS pending_head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
+        if !row.ok { self.note("projection basis", row.err); return GraphProjection { }; }
+        let basis = GraphProjection { ok: std::json::find_string_field(row.data, "protocol") == "1" && std::str::starts_with(std::json::find_field_raw(row.data, "head"), "\"") && std::str::starts_with(std::json::find_field_raw(row.data, "pending_head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(row.data, "watermark")) or - 1, head: std::json::find_string_field(row.data, "head"), live_watermark: std::str::parse_int(std::json::find_field_raw(row.data, "live_watermark")) or - 1, pending_watermark: std::str::parse_int(std::json::find_field_raw(row.data, "pending_watermark")) or - 1, pending_head: std::json::find_string_field(row.data, "pending_head") };
+        let rules = GraphRules { };
+        if !rules.projection_valid(basis) { self.error = "projection basis: missing or invalid stamp"; return GraphProjection { }; }
+        return basis;
+    }
+    fn begin_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
+        let rules = GraphRules { };
+        if !rules.projection_begin_valid(previous, watermark, head) { return false; }
+        let held = self.projection_claim;
+        if !self.claim_projection() { return false; }
+        if self.projection_change(previous, watermark, head, true) { return true; }
+        // No effect ran after this failed begin. Keep an earlier successful
+        // claim for retry, but do not strand a newly acquired session claim.
+        if !held { let released = self.release_projection(); }
+        return false;
+    }
+    fn checkpoint_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
+        let rules = GraphRules { };
+        if !rules.projection_valid(previous) || watermark < 1 || len(head) == 0 || len(head) > 4096 { return false; }
+        if previous.pending_watermark == 0 {
+            if previous.watermark != watermark || previous.head != head { return false; }
+        } else if previous.pending_watermark != watermark || previous.pending_head != head { return false; }
+        let held = self.projection_claim;
+        if !self.claim_projection() { return false; }
+        if self.projection_change(previous, watermark, head, false) { return self.release_projection(); }
+        if !held { let released = self.release_projection(); }
+        return false;
+    }
+    fn claim_projection() -> Bool {
+        if !self.opened || !self.conn.connected || self.conn.tx_status() != "idle" { self.error = "projection claim: store is not idle and open"; return false; }
+        let key = "hale.knowledge.projection:" + self.schema();
+        // Supported service projectors cooperate here; this does not fence
+        // legacy binaries or arbitrary direct SQL writers. Reentry after an
+        // interrupted effect must not increment PostgreSQL's
+        // advisory-lock reference count; one checkpoint releases one claim.
+        if self.projection_claim { return self.projection_claim_key == key; }
+        let args = db::Args { }; args.add(key);
+        let result = self.conn.query_params("SELECT pg_try_advisory_lock(hashtextextended($1, 0))::text", args);
+        if !result.ok {
+            self.note("projection claim", result.err);
+            self.close();
+            return false;
+        }
+        if result.n == 1 && result.csv == "false" { self.error = "projection claim: another Knowledge projector owns this Record"; return false; }
+        if result.n != 1 || result.csv != "true" {
+            self.error = "projection claim: invalid lock response";
+            self.close();
+            return false;
+        }
+        self.projection_claim = true; self.projection_claim_key = key;
+        return true;
+    }
+    fn release_projection() -> Bool {
+        if !self.projection_claim { return true; }
+        let args = db::Args { }; args.add(self.projection_claim_key);
+        let result = self.conn.query_params("SELECT pg_advisory_unlock(hashtextextended($1, 0))::text", args);
+        if !result.ok {
+            self.note("projection release", result.err);
+            self.close();
+            return false;
+        }
+        if result.n != 1 || result.csv != "true" {
+            self.error = "projection release: session claim was lost";
+            self.close();
+            return false;
+        }
+        self.projection_claim = false; self.projection_claim_key = "";
+        return true;
+    }
+    fn projection_change(previous: GraphProjection, watermark: Int, head: String, begin: Bool) -> Bool {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection transition: store is not idle and open"; return false; }
+        let args = db::Args { };
+        args.add(to_string(previous.watermark)); args.add(previous.head);
+        args.add(to_string(previous.pending_watermark)); args.add(previous.pending_head);
+        args.add(to_string(previous.live_watermark)); args.add(to_string(watermark)); args.add(head);
+        args.add(if begin { "true" } else { "false" });
+        // Both transitions lock the same metadata in the same order. Begin
+        // compares the observed live mark; checkpoint expects the target live
+        // mark after application. SQL errors roll back every metadata write.
+        let sql = "WITH locked AS MATERIALIZED (SELECT key, value FROM knowledge_meta WHERE key IN ('watermark', 'graph_projection_watermark', 'graph_projection_head', 'graph_projection_pending_watermark', 'graph_projection_pending_head', 'graph_generation', 'graph_projection_protocol') ORDER BY key FOR UPDATE), checked AS MATERIALIZED (SELECT ((SELECT value::bigint FROM locked WHERE key = 'watermark') = CASE WHEN $8::boolean THEN $5::bigint ELSE $6::bigint END AND (SELECT value::bigint FROM locked WHERE key = 'graph_projection_watermark') = $1::bigint AND (SELECT value FROM locked WHERE key = 'graph_projection_head') = $2 AND (SELECT value::bigint FROM locked WHERE key = 'graph_projection_pending_watermark') = $3::bigint AND (SELECT value FROM locked WHERE key = 'graph_projection_pending_head') = $4 AND (SELECT value::bigint FROM locked WHERE key = 'graph_generation') >= 0 AND (SELECT value FROM locked WHERE key = 'graph_projection_protocol') = '1') AS valid, CASE WHEN $8::boolean THEN ($3::bigint = $6::bigint AND $4 = $7) ELSE ($3::bigint = 0 AND $1::bigint = $6::bigint AND $2 = $7) END AS unchanged), changed AS (UPDATE knowledge_meta SET value = CASE key WHEN 'graph_projection_watermark' THEN CASE WHEN $8::boolean THEN $1::text ELSE $6::text END WHEN 'graph_projection_head' THEN CASE WHEN $8::boolean THEN $2 ELSE $7 END WHEN 'graph_projection_pending_watermark' THEN CASE WHEN $8::boolean THEN $6::text ELSE '0' END WHEN 'graph_projection_pending_head' THEN CASE WHEN $8::boolean THEN $7 ELSE '' END ELSE ((value::bigint) + 1)::text END WHERE key IN ('graph_projection_watermark', 'graph_projection_head', 'graph_projection_pending_watermark', 'graph_projection_pending_head', 'graph_generation') AND (SELECT valid AND NOT unchanged FROM checked) RETURNING key) SELECT (valid AND (unchanged OR (SELECT count(*) FROM changed) = 5))::text FROM checked";
+        let result = self.conn.query_params(sql, args);
+        if !result.ok { self.note("projection transition", result.err); return false; }
+        return result.n == 1 && result.csv == "true";
+    }
+    fn graph_abort(code: String) -> GraphPage {
+        let rolled = self.conn.rollback();
+        if !rolled.ok { self.note("graph rollback", rolled.err); }
+        return GraphPage { error: code };
+    }
+    fn graph_next(query: GraphQuery, after: GraphKey, remaining: Int) -> db::Rows {
+        let rules = GraphRules { };
+        let args = db::Args { };
+        args.add(query.id); args.add(query.target); args.add(after.first); args.add(after.second); args.add(after.third); args.add(to_string(remaining));
+        return self.conn.query_params(rules.sql(query.kind), args);
+    }
+    // Every candidate and the metadata basis use one coherent snapshot.
+    // This is not atomic application of an event: callers must also compare
+    // the captured Record revision to watermark, then recheck generation.
+    fn read_graph(query: GraphQuery, policy: KnowledgeReadPolicy, sink: GraphSink) -> GraphPage {
+        let rules = GraphRules { };
+        let invalid = rules.validate(query);
+        if len(invalid) > 0 { return GraphPage { error: invalid }; }
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "graph read: store is not idle and open"; return GraphPage { error: "read_failed" }; }
+        self.forget_error();
+        let begun = self.conn.exec("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        if !begun.ok { self.note("graph begin", begun.err); return GraphPage { error: "read_failed" }; }
+        let basis = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT coalesce((SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'record'), '') AS record, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation') AS generation, (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS watermark, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_watermark') AS projection_watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS projection_head, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_pending_watermark') AS projection_pending_watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_pending_head') AS projection_pending_head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
+        if !basis.ok { self.note("graph basis", basis.err); return self.graph_abort("read_failed"); }
+        let record = std::json::find_string_field(basis.data, "record");
+        let generation = std::str::parse_int(std::json::find_field_raw(basis.data, "generation")) or - 1;
+        let mark = std::str::parse_int(std::json::find_field_raw(basis.data, "watermark")) or - 1;
+        if std::json::find_string_field(basis.data, "protocol") != "1" || record != self.record_id || generation < 0 || mark < 0 { self.error = "graph basis: invalid scope, generation or watermark"; return self.graph_abort("read_failed"); }
+        let stamped = GraphProjection { ok: std::str::starts_with(std::json::find_field_raw(basis.data, "projection_head"), "\"") && std::str::starts_with(std::json::find_field_raw(basis.data, "projection_pending_head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(basis.data, "projection_watermark")) or - 1, head: std::json::find_string_field(basis.data, "projection_head"), live_watermark: mark, pending_watermark: std::str::parse_int(std::json::find_field_raw(basis.data, "projection_pending_watermark")) or - 1, pending_head: std::json::find_string_field(basis.data, "projection_pending_head") };
+        if !rules.projection_valid(stamped) { self.error = "graph basis: missing or invalid projection stamp"; return self.graph_abort("read_failed"); }
+        let mut subject_present = false;
+        if len(query.id) > 0 {
+            let subject_args = db::Args { };
+            subject_args.add(query.id);
+            // Identity-only indexed probe: no Idea text or JSON crosses the
+            // wire, including for nodes whose body exceeds the graph budget.
+            // It shares the repeatable-read snapshot with the basis and rows.
+            let subject = self.conn.query_params("SELECT 1 FROM knowledge_ideas WHERE id = $1 LIMIT 1", subject_args);
+            if !subject.ok { self.note("graph subject", subject.err); return self.graph_abort("read_failed"); }
+            subject_present = subject.n == 1 && policy.visible(query.id);
+        }
+        let mut page = GraphPage { ok: true, record: record, generation: generation, watermark: mark, projection_watermark: stamped.watermark, projection_head: stamped.head, projection_pending_watermark: stamped.pending_watermark, projection_pending_head: stamped.pending_head, subject_present: subject_present };
+        let mut after = GraphKey { first: query.after_first, second: query.after_second, third: query.after_third };
+        let mut scanned = 0;
+        let mut bytes = 0;
+        let mut visible = 0;
+        while true {
+            // At the row cap, probe only for existence: a nonempty next
+            // candidate is represented by the zero-budget sentinel, never
+            // transported as a 10,001st input row.
+            let remaining = if scanned >= 10000 { 0 } else { 8388608 - bytes };
+            let rows = self.graph_next(query, after, remaining);
+            if !rows.ok { self.note("graph query", rows.err); return self.graph_abort("read_failed"); }
+            if rows.n == 0 { break; }
+            if scanned >= 10000 || len(rows.csv) == 0 { return self.graph_abort("read_limit"); }
+            scanned = scanned + 1;
+            bytes = bytes + len(rows.csv);
+            let key = rules.key(rows.csv, query.kind);
+            if !rules.key_ok(key) { return self.graph_abort("read_limit"); }
+            // Receipt identities are nonempty. Refuse malformed stored keys
+            // rather than letting an empty key reset a keyset scan forever.
+            if len(key.first) == 0 || (len(after.first) > 0 && rules.compare_key(key, after) <= 0) { self.error = "graph query: invalid stored cursor"; return self.graph_abort("read_failed"); }
+            after = key;
+            if !policy.visible(key.first) { continue; }
+            if query.kind == "edges" && !policy.visible(key.second) { continue; }
+            if visible == query.limit { page.has_more = true; break; }
+            if !rules.emit(rows.csv, query.kind, sink) { return self.graph_abort("read_limit"); }
+            visible = visible + 1;
+            page.last_first = key.first; page.last_second = key.second; page.last_third = key.third;
+        }
+        let committed = self.conn.commit();
+        if !committed.ok { self.note("graph commit", committed.err); return self.graph_abort("read_failed"); }
+        return page;
+    }
+    fn rebuild() -> Bool {
+        if !self.opened { self.error = "rebuild: the store is not open"; return false; }
+        let sql = "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals;"
+            + " UPDATE knowledge_meta SET value = '0' WHERE key IN ('watermark', 'graph_projection_watermark', 'graph_projection_pending_watermark');"
+            + " UPDATE knowledge_meta SET value = '' WHERE key IN ('graph_projection_head', 'graph_projection_pending_head');"
+            + " UPDATE knowledge_meta SET value = (value::bigint + 1)::text WHERE key = 'graph_generation'";
+        let r = self.conn.exec(sql);
+        if !r.ok { self.note("rebuild", r.err); return false; }
+        return true;
+    }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
         // no row yet is the normal state of a store nothing has been
@@ -482,7 +1074,9 @@ locus Pq {
         a.add(if i.accepted { "true" } else { "false" });
         a.add(to_string(ratified_seq));
         a.add(embed_text(i.text));
-        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq, embedding) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint, $9::vector) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq, embedding = EXCLUDED.embedding", a);
+        a.add(i.name);
+        a.add(i.supersedes);
+        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq, embedding, name, supersedes) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint, $9::vector, $10, $11) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq, embedding = EXCLUDED.embedding, name = EXCLUDED.name, supersedes = EXCLUDED.supersedes", a);
         if !r.ok { return self.fail("upsert", r.err); }
         return true;
     }
@@ -500,8 +1094,14 @@ locus Pq {
         a.add(b.target);
         a.add(b.author);
         a.add(b.class);
-        let r = self.conn.exec_params("INSERT INTO knowledge_bindings (idea, target, author, class) VALUES ($1, $2, $3, $4) ON CONFLICT (idea, target, author) DO UPDATE SET class = EXCLUDED.class", a);
+        let r = self.conn.exec_params("INSERT INTO knowledge_bindings (idea, target, author, class) VALUES ($1, $2, $3, $4) ON CONFLICT (idea, target, author) DO UPDATE SET class = EXCLUDED.class WHERE knowledge_bindings.class IS DISTINCT FROM EXCLUDED.class", a);
         if !r.ok { return self.fail("bind", r.err); }
+        return true;
+    }
+    fn unbind(b: dna::KnowledgeBinding) -> Bool {
+        let a = db::Args { }; a.add(b.idea); a.add(b.target); a.add(b.author);
+        let r = self.conn.exec_params("DELETE FROM knowledge_bindings WHERE idea = $1 AND target = $2 AND author = $3", a);
+        if !r.ok { return self.fail("unbind", r.err); }
         return true;
     }
     fn link(e: dna::KnowledgeEdge) -> Bool {
@@ -513,6 +1113,15 @@ locus Pq {
         if !r.ok { return self.fail("link", r.err); }
         return true;
     }
+    fn unlink(e: dna::KnowledgeEdge) -> Bool {
+        let a = db::Args { };
+        a.add(e.from);
+        a.add(e.to);
+        a.add(e.rel);
+        let r = self.conn.exec_params("DELETE FROM knowledge_edges WHERE src = $1 AND dst = $2 AND rel = $3", a);
+        if !r.ok { return self.fail("unlink", r.err); }
+        return true;
+    }
     // Read the row as JSON, not as tab-separated text. The driver's
     // rows are newline- and tab-separated with no escaping, so an idea
     // whose text contains either — an ordinary paragraph — came back
@@ -522,7 +1131,7 @@ locus Pq {
     fn idea(id: String) -> Stored {
         let a = db::Args { };
         a.add(id);
-        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq FROM knowledge_ideas WHERE id = $1) t", a);
+        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq, name, supersedes FROM knowledge_ideas WHERE id = $1) t", a);
         if !rows.ok { self.note("idea", rows.err); return Stored { }; }
         if rows.n == 0 { return Stored { }; }
         let row = dna::trim_nl(first_line(rows.csv));
@@ -536,7 +1145,9 @@ locus Pq {
                 author: std::json::find_string_field(row, "author"),
                 provenance: std::json::find_string_field(row, "provenance"),
                 revision: std::json::find_int_field(row, "revision"),
-                accepted: std::json::find_bool_field(row, "accepted")
+                accepted: std::json::find_bool_field(row, "accepted"),
+                name: std::json::find_string_field(row, "name"),
+                supersedes: std::json::find_string_field(row, "supersedes")
             },
             ratified_seq: std::json::find_int_field(row, "ratified_seq")
         };

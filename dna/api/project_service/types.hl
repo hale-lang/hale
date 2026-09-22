@@ -1,0 +1,138 @@
+// dna/api/project_service/types.hl — the values the head's parts share
+// (GH #965). `HeadContext`, `Plan` and `ChildView` are the interface
+// `operations_s3.hl` is written against; `Receipt` and `Registered`
+// are the folds of the two journals; `LogPage` is one read of a log.
+// None of them holds a locus, so a value crosses a function boundary
+// without a holder reclaiming anything.
+
+// What every operation sees of the head: its principal, the active
+// project, and where its files are.
+type HeadContext {
+    principal_mode: String = "local";
+    principal_name: String = "";
+    active_id: String = "";
+    active_root: String = "";
+    active_name: String = "";
+    state_dir: String = "";
+    sources_dir: String = "";
+    children_dir: String = "";
+    hale: String = "";
+    observer_port: Int = 8787;
+}
+
+// An operation's answer to a validated request: refused, or how to
+// execute it. `kind` is inline | run | body | observer.
+type Plan {
+    ok: Bool = false;
+    refused: String = "";
+    reason: String = "";
+    // inline | run | body | observer
+    kind: String = "run";
+    // run: the script body (sh -e); the head writes it 0600 and wraps it in timeout
+    script: String = "";
+    // body | observer: the child's newline-separated argv
+    argv: String = "";
+    cwd: String = "";
+    // extra NAME=value lines beyond the common set
+    envs: String = "";
+    deadline_secs: Int = 120;
+    external: Bool = false;
+    // inline: the outcome JSON when ok (the effect already happened)
+    outcome: String = "{}";
+}
+
+// One long-lived child as the head sees it.
+type ChildView {
+    name: String = "";
+    pid: Int = -1;
+    alive: Bool = false;
+    exit_code: Int = -2;
+    since: Int = 0;
+    command_id: String = "";
+}
+
+// One receipt: the fold of every `receipts.jsonl` line carrying its
+// command_id, last state wins. `ok` is false when no line carries it.
+type Receipt {
+    ok: Bool = false;
+    seq: Int = 0;
+    command_id: String = "";
+    request_id: String = "";
+    operation: String = "";
+    operation_version: String = "1";
+    principal_mode: String = "";
+    principal_name: String = "";
+    application_id: String = "";
+    target_kind: String = "";
+    target_id: String = "";
+    fingerprint: String = "";
+    // the full validated request, as recorded
+    request: String = "";
+    // the Record head when the request was recorded ("" when detached)
+    head_before: String = "";
+    state: String = "";
+    reason_code: String = "";
+    reason: String = "";
+    submitted_at: Int = 0;
+    updated_at: Int = 0;
+    // run | body | observer | inline; "" before the receipt ran
+    run_kind: String = "";
+    pid: Int = -1;
+    argv_digest: String = "";
+    deadline: Int = 0;
+    external: Bool = false;
+    exit_code: Int = -1;
+    outcome: String = "{}";
+}
+
+// The journal's answer to a submission.
+type Submitted {
+    // "" | request_conflict | invalid_command
+    code: String = "";
+    // the request was already in the journal under an equal fingerprint
+    replayed: Bool = false;
+    receipt: Receipt = Receipt { };
+}
+
+// How a run or a child ended, as the journal read it from the files.
+type RunEnd {
+    // "" while it still runs; else succeeded | failed | outcome_unknown
+    state: String = "";
+    code: Int = -1;
+    reason_code: String = "";
+    reason: String = "";
+    log_tail: String = "";
+}
+
+// One project in the registry: the fold of every `projects.jsonl`
+// line carrying its application_id, last event wins.
+type Registered {
+    ok: Bool = false;
+    seq: Int = 0;
+    application_id: String = "";
+    root: String = "";
+    name: String = "";
+    registered_at: Int = 0;
+    activated_at: Int = 0;
+    // registered | activated | deactivated | forgotten
+    last_event: String = "";
+    command_id: String = "";
+    active: Bool = false;
+    forgotten: Bool = false;
+}
+
+// A page of a log: `text` is the bytes from `offset`, `next_offset`
+// where the next page starts, `complete` when the file ended there.
+type LogPage {
+    text: String = "";
+    offset: Int = 0;
+    next_offset: Int = 0;
+    complete: Bool = false;
+}
+
+// What the journal asks of the dispatcher when a run or a child
+// settles: the operation's outcome JSON, given the receipt, the exit
+// code and the last 64 KiB of the log.
+interface Outcomes {
+    fn outcome(receipt: Receipt, exit_code: Int, log_tail: String) -> String;
+}

@@ -22,6 +22,8 @@
 //! against built-ins.
 
 pub mod alloc_summary;
+pub mod borrow_lifetime;
+pub mod bare_fallible;
 pub mod budget_check;
 pub mod bus_graph;
 pub mod callgraph;

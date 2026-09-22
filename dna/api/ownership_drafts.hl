@@ -1,0 +1,130 @@
+// Source preparation over the existing Ownership model; no admission or writes.
+import "../core" as dna;
+import "../organization_source" as orgsource;
+import "../operations" as ops;
+
+locus OwnershipDraftWire {
+    params { }
+    fn capability() -> String {
+        return "{\"profile\":\"dna.organization.ownership.draft.v1\",\"supported\":true,\"validation\":true,\"publication\":false,\"module\":\"dna/org/owners\",\"max_request_bytes\":\"32768\",\"max_source_bytes\":\"16384\",\"max_entries\":\"256\"}";
+    }
+    fn token(text: String) -> Bool {
+        if len(text) == 0 || len(text) > 1024 { return false; }
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c <= 32 || c == 127 || c == 35 || c == 44 || c == 58 || c == 61 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    // A bounded, unambiguous editing profile. The domain parser remains the
+    // authority for inheritance, membership, hosting and review impact.
+    fn source_error(text: String) -> String {
+        if len(text) > 16384 { return "the ownership map exceeds 16 KiB"; }
+        let syntax = ops::OrganizationJson { };
+        if !syntax.utf8(text, len(text)) { return "the ownership map is not valid UTF-8"; }
+        let mut rest = text + "\n";
+        let mut positions = ""; let mut memberships = ""; let mut hosted = false; let mut count = 0;
+        while len(rest) > 0 {
+            let cut = std::str::index_of(rest, "\n");
+            let line = dna::strip_blanks(rest[0..cut]); rest = rest[(cut + 1)..len(rest)];
+            if len(line) > 0 && line[0..1] != "#" {
+                count = count + 1;
+                if count > 256 { return "the ownership map exceeds 256 entries"; }
+                let eq = std::str::index_of(line, "="); let colon = std::str::index_of(line, ":");
+                if eq >= 0 && (colon < 0 || eq < colon) {
+                    let scope = dna::strip_blanks(line[0..eq]); let owner = dna::strip_blanks(line[(eq + 1)..len(line)]);
+                    if !self.token(scope) || (len(owner) > 0 && !self.token(owner)) { return "assignments require a scope and one owner name (or an empty owner)"; }
+                    if scope == "host" { if hosted { return "host is declared more than once"; } hosted = true; }
+                    else {
+                        let normalized = dna::position_name(scope);
+                        if dna::word_in(normalized, positions) { return "a normalized position is declared more than once"; }
+                        positions = dna::word_add(positions, normalized);
+                    }
+                } else if colon >= 0 {
+                    let owner = dna::strip_blanks(line[0..colon]);
+                    if !self.token(owner) { return "memberships require one owner name"; }
+                    if dna::word_in(owner, memberships) { return "an owner's membership is declared more than once"; }
+                    memberships = dna::word_add(memberships, owner);
+                    let members = dna::words_of(dna::strip_blanks(line[(colon + 1)..len(line)]));
+                    let mut i = 0;
+                    while len(dna::nth_word(members, i)) > 0 {
+                        if !self.token(dna::nth_word(members, i)) { return "members must be names separated by commas or spaces"; }
+                        i = i + 1;
+                    }
+                } else { return "each non-comment line must declare scope = owner, owner: members, or host = owner"; }
+            }
+        }
+        return "";
+    }
+    fn words(words: String) -> String {
+        let b = std::json::Builder { }; b.begin_array(); let mut i = 0;
+        while len(dna::nth_word(words, i)) > 0 { b.string_value(dna::nth_word(words, i)); i = i + 1; }
+        b.end_array(); return b.result();
+    }
+    fn impact(before: String, after: String) -> String {
+        let was = dna::Ownership { text: before, me_env: "" }; let will = dna::Ownership { text: after, me_env: "" };
+        was.load(); will.load();
+        let b = std::json::Builder { }; b.begin_object();
+        b.bool_field("host_changed", was.host() != will.host());
+        b.bool_field("mode_changed", was.shared() != will.shared());
+        b.string_field("live_obligations", "unavailable");
+        b.begin_array_field("affected_owners"); let affected = dna::owners_affected(before, after); let mut i = 0;
+        while len(dna::nth_word(affected, i)) > 0 {
+            let owner = dna::nth_word(affected, i); let next = will.members_of(owner);
+            b.begin_object(); b.string_field("owner", owner);
+            b.field("members", self.words(if len(next) > 0 { next } else { was.members_of(owner) }));
+            b.end_object(); i = i + 1;
+        }
+        b.end_array(); b.begin_array_field("scopes");
+        let mut scopes = ""; i = 0;
+        while i < was.positions.len() { let row = was.positions.get(i) or dna::Owned { }; scopes = dna::word_add(scopes, row.position); i = i + 1; }
+        i = 0; while i < will.positions.len() { let row = will.positions.get(i) or dna::Owned { }; scopes = dna::word_add(scopes, row.position); i = i + 1; }
+        i = 0;
+        while len(dna::nth_word(scopes, i)) > 0 {
+            let scope = dna::nth_word(scopes, i);
+            b.begin_object(); b.string_field("position", scope); b.string_field("before_owner", was.owner_of(scope)); b.string_field("after_owner", will.owner_of(scope)); b.end_object(); i = i + 1;
+        }
+        b.end_array(); b.end_object(); return b.result();
+    }
+    fn handle(req: std::http::Request, has_query: Bool, context: CommandContext, organization: orgsource::OrganizationSource, origin: String) -> std::http::Response {
+        let http = Http { }; let w = CommandWire { }; let drafting = req.method == "POST";
+        if !organization.allow_drafts || !w.origin_valid(origin) { return http.error(503, "ownership_drafts_unsupported", "this host has not enabled ownership source drafting", false); }
+        if has_query { return http.error(400, "invalid_query", "ownership drafting takes no query", false); }
+        if !drafting && req.method != "GET" { return http.error(405, "method_not_allowed", "ownership drafting supports GET and POST", false); }
+        let mut candidate = ""; let mut base = "";
+        if drafting {
+            let framing = DefinitionDraftWire { }; let guard = framing.guard(req, origin);
+            if len(guard) > 0 { return http.error(if guard == "invalid_origin" { 403 } else if guard == "unsupported_media_type" { 415 } else if len(req.body) > 32768 { 413 } else { 400 }, "invalid_ownership_draft", "invalid ownership draft origin, framing or size", false); }
+            let syntax = ops::OrganizationJson { };
+            if !syntax.valid(req.body) || !w.fields(req.body, "profile application_id principal base source_text", 5) || w.text(req.body, "profile") != "dna.organization.ownership.draft.v1" || w.text(req.body, "application_id") != context.source.identity || !w.is_text(w.raw(req.body, "source_text")) { return http.error(400, "invalid_ownership_draft", "invalid ownership draft fields", false); }
+            let principal = w.raw(req.body, "principal");
+            if !w.fields(principal, "mode name", 2) { return http.error(400, "invalid_ownership_draft", "invalid principal fields", false); }
+            if w.text(principal, "mode") != context.principal_mode || w.text(principal, "name") != context.principal_name { return http.error(409, "ownership_draft_context_changed", "the authenticated principal changed; reload before validating", false); }
+            candidate = w.text(req.body, "source_text"); base = w.raw(req.body, "base");
+            if len(candidate) > 16384 { return http.error(413, "ownership_draft_too_large", "ownership source exceeds 16 KiB", false); }
+        }
+        let mut original = organization.read();
+        if !original.ok { return http.error(if original.code == "snapshot_changed" { 409 } else { 503 }, original.code, original.error, false); }
+        let original_error = self.source_error(original.owners);
+        if len(original_error) > 0 { return http.error(503, "ownership_source_unsupported", original_error, false); }
+        original.module_digest = dna::digest_of(original.owners);
+        let source_wire = OrganizationDraftWire { };
+        if drafting && !source_wire.same_base(base, original, context.source) { return http.error(409, "snapshot_changed", "ownership source, dependencies or Record changed; reload before validating", false); }
+        let text = if drafting { candidate } else { original.owners };
+        let error = self.source_error(text);
+        if len(error) > 0 { return http.error(422, "invalid_ownership_source", error, false); }
+        let q = ops::Organization { owners: text };
+        let codec = ops::DefinitionDraftCodec { }; let b = std::json::Builder { };
+        b.begin_object(); b.string_field("profile", "dna.organization.ownership.draft.v1");
+        b.begin_object_field("principal"); b.string_field("mode", context.principal_mode); b.string_field("name", context.principal_name); b.end_object();
+        b.field("base", source_wire.base(original, context.source));
+        b.begin_object_field("module"); b.string_field("path", "dna/org/owners"); b.field("text", codec.quote_json(text)); b.string_field("digest", dna::digest_of(text)); b.end_object();
+        b.field("ownership", q.ownership_json()); b.field("impact", self.impact(original.owners, text));
+        b.string_field("validation", if drafting { "valid_draft" } else { "parsed_source" }); b.string_field("publication", "unavailable"); b.end_object();
+        let record = dna::GitRecord { repo: context.root };
+        if !organization.unchanged(original) || record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "the ownership basis changed while building the response", false); }
+        return http.success(context.source, b.result());
+    }
+}

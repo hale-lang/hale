@@ -1401,7 +1401,12 @@ reclaim on a real-world long-running workload:
      and `f`'s next in-place overwrite silently mutated `g` —
      a value-semantics violation, and unsound to combine with
      retirement. The codegen emits the right helper at every
-     `self.X = String|Bytes` site inside a method-with-scratch.
+     `self.X = String|Bytes` site inside a method-with-scratch,
+     and at a deeper self-rooted path (`self.a.b = s`). A slot
+     under a LOCAL root (`c.id = s`, `c.inner.id = s`) is never
+     assigned in place: a `let` copy of a struct may share an
+     unchanged String with its source, so the new value is cloned
+     into the frame's arena and stored over the pointer (GH #993).
      Closes the per-update heap-field-reassignment leak class
      — measured against a per-frame `self.last_ts = ts` pattern
      in a long-running daemon: the receiver locus's arena

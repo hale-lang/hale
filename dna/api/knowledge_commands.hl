@@ -1,0 +1,394 @@
+// Authenticated Knowledge command adaptation. Native Record admission and
+// policy stay in the owning service; a receipt never claims graph projection.
+import "../core" as dna;
+import "../operations" as ops;
+
+type KnowledgeCommandRequest {
+    valid: Bool = false;
+    expected_mode: String = "";
+    expected_name: String = "";
+    command: ops::KnowledgeCommand = ops::KnowledgeCommand { };
+}
+type KnowledgeCapabilityResult {
+    valid: Bool = false;
+    capability: ops::KnowledgeCapability = ops::KnowledgeCapability { };
+}
+
+interface KnowledgeCommandProvider {
+    fn supported() -> Bool;
+    fn capability(context: CommandContext) -> KnowledgeUpstream;
+    fn capability_for(context: CommandContext, operation: String) -> KnowledgeUpstream;
+    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> KnowledgeUpstream;
+    fn lookup(context: CommandContext, request_id: String) -> KnowledgeUpstream;
+}
+locus NoKnowledgeCommands {
+    params { }
+    fn supported() -> Bool { return false; }
+    fn capability(context: CommandContext) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
+    fn capability_for(context: CommandContext, operation: String) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
+    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
+    fn lookup(context: CommandContext, request_id: String) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
+}
+
+locus ConfiguredKnowledgeCommands {
+    params { url: String = ""; command_key: String = ""; read_key: String = ""; }
+    fn supported() -> Bool { return len(self.url) > 0 && len(self.command_key) > 0; }
+    fn configured() -> Bool {
+        if self.command_key == self.read_key { return false; }
+        let shape = ConfiguredKnowledge { url: self.url, read_key: self.command_key };
+        return shape.configured();
+    }
+    fn send(kind: String, body: String) -> KnowledgeUpstream {
+        if !self.configured() || len(body) == 0 || len(body) > 98304 { return KnowledgeUpstream { }; }
+        let base = if std::str::ends_with(self.url, "/") { self.url[0..(len(self.url) - 1)] } else { self.url };
+        let url = std::http::parse_url(base + "/graph/commands/" + kind) or std::http::Url { host: "" };
+        if len(url.host) == 0 { return KnowledgeUpstream { }; }
+        // No replay of a possibly committed POST. The current native Client's
+        // timeout_ms is not enforced; this does not claim a transport deadline.
+        let client = std::http::Client { max_retries: 0, max_body: 65536 };
+        let bytes = std::bytes::BytesBuilder { }; bytes.append_str(body);
+        let response = client.request(std::http::ClientRequest {
+            method: "POST", url: url,
+            headers: "Authorization: Bearer " + self.command_key + "\r\nContent-Type: application/json",
+            body: bytes.snapshot()
+        }) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+        let text = std::str::from_bytes(response.body);
+        if len(text) != len(response.body) { return KnowledgeUpstream { }; }
+        return KnowledgeUpstream { transport_ok: response.status > 0, status: response.status, body: text };
+    }
+    fn capability(context: CommandContext) -> KnowledgeUpstream {
+        return self.capability_for(context, "dna.knowledge.edge.link");
+    }
+    fn capability_for(context: CommandContext, operation: String) -> KnowledgeUpstream {
+        let wire = KnowledgeCommandWire { };
+        return self.send("capability", wire.private_request(context, "capability", ops::KnowledgeCommand { operation: operation }, ""));
+    }
+    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> KnowledgeUpstream {
+        let wire = KnowledgeCommandWire { };
+        return self.send("submit", wire.private_request(context, "submit", command, ""));
+    }
+    fn lookup(context: CommandContext, request_id: String) -> KnowledgeUpstream {
+        let wire = KnowledgeCommandWire { };
+        return self.send("lookup", wire.private_request(context, "lookup", ops::KnowledgeCommand { }, request_id));
+    }
+}
+
+locus KnowledgeCommandWire {
+    params { }
+    fn edge(operation: String) -> Bool { return operation == "dna.knowledge.edge.link" || operation == "dna.knowledge.edge.unlink"; }
+    fn node(operation: String) -> Bool { return operation == "dna.knowledge.node.propose" || operation == "dna.knowledge.node.revise" || operation == "dna.knowledge.node.retire"; }
+    fn binding(operation: String) -> Bool { return operation == "dna.knowledge.binding.bind" || operation == "dna.knowledge.binding.unbind"; }
+    fn known(operation: String) -> Bool { return operation == "dna.knowledge.edge.link" || operation == "dna.knowledge.edge.unlink" || self.node(operation) || self.binding(operation); }
+    fn capability_operation(query: String) -> String {
+        if len(query) == 0 { return "dna.knowledge.edge.link"; }
+        if len(query) > 512 || std::str::contains(query, "&") { return ""; }
+        let cut = std::str::index_of(query, "=");
+        if cut < 1 { return ""; }
+        let http = Http { }; let key = http.decode(query[0..cut]); let value = http.decode(query[(cut + 1)..len(query)]);
+        if !key.ok || key.text != "operation" || !value.ok || !self.known(value.text) { return ""; }
+        return value.text;
+    }
+    fn context(context: CommandContext) -> ops::GovernanceContext {
+        return ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
+    }
+    fn parse(body: String, context: CommandContext) -> KnowledgeCommandRequest {
+        let syntax = ops::OrganizationJson { }; let fields = CommandWire { }; let read = KnowledgeWire { };
+        if len(body) > 98304 || !syntax.valid(body) || !fields.fields(body, "request_id operation operation_version context target preconditions arguments", 7) || !read.texts(body, "request_id operation operation_version") { return KnowledgeCommandRequest { }; }
+        let acting = fields.raw(body, "context"); let target = fields.raw(body, "target");
+        let conditions = fields.raw(body, "preconditions"); let arguments = fields.raw(body, "arguments");
+        let operation = fields.text(body, "operation"); let unlink = operation == "dna.knowledge.edge.unlink";
+        let node = self.node(operation); let propose = operation == "dna.knowledge.node.propose"; let retire = operation == "dna.knowledge.node.retire";
+        let binding = self.binding(operation); let unbind = operation == "dna.knowledge.binding.unbind";
+        let argument_fields = if binding { if unbind { "idea_id author target rationale binding_id" } else { "idea_id author target rationale" } } else if retire { "id rationale" } else if propose { "kind name text author target rationale" } else if node { "supersedes kind name text author target rationale" } else if unlink { "from_id to_id rel rationale edge_id" } else { "from_id to_id rel rationale" };
+        let argument_count = if binding { if unbind { 5 } else { 4 } } else if retire { 2 } else if propose { 6 } else if node { 7 } else if unlink { 5 } else { 4 };
+        if !self.known(operation) || (!node && len(body) > 32768) || !fields.fields(acting, "application_id position_id", 2) || !read.texts(acting, "application_id position_id") || !fields.fields(target, "application_id kind id", 3) || !read.texts(target, "application_id kind id") || !fields.fields(conditions, "principal record_head", 2) || !read.texts(conditions, "record_head") || !fields.fields(arguments, argument_fields, argument_count) || !read.texts(arguments, argument_fields) { return KnowledgeCommandRequest { }; }
+        let principal = fields.raw(conditions, "principal");
+        if !fields.fields(principal, "mode name", 2) || !read.texts(principal, "mode name") { return KnowledgeCommandRequest { }; }
+        let expected = ops::GovernanceContext { application_id: context.source.identity, principal_mode: fields.text(principal, "mode"), principal_name: fields.text(principal, "name") };
+        let identity = ops::GovernanceCommandCodec { };
+        if !identity.context_valid(expected) || fields.text(acting, "application_id") != context.source.identity || fields.text(target, "application_id") != context.source.identity || fields.text(target, "kind") != if propose { "dna.knowledge.collection" } else { "dna.knowledge.node" } { return KnowledgeCommandRequest { }; }
+        if (binding && fields.text(target, "id") != fields.text(arguments, "idea_id")) || (propose && fields.text(target, "id") != fields.text(arguments, "target")) || (retire && fields.text(target, "id") != fields.text(arguments, "id")) || (operation == "dna.knowledge.node.revise" && fields.text(target, "id") != fields.text(arguments, "supersedes")) { return KnowledgeCommandRequest { }; }
+        let command = ops::KnowledgeCommand {
+            request_id: fields.text(body, "request_id"), operation: fields.text(body, "operation"), operation_version: fields.text(body, "operation_version"),
+            application_id: fields.text(acting, "application_id"), position_id: fields.text(acting, "position_id"), target_id: fields.text(target, "id"), record_head: fields.text(conditions, "record_head"),
+            from_id: fields.text(arguments, "from_id"), to_id: fields.text(arguments, "to_id"), rel: fields.text(arguments, "rel"), rationale: fields.text(arguments, "rationale"), edge_id: if unlink { fields.text(arguments, "edge_id") } else { "" },
+            node_kind: fields.text(arguments, "kind"), name: fields.text(arguments, "name"), text: fields.text(arguments, "text"), author: fields.text(arguments, "author"), target: fields.text(arguments, "target"), supersedes: fields.text(arguments, "supersedes"),
+            idea_id: fields.text(arguments, "idea_id"), binding_id: if unbind { fields.text(arguments, "binding_id") } else { "" }
+        };
+        let codec = ops::KnowledgeCommandCodec { };
+        if !codec.valid(self.context(context), command) { return KnowledgeCommandRequest { }; }
+        return KnowledgeCommandRequest { valid: true, expected_mode: expected.principal_mode, expected_name: expected.principal_name, command: command };
+    }
+    fn private_request(context: CommandContext, kind: String, command: ops::KnowledgeCommand, request_id: String) -> String {
+        let codec = ops::KnowledgeCommandCodec { }; let identity = ops::GovernanceCommandCodec { };
+        let trusted = self.context(context);
+        if !identity.context_valid(trusted) { return ""; }
+        if kind != "capability" && kind != "submit" && kind != "lookup" { return ""; }
+        if kind == "capability" && !self.known(command.operation) { return ""; }
+        if kind == "submit" && !codec.valid(trusted, command) { return ""; }
+        if kind == "lookup" && len(codec.identity(trusted, request_id)) == 0 { return ""; }
+        let b = std::json::Builder { }; b.begin_object(); b.begin_object_field("context");
+        b.string_field("application_id", trusted.application_id); b.string_field("principal_mode", trusted.principal_mode); b.string_field("principal_name", trusted.principal_name); b.end_object();
+        if kind == "submit" { b.field("command", codec.canonical(trusted, command)); }
+        if kind == "lookup" { b.string_field("request_id", request_id); }
+        if kind == "capability" && command.operation != "dna.knowledge.edge.link" { b.string_field("operation", command.operation); }
+        b.end_object(); return b.result();
+    }
+    fn valid_upstream(upstream: KnowledgeUpstream) -> Bool {
+        let syntax = ops::OrganizationJson { };
+        return upstream.transport_ok && upstream.status != 401 && len(upstream.body) > 0 && len(upstream.body) <= 65536 && syntax.valid(upstream.body);
+    }
+    fn error(code: String) -> std::http::Response {
+        let http = Http { };
+        if code == "command_history_invalid" { return http.error(503, code, "the Knowledge command history cannot establish a safe receipt", false); }
+        if code == "command_outcome_unknown" { return http.error(503, code, "the Knowledge command outcome is uncertain; retain its request identity and use lookup", true); }
+        if code == "command_busy" { return http.error(503, code, "the Knowledge command service is busy; retain its request identity and use lookup", true); }
+        let common = CommandWire { };
+        return common.error(code);
+    }
+    fn capability_json(context: CommandContext, capability: ops::KnowledgeCapability, operation: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", operation + ".v1"); b.string_field("application_id", context.source.identity);
+        b.begin_object_field("principal"); b.string_field("mode", context.principal_mode); b.string_field("name", context.principal_name); b.end_object();
+        b.string_field("position_id", "org"); b.bool_field("available", capability.available); b.bool_field("authorized", capability.authorized);
+        b.string_field("mode", capability.mode); b.string_field("reason", capability.reason); b.string_field("policy_basis", capability.policy_basis);
+        b.string_field("recovery", "record_lifetime");
+        if self.node(operation) { b.string_field("max_text_bytes", "8192"); } else if self.binding(operation) { b.string_field("max_locus_bytes", "256"); } else { b.string_field("max_rel_bytes", "256"); }
+        b.string_field("max_rationale_bytes", "2048"); b.string_field("max_request_bytes", if self.node(operation) { "98304" } else { "32768" });
+        b.end_object(); return b.result();
+    }
+    fn decode_capability(upstream: KnowledgeUpstream) -> KnowledgeCapabilityResult {
+        return self.decode_capability_for(upstream, "dna.knowledge.edge.link");
+    }
+    fn decode_capability_for(upstream: KnowledgeUpstream, operation: String) -> KnowledgeCapabilityResult {
+        let read = KnowledgeWire { }; let fields = CommandWire { }; let bound = ops::GovernanceCommandCodec { };
+        if !self.valid_upstream(upstream) || upstream.status != 200 || !fields.fields(upstream.body, "available authorized mode reason policy_basis", 5) || !read.texts(upstream.body, "mode reason policy_basis") { return KnowledgeCapabilityResult { }; }
+        let body = upstream.body; let available = fields.raw(body, "available"); let authorized = fields.raw(body, "authorized"); let mode = fields.text(body, "mode");
+        if (available != "true" && available != "false") || (authorized != "true" && authorized != "false") || (mode != "direct" && mode != "review" && mode != "unavailable") || !bound.bounded(fields.text(body, "reason"), 512, false, true) || !bound.bounded(fields.text(body, "policy_basis"), 2048, false, false) { return KnowledgeCapabilityResult { }; }
+        if !self.known(operation) || ((if self.node(operation) || self.binding(operation) { mode != "review" } else { mode != "direct" && mode != "review" }) && available != "false") || (authorized == "true" && len(fields.text(body, "policy_basis")) == 0) { return KnowledgeCapabilityResult { }; }
+        let capability = ops::KnowledgeCapability { available: available == "true", authorized: authorized == "true", mode: mode, reason: fields.text(body, "reason"), policy_basis: fields.text(body, "policy_basis") };
+        return KnowledgeCapabilityResult { valid: true, capability: capability };
+    }
+    fn writable(context: CommandContext, provider: KnowledgeCommandProvider, origin: String) -> Bool {
+        let common = CommandWire { };
+        if !common.origin_valid(origin) || !provider.supported() { return false; }
+        let link = self.decode_capability(provider.capability_for(context, "dna.knowledge.edge.link"));
+        if link.valid && link.capability.available && link.capability.authorized && (link.capability.mode == "direct" || link.capability.mode == "review") { return true; }
+        let unlink = self.decode_capability(provider.capability_for(context, "dna.knowledge.edge.unlink"));
+        if unlink.valid && unlink.capability.available && unlink.capability.authorized && (unlink.capability.mode == "direct" || unlink.capability.mode == "review") { return true; }
+        let operations = "dna.knowledge.node.propose dna.knowledge.node.revise dna.knowledge.node.retire dna.knowledge.binding.bind dna.knowledge.binding.unbind";
+        let mut i = 0;
+        while i < 5 {
+            let operation = dna::nth_word(operations, i);
+            let result = self.decode_capability_for(provider.capability_for(context, operation), operation);
+            if result.valid && result.capability.available && result.capability.authorized && result.capability.mode == "review" { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    fn capability_response(context: CommandContext, upstream: KnowledgeUpstream, operation: String) -> std::http::Response {
+        let result = self.decode_capability_for(upstream, operation); let http = Http { };
+        if !result.valid { return self.error("commands_unavailable"); }
+        return http.success(context.source, self.capability_json(context, result.capability, operation));
+    }
+    fn receipt(body: String) -> ops::KnowledgeReceipt {
+        let fields = CommandWire { };
+        let node = fields.raw(body, "node");
+        let binding = fields.raw(body, "binding"); let relationship = fields.raw(body, "relationship");
+        return ops::KnowledgeReceipt {
+            command_id: fields.text(body, "command_id"), request_id: fields.text(body, "request_id"), application_id: fields.text(body, "application_id"),
+            principal_mode: fields.text(body, "principal_mode"), principal_name: fields.text(body, "principal_name"), operation: fields.text(body, "operation"), operation_version: fields.text(body, "operation_version"),
+            position_id: fields.text(body, "position_id"), target_id: fields.text(body, "target_id"), fingerprint: fields.text(body, "fingerprint"), state: fields.text(body, "state"),
+            edge_id: fields.text(body, "edge_id"), event_id: fields.text(body, "event_id"), admission_head: fields.text(body, "admission_head"), sequence: std::str::parse_int(fields.raw(body, "sequence")) or - 1,
+            authority: fields.text(body, "authority"), authority_basis: fields.text(body, "authority_basis"), details_visible: fields.raw(body, "details_visible") == "true",
+            reviewed: relationship != "",
+            relationship: ops::KnowledgeEdgeOutcome { proposal_state: fields.text(relationship, "proposal_state"), candidate_digest: fields.text(relationship, "candidate_digest"), review_id: fields.text(relationship, "review_id"), review_state: fields.text(relationship, "review_state"), review_outcome: fields.text(relationship, "review_outcome"), effect_state: fields.text(relationship, "effect_state"), effect_reason: fields.text(relationship, "effect_reason"), reason: fields.text(relationship, "reason") },
+            node: ops::KnowledgeNodeOutcome { proposal_state: fields.text(node, "proposal_state"), candidate_digest: fields.text(node, "candidate_digest"), review_id: fields.text(node, "review_id"), review_state: fields.text(node, "review_state"), review_outcome: fields.text(node, "review_outcome"), activation_state: fields.text(node, "activation_state"), activation_reason: fields.text(node, "activation_reason"), reason: fields.text(node, "reason") },
+            binding: ops::KnowledgeBindingOutcome { binding_id: fields.text(binding, "binding_id"), proposal_state: fields.text(binding, "proposal_state"), candidate_digest: fields.text(binding, "candidate_digest"), review_id: fields.text(binding, "review_id"), review_state: fields.text(binding, "review_state"), review_outcome: fields.text(binding, "review_outcome"), effect_state: fields.text(binding, "effect_state"), effect_reason: fields.text(binding, "effect_reason"), reason: fields.text(binding, "reason") }
+        };
+    }
+    fn node_outcome_valid(r: ops::KnowledgeReceipt) -> Bool {
+        let n = r.node; let bound = ops::GovernanceCommandCodec { }; let codec = ops::KnowledgeCommandCodec { };
+        if !bound.bounded(n.reason, 512, false, true) || !bound.bounded(n.activation_reason, 512, false, true) { return false; }
+        if !r.details_visible {
+            return n.proposal_state == "unknown" && n.candidate_digest == "" && n.review_id == "" && n.review_state == "unavailable" && n.review_outcome == "" && n.activation_state == "unknown" && n.reason == "" && n.activation_reason == "";
+        }
+        if n.proposal_state == "created" {
+            if r.state != "succeeded" || !codec.digest(n.candidate_digest) || !bound.bounded(n.review_id, 256, true, false) || n.reason != "" { return false; }
+        } else {
+            let state = if n.proposal_state == "pending" { "recorded" } else if n.proposal_state == "refused" { "refused" } else if n.proposal_state == "unknown" { "outcome_unknown" } else { "" };
+            return state != "" && r.state == state && n.candidate_digest == "" && n.review_id == "" && n.review_state == "unavailable" && n.review_outcome == "" && n.activation_state == "unknown" && n.activation_reason == "" && (n.proposal_state == "refused" || n.reason == "");
+        }
+        if n.review_state != "pending" && n.review_state != "settled" && n.review_state != "unavailable" { return false; }
+        if n.review_state == "settled" {
+            if n.review_outcome != "approve" && n.review_outcome != "reject" && n.review_outcome != "revise" { return false; }
+        } else if n.review_outcome != "" { return false; }
+        if n.activation_state != "unknown" && n.activation_state != "pending" && n.activation_state != "adopted" && n.activation_state != "refused" { return false; }
+        if n.activation_state != "unknown" && (n.review_state != "settled" || n.review_outcome != "approve") { return false; }
+        return n.activation_state == "refused" || n.activation_reason == "";
+    }
+    fn binding_outcome_valid(r: ops::KnowledgeReceipt) -> Bool {
+        let n = r.binding; let bound = ops::GovernanceCommandCodec { }; let codec = ops::KnowledgeCommandCodec { };
+        if !bound.bounded(n.reason, 512, false, true) || !bound.bounded(n.effect_reason, 512, false, true) { return false; }
+        if !r.details_visible {
+            return n.binding_id == "" && n.proposal_state == "unknown" && n.candidate_digest == "" && n.review_id == "" && n.review_state == "unavailable" && n.review_outcome == "" && n.effect_state == "unknown" && n.reason == "" && n.effect_reason == "";
+        }
+        if !codec.digest(n.binding_id) { return false; }
+        if n.proposal_state == "created" {
+            if r.state != "succeeded" || !codec.digest(n.candidate_digest) || !bound.bounded(n.review_id, 256, true, false) || n.reason != "" { return false; }
+        } else {
+            let state = if n.proposal_state == "pending" { "recorded" } else if n.proposal_state == "refused" { "refused" } else if n.proposal_state == "unknown" { "outcome_unknown" } else { "" };
+            return state != "" && r.state == state && n.candidate_digest == "" && n.review_id == "" && n.review_state == "unavailable" && n.review_outcome == "" && n.effect_state == "unknown" && n.effect_reason == "" && (n.proposal_state == "refused" || n.reason == "");
+        }
+        if n.review_state != "pending" && n.review_state != "settled" && n.review_state != "unavailable" { return false; }
+        if n.review_state == "settled" {
+            if n.review_outcome != "approve" && n.review_outcome != "reject" && n.review_outcome != "revise" { return false; }
+        } else if n.review_outcome != "" { return false; }
+        if n.effect_state == "bound" || n.effect_state == "unbound" || n.effect_state == "refused" {
+            if n.review_state != "settled" || n.review_outcome != "approve" { return false; }
+            if n.effect_state == "bound" && r.operation != "dna.knowledge.binding.bind" { return false; }
+            if n.effect_state == "unbound" && r.operation != "dna.knowledge.binding.unbind" { return false; }
+        } else if n.effect_state == "declined" {
+            if n.review_state != "settled" || (n.review_outcome != "reject" && n.review_outcome != "revise") { return false; }
+        } else if n.effect_state != "unknown" && n.effect_state != "pending" { return false; }
+        return n.effect_state == "refused" || n.effect_state == "declined" || n.effect_reason == "";
+    }
+    fn relationship_outcome_valid(r: ops::KnowledgeReceipt) -> Bool {
+        let n = r.relationship; let bound = ops::GovernanceCommandCodec { }; let codec = ops::KnowledgeCommandCodec { };
+        if !bound.bounded(n.reason, 512, false, true) || !bound.bounded(n.effect_reason, 512, false, true) { return false; }
+        if !r.details_visible {
+            return n.proposal_state == "unknown" && n.candidate_digest == "" && n.review_id == "" && n.review_state == "unavailable" && n.review_outcome == "" && n.effect_state == "unknown" && n.reason == "" && n.effect_reason == "";
+        }
+        if n.proposal_state == "created" {
+            if r.state != "succeeded" || !codec.digest(n.candidate_digest) || !bound.bounded(n.review_id, 256, true, false) || n.reason != "" { return false; }
+        } else {
+            let state = if n.proposal_state == "pending" { "recorded" } else if n.proposal_state == "refused" { "refused" } else if n.proposal_state == "unknown" { "outcome_unknown" } else { "" };
+            return state != "" && r.state == state && n.candidate_digest == "" && n.review_id == "" && n.review_state == "unavailable" && n.review_outcome == "" && n.effect_state == "unknown" && n.effect_reason == "" && (n.proposal_state == "refused" || n.reason == "");
+        }
+        if n.review_state != "pending" && n.review_state != "settled" && n.review_state != "unavailable" { return false; }
+        if n.review_state == "settled" {
+            if n.review_outcome != "approve" && n.review_outcome != "reject" && n.review_outcome != "revise" { return false; }
+        } else if n.review_outcome != "" { return false; }
+        if n.effect_state == "linked" || n.effect_state == "unlinked" || n.effect_state == "refused" {
+            if n.review_state != "settled" || n.review_outcome != "approve" { return false; }
+            if n.effect_state == "linked" && r.operation != "dna.knowledge.edge.link" { return false; }
+            if n.effect_state == "unlinked" && r.operation != "dna.knowledge.edge.unlink" { return false; }
+        } else if n.effect_state == "declined" {
+            if n.review_state != "settled" || (n.review_outcome != "reject" && n.review_outcome != "revise") { return false; }
+        } else if n.effect_state != "unknown" && n.effect_state != "pending" { return false; }
+        return n.effect_state == "refused" || n.effect_state == "declined" || n.effect_reason == "";
+    }
+    fn receipt_valid(context: CommandContext, command: ops::KnowledgeCommand, request_id: String, r: ops::KnowledgeReceipt, revision: Int, submitting: Bool) -> Bool {
+        let codec = ops::KnowledgeCommandCodec { }; let bound = ops::GovernanceCommandCodec { }; let trusted = self.context(context);
+        let node = self.node(r.operation); let binding = self.binding(r.operation); let reviewed = node || binding || r.reviewed;
+        if r.command_id != codec.identity(trusted, request_id) || r.request_id != request_id || r.application_id != trusted.application_id || r.principal_mode != trusted.principal_mode || r.principal_name != trusted.principal_name || !self.known(r.operation) || r.operation_version != "1" || r.position_id != "org" || (!reviewed && r.state != "recorded") || !codec.digest(r.fingerprint) { return false; }
+        if r.reviewed && !self.edge(r.operation) { return false; }
+        if reviewed && ((r.state != "recorded" && r.state != "succeeded" && r.state != "refused" && r.state != "outcome_unknown") || (if node { !self.node_outcome_valid(r) } else if binding { !self.binding_outcome_valid(r) } else { !self.relationship_outcome_valid(r) }) || ((node || binding) && r.edge_id != "")) { return false; }
+        if r.sequence < 0 || r.sequence >= revision || !bound.bounded(r.event_id, 256, true, false) || !bound.bounded(r.admission_head, 256, true, false) || !bound.bounded(r.authority, 256, true, false) || !bound.bounded(r.authority_basis, 2048, true, false) { return false; }
+        if r.details_visible { if !(if r.operation == "dna.knowledge.node.propose" { bound.bounded(r.target_id, 256, true, false) } else { codec.digest(r.target_id) }) || (self.edge(r.operation) && !codec.digest(r.edge_id)) { return false; } }
+        else if r.target_id != "" || r.edge_id != "" { return false; }
+        if submitting && (r.operation != command.operation || r.admission_head != command.record_head || r.fingerprint != codec.fingerprint(trusted, command) || (r.details_visible && (r.target_id != command.target_id || (self.edge(r.operation) && r.edge_id != codec.edge_id(command.from_id, command.to_id, command.rel))))) { return false; }
+        if submitting && binding && r.details_visible {
+            let native = dna::KnowledgeBindingCodec { };
+            if r.binding.binding_id != native.identity(command.idea_id, command.target, command.author) { return false; }
+        }
+        return true;
+    }
+    fn receipt_json(r: ops::KnowledgeReceipt) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("command_id", r.command_id); b.string_field("request_id", r.request_id); b.string_field("application_id", r.application_id);
+        b.string_field("operation", r.operation); b.string_field("operation_version", r.operation_version);
+        b.begin_object_field("principal"); b.string_field("mode", r.principal_mode); b.string_field("name", r.principal_name); b.end_object();
+        b.begin_object_field("context"); b.string_field("application_id", r.application_id); b.string_field("position_id", r.position_id); b.end_object();
+        b.begin_object_field("target"); b.string_field("application_id", r.application_id); b.string_field("kind", if r.operation == "dna.knowledge.node.propose" { "dna.knowledge.collection" } else { "dna.knowledge.node" }); b.string_field("id", r.target_id); b.end_object();
+        b.string_field("fingerprint", r.fingerprint); b.string_field("state", r.state); b.bool_field("details_visible", r.details_visible);
+        b.string_field("edge_id", r.edge_id); b.string_field("event_id", r.event_id); b.string_field("sequence", to_string(r.sequence)); b.string_field("admission_head", r.admission_head);
+        b.string_field("authority", r.authority); b.string_field("authority_basis", r.authority_basis);
+        if self.node(r.operation) { b.field("node", self.node_json(r.node)); }
+        if self.binding(r.operation) { b.field("binding", self.binding_json(r.binding)); }
+        if r.reviewed { b.field("relationship", self.relationship_json(r.relationship)); }
+        b.end_object(); return b.result();
+    }
+    fn node_json(n: ops::KnowledgeNodeOutcome) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("proposal_state", n.proposal_state); b.string_field("candidate_digest", n.candidate_digest); b.string_field("review_id", n.review_id);
+        b.string_field("review_state", n.review_state); b.string_field("review_outcome", n.review_outcome); b.string_field("activation_state", n.activation_state); b.string_field("activation_reason", n.activation_reason); b.string_field("reason", n.reason); b.end_object(); return b.result();
+    }
+    fn binding_json(n: ops::KnowledgeBindingOutcome) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("binding_id", n.binding_id); b.string_field("proposal_state", n.proposal_state); b.string_field("candidate_digest", n.candidate_digest); b.string_field("review_id", n.review_id);
+        b.string_field("review_state", n.review_state); b.string_field("review_outcome", n.review_outcome); b.string_field("effect_state", n.effect_state); b.string_field("effect_reason", n.effect_reason); b.string_field("reason", n.reason); b.end_object(); return b.result();
+    }
+    fn relationship_json(n: ops::KnowledgeEdgeOutcome) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("proposal_state", n.proposal_state); b.string_field("candidate_digest", n.candidate_digest); b.string_field("review_id", n.review_id);
+        b.string_field("review_state", n.review_state); b.string_field("review_outcome", n.review_outcome); b.string_field("effect_state", n.effect_state); b.string_field("effect_reason", n.effect_reason); b.string_field("reason", n.reason); b.end_object(); return b.result();
+    }
+    fn response(context: CommandContext, command: ops::KnowledgeCommand, request_id: String, upstream: KnowledgeUpstream, submitting: Bool) -> std::http::Response {
+        let fields = CommandWire { }; let read = KnowledgeWire { }; let bound = ops::GovernanceCommandCodec { };
+        if !self.valid_upstream(upstream) || !fields.fields(upstream.body, "ok code application_id head revision receipt", 6) || !read.texts(upstream.body, "code application_id head") || !read.integer(fields.raw(upstream.body, "revision")) { return self.error("commands_unavailable"); }
+        let ok = fields.raw(upstream.body, "ok");
+        if ok != "true" && ok != "false" { return self.error("commands_unavailable"); }
+        let body = fields.raw(upstream.body, "receipt");
+        let node = self.node(fields.text(body, "operation")); let binding = self.binding(fields.text(body, "operation")); let relationship = !node && !binding && fields.raw(body, "relationship") != "";
+        if !fields.fields(body, "command_id request_id application_id principal_mode principal_name operation operation_version position_id target_id fingerprint state edge_id event_id admission_head sequence authority authority_basis details_visible" + (if node { " node" } else if binding { " binding" } else if relationship { " relationship" } else { "" }), if node || binding || relationship { 19 } else { 18 }) || !read.texts(body, "command_id request_id application_id principal_mode principal_name operation operation_version position_id target_id fingerprint state edge_id event_id admission_head authority authority_basis") || !read.integer(fields.raw(body, "sequence")) || (fields.raw(body, "details_visible") != "true" && fields.raw(body, "details_visible") != "false") { return self.error("commands_unavailable"); }
+        if node {
+            let n = fields.raw(body, "node"); let keys = "proposal_state candidate_digest review_id review_state review_outcome activation_state activation_reason reason";
+            if !fields.fields(n, keys, 8) || !read.texts(n, keys) { return self.error("commands_unavailable"); }
+        }
+        if binding {
+            let n = fields.raw(body, "binding"); let keys = "binding_id proposal_state candidate_digest review_id review_state review_outcome effect_state effect_reason reason";
+            if !fields.fields(n, keys, 9) || !read.texts(n, keys) { return self.error("commands_unavailable"); }
+        }
+        if relationship {
+            let n = fields.raw(body, "relationship"); let keys = "proposal_state candidate_digest review_id review_state review_outcome effect_state effect_reason reason";
+            if !fields.fields(n, keys, 8) || !read.texts(n, keys) { return self.error("commands_unavailable"); }
+        }
+        if ok == "false" { return self.error(fields.text(upstream.body, "code")); }
+        if upstream.status != 200 && upstream.status != 202 { return self.error("commands_unavailable"); }
+        let application_id = fields.text(upstream.body, "application_id"); let head = fields.text(upstream.body, "head"); let revision = std::str::parse_int(fields.raw(upstream.body, "revision")) or - 1;
+        if fields.text(upstream.body, "code") != "" || application_id != context.source.identity || !bound.bounded(head, 256, true, false) || revision < 1 { return self.error("commands_unavailable"); }
+        let receipt = self.receipt(body);
+        if !self.receipt_valid(context, command, request_id, receipt, revision, submitting) { return self.error("commands_unavailable"); }
+        // Preserve the owning service's post-operation capture, not a new local
+        // read that might attach an unrelated Record head to this receipt.
+        let source = Source { ok: true, identity: application_id, head: head, revision: revision, name: context.source.name, code: "", error: "" };
+        let http = Http { }; let mut response = http.success(source, self.receipt_json(receipt));
+        if submitting { response.status = 202; }
+        return response;
+    }
+    fn handle(req: std::http::Request, query: String, capability: Bool, context: CommandContext, provider: KnowledgeCommandProvider, origin: String) -> std::http::Response {
+        let common = CommandWire { }; let http = Http { };
+        if capability {
+            if req.method != "GET" { return http.error(405, "method_not_allowed", "Knowledge command capability requires GET", false); }
+            let operation = self.capability_operation(query);
+            if len(operation) == 0 { return http.error(400, "invalid_query", "capability accepts only an optional supported operation", false); }
+            if !provider.supported() || !common.origin_valid(origin) {
+                return http.success(context.source, self.capability_json(context, ops::KnowledgeCapability { reason: "This connection does not configure Knowledge command submission." }, operation));
+            }
+            return self.capability_response(context, provider.capability_for(context, operation), operation);
+        }
+        if req.method == "GET" {
+            let id = common.lookup_id(query);
+            if len(id) == 0 { return self.error("invalid_query"); }
+            if !provider.supported() { return self.error("commands_unsupported"); }
+            return self.response(context, ops::KnowledgeCommand { }, id, provider.lookup(context, id), false);
+        }
+        if req.method != "POST" { return http.error(405, "method_not_allowed", "unsupported Knowledge command method", false); }
+        if len(query) > 0 { return self.error("invalid_query"); }
+        let refusal = self.guard(req, origin);
+        if len(refusal) > 0 { return self.error(refusal); }
+        let parsed = self.parse(req.body, context);
+        if !parsed.valid { return self.error("invalid_command"); }
+        if parsed.expected_mode != context.principal_mode || parsed.expected_name != context.principal_name { return self.error("command_context_changed"); }
+        if !provider.supported() { return self.error("commands_unsupported"); }
+        // Native admission recovers a matching request before stale-head checks.
+        return self.response(context, parsed.command, parsed.command.request_id, provider.submit(context, parsed.command), true);
+    }
+    fn guard(req: std::http::Request, origin: String) -> String {
+        let common = CommandWire { };
+        // Preserve the shared transport checks; only the node profile has a
+        // larger encoded body budget. Practice and edge profiles stay at 32KiB.
+        let result = common.guard(req, origin);
+        if result != "command_too_large" { return result; }
+        if len(req.body) > 98304 || !self.node(common.text(req.body, "operation")) { return result; }
+        return "";
+    }
+}

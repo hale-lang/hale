@@ -1,0 +1,39 @@
+// Organization admission extends the existing command namespace. The source
+// service retains inputs before admission; only the Body may start a mutation.
+import "../core" as dna;
+
+interface OrganizationAdmissionInputs {
+    fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation;
+    fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck;
+}
+locus NoOrganizationAdmissionInputs {
+    params { }
+    fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation { return dna::OrganizationSourcePreparation { }; }
+    fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck { return dna::OrganizationSourceCheck { }; }
+}
+
+type OrganizationCommandOutcome {
+    proposal_state: String = "pending";
+    source_head: String = "";
+    source_digest: String = "";
+    mutation_id: String = "";
+    candidate_commit: String = "";
+    application_state: String = "pending";
+    application_reason_code: String = "";
+    restart_handoff_state: String = "pending";
+}
+
+locus OrganizationAdmission {
+    params { }
+    fn prepared(context: GovernanceContext, command: GovernanceCommand, grant: GovernanceGrant, owner: String, prepared: dna::OrganizationSourcePreparation) -> Bool {
+        let codec = OrganizationCommandCodec { };
+        let r = prepared.request;
+        return prepared.ok && codec.matches(context, command, r) && r.source_owner == owner
+            && r.authority == grant.authority && r.authority_basis == grant.basis
+            && (r.dependency_source == "local_vendor_snapshot" || r.dependency_receipt == "");
+    }
+    fn stage(kind: String) -> Bool {
+        return kind == "organization.source.started" || kind == "organization.source.proposed"
+            || kind == "organization.source.failed" || kind == "organization.source.refused";
+    }
+}

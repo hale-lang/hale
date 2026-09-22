@@ -1,0 +1,168 @@
+// dna/api/project_service/policy.hl — the per-project policies the
+// head synthesizes (GH #965, §2.8 of the head's contract). An attached
+// project's API child composes under `<root>/.hale/dna/iris/
+// {authority.json,task-policy.json}`: the shape the native harness
+// writes, granting the head's principal what `hale dna ui` grants at
+// the terminal (board authority, propose, verdict, recover; task
+// reassign, recover, retire) and nothing more. A file is written only
+// when absent — an operator's own policy is never rewritten — and
+// `organization-policy.json` is never synthesized: when present it is
+// passed through as `HALE_DNA_ORGANIZATION_POLICY`. The detail read's
+// `authority` booleans say whether each file is present and decodes
+// for this identity under the Record's trust, with the same codecs the
+// API child decodes with.
+
+import "../../core" as dna;
+import "../../operations" as ops;
+
+const POLICY_DIR: String = ".hale/dna/iris";
+const AUTHORITY_FILE: String = "authority.json";
+const TASK_POLICY_FILE: String = "task-policy.json";
+const ORGANIZATION_POLICY_FILE: String = "organization-policy.json";
+
+// What the three policy files say for one identity.
+type Policies {
+    command: Bool = false;
+    task: Bool = false;
+    organization: Bool = false;
+    // organization-policy.json exists (decodable or not)
+    organization_present: Bool = false;
+}
+
+fn policy_dir(root: String) -> String { return root + "/" + POLICY_DIR; }
+fn authority_path(root: String) -> String { return policy_dir(root) + "/" + AUTHORITY_FILE; }
+fn task_policy_path(root: String) -> String { return policy_dir(root) + "/" + TASK_POLICY_FILE; }
+fn organization_policy_path(root: String) -> String { return policy_dir(root) + "/" + ORGANIZATION_POLICY_FILE; }
+
+// `git config dna.trust`, "local" when unset.
+fn trust_of(root: String) -> String {
+    let record = dna::GitRecord { repo: root };
+    let declared = record.setting("trust");
+    return if len(declared) == 0 { "local" } else { declared };
+}
+
+// §2.8: one board grant for the head's principal.
+fn authority_policy_json(application_id: String, principal_name: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("format", "dna.practice-review-authority/1");
+    b.string_field("application_id", application_id);
+    b.begin_array_field("grants");
+    b.begin_object();
+    b.string_field("mode", "local");
+    b.string_field("name", principal_name);
+    b.string_field("authority", "board");
+    b.bool_field("practice_propose", true);
+    b.bool_field("review_verdict", true);
+    b.bool_field("recover", true);
+    b.end_object();
+    b.end_array();
+    b.end_object();
+    return b.result() + "\n";
+}
+
+// §2.8: the principal owns the task group and is its one member.
+fn task_policy_json(application_id: String, principal_name: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("format", "dna.task-authority/1");
+    b.string_field("application_id", application_id);
+    b.string_field("owner", principal_name);
+    b.begin_array_field("members");
+    b.string_value(principal_name);
+    b.end_array();
+    b.begin_array_field("grants");
+    b.begin_object();
+    b.string_field("mode", "local");
+    b.string_field("name", principal_name);
+    b.bool_field("reassign", true);
+    b.bool_field("recover", true);
+    b.bool_field("retire", true);
+    b.end_object();
+    b.end_array();
+    b.end_object();
+    return b.result() + "\n";
+}
+
+// The policy directory, private to the operator (`umask 077`).
+fn ensure_policy_dir(root: String) -> Bool {
+    let made = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$1\"\nsh\n" + policy_dir(root));
+    return made.code == 0;
+}
+
+// Writes the two synthesized files that are absent; true when
+// `authority.json` was written now (the receipt's `authority_written`).
+// Idempotent: a second attach writes nothing.
+fn write_policies(root: String, application_id: String, principal_name: String) -> Bool {
+    if !ensure_policy_dir(root) { return false; }
+    let mut wrote = false;
+    if !std::io::fs::file_exists(authority_path(root)) {
+        wrote = write_private(authority_path(root), authority_policy_json(application_id, principal_name));
+    }
+    if !std::io::fs::file_exists(task_policy_path(root)) {
+        let w = write_private(task_policy_path(root), task_policy_json(application_id, principal_name));
+    }
+    return wrote;
+}
+
+// Whether the authority policy at `path` decodes for this identity and trust.
+fn authority_decodes(path: String, application_id: String, trust: String) -> Bool {
+    let size = std::io::fs::file_size(path) or - 1;
+    if size < 1 || size > 65536 { return false; }
+    let document = std::io::fs::read_file(path) or "";
+    let codec = ops::AuthorityPolicyCodec { };
+    return codec.decode(document, application_id, trust).valid;
+}
+
+fn task_policy_decodes(path: String, application_id: String, trust: String) -> Bool {
+    let size = std::io::fs::file_size(path) or - 1;
+    if size < 1 || size > 32768 { return false; }
+    let document = std::io::fs::read_file(path) or "";
+    let codec = ops::TaskAuthorityPolicyCodec { };
+    return codec.decode(document, application_id, trust).valid;
+}
+
+fn organization_policy_decodes(path: String, application_id: String, trust: String) -> Bool {
+    let size = std::io::fs::file_size(path) or - 1;
+    if size < 1 || size > 65536 { return false; }
+    let document = std::io::fs::read_file(path) or "";
+    let codec = ops::OrganizationAuthorityPolicyCodec { };
+    return codec.decode(document, application_id, trust).valid;
+}
+
+// The state of the three files for `application_id` under the Record's trust.
+fn policies_of(root: String, application_id: String) -> Policies {
+    let trust = trust_of(root);
+    let organization = organization_policy_path(root);
+    let present = std::io::fs::file_exists(organization);
+    return Policies {
+        command: authority_decodes(authority_path(root), application_id, trust),
+        task: task_policy_decodes(task_policy_path(root), application_id, trust),
+        organization: present && organization_policy_decodes(organization, application_id, trust),
+        organization_present: present
+    };
+}
+
+// The detail read's `authority` object.
+fn authority_json(root: String, application_id: String) -> String {
+    let p = policies_of(root, application_id);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.bool_field("command", p.command);
+    b.bool_field("task", p.task);
+    b.bool_field("organization", p.organization);
+    b.end_object();
+    return b.result();
+}
+
+// The policy environment every child of an attached project gets
+// (§2.6): the files that exist, by their names, so a native CLI path
+// inside a verb admits under the same policy as the API child.
+fn policy_env(root: String) -> String {
+    if len(root) == 0 { return ""; }
+    let mut out = "";
+    if std::io::fs::file_exists(authority_path(root)) { out = out + "HALE_DNA_COMMAND_POLICY=" + authority_path(root) + "\n"; }
+    if std::io::fs::file_exists(task_policy_path(root)) { out = out + "HALE_DNA_TASK_POLICY=" + task_policy_path(root) + "\n"; }
+    if std::io::fs::file_exists(organization_policy_path(root)) { out = out + "HALE_DNA_ORGANIZATION_POLICY=" + organization_policy_path(root) + "\n"; }
+    return out;
+}

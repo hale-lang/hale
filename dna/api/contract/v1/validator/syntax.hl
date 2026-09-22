@@ -1,0 +1,218 @@
+// Strict syntax before using the stdlib's deliberately permissive JSON cursors.
+// Contract keys are literal/unescaped; duplicate or escaped keys fail closed.
+// Values accept Unicode, including paired JSON surrogate escapes.
+locus JsonSyntax {
+    params { }
+    fn utf8(text: String) -> Bool {
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 128 { i = i + 1; continue; }
+            let n = if c >= 194 && c <= 223 { 2 } else if c >= 224 && c <= 239 { 3 } else if c >= 240 && c <= 244 { 4 } else { 0 };
+            if n == 0 || i + n > len(text) { return false; }
+            let second = std::str::byte_at_unchecked(text, i + 1);
+            if (c == 224 && second < 160) || (c == 237 && second > 159) || (c == 240 && second < 144) || (c == 244 && second > 143) { return false; }
+            let mut k = 1;
+            while k < n {
+                let part = std::str::byte_at_unchecked(text, i + k);
+                if part < 128 || part > 191 { return false; }
+                k = k + 1;
+            }
+            i = i + n;
+        }
+        return true;
+    }
+    fn hex_value(c: Int) -> Int {
+        if c >= 48 && c <= 57 { return c - 48; }
+        if c >= 65 && c <= 70 { return c - 55; }
+        return c - 87;
+    }
+    fn codepoint(text: String, start: Int) -> Int {
+        let mut cp = 0;
+        let mut i = start;
+        while i < start + 4 {
+            cp = cp * 16 + self.hex_value(std::str::byte_at_unchecked(text, i));
+            i = i + 1;
+        }
+        return cp;
+    }
+    fn decoded(raw: String) -> String {
+        let mut i = 1;
+        let bytes = std::bytes::BytesBuilder { };
+        while i < len(raw) - 1 {
+            if raw[i..(i + 1)] != "\\" { bytes.append_u8(std::str::byte_at_unchecked(raw, i)); i = i + 1; continue; }
+            if raw[(i + 1)..(i + 2)] != "u" {
+                let escaped = std::str::byte_at_unchecked(raw, i + 1);
+                let decoded = if escaped == 98 { 8 } else if escaped == 102 { 12 } else if escaped == 110 { 10 } else if escaped == 114 { 13 } else if escaped == 116 { 9 } else { escaped };
+                bytes.append_u8(decoded);
+                i = i + 2;
+                continue;
+            }
+            let mut cp = self.codepoint(raw, i + 2);
+            if cp >= 55296 && cp <= 56319 {
+                let low = self.codepoint(raw, i + 8);
+                cp = 65536 + (cp - 55296) * 1024 + low - 56320;
+                i = i + 6;
+            }
+            if cp < 128 { bytes.append_u8(cp); }
+            else if cp < 2048 {
+                bytes.append_u8(192 + cp / 64);
+                bytes.append_u8(128 + cp % 64);
+            } else if cp < 65536 {
+                bytes.append_u8(224 + cp / 4096);
+                bytes.append_u8(128 + (cp / 64) % 64);
+                bytes.append_u8(128 + cp % 64);
+            } else {
+                bytes.append_u8(240 + cp / 262144);
+                bytes.append_u8(128 + (cp / 4096) % 64);
+                bytes.append_u8(128 + (cp / 64) % 64);
+                bytes.append_u8(128 + cp % 64);
+            }
+            i = i + 6;
+        }
+        return std::str::from_bytes(bytes.snapshot());
+    }
+    fn codepoints(raw: String) -> Int {
+        let text = self.decoded(raw);
+        let mut count = 0;
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 128 || c >= 192 { count = count + 1; }
+            i = i + 1;
+        }
+        return count;
+    }
+    fn space(text: String, start: Int) -> Int {
+        let mut p = start;
+        while p < len(text) {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c != 32 && c != 9 && c != 10 && c != 13 { return p; }
+            p = p + 1;
+        }
+        return p;
+    }
+    fn hex(c: Int) -> Bool {
+        return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+    }
+    fn string_end(text: String, start: Int) -> Int {
+        if start >= len(text) || std::str::byte_at_unchecked(text, start) != 34 { return -1; }
+        let mut p = start + 1;
+        while p < len(text) {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c == 34 { return p + 1; }
+            if c < 32 { return -1; }
+            if c == 92 {
+                p = p + 1;
+                if p >= len(text) { return -1; }
+                let e = std::str::byte_at_unchecked(text, p);
+                if e == 117 {
+                    if p + 4 >= len(text) { return -1; }
+                    let mut h = p + 1;
+                    while h <= p + 4 {
+                        if !self.hex(std::str::byte_at_unchecked(text, h)) { return -1; }
+                        h = h + 1;
+                    }
+                    let cp = self.codepoint(text, p + 1);
+                    // Native String operations are NUL-terminated. Do not let
+                    // a decoded NUL turn an unequal const/enum into a prefix.
+                    if cp == 0 { return -1; }
+                    if cp >= 56320 && cp <= 57343 { return -1; }
+                    if cp >= 55296 && cp <= 56319 {
+                        if p + 10 >= len(text) || text[(p + 5)..(p + 7)] != "\\u" { return -1; }
+                        h = p + 7;
+                        while h <= p + 10 {
+                            if !self.hex(std::str::byte_at_unchecked(text, h)) { return -1; }
+                            h = h + 1;
+                        }
+                        let low = self.codepoint(text, p + 7);
+                        if low < 56320 || low > 57343 { return -1; }
+                        p = p + 6;
+                    }
+                    p = p + 4;
+                } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102 && e != 110 && e != 114 && e != 116 { return -1; }
+            }
+            p = p + 1;
+        }
+        return -1;
+    }
+    fn number_end(text: String, start: Int) -> Int {
+        let mut p = start;
+        if p < len(text) && text[p..(p + 1)] == "-" { p = p + 1; }
+        if p >= len(text) { return -1; }
+        if text[p..(p + 1)] == "0" { p = p + 1; } else {
+            let first = std::str::byte_at_unchecked(text, p);
+            if first < 49 || first > 57 { return -1; }
+            while p < len(text) {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+        }
+        if p < len(text) && text[p..(p + 1)] == "." {
+            p = p + 1;
+            let begin = p;
+            while p < len(text) {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+            if p == begin { return -1; }
+        }
+        if p < len(text) && (text[p..(p + 1)] == "e" || text[p..(p + 1)] == "E") {
+            p = p + 1;
+            if p < len(text) && (text[p..(p + 1)] == "+" || text[p..(p + 1)] == "-") { p = p + 1; }
+            let begin = p;
+            while p < len(text) {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+            if p == begin { return -1; }
+        }
+        return p;
+    }
+    fn value_end(text: String, start: Int, depth: Int) -> Int {
+        if depth > 64 { return -1; }
+        let mut p = self.space(text, start);
+        if p >= len(text) { return -1; }
+        let c = text[p..(p + 1)];
+        if c == "\"" { return self.string_end(text, p); }
+        if c == "{" || c == "[" {
+            let end = if c == "{" { "}" } else { "]" };
+            p = self.space(text, p + 1);
+            if p < len(text) && text[p..(p + 1)] == end { return p + 1; }
+            let mut keys = "|";
+            while p < len(text) {
+                if c == "{" {
+                    let k = self.string_end(text, p);
+                    if k < 0 { return -1; }
+                    // Domain schemas use ordinary unescaped keys. Reject
+                    // escaped/duplicate keys rather than reinterpret them.
+                    let key = text[(p + 1)..(k - 1)];
+                    if std::str::contains(key, "\\") || std::str::contains(key, "|") || std::str::contains(keys, "|" + key + "|") { return -1; }
+                    keys = keys + key + "|";
+                    p = self.space(text, k);
+                    if p >= len(text) || text[p..(p + 1)] != ":" { return -1; }
+                    p = self.space(text, p + 1);
+                }
+                p = self.value_end(text, p, depth + 1);
+                if p < 0 { return -1; }
+                p = self.space(text, p);
+                if p >= len(text) { return -1; }
+                if text[p..(p + 1)] == end { return p + 1; }
+                if text[p..(p + 1)] != "," { return -1; }
+                p = self.space(text, p + 1);
+            }
+            return -1;
+        }
+        if p + 4 <= len(text) && (text[p..(p + 4)] == "true" || text[p..(p + 4)] == "null") { return p + 4; }
+        if p + 5 <= len(text) && text[p..(p + 5)] == "false" { return p + 5; }
+        return self.number_end(text, p);
+    }
+    fn valid(text: String) -> Bool {
+        if !self.utf8(text) { return false; }
+        let p = self.value_end(text, 0, 0);
+        return p >= 0 && self.space(text, p) == len(text);
+    }
+}

@@ -1,0 +1,165 @@
+// Typed command content only: no admission, storage, authorization, or outcome.
+// The host supplies this context after authentication; command payloads cannot
+// replace its application or principal. Position is a requested acting context,
+// not proof of authority or a change to the native whole-org Practice target.
+import "../core" as dna;
+
+type GovernanceContext {
+    application_id: String = "";
+    principal_mode: String = "";
+    principal_name: String = "";
+}
+type GovernanceCommand {
+    request_id: String = "";
+    operation: String = "";
+    operation_version: String = "1";
+    application_id: String = "";
+    position_id: String = "org";
+    target_kind: String = "";
+    target_id: String = "";
+    subject_digest: String = "";
+    text: String = "";
+    rationale: String = "";
+    expected_review_state: String = "";
+    verdict: String = "";
+    comment: String = "";
+    expected_assignee: String = "";
+    new_assignee: String = "";
+    // Prepared Organization source is a separate canonical variant. These
+    // fields never enter historical Practice/Review payloads or fingerprints.
+    source_head: String = "";
+    dependency_source: String = "";
+    dependency_digest: String = "";
+    record_head: String = "";
+    source_text: String = "";
+    // Raising work (dna.task.create) carries the intent's outcome and the
+    // position it is for, beside a `record_head` precondition. Every other
+    // variant requires both empty.
+    outcome: String = "";
+    to: String = "";
+}
+
+locus GovernanceCommandCodec {
+    params { }
+    fn known(operation: String, version: String) -> Bool {
+        return version == "1" && (operation == "dna.practice.propose" || operation == "dna.review.verdict");
+    }
+    // Match the API's decoded UTF-8 byte bounds. Identifiers exclude control
+    // bytes; payload text preserves them, including CRLF, without trimming.
+    // Strict JSON syntax rejects escaped NUL before native String decoding.
+    fn bounded(value: String, maximum: Int, nonempty: Bool, controls: Bool) -> Bool {
+        let size = len(value);
+        let syntax = OrganizationJson { };
+        if size > maximum || (nonempty && size == 0) || !syntax.utf8(value, size) { return false; }
+        if controls { return true; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c < 32 || c == 127 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn context_valid(context: GovernanceContext) -> Bool {
+        return self.bounded(context.application_id, 256, true, false)
+            && (context.principal_mode == "local" || context.principal_mode == "oidc")
+            && self.bounded(context.principal_name, 256, true, false);
+    }
+    fn valid(context: GovernanceContext, command: GovernanceCommand) -> Bool {
+        if !self.context_valid(context) || command.application_id != context.application_id || command.position_id != "org" || !self.known(command.operation, command.operation_version) { return false; }
+        if command.expected_assignee != "" || command.new_assignee != "" { return false; }
+        if command.source_head != "" || command.dependency_source != "" || command.dependency_digest != "" || command.record_head != "" || command.source_text != "" { return false; }
+        if command.outcome != "" || command.to != "" { return false; }
+        if !self.bounded(command.request_id, 128, true, false) || !self.bounded(command.target_id, 256, true, false) || !self.bounded(command.subject_digest, 256, true, false) { return false; }
+        if command.operation == "dna.practice.propose" {
+            return command.target_kind == "dna.practice" && command.target_id == command.subject_digest
+                && self.bounded(command.text, 8192, true, true) && self.bounded(command.rationale, 2048, true, true)
+                && command.expected_review_state == "" && command.verdict == "" && command.comment == "";
+        }
+        return command.target_kind == "dna.review" && command.expected_review_state == "pending"
+            && (command.verdict == "approve" || command.verdict == "reject" || command.verdict == "revise")
+            && self.bounded(command.comment, 2048, false, true) && command.text == "" && command.rationale == "";
+    }
+    // Linear quoting avoids the stdlib encoder's repeated growing prefixes.
+    // Callers validate native strings before encoding; byte spelling of valid
+    // Unicode and all representable payload controls remains exact.
+    fn quote(value: String) -> String {
+        let b = std::bytes::BytesBuilder { };
+        let digits = "0123456789abcdef";
+        let size = len(value);
+        b.append_u8(34);
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c == 34 || c == 92 { b.append_u8(92); b.append_u8(c); }
+            else if c < 32 {
+                b.append_str("\\u00");
+                b.append_u8(std::str::byte_at_unchecked(digits, c / 16));
+                b.append_u8(std::str::byte_at_unchecked(digits, c % 16));
+            } else { b.append_u8(c); }
+            i = i + 1;
+        }
+        b.append_u8(34);
+        return std::str::from_bytes(b.snapshot());
+    }
+    // One request namespace across operations. This is usable for lookup
+    // without knowing which operation originally occupied the caller's key.
+    fn identity(context: GovernanceContext, request_id: String) -> String {
+        if !self.context_valid(context) || !self.bounded(request_id, 128, true, false) { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":\"dna.governance-command-key/1\",\"application_id\":"); b.append_str(self.quote(context.application_id));
+        b.append_str(",\"principal_mode\":"); b.append_str(self.quote(context.principal_mode));
+        b.append_str(",\"principal_name\":"); b.append_str(self.quote(context.principal_name));
+        b.append_str(",\"request_id\":"); b.append_str(self.quote(request_id)); b.append_str("}");
+        return "command-" + dna::hex_digest(std::str::from_bytes(b.snapshot()));
+    }
+    // Fixed field order and all typed fields, including the inactive variant's
+    // required empty values. No Record-head condition or source normalization
+    // is introduced here; the subject precondition remains exact command data.
+    fn canonical(context: GovernanceContext, command: GovernanceCommand) -> String {
+        if !self.valid(context, command) { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":\"dna.governance-command/1\",\"application_id\":"); b.append_str(self.quote(command.application_id));
+        b.append_str(",\"principal_mode\":"); b.append_str(self.quote(context.principal_mode));
+        b.append_str(",\"principal_name\":"); b.append_str(self.quote(context.principal_name));
+        b.append_str(",\"request_id\":"); b.append_str(self.quote(command.request_id));
+        b.append_str(",\"operation\":"); b.append_str(self.quote(command.operation));
+        b.append_str(",\"operation_version\":"); b.append_str(self.quote(command.operation_version));
+        b.append_str(",\"position_id\":"); b.append_str(self.quote(command.position_id));
+        b.append_str(",\"target_kind\":"); b.append_str(self.quote(command.target_kind));
+        b.append_str(",\"target_id\":"); b.append_str(self.quote(command.target_id));
+        b.append_str(",\"subject_digest\":"); b.append_str(self.quote(command.subject_digest));
+        b.append_str(",\"text\":"); b.append_str(self.quote(command.text));
+        b.append_str(",\"rationale\":"); b.append_str(self.quote(command.rationale));
+        b.append_str(",\"expected_review_state\":"); b.append_str(self.quote(command.expected_review_state));
+        b.append_str(",\"verdict\":"); b.append_str(self.quote(command.verdict));
+        b.append_str(",\"comment\":"); b.append_str(self.quote(command.comment)); b.append_str("}");
+        return std::str::from_bytes(b.snapshot());
+    }
+    fn fingerprint(context: GovernanceContext, command: GovernanceCommand) -> String {
+        return dna::digest_of(self.canonical(context, command));
+    }
+    fn string(document: String, key: String) -> String {
+        let syntax = OrganizationJson { };
+        return syntax.decode(std::json::find_field_raw(document, key));
+    }
+    // This is an internal typed-content decoder, not the public HTTP envelope.
+    // The supplied context stays authoritative. Return a default invalid
+    // command for malformed, cross-context, or unsupported content.
+    fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
+        // A maximum-size valid payload can expand sixfold as JSON escapes.
+        if !self.context_valid(context) || len(document) > 98304 { return GovernanceCommand { }; }
+        let syntax = OrganizationJson { };
+        let fields = DefinitionCodec { };
+        if !syntax.valid(document) || !fields.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_kind target_id subject_digest text rationale expected_review_state verdict comment", "") { return GovernanceCommand { }; }
+        if self.string(document, "format") != "dna.governance-command/1" || self.string(document, "principal_mode") != context.principal_mode || self.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
+        let command = GovernanceCommand {
+            request_id: self.string(document, "request_id"), operation: self.string(document, "operation"), operation_version: self.string(document, "operation_version"),
+            application_id: self.string(document, "application_id"), position_id: self.string(document, "position_id"), target_kind: self.string(document, "target_kind"),
+            target_id: self.string(document, "target_id"), subject_digest: self.string(document, "subject_digest"), text: self.string(document, "text"),
+            rationale: self.string(document, "rationale"), expected_review_state: self.string(document, "expected_review_state"), verdict: self.string(document, "verdict"), comment: self.string(document, "comment")
+        };
+        if !self.valid(context, command) { return GovernanceCommand { }; }
+        return command;
+    }
+}

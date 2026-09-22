@@ -1,0 +1,142 @@
+// Exact binding admission and recovery over disposable, real Git Records.
+// The Body authors proposals; no test supplies a successful outcome receipt.
+import ".." as ops;
+import "../../core" as dna;
+
+const SCOPES: String = "[{\"author\":\"org\",\"target\":\"org/support\"}]";
+
+locus BindingAuthority {
+    params { scopes: String = SCOPES; mode: String = "review"; writes: Bool = true; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> ops::KnowledgeGrant {
+        return ops::KnowledgeGrant { allowed: context.principal_name == "alice" && (recovery || self.writes), mode: if recovery { "direct" } else { self.mode }, authority: "board", basis: "explicit-binding-test-policy", scopes: self.scopes };
+    }
+}
+locus BindingFaultRecord {
+    params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
+    fn location() -> String { return ""; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1; let fault = std::str::clone(self.fault); self.fault = "";
+        if fault == "unknown" { return dna::Appended { error: "io" }; }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lose only an actual committed reply"); return dna::Appended { error: "io" }; }
+        return result;
+    }
+}
+locus BindingAdmissionCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        let refreshed = j.refresh();
+        let result = j.append_exact(j.revision(), kind, entity, body);
+        std::test::assert(result.ok, "native fixture " + kind);
+    }
+    fn setup(repo: String) -> String {
+        std::io::fs::mkdir(repo) or discard;
+        let initialized = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(initialized.code, 0, "isolated binding Record");
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+        self.append(j, "application.observed", "org", "{}");
+        let idea = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "concept", text: "Retained original knowledge.", author: "org" }, "org"));
+        self.append(j, "knowledge.ratified", idea, "{\"class\":\"initiative\"}");
+        return idea;
+    }
+    fn who(record: ops::GovernanceRecord) -> ops::GovernanceContext {
+        return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+    }
+    fn command(context: ops::GovernanceContext, head: String, id: String, operation: String, idea: String, author: String, target: String) -> ops::KnowledgeCommand {
+        let native = dna::KnowledgeBindingCodec { };
+        return ops::KnowledgeCommand {
+            request_id: id, operation: "dna.knowledge.binding." + operation, application_id: context.application_id,
+            target_id: idea, idea_id: idea, record_head: head, author: author, target: target,
+            binding_id: if operation == "unbind" { native.identity(idea, target, author) } else { "" },
+            rationale: "Exact applicability — équipe 🧭\r\nRetain prior work."
+        };
+    }
+    fn fact(commands: ops::KnowledgeCommands, sequence: Int) -> ops::KnowledgeFact {
+        let j = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { };
+        return codec.decode_fact(j.read(sequence));
+    }
+    fn policy() {
+        let codec = ops::KnowledgePolicyCodec { }; let j = dna::MemJournal { };
+        let prefix = "{\"format\":\"dna.knowledge-authority/1\",\"application_id\":\"app\",\"grants\":[";
+        let member = "{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"edge_link\":\"deny\",\"recover\":true";
+        let context = ops::GovernanceContext { application_id: "app", principal_mode: "local", principal_name: "alice" };
+        let document = prefix + member + ",\"binding_bind\":\"review\",\"binding_unbind\":\"review\",\"binding_scopes\":" + SCOPES + "}]}";
+        let policy = codec.decode(document, "app", "local"); let authority = ops::FixedKnowledgeAuthority { policy: policy };
+        std::test::assert(policy.valid && authority.authorize(context, "dna.knowledge.binding.bind", false, j).allowed && authority.authorize(context, "dna.knowledge.binding.unbind", false, j).scopes == SCOPES, "exact independent binding grant");
+        std::test::assert(!authority.authorize(context, "dna.knowledge.node.propose", false, j).allowed, "binding grants no node authority");
+        let old_policy = codec.decode(prefix + member + ",\"node_propose\":\"review\",\"node_scopes\":" + SCOPES + "}]}", "app", "local"); let old = ops::FixedKnowledgeAuthority { policy: old_policy };
+        std::test::assert(old_policy.valid && !old.authorize(context, "dna.knowledge.binding.bind", false, j).allowed, "node scopes cannot imply binding authority");
+        let remove = ops::FixedKnowledgeAuthority { policy: codec.decode(std::str::replace(document, "\"binding_bind\":\"review\"", "\"binding_bind\":\"deny\""), "app", "local") };
+        std::test::assert(!remove.authorize(context, "dna.knowledge.binding.bind", false, j).allowed && remove.authorize(context, "dna.knowledge.binding.unbind", false, j).allowed, "unbind is independent from bind");
+        std::test::assert(!codec.decode(std::str::replace(document, ",\"binding_scopes\":" + SCOPES, ""), "app", "local").valid, "grant without scopes fails startup");
+        std::test::assert(!codec.decode(std::str::replace(document, "\"binding_bind\":\"review\"", "\"binding_bind\":\"direct\""), "app", "local").valid, "Review has no silent direct fallback");
+        std::test::assert(!codec.decode(std::str::replace(document, SCOPES, "[{\"author\":\"org/a\",\"target\":\"org/b\"}]"), "app", "local").valid, "lateral scope rejected");
+    }
+    fn recovery(repo: String) {
+        let idea = self.setup(repo); let record = BindingFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
+        let commands = ops::KnowledgeCommands { record: record, authority: BindingAuthority { } };
+        let c = self.command(context, record.head("journal"), "bind", "bind", idea, "org", "org/support");
+        std::test::assert(commands.capability_for(context, c.operation).available, "native binding Review capability is available");
+        record.fault = "lost";
+        let admitted = commands.submit(context, c);
+        std::test::assert(admitted.ok && admitted.receipt.state == "recorded" && admitted.receipt.binding.proposal_state == "pending", "lost commit reply recovers one actual admission: " + admitted.code);
+        std::test::assert_eq_int(record.appends, 1, "ambiguous reply never appends a second request");
+        let f = self.fact(commands, admitted.receipt.sequence); let native = dna::KnowledgeBindingCodec { }; let codec = ops::KnowledgeBindingCommandCodec { };
+        std::test::assert(f.valid && f.binding.request_id == admitted.receipt.command_id && f.binding.binding_basis == "", "new tuple pins absence with exact scoped identity");
+        std::test::assert_eq_str(f.binding.candidate_digest, dna::digest_of(native.document(f.binding)), "candidate pins the exact rationale and grant");
+        let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: BindingAuthority { writes: false } };
+        std::test::assert_eq_str(fresh.submit(context, c).receipt.event_id, admitted.receipt.event_id, "restart with writes removed recovers original event");
+        let changed = self.command(context, c.record_head, c.request_id, "unbind", idea, "org", "org/support");
+        std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "bind/unbind share durable request identity");
+        let edge = ops::KnowledgeCommand { request_id: c.request_id, application_id: c.application_id, record_head: c.record_head, target_id: idea, from_id: idea, to_id: idea, rel: "self", rationale: "Different operation." };
+        std::test::assert_eq_str(fresh.submit(context, edge).code, "request_conflict", "bindings share request namespace with edges");
+        let invalid = std::str::replace(codec.fact(context, c, BindingAuthority { }.authorize(context, c.operation, false, dna::MemJournal { }), f.binding), f.binding.candidate_digest, dna::digest_of("wrong"));
+        std::test::assert(!codec.decode_fact(dna::Event { kind: "knowledge.binding.requested", entity: f.command_id, prev: c.record_head, body: invalid }).valid, "wrong native candidate cannot recover as canonical intent");
+        let j = dna::GitJournal { repo: repo };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        body.on_knowledge_binding_requested(f.binding);
+        let proposed = fresh.lookup(context, c.request_id);
+        std::test::assert(proposed.ok && proposed.receipt.state == "succeeded" && proposed.receipt.binding.proposal_state == "created", "actual Body creates distinct binding candidate and Review");
+        std::test::assert(proposed.receipt.binding.candidate_digest == f.binding.candidate_digest && proposed.receipt.binding.review_state == "pending" && proposed.receipt.binding.effect_state == "unknown", "proposal never implies a binding effect");
+        self.append(j, "receipt.withheld", idea, "{}");
+        let hidden = fresh.lookup(context, c.request_id);
+        std::test::assert(hidden.ok && !hidden.receipt.details_visible && hidden.receipt.target_id == "" && hidden.receipt.binding.binding_id == "" && hidden.receipt.binding.candidate_digest == "" && hidden.receipt.binding.review_id == "" && hidden.receipt.binding.proposal_state == "unknown", "underlying idea protection clears binding details too");
+    }
+    fn subjects(repo: String) {
+        let idea = self.setup(repo); let record = BindingFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
+        let commands = ops::KnowledgeCommands { record: record, authority: BindingAuthority { } };
+        let codec = ops::KnowledgeCommandCodec { };
+        let wrong = self.command(context, record.head("journal"), "wrong-id", "unbind", idea, "org", "org/support"); wrong.binding_id = dna::digest_of("wrong tuple");
+        std::test::assert_eq_str(commands.submit(context, wrong).code, "invalid_command", "caller cannot override native tuple identity");
+        let lateral = self.command(context, record.head("journal"), "lateral", "bind", idea, "org/a", "org/b");
+        std::test::assert(!codec.valid(context, lateral), "lateral intent is invalid before effect");
+        let denied = self.command(context, record.head("journal"), "denied", "bind", idea, "org", "org/other");
+        std::test::assert_eq_str(commands.submit(context, denied).code, "forbidden", "scope equality is exact");
+        let removed = commands.submit(context, self.command(context, record.head("journal"), "already-absent", "unbind", idea, "org", "org/support"));
+        std::test::assert(removed.ok && self.fact(commands, removed.receipt.sequence).binding.binding_basis == "", "already absent exact tuple can be reviewed for removal");
+        let original = ops::KnowledgeCommands { record: record, authority: BindingAuthority { scopes: "[{\"author\":\"org\",\"target\":\"org\"}]" } };
+        let original_request = original.submit(context, self.command(context, record.head("journal"), "original", "unbind", idea, "org", "org"));
+        let captured = ops::GovernanceJournal { snapshot: commands.capture() };
+        std::test::assert(original_request.ok && self.fact(commands, original_request.receipt.sequence).binding.binding_basis == captured.read(1).digest, "original ratification supplies exact tuple basis");
+        let j = dna::GitJournal { repo: repo }; self.append(j, "knowledge.retired", idea, "{}");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "inactive", "bind", idea, "org", "org/support")).code, "stale_subject", "new binding requires active idea");
+        std::test::assert(commands.submit(context, self.command(context, record.head("journal"), "historical", "unbind", idea, "org", "org/support")).ok, "retired visible item permits exact removal without reactivation");
+        let stale = self.command(context, record.head("journal"), "stale", "unbind", idea, "org", "org/support"); self.append(j, "application.observed", "org", "{}");
+        std::test::assert_eq_str(commands.submit(context, stale).code, "stale_subject", "checked head is never silently rebased");
+        record.fault = "unknown";
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "unknown", "unbind", idea, "org", "org/support")).code, "command_outcome_unknown", "unresolved append stays unknown");
+        std::test::assert_eq_int(record.appends, 4, "only three admitted changes and one uncertain attempt reached append");
+    }
+    fn check() {
+        let root = "/tmp/dna-binding-admission-" + to_string(std::process::pid()); std::io::fs::mkdir(root) or discard;
+        self.policy(); self.recovery(root + "/recovery"); self.subjects(root + "/subjects");
+        let removed = dna::run_tool("rm\n-rf\n" + root);
+    }
+}
+fn main() { let cases = BindingAdmissionCases { }; cases.check(); }

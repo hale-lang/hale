@@ -1,0 +1,171 @@
+// Native Record-CAS tests for raising work (dna.task.create@1). The row under
+// test is the `intent.requested` row `hale dna ask` writes, with the command
+// fields beside it; the organism's answers below are explicit fixture rows,
+// not a running body.
+import ".." as ops;
+import "../../core" as dna;
+
+const HEAD: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OUTCOME: String = "Raise é 🧭\r\n<literal & markup>";
+
+locus CreateFaultRecord {
+    params { inner: dna::GitRecord; fault: String = ""; appends: Int = 0; }
+    fn location() -> String { return ""; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1; let fault = self.fault; self.fault = "";
+        if fault == "unknown" { return dna::Appended { error: "unknown" }; }
+        if fault == "stale" {
+            // a CLI ask lands first at the same head
+            let moved = self.inner.append(chain, at, dna::Row { kind: "intent.requested", entity: "i1", body: "{\"outcome\": \"first\", \"from\": \"cli\", \"to\": \"org\"}", author: "cli" }, false, "");
+            std::test::assert(moved.ok, "concurrent CLI ask lands"); return dna::Appended { error: "stale" };
+        }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lost acknowledgment persisted effect"); return dna::Appended { error: "unknown" }; }
+        return result;
+    }
+}
+locus CreateCases {
+    params { }
+    fn context(app: String) -> ops::GovernanceContext { return ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "riley" }; }
+    fn command(context: ops::GovernanceContext, key: String, head: String, outcome: String, to: String) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand { request_id: key, operation: "dna.task.create", application_id: context.application_id, target_kind: "dna.record", target_id: context.application_id,
+            subject_digest: head, record_head: head, outcome: outcome, to: to };
+    }
+    // the bytes `hale dna ask` writes for the same outcome/from/to (dna/host/writers.hl)
+    fn cli_row(outcome: String, from: String, to: String) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("outcome", outcome); b.string_field("from", from); b.string_field("to", to); b.end_object(); return b.result();
+    }
+    fn row(repo: String, kind: String, entity: String) -> dna::Event {
+        let j = dna::GitJournal { repo: repo }; let mut found = dna::Event { }; let mut i = 0;
+        while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == entity { found = e; } i = i + 1; }
+        return found;
+    }
+    fn author_of(record: dna::GitRecord, seq: Int) -> String { return std::json::find_string_field(dna::line_at(record.text_at(record.head("journal")), seq), "author"); }
+    fn native(repo: String, mode: String) {
+        let record = dna::GitRecord { repo: repo }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+        std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+        let context = self.context(record.identity()); let head = record.head("journal");
+        let outcome = "Confirm the supplier handover\r\né 🧭 <literal & markup>";
+        let command = self.command(context, "shared-key", head, outcome, "org");
+        let fault = CreateFaultRecord { inner: record, fault: mode };
+        let provider = ops::GovernanceCommands { record: fault };
+        let capability = provider.capability(context, "dna.task.create", "1");
+        std::test::assert(capability.available && capability.authorized && capability.recipients == "[]", "any authenticated principal may raise work: " + capability.reason);
+        let result = provider.submit(context, command);
+        if mode == "stale" { std::test::assert(!result.ok && result.code == "stale_subject" && fault.appends == 1, "a moved head refuses the prepared request: " + result.code); return; }
+        if mode == "unknown" {
+            let t = result.receipt.task_create;
+            std::test::assert(result.ok && result.receipt.state == "outcome_unknown" && t.intent_state == "unknown" && t.intent_id == "" && t.task_id == "" && t.event_id == "" && fault.appends == 1, "uncertain append never blindly repeats");
+            return;
+        }
+        let r = result.receipt; let codec = ops::TaskCreateCommandCodec { };
+        std::test::assert(result.ok && r.state == "succeeded" && r.task_create.intent_state == "requested" && codec.intent_id_valid(r.task_create.intent_id) && r.task_create.task_id == "" && r.task_create.event_id != "", "the ask is admitted once its row is in the Record: " + result.code);
+        std::test::assert(r.target_kind == "dna.record" && r.target_id == context.application_id && r.subject_digest == head && r.proposal_state == "" && r.review_state == "unavailable" && r.activation_state == "unknown", "the receipt names the Record and the head the request was prepared against");
+        // the row is the CLI's row, with the command fields beside it
+        let e = self.row(repo, "intent.requested", r.task_create.intent_id);
+        std::test::assert(e.kind == "intent.requested" && e.digest == r.task_create.event_id && e.prev == head, "one intent.requested row at the captured head is the receipt's event");
+        let cli = self.cli_row(outcome, "riley", "org");
+        std::test::assert(std::str::starts_with(e.body, cli[0..(len(cli) - 1)] + ", \"command_format\": \"dna.task-create-command/1\", \"command_id\": "), "the row begins with the bytes hale dna ask writes for the same outcome/from/to");
+        std::test::assert(!std::str::contains(e.body, "\"via\"") && !std::str::contains(e.body, "\"intent_id\"") && std::str::ends_with(e.body, "}"), "no via and no intent_id: the relay adds the id before the last brace");
+        std::test::assert(std::json::find_string_field(e.body, "command_id") == r.command_id && std::json::find_string_field(e.body, "command_record_head") == head && std::json::find_string_field(e.body, "command_authority") == "riley", "one command id, the captured head, the principal as authority");
+        std::test::assert_eq_str(self.author_of(record, e.seq), "riley", "the acting principal is the row's author");
+        let fact = codec.decode_fact(e); std::test::assert(fact.valid && fact.intent_id == r.task_create.intent_id && fact.command.outcome == outcome && fact.command.to == "org", "the row re-verifies as this exact command");
+        // restart, write-disabled recovery and identical retry read the row
+        let fresh = ops::GovernanceCommands { record: record };
+        let recovered = fresh.lookup(context, "shared-key");
+        std::test::assert(recovered.ok && recovered.receipt.command_id == r.command_id && recovered.receipt.task_create.intent_id == r.task_create.intent_id && recovered.receipt.task_create.event_id == r.task_create.event_id && recovered.receipt.task_create.intent_state == "requested", "restart recovery exact");
+        let again = fresh.submit(context, command);
+        std::test::assert(again.ok && again.receipt.task_create.intent_id == r.task_create.intent_id && fault.appends == 1, "identical retry after the head moved is lookup, not another ask");
+        std::test::assert_eq_int(self.count(repo, "intent.requested"), 1, "one ask in the Record");
+        let changed = self.command(context, "shared-key", head, outcome + "!", "org"); std::test::assert(fresh.submit(context, changed).code == "request_conflict", "changed content conflict");
+        let old = ops::GovernanceCommand { request_id: "shared-key", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: "subject", subject_digest: "subject", text: "text", rationale: "because" };
+        std::test::assert(fresh.submit(context, old).code == "request_conflict", "shared namespace cross-operation conflict");
+        // the organism answers, and lookup re-derives the answer every time
+        let j = dna::GitJournal { repo: repo }; let intent = r.task_create.intent_id;
+        std::test::assert(j.append(j.revision(), "intent.offered", intent, outcome + " (from riley)").ok, "offered");
+        let offered = fresh.lookup(context, "shared-key"); std::test::assert(offered.receipt.task_create.intent_state == "offered" && offered.receipt.task_create.task_id == "", "offered, no Task yet");
+        std::test::assert(j.append(j.revision(), "task.born", "org:t1", intent + ": " + outcome).ok, "born");
+        let born = fresh.lookup(context, "shared-key"); std::test::assert(born.receipt.state == "succeeded" && born.receipt.task_create.intent_state == "born" && born.receipt.task_create.task_id == "org:t1" && born.receipt.task_create.intent_id == intent, "born names the Task by the intent prefix");
+        // a second ask at the current head mints a distinct id and can be refused
+        let now = record.head("journal"); let second = provider.submit(context, self.command(context, "second-key", now, "Another outcome", "org/support"));
+        std::test::assert(second.ok && second.receipt.task_create.intent_state == "requested" && second.receipt.task_create.intent_id != intent, "a distinct intent id: " + second.code);
+        std::test::assert(j.append(j.revision(), "intent.refused", second.receipt.task_create.intent_id, "refused: not this organization's to admit").ok, "refused");
+        let refused = fresh.lookup(context, "second-key"); std::test::assert(refused.ok && refused.receipt.state == "succeeded" && refused.receipt.task_create.intent_state == "refused" && refused.receipt.task_create.task_id == "", "the organism's refusal is a separate fact on a succeeded command");
+        std::test::assert(born.receipt.task_create.task_id == fresh.lookup(context, "shared-key").receipt.task_create.task_id, "the first ask keeps its Task");
+        // a CLI ask beside ours is not a command and cannot be recovered as one
+        std::test::assert(j.append(j.revision(), "intent.requested", "i2", self.cli_row("plain ask", "riley", "org")).ok, "CLI ask");
+        std::test::assert(fresh.lookup(context, "absent-key").code == "forbidden", "an absent key needs the policy's recover grant, as for every operation");
+        let policy_codec = ops::AuthorityPolicyCodec { };
+        let policy = policy_codec.decode("{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + context.application_id + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}", context.application_id, "local");
+        std::test::assert(policy.valid, "recover-only policy");
+        let recovering = ops::GovernanceCommands { record: record, authority: ops::FixedAuthority { policy: policy } };
+        std::test::assert(recovering.lookup(context, "absent-key").code == "command_not_found", "a CLI ask without command fields is invisible to lookup");
+        std::test::assert(recovering.lookup(context, "shared-key").ok && fresh.lookup(context, "shared-key").ok, "and does not corrupt command history");
+        // after Ledger adoption new asks fail closed, recovery survives
+        std::test::assert(j.append(j.revision(), "ledger.adopted", "org", "{}").ok, "adopted");
+        std::test::assert(provider.submit(context, self.command(context, "adopted-key", record.head("journal"), "late", "org")).code == "commands_unsupported", "adopted Ledger refuses new asks");
+        std::test::assert(fresh.lookup(context, "shared-key").ok, "recorded asks stay recoverable");
+    }
+    fn count(repo: String, kind: String) -> Int {
+        let j = dna::GitJournal { repo: repo }; let mut n = 0; let mut i = 0;
+        while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
+        return n;
+    }
+    fn sample(context: ops::GovernanceContext) -> ops::GovernanceCommand { return self.command(context, "key", HEAD, OUTCOME, "org/support"); }
+    fn event(kind: String, entity: String, body: String, prev: String) -> dna::Event { return dna::Event { seq: 3, kind: kind, entity: entity, body: body, prev: prev, digest: "d" }; }
+    // `let bad = c` aliases the struct, so every negative below is built fresh.
+    fn codecs() {
+        let context = self.context("app"); let codec = ops::TaskCreateCommandCodec { }; let common = ops::GovernanceCommandCodec { };
+        let c = self.sample(context); let canonical = codec.canonical(context, c);
+        std::test::assert(codec.valid(context, c) && std::str::starts_with(canonical, "{\"format\":\"dna.task-create-command/1\"") && codec.canonical(context, codec.decode(context, canonical)) == canonical, "closed exact create variant roundtrip");
+        let decoded = codec.decode(context, canonical);
+        std::test::assert(decoded.outcome == OUTCOME && decoded.to == "org/support" && decoded.record_head == HEAD && decoded.subject_digest == HEAD, "decoded fields exact");
+        let mut bad = self.sample(context); bad.outcome = ""; std::test::assert(!codec.valid(context, bad), "an outcome is required");
+        bad = self.sample(context); bad.to = ""; std::test::assert(!codec.valid(context, bad), "a position is required");
+        bad = self.sample(context); bad.to = "a\nb"; std::test::assert(!codec.valid(context, bad), "a position has no control bytes");
+        bad = self.sample(context); bad.record_head = ""; bad.subject_digest = ""; std::test::assert(!codec.valid(context, bad), "the head precondition is required");
+        bad = self.sample(context); bad.subject_digest = "other"; std::test::assert(!codec.valid(context, bad), "the subject is the head");
+        bad = self.sample(context); bad.target_kind = "dna.task"; std::test::assert(!codec.valid(context, bad), "the target is the Record");
+        bad = self.sample(context); bad.target_id = "other"; std::test::assert(!codec.valid(context, bad), "the target is this application");
+        bad = self.sample(context); bad.text = "stray"; std::test::assert(!codec.valid(context, bad), "no practice fields");
+        let big = std::bytes::BytesBuilder { }; let mut i = 0; while i < 8193 { big.append_u8(97); i = i + 1; }
+        bad = self.sample(context); bad.outcome = std::str::from_bytes(big.snapshot()); std::test::assert(!codec.valid(context, bad), "outcome bound");
+        let old = ops::GovernanceCommand { request_id: "key", operation: "dna.practice.propose", application_id: "app", target_kind: "dna.practice", target_id: "subject", subject_digest: "subject", text: "text", rationale: "because", outcome: "stray" };
+        std::test::assert(!common.valid(context, old), "old variant rejects stray create fields");
+        let task = ops::TaskCommandCodec { }; let reassign = ops::GovernanceCommand { request_id: "key", operation: "dna.task.reassign", application_id: "app", target_kind: "dna.task", target_id: "task", subject_digest: dna::digest_of("basis"), expected_assignee: "alice", new_assignee: "bob", to: "org" };
+        std::test::assert(!task.valid(context, reassign), "Task variant rejects stray create fields");
+        std::test::assert_eq_str(codec.hex(255), "ff", "lower-case hex"); std::test::assert_eq_str(codec.hex(0), "0", "zero");
+        std::test::assert(codec.intent_id_valid("i1f4") && codec.intent_id_valid("i0") && !codec.intent_id_valid("i") && !codec.intent_id_valid("x1f") && !codec.intent_id_valid("i1F") && !codec.intent_id_valid("command-1"), "intent id shape");
+        let q = dna::MemJournal { }; std::test::assert(q.append(0, "intent.requested", "i1f4", "{}").ok && q.append(1, "intent.requested", "i1f5", "{}").ok, "held ids");
+        std::test::assert_eq_str(codec.intent_id(q, 500), "i1f6", "an id this Record holds steps to the next millisecond");
+        std::test::assert_eq_str(codec.intent_id(q, 501), "i1f6", "and the next");
+        std::test::assert_eq_str(codec.intent_id(q, 600), "i258", "a free millisecond is used as is");
+        let grant = codec.grant(context); std::test::assert(grant.allowed && grant.authority == "riley" && std::str::starts_with(grant.basis, "dna.task.create/1:authenticated-principal:local"), "the principal is the authority");
+        std::test::assert(!codec.grant(ops::GovernanceContext { }).allowed, "no context, no grant");
+        let sound = self.sample(context); let fact = codec.fact(context, sound, grant, HEAD);
+        let cli = self.cli_row(OUTCOME, "riley", "org/support");
+        std::test::assert(std::str::starts_with(fact, cli[0..(len(cli) - 1)] + ", \"command_format\""), "fact begins with the CLI bytes");
+        let e = self.event("intent.requested", "i1f4", fact, HEAD);
+        std::test::assert(codec.decode_fact(e).valid && codec.decode_fact(e).intent_id == "i1f4" && codec.decode_fact(e).command.outcome == OUTCOME, "fact roundtrip");
+        std::test::assert(!codec.decode_fact(self.event("intent.requested", "task", fact, HEAD)).valid, "the entity is an intent id");
+        std::test::assert(!codec.decode_fact(self.event("task.born", "i1f4", fact, HEAD)).valid, "the kind is the ask");
+        std::test::assert(!codec.decode_fact(self.event("intent.requested", "i1f4", fact, "other")).valid, "the head is the predecessor");
+        std::test::assert(!codec.decode_fact(self.event("intent.requested", "i1f4", std::str::replace(fact, "org/support", "org/finance"), HEAD)).valid, "changed bytes are not this command");
+        std::test::assert(!codec.decode_fact(self.event("intent.requested", "i1f4", self.cli_row(OUTCOME, "riley", "org/support"), HEAD)).valid, "a CLI ask is not a command fact");
+        std::test::assert(codec.fact(context, self.sample(context), ops::GovernanceGrant { }, HEAD) == "" && codec.fact(context, bad, grant, HEAD) == "", "no fact without a grant or a valid command");
+    }
+}
+fn main() {
+    let cases = CreateCases { }; cases.codecs();
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-task-create") };
+    std::io::fs::mkdir(base + "/normal") or discard; std::io::fs::mkdir(base + "/lost") or discard; std::io::fs::mkdir(base + "/stale") or discard; std::io::fs::mkdir(base + "/unknown") or discard;
+    cases.native(base + "/normal", "normal"); cases.native(base + "/lost", "lost"); cases.native(base + "/stale", "stale"); cases.native(base + "/unknown", "unknown");
+    if len(given) == 0 { dna::scratch_done(base); }
+    eprintln("task create native cases passed");
+}

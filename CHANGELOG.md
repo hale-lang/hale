@@ -34,6 +34,147 @@ the park path, replay and shutdown are untouched.
 - The macOS workflow's step (c) turns from "async_io is refused" into
   "an async_io program builds and runs".
 
+### Iris: the project service, onboarding from the browser (GH #965)
+
+- A new head, `dna/api/project_service`, is the one process the cockpit talks
+  to: it serves the shell, keeps a registry of projects and a receipt journal
+  under a state directory, and proxies the Record routes to a per-project API
+  child (`dna/api/practice_review`) it starts under policies it synthesizes
+  when the operator wrote none. `iris/cockpit/start.sh` now takes an optional
+  project and builds both seeds; a detached head begins in the Projects
+  workspace, where a project is created, initialized or attached.
+- Every operation is the CLI verb run detached with pid, exit and log files —
+  create/init, attach/detach/forget, sync, publish (commit and push the genome),
+  forge configure/sync, the local and remote body, secrets by source name, the
+  model probe, connections, handoffs and the observer — each answering a
+  receipt (`recorded → admitted|refused → running → succeeded|failed|outcome_unknown`)
+  under a `command-<digest>` identity with identical-retry replay and
+  `request_conflict`. A deadline on a verb that reaches beyond the machine is
+  `outcome_unknown` with evidence, never a fabricated failure; row-writing
+  operations carry the rows the Record gained. Restarting the head interrupts
+  nothing: children are re-adopted and every earlier request answers the same
+  receipt. Secrets never cross the wire (a `value` key is refused; a 0600
+  source file is consumed once). Driver: a downstream handoff asking for
+  first commit, push and sync from the browser.
+- The contract gains the four head paths and their definitions (26 paths);
+  `dna/api/project_service/tests` runs the journal over a fake runner, the
+  operations without HTTP, and the head over HTTP with a restart. The book's
+  run chapter and reference, `spec/dna.md` and the API README describe the
+  head, its state directory and the sources directory.
+### Iris: raise work from the cockpit (GH #690)
+
+- `dna.task.create@1` is the command surface's `hale dna ask`. It admits the
+  same `intent.requested` row the CLI writes — entity the minted intent id,
+  author the acting principal, body `outcome`/`from`/`to` first and the command
+  fields after — so the relay and the organism treat a cockpit ask and a CLI
+  ask as one row. No policy grant: the authenticated principal is the
+  authority; the organism judges the position. The receipt succeeds once the
+  row is in the Record and re-derives the organism's answer (requested,
+  offered, refused, born with the Task id) on every lookup.
+- The cockpit's Handed Tasks register gains a "New task" form
+  (`web/task-create.js`) fed from the working-context loci, with the usual
+  identity-before-POST recovery. Contract, scripted HTTP, native API, domain
+  and browser cases cover it; the native browser lane proves the row bytes.
+
+### Iris: inspect the declared organization (GH #690)
+
+- The Organization workspace browses exact static instances from a checked
+  compiler artifact, with declared position groups, containment, typed contracts
+  and per-node source locations. Source revision, dependency fingerprint and
+  Record basis remain separate from runtime evidence and authenticated identity.
+- The native read adapter checks an owned snapshot of committed `dna/org`
+  source and its available dependencies. It preserves the existing ownership
+  map separately; compiler instance paths do not invent a position-to-owner or
+  person-to-authority mapping. Source changes invalidate paged reads.
+- Organization reads retain the API's authentication boundary and leave project
+  source and Record refs unchanged. Native and browser regression cases cover
+  exact identities, source changes, unavailable dependencies and mobile/history
+  navigation. Semantic position bindings and governed editing remain work in
+  the full [cockpit scope](https://github.com/hale-lang/hale/issues/690).
+
+### Iris: live read-only cockpit for DNA practices and reviews (GH #690)
+
+- An independently produced browser shell reads the typed DNA API, with paged
+  Practice and Review catalogs, exact-document links, source revisions and
+  explicit content availability. Review approval and practice activation remain
+  separate. Knowledge and Definitions are visible core workspaces awaiting their
+  adapters; Runtime links to the independent existing observer.
+- The Hale API accepts an optional static asset directory and serves the shell,
+  authentication and data on one origin. API-only mode remains available; static
+  assets contain no Record data and all data reads retain their authentication.
+  Native boundary tests and real-browser tests cover serving, navigation,
+  stale snapshots, suppressed content and connection failures. See
+  [`iris/cockpit/README.md`](iris/cockpit/README.md).
+
+### DNA: `hale dna ask` is `hale dna task create`
+
+- The verb that asks the organization for an outcome is `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`; `hale dna ask` is gone, with no alias. Asking is one kind of task, and the cockpit exposes the same operation as `dna.task.create`, so the verb sits beside `task done`, `task accept` and the rest, and takes every word after the subverb as the outcome. Only the name and its strings change: the answer is still the execution whose admission names the intent (never the next birth in the record); the row kinds (`intent.requested`, `intent.offered`, `intent.refused`, `workflow.admitted`), the membrane kind `intent`, the topic `dna.intent.offered`, the sockets and `Dna.ask(Intent)` keep their names.
+- `--no-wait` returns once the row is in the record on both paths: beside a live organism (the row appended and published, no polling) as it already did from a clone with no organism (the row appended and synced). The one-line notice is the same on either.
+- The old head (`hale dna ui`) titles its form "New task" and posts `POST /api/task/create`, which runs the verb with `--no-wait`; the cockpit's read API still answers 405 on that path. Tests and fixtures spell the new verb: `dna_run`, `dna_record_sync`, `dna_record_trust`, `dna_task_done`, `dna_knowledge`, `dna_long_path`, `dna_status`, `dna_twelve_steps`, `dna_recorded_fixture`, `dna_ui`; `owners_test`, `two_owners_test`, `principal_oidc_test`, `b1_team_test`, `two_heads_test`, `read_api_test`, and the books acceptance program.
+
+### DNA: cadence refresh runs on the organism's owner queue
+
+- Generated organizations use `Dna.request_tick` so journal refresh finishes
+  before queued work reads or appends. A task arriving during a direct tick
+  could otherwise append an effect claim successfully, then reject its own
+  claim as already in flight because the journal's cached view was incomplete.
+  `hale dna upgrade` explains the one-line change for existing organizations;
+  their project-owned source stays intact.
+
+### DNA: first typed read API for the Iris cockpit (GH #690)
+
+- A source-built `dna/api` service exposes versioned application discovery,
+  capabilities and practice/review reads from a checked local Record snapshot.
+  It shares typed governance queries with the CLI, preserves exact identities
+  and attribution, and distinguishes Review decisions from practice activation.
+- The service uses trusted loopback access or the existing OIDC member sessions.
+  Reads return structured errors, bounded pages and source revisions; unavailable
+  receipt text is explicitly withheld. OpenAPI/JSON Schema fixtures and live
+  Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
+  packaging and the browser cockpit remain subsequent work; see
+  [`dna/api/README.md`](dna/api/README.md).
+### Docs: the book catches up with the week
+
+- `docs/src/everyday/records.md` says a `let` of a record, and an assignment, is a copy (GH #713, #992); `docs/src/services/lifecycle.md` says an omitted `run()` is an empty one (GH #735), that a handle stored into a contract-typed field or handed to a field of its own interface is a borrow (GH #967, #730), and which positions `hale check` refuses because the borrow would not outlive its holder (GH #730); `docs/src/reference.md`'s command table gains `hale replay`, `hale iris`, `hale dna` and `hale inputs`; `spec/projects.md`'s surface table gains `hale check --strict-fallible` (GH #738). The install chapter, the spec and the DNA book were already current for cross-compilation, `Time`, the stdlib additions and the workflow.
+### A write through a struct local never reaches another (GH #993, #992)
+
+- `crates/hale-codegen/src/codegen.rs`: a field write under a local root (`bad.id = "…"`, `bad.inner.id = "…"`, `grown.id += "…"`) inside a locus method took the locus field's in-place String path, so it overwrote bytes in place. A `let` copy of a struct (GH #713) may share an unchanged String with its source, so the write reached the source and every local sharing that String: after `let command = self.host.saved; let good = self.host.result(command); let mut bad = good; bad.id = "PRIVATE-CANARY";`, `command.id` read the canary. A String or Bytes field under a local root is now replaced: the new value is cloned into the frame's arena and the pointer stored over. The P1 regression from #980, reported against the cockpit branch's commands API test. The String stored into the locus field was already an owned clone in the locus arena, and the reproducer runs clean under ASan.
+- GH #992: `x = <place>` on a struct local, `arr[i] = <place>` on a local array and `x.inner = <place>` under a local copy the value, as `let` does. They used to store the place's pointer, so `bad = good; bad.inner.id = "CANARY"` wrote `good`. A literal or a call result is stored as it is.
+- Spec: `spec/types.md` § "A struct binding is a copy", `spec/memory.md` (in-place reassignment, item 7). Test: `tests/hale/struct_local_writes_test.hl`, which covers the issue's three store shapes and its two controls, an assigned copy, a nested field, a compound write and an array element. It fails without the change at the #993 shape and, with that shape removed, at the #992 one.
+
+### A borrow must outlive its holder (GH #730, second half)
+
+- `crates/hale-types/src/borrow_lifetime.rs` (new), `hale check`: a handle stored by name into a locus-carrying param field (`LocusRef`, `interface`, `perspective(P)`) is borrowed, never the holder's to reclaim, so `check` refuses the positions where nothing outlives the holder — a `let` of the frame or a bus handler's payload into a child of `self` (a field reassigned, an accepted child), a field of `self` or a frame `let` into a returned literal, a `let` of an inner block into an outer binding — and, for a parameter, asks every call site: the first caller that hands a `let` of its own frame or a handler payload is the witness the refusal names, a parameter at the caller recursing to a bounded depth. A borrow the holder reads only in `birth()` is birth-scoped and sound (the engine's residents copy what they are handed there). Errors; nothing the walk cannot follow is refused. Beside it, a GH #737 notice: a subscription keyed by `self.f` read its key when it was registered, at construction, so an assignment to `f` in `birth()` did not retarget it. Spec: `spec/semantics.md` § "A borrow outlives its holder", `spec/decisions.md` F.39. Test: `crates/hale-cli/tests/check_borrow_lifetime.rs`. Not decided here: a borrow across thread domains, and the container case of #712.
+
+### An interface value flows into a field of the same interface (GH #730, first half)
+
+- `crates/hale-types/src/check.rs`, `crates/hale-codegen/src/locus/instantiation.rs`: `Attempt { performer: self.performer }` where both are `Performer` — an interface VALUE into a field of the same interface — is identity now (it was refused as "type `Performer` cannot satisfy interface `Performer`", dna/FRICTION.md F.3). The holder stores a fresh `{data, vtable}` pair of its own and owns nothing: the impl is a borrow, as F.39 reads a name in a field initialiser and as the assignment form has been since #967. The same at an `or <substitute>`. A value of a different interface is still refused. The F.3 reproducer runs clean under ASan; `dna/core/assembly.hl` hands its journal to the engine at construction and the `adopt` workaround is gone. Spec: `spec/types.md`, the coercion sites. The remaining half of #730 — the checker's lifetime rule for borrows — is separate.
+
+### `let` copies a struct value (GH #713)
+
+- `crates/hale-codegen/src/codegen.rs`, the `let` lowering: a struct read from a place — a field of `self` or of a child, a local, an element — is now copied into the frame's own region at the binding (Strings and Bytes cloned, nested structs copied, locus handles left as handles), the way a returned struct already was. Before, the binding was a view of the storage: `let saved = self.row; self.row = Row { };` emptied `saved`, and `let mut copy = original; copy.x = …` wrote the original. A literal or a call result is bound as it is. The ruling of 2026-09-20. Spec: `spec/types.md` § "A struct binding is a copy". Test: `tests/hale/struct_let_copies_test.hl` — same-locus and child fields, replacement, mutation through the binding and through the source, Int and String fields, a nested struct, a local-to-local copy.
+### An omitted `run` is an empty `run` (GH #735)
+
+- `crates/hale-syntax/src/desugar.rs` (`desugar_omitted_run`, called from codegen beside the topic desugars): every locus that declares no `run()` gets an empty one, so the two spellings lower identically. The visible change is for a flow child — a type some parent `release`s — that declared no `run`: it is now reclaimed (released, dissolved) when its empty run completes, right after its birth, exactly as one with a written `run() { }` is, instead of living until its owner's `run` returned. The ruling of 2026-09-20 on the issue. Residents are unaffected; an empty run that is not a flow's is still elided. Spec: `spec/semantics.md` under `run()`. Test: `tests/hale/omitted_run_is_empty_run_test.hl`, the issue's paired owners, asserting the same counts.
+### A bare fallible stdlib call is a warning, and `--strict-fallible` makes it an error (GH #738)
+
+- `crates/hale-types/src/bare_fallible.rs` (new), `hale check`: a call to a stdlib entry point the signature table marks `fallible`, with no `or`, is reported — the callee, its payload, and the four dispositions that address it (`or raise`, `or <fallback>`, `or discard`, `or handler(err)`). A warning by default; an error under `hale check --strict-fallible` (the `--strict-secret` shape); `hale verify` fails on it as on every advisory. The typing of the bare call is unchanged: it keeps the legacy form (the success value, or an Int status for a write) and `hale build` lowers it as before. The ruling of 2026-09-20, staged: **the default becomes an error at the next minor.** Migration: add the disposition you mean — `or discard` where the failure is deliberately ignored, `or raise` where it should propagate, `or <fallback>` or `or handler(err)` where it is handled — and keep `let r: Int = write_file(…)` only until then. The inventory is the table's own rows with a payload (94 today).
+- `crates/hale-stdlib/hl/text.hl`: the stdlib's three bare appends say `or discard`. Spec: `spec/semantics.md` § "A bare stdlib call is a warning, then an error". Book: `docs/src/basics/fallible.md` § "The bare form, and `--strict-fallible`". Test: `crates/hale-cli/tests/check_strict_fallible.rs` — unhandled (warning, then error under the flag, and a verify failure), explicitly discarded, handled, and the legacy status form.
+
+### Docs: the DNA book learns the workflow; four small rules written down
+
+- `docs/src/dna/workflow.md` (new chapter, in the under-the-hood section): what an ask becomes — the admission, definitions in code with the canonical close-month example and the limits, how an execution runs (registered member sets, attempts and their one claim, delayed replies, failure and the drain policy, cancellation), people's jobs as cases closed with `task done`, edits as Mutations bound to their attempt, what a restart keeps and how uncertain effects are reconciled, what the conformance baseline promises, and where the cockpit (GH #690) takes these surfaces. `index.md`, `working.md` (the ask), `limits.md`, `troubleshooting.md` (`[planning]`, `intent.unrecovered`, a case that waits) and `run.md` (the cockpit direction) point at it; `reference.md`'s vocabulary gains the workflow, step, attempt, work, case, `mutation.requested`, `effect.redelivered` and `lease.taken` rows.
+- GH #794: `std::process::spawn`'s documented `not_found` was not what happens — a missing argv[0] is exit 127 from `wait`, since the exec runs after `spawn` returns. The contract in `process.hl` now says so.
+- GH #737: a keyed subscription reads its key when it is registered, at construction and before `birth()`; `docs/src/services/bus.md` and `spec/semantics.md` say so and say to pass the key at the literal.
+- GH #736: flow versus resident is type-wide, imported seeds included; `docs/src/services/parents-children.md` and the spec say so.
+- GH #712: what a handler hands a resident lives for that dispatch; a resident copies it in `birth()`. Stated in the same two places. The diagnostics the three issues ask for remain open.
+- `dna/WORKFLOW-CONTRACT.md`: two references to `Metabolism` that outlived card 18 reworded.
+
+### Ownership: a handle stored into a contract-typed field is a borrow (GH #967)
+
+- `crates/hale-codegen/src/codegen.rs`: `self.<field> = <handle>` on an `interface`- or `perspective(P)`-typed field now does what a name in a field initialiser does (F.39 `Owner::Borrowed`): the child the field owned until then is reclaimed at the store (break-before-make, as a locus literal's reassignment is), the field's F.29 owned bit and GH #871 reclaim slot are cleared, and the holder's cascade leaves the handle to its owner. Before, the store was a plain value store — the slot kept naming the default's `__reclaim_<Impl>`, so the holder's teardown reclaimed whatever it had been handed (an assembly reclaimed a journal shared with the next assembly, which read freed memory; a let-bound journal was reclaimed a second time by its binding and the program segfaulted at exit) and the default leaked. `hale check` said nothing and still says nothing: the store is sound now; the lifetime question (the handle must outlive the holder, as at construction) stays GH #730's.
+- Spec: `spec/semantics.md` (the contract-typed paragraph under *Reassigning a locus-typed field*), `spec/decisions.md` F.39 (assignment follows initialisation). Regression: `crates/hale-codegen/tests/gh967_contract_field_borrow.rs` — the issue's three shapes and its let-bound crash, with the `dissolve()` hook as the oracle (the default reclaimed at the store, the borrowed impl once by its owner, a second handle releasing nothing of the first).
+
 ### musl targets: a static Linux binary from any host (GH #970, third step)
 
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` join the
@@ -152,12 +293,19 @@ foreign one was silently dropped; `hale --list-targets` listed it as
   `describe_from(host)` carry the host-relative tier;
   `TargetSpec::support()` still answers for the target alone.
 - `native`, the host's own triple, and `wasm32` build exactly as before.
+### DNA: the baseline qualified (workflow card 19)
+
+- `dna/tests/workflow_conformance_test.hl` (new): one oracle over the canonical three-level example (`dna/WORKFLOW-CONTRACT.md` §6) in every supported mode. The oracle reads the record and the adapters' own stores: the member set each step registered, each step activated and completed once, every Work settled once on an admitted attempt, one execution claim per attempt, the invocation count per attempt, the order of the record (C1 before its step, the grandchild before the child's step, the child before the root's step, D's step activated before D was claimed, the root last), and the tree reclaimed. The replies: immediate; delayed and out of order; a duplicate of a settled reply and a reply from another identity; a stale reply for a retried-past attempt; a failed grandchild whose ancestors fail while an outstanding leaf keeps its responsibility (the failed-grandchild test the assessment's inconclusive probe asked for); a cancellation reaching the grandchild's leaf. The modes: one memory in process (repeated completed runs leave nothing alive); a git record with a restart mid-flight (pending attempts redelivered under their ids, each redelivery recorded, completed members never run again) and a reboot of the completed record (no row, no adapter asked); two memories reconstructed mid-flight (every fact of the tree is the ledger's; the order holds; a restart over the pair continues exactly); a leased record fenced by a takeover.
+- `dna/tests/conformance/runner.hl` (new): the real process-stop boundary — the public assembly (`Dna.run_workflow` over a `GitJournal`, a durable service adapter whose store is a file), built by the fixture with the `hale` under test and run as a separate process, killed with SIGKILL after C1's attempt was admitted, after it was claimed, and after its adapter recorded the effect but before the outcome landed; each restart resumes the admitted root, keeps the one admission and one claim, records the redelivery once, takes the adapter's store as the outcome (C1 performed once), runs D once and settles the root last; the completed record rebooted runs nothing.
+- `spec/dna.md` ("Workflow execution: the baseline"), `dna/WORKFLOW-CONTRACT.md` (§6 results as rows, §11 proof rows for the baseline, the process boundary and exactly-once-apart-from-reconciliation; the "delivery across off-thread bindings" row closed), `dna/FRICTION.md` (F.15 FIXED: the engine is the shape that answers it), `docs/src/dna/reference.md`: the supported delivery, failure, cancellation, restart, fencing and reclamation semantics stated as measured.
+- Review round 1: the fixture and the runner declare a unix listen binding on `dna::IntentOffered`, so the oracle runs under the bound organism's queued bus; each of the five steps, three executions and four leaves is checked on its own (registered, activated and completed exactly once, its exact member set, the leaf claimed after its step activated and settled before it completed), and the runner's record is verified by the same oracle as every in-process mode, after the completed record was asked for its root once more and nothing ran.
+- `dna/tests/workflow_public_admission_test.hl`: the waits for an attempt's claim read its `effect.requested` row (there is no `attempt.claimed` kind), and a wait that runs out fails the test instead of timing out silently; the same rule in the conformance fixture.
 
 ### DNA: the public admission runs in the one engine (workflow card 18)
 
 - **Hard cutover, by ruling** (no backwards compatibility; no old records to care about): `Dna.ask(Intent)` admits a workflow for the intent (`workflow.admitted` under the intent's id as the admission's identity — offered again, the same execution) and runs it in the engine the assembly now owns for its scope (`runtime`, `executions`, born with it under `org_id`; `runs_engine: false` for a program that assembles them itself). Where the organism plans, the leader's word comes first and is bound into the admission's inputs — the objective, the kind, the class applied, the target, whom and under what obligation — so a person's job is admitted under `ask-person` (one human leaf, handed to whom the leader named with no second word asked) and anything else under `ask-edit` (one edit leaf, performed by the assembly's editor under the bound class and target); class `organization` for a child that is not the organism is refused before admission. Without a leader the ask is an application change. `Dna.run_workflow(WorkflowAsk)` is the authored-definition API: the admission (card 07) followed by the start.
 - **Deleted, not adapted**: `process.hl` (`Knobs`, `Attempt`, `Work`, `Step`, `Workflow`, `Task`, `Metabolism`), the routed exchange (`WorkRequested`, `WorkDone`, `TaskSettled`), the `WorkSystem`'s own retry loop and its counters (`max_attempts`, `requests`, `attempts_made`, `last_history`; the engine admits each attempt under the leaf's allowance and the router performs one), the `Settled` type, and the legacy recovery (`resume_work`, `pend_born_tasks`, `execute_plan`, `on_work_requested`, `on_task_settled`, `settle_task_of`, `task.pending` / `task.planned` / `task.resumed` rows). A restart asks the engine again for every admitted root of this owner's not yet settled; a Task with no admission is left where it is; an intent with no admission is noted once (`intent.unrecovered`). The `WorkSystem`'s `human` and `edit` performers are the assembly's relays (`HumanRelay`, `EditRelay`), scoped at the assembly's birth (`bind_scope`). The host's projection reads `workflow.settled` as an execution's terminal state. `status()` reports `executions_asked` / `executions_settled` instead of the tower's counters.
-- **Fixtures**: `fanout_join_test.hl`, `performers_test.hl` and `recursion_settlement_test.hl` (the in-tower controls) are gone; `workflow_public_admission_test.hl` runs intent through the membrane into the engine (no legacy row, the same intent again the same execution), the leader's word once for a person's job completed through the record, a restart that asks again and plans nothing while leaving a row of the old shape alone, and the authored-definition API with a delayed performer (the second step waits for the first's replies; seven attempts, one settlement). The contract's compatibility section records the ruling. Review: a performer kind is named for the exact Work (its bound id) and resolved by it, never by a member key two Works may share; a restart asks the engine again for a settled root whose tree still owes a Work settlement (a cancellation settles the root first), the engine counting the responsibilities outstanding anywhere in the tree — Works, and admitted children not yet settled, before their first attempt or after their last Work — so a cancelled parent drains its child, a reborn child reading its ancestor's cancellation from the record at its own state question (a fence published before it existed reached nobody) and settling itself cancelled, and a drained record is asked for nothing; the host's answer to `hale dna ask` is the execution whose admission names the ask, never the next birth in the record. The retained acceptance gates (`dna_run`, `dna_task_done`, `dna_twelve_steps`, `books_slice_test.hl`, `b1_team_test.hl`, `membrane_loss_test.hl`) read the engine's rows and the case ids.
+- **Fixtures**: `fanout_join_test.hl`, `performers_test.hl` and `recursion_settlement_test.hl` (the in-tower controls) are gone; `workflow_public_admission_test.hl` runs intent through the membrane into the engine (no legacy row, the same intent again the same execution), the leader's word once for a person's job completed through the record, a restart that asks again and plans nothing while leaving a row of the old shape alone, and the authored-definition API with a delayed performer (the second step waits for the first's replies; seven attempts, one settlement). The contract's compatibility section records the ruling. Review: a performer kind is named for the exact Work (its bound id) and resolved by it, never by a member key two Works may share; a restart asks the engine again for a settled root whose tree still owes a Work settlement (a cancellation settles the root first), the engine counting the responsibilities outstanding anywhere in the tree — Works, and admitted children not yet settled, before their first attempt or after their last Work — so a cancelled parent drains its child, a reborn child reading its ancestor's cancellation from the record at its own state question (a fence published before it existed reached nobody) and settling itself cancelled, and a drained record is asked for nothing; the host's answer to `hale dna task create` is the execution whose admission names the ask, never the next birth in the record. The retained acceptance gates (`dna_run`, `dna_task_done`, `dna_twelve_steps`, `books_slice_test.hl`, `b1_team_test.hl`, `membrane_loss_test.hl`) read the engine's rows and the case ids.
 
 
 ### DNA: the workflow resumes from accepted human completion (workflow card 17)

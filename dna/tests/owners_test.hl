@@ -78,7 +78,7 @@ main locus App {
         std::io::fs::mkdir(app + "/.hale/dna") or discard;
         std::io::fs::write_file(app + "/.hale/dna/hale-dna.intent.offered.sock", "") or discard;
         std::io::fs::write_file(app + "/.hale/dna/hale-dna.review.verdict.sock", "") or discard;
-        let asked = in_dir(app, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/collections\n--as\nalice\ncall the agency about the late invoice");
+        let asked = in_dir(app, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/collections\n--as\nalice\ncall the agency about the late invoice");
         std::test::assert_eq_int(asked.code, 0, "the ask is taken: " + asked.stdout + asked.stderr);
         std::test::assert(std::str::contains(asked.stdout, "requested in the record for its owner's controller") && std::str::contains(asked.stdout, "owned by north, not acme"), "…into the record, naming whose it is: " + asked.stdout);
         let row = self.last(app, "intent.requested");
@@ -96,7 +96,7 @@ main locus App {
         // ---- an ask for acme's own position from north's clone goes to the record too
         let c5 = in_dir(other, "git\nconfig\nuser.name\nbob");
         let c6 = in_dir(other, "git\nconfig\nuser.email\nbob@n");
-        let asked2 = in_dir(other, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nbob\nclose the books");
+        let asked2 = in_dir(other, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nbob\nclose the books");
         std::test::assert(asked2.code == 0 && std::str::contains(asked2.stdout, "owned by acme, not north"), "from north's clone, acme's position is acme's to admit: " + asked2.stdout + asked2.stderr);
         dna::scratch_done(scratch);
     }

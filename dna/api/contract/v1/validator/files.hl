@@ -1,0 +1,386 @@
+// File-level checks deliberately cover this contract's routes and local schema
+// links, not the whole OpenAPI specification.
+locus ContractFiles {
+    params { root: String = "dna/api/contract/v1"; }
+    fn responses(operation: String, schema: String, name: String, label: String, submitted: Bool) -> ValidationResult {
+        let rules = ContractSchema { document: schema };
+        let responses = std::json::find_field_raw(operation, "responses");
+        let recorded = submitted && name == "KnowledgeCommandResponse";
+        let success = if recorded { "202" } else { "200" };
+        if rules.kind(operation) != "object" || rules.kind(responses) != "object" || len(std::json::find_field_raw(responses, success)) == 0 { return ValidationResult { error: "OpenAPI: operation must declare its " + success + " response at " + label }; }
+        if recorded && len(std::json::find_field_raw(responses, "200")) > 0 { return ValidationResult { error: "OpenAPI: Knowledge submission returns only a recorded 202 receipt" }; }
+        if submitted && len(std::json::find_field_raw(responses, "202")) == 0 { return ValidationResult { error: "OpenAPI: command submission must declare its 202 response" }; }
+        let mut entries = std::json::object_first(responses);
+        while !entries.done {
+            let status = std::json::obj_key_string(entries, responses);
+            if status == "202" && !submitted { return ValidationResult { error: "OpenAPI: only command submission declares 202" }; }
+            let response = std::json::obj_value_raw(entries, responses);
+            let content = std::json::find_field_raw(response, "content");
+            let media = std::json::find_field_raw(content, "application/json");
+            let target = std::json::find_string_field(std::json::find_field_raw(media, "schema"), "$ref");
+            let wanted = if status == "200" || status == "202" { name } else { "ErrorResponse" };
+            if target != "./schema.json#/$defs/" + wanted || len(rules.definition(wanted)) == 0 { return ValidationResult { error: "OpenAPI: unresolved or incorrect response reference at " + label + " " + status }; }
+            entries = std::json::object_next(entries, responses);
+        }
+        return ValidationResult { ok: true };
+    }
+    fn command_parameters(operation: String, schema: String, submitted: Bool, request_name: String) -> ValidationResult {
+        let rules = ContractSchema { document: schema };
+        let parameters = std::json::find_field_raw(operation, "parameters");
+        if rules.kind(parameters) != "array" { return ValidationResult { error: "OpenAPI: command parameters must be an array" }; }
+        let mut entries = std::json::array_first(parameters);
+        let mut origin = false;
+        let mut header = false;
+        let mut request_id = false;
+        while !entries.done {
+            let parameter = entries.element;
+            let name = std::json::find_string_field(parameter, "name");
+            let place = std::json::find_string_field(parameter, "in");
+            if std::json::find_field_raw(parameter, "required") != "true" { return ValidationResult { error: "OpenAPI: command parameters must be required" }; }
+            let shape = std::json::find_field_raw(parameter, "schema");
+            if std::json::find_string_field(shape, "type") != "string" { return ValidationResult { error: "OpenAPI: command parameters must be strings" }; }
+            if submitted && name == "Origin" && place == "header" && !origin {
+                origin = true;
+            } else if submitted && name == "X-Hale-Command" && place == "header" && !header && std::json::find_string_field(shape, "const") == "1" {
+                header = true;
+            } else if !submitted && name == "request_id" && place == "query" && !request_id {
+                request_id = true;
+            } else { return ValidationResult { error: "OpenAPI: unexpected or duplicate command parameter" }; }
+            entries = std::json::array_next(entries);
+        }
+        if submitted && (!origin || !header) { return ValidationResult { error: "OpenAPI: command submission requires Origin and X-Hale-Command" }; }
+        if !submitted && !request_id { return ValidationResult { error: "OpenAPI: command recovery requires request_id" }; }
+        if submitted {
+            let body = std::json::find_field_raw(operation, "requestBody");
+            let content = std::json::find_field_raw(body, "content");
+            let media = std::json::find_field_raw(content, "application/json");
+            let reference = std::json::find_string_field(std::json::find_field_raw(media, "schema"), "$ref");
+            if std::json::find_field_raw(body, "required") != "true" || reference != "./schema.json#/$defs/" + request_name || len(rules.definition(request_name)) == 0 { return ValidationResult { error: "OpenAPI: command request needs its required operation-specific JSON envelope reference" }; }
+        } else if len(std::json::find_field_raw(operation, "requestBody")) > 0 { return ValidationResult { error: "OpenAPI: command recovery cannot declare a request body" }; }
+        return ValidationResult { ok: true };
+    }
+    fn knowledge_capability_parameters(operation: String) -> ValidationResult {
+        let rules = ContractSchema { document: "{}" };
+        let parameters = std::json::find_field_raw(operation, "parameters");
+        if rules.kind(parameters) != "array" || len(std::json::find_field_raw(operation, "requestBody")) > 0 { return ValidationResult { error: "OpenAPI: Knowledge capability has only an optional operation query and no body" }; }
+        let first = std::json::array_first(parameters);
+        if first.done || !std::json::array_next(first).done { return ValidationResult { error: "OpenAPI: Knowledge capability describes exactly one optional operation" }; }
+        let p = first.element; let shape = std::json::find_field_raw(p, "schema");
+        if std::json::find_string_field(p, "name") != "operation" || std::json::find_string_field(p, "in") != "query" || std::json::find_field_raw(p, "required") != "false" || std::json::find_string_field(shape, "type") != "string" { return ValidationResult { error: "OpenAPI: Knowledge capability operation is an optional string query" }; }
+        let values = std::json::find_field_raw(shape, "enum");
+        if rules.kind(values) != "array" { return ValidationResult { error: "OpenAPI: Knowledge capability must enumerate supported operations" }; }
+        let expected = "dna.knowledge.edge.link dna.knowledge.edge.unlink dna.knowledge.node.propose dna.knowledge.node.revise dna.knowledge.node.retire dna.knowledge.binding.bind dna.knowledge.binding.unbind";
+        let mut entries = std::json::array_first(values); let mut index = 0;
+        while !entries.done {
+            let mut rest = expected; let mut n = 0;
+            while n < index { let cut = std::str::index_of(rest, " "); rest = if cut < 0 { "" } else { rest[(cut + 1)..len(rest)] }; n = n + 1; }
+            let cut = std::str::index_of(rest, " "); let wanted = if cut < 0 { rest } else { rest[0..cut] };
+            if index >= 7 || rules.string(entries.element) != wanted { return ValidationResult { error: "OpenAPI: Knowledge capability operation set differs from the adapter" }; }
+            index = index + 1; entries = std::json::array_next(entries);
+        }
+        if index != 7 { return ValidationResult { error: "OpenAPI: Knowledge capability operation set differs from the adapter" }; }
+        return ValidationResult { ok: true };
+    }
+    fn candidate_parameters(operation: String, snapshot_required: Bool) -> ValidationResult {
+        let rules = ContractSchema { document: "{}" }; let parameters = std::json::find_field_raw(operation, "parameters");
+        if rules.kind(parameters) != "array" || len(std::json::find_field_raw(operation, "requestBody")) > 0 { return ValidationResult { error: "OpenAPI: candidate read requires exact identity and snapshot without a body" }; }
+        let mut id = false; let mut snapshot = false; let mut entries = std::json::array_first(parameters);
+        while !entries.done {
+            let p = entries.element; let shape = std::json::find_field_raw(p, "schema"); let name = std::json::find_string_field(p, "name");
+            if std::json::find_string_field(p, "in") != "query" || std::json::find_field_raw(p, "required") != (if name == "snapshot" && !snapshot_required { "false" } else { "true" }) || std::json::find_string_field(shape, "type") != "string" { return ValidationResult { error: "OpenAPI: candidate query fields are required strings" }; }
+            if name == "id" && !id { id = true; } else if name == "snapshot" && !snapshot { snapshot = true; } else { return ValidationResult { error: "OpenAPI: unexpected or duplicate candidate query field" }; }
+            entries = std::json::array_next(entries);
+        }
+        return ValidationResult { ok: id && snapshot, error: if id && snapshot { "" } else { "OpenAPI: candidate read requires id and snapshot" } };
+    }
+    fn draft_parameters(operation: String, schema: String, request_name: String) -> ValidationResult {
+        let rules = ContractSchema { document: schema };
+        let parameters = std::json::find_field_raw(operation, "parameters");
+        if rules.kind(parameters) != "array" { return ValidationResult { error: "OpenAPI: draft headers must be an array" }; }
+        let mut origin = false; let mut marker = false; let mut length = false;
+        let mut entries = std::json::array_first(parameters);
+        while !entries.done {
+            let parameter = entries.element;
+            let shape = std::json::find_field_raw(parameter, "schema");
+            if std::json::find_string_field(parameter, "in") != "header" || std::json::find_field_raw(parameter, "required") != "true" || std::json::find_string_field(shape, "type") != "string" { return ValidationResult { error: "OpenAPI: draft headers must be required strings" }; }
+            let name = std::json::find_string_field(parameter, "name");
+            if name == "Origin" && !origin { origin = true; }
+            else if name == "X-Hale-Command" && !marker && std::json::find_string_field(shape, "const") == "1" { marker = true; }
+            else if name == "Content-Length" && !length { length = true; }
+            else { return ValidationResult { error: "OpenAPI: unexpected or duplicate draft header" }; }
+            entries = std::json::array_next(entries);
+        }
+        if !origin || !marker || !length { return ValidationResult { error: "OpenAPI: draft requires Origin, intent and unambiguous length" }; }
+        let body = std::json::find_field_raw(operation, "requestBody");
+        let content = std::json::find_field_raw(body, "content");
+        let media = std::json::find_field_raw(content, "application/json");
+        if std::json::find_field_raw(body, "required") != "true" || std::json::find_string_field(std::json::find_field_raw(media, "schema"), "$ref") != "./schema.json#/$defs/" + request_name || len(rules.definition(request_name)) == 0 { return ValidationResult { error: "OpenAPI: draft needs its required closed JSON request" }; }
+        return ValidationResult { ok: true };
+    }
+    fn assignee_parameter(operation: String, tasks: Bool) -> ValidationResult {
+        let parameters = std::json::find_field_raw(operation, "parameters"); let mut entries = std::json::array_first(parameters); let mut seen = false;
+        while !entries.done {
+            let p = entries.element;
+            if std::json::find_string_field(p, "name") == "assignee" {
+                let shape = std::json::find_field_raw(p, "schema");
+                if !tasks || seen || std::json::find_string_field(p, "in") != "query" || std::json::find_field_raw(p, "required") != "false"
+                    || std::json::find_string_field(shape, "type") != "string" || std::json::find_field_raw(shape, "minLength") != "1" || std::json::find_field_raw(shape, "maxLength") != "256" { return ValidationResult { error: "OpenAPI: assignee is one optional bounded exact Task query only" }; }
+                seen = true;
+            }
+            entries = std::json::array_next(entries);
+        }
+        return ValidationResult { ok: !tasks || seen, error: if tasks && !seen { "OpenAPI: Task reads require the exact assignee filter contract" } else { "" } };
+    }
+    // The head reads: `/head` takes no query; `/head/projects` one optional
+    // string `id`; `/head/logs` optional `run` (string), `child` (the three
+    // children) and `offset` (integer). Never a body.
+    fn head_parameters(operation: String, path: String) -> ValidationResult {
+        let rules = ContractSchema { document: "{}" };
+        let parameters = std::json::find_field_raw(operation, "parameters");
+        if len(std::json::find_field_raw(operation, "requestBody")) > 0 { return ValidationResult { error: "OpenAPI: a head read has no request body" }; }
+        let allowed = if path == "/api/hale/v1/head/projects" { " id " } else if path == "/api/hale/v1/head/logs" { " run child offset " } else { " " };
+        if len(parameters) == 0 { return ValidationResult { ok: allowed == " ", error: if allowed == " " { "" } else { "OpenAPI: head read must declare its optional query fields" } }; }
+        if rules.kind(parameters) != "array" { return ValidationResult { error: "OpenAPI: head parameters must be an array" }; }
+        let mut seen = " ";
+        let mut entries = std::json::array_first(parameters);
+        while !entries.done {
+            let p = entries.element; let shape = std::json::find_field_raw(p, "schema"); let name = std::json::find_string_field(p, "name");
+            if !std::str::contains(allowed, " " + name + " ") || std::str::contains(seen, " " + name + " ") || std::json::find_string_field(p, "in") != "query" || std::json::find_field_raw(p, "required") != "false" { return ValidationResult { error: "OpenAPI: unexpected, duplicate or required head query field at " + path }; }
+            let wanted = if name == "offset" { "integer" } else { "string" };
+            if std::json::find_string_field(shape, "type") != wanted { return ValidationResult { error: "OpenAPI: head query field " + name + " must be a " + wanted }; }
+            if name == "child" && rules.kind(std::json::find_field_raw(shape, "enum")) != "array" { return ValidationResult { error: "OpenAPI: head log child must enumerate the three children" }; }
+            seen = seen + name + " ";
+            entries = std::json::array_next(entries);
+        }
+        if path == "/api/hale/v1/head/projects" && !std::str::contains(seen, " id ") { return ValidationResult { error: "OpenAPI: the projects read declares its optional id" }; }
+        if path == "/api/hale/v1/head/logs" && (!std::str::contains(seen, " run ") || !std::str::contains(seen, " child ") || !std::str::contains(seen, " offset ")) { return ValidationResult { error: "OpenAPI: the logs read declares run, child and offset" }; }
+        return ValidationResult { ok: true };
+    }
+    fn openapi(spec: String, schema: String) -> ValidationResult {
+        let syntax = JsonSyntax { };
+        if !syntax.valid(spec) { return ValidationResult { error: "OpenAPI: invalid JSON" }; }
+        if std::json::find_string_field(spec, "openapi") != "3.1.0" { return ValidationResult { error: "OpenAPI: expected 3.1.0" }; }
+        let paths = std::json::find_field_raw(spec, "paths");
+        let rules = ContractSchema { document: schema };
+        if rules.kind(paths) != "object" { return ValidationResult { error: "OpenAPI: missing paths object" }; }
+        let mut count = 0;
+        let mut routes = std::json::object_first(paths);
+        while !routes.done {
+            let path = std::json::obj_key_string(routes, paths);
+            let knowledge_command = path == "/api/hale/v1/applications/{application_id}/dna/knowledge/commands";
+            let knowledge_capability = path == "/api/hale/v1/applications/{application_id}/dna/knowledge/commands/capability";
+            let head_command = path == "/api/hale/v1/head/commands";
+            let head_read = path == "/api/hale/v1/head" || path == "/api/hale/v1/head/projects" || path == "/api/hale/v1/head/logs";
+            let command = knowledge_command || head_command || path == "/api/hale/v1/applications/{application_id}/commands";
+            let ownership_draft = path == "/api/hale/v1/applications/{application_id}/dna/organization/ownership/draft";
+            let organization_draft = ownership_draft || path == "/api/hale/v1/applications/{application_id}/dna/organization/draft";
+            let draft = path == "/api/hale/v1/applications/{application_id}/dna/definitions/draft";
+            let response_name = if knowledge_command { "KnowledgeCommandResponse" } else if head_command { "HeadCommandResponse" } else if path == "/api/hale/v1/head" { "HeadResponse" } else if path == "/api/hale/v1/head/projects" { "HeadProjectsResponse" } else if path == "/api/hale/v1/head/logs" { "HeadLogResponse" } else if knowledge_capability { "KnowledgeCommandCapabilityResponse" } else if ownership_draft { "OwnershipDraftResponse" } else if organization_draft { "OrganizationDraftResponse" } else if draft { "DefinitionDraftResponse" } else if command { "CommandResponse" } else if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews/candidate" { "ReviewCandidateResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-status" { "OrganizationSourceStatusResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-impact" { "OrganizationSourceImpactResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization" { "OrganizationResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/tasks" { "TasksResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/people" { "PersonResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/workflows" { "WorkflowsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/definitions" { "DefinitionsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/nodes" { "KnowledgeNodesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/edges" { "KnowledgeEdgesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/bindings" { "KnowledgeBindingsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/dependents" { "KnowledgeBindingsResponse" } else { "" };
+            if len(response_name) == 0 { return ValidationResult { error: "OpenAPI: unexpected route " + path }; }
+            count = count + 1;
+            let route = std::json::obj_value_raw(routes, paths);
+            if rules.kind(route) != "object" { return ValidationResult { error: "OpenAPI: path item must be an object" }; }
+            let mut fields = std::json::object_first(route);
+            while !fields.done {
+                let field = std::json::obj_key_string(fields, route);
+                if field != "parameters" && !(!draft && field == "get") && !((command || draft || organization_draft) && field == "post") { return ValidationResult { error: "OpenAPI: only declared reads and command submission are advertised" }; }
+                fields = std::json::object_next(fields, route);
+            }
+            if draft || organization_draft {
+                if organization_draft {
+                    let get = std::json::find_field_raw(route, "get");
+                    let read = self.responses(get, schema, response_name, path + " GET", false);
+                    if !read.ok { return read; }
+                    if len(std::json::find_field_raw(get, "requestBody")) > 0 { return ValidationResult { error: "OpenAPI: organization source read has no request body" }; }
+                }
+                let post = std::json::find_field_raw(route, "post");
+                let response = self.responses(post, schema, response_name, path + " POST", false);
+                if !response.ok { return response; }
+                let headers = self.draft_parameters(post, schema, if ownership_draft { "OwnershipDraftRequest" } else if organization_draft { "OrganizationDraftRequest" } else { "DefinitionDraftRequest" });
+                if !headers.ok { return headers; }
+                routes = std::json::object_next(routes, paths);
+                continue;
+            }
+            let operation = std::json::find_field_raw(route, "get");
+            let assignee = self.assignee_parameter(operation, response_name == "TasksResponse");
+            if !assignee.ok { return assignee; }
+            let read = self.responses(operation, schema, response_name, path + " GET", false);
+            if !read.ok { return read; }
+            if knowledge_capability {
+                let parameters = self.knowledge_capability_parameters(operation);
+                if !parameters.ok { return parameters; }
+            }
+            if head_read {
+                let parameters = self.head_parameters(operation, path);
+                if !parameters.ok { return parameters; }
+            }
+            if response_name == "ReviewCandidateResponse" || response_name == "OrganizationSourceStatusResponse" || response_name == "OrganizationSourceImpactResponse" {
+                let parameters = self.candidate_parameters(operation, response_name == "ReviewCandidateResponse");
+                if !parameters.ok { return parameters; }
+            }
+            if command {
+                let request_name = if knowledge_command { "KnowledgeCommandRequest" } else if head_command { "HeadCommandRequest" } else { "CommandRequest" };
+                let lookup = self.command_parameters(operation, schema, false, request_name);
+                if !lookup.ok { return lookup; }
+                let post = std::json::find_field_raw(route, "post");
+                let submitted = self.responses(post, schema, response_name, path + " POST", true);
+                if !submitted.ok { return submitted; }
+                let request = self.command_parameters(post, schema, true, request_name);
+                if !request.ok { return request; }
+            }
+            routes = std::json::object_next(routes, paths);
+        }
+        if count != 26 { return ValidationResult { error: "OpenAPI: expected seventeen read paths, two command submit/recovery paths, three draft preparation paths and four head paths" }; }
+        return ValidationResult { ok: true };
+    }
+    fn fixtures(fixtures: String, schema: String) -> ValidationResult {
+        let syntax = JsonSyntax { };
+        let rules = ContractSchema { document: schema };
+        if !syntax.valid(fixtures) || rules.kind(fixtures) != "array" { return ValidationResult { error: "fixtures: invalid JSON array" }; }
+        let validator = Validator { root: self.root };
+        // This immutable schema is shared by the whole fixture batch. Validate
+        // its complete profile once; each value and mutation still gets strict
+        // JSON validation and the same recursive schema evaluation below.
+        let profile = validator.schema_profile(schema);
+        if !profile.ok { return profile; }
+        let mut examples = std::json::array_first(fixtures);
+        let mut positive = 0;
+        let mut negative = 0;
+        let mut organization = false;
+        let mut definitions = false;
+        let mut knowledge_nodes = false;
+        let mut knowledge_edges = false;
+        let mut knowledge_bindings = false;
+        let mut knowledge_unsupported = false;
+        let mut knowledge_invalid = false;
+        let mut knowledge_command_capability = false; let mut knowledge_command_request = false; let mut knowledge_command_receipt = false; let mut knowledge_command_hidden = false; let mut knowledge_command_invalid = false;
+        let mut definitions_unsupported = false;
+        let mut definitions_invalid = false;
+        let mut legacy_capabilities = false;
+        let mut command_capabilities = false;
+        let mut command_request = false;
+        let mut command_receipt = false;
+        let mut command_unknown = false;
+        let mut command_invalid = false;
+        let mut command_unsupported = false;
+        let mut review_capabilities = false;
+        let mut review_request = false;
+        let mut review_receipt = false;
+        let mut review_unknown = false;
+        let mut review_independent = false;
+        let mut review_invalid = false;
+        let mut draft_request = false; let mut draft_valid = false; let mut draft_invalid = false; let mut draft_rejected = false;
+        let mut head_state = false; let mut head_projects = false; let mut head_command_request = false; let mut head_command_receipt = false;
+        let mut head_command_refused = false; let mut head_command_unknown = false; let mut head_command_invalid = false; let mut head_log = false;
+        let mut task_create_request = false; let mut task_create_receipt = false; let mut task_create_unknown = false; let mut task_create_invalid = false;
+        while !examples.done {
+            let example = examples.element;
+            let name = std::json::find_string_field(example, "name");
+            let definition = std::json::find_string_field(example, "schema");
+            let expected = std::json::find_field_raw(example, "valid");
+            let value = std::str::trim(std::json::find_field_raw(example, "value"));
+            if len(name) == 0 || len(rules.definition(definition)) == 0 || (expected != "true" && expected != "false") || len(value) == 0 { return ValidationResult { error: "fixtures: malformed example " + name }; }
+            let error = if !syntax.valid(value) { "response: invalid JSON or unsupported object key encoding" } else { rules.check(rules.definition(definition), value, "$", 0) };
+            let result = ValidationResult { ok: len(error) == 0, error: error };
+            if result.ok != (expected == "true") { return ValidationResult { error: "fixture " + name + ": unexpected validity: " + result.error }; }
+            if result.ok {
+                positive = positive + 1;
+                if definition == "DefinitionDraftRequest" { draft_request = true; }
+                if definition == "DefinitionDraftResponse" {
+                    let data = std::json::find_field_raw(value, "data");
+                    if std::json::find_field_raw(std::json::find_field_raw(data, "validation"), "valid") == "true" { draft_valid = true; } else { draft_invalid = true; }
+                }
+                if definition == "OrganizationResponse" { organization = true; }
+                if definition == "DefinitionsResponse" { definitions = true; }
+                if definition == "KnowledgeNodesResponse" { knowledge_nodes = true; }
+                if definition == "KnowledgeEdgesResponse" { knowledge_edges = true; }
+                if definition == "KnowledgeBindingsResponse" { knowledge_bindings = true; }
+                if definition == "KnowledgeCommandCapabilityResponse" { knowledge_command_capability = true; }
+                if definition == "KnowledgeCommandRequest" { knowledge_command_request = true; }
+                if definition == "KnowledgeCommandResponse" {
+                    knowledge_command_receipt = true;
+                    if std::json::find_field_raw(std::json::find_field_raw(value, "data"), "details_visible") == "false" { knowledge_command_hidden = true; }
+                }
+                if definition == "CapabilitiesResponse" {
+                    let data = std::json::find_field_raw(value, "data");
+                    let practice = len(std::json::find_field_raw(data, "commands")) > 0;
+                    let review = len(std::json::find_field_raw(data, "review_commands")) > 0;
+                    if !practice && !review { legacy_capabilities = true; }
+                    if practice { command_capabilities = true; }
+                    if review { review_capabilities = true; }
+                }
+                if definition == "PracticeCommandRequest" { command_request = true; }
+                if definition == "ReviewCommandRequest" { review_request = true; }
+                if definition == "HeadResponse" { head_state = true; }
+                if definition == "HeadProjectsResponse" { head_projects = true; }
+                if definition == "HeadCommandRequest" { head_command_request = true; }
+                if definition == "HeadLogResponse" { head_log = true; }
+                if definition == "HeadCommandResponse" {
+                    head_command_receipt = true;
+                    let state = std::json::find_string_field(std::json::find_field_raw(value, "data"), "state");
+                    if state == "refused" { head_command_refused = true; }
+                    if state == "outcome_unknown" { head_command_unknown = true; }
+                }
+                if definition == "TaskCreateCommandRequest" { task_create_request = true; }
+                if definition == "CommandResponse" {
+                    let data = std::json::find_field_raw(value, "data");
+                    let state = std::json::find_string_field(data, "state");
+                    if std::json::find_string_field(data, "operation") == "dna.review.verdict" {
+                        review_receipt = true;
+                        if state == "outcome_unknown" { review_unknown = true; }
+                        if state == "refused" && std::json::find_string_field(std::json::find_field_raw(data, "review"), "outcome") == "approve" { review_independent = true; }
+                    } else {
+                        command_receipt = true;
+                        if state == "outcome_unknown" { command_unknown = true; }
+                        if std::json::find_string_field(data, "operation") == "dna.task.create" {
+                            task_create_receipt = true;
+                            if state == "outcome_unknown" { task_create_unknown = true; }
+                        }
+                    }
+                }
+                if definition == "ErrorResponse" {
+                    let code = std::json::find_string_field(std::json::find_field_raw(value, "error"), "code");
+                    if code == "knowledge_unsupported" { knowledge_unsupported = true; }
+                    if code == "definitions_unsupported" { definitions_unsupported = true; }
+                    if code == "definition_invalid" { definitions_invalid = true; }
+                    if code == "commands_unsupported" { command_unsupported = true; }
+                }
+                if rules.kind(value) != "object" { return ValidationResult { error: "fixture " + name + ": payload must be an object" }; }
+                let injected = value[0..(len(value) - 1)] + ",\"actor\":\"caller-selected\"}";
+                let injected_error = if !syntax.valid(injected) { "response: invalid JSON or unsupported object key encoding" } else { rules.check(rules.definition(definition), injected, "$", 0) };
+                if len(injected_error) == 0 { return ValidationResult { error: "fixture " + name + ": payload accepted an unexplained actor" }; }
+            } else {
+                negative = negative + 1;
+                if definition == "DefinitionDraftRequest" || definition == "DefinitionDraftResponse" { draft_rejected = true; }
+                if definition == "KnowledgeNodesResponse" { knowledge_invalid = true; }
+                if definition == "KnowledgeCommandResponse" || definition == "KnowledgeCommandRequest" || definition == "KnowledgeCommandCapabilityResponse" { knowledge_command_invalid = true; }
+                if definition == "PracticeCommandRequest" || definition == "CommandResponse" { command_invalid = true; }
+                if definition == "HeadCommandRequest" || definition == "HeadCommandResponse" || definition == "HeadResponse" { head_command_invalid = true; }
+                if definition == "TaskCreateCommandRequest" || definition == "TaskCreateCommandReceipt" || definition == "TaskCreateCommandCapabilities" { task_create_invalid = true; }
+                if definition == "ReviewCommandRequest" || (definition == "CommandResponse" && std::json::find_string_field(std::json::find_field_raw(value, "data"), "operation") == "dna.review.verdict") { review_invalid = true; }
+            }
+            examples = std::json::array_next(examples);
+        }
+        if positive < 5 || negative < 4 { return ValidationResult { error: "fixtures: preserve all five positive and four negative baseline examples" }; }
+        if !organization { return ValidationResult { error: "fixtures: the declared organization response needs a positive fixture" }; }
+        if !definitions || !definitions_unsupported || !definitions_invalid { return ValidationResult { error: "fixtures: definitions need success, unsupported and invalid-catalog examples" }; }
+        if !knowledge_nodes || !knowledge_edges || !knowledge_bindings || !knowledge_unsupported || !knowledge_invalid { return ValidationResult { error: "fixtures: Knowledge needs nodes, edges, bindings, unsupported and invalid-response examples" }; }
+        if !knowledge_command_capability || !knowledge_command_request || !knowledge_command_receipt || !knowledge_command_hidden || !knowledge_command_invalid { return ValidationResult { error: "fixtures: Knowledge commands need capability, exact request, recorded and hidden receipt, and invalid shape examples" }; }
+        if !legacy_capabilities || !command_capabilities || !command_request || !command_receipt || !command_unknown || !command_invalid || !command_unsupported { return ValidationResult { error: "fixtures: preserve legacy capabilities and optional command profile, request, receipt, unknown-outcome and refusal coverage" }; }
+        if !draft_request || !draft_valid || !draft_invalid || !draft_rejected { return ValidationResult { error: "fixtures: draft needs exact request, native valid/invalid and closed-envelope rejection coverage" }; }
+        if !review_capabilities || !review_request || !review_receipt || !review_unknown || !review_independent || !review_invalid { return ValidationResult { error: "fixtures: Review commands need independent capabilities, request, receipt, unknown-outcome, per-command refusal and invalid-envelope coverage" }; }
+        if !head_state || !head_projects || !head_command_request || !head_command_receipt || !head_command_refused || !head_command_unknown || !head_command_invalid || !head_log { return ValidationResult { error: "fixtures: the head needs state, projects, request, receipt, refused, unknown-outcome, invalid-shape and log-page coverage" }; }
+        if !task_create_request || !task_create_receipt || !task_create_unknown || !task_create_invalid { return ValidationResult { error: "fixtures: raising work needs request, receipt, unknown-outcome and invalid-shape coverage" }; }
+        return ValidationResult { ok: true };
+    }
+    fn check() -> ValidationResult {
+        let schema = std::io::fs::read_file(self.root + "/schema.json") or "";
+        let validator = Validator { root: self.root };
+        let profile = validator.schema_profile(schema);
+        if !profile.ok { return profile; }
+        let spec = std::io::fs::read_file(self.root + "/openapi.json") or "";
+        let links = self.openapi(spec, schema);
+        if !links.ok { return links; }
+        return self.fixtures(std::io::fs::read_file(self.root + "/fixtures.json") or "", schema);
+    }
+}

@@ -1,0 +1,121 @@
+// Scripted boundary conformance only; this fixture does not prove persistence.
+import ".." as service;
+import "../../../dna/api/web" as assets;
+
+const APP: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const INSTANCE: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const HOST: String = "127.0.0.1:8793";
+const ORIGIN: String = "http://127.0.0.1:8793";
+
+locus ScriptedProvider {
+    params { submits: Int = 0; lookups: Int = 0; inspections: Int = 0; wrong_actor: Bool = false; corrupt_fingerprint: Bool = false; refusal: Bool = false; error: String = ""; }
+    fn application_id() -> String { return APP; }
+    fn inspect(actor: service::Actor) -> service::StateResult {
+        self.inspections = self.inspections + 1;
+        return service::StateResult { ok: true, state: service::ApplicationState { application_id: APP, name: "An ordinary Hale app · é", incarnation_id: INSTANCE, online: true, control_id: "intake", control_label: "Intake", revision: "0", value: "running", activity_label: "Accepted", activity_count: "9007199254740993", observation_tick: "1" } };
+    }
+    fn operation_count() -> Int { return 1; }
+    fn operation_at(actor: service::Actor, index: Int) -> service::Operation {
+        return service::Operation { id: "example.intake.set_mode", label: "Set intake", target_id: "intake", supported: true, available: true, authorized: true, input_label: "Mode", choices: "[{\"value\":\"running\",\"label\":\"Running\"},{\"value\":\"paused\",\"label\":\"Paused\"}]", success_meaning: "Desired configuration committed" };
+    }
+    fn submit(actor: service::Actor, command: service::Command) -> service::CommandResult {
+        self.submits = self.submits + 1;
+        if len(self.error) > 0 { return service::CommandResult { code: self.error }; }
+        let wire = service::ApplicationWire { };
+        return service::CommandResult { ok: true, status: if self.refusal { 409 } else { 200 }, code: "", receipt: service::Receipt {
+            command_id: "fixture-command", request_id: command.request_id, application_id: APP,
+            principal_mode: actor.mode, principal_name: if self.wrong_actor { "other-secret-actor" } else { actor.name },
+            operation: command.operation, operation_version: command.operation_version, target_kind: command.target_kind, target_id: command.target_id,
+            incarnation_id: command.incarnation_id, expected_revision: command.revision, value: command.value,
+            fingerprint: if self.corrupt_fingerprint { "sha256:invalid" } else { wire.fingerprint(actor, command) },
+            state: if self.refusal { "refused" } else { "succeeded" }, reason: if self.refusal { "stale_revision" } else { "" },
+            changed: !self.refusal, resulting_revision: if self.refusal { "7" } else { "1" }, resulting_value: if self.refusal { "running" } else { command.value }
+        } };
+    }
+    fn lookup(actor: service::Actor, request_id: String) -> service::CommandResult {
+        self.lookups = self.lookups + 1;
+        return service::CommandResult { status: 404, code: "command_not_found" };
+    }
+}
+
+locus Cases {
+    params { provider: ScriptedProvider = ScriptedProvider { }; }
+    fn body() -> String {
+        return "{\"request_id\":\"request-1\",\"operation\":\"example.intake.set_mode\",\"operation_version\":\"1\",\"context\":{\"application_id\":\"" + APP + "\"},\"target\":{\"application_id\":\"" + APP + "\",\"kind\":\"application.control\",\"id\":\"intake\"},\"preconditions\":{\"incarnation_id\":\"" + INSTANCE + "\",\"revision\":\"0\",\"principal\":{\"mode\":\"trusted_local\",\"name\":\"operator\"}},\"arguments\":{\"value\":\"paused\"}}";
+    }
+    fn headers(body: String) -> String { return "Host: " + HOST + "\r\nOrigin: " + ORIGIN + "\r\nContent-Type: application/json\r\nX-Iris-Command: 1\r\nContent-Length: " + to_string(len(body)); }
+    fn call(method: String, suffix: String, headers: String, body: String) -> std::http::Response {
+        let web = assets::WebAssets { };
+        let api = service::ApplicationApi { actor: service::Actor { name: "operator" }, provider: self.provider, application_id: APP, host: HOST, origin: ORIGIN, web: web };
+        return api.handle(std::http::Request { method: method, path: service::APPLICATION_PREFIX + "/" + APP + suffix, headers: headers, body: body });
+    }
+    fn rejected(body: String, expected: Int, label: String) {
+        let before = self.provider.submits;
+        let result = self.call("POST", "/commands", self.headers(body), body);
+        std::test::assert_eq_int(result.status, expected, label);
+        std::test::assert_eq_int(self.provider.submits, before, label + " never submits");
+    }
+    fn run_cases() {
+        let wire = service::ApplicationWire { }; let body = self.body();
+        std::test::assert(wire.parse(body, APP).valid, "strict valid request");
+        std::test::assert(!wire.actor_ok(service::Actor { name: "two words" }), "principal name follows the same safe identifier profile");
+        std::test::assert(wire.decimal("9223372036854775807"), "maximum Int64 is exact");
+        std::test::assert(!wire.decimal("9223372036854775808"), "Int64 overflow rejected");
+        let mut impossible = self.provider.inspect(service::Actor { name: "operator" }).state;
+        impossible.effective_revision = "1"; impossible.effective_value = "paused";
+        std::test::assert(!wire.state_ok(impossible, APP), "effective revision cannot exceed committed revision");
+        impossible.effective_revision = "0";
+        std::test::assert(!wire.state_ok(impossible, APP), "same effective revision cannot contradict committed value");
+        let mut observed = self.provider.inspect(service::Actor { name: "operator" }).state;
+        observed.runtime_pid = "12"; observed.runtime_process_key = APP; observed.online = true;
+        std::test::assert(wire.state_ok(observed, APP), "well formed online association");
+        std::test::assert(std::str::contains(wire.state(observed), "hale.iris.process.v1"), "association has an explicit profile");
+        observed.online = false;
+        std::test::assert(!wire.state_ok(observed, APP), "offline association rejected");
+        observed.online = true; observed.runtime_process_key = "pid:12";
+        std::test::assert(!wire.state_ok(observed, APP), "PID-only association rejected");
+        observed.runtime_process_key = "";
+        std::test::assert(!std::str::contains(wire.state(observed), "hale.iris.process.v1"), "missing key never falls back to PID");
+        self.rejected(std::str::replace(body, "\"request_id\":", "\"extra\":0,\"request_id\":"), 400, "extra mutation field");
+        self.rejected(std::str::replace(body, "\"request_id\":", "\"request_id\":\"duplicate\",\"request_id\":"), 400, "duplicate key");
+        self.rejected(std::str::replace(body, "request_id", "request_\\u0069d"), 400, "escaped key");
+        self.rejected(std::str::replace(body, "paused", "pa\\u0000used"), 400, "escaped NUL");
+        self.rejected(std::str::replace(body, "\"revision\":\"0\"", "\"revision\":0"), 400, "revision must remain text");
+        self.rejected(std::str::replace(body, "operator", "different"), 409, "expected actor fence");
+        self.rejected(std::str::replace(body, "example.intake.set_mode", "unregistered.operation"), 400, "unregistered operation");
+        self.rejected(std::str::replace(body, "paused", "not-a-choice"), 400, "invalid enum value");
+        let headers = self.headers(body); let before = self.provider.submits;
+        std::test::assert_eq_int(self.call("POST", "/commands", headers + "\r\nOrigin: " + ORIGIN, body).status, 400, "duplicate origin");
+        std::test::assert_eq_int(self.call("POST", "/commands", headers + "\r\nContent-Length: " + to_string(len(body)), body).status, 400, "duplicate body length");
+        std::test::assert_eq_int(self.call("POST", "/commands", headers + "\r\nTransfer-Encoding: chunked", body).status, 400, "no alternate framing");
+        std::test::assert_eq_int(self.call("POST", "/commands", std::str::replace(headers, "Content-Length: " + to_string(len(body)), "Content-Length: 2"), body).status, 400, "transport length must match");
+        std::test::assert_eq_int(self.call("POST", "/commands", std::str::replace(headers, "Origin: " + ORIGIN, "Origin: http://foreign.invalid"), body).status, 403, "foreign origin");
+        std::test::assert_eq_int(self.call("GET", "/state", "Host: foreign.invalid", "").status, 403, "foreign host");
+        std::test::assert_eq_int(self.provider.submits, before, "header errors never dispatch");
+        let state = self.call("GET", "/state", "Host: " + HOST, "");
+        std::test::assert_eq_int(state.status, 200, "ordinary Hale state");
+        std::test::assert(std::str::contains(state.body, "9007199254740993") && !std::str::contains(state.body, "record_id"), "exact state has no DNA source");
+        std::test::assert_eq_int(self.call("POST", "/commands", headers, body).status, 200, "validated success receipt");
+        self.provider.refusal = true;
+        let refused = self.call("POST", "/commands", headers, body);
+        std::test::assert_eq_int(refused.status, 409, "retained refusal remains conflict");
+        std::test::assert(std::str::contains(refused.body, "\"receipt\"") && std::str::contains(refused.body, "stale_revision"), "refusal retains its receipt");
+        self.provider.refusal = false; self.provider.wrong_actor = true;
+        let wrong = self.call("POST", "/commands", headers, body);
+        std::test::assert_eq_int(wrong.status, 503, "mismatched receipt withheld");
+        std::test::assert(!std::str::contains(wrong.body, "other-secret-actor"), "invalid provider body is not leaked");
+        self.provider.wrong_actor = false; self.provider.corrupt_fingerprint = true;
+        std::test::assert_eq_int(self.call("POST", "/commands", headers, body).status, 503, "fingerprint contradiction withheld");
+        self.provider.corrupt_fingerprint = false; self.provider.error = "private_database_path";
+        let unavailable = self.call("POST", "/commands", headers, body);
+        std::test::assert_eq_int(unavailable.status, 503, "unknown provider errors sanitized");
+        std::test::assert(!std::str::contains(unavailable.body, "private_database_path"), "no internal error leak");
+        std::test::assert_eq_int(self.call("GET", "/commands?request_id=request%2D1", "Host: " + HOST, "").status, 404, "encoded request identity recovery");
+        std::test::assert_eq_int(self.provider.lookups, 1, "lookup dispatch exact once");
+        std::test::assert_eq_int(self.call("GET", "/commands?request_id=request-1&extra=x", "Host: " + HOST, "").status, 400, "lookup rejects extra fields");
+        let web = assets::WebAssets { enabled: true, app: "public fixture" };
+        let api = service::ApplicationApi { actor: service::Actor { name: "operator" }, provider: self.provider, application_id: "unavailable", host: HOST, origin: ORIGIN, web: web };
+        std::test::assert_eq_int(api.handle(std::http::Request { method: "GET", path: "/app.js", headers: "Host: " + HOST }).status, 200, "public shell does not consult provider identity");
+    }
+}
+fn main() { let cases = Cases { }; cases.run_cases(); }

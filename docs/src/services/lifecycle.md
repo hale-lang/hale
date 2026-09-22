@@ -32,6 +32,10 @@ locus Server {
 - **`run()`** is the steady-state body — typically a loop that
   serves requests, drains a queue, or ticks on a timer. It runs
   until it returns on its own or the locus is asked to shut down.
+  A locus that declares no `run()` has an empty one — the two
+  spellings are the same program — so a flow child with no `run`
+  is released as soon as its `birth()` completes, exactly as one
+  written `run() { }` is.
 - **`drain()`** runs when shutdown begins: stop accepting new
   work, let in-flight work finish.
 - **`dissolve()`** runs last: release what `birth` acquired. The
@@ -242,7 +246,23 @@ level's arena is gone. The exception is a handle you pass *in* —
 `Mid { leaf: shared }` borrows `shared`, so the cascade steps over
 it at whatever depth it sits, and `shared` is released once, by the
 scope that made it. A call that hands back a locus it didn't build
-is the same borrow, written as a call.
+is the same borrow, written as a call. So is a handle you store
+*later*: `self.journal = shared` on a field typed by an `interface`
+or a `perspective(P)` reclaims whatever the field held until then
+and borrows `shared`, exactly as the literal would have. And an
+interface value handed to a field of the same interface — `Attempt {
+performer: self.performer }`, both `Performer` — flows in as itself,
+borrowed; no impl is built, and none is owned.
+
+A borrow has to outlive its holder, and `hale check` refuses the
+positions where it cannot: a `let` of the current frame, or a
+handler's payload, stored into a child of `self`; a field of `self`
+or a frame `let` into a literal you `return`; a `let` of an inner
+block into an outer binding; and a parameter, when any caller hands
+it something of the caller's own frame — the refusal names that call
+site. The one allowance is a handle the holder reads only in
+`birth()`: it copies what it needs while the handle is live, and
+never touches it again.
 
 **How the field is declared doesn't change the answer.** A param
 typed by an `interface` the child satisfies, or by a

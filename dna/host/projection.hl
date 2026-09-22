@@ -3,6 +3,7 @@
 // it, and the surface and iris render it (GH #566 F8).
 
 import "../core" as dna;
+import "../operations" as ops;
 
 type TaskRow {
     id: String = "";
@@ -218,42 +219,33 @@ locus Projection {
     }
     @unbounded
     fn review_of(id: String) -> ReviewRow {
-        let mut r = ReviewRow { };
-        let mut i = 0;
-        while i < self.rows() {
-            let e = self.row(i);
-            if self.review_id_of(e) == id {
-                if e.kind == "review.requested" {
-                    let b = e.body;
-                    let mid = std::json::find_string_field(b, "mutation_id");
-                    r = ReviewRow {
-                        id: id, state: "pending",
-                        question: std::json::find_string_field(b, "question"),
-                        required_authority: std::json::find_string_field(b, "required_authority"),
-                        subject_digest: std::json::find_string_field(b, "subject_digest"),
-                        mutation_id: mid, is_mutation: len(mid) > 0,
-                        group: std::json::find_string_field(b, "group"),
-                        change_class: std::json::find_string_field(b, "change_class"),
-                        seed: std::json::find_string_field(b, "seed"),
-                        disposition: std::json::find_string_field(b, "disposition"),
-                        base_commit: std::json::find_string_field(b, "base_commit"),
-                        candidate_commit: std::json::find_string_field(b, "candidate_commit"),
-                        candidate_shape: std::json::find_string_field(b, "candidate_shape"),
-                        evidence: std::json::find_string_field(b, "evidence"),
-                        magnitude_raw: std::json::find_field_raw(b, "magnitude"),
-                        diff_text: std::json::find_string_field(b, "diff_text"),
-                        diff_json: std::json::find_string_field(b, "diff_json"),
-                        author: std::json::find_string_field(b, "author")
-                    };
-                } else if len(r.id) > 0 {
-                    if e.kind == "review.settled" { r.state = "settled"; r.settled = e.body; }
-                    if e.kind == "review.reasoned" { r.reasoned = e.body; r.has_reasoned = true; }
-                    if e.kind == "review.refused" { r.refusals = r.refusals + e.body + "\n"; r.refusal_count = r.refusal_count + 1; }
-                }
-            }
-            i = i + 1;
-        }
-        return r;
+        let r = ops::review_row(self.j, id);
+        return ReviewRow {
+            id: r.id,
+            state: r.state,
+            question: r.question,
+            required_authority: r.required_authority,
+            subject_digest: r.subject_digest,
+            refusals: r.refusals,
+            refusal_count: r.refusal_count,
+            settled: r.settled,
+            reasoned: r.reasoned,
+            has_reasoned: r.has_reasoned,
+            mutation_id: r.mutation_id,
+            is_mutation: r.is_mutation,
+            group: r.group,
+            change_class: r.change_class,
+            seed: r.seed,
+            disposition: r.disposition,
+            base_commit: r.base_commit,
+            candidate_commit: r.candidate_commit,
+            candidate_shape: r.candidate_shape,
+            evidence: r.evidence,
+            magnitude_raw: r.magnitude_raw,
+            diff_text: r.diff_text,
+            diff_json: r.diff_json,
+            author: r.author
+        };
     }
     @unbounded
     fn mutation_of(id: String) -> MutationRow {

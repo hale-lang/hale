@@ -517,8 +517,12 @@ repository:
   the organism's own name, taking the ordinary road. The org chart
   declares them in its `birth()` — `self.core.schedule(Schedule {
   id, every_ms | cron, ask, requires })` — and the substrate's clock
-  (the org program's loop, `tick` with a millisecond monotonic clock)
-  checks them. A declaration is a row, `schedule.declared <id>
+  (the org program's loop, `request_tick` with a millisecond monotonic
+  clock) queues their processing through the organization's keyed
+  `TickRequested` handler. Synchronous `tick` is for that handler or
+  isolated callers with no incoming bus work; a live loop uses
+  `request_tick` so incoming work cannot enter during journal refresh.
+  A declaration is a row, `schedule.declared <id>
   {action, every_ms, cron, ask, requires}`, when new or changed; a
   malformed cron (five fields, minute hour day-of-month month
   day-of-week; `*`, `a`, `a-b`, `*/n`, lists; ranges checked) is
@@ -553,7 +557,7 @@ repository:
   `schedule.fired optimize` row.
 - **The optimize pass (GH #596 O).** On a cadence the org chart sets
   (`optimize_every_ms` on the substrate; 0 is never; the org program's
-  loop ticks it with a millisecond monotonic clock), the substrate
+  loop calls `request_tick` with a millisecond monotonic clock), the substrate
   first asks the budget — the pass is model-backed work, and none is
   routed on an exhausted window: `optimize.refused <org>`, and the
   pass waits for the next window — then reads the record's structural signals
@@ -680,13 +684,13 @@ repository:
   (`Secure` when the callback is https) and lasts eight hours or until
   `/auth/logout`. With a session, a verdict acts as the member (`--as`,
   and `--authority board` when `dna.oidc.board` names them, `reviewer`
-  otherwise) and an intent is asked by them (`hale dna ask --as`), the
+  otherwise) and an intent is asked by them (`hale dna task create --as`), the
   row's author too; the form's own `as` field is ignored. The head never
   acts in its own name. It speaks plain HTTP: TLS is a reverse proxy in
   front of it. Rows arriving by sync remain admitted under `dna.trust`
   (GH #604 rule 6); a synced row claiming a rank is not a sign-in.
 - **The membrane over the record.** From a clone with no organism,
-  `hale dna ask` appends `intent.requested` (the body: outcome, from,
+  `hale dna task create` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
@@ -717,7 +721,7 @@ repository:
   The organism admits an intent once by its id — an intent offered
   again after its Task was born answers with that Task and journals
   nothing — and a repeated verdict at a settled Review is answered as
-  already settled. `hale dna ask`, `review`, `concern raise` and
+  already settled. `hale dna task create`, `review`, `concern raise` and
   `practice propose` beside a live organism write their row first
   (`intent.requested`, `review.verdict`, `concern.requested`,
   `practice.requested`, marked `via: membrane`) and then publish, so
@@ -743,7 +747,9 @@ repository:
   body names who asked — `<outcome> (from alice)`, a schedule, an
   optimizer — and a head's ask carries the person the head identified.
   A row is answered when a later row of the answering kind names its
-  entity. `hale dna ask --no-wait` appends and returns.
+  entity. `hale dna task create --no-wait` appends and returns, on either
+  path: beside a live organism once the row is appended and published,
+  from a clone with no organism once the row is appended and synced.
 
 `.hale/dna/` holds only what is not the record: the membrane sockets,
 the status projection, worktrees, scratch inputs to the toolchain.
@@ -1671,6 +1677,88 @@ owner connects a completion — the Work runs in the origin's
 execution. The tooling's own gate (`hale dna task done`, evidence,
 exceptions, reported decisions) is unchanged.
 
+## Workflow execution: the baseline
+
+What the sections above promise is held, as one oracle, by
+`dna/tests/workflow_conformance_test.hl` over the canonical three-level
+example (`dna/WORKFLOW-CONTRACT.md` §6), in every supported mode, with
+a unix listen binding declared so every publish is queued as in a
+bound organism. A review traces each promise to it; what it does not
+cover is not promised.
+
+**Delivery.** A leaf's attempt is admitted, claimed and delivered to
+its performer once per claim. A performer answers at once or later;
+a later reply names the attempt and the performer, and reaches the
+runtime whenever it comes — after the grandchild's step, before the
+root's own leaf, in any order. A reply for an attempt whose outcome is
+recorded is answered from the record and writes nothing, whether it
+repeats the recorded reply or arrives for an attempt the Work has
+retried past. A reply from another identity than the admitted
+performer's is nobody's and is refused. A reply for an attempt the
+record never admitted or never claimed is nobody's.
+
+**Failure.** A leaf that fails its allowance fails its step; the step
+fails its execution; a child's failure fails the step that invoked it,
+up to the root. Nothing later activates and nothing further is
+requested. A leaf still out under a failed step keeps its
+responsibility: its outcome is recorded when it comes, it reopens
+nothing, and the execution above it settles failed only after it
+settled (the drain policy, contract §6).
+
+**Cancellation.** A root's cancellation fences everything below it:
+what was admitted records its outcome; nothing further is admitted or
+claimed at any depth; the tree drains and reclaims from the leaves up;
+a late reply for a fenced attempt is still recorded, as the attempt's
+outcome, and reopens nothing. A root's own residents learn of a
+cancellation committed by another hand through a restart or through
+the fence on their next transition, not by being told.
+
+**Restart.** The record is the execution. An incarnation booted over
+it — in process, a new runtime over the same git record, a new routed
+record over the same two memories, or a new process — rebuilds only
+what is unfinished, under the original ids: no execution is admitted
+again, no step registers or activates twice, no completed member runs
+again. An attempt claimed by the incarnation that died is reconciled
+before anything is delivered: a durable adapter that recorded the
+effect answers from its store and the attempt is not performed again;
+a performer that truthfully has not acted is delivered the attempt
+again, once, under the same id, and the record says so
+(`effect.redelivered`). The completed record rebooted gains no row and
+asks no adapter. Every fact of an execution is routed to the ledger
+(one memory), so a reconstruction of the routed record keeps their
+order.
+
+**Fencing.** Under a lease, a holder whose token is not live commits
+nothing: its replies are refused and written nowhere; with the lease
+back, the same replies go through and the run completes as every other.
+
+**Reclamation.** A settled execution dissolves every resident of its
+tree, leaves first; repeated completed runs leave nothing alive. What
+grows is the record.
+
+**Logical exactly-once, apart from external-effect reconciliation.**
+One `effect.requested` per attempt, ever; one `attempt.outcome`; one
+`work.settled` on that attempt; one settlement per execution. Whether
+the external effect happened once is the adapter's to say: an adapter
+whose store holds the invocation is not asked again; one that cannot
+say leaves the claim resulted unknown and the attempt waits for a
+person (card 12c); one documented idempotent is replayed. The record
+distinguishes the cases: a redelivered attempt has its
+`effect.redelivered` row and, in the adapter's store, two invocations
+under one id.
+
+**The process boundary.** `dna/tests/conformance/runner.hl` is the
+public assembly (`Dna.run_workflow` over a `GitJournal`) with a durable
+service adapter whose store is a file; the fixture builds it with the
+`hale` under test, runs it as a separate process, kills it with
+SIGKILL the moment C1's attempt is admitted, the moment it is claimed,
+and the moment its adapter has recorded the effect but before the
+outcome landed, and runs it again over the same record each time: the
+assembly resumes the admitted root, the attempt keeps its one
+admission and one claim, the redelivery is recorded once, the store is
+the outcome, D runs once, the root settles last. Run once more over
+the completed record, it runs nothing.
+
 ## Storage interfaces
 
 `Journal` (ordered append with an expected revision, read by index,
@@ -1773,7 +1861,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   position its owner holds, refusing one offered to it for another's
   by name (`intent.refused`: "not this organization's to admit"). A
   head never offers such an intent to the body beside it: `hale dna
-  ask --to` writes it to the record for the owner's controller, the
+  task create --to` writes it to the record for the owner's controller, the
   host relays only `intent.requested` rows for positions its owner
   holds, and `status` lists the rest as `[unadmitted]` with the owner.
   Changing the map is a change to the organization approved by every
@@ -2252,18 +2340,49 @@ authority.
   `kind`, `target`, `class`, `at`); any other outcome appends
   `knowledge.declined`. A pending knowledge Review is re-born from the
   record at birth like a mutation's.
+- **Binding changes preserve the item.** The service's reviewed
+  `dna.knowledge.binding.bind@1` and `.unbind@1` operations address one
+  `(idea, target, author)` tuple. Independent explicit grants admit a
+  `knowledge.binding.requested` fact. The Body records delivery before
+  creating the canonical `dna.knowledge-binding-change/1` candidate and
+  its exact Review (`knowledge_binding_digest`, not `knowledge_digest`).
+  The candidate pins the original command, grant and latest Record
+  directive for the tuple. Approval produces `knowledge.binding.bound`
+  or `.unbound`; an intervening tuple change or newly inactive bind
+  subject produces a separate apply refusal. Each consequence belongs
+  to the original request identity. Projection changes future package
+  applicability, preserving the item receipt and earlier Work packages.
+  A visible retired item permits exact unbinding. This is the service's
+  reviewed command profile, not a universal Review requirement on the
+  in-process `Knowledge.bind` primitive. See
+  `dna/knowledge/service/COMMANDS.md` for authority, recovery and visibility.
+- **Relationship policy selects direct or reviewed admission.** The existing
+  `dna.knowledge.edge.link@1` and `.unlink@1` commands retain their exact directed
+  `(from, to, rel)` identity and command encoding. A `review` grant instead admits
+  `knowledge.edge.requested`, pinning the latest direct or reviewed directive for
+  that tuple in a canonical `dna.knowledge-edge-change/1` candidate. Its Review
+  carries `knowledge_edge_digest`; the candidate is not a Knowledge node. The
+  Body derives ownership from both endpoint receipts and requires its owner to
+  admit all four author/target positions in this reference profile. An independent
+  approval produces `knowledge.edge.reviewed_linked` or `.reviewed_unlinked` only
+  while the pinned tuple basis and endpoint eligibility still hold. A changed
+  basis or ineligible endpoint produces a separate apply refusal. A retired,
+  ratified endpoint permits exact unlinking. Recovery follows the original
+  admitted variant even if policy later changes mode. Native effects replay in
+  Record order; approval alone does not establish a graph change. This policy
+  does not add a universal Review requirement to the graph primitives.
 - **The store holds the live half.** `dna/knowledge` (embedded in the
   toolchain beside the core, with pond's Postgres driver pinned under
   `dna/pond`) declares `KnowledgeStore`: `open`, `watermark` /
   `set_watermark` (the next record seq to apply; it only advances),
   `upsert(idea, ratified_seq)` (idempotent by id, which is the
-  digest), `bind`, `link`, `idea(id)`, `context_ids(target, budget)`
+  digest), `bind`, `unbind`, `link`, `unlink`, `idea(id)`, `context_ids(target, budget)`
   (accepted ideas bound to the target or any prefix of its path —
   goals flow down, initiatives stay local — in ratification order),
   `count(what)`. `Pq` is Postgres (six tables: `knowledge_meta`,
   `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`,
   `knowledge_structure`, `knowledge_signals`; the schema migrated at
-  `open`; every write an upsert; rows come back as
+  `open`; node writes are upserts and removals delete exact tuples; rows come back as
   JSON built by the server, since the driver's tab- and
   newline-separated rows cannot carry an ordinary paragraph; a signal
   counts once per record row, keyed on that row's sequence, because
@@ -2407,7 +2526,7 @@ authority.
   key, which two Works of different steps or workflows may share — the
   editor's for an edit leaf, the human kind for a person's, else the
   routing policy's choice for the Work's own request under the Task
-  that owns it. The tooling's answer to an ask (`hale dna ask`) is the
+  that owns it. The tooling's answer to an ask (`hale dna task create`) is the
   execution whose admission names that ask as its request, never the
   next birth in the record, which may be another ask's. An answer that names
   no kind and no class leaves the defaults standing — class
@@ -2674,7 +2793,7 @@ seed, the fleet and its plan under `[dna]`) and execs the host:
 toolchain), `HALE_DNA_MEMBRANE` (the membrane client's binary) and
 `HALE_DNA_TOOLCHAIN` in the environment. The host owns the
 projections (`status`, `history`, `review`, `board`, `report`,
-`pressure`, `fleet`), the writers (`ask`, a verdict, `pressure raise`,
+`pressure`, `fleet`), the writers (`task create`, a verdict, `pressure raise`,
 `sync`, `deploy`, `rollback`, `github sync`), the supervision (`run`,
 `dev`) and the node agent (`hale node`). It reads the record through
 the core's `GitJournal`, appends in a person's or a node's name with
@@ -2775,7 +2894,7 @@ offline verb of `hale dna` in the project root and returning what it printed
 (`/api/board`), the pending Reviews and one Review's three views
 (`/api/reviews`, `/api/review/<id>`), the fleet (`/api/fleet`), the
 history (`/api/history[/<entity>]`), pressure (`/api/pressure`). A
-verdict (`POST /api/verdict`), an intent (`POST /api/ask`) and a
+verdict (`POST /api/verdict`), a task (`POST /api/task/create`) and a
 pressure signal (`POST /api/pressure`) are the CLI's own verbs sent
 and not waited for: onto the membrane when one is bound here, into
 the record otherwise, in the name the form gives. A path segment
@@ -2787,9 +2906,25 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
+The cockpit's head (`dna/api/project_service`, `iris/cockpit/start.sh
+[project]`) is the surface's counterpart for the operator's machine:
+one loopback process that serves the browser shell, keeps a registry
+of projects and a journal of receipts under a state directory, and
+proxies the Record's read and command routes to a per-project API
+child it starts and replaces. Its own operations — create, init,
+attach, detach, forget, sync, publish, forge, the local body, the
+remote body, secrets by source name, the model probe, connections,
+handoffs, the observer — are the CLI's verbs run detached with a
+pid, an exit code and a log as files, and each answers a receipt
+(`recorded → admitted|refused → running → succeeded|failed|outcome_unknown`)
+under a `command-<digest>` identity that replays on an identical
+retry and conflicts on a changed one. A run that passes its deadline
+is `outcome_unknown` when the verb reaches beyond this machine, never
+`failed`; the head appends nothing to any record itself. It is
+trusted-local and refuses an `oidc` project.
+
 What is deliberately not here yet: a fleet-level semantic diff (a
 Review's diff is the edited seed's; the deploy row names the instances
 it reaches), pressure raised from services' typed metrics (`hale dna
 pressure raise` is the spelling; nothing raises it for a node), and
 the organization as an instance of its own plan.
-

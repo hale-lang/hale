@@ -1,0 +1,209 @@
+// An exact reviewed relationship change. Direct edge facts retain their
+// original codec; a narrow injected proof adapter joins that existing history.
+type KnowledgeDirectEdgeFact {
+    ok: Bool = false; application_id: String = ""; edge_id: String = "";
+    from_id: String = ""; to_id: String = ""; rel: String = ""; linked: Bool = false;
+}
+interface KnowledgeDirectEdgeFacts { fn decode(e: Event) -> KnowledgeDirectEdgeFact; }
+locus NoKnowledgeDirectEdgeFacts { params { } fn decode(e: Event) -> KnowledgeDirectEdgeFact { return KnowledgeDirectEdgeFact { }; } }
+type KnowledgeEdgeEndpoints {
+    ok: Bool = false; ratified: Bool = false; active: Bool = false;
+    from_author: String = ""; from_target: String = ""; to_author: String = ""; to_target: String = "";
+}
+type KnowledgeEdgeBasis { ok: Bool = false; present: Bool = false; event_id: String = ""; }
+type KnowledgeEdgeEffect {
+    ok: Bool = false; request: KnowledgeEdgeRequest = KnowledgeEdgeRequest { };
+    decision_command_id: String = ""; decided_by: String = ""; state: String = "";
+    reason_code: String = ""; observed_basis: String = "";
+}
+locus KnowledgeEdgeCodec {
+    params { }
+    fn visible(j: Journal, syntax: KnowledgeBindingPolicySyntax, r: KnowledgeEdgeRequest, end: Int) -> Bool {
+        let native = KnowledgeBindingCodec { };
+        return native.visible(j, syntax, r.from_id, end) && native.visible(j, syntax, r.to_id, end)
+            && native.visible(j, syntax, r.candidate_digest, end);
+    }
+    fn identity(from_id: String, to_id: String, rel: String) -> String {
+        let b = std::json::Builder { }; b.begin_array();
+        b.value(record_json_quote(from_id)); b.value(record_json_quote(to_id)); b.value(record_json_quote(rel)); b.end_array();
+        return digest_of(b.result());
+    }
+    fn review_id(digest: String) -> String { return "knowledge-edge:" + digest; }
+    fn valid(r: KnowledgeEdgeRequest) -> Bool {
+        let b = KnowledgeNodeRequestCodec { };
+        return (r.operation == "dna.knowledge.edge.link" || r.operation == "dna.knowledge.edge.unlink")
+            && b.bounded(r.application_id, 256, true, false) && b.bounded(r.request_id, 256, true, false)
+            && digest_well_formed(r.command_fingerprint) && b.bounded(r.authority, 256, true, false) && b.bounded(r.authority_basis, 2048, true, false)
+            && digest_well_formed(r.from_id) && digest_well_formed(r.to_id) && digest_well_formed(r.edge_id) && digest_well_formed(r.candidate_digest)
+            && b.bounded(r.rel, 256, true, false) && b.bounded(r.by, 256, true, false) && b.bounded(r.because, 2048, true, true)
+            && b.bounded(r.edge_basis, 256, false, false) && r.edge_id == self.identity(r.from_id, r.to_id, r.rel);
+    }
+    fn decode(body: String) -> KnowledgeEdgeRequest {
+        if len(body) > 131072 { return KnowledgeEdgeRequest { }; }
+        return KnowledgeEdgeRequest {
+            application_id: native_json_string(body, "application_id"),
+            request_id: native_json_string(body, "request_id"),
+            command_fingerprint: native_json_string(body, "command_fingerprint"),
+            authority: native_json_string(body, "authority"),
+            authority_basis: native_json_string(body, "authority_basis"),
+            operation: native_json_string(body, "operation"),
+            edge_id: native_json_string(body, "edge_id"),
+            from_id: native_json_string(body, "from_id"),
+            to_id: native_json_string(body, "to_id"),
+            rel: native_json_string(body, "rel"),
+            by: native_json_string(body, "by"),
+            because: native_json_string(body, "because"),
+            edge_basis: native_json_string(body, "edge_basis"),
+            candidate_digest: native_json_string(body, "candidate_digest")
+        };
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) { b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(record_json_quote(value)); }
+    fn inputs(b: std::bytes::BytesBuilder, r: KnowledgeEdgeRequest, candidate: Bool) {
+        self.field(b, "application_id", r.application_id);
+        self.field(b, "request_id", r.request_id);
+        self.field(b, "command_fingerprint", r.command_fingerprint);
+        self.field(b, "authority", r.authority);
+        self.field(b, "authority_basis", r.authority_basis);
+        self.field(b, "operation", r.operation);
+        self.field(b, "edge_id", r.edge_id);
+        self.field(b, "from_id", r.from_id);
+        self.field(b, "to_id", r.to_id);
+        self.field(b, "rel", r.rel);
+        self.field(b, "by", r.by);
+        self.field(b, "because", r.because);
+        self.field(b, "edge_basis", r.edge_basis);
+        if !candidate { self.field(b, "candidate_digest", r.candidate_digest); }
+    }
+    fn document(r: KnowledgeEdgeRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-edge-change/1\""); self.inputs(b, r, true); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fields(b: std::bytes::BytesBuilder, r: KnowledgeEdgeRequest) {
+        b.append_str("{\"application_id\":"); b.append_str(record_json_quote(r.application_id));
+        self.field(b, "request_id", r.request_id);
+        self.field(b, "command_fingerprint", r.command_fingerprint);
+        self.field(b, "authority", r.authority);
+        self.field(b, "authority_basis", r.authority_basis);
+        self.field(b, "operation", r.operation);
+        self.field(b, "edge_id", r.edge_id);
+        self.field(b, "from_id", r.from_id);
+        self.field(b, "to_id", r.to_id);
+        self.field(b, "rel", r.rel);
+        self.field(b, "by", r.by);
+        self.field(b, "because", r.because);
+        self.field(b, "edge_basis", r.edge_basis);
+        self.field(b, "candidate_digest", r.candidate_digest);
+    }
+    fn started(r: KnowledgeEdgeRequest) -> String { let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot()); }
+    fn proposed(r: KnowledgeEdgeRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest)); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn refused(r: KnowledgeEdgeRequest, reason_code: String, why: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn review_request(r: KnowledgeEdgeRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"question\":");
+        b.append_str(record_json_quote((if r.operation == "dna.knowledge.edge.link" { "Link " } else { "Unlink " }) + r.from_id + " to " + r.to_id + " as " + r.rel + "?"));
+        self.field(b, "subject_digest", r.candidate_digest); self.field(b, "required_authority", "board"); self.field(b, "author", r.by);
+        self.field(b, "knowledge_edge_digest", r.candidate_digest); self.field(b, "edge_request_id", r.request_id);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn terminal_fields(b: std::bytes::BytesBuilder, r: KnowledgeEdgeRequest, decision: String, reviewer: String) {
+        b.append_str("{\"format\":\"dna.knowledge-edge-effect/1\""); self.field(b, "request_id", r.request_id); self.field(b, "command_fingerprint", r.command_fingerprint);
+        self.field(b, "candidate_digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest));
+        self.field(b, "decision_command_id", decision); self.field(b, "decided_by", reviewer); self.field(b, "operation", r.operation);
+        self.field(b, "edge_id", r.edge_id); self.field(b, "from_id", r.from_id); self.field(b, "to_id", r.to_id); self.field(b, "rel", r.rel); self.field(b, "edge_basis", r.edge_basis);
+    }
+    fn effect(r: KnowledgeEdgeRequest, decision: String, reviewer: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn declined(r: KnowledgeEdgeRequest, decision: String, reviewer: String, outcome: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "outcome", outcome); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn apply_refused(r: KnowledgeEdgeRequest, decision: String, reviewer: String, reason_code: String, observed_basis: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    @unbounded
+    fn fact(j: Journal, kind: String, entity: String, end: Int) -> Event {
+        let mut found = Event { }; let mut i = 0;
+        while i < end {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity {
+                if len(found.kind) > 0 && found.body != e.body { return Event { kind: "invalid" }; }
+                if len(found.kind) == 0 { found = e; }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn request_of(j: Journal, review_id: String) -> KnowledgeEdgeRequest {
+        let review = self.fact(j, "review.requested", "review:" + review_id, j.revision());
+        if review.kind != "review.requested" { return KnowledgeEdgeRequest { }; }
+        let id = native_json_string(review.body, "edge_request_id");
+        let started = self.fact(j, "knowledge.edge.started", id, j.revision()); let r = self.decode(started.body);
+        let incoming = self.fact(j, "knowledge.edge.requested", id, j.revision());
+        if started.kind != "knowledge.edge.started" || started.entity != r.request_id || !self.valid(r) || started.body != self.started(r)
+            || incoming.kind != "knowledge.edge.requested" || self.started(self.decode(incoming.body)) != self.started(r) || incoming.seq >= started.seq || started.seq >= review.seq
+            || digest_of(self.document(r)) != r.candidate_digest || self.review_id(r.candidate_digest) != review_id || review.body != self.review_request(r)
+            || j.revision() == 0 || j.read(0).digest != r.application_id { return KnowledgeEdgeRequest { }; }
+        return r;
+    }
+    fn effect_of(j: Journal, e: Event) -> KnowledgeEdgeEffect {
+        let bound = e.kind == "knowledge.edge.reviewed_linked"; let unbound = e.kind == "knowledge.edge.reviewed_unlinked";
+        let declined = e.kind == "knowledge.edge.declined"; let refused = e.kind == "knowledge.edge.apply_refused";
+        if !bound && !unbound && !declined && !refused { return KnowledgeEdgeEffect { }; }
+        let review_id = native_json_string(e.body, "review_id"); let r = self.request_of(j, review_id);
+        let proposed = self.fact(j, "knowledge.edge.proposed", r.request_id, e.seq);
+        let review = self.fact(j, "review.requested", "review:" + review_id, e.seq);
+        let decision = native_json_string(e.body, "decision_command_id"); let reviewer = native_json_string(e.body, "decided_by");
+        let settled = self.fact(j, "review.settled", review_id, e.seq);
+        let outcome = if declined { native_json_string(e.body, "outcome") } else { "approve" };
+        if !self.valid(r) || e.entity != r.request_id || proposed.kind != "knowledge.edge.proposed" || proposed.body != self.proposed(r) || review.kind != "review.requested" || review.body != self.review_request(r) || review.seq >= proposed.seq
+            || settled.kind != "review.settled" || settled.seq <= review.seq || settled.body != outcome + " by " + reviewer || reviewer == r.by || len(reviewer) == 0
+            || (bound && r.operation != "dna.knowledge.edge.link") || (unbound && r.operation != "dna.knowledge.edge.unlink")
+            || (declined && outcome != "reject" && outcome != "revise") { return KnowledgeEdgeEffect { }; }
+        if len(decision) > 0 {
+            let fact = self.fact(j, "review.command_decided", decision, e.seq); let v = review_command_verdict(decision, fact.body);
+            if fact.kind != "review.command_decided" || fact.seq >= settled.seq || fact.seq <= review.seq || v.review_id != review_id || v.subject_digest != r.candidate_digest || v.reviewer != reviewer || v.verdict != outcome
+                || !authority_satisfies(v.authority, "board") || fact.body != review_command_body(v, true, "", true, outcome) { return KnowledgeEdgeEffect { }; }
+        }
+        let code = native_json_string(e.body, "reason_code"); let observed = native_json_string(e.body, "observed_basis");
+        if refused && code != "edge_changed" && code != "subject_inactive" { return KnowledgeEdgeEffect { }; }
+        let expected = if declined { self.declined(r, decision, reviewer, outcome) } else if refused { self.apply_refused(r, decision, reviewer, code, observed) } else { self.effect(r, decision, reviewer) };
+        if e.body != expected { return KnowledgeEdgeEffect { }; }
+        return KnowledgeEdgeEffect { ok: true, request: r, decision_command_id: decision, decided_by: reviewer, state: if bound { "linked" } else if unbound { "unlinked" } else if declined { "declined" } else { "refused" }, reason_code: code, observed_basis: observed };
+    }
+    fn endpoints(j: Journal, receipts: Receipts, r: KnowledgeEdgeRequest, end: Int) -> KnowledgeEdgeEndpoints {
+        let native = KnowledgeBindingCodec { };
+        let from = native.subject_at(j, receipts, r.from_id, end); let to = native.subject_at(j, receipts, r.to_id, end);
+        if !from.ok || !to.ok { return KnowledgeEdgeEndpoints { }; }
+        return KnowledgeEdgeEndpoints { ok: true, ratified: from.ratified && to.ratified, active: from.active && to.active,
+            from_author: from.author, from_target: from.target, to_author: to.author, to_target: to.target };
+    }
+    @unbounded
+    fn basis(j: Journal, receipts: Receipts, direct: KnowledgeDirectEdgeFacts, r: KnowledgeEdgeRequest, end: Int) -> KnowledgeEdgeBasis {
+        if end < 1 || end > j.revision() || j.read(0).digest != r.application_id || !digest_well_formed(r.from_id) || !digest_well_formed(r.to_id)
+            || r.edge_id != self.identity(r.from_id, r.to_id, r.rel) { return KnowledgeEdgeBasis { }; }
+        let mut out = KnowledgeEdgeBasis { ok: true }; let mut i = 0;
+        while i < end {
+            let e = j.read(i);
+            if e.kind == "knowledge.edge.linked" || e.kind == "knowledge.edge.unlinked" {
+                let fact = direct.decode(e);
+                if !fact.ok || fact.application_id != r.application_id || fact.edge_id != self.identity(fact.from_id, fact.to_id, fact.rel)
+                    || fact.edge_id != e.entity || fact.linked != (e.kind == "knowledge.edge.linked") { return KnowledgeEdgeBasis { }; }
+                if fact.edge_id == r.edge_id {
+                    if fact.from_id != r.from_id || fact.to_id != r.to_id || fact.rel != r.rel { return KnowledgeEdgeBasis { }; }
+                    out.present = fact.linked; out.event_id = e.digest;
+                }
+            }
+            if (e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked") && native_json_string(e.body, "edge_id") == r.edge_id {
+                let fact = self.effect_of(j, e); let f = fact.request;
+                if !fact.ok || f.application_id != r.application_id || f.edge_basis != out.event_id || f.edge_id != r.edge_id || f.from_id != r.from_id || f.to_id != r.to_id || f.rel != r.rel { return KnowledgeEdgeBasis { }; }
+                let endpoints = self.endpoints(j, receipts, f, e.seq);
+                if !endpoints.ok || !endpoints.ratified || (e.kind == "knowledge.edge.reviewed_linked" && !endpoints.active) { return KnowledgeEdgeBasis { }; }
+                out.present = e.kind == "knowledge.edge.reviewed_linked"; out.event_id = e.digest;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}

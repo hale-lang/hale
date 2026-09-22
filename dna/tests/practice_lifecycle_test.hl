@@ -1,0 +1,63 @@
+// A real Practice and real reviewed retirement share the generic native node
+// lifecycle. No ratification/retirement outcome rows are authored by this test.
+import "../core" as dna;
+
+fn lifecycle_request(id: String, operation: String, kind: String, text: String, old: String) -> dna::KnowledgeNodeRequest {
+    let codec = dna::KnowledgeNodeRequestCodec { };
+    let mut r = dna::KnowledgeNodeRequest {
+        request_id: id, operation: "dna.knowledge.node." + operation, kind: kind,
+        name: "acceptance/practice-lifecycle", text: text, author: "org", target: "org",
+        supersedes: old, by: "alice", because: if operation == "retire" { text } else { "Keep exact Practice history." }
+    };
+    r.candidate_digest = dna::digest_of(codec.document(r));
+    return r;
+}
+@unbounded
+fn lifecycle_event(j: dna::Journal, kind: String, id: String) -> dna::Event {
+    let refreshed = j.refresh(); let mut i = 0;
+    while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { return e; } i = i + 1; }
+    return dna::Event { };
+}
+main locus App {
+    bus { publish dna::ReviewVerdict; }
+    fn wait_event(j: dna::Journal, kind: String, id: String) {
+        let mut ticks = 0;
+        while len(lifecycle_event(j, kind, id).kind) == 0 && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
+        std::test::assert(len(lifecycle_event(j, kind, id).kind) > 0, "actual native " + kind + " arrived");
+    }
+    fn approve(id: String, digest: String) {
+        dna::ReviewVerdict <- dna::Verdict { command_id: id, review_id: dna::knowledge_review_id(digest), subject_digest: digest,
+            verdict: "approve", reviewer: "bob", authority: "board", comment: "Independent exact candidate decision." };
+    }
+    fn check() {
+        let repo = "/tmp/dna-practice-lifecycle-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        std::test::assert_eq_int(dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain").code, 0, "isolated actual Record");
+        let j = dna::GitJournal { repo: repo };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let first = lifecycle_request("practice/create", "propose", "practice", "A Practice — exact café evidence.", "");
+        body.on_knowledge_node_requested(first);
+        std::test::assert_eq_str(body.practice_in_force(first.name), "", "pending Practice is not in force");
+        self.approve("decision/create", first.candidate_digest); self.wait_event(j, "knowledge.ratified", first.candidate_digest);
+        std::test::assert_eq_str(body.practice_in_force(first.name), first.candidate_digest, "ratified Practice is in force");
+        let other = lifecycle_request("same-name/idea", "propose", "idea", "Same name does not make an Idea a Practice.", "");
+        body.on_knowledge_node_requested(other); self.approve("decision/idea", other.candidate_digest); self.wait_event(j, "knowledge.ratified", other.candidate_digest);
+        std::test::assert_eq_str(body.practice_in_force(first.name), first.candidate_digest, "same-name nonpractice never displaces active Practice");
+        let revised = lifecycle_request("practice/revise", "revise", "practice", "Revised exact Practice.", first.candidate_digest);
+        body.on_knowledge_node_requested(revised); self.approve("decision/revise", revised.candidate_digest); self.wait_event(j, "knowledge.retired", first.candidate_digest);
+        std::test::assert_eq_str(body.practice_in_force(first.name), revised.candidate_digest, "native revision replaces exact predecessor");
+        let retired = lifecycle_request("practice/retire", "retire", "retirement", "This Practice is no longer required.", revised.candidate_digest);
+        body.on_knowledge_node_requested(retired);
+        std::test::assert_eq_str(body.practice_in_force(first.name), revised.candidate_digest, "retirement proposal alone changes no active Practice");
+        self.approve("decision/retire", retired.candidate_digest); self.wait_event(j, "knowledge.retired", revised.candidate_digest);
+        std::test::assert(len(lifecycle_event(j, "knowledge.ratified", retired.candidate_digest).kind) > 0, "actual retirement candidate itself has native ratification");
+        std::test::assert_eq_str(body.practice_in_force(first.name), "", "ratified retirement candidate is never an active Practice");
+        let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeNodeRequestCodec { };
+        std::test::assert_eq_str(receipts.read(first.candidate_digest[7..len(first.candidate_digest)]), codec.document(first), "original immutable Practice remains readable");
+        std::test::assert_eq_str(receipts.read(revised.candidate_digest[7..len(revised.candidate_digest)]), codec.document(revised), "retired successor remains readable");
+        eprintln("PASS actual Practice creation, nonpractice same-name exclusion, revision and reviewed retirement");
+        let removed = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    run { self.check(); }
+}
+fn main() { App { }; }

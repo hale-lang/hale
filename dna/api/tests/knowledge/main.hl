@@ -1,0 +1,91 @@
+// Browser acceptance composition: real Git receipts and Record projection,
+// with native stored relationships. No public/private graph response is mocked.
+import "../../../core" as dna;
+import "../../../knowledge" as know;
+import "../../../knowledge/service" as service;
+import "../fixture" as fixtures;
+
+@unbounded
+fn seed(root: String, count: Int) {
+    std::test::assert(count >= 0 && count <= 50, "bounded knowledge fixture size");
+    let f = fixtures::Fixture { root: root, port: 1 };
+    let target = "org/support/équipe";
+    let predecessor = f.knowledge("Earlier support goal", "Earlier accepted knowledge", "org", "", true);
+    let name = "Support knowledge — équipe <goal>";
+    let text = "Première ligne — ✓\n第二行 / preserve\n<img src=x onerror=\"window.__injected=true\">";
+    let current = f.knowledge(name, text, target, predecessor, true);
+    let proposed = f.knowledge("Proposed knowledge", "Still proposed, not accepted", "org/finance", "", false);
+    let hidden = f.knowledge("Protected knowledge title", "Protected knowledge body", target, "", true);
+    f.append("receipt.classified", hidden, "{\"class\":\"confidential\"}");
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("application", f.identity);
+    b.string_field("knowledge", current);
+    b.string_field("predecessor", predecessor);
+    b.string_field("proposed", proposed);
+    b.string_field("hidden", hidden);
+    b.string_field("name", name);
+    b.string_field("text", text);
+    b.string_field("target", target);
+    b.begin_array_field("neighbors");
+    let mut i = 0;
+    while i < count {
+        let id = f.knowledge("Knowledge " + to_string(i), "Recorded knowledge " + to_string(i), "org/finance", "", true);
+        b.begin_object(); b.string_field("id", id); b.end_object();
+        i = i + 1;
+    }
+    b.end_array();
+    b.end_object();
+    std::io::fs::write_file(root + "/fixture.json", b.result()) or discard;
+    f.root = "";
+}
+
+fn mutate(root: String, action: String) {
+    let j = dna::GitJournal { repo: root };
+    let document = std::io::fs::read_file(root + "/fixture.json") or "";
+    let id = std::json::find_string_field(document, if action == "protect-predecessor" { "predecessor" } else { "knowledge" });
+    let result = if action == "protect" || action == "protect-predecessor" {
+        j.append(j.revision(), "receipt.classified", id, "{\"class\":\"confidential\"}")
+    } else if action == "redact" {
+        j.append(j.revision(), "receipt.redacted", id, "{\"by\":\"browser-fixture\",\"why\":\"retention\",\"policy\":\"test\"}")
+    } else {
+        j.append(j.revision(), "browser.fixture", "refresh", "another writer advanced the Record")
+    };
+    std::test::assert(result.ok, "knowledge fixture mutation: " + result.error);
+}
+
+@unbounded
+fn serve(root: String, port: Int) {
+    let store = know::Mem { };
+    let head = service::Service {
+        root: root, store: store, graph: store,
+        protected: know::MemProtected { }, ledger: know::MemLedger { }, leases: know::MemLeaseStore { },
+        j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root }
+    };
+    let applied = head.apply();
+    std::test::assert(len(applied.error) == 0, "native knowledge fixture projection: " + applied.error);
+    let document = std::io::fs::read_file(root + "/fixture.json") or "";
+    let current = std::json::find_string_field(document, "knowledge");
+    let predecessor = std::json::find_string_field(document, "predecessor");
+    let hidden = std::json::find_string_field(document, "hidden");
+    std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: predecessor, rel: "supports <stored relationship>" }), "native outgoing edge");
+    std::test::assert(store.link(dna::KnowledgeEdge { from: predecessor, to: current, rel: "informs" }), "native incoming edge");
+    std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: hidden, rel: "protected-endpoint relationship" }), "native protected edge");
+    let mut it = std::json::array_first(std::json::find_field_raw(document, "neighbors"));
+    while !it.done {
+        let id = std::json::find_string_field(it.element, "id");
+        std::test::assert(len(id) == 71, "native neighbor receipt identity");
+        std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: id, rel: "related" }), "native fixture edge");
+        it = std::json::array_next(it);
+    }
+    service::Knowledge { root: root, port: port, dsn: "memory", srv: std::http::Server { port: port, handler: head } };
+}
+
+fn main() {
+    let root = std::env::arg_or(1, "");
+    let action = std::env::arg_or(2, "");
+    std::test::assert(std::str::starts_with(root, "/tmp/hale-iris-browser."), "owned browser fixture root");
+    if action == "seed" { seed(root, std::str::parse_int(std::env::arg_or(3, "3")) or 3); }
+    else if action == "advance" || action == "protect" || action == "protect-predecessor" || action == "redact" { mutate(root, action); }
+    else { serve(root, std::str::parse_int(action) or 0); }
+}

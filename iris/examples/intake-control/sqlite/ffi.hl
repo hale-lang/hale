@@ -1,0 +1,47 @@
+// ffi.hl — @ffi("c") extern declarations for the glue.c shims.
+//
+// Per spec/ffi.md: @ffi fns are top-level free fns only, never
+// fallible, never generic. Handles (sqlite3* / sqlite3_stmt*)
+// cross the boundary as Int (int64 addresses); SQL text and paths
+// as String (NUL-terminated const char *).
+//
+// String RETURNS (errmsg / open_error / column_text) hand back
+// pointers OWNED BY SQLITE (or by glue.c's static buffer), valid
+// only until the next sqlite call on the same object. Every
+// caller in db.hl clones them immediately via std::str::clone —
+// never hold one across a step/finalize/close.
+//
+// These decls are wired up by the sibling hale.toml `[ffi]`
+// section (csrc = ["glue.c"], link = ["sqlite3"]), picked up
+// automatically when a program imports this lib.
+
+// ---- connection lifecycle ----
+@ffi("c") fn lotus_sqlite_open(path: String) -> Int; // 0 = open failed
+@ffi("c") fn lotus_sqlite_open_error() -> String; // last open failure detail
+@ffi("c") fn lotus_sqlite_open_errcode() -> Int; // last open failure SQLITE_* code
+@ffi("c") fn lotus_sqlite_close(h: Int); // rc dropped (see glue.c)
+
+// ---- one-shot exec ----
+@ffi("c") fn lotus_sqlite_exec(h: Int, sql: String) -> Int; // SQLITE_* code; 0 = OK
+
+// ---- prepare / bind / step / column / finalize ----
+@ffi("c") fn lotus_sqlite_prepare(h: Int, sql: String) -> Int; // stmt handle; 0 = failed
+@ffi("c") fn lotus_sqlite_bind_text(st: Int, idx: Int, val: String) -> Int; // 1-indexed
+@ffi("c") fn lotus_sqlite_bind_int(st: Int, idx: Int, val: Int) -> Int; // 1-indexed
+@ffi("c") fn lotus_sqlite_step(st: Int) -> Int; // 100 = ROW, 101 = DONE
+@ffi("c") fn lotus_sqlite_column_count(st: Int) -> Int;
+@ffi("c") fn lotus_sqlite_column_text(st: Int, col: Int) -> String; // 0-indexed; CLONE IMMEDIATELY
+@ffi("c") fn lotus_sqlite_column_int(st: Int, col: Int) -> Int; // 0-indexed
+@ffi("c") fn lotus_sqlite_finalize(st: Int) -> Int;
+
+// ---- connection metadata / diagnostics ----
+@ffi("c") fn lotus_sqlite_changes(h: Int) -> Int;
+@ffi("c") fn lotus_sqlite_last_rowid(h: Int) -> Int;
+@ffi("c") fn lotus_sqlite_errcode(h: Int) -> Int;
+@ffi("c") fn lotus_sqlite_errmsg(h: Int) -> String; // CLONE IMMEDIATELY
+
+// App-local additions; see PROVENANCE.md.
+@ffi("c") fn lotus_sqlite_open_existing(path: String) -> Int;
+@ffi("c") fn lotus_sqlite_autocommit(h: Int) -> Int;
+@ffi("c") fn lotus_sqlite_busy_timeout(h: Int, ms: Int) -> Int;
+@ffi("c") fn lotus_sqlite_column_type(st: Int, col: Int) -> Int;

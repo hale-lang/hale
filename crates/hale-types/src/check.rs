@@ -11749,6 +11749,12 @@ impl<'a> Checker<'a> {
         }
         let want = self.lvalue_ty(target);
         let Ty::Named(tname) = &want else { return };
+        // An `interface`- or `perspective(P)`-typed field returns here:
+        // only an interface VALUE (a param, a field — a fat pointer
+        // somebody else owns) can reach such a store, and codegen
+        // treats the store as a borrow (GH #967): the field's own
+        // child is reclaimed, the holder never reclaims the handle.
+        // The locus-typed case below is the ambiguous one.
         if !matches!(self.top.lookup(tname), Some(TopSymbol::Locus(_))) {
             return;
         }
@@ -15597,12 +15603,17 @@ impl<'a> Checker<'a> {
                                 self.top.lookup(iface_name),
                                 Some(TopSymbol::Interface(_))
                             ) {
+                                // GH #730: the same interface is identity.
+                                if rhs_name == iface_name {
+                                    true
+                                } else {
                                 match self.check_structural_impl(rhs_name, iface_name) {
                                     Ok(()) => true,
                                     Err(msg) => {
                                         self.diags.push(Diag::ty(rhs.span(), msg));
                                         true
                                     }
+                                }
                                 }
                             } else {
                                 false
@@ -16797,6 +16808,14 @@ impl<'a> Checker<'a> {
                             self.top.lookup(iface_name),
                             Some(TopSymbol::Interface(_))
                         ) {
+                            // GH #730: an interface VALUE into a field of
+                            // the same interface is identity — a handle
+                            // somebody else owns, stored as a borrow (F.39;
+                            // the assignment form since GH #967). The
+                            // structural check is for a concrete locus.
+                            if arg_name == iface_name {
+                                true
+                            } else {
                             match self.check_structural_impl(arg_name, iface_name) {
                                 Ok(()) => true,
                                 Err(msg) => {
@@ -16806,6 +16825,7 @@ impl<'a> Checker<'a> {
                                     ));
                                     true
                                 }
+                            }
                             }
                         } else {
                             false

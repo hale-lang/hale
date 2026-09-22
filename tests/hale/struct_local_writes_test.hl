@@ -1,0 +1,104 @@
+// GH #993 and GH #992 — a write through one struct local never reaches
+// another.
+//
+// A `let` copy of a struct (GH #713) may share a String with the
+// binding it was copied from. A write through the copy used to take the
+// locus field's in-place path and overwrite those shared bytes, so an
+// unrelated local read the new value (#993). And `x = y` on a struct
+// local stored y's pointer, so the local was a view of y (#992). Each
+// Host below stores the command a different way; the controls stored a
+// literal or the param String and never failed.
+type Cmd { id: String = ""; }
+type Res { id: String = ""; }
+type Inner { id: String = ""; state: String = ""; }
+type Receipt { ok: Bool = true; inner: Inner = Inner { }; }
+locus Literal {
+    params { saved: Cmd = Cmd { }; }
+    fn submit(body: String) { self.saved = Cmd { id: std::str::substring(body, 0, 14) }; }
+}
+locus Nested {
+    params { saved: Cmd = Cmd { }; }
+    fn submit(body: String) { self.saved.id = std::str::substring(body, 0, 14); }
+}
+locus ViaLet {
+    params { saved: Cmd = Cmd { }; }
+    fn submit(body: String) {
+        let c = Cmd { id: std::str::substring(body, 0, 14) };
+        self.saved = c;
+    }
+}
+locus ParamString {
+    params { saved: Cmd = Cmd { }; }
+    fn submit(body: String) { self.saved = Cmd { id: body }; }
+}
+locus Constant {
+    params { saved: Cmd = Cmd { }; }
+    fn submit(body: String) { self.saved = Cmd { id: "stable-request" }; }
+}
+fn result(c: Cmd) -> Res { return Res { id: c.id }; }
+fn receipt(c: Cmd) -> Receipt { return Receipt { inner: Inner { id: c.id, state: "pending" } }; }
+main locus App {
+    params {
+        a: Literal = Literal { };
+        b: Nested = Nested { };
+        c: ViaLet = ViaLet { };
+        d: ParamString = ParamString { };
+        e: Constant = Constant { };
+    }
+    // A method, not a free fn: the in-place write only ever happened
+    // inside a locus method, where a local's field write was routed to
+    // the locus field's store.
+    fn check(command: Cmd, want: String, label: String) {
+        let good = result(command);
+        let mut bad = good;
+        bad.id = "PRIVATE-CANARY";
+        std::test::assert_eq_str(command.id, want, label + ": the command after a write through a copy of its result");
+        std::test::assert_eq_str(good.id, want, label + ": the result after a write through its copy");
+        std::test::assert_eq_str(bad.id, "PRIVATE-CANARY", label + ": the copy holds the write");
+    }
+    run() {
+        self.a.submit("stable-request;padding");
+        self.b.submit("stable-request;padding");
+        self.c.submit("stable-request;padding");
+        self.d.submit("stable-request");
+        self.e.submit("ignored");
+        self.check(self.a.saved, "stable-request", "a struct literal store");
+        self.check(self.b.saved, "stable-request", "a nested field store");
+        self.check(self.c.saved, "stable-request", "a let-bound struct store");
+        self.check(self.d.saved, "stable-request", "the param String");
+        self.check(self.e.saved, "stable-request", "a literal");
+        std::test::assert_eq_str(self.a.saved.id, "stable-request", "the field itself is untouched");
+
+        // #992: assignment to a struct local copies, as `let` does
+        let command = self.a.saved;
+        let good = receipt(command);
+        let mut bad = good;
+        bad.inner.state = "x";
+        bad = good;
+        bad.inner.id = "CANARY";
+        std::test::assert_eq_str(command.id, "stable-request", "the command after a write through an assigned copy");
+        std::test::assert_eq_str(good.inner.id, "stable-request", "the source after a write through an assigned copy");
+        std::test::assert_eq_str(bad.inner.state, "pending", "the assignment replaced the earlier write");
+        std::test::assert_eq_str(bad.inner.id, "CANARY", "the assigned copy holds its own write");
+
+        // a nested struct field of a local takes a copy of a place
+        let mut other = receipt(command);
+        other.inner = good.inner;
+        other.inner.state = "moved";
+        std::test::assert_eq_str(good.inner.state, "pending", "a nested field assigned from a place is a copy");
+
+        // a compound write through a copy
+        let mut grown = good;
+        grown.inner.id += "-more";
+        std::test::assert_eq_str(good.inner.id, "stable-request", "a compound write through a copy leaves the source");
+        std::test::assert_eq_str(grown.inner.id, "stable-request-more", "and lands in the copy");
+
+        // an element of a local array assigned from a place
+        let mut rows = [Cmd { }, Cmd { }];
+        rows[0] = command;
+        rows[0].id = "row-zero";
+        std::test::assert_eq_str(command.id, "stable-request", "an array element assigned from a place is a copy");
+        std::test::assert_eq_str(rows[0].id, "row-zero", "and holds its own write");
+    }
+}
+fn main() { App { }; }

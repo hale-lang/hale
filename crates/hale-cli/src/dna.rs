@@ -12,7 +12,7 @@
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
 //!   hale dna run [project]      build, run under LOTUS_OBS with iris attached, hold the membrane
 //!   hale dna status [--json]    the status projection, from the Journal
-//!   hale dna ask <intent…>      offer intent over the membrane
+//!   hale dna task create <outcome…>  ask for an outcome: a Task, over the membrane or into the record
 //!   hale dna history [<entity>] walk the Journal by causal links
 //!   hale dna review <id> <verdict> a verdict over the membrane (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
@@ -312,8 +312,9 @@ pub fn run(args: &[String]) -> ExitCode {
         // working tree's (`--from-tree <dir>`, a checkout holding
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
-        Some("ask") => host_exec("ask", Path::new("."), &args[1..]),
-        // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
+        // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`
+        // (asking is one kind of task; the cockpit exposes the same operation
+        // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
         // GH #604 rule 5: `hale dna retire <who> [--to <successor>]`
         Some("retire") => host_exec("retire", Path::new("."), &args[1..]),
@@ -469,8 +470,6 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the application on an apply, watch the window, report back");
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
-    eprintln!("       hale dna ask [--to <locus>] <intent…>");
-    eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna queue [submit]      the requests kept here while the service could not be reached; send them");
@@ -500,6 +499,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
+    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome: over the membrane here, into the record otherwise; prints the Task born or the refusal");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
     eprintln!("       hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)");
@@ -887,6 +888,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("created {}", owners.display()));
     }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+    if main_text.contains("self.core.tick(") {
+        out.push(format!(
+            "note    {}/main.hl calls self.core.tick directly; use self.core.request_tick with the same millisecond clock in the live loop so journal refresh and incoming work run on the owner's queue",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("main locus Org") && !main_text.contains("ownership: dna::Ownership") {
         out.push(format!(
             "note    {}/main.hl names no owners map; a shared record needs one (GH #664): `ownership: dna::Ownership {{ path: \"dna/org/owners\" }}`",
@@ -1398,7 +1405,7 @@ fn ui_cmd(args: &[String]) -> ExitCode {
 // ---------------------------------------------------------------
 
 // ---------------------------------------------------------------
-// the Journal as read by the host: status / ask / history
+// the Journal as read by the host: status / task create / history
 // ---------------------------------------------------------------
 
 // ---------------------------------------------------------------
@@ -1666,8 +1673,10 @@ main locus Org {{
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
         // GH #596 O: the substrate's cadence — the optimize pass fires
-        // every `optimize_every_ms` on the substrate above (0 = never)
-        while true {{ std::time::sleep(100ms); self.core.tick(std::time::monotonic_ns() / 1000000); }}
+        // every `optimize_every_ms` on the substrate above (0 = never).
+        // Queue it with incoming work so a journal refresh completes
+        // before a task handler can read or append its cached view.
+        while true {{ std::time::sleep(100ms); self.core.request_tick(std::time::monotonic_ns() / 1000000); }}
     }}
 }}
 

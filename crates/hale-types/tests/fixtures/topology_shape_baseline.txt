@@ -745,6 +745,8 @@ crates/hale-codegen/tests/generics.rs#6 3089c600ae8dc10a
 crates/hale-codegen/tests/generics.rs#7 f2c1228edb650960
 crates/hale-codegen/tests/generics.rs#8 7ba49c53bd84fd5d
 crates/hale-codegen/tests/generics.rs#9 c93fe180e441bbce
+crates/hale-codegen/tests/gh730_interface_identity.rs#0 007b2814ccb65d21
+crates/hale-codegen/tests/gh967_contract_field_borrow.rs#0 99da658ed7124b0e
 crates/hale-codegen/tests/hale_self_test.rs#0 b1e7c383d7515c93
 crates/hale-codegen/tests/hale_self_test.rs#1 b1e7c383d7515c93
 crates/hale-codegen/tests/hale_self_test.rs#2 7ba49c53bd84fd5d
@@ -1307,6 +1309,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 865d341109268295
 crates/hale-stdlib/hl/cli.hl f5e2f8bd9037e592
 crates/hale-stdlib/hl/core.hl 50b0f0e8be0c5f09
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
+crates/hale-stdlib/hl/http.hl be6d556ef3327d21
 crates/hale-stdlib/hl/http_client.hl fccb52d86a539447
 crates/hale-stdlib/hl/io_tcp.hl 170732f0b5edc9ab
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1

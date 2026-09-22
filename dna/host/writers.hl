@@ -6,6 +6,7 @@
 // decides.
 
 import "../core" as dna;
+import "../operations" as ops;
 
 fn who_am_i() -> String {
     let u = std::env::var("USER");
@@ -45,7 +46,30 @@ fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::E
     return dna::Event { seq: -1 };
 }
 
-// ---- ask ------------------------------------------------------------
+// Eligibility belongs to the captured projection. A stale append must return
+// to the verb's complete decision, never retry a previously chosen assignee.
+interface TaskWriterAdmission {
+    fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String;
+}
+locus RecordTaskWriterAdmission {
+    params { root: String = "."; }
+    fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String {
+        let r = rec(self.root);
+        if r.head(JOURNAL) != expected { return "stale_revision"; }
+        if routing > 0 {
+            // Preserve the existing owning-Ledger path. This is not a joint
+            // Record/Ledger transaction; atomic person retirement is Record-only.
+            return append_as_at(self.root, expected, ledger_expected, row.kind, row.entity, row.body, row.author);
+        }
+        // Do not choose a different memory after reading routing 0. Concurrent
+        // Ledger adoption moves this exact Record predecessor and loses this CAS.
+        let a = r.append(JOURNAL, expected, row, signing(self.root), "");
+        if a.ok { return ""; }
+        return if a.error == "stale" { "stale_revision" } else { "the row could not be written" };
+    }
+}
+
+// ---- task create ----------------------------------------------------
 
 @unbounded
 // GH #596 W: a person reports a handed Task done. A row in the record
@@ -54,76 +78,103 @@ fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::E
 // not handed: a Task the organism is working, or has settled, is not
 // a person's to close.
 fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String) -> Answer {
+    let writer = RecordTaskWriterAdmission { root: root };
+    return task_done_admit(root, seed, id, who_flag, note, evidence_flag, exception, authorized_by, writer);
+}
+
+@unbounded
+fn task_done_admit(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 { return fail("task done: which Task? `hale dna task done <id>`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
-    let p = open_projection(root, seed, "");
-    let t = p.task_of(id);
-    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
-    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to report done"); }
-    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    // GH #604 rule 4: completion is checked at admission — the row must
-    // be the assignee's. Reassignment is its own row, by its own verb.
-    if len(t.assignee) > 0 && t.assignee != who {
-        return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; `hale dna task reassign " + id + " --to " + who + "` first");
-    }
-    // GH #604: the acceptance condition bound at hand-off. A note never
-    // verifies anything: the evidence is linked, or an exception someone
-    // else authorized is recorded as such, or the completion is shown as
-    // human-reported.
-    let evidence = if len(evidence_flag) > 0 { dna::evidence_digest(evidence_flag) } else { "" };
-    let refusal = dna::completion_refusal(who, t.evidence_required, evidence, exception, authorized_by);
-    if refusal == "evidence required" {
-        return fail("Task `" + id + "` closes only with its evidence, under acceptance/" + t.obligation + " (" + t.acceptance + ") as it stood when the Task was handed: link it with `--evidence <digest>` (file it first: `hale dna receipt file <path>`), or record an exception with `--exception <why> --authorized-by <who>`; a note alone does not verify it");
-    }
-    if len(refusal) > 0 { return fail("task done: " + refusal); }
-    if len(evidence) > 0 {
-        if !dna::digest_well_formed(evidence) { return fail("task done: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
-        if !evidence_held(root, p, evidence) { return fail("task done: no receipt " + evidence + " in the record; file it first: `hale dna receipt file <path>`"); }
-        let lb = std::json::Builder { };
-        lb.begin_object();
-        lb.string_field("task", id);
-        lb.string_field("evidence", evidence);
-        lb.string_field("by", who);
-        lb.string_field("practice", t.acceptance);
-        lb.end_object();
-        if !append_as(root, "completion.linked", id, lb.result(), who) { return fail("the record refused the append"); }
-    }
-    if len(exception) > 0 {
-        // an exception is its authorizer's act, in their own name: the
-        // assignee's naming someone is not an authorization
-        // and it closes the Task only as it was authorized: the exception
-        // text the authorizer approved, under the practice bound to the Task
-        // — never another the assignee writes over it (the second review
-        // of #632)
-        let mut authorized = "";
-        let mut matched = false;
-        let mut k = 0;
-        while k < p.rows() {
-            let e = p.row(k);
-            if e.kind == "exception.authorized" && e.entity == id && dna::same_party(std::json::find_string_field(e.body, "by"), authorized_by) {
-                authorized = std::json::find_string_field(e.body, "why");
-                if authorized == exception && std::json::find_string_field(e.body, "practice") == t.acceptance { matched = true; }
-            }
-            k = k + 1;
+    let mut stage = 0;
+    let mut tries = 0;
+    while tries < 16 {
+        tries = tries + 1;
+        let p = open_projection(root, seed, "");
+        let read_at = p.j.record.head();
+        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let t = p.task_of(id);
+        if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+        if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to report done"); }
+        let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+        if p.has_row("person.retired", who) { return fail("task done: " + who + " retired; no new admission is made in their name"); }
+        // GH #604 rule 4: completion is checked at admission — the row must
+        // be the assignee's. Reassignment is its own row, by its own verb.
+        if len(t.assignee) > 0 && t.assignee != who {
+            return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; `hale dna task reassign " + id + " --to " + who + "` first");
         }
-        if len(authorized) == 0 { return fail("task done: no exception for `" + id + "` authorized by " + authorized_by + " in the record; " + authorized_by + " authorizes it: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
-        if !matched { return fail("task done: " + authorized_by + " authorized a different exception for `" + id + "` (\"" + authorized + "\"); an exception closes a Task only as it was authorized — close it with that exception, or " + authorized_by + " authorizes this one: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
-        let xb = std::json::Builder { };
-        xb.begin_object();
-        xb.string_field("task", id);
-        xb.string_field("why", exception);
-        xb.string_field("authorized_by", authorized_by);
-        xb.string_field("by", who);
-        xb.string_field("practice", t.acceptance);
-        xb.end_object();
-        if !append_as(root, "completion.excepted", id, xb.result(), who) { return fail("the record refused the append"); }
+        // GH #604: the acceptance condition bound at hand-off. A note never
+        // verifies anything: the evidence is linked, or an exception someone
+        // else authorized is recorded as such, or the completion is shown as
+        // human-reported.
+        let evidence = if len(evidence_flag) > 0 { dna::evidence_digest(evidence_flag) } else { "" };
+        let refusal = dna::completion_refusal(who, t.evidence_required, evidence, exception, authorized_by);
+        if refusal == "evidence required" {
+            return fail("Task `" + id + "` closes only with its evidence, under acceptance/" + t.obligation + " (" + t.acceptance + ") as it stood when the Task was handed: link it with `--evidence <digest>` (file it first: `hale dna receipt file <path>`), or record an exception with `--exception <why> --authorized-by <who>`; a note alone does not verify it");
+        }
+        if len(refusal) > 0 { return fail("task done: " + refusal); }
+        if len(evidence) > 0 {
+            if !dna::digest_well_formed(evidence) { return fail("task done: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+            if !evidence_held(root, p, evidence) { return fail("task done: no receipt " + evidence + " in the record; file it first: `hale dna receipt file <path>`"); }
+            if stage == 0 {
+                let lb = std::json::Builder { };
+                lb.begin_object();
+                lb.string_field("task", id);
+                lb.string_field("evidence", evidence);
+                lb.string_field("by", who);
+                lb.string_field("practice", t.acceptance);
+                lb.end_object();
+                let linked = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "completion.linked", entity: id, body: lb.result(), author: who });
+                if linked == "stale_revision" { continue; }
+                if len(linked) > 0 { return fail("the record refused the append: " + linked); }
+                stage = 1; continue;
+            }
+        }
+        if len(exception) > 0 {
+            // an exception is its authorizer's act, in their own name: the
+            // assignee's naming someone is not an authorization
+            // and it closes the Task only as it was authorized: the exception
+            // text the authorizer approved, under the practice bound to the Task
+            // — never another the assignee writes over it (the second review
+            // of #632)
+            let mut authorized = "";
+            let mut matched = false;
+            let mut k = 0;
+            while k < p.rows() {
+                let e = p.row(k);
+                if e.kind == "exception.authorized" && e.entity == id && dna::same_party(std::json::find_string_field(e.body, "by"), authorized_by) {
+                    authorized = std::json::find_string_field(e.body, "why");
+                    if authorized == exception && std::json::find_string_field(e.body, "practice") == t.acceptance { matched = true; }
+                }
+                k = k + 1;
+            }
+            if len(authorized) == 0 { return fail("task done: no exception for `" + id + "` authorized by " + authorized_by + " in the record; " + authorized_by + " authorizes it: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
+            if !matched { return fail("task done: " + authorized_by + " authorized a different exception for `" + id + "` (\"" + authorized + "\"); an exception closes a Task only as it was authorized — close it with that exception, or " + authorized_by + " authorizes this one: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
+            if stage < 2 {
+                let xb = std::json::Builder { };
+                xb.begin_object();
+                xb.string_field("task", id);
+                xb.string_field("why", exception);
+                xb.string_field("authorized_by", authorized_by);
+                xb.string_field("by", who);
+                xb.string_field("practice", t.acceptance);
+                xb.end_object();
+                let excepted = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "completion.excepted", entity: id, body: xb.result(), author: who });
+                if excepted == "stale_revision" { continue; }
+                if len(excepted) > 0 { return fail("the record refused the append: " + excepted); }
+                stage = 2; continue;
+            }
+        }
+        let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
+        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "task.done", entity: id, body: body, author: who });
+        if landed == "stale_revision" { continue; }
+        if len(landed) > 0 { return fail("the record refused the append: " + landed); }
+        let s2 = sync_record(root);
+        let label = if len(evidence) > 0 { " — evidence " + evidence + " linked" } else if len(exception) > 0 { " — exception authorized by " + authorized_by + ": " + exception } else { " — human-reported, no evidence linked" };
+        return answer("task " + id + " done " + body + label + "\n");
     }
-    let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
-    if !append_as(root, "task.done", id, body, who) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
-    let label = if len(evidence) > 0 { " — evidence " + evidence + " linked" } else if len(exception) > 0 { " — exception authorized by " + authorized_by + ": " + exception } else { " — human-reported, no evidence linked" };
-    return answer("task " + id + " done " + body + label + "\n");
+    return fail("task done: the Record kept changing; no further admission was made, inspect the Task before retrying");
 }
 
 // Evidence the record holds: a receipt under refs/dna/receipts, or a
@@ -138,35 +189,51 @@ fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
 // only one of the people the bound practice names when it names them.
 @unbounded
 fn task_authorize_verb(root: String, seed: String, id: String, exception: String, who_flag: String) -> Answer {
+    let writer = RecordTaskWriterAdmission { root: root };
+    return task_authorize_admit(root, seed, id, exception, who_flag, writer);
+}
+
+@unbounded
+fn task_authorize_admit(root: String, seed: String, id: String, exception: String, who_flag: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 || len(exception) == 0 { return fail("task authorize: `hale dna task authorize <id> --exception <why> [--as <authorizer>]`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
-    let p = open_projection(root, seed, "");
-    let t = p.task_of(id);
-    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
-    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no exception to authorize"); }
-    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    if dna::same_party(who, t.assignee) { return fail("task authorize: " + who + " holds `" + id + "`; an exception is authorized by someone other than its assignee"); }
-    if len(t.acceptance) > 0 {
-        let doc = receipt_read(root, t.acceptance[7..len(t.acceptance)]);
-        // the bound practice is read, or nothing is authorized under it: a
-        // practice absent from this clone, unreadable or redacted is not a
-        // practice that names no one (the second review of #632)
-        if !doc.present { return fail("task authorize: the practice bound to `" + id + "` (" + t.acceptance + ") cannot be read here; an exception is authorized only under the practice it binds — `hale dna sync` fetches it where the record has it"); }
-        let text = std::json::find_string_field(doc.text, "text");
-        if len(text) == 0 { return fail("task authorize: the practice bound to `" + id + "` (" + t.acceptance + ") has no text this host reads; nothing is authorized under it"); }
-        if !dna::may_authorize(text, who) { return fail("task authorize: acceptance/" + t.obligation + " (" + t.acceptance + ") lets only " + dna::exception_authorizers(text) + " authorize an exception"); }
+    let mut tries = 0;
+    while tries < 16 {
+        tries = tries + 1;
+        let p = open_projection(root, seed, "");
+        let read_at = p.j.record.head();
+        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let t = p.task_of(id);
+        if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+        if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no exception to authorize"); }
+        let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+        if p.has_row("person.retired", who) { return fail("task authorize: " + who + " retired; no new admission is made in their name"); }
+        if dna::same_party(who, t.assignee) { return fail("task authorize: " + who + " holds `" + id + "`; an exception is authorized by someone other than its assignee"); }
+        if len(t.acceptance) > 0 {
+            let doc = receipt_read(root, t.acceptance[7..len(t.acceptance)]);
+            // the bound practice is read, or nothing is authorized under it: a
+            // practice absent from this clone, unreadable or redacted is not a
+            // practice that names no one (the second review of #632)
+            if !doc.present { return fail("task authorize: the practice bound to `" + id + "` (" + t.acceptance + ") cannot be read here; an exception is authorized only under the practice it binds — `hale dna sync` fetches it where the record has it"); }
+            let text = std::json::find_string_field(doc.text, "text");
+            if len(text) == 0 { return fail("task authorize: the practice bound to `" + id + "` (" + t.acceptance + ") has no text this host reads; nothing is authorized under it"); }
+            if !dna::may_authorize(text, who) { return fail("task authorize: acceptance/" + t.obligation + " (" + t.acceptance + ") lets only " + dna::exception_authorizers(text) + " authorize an exception"); }
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("task", id);
+        b.string_field("why", exception);
+        b.string_field("by", who);
+        b.string_field("practice", t.acceptance);
+        b.end_object();
+        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "exception.authorized", entity: id, body: b.result(), author: who });
+        if landed == "stale_revision" { continue; }
+        if len(landed) > 0 { return fail("the record refused the append: " + landed); }
+        let s2 = sync_record(root);
+        return answer("task " + id + ": exception authorized by " + who + ": " + exception + " (exception.authorized); " + t.assignee + " closes it with `hale dna task done " + id + " --exception \"" + exception + "\" --authorized-by " + who + "`\n");
     }
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("task", id);
-    b.string_field("why", exception);
-    b.string_field("by", who);
-    b.string_field("practice", t.acceptance);
-    b.end_object();
-    if !append_as(root, "exception.authorized", id, b.result(), who) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
-    return answer("task " + id + ": exception authorized by " + who + ": " + exception + " (exception.authorized); " + t.assignee + " closes it with `hale dna task done " + id + " --exception \"" + exception + "\" --authorized-by " + who + "`\n");
+    return fail("task authorize: the Record kept changing; no further admission was made, inspect the Task before retrying");
 }
 
 // GH #616: a person reports a decision someone else made — a manager,
@@ -178,58 +245,74 @@ fn task_authorize_verb(root: String, seed: String, id: String, exception: String
 // the decider.
 @unbounded
 fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String) -> Answer {
+    let writer = RecordTaskWriterAdmission { root: root };
+    return task_decide_admit(root, seed, id, decided_by, via, evidence_flag, note, who_flag, writer);
+}
+
+@unbounded
+fn task_decide_admit(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 { return fail("task decide: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
-    let p = open_projection(root, seed, "");
-    let t = p.task_of(id);
-    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
-    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no decision to report"); }
-    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    let malformed = dna::report_refusal(who, decided_by, via, evidence_flag);
-    if len(malformed) > 0 { return fail("task decide: " + malformed); }
-    if len(t.assignee) > 0 && t.assignee != who {
-        return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; only its assignee reports a decision on it (`hale dna task reassign " + id + " --to " + who + "` first)");
+    let mut tries = 0;
+    while tries < 16 {
+        tries = tries + 1;
+        let p = open_projection(root, seed, "");
+        let read_at = p.j.record.head();
+        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let t = p.task_of(id);
+        if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+        if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no decision to report"); }
+        let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+        if p.has_row("person.retired", who) { return fail("task decide: " + who + " retired; no new admission is made in their name"); }
+        let malformed = dna::report_refusal(who, decided_by, via, evidence_flag);
+        if len(malformed) > 0 { return fail("task decide: " + malformed); }
+        if len(t.assignee) > 0 && t.assignee != who {
+            return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; only its assignee reports a decision on it (`hale dna task reassign " + id + " --to " + who + "` first)");
+        }
+        let evidence = dna::evidence_digest(evidence_flag);
+        if !dna::digest_well_formed(evidence) { return fail("task decide: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+        let held = evidence_held(root, p, evidence);
+        if !held { return fail("task decide: no receipt " + evidence + " in the record; file the mail or document first: `hale dna receipt file <path>`"); }
+        let practice = if len(t.obligation) > 0 { dna::acceptance_practice(t.obligation) } else { "" };
+        // the practice bound when the Task was handed governs every way it
+        // closes; only a Task handed before practices were bound reads the one
+        // in force now
+        let policy = if t.acceptance_bound { t.acceptance } else if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
+        let mut accepted = false;
+        let mut why = "";
+        if len(t.obligation) == 0 {
+            why = "the Task names no obligation class, so no acceptance practice lets a report settle it; its assignee closes it with `hale dna task done " + id + "`";
+        } else if len(policy) == 0 {
+            why = (if t.acceptance_bound { "no practice `" + practice + "` was in force when the Task was handed" } else { "no ratified practice `" + practice + "`" }) + ": a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
+        } else {
+            let doc = receipt_read(root, policy[7..len(policy)]);
+            if dna::acceptance_allows_reports(std::json::find_string_field(doc.text, "text")) { accepted = true; }
+            else { why = "practice `" + practice + "` (" + policy + ") requires a native decision: `hale dna task done " + id + "` by " + t.assignee; }
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("reporter", who);
+        b.string_field("decider", decided_by);
+        b.string_field("channel", via);
+        b.string_field("evidence", evidence);
+        b.string_field("scope", id);
+        b.string_field("obligation", t.obligation);
+        b.string_field("practice", practice);
+        b.string_field("policy", policy);
+        b.bool_field("accepted", accepted);
+        b.string_field("why", why);
+        b.string_field("note", note);
+        b.end_object();
+        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "decision.reported", entity: id, body: b.result(), author: who });
+        if landed == "stale_revision" { continue; }
+        if len(landed) > 0 { return fail("the record refused the append: " + landed); }
+        let s2 = sync_record(root);
+        let line = dna::decision_line(who, decided_by, via, evidence);
+        if accepted { return answer("task " + id + " decided: " + line + ", under " + practice + " (" + policy + ")\n"); }
+        return answer("task " + id + " still handed: the report is kept (" + line + ") and does not settle it — " + why + "\n");
     }
-    let evidence = dna::evidence_digest(evidence_flag);
-    if !dna::digest_well_formed(evidence) { return fail("task decide: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
-    let held = evidence_held(root, p, evidence);
-    if !held { return fail("task decide: no receipt " + evidence + " in the record; file the mail or document first: `hale dna receipt file <path>`"); }
-    let practice = if len(t.obligation) > 0 { dna::acceptance_practice(t.obligation) } else { "" };
-    // the practice bound when the Task was handed governs every way it
-    // closes; only a Task handed before practices were bound reads the one
-    // in force now
-    let policy = if t.acceptance_bound { t.acceptance } else if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
-    let mut accepted = false;
-    let mut why = "";
-    if len(t.obligation) == 0 {
-        why = "the Task names no obligation class, so no acceptance practice lets a report settle it; its assignee closes it with `hale dna task done " + id + "`";
-    } else if len(policy) == 0 {
-        why = (if t.acceptance_bound { "no practice `" + practice + "` was in force when the Task was handed" } else { "no ratified practice `" + practice + "`" }) + ": a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
-    } else {
-        let doc = receipt_read(root, policy[7..len(policy)]);
-        if dna::acceptance_allows_reports(std::json::find_string_field(doc.text, "text")) { accepted = true; }
-        else { why = "practice `" + practice + "` (" + policy + ") requires a native decision: `hale dna task done " + id + "` by " + t.assignee; }
-    }
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("reporter", who);
-    b.string_field("decider", decided_by);
-    b.string_field("channel", via);
-    b.string_field("evidence", evidence);
-    b.string_field("scope", id);
-    b.string_field("obligation", t.obligation);
-    b.string_field("practice", practice);
-    b.string_field("policy", policy);
-    b.bool_field("accepted", accepted);
-    b.string_field("why", why);
-    b.string_field("note", note);
-    b.end_object();
-    if !append_as(root, "decision.reported", id, b.result(), who) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
-    let line = dna::decision_line(who, decided_by, via, evidence);
-    if accepted { return answer("task " + id + " decided: " + line + ", under " + practice + " (" + policy + ")\n"); }
-    return answer("task " + id + " still handed: the report is kept (" + line + ") and does not settle it — " + why + "\n");
+    return fail("task decide: the Record kept changing; no further admission was made, inspect the Task before retrying");
 }
 
 // GH #616: file a document — a mail, a signed page — as evidence a report
@@ -286,32 +369,48 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
 // names both; the Task stays handed. Reached per command.
 @unbounded
 fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_flag: String) -> Answer {
+    let writer = RecordTaskWriterAdmission { root: root };
+    return task_reassign_admit(root, seed, id, to, by_flag, writer);
+}
+
+@unbounded
+fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_flag: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 || len(to) == 0 { return fail("task reassign: `hale dna task reassign <id> --to <who> [--as <by>]`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
-    let p = open_projection(root, seed, "");
-    let t = p.task_of(id);
-    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
-    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to reassign"); }
-    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
-    // GH #604 rule 5: no new work reaches a person who retired
-    let mut gone = false;
-    let mut k = 0;
-    while k < p.rows() {
-        let e = p.row(k);
-        if e.kind == "person.retired" && e.entity == to { gone = true; }
-        k = k + 1;
+    let mut tries = 0;
+    while tries < 16 {
+        tries = tries + 1;
+        let p = open_projection(root, seed, "");
+        let read_at = p.j.record.head();
+        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let t = p.task_of(id);
+        if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+        if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to reassign"); }
+        let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+        if p.has_row("person.retired", by) { return fail("task reassign: " + by + " retired; no new admission is made in their name"); }
+        // GH #604 rule 5: no new work reaches a person who retired
+        let mut gone = false;
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.kind == "person.retired" && e.entity == to { gone = true; }
+            k = k + 1;
+        }
+        if gone { return fail("task reassign: " + to + " retired; no new work reaches them — reassign to someone who works here"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("from", t.assignee);
+        b.string_field("to", to);
+        b.string_field("by", by);
+        b.end_object();
+        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "task.reassigned", entity: id, body: b.result(), author: by });
+        if landed == "stale_revision" { continue; }
+        if len(landed) > 0 { return fail("the record refused the append: " + landed); }
+        let s2 = sync_record(root);
+        return answer("task " + id + " reassigned " + (if len(t.assignee) > 0 { "from " + t.assignee + " " } else { "" }) + "to " + to + " by " + by + "\n");
     }
-    if gone { return fail("task reassign: " + to + " retired; no new work reaches them — reassign to someone who works here"); }
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("from", t.assignee);
-    b.string_field("to", to);
-    b.string_field("by", by);
-    b.end_object();
-    if !append_as(root, "task.reassigned", id, b.result(), by) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
-    return answer("task " + id + " reassigned " + (if len(t.assignee) > 0 { "from " + t.assignee + " " } else { "" }) + "to " + to + " by " + by + "\n");
+    return fail("task reassign: the Record kept changing; no further admission was made, inspect the Task before retrying");
 }
 
 // GH #667: `hale dna task accept <id> [--as <who>] [--note …]` — a member
@@ -319,30 +418,48 @@ fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_fla
 // the Task to the assignee the request named. Refused for anyone else:
 // settlement is the receiving owner's alone.
 fn task_accept_verb(root: String, seed: String, id: String, who_flag: String, note: String) -> Answer {
+    let writer = RecordTaskWriterAdmission { root: root };
+    return task_accept_admit(root, seed, id, who_flag, note, writer);
+}
+
+@unbounded
+fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, note: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 { return fail("task accept: `hale dna task accept <id> [--as <who>] [--note <why>]`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
-    let p = open_projection(root, seed, "");
-    let t = p.task_of(id);
-    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
-    if t.state != "transfer_requested" { return fail("Task `" + id + "` is " + t.state + ", not offered to another owner: nothing to accept"); }
-    let to = std::json::find_string_field(t.detail, "to");
-    let from = std::json::find_string_field(t.detail, "owner");
-    if len(to) == 0 { return fail("Task `" + id + "` is offered to another record (`hale dna handoff accept`), not to an owner of this one"); }
-    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    let theirs = owner_of_person_here(root, who);
-    if theirs != to { return fail("task accept: " + id + " is offered to " + to + "; " + who + " is " + (if len(theirs) > 0 { theirs + "'s" } else { "no owner's" }) + " member, and only " + to + "'s accepts"); }
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("owner", to);
-    b.string_field("from", from);
-    b.string_field("by", who);
-    b.string_field("assignee", std::json::find_string_field(t.detail, "assignee"));
-    b.string_field("note", note);
-    b.end_object();
-    if !append_as(root, "task.transfer_accepted", id, b.result(), who) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
-    return answer("task " + id + " accepted for " + to + " by " + who + " (task.transfer_accepted); " + to + "'s controller hands it to " + std::json::find_string_field(t.detail, "assignee") + "\n");
+    let mut tries = 0;
+    while tries < 16 {
+        tries = tries + 1;
+        let p = open_projection(root, seed, "");
+        let read_at = p.j.record.head();
+        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let t = p.task_of(id);
+        if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+        if t.state != "transfer_requested" { return fail("Task `" + id + "` is " + t.state + ", not offered to another owner: nothing to accept"); }
+        let to = std::json::find_string_field(t.detail, "to");
+        let from = std::json::find_string_field(t.detail, "owner");
+        if len(to) == 0 { return fail("Task `" + id + "` is offered to another record (`hale dna handoff accept`), not to an owner of this one"); }
+        let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+        if p.has_row("person.retired", who) { return fail("task accept: " + who + " retired; no new admission is made in their name"); }
+        let assignee = std::json::find_string_field(t.detail, "assignee");
+        if len(assignee) == 0 || p.has_row("person.retired", assignee) { return fail("task accept: the requested assignee is unavailable or retired; a new owner-approved transfer is required"); }
+        let theirs = owner_of_person_here(root, who);
+        if theirs != to { return fail("task accept: " + id + " is offered to " + to + "; " + who + " is " + (if len(theirs) > 0 { theirs + "'s" } else { "no owner's" }) + " member, and only " + to + "'s accepts"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("owner", to);
+        b.string_field("from", from);
+        b.string_field("by", who);
+        b.string_field("assignee", std::json::find_string_field(t.detail, "assignee"));
+        b.string_field("note", note);
+        b.end_object();
+        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "task.transfer_accepted", entity: id, body: b.result(), author: who });
+        if landed == "stale_revision" { continue; }
+        if len(landed) > 0 { return fail("the record refused the append: " + landed); }
+        let s2 = sync_record(root);
+        return answer("task " + id + " accepted for " + to + " by " + who + " (task.transfer_accepted); " + to + "'s controller hands it to " + std::json::find_string_field(t.detail, "assignee") + "\n");
+    }
+    return fail("task accept: the Record kept changing; no further admission was made, inspect the Task before retrying");
 }
 
 // GH #604 rule 5: a person retires. Admission of new work to them
@@ -353,8 +470,17 @@ fn task_accept_verb(root: String, seed: String, id: String, who_flag: String, no
 @unbounded
 fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: String) -> Answer {
     if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
-    let s = sync_record(root);
+    let synced = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    return retire_rows(root, seed, who, to, by_flag);
+}
+
+// GH #604 rule 5, row by row: admission of new work to the person stops,
+// what they hold is transferred to a named successor (`task.reassigned`
+// each), and the retirement is a row in the retiring or retiring-them
+// person's name. Refused while they hold work and no successor is named.
+@unbounded
+fn retire_rows(root: String, seed: String, who: String, to: String, by_flag: String) -> Answer {
     let p = open_projection(root, seed, "");
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
     let mut held = "";
@@ -400,6 +526,88 @@ fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: Str
     return answer(who + " retired by " + by + "; " + to_string(n) + " task(s) transferred" + (if n > 0 { " to " + to } else { "" }) + "\n");
 }
 
+// The ids in a retirement plan's task array, space-separated, as the
+// refusal names them (`noor holds 1 handed task(s): t2`).
+@unbounded
+fn held_task_ids(tasks: String) -> String {
+    let mut out = "";
+    let mut entries = std::json::array_first(tasks);
+    while !entries.done {
+        let id = std::json::find_string_field(entries.element, "id");
+        if len(id) > 0 { out = if len(out) > 0 { out + " " + id } else { id }; }
+        entries = std::json::array_next(entries);
+    }
+    return out;
+}
+
+// Trusted-local CLI attribution is its existing authority model. The HTTP
+// provider independently requires its explicit application policy grant.
+@unbounded
+fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: String, batch: ops::GovernanceBatchRecord) -> Answer {
+    if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
+    let synced = sync_record(root);
+    let record = dna::GitRecord { repo: root };
+    if len(record.head(JOURNAL)) == 0 { return fail(no_record(root)); }
+    let principal = record.setting("principal");
+    // The atomic batch below is the trusted-local Record's. A record with
+    // Ledger routing or a hosted principal retires the way it did before
+    // the batch existed: each transfer a row, then the retirement, in the
+    // named person's name (the two-heads fixture retires under both).
+    if trust_mode(root) != "local" || (principal != "" && principal != "local") || routing_here(root) != 0 {
+        return retire_rows(root, seed, who, to, by_flag);
+    }
+    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: by };
+    let common = ops::GovernanceCommandCodec { }; let codec = ops::PersonRetirementCodec { }; let retirement = ops::PersonRetirement { };
+    if !common.context_valid(context) || !common.bounded(who, 256, true, false) || !common.bounded(to, 256, false, false) || to == who { return fail("retire: name an exact person and a distinct successor, when one is supplied"); }
+    let grant = ops::GovernanceGrant { allowed: true, authority: "trusted-local-cli", basis: "dna.trusted-local-cli-retirement/1" };
+    let cli = GovernanceCli { root: root }; let request_id = cli.request_id("");
+    let native = ops::GovernanceCommands { record: record };
+    let mut attempts = 0;
+    while attempts < 4 {
+        attempts = attempts + 1;
+        let snapshot = native.capture();
+        if !snapshot.ok { return fail("retire: " + snapshot.code); }
+        let journal = ops::GovernanceJournal { snapshot: snapshot };
+        if !journal.valid || !native.source_supported(journal) { return fail("retire: the complete Record-only history is unavailable"); }
+        let plan = retirement.plan(journal, who, grant.basis);
+        if !plan.ok { return fail("retire: " + plan.code + "; no partial transfers were published"); }
+        if plan.state == "retired" { return fail("retire: " + who + " already retired" + (if plan.successor != "" { " to " + plan.successor } else { " without a successor" }) + "; inspect the existing retirement and Task history rather than publishing it again"); }
+        if !retirement.active(journal, by) { return fail("retire: " + by + " retired; no new admission is made in their name"); }
+        if plan.transferred > 0 && to == "" { return fail(who + " holds " + to_string(plan.transferred) + " handed task(s): " + held_task_ids(plan.tasks) + "; name a successor: `hale dna retire " + who + " --to <who>`"); }
+        let command = ops::GovernanceCommand { request_id: request_id, operation: "dna.person.retire", application_id: context.application_id, target_kind: "dna.person", target_id: who,
+            subject_digest: plan.subject_digest, new_assignee: to };
+        if !codec.valid(context, command) { return fail("retire: invalid exact retirement command"); }
+        let existing = native.find(snapshot, journal, context, request_id);
+        if existing.ok || existing.code != "command_not_found" { return fail("retire: the fresh request identity is unavailable: " + request_id); }
+        if trust_mode(root) != "local" || record.setting("principal") != principal { return fail("retire: local authority changed before admission; nothing was published"); }
+        eprintln("hale dna retirement request_id: ", request_id);
+        let published = retirement.publish_retirement(batch, snapshot, context, command, grant, plan, false);
+        if published.code == "stale" { continue; }
+        if !published.ok { return fail("retire: " + published.code + "; no partial transfers were published; request_id " + request_id); }
+        // Both a successful and an uncertain ref update are observed through
+        // the same shared namespace and native chain proof. Never republish an
+        // uncertain batch, and never infer admission from off-ref commits.
+        let after = native.capture();
+        if after.ok {
+            let current = ops::GovernanceJournal { snapshot: after };
+            if current.valid {
+                let found = native.find(after, current, context, request_id);
+                if found.ok && found.fingerprint == codec.fingerprint(context, command) {
+                    let result = native.result(after, current, found);
+                    if result.ok && result.receipt.person.state == "applied" {
+                        // Reconciliation may rewrite event IDs; it cannot run
+                        // implicitly across this exact local transfer manifest.
+                        return answer(who + " retired by " + by + "; " + to_string(result.receipt.person.transferred) + " task(s) transferred" + (if result.receipt.person.transferred > 0 { " to " + to } else { "" }) + "\nrequest_id: " + request_id + "\nretirement event: " + result.receipt.person.event_id + "\nRecorded atomically in this local Record; remote synchronization is not automatic after this transaction.\n");
+                    }
+                }
+            }
+        }
+        return fail("retire: outcome unknown; no second publication was attempted. Retain request_id " + request_id + "; inspect the native retirement and Task history before any new command");
+    }
+    return fail("retire: the Record kept changing; no retirement batch was admitted by this request. Retain request_id " + request_id);
+}
+
 // GH #604 rule 3: a person resolves an effect whose outcome the
 // organism could not establish after a restart. The last
 // `effect.result` for a key is its status, so the resolution is one
@@ -427,8 +635,12 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
     return answer("effect " + key + " " + body + "\n");
 }
 
-fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {
-    if len(outcome) == 0 { return fail("ask: say what should happen — `hale dna ask \"<intent>\"`"); }
+// `hale dna task create`: asking for an outcome is one kind of task (the
+// cockpit exposes the same operation as `dna.task.create`). The row kinds
+// it writes and reads (`intent.requested`, `intent.refused`,
+// `workflow.admitted`) and the membrane kind `intent` keep their names.
+fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {
+    if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
     let s0 = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, ".", "");
@@ -451,21 +663,24 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
     // it stays unanswered
     if local { b.string_field("via", "membrane"); }
     b.end_object();
+    // `--no-wait`: the one notice, on either path, once the row is in the record
+    let requested = "intent " + intent_id + " requested in the record" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
     if local {
         // GH #682: the durable fact precedes the act, on this path too — the
         // row lands first, so a publish the membrane loses is relayed by the
         // host beside the organism, which admits an intent once by its id
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "intent", b.result());
-        if len(e) > 0 { eprintln("hale dna ask: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
+        if len(e) > 0 { eprintln("hale dna task create: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
+        if no_wait { return answer(requested); }
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
-        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "ask: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
+        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let s = sync_record(root);
         if !s.ok { return fail(s.summary); }
-        if no_wait { return answer("intent " + intent_id + " requested in the record" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n"); }
+        if no_wait { return answer(requested); }
     }
     // the organism's answer, from the record
     let deadline = std::time::now() + (if local { 10 } else { 60 });
@@ -491,6 +706,184 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
         std::time::sleep(if local { 150ms } else { 1000ms });
     }
     return fail("unreachable");
+}
+
+// ---- native governance command adapter -------------------------------
+
+type GovernanceCliSettings {
+    ok: Bool = false;
+    error: String = "";
+    context: ops::GovernanceContext = ops::GovernanceContext { };
+    policy: ops::AuthorityPolicy = ops::AuthorityPolicy { };
+}
+type GovernanceCliReview {
+    ok: Bool = false;
+    error: String = "";
+    supported: Bool = false;
+    subject_digest: String = "";
+}
+
+// CLI parsing/presentation only. FixedAuthority and GovernanceCommands are
+// shared with the HTTP head; this adapter never appends or publishes a trigger.
+locus GovernanceCli {
+    params { root: String = "."; }
+    fn settings(who_flag: String) -> GovernanceCliSettings {
+        let actor = std::env::var("USER");
+        if len(actor) == 0 || (len(who_flag) > 0 && who_flag != actor) { return GovernanceCliSettings { error: "command_context_changed: --as must match the trusted local USER identity" }; }
+        let path = std::env::var("HALE_DNA_COMMAND_POLICY");
+        if len(path) == 0 { return GovernanceCliSettings { error: "HALE_DNA_COMMAND_POLICY must name an explicit authority policy for native commands" }; }
+        let record = dna::GitRecord { repo: self.root };
+        let identity = record.identity();
+        let context = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: actor };
+        let command_codec = ops::GovernanceCommandCodec { };
+        if !command_codec.context_valid(context) { return GovernanceCliSettings { error: "invalid native application or local principal identity" }; }
+        let trust_setting = record.git("config\n--get\ndna.trust");
+        if trust_setting.code != 0 && trust_setting.code != 1 { return GovernanceCliSettings { error: "cannot read Record trust policy" }; }
+        let declared = dna::trim_nl(trust_setting.stdout);
+        let trust = if len(declared) == 0 { "local" } else { declared };
+        let size = std::io::fs::file_size(path) or - 1;
+        if size < 1 || size > 65536 { return GovernanceCliSettings { error: "authority policy must be a readable file of 1..65536 bytes" }; }
+        let document = std::io::fs::read_file(path) or "";
+        let codec = ops::AuthorityPolicyCodec { };
+        let policy = codec.decode(document, identity, trust);
+        if !policy.valid { return GovernanceCliSettings { error: "invalid authority policy, application binding, or Record trust mode" }; }
+        return GovernanceCliSettings { ok: true, context: context, policy: policy };
+    }
+    fn request_id(supplied: String) -> String {
+        if len(supplied) > 0 { return supplied; }
+        return "cli-" + to_string(std::time::now()) + "-" + to_string(std::process::pid()) + "-" + to_string(std::time::monotonic_ns());
+    }
+    fn recovery_hint(id: String) -> String {
+        return "Retain request_id " + id + "; recover either operation with `hale dna practice lookup --request-id <request_id>` under the same local identity and policy.\n";
+    }
+    fn render(result: ops::GovernanceResult, request_id: String) -> Answer {
+        if !result.ok { return fail("command " + request_id + ": " + result.code + "\n" + self.recovery_hint(request_id)); }
+        let r = result.receipt;
+        let mut out = "request_id: " + r.request_id + "\ncommand_id: " + r.command_id + "\n" + r.operation + ": " + r.state + "\n";
+        if len(r.reason) > 0 { out = out + r.reason + "\n"; }
+        if r.operation == "dna.practice.propose" {
+            out = out + "proposal: " + r.proposal_state + "\n";
+            if len(r.candidate_digest) > 0 { out = out + "candidate: " + r.candidate_digest + "\n"; }
+            if len(r.review_id) > 0 { out = out + "review_id: " + r.review_id + "\n"; }
+        } else { out = out + "verdict: " + r.verdict_value + " [" + r.verdict_state + "]\n"; }
+        out = out + "review: " + r.review_state + (if len(r.review_outcome) > 0 { " [" + r.review_outcome + "]" } else { "" }) + "\nactivation: " + r.activation_state + "\n";
+        if len(r.activation_reason) > 0 { out = out + r.activation_reason + "\n"; }
+        out = out + "Record: " + result.head + " (revision " + to_string(result.revision) + ")\n";
+        if r.state != "succeeded" && r.state != "refused" && r.state != "failed" { out = out + self.recovery_hint(request_id); }
+        return Answer { ok: r.state != "refused" && r.state != "failed", text: out };
+    }
+    fn finished(result: ops::GovernanceResult) -> Bool {
+        if !result.ok { return true; }
+        let state = result.receipt.state;
+        return state == "succeeded" || state == "refused" || state == "failed" || state == "outcome_unknown";
+    }
+    fn submit(native: ops::GovernanceCommands, authority: ops::FixedAuthority, context: ops::GovernanceContext, command: ops::GovernanceCommand, authority_flag: String, no_wait: Bool) -> Answer {
+        let codec = ops::GovernanceCommandCodec { };
+        if !codec.valid(context, command) { return fail("invalid_command: native replacements require exact subject, nonempty text and rationale; verdicts require approve, reject or revise on an exact pending Practice Review"); }
+        if len(authority_flag) > 0 {
+            let snapshot = native.capture();
+            if !snapshot.ok { return fail("cannot check --authority against current policy: " + snapshot.code); }
+            let journal = ops::GovernanceJournal { snapshot: snapshot };
+            if !journal.valid { return fail("cannot check --authority against an invalid Record"); }
+            let grant = authority.authorize(context, command.operation, false, journal);
+            if authority_flag != grant.authority { return fail("forbidden: --authority is an expected policy role; it cannot grant or replace authority"); }
+        }
+        // stderr is delivered before the potentially uncertain operation. The
+        // final answer also repeats the key for scripts capturing stdout.
+        eprintln("hale dna command request_id: ", command.request_id);
+        let mut result = native.submit(context, command);
+        if no_wait || self.finished(result) || !membrane_up(self.root) { return self.render(result, command.request_id); }
+        let deadline = std::time::monotonic_ns() + (if command.operation == "dna.practice.propose" { 60000000000 } else { 10000000000 });
+        while std::time::monotonic_ns() < deadline {
+            std::time::sleep(150ms);
+            result = native.lookup(context, command.request_id);
+            if self.finished(result) { return self.render(result, command.request_id); }
+        }
+        let answer = self.render(result, command.request_id);
+        return Answer { ok: answer.ok, text: answer.text + "No terminal native answer before the wait ended; the command remains recoverable.\n" };
+    }
+    fn practice(name: String, text: String, because: String, supersedes: String, who_flag: String, supplied_id: String, no_wait: Bool) -> Answer {
+        let settings = self.settings(who_flag);
+        if !settings.ok { return fail(settings.error); }
+        let record = dna::GitRecord { repo: self.root };
+        let authority = ops::FixedAuthority { policy: settings.policy };
+        let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
+        let snapshot = native.capture();
+        if !snapshot.ok { return fail("cannot read Practice predecessor: " + snapshot.code); }
+        let journal = ops::GovernanceJournal { snapshot: snapshot };
+        if !journal.valid { return fail("cannot read Practice predecessor: invalid Record"); }
+        let queries = ops::Queries { j: journal };
+        let selected = queries.practice_metadata(supersedes);
+        if len(name) == 0 || selected.name != name { return fail("stale_subject: the supplied name must match the selected native Practice predecessor"); }
+        let command = ops::GovernanceCommand {
+            request_id: self.request_id(supplied_id), operation: "dna.practice.propose", application_id: settings.context.application_id,
+            target_kind: "dna.practice", target_id: supersedes, subject_digest: supersedes, text: text, rationale: because
+        };
+        return self.submit(native, authority, settings.context, command, "", no_wait);
+    }
+    fn review_profile(id: String) -> GovernanceCliReview {
+        let record = dna::GitRecord { repo: self.root };
+        let native = ops::GovernanceCommands { record: record };
+        let snapshot = native.capture();
+        if !snapshot.ok { return GovernanceCliReview { error: snapshot.code }; }
+        let journal = ops::GovernanceJournal { snapshot: snapshot };
+        if !journal.valid { return GovernanceCliReview { error: "command_history_invalid" }; }
+        let review = ops::review_row(journal, id);
+        let queries = ops::Queries { j: journal };
+        let practice = queries.practice_metadata(review.knowledge_digest);
+        if len(review.id) == 0 { return GovernanceCliReview { error: "review_not_found" }; }
+        // Missing Practice metadata cannot prove this is an unrelated legacy
+        // Review. Never use a failed classification to bypass shared admission.
+        if !review.is_mutation && len(review.knowledge_digest) > 0 && len(practice.id) == 0 { return GovernanceCliReview { error: "knowledge_subject_unavailable" }; }
+        let supported = len(review.id) > 0 && !review.is_mutation && len(review.approvers) == 0 && practice.kind == "practice" && practice.target == "org";
+        return GovernanceCliReview { ok: true, supported: supported, subject_digest: review.subject_digest };
+    }
+    fn verdict(id: String, verdict: String, who_flag: String, authority_flag: String, comment: String, digest: String, supplied_id: String, no_wait: Bool) -> Answer {
+        let settings = self.settings(who_flag);
+        if !settings.ok { return fail(settings.error); }
+        let record = dna::GitRecord { repo: self.root };
+        let authority = ops::FixedAuthority { policy: settings.policy };
+        let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
+        let command = ops::GovernanceCommand {
+            request_id: self.request_id(supplied_id), operation: "dna.review.verdict", application_id: settings.context.application_id,
+            target_kind: "dna.review", target_id: id, subject_digest: digest, expected_review_state: "pending", verdict: verdict, comment: comment
+        };
+        return self.submit(native, authority, settings.context, command, authority_flag, no_wait);
+    }
+    fn lookup(request_id: String, who_flag: String) -> Answer {
+        let settings = self.settings(who_flag);
+        if !settings.ok { return fail(settings.error); }
+        let codec = ops::GovernanceCommandCodec { };
+        if len(codec.identity(settings.context, request_id)) == 0 { return fail("lookup requires one valid --request-id"); }
+        let record = dna::GitRecord { repo: self.root };
+        let authority = ops::FixedAuthority { policy: settings.policy };
+        let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
+        return self.render(native.lookup(settings.context, request_id), request_id);
+    }
+}
+
+fn practice_command_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String, request_id: String, no_wait: Bool) -> Answer {
+    let cli = GovernanceCli { root: root };
+    if sub == "lookup" {
+        if len(name) > 0 || len(text) > 0 || len(because) > 0 || len(supersedes) > 0 { return fail("practice lookup accepts --request-id and optional matching --as only"); }
+        return cli.lookup(request_id, who_flag);
+    }
+    if sub == "propose" && len(supersedes) > 0 && len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 { return cli.practice(name, text, because, supersedes, who_flag, request_id, no_wait); }
+    if len(request_id) > 0 { return fail("--request-id requires the configured native replacement profile; set HALE_DNA_COMMAND_POLICY and supply --supersedes"); }
+    return practice_verb(root, seed, sub, name, text, because, supersedes, who_flag);
+}
+
+fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, request_id: String) -> Answer {
+    if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && id != "design" {
+        let cli = GovernanceCli { root: root };
+        let selected = cli.review_profile(id);
+        if !selected.ok { return fail("cannot determine native Review profile: " + selected.error); }
+        if selected.supported {
+            return cli.verdict(id, verdict, reviewer_flag, authority_flag, comment, if len(digest_flag) > 0 { digest_flag } else { selected.subject_digest }, request_id, no_wait);
+        }
+    }
+    if len(request_id) > 0 { return fail("--request-id requires a configured native Practice Review command; design batches and unrelated Reviews keep their existing paths"); }
+    return verdict_verb(root, seed, id, verdict, reviewer_flag, authority_flag, comment, digest_flag, no_wait);
 }
 
 // ---- a verdict ------------------------------------------------------
@@ -672,32 +1065,28 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
     }
     if len(sub) > 0 { return fail(usage); }
     let s = sync_record(root);
-    let p = open_projection(root, seed, "");
+    // Governance reads need only Record. The shared projection supplies native
+    // identities/state; this legacy CLI retains its existing receipt renderer.
+    // Hosted readers use Queries.practice_of's fail-closed visibility instead.
+    let q = ops::Queries { j: dna::GitJournal { repo: root } };
     let mut out = "";
     let mut n = 0;
     let mut i = 0;
-    while i < p.rows() {
-        let e = p.row(i);
-        let pname = std::json::find_string_field(e.body, "name");
-        if e.kind == "knowledge.proposed" && len(pname) > 0 {
-            let d = e.entity;
-            let review = dna::knowledge_review_id(d);
-            let state = if p.has_row("knowledge.retired", d) { "retired" } else if p.has_row("knowledge.ratified", d) { "in force" } else if p.has_row("knowledge.declined", d) { "declined" } else { "awaiting the Board (" + review + ")" };
-            let doc = receipt_read(root, if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
+    while i < q.revision() {
+        let e = q.event_at(i);
+        if q.practice_event(e) {
+            let p = q.practice_metadata(e.entity);
+            let state = if p.retired { "retired" } else if p.ratified { "in force" } else if p.declined { "declined" } else { "awaiting the Board (" + p.review_id + ")" };
+            let doc = receipt_read(root, ops::raw_digest(p.digest));
             let body = std::json::find_string_field(doc.text, "text");
             let nl = std::str::index_of(body, "\n");
-            let mut by = "";
-            let mut k = 0;
-            while k < p.rows() {
-                let q = p.row(k);
-                if q.kind == "practice.proposed" && std::json::find_string_field(q.body, "digest") == d { by = " · proposed by " + std::json::find_string_field(q.body, "by") + (if len(std::json::find_string_field(q.body, "because")) > 0 { " because " + std::json::find_string_field(q.body, "because") } else { "" }); }
-                k = k + 1;
-            }
-            out = out + "  " + pname + " " + short(d) + " [" + state + "] " + (if nl < 0 { body } else { body[0..nl] }) + by + "\n";
+            let by = if len(p.request_id) > 0 { " · proposed by " + p.requester + (if len(p.because) > 0 { " because " + p.because } else { "" }) } else { "" };
+            out = out + "  " + p.name + " " + short(p.digest) + " [" + state + "] " + (if nl < 0 { body } else { body[0..nl] }) + by + "\n";
             n = n + 1;
         }
-        if e.kind == "practice.requested" && find_after(p, i + 1, " practice.proposed practice.refused ", e.entity).seq < 0 {
-            out = out + "  " + pname + " [requested by " + std::json::find_string_field(e.body, "by") + ", not yet heard by the organization] " + e.entity + "\n";
+        let pending = q.request_at_seq(i);
+        if len(pending.id) > 0 {
+            out = out + "  " + pending.name + " [requested by " + pending.requester + ", not yet heard by the organization] " + pending.id + "\n";
             n = n + 1;
         }
         i = i + 1;

@@ -1,0 +1,150 @@
+// Storage/admission unit regressions over real Git. These fixtures establish
+// prior subjects only; full native body progression has a separate gate.
+import ".." as ops;
+import "../../core" as dna;
+
+locus Authority {
+    params { writes: Bool = true; reads: Bool = true; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> ops::GovernanceGrant {
+        return ops::GovernanceGrant { allowed: (context.principal_name == "alice" || context.principal_name == "bob") && if recovery { self.reads } else { self.writes }, authority: "board", basis: "test-fixed-policy-v1" };
+    }
+}
+locus FaultRecord {
+    params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; subject: String = ""; appends: Int = 0; }
+    fn location() -> String { return ""; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1;
+        let fault = self.fault; self.fault = "";
+        if fault == "stale" {
+            let changed = self.inner.append(chain, at, dna::Row { kind: "knowledge.retired", entity: self.subject, body: "{\"by\":\"another-candidate\"}", author: "fixture" }, false, "");
+            std::test::assert(changed.ok, "concurrent change fixture lands");
+            return dna::Appended { error: "stale" };
+        }
+        if fault == "unknown" { return dna::Appended { error: "io: result unknown" }; }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lost response did persist"); return dna::Appended { error: "io: response lost" }; }
+        return result;
+    }
+}
+fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+    let result = j.append(j.revision(), kind, entity, body);
+    std::test::assert(result.ok, "fixture " + kind);
+}
+fn subject(repo: String, ratified: Bool) -> String {
+    let r = dna::GitRecord { repo: repo };
+    let initialized = r.git("init\n--quiet"); std::test::assert_eq_int(initialized.code, 0, "initialize isolated Git Record");
+    let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+    let document = dna::knowledge_document(dna::Idea { kind: "practice", name: "evidence", text: "Keep evidence.", author: "org", provenance: "fixture" }, "org");
+    let digest = "sha256:" + receipts.store(document); let review = dna::knowledge_review_id(digest);
+    append(j, "knowledge.proposed", digest, "{\"kind\":\"practice\",\"name\":\"evidence\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\",\"review_id\":\"" + review + "\",\"supersedes\":\"\"}");
+    append(j, "review.requested", "review:" + review, "{\"subject_digest\":\"" + digest + "\",\"knowledge_digest\":\"" + digest + "\",\"required_authority\":\"board\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
+    if ratified { append(j, "knowledge.ratified", digest, "{}"); }
+    return digest;
+}
+fn who(repo: String) -> ops::GovernanceContext { let record = dna::GitRecord { repo: repo }; return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" }; }
+fn proposal(context: ops::GovernanceContext, digest: String, key: String) -> ops::GovernanceCommand {
+    return ops::GovernanceCommand { request_id: key, operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: "Keep exact é 🧭\r\nevidence.", rationale: "Preserve the review evidence." };
+}
+fn test_recovery(repo: String) {
+    let digest = subject(repo, true); let context = who(repo); let command = proposal(context, digest, "request/équipe/1");
+    let provider = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    let first = provider.submit(context, command);
+    std::test::assert(first.ok && first.receipt.state == "recorded", "admission is recorded, never fabricated completion");
+    let codec = ops::GovernanceCommandCodec { };
+    std::test::assert_eq_str(first.receipt.command_id, codec.identity(context, command.request_id), "public command identity is scoped");
+    let fresh = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    let restored = fresh.lookup(context, command.request_id);
+    std::test::assert(restored.ok, "fresh provider reads durable receipt");
+    std::test::assert_eq_str(restored.receipt.fingerprint, first.receipt.fingerprint, "restart retains exact content");
+    let same = fresh.submit(context, command);
+    std::test::assert(same.ok && same.revision == first.revision, "identical retry has no second trigger");
+    let mut changed = proposal(context, digest, "request/équipe/1"); changed.text = command.text + " ";
+    std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed content conflicts");
+    changed = ops::GovernanceCommand { request_id: command.request_id, operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve" };
+    std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "cross-operation reuse conflicts before new eligibility");
+    let j = dna::GitJournal { repo: repo }; append(j, "knowledge.retired", digest, "{\"by\":\"newer\"}");
+    let after_move = fresh.submit(context, command);
+    std::test::assert(after_move.ok, "existing identity recovers after subject moved: " + after_move.code);
+    std::test::assert_eq_str(fresh.submit(context, proposal(context, digest, "new-request")).code, "stale_subject", "new request requires active predecessor");
+    let mut other = who(repo); other.principal_name = "bob";
+    std::test::assert_eq_str(fresh.lookup(other, command.request_id).code, "command_not_found", "another actor cannot read this receipt");
+    other = who(repo); other.principal_mode = "oidc";
+    std::test::assert_eq_str(fresh.lookup(other, command.request_id).code, "command_not_found", "authentication modes cannot alias");
+    other = who(repo); other.application_id = "other-application";
+    std::test::assert_eq_str(fresh.lookup(other, command.request_id).code, "command_context_changed", "another application cannot read receipt");
+    other = who(repo); other.principal_name = "outsider";
+    std::test::assert_eq_str(fresh.lookup(other, command.request_id).code, "forbidden", "receipt access requires current grant");
+    let deny = ops::GovernanceCommands { record: dna::GitRecord { repo: repo } };
+    std::test::assert_eq_str(deny.submit(context, command).code, "forbidden", "default authority denies even existing receipts");
+}
+fn test_races(repo: String) {
+    let digest = subject(repo, true); let context = who(repo);
+    let record = FaultRecord { inner: dna::GitRecord { repo: repo }, subject: digest };
+    let provider = ops::GovernanceCommands { record: record, authority: Authority { } };
+    record.fault = "lost";
+    let lost = provider.submit(context, proposal(context, digest, "lost"));
+    std::test::assert(lost.ok && lost.receipt.state == "recorded", "ambiguous successful append recovers persisted command");
+    std::test::assert_eq_int(record.appends, 1, "lost result does not append twice");
+    record.fault = "unknown";
+    let unknown = provider.submit(context, proposal(context, digest, "unknown"));
+    std::test::assert(unknown.ok && unknown.receipt.state == "outcome_unknown", "uncertain absence stays unknown");
+    std::test::assert_eq_int(record.appends, 2, "unknown result never blindly re-appends");
+    std::test::assert_eq_str(provider.lookup(context, "unknown").code, "command_not_found", "lookup reads facts without creating outcome");
+    record.fault = "stale";
+    let stale = provider.submit(context, proposal(context, digest, "concurrent"));
+    std::test::assert_eq_str(stale.code, "stale_subject", "stale CAS repeats subject decision on new snapshot");
+    std::test::assert_eq_int(record.appends, 3, "stale predecessor never lands at a new tail");
+}
+fn test_verdict(repo: String) {
+    let digest = subject(repo, false); let context = who(repo);
+    let provider = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    let command = ops::GovernanceCommand { request_id: "review-1", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve", comment: "Exact é\r\ncomment" };
+    let first = provider.submit(context, command);
+    std::test::assert(first.ok && first.receipt.verdict_state == "pending", "native verdict trigger is not a decision");
+    let s = provider.capture(); let j = ops::GovernanceJournal { snapshot: s };
+    let codec = ops::GovernanceCommandCodec { }; let last = j.read(j.revision() - 1);
+    std::test::assert_eq_str(last.kind, "review.verdict", "verdict uses native governance event");
+    std::test::assert_eq_str(codec.string(last.body, "command_id"), first.receipt.command_id, "command and domain trigger are one fact");
+    std::test::assert_eq_str(codec.string(last.body, "comment"), command.comment, "native comment remains exact");
+    let wrong = ops::GovernanceCommand { request_id: "review-2", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: "different", expected_review_state: "pending", verdict: "approve" };
+    std::test::assert_eq_str(provider.submit(context, wrong).code, "stale_subject", "exact review subject checked");
+    let denied = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { writes: false } };
+    let unauthorised = ops::GovernanceCommand { request_id: "review-3", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve" };
+    std::test::assert_eq_str(denied.submit(context, unauthorised).code, "forbidden", "admission checks authority independently of capabilities");
+    std::test::assert(denied.lookup(context, command.request_id).ok, "receipt grant may survive loss of write grant");
+}
+fn test_exact_head(repo: String) {
+    let digest = subject(repo, true); let r = dna::GitRecord { repo: repo }; let j = dna::GitJournal { repo: repo };
+    let head = r.head("journal"); let parent = dna::line_at(r.ids("journal"), 1);
+    let replacement = r.build(parent, dna::Row { kind: "knowledge.refused", entity: digest, body: "replacement", author: "fixture" }, false, "");
+    std::test::assert(r.move_chain("journal", replacement, head), "same-count chain replacement installed");
+    let result = j.append_exact(j.revision(), "test.decision", "decision", "based on old head");
+    std::test::assert(!result.ok && result.error == "stale_revision", "same-count replacement invalidates Journal decision basis: ok=" + to_string(result.ok) + " error=" + result.error);
+    std::test::assert_eq_str(r.head("journal"), replacement, "stale decision did not mutate replacement");
+}
+fn test_payload_bound(repo: String, byte: Int) {
+    let digest = subject(repo, true); let context = who(repo);
+    let text = std::bytes::BytesBuilder { }; let rationale = std::bytes::BytesBuilder { }; let mut i = 0;
+    while i < 8192 { text.append_u8(byte); if i < 2048 { rationale.append_u8(114); } i = i + 1; }
+    let command = ops::GovernanceCommand { request_id: "maximum", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: std::str::from_bytes(text.snapshot()), rationale: std::str::from_bytes(rationale.snapshot()) };
+    let service = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    let result = service.submit(context, command);
+    std::test::assert(result.ok, "advertised maximum payload persists: " + result.code);
+    let found = service.lookup(context, command.request_id);
+    std::test::assert(found.ok && found.receipt.fingerprint == result.receipt.fingerprint, "maximum payload recovers exactly");
+}
+fn main() {
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-governance-admission") };
+    std::io::fs::mkdir(base + "/recovery") or discard; test_recovery(base + "/recovery");
+    std::io::fs::mkdir(base + "/races") or discard; test_races(base + "/races");
+    std::io::fs::mkdir(base + "/verdict") or discard; test_verdict(base + "/verdict");
+    std::io::fs::mkdir(base + "/head") or discard; test_exact_head(base + "/head");
+    std::io::fs::mkdir(base + "/maximum") or discard; test_payload_bound(base + "/maximum", 120);
+    std::io::fs::mkdir(base + "/escaped-maximum") or discard; test_payload_bound(base + "/escaped-maximum", 1);
+}

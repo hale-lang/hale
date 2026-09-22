@@ -197,9 +197,9 @@ main locus App {
         let alice = self.session(ui, "alice-sub");
         let bob = self.session(ui, "bob-sub");
         std::test::assert(len(alice) > 60 && len(bob) > 60 && alice != bob, "two sessions, one each");
-        let a1 = curl("POST", ui + "/api/ask", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
+        let a1 = curl("POST", ui + "/api/task/create", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
         std::test::assert_eq_int(a1.status, 200, "alice's ask is taken: " + a1.body);
-        let b1 = curl("POST", ui + "/api/ask", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
+        let b1 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b1.status, 200, "bob's ask is taken: " + b1.body);
         let ledger = curl("GET", service + "/ledger/rows?from=0", "", "").body;
         std::test::assert(std::str::contains(ledger, "chase the late invoice") && std::str::contains(ledger, "reconcile the payroll account"), "both asks are rows of the ledger: " + ledger);
@@ -211,7 +211,7 @@ main locus App {
         let record = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
         std::test::assert(!std::str::contains(record, "chase the late invoice"), "the asks did not go into the record: the day's work is the ledger's");
         // a session is not a shared secret: bob's cookie on alice's form field is bob
-        let b2 = curl("POST", ui + "/api/ask", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
+        let b2 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b2.status, 200, "taken");
         let ledger2 = curl("GET", service + "/ledger/rows?from=0", "", "").body;
         std::test::assert(std::str::contains(row_with(ledger2, "file the returns"), "\"author\": \"bob\""), "in bob's name: " + ledger2);
@@ -220,7 +220,7 @@ main locus App {
         // re-checked against the record as it is then
         let kstop = dna::run_tool("kill\n" + kpid);
         std::time::sleep(500ms);
-        let queued = curl("POST", ui + "/api/ask", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
+        let queued = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
         std::test::assert_eq_int(queued.status, 200, "captured while the service is away: " + queued.body);
         let listed = in_dir(app, toolchain() + "\ndna\nqueue");
         std::test::assert(std::str::contains(listed.stdout, "1 request(s) waiting") && std::str::contains(listed.stdout, "as bob"), "queued on the head, in bob's name: " + listed.stdout + listed.stderr);

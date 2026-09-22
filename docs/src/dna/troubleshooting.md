@@ -2,7 +2,7 @@
 
 **`organism: not running — reading the Journal`** in `status`. No
 host is up here. `status`, `review <id>`, `history`, `board`,
-`fleet` and `ui` work from the record; `ask` and a verdict go into
+`fleet` and `ui` work from the record; `task create` and a verdict go into
 the record when the repository has a remote (an organization
 elsewhere answers), and need `hale dna run` or `dev` in another
 terminal when it doesn't.
@@ -27,15 +27,32 @@ editor's router at a local or scripted model in `dna/org/models.hl`
 model; with no key it cannot, and the review waits. Answer it as the
 Board (`hale dna review m1 approve --as you`), or give the Leader a
 model. The same happens when the budget is spent: `history` shows
-`budget.exhausted`, `ask` is refused with the spend, and the review
+`budget.exhausted`, `task create` is refused with the spend, and the review
 is yours until the next window.
 
+**`task t1 born … [planning]`**, and it stays there. The Leader is
+asked what kind of work the intent is before it is admitted, and the
+Leader decides with a model. With no key, or a spent budget, the
+word never comes; give the Leader a model or answer as the Board.
+The intent is not lost and is not offered twice.
+
+**`intent.unrecovered` in `history`.** An intent was offered before
+a stop and no admission names it. It is noted once and never
+re-offered, because work may already have run for it. Ask again if
+you still want it.
+
+**A handed Task that never settles.** A person's job is a case, and
+only that person's `hale dna task done <id> --as <them>` closes it —
+with the evidence or the authorized exception its acceptance
+practice requires (`hale dna board` says which). A restart does not
+close it; neither does anyone else's report.
+
 **`refused: budget exhausted (spent … of … micro-dollars this
-day …)`** from `ask`. The organization's allowance for the window is
+day …)`** from `task create`. The organization's allowance for the window is
 spent; nothing model-backed is routed until the next one. Raise
 `allowance_micros` in `org_budget()` (`dna/org/models.hl`), or wait.
 
-**`needs board`** on every review. Requests through `ask` are
+**`needs board`** on every review. Requests through `task create` are
 `application` changes, and the default grant is `refactor docs`.
 It's the expected posture for a new organization: you are asked, and
 told why. Widen `classes` in `dna/org/main.hl` when you want the

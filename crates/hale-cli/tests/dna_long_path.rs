@@ -4,7 +4,7 @@
 //! bytes of suffix, so a root of 70 characters is already too long.
 //! The organization binds these names RELATIVE to the root it runs in
 //! and was never the long side; the client wrote absolute routes, so
-//! `hale dna ask` could not reach sockets that were there and
+//! `hale dna task create` could not reach sockets that were there and
 //! listening, and the manual shakeout had to move the checkout to
 //! `/tmp/…` to proceed. Routes are relative on both sides now.
 
@@ -68,7 +68,7 @@ fn an_intent_reaches_the_membrane_from_a_long_project_path() {
         finish(&mut host);
         panic!("the organization never bound its membrane at this path");
     }
-    let (ok, ask) = hale(&["dna", "ask", "write", "the", "changelog"], &app);
+    let (ok, ask) = hale(&["dna", "task", "create", "write", "the", "changelog"], &app);
     let record = || -> String {
         Command::new("git")
             .args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"])

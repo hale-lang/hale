@@ -1,0 +1,194 @@
+// Native in-memory Journal facts exercise only the receipt projection. These
+// fixtures do not claim that admission, Review delivery, or adoption ran.
+import ".." as ops;
+import "../../core" as dna;
+
+const BASE: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CANDIDATE: String = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const REVIEW: String = "knowledge-bbbbbbbbbbbb";
+const SECRET: String = "private customer detail 🧭";
+
+fn event(j: dna::Journal, kind: String, entity: String, body: String) {
+    let added = j.append(j.revision(), kind, entity, body);
+    std::test::assert(added.ok, "fixture append " + kind);
+}
+fn admission(j: dna::Journal, operation: String, verdict: String) -> ops::GovernanceAdmission {
+    let context = ops::GovernanceContext { application_id: "native-test-app", principal_mode: "local", principal_name: "alice" };
+    let practice = operation == "dna.practice.propose";
+    let command = ops::GovernanceCommand {
+        request_id: "caller-request/one", operation: operation, application_id: context.application_id,
+        target_kind: if practice { "dna.practice" } else { "dna.review" }, target_id: if practice { BASE } else { REVIEW },
+        subject_digest: if practice { BASE } else { CANDIDATE }, text: if practice { "new practice" } else { "" },
+        rationale: if practice { "exact rationale" } else { "" }, expected_review_state: if practice { "" } else { "pending" },
+        verdict: if practice { "" } else { verdict }, comment: if practice { "" } else { "exact comment é\r\nsecond line" }
+    };
+    let codec = ops::GovernanceCommandCodec { }; let commands = ops::GovernanceCommands { };
+    let grant = ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixed test grant" };
+    let id = codec.identity(context, command.request_id);
+    let body = commands.fact(context, command, "Working practice", grant, "captured-native-head");
+    let seq = j.revision();
+    event(j, if practice { "practice.requested" } else { "review.verdict" }, if practice { id } else { REVIEW }, body);
+    return ops::GovernanceAdmission { ok: true, command_id: id, fingerprint: codec.fingerprint(context, command), context: context, command: command, sequence: seq, event_id: j.head(), native_body: body };
+}
+fn candidate(j: dna::Journal) {
+    let b = std::json::Builder { }; b.begin_object();
+    b.string_field("digest", CANDIDATE); b.string_field("review_id", REVIEW); b.string_field("name", "Working practice");
+    b.string_field("kind", "practice"); b.string_field("author", "org"); b.string_field("target", "org"); b.string_field("class", "initiative"); b.string_field("supersedes", BASE); b.int_field("at", 1); b.end_object();
+    event(j, "knowledge.proposed", CANDIDATE, b.result());
+}
+fn requested(j: dna::Journal, subject: String) {
+    let b = std::json::Builder { }; b.begin_object();
+    b.string_field("question", SECRET); b.string_field("subject_digest", subject); b.string_field("knowledge_digest", subject);
+    b.string_field("author", "org"); b.string_field("target", "org"); b.string_field("kind", "practice"); b.string_field("class", "initiative"); b.string_field("required_authority", "board"); b.end_object();
+    event(j, "review.requested", "review:" + REVIEW, b.result());
+}
+fn proposed_body(a: ops::GovernanceAdmission) -> String {
+    let b = std::json::Builder { }; b.begin_object();
+    b.string_field("name", "Working practice"); b.string_field("digest", CANDIDATE); b.string_field("review_id", REVIEW);
+    b.string_field("by", a.context.principal_name); b.string_field("because", a.command.rationale); b.string_field("supersedes", BASE); b.end_object();
+    return b.result();
+}
+fn settled(j: dna::Journal, outcome: String, reviewer: String) { event(j, "review.settled", REVIEW, outcome + " by " + reviewer); }
+fn ratified(j: dna::Journal, reviewer: String) {
+    let b = std::json::Builder { }; b.begin_object();
+    b.string_field("digest", CANDIDATE); b.string_field("review_id", REVIEW); b.string_field("decided_by", reviewer);
+    b.string_field("outcome", "approve"); b.string_field("kind", "practice"); b.string_field("target", "org"); b.string_field("class", "initiative"); b.string_field("supersedes", BASE); b.int_field("at", 2); b.end_object();
+    event(j, "knowledge.ratified", CANDIDATE, b.result());
+}
+fn retired(j: dna::Journal, entity: String, by: String, reviewer: String) {
+    let b = std::json::Builder { }; b.begin_object();
+    b.string_field("digest", entity); b.string_field("by", by); b.string_field("review_id", REVIEW); b.string_field("decided_by", reviewer); b.end_object();
+    event(j, "knowledge.retired", entity, b.result());
+}
+fn adoption_refused(j: dna::Journal, reviewer: String) {
+    let b = std::json::Builder { }; b.begin_object();
+    b.string_field("digest", CANDIDATE); b.string_field("review_id", REVIEW); b.string_field("decided_by", reviewer);
+    b.string_field("supersedes", BASE); b.string_field("retired_by", "another-candidate"); b.string_field("why", SECRET); b.end_object();
+    event(j, "knowledge.refused", CANDIDATE, b.result());
+}
+fn decision(a: ops::GovernanceAdmission, accepted: Bool, complete: Bool, refusal: String) -> String {
+    let v = dna::Verdict { command_id: a.command_id, review_id: a.command.target_id, subject_digest: a.command.subject_digest,
+        verdict: a.command.verdict, reviewer: a.context.principal_name, authority: "board", comment: a.command.comment };
+    return dna::review_command_body(v, accepted, refusal, complete, if complete { a.command.verdict } else { "" });
+}
+fn receipt(j: dna::Journal, a: ops::GovernanceAdmission) -> ops::GovernanceReceipt {
+    let head = j.head(); let count = j.revision();
+    let r = ops::governance_project(j, a);
+    std::test::assert_eq_str(j.head(), head, "projection leaves head unchanged");
+    std::test::assert_eq_int(j.revision(), count, "projection appends no native facts");
+    std::test::assert_eq_str(r.command_id, a.command_id, "command identity preserved");
+    std::test::assert_eq_str(r.request_id, a.command.request_id, "caller identity preserved");
+    std::test::assert_eq_str(r.fingerprint, a.fingerprint, "content fingerprint preserved");
+    std::test::assert_eq_str(r.application_id, a.context.application_id, "application identity preserved");
+    std::test::assert_eq_str(r.principal_name, a.context.principal_name, "authenticated principal preserved");
+    std::test::assert(!std::str::contains(r.reason, SECRET) && !std::str::contains(r.activation_reason, SECRET), "native prose never leaks through receipt reasons");
+    return r;
+}
+fn test_recorded_and_unknown() {
+    let j = dna::MemJournal { }; let a = admission(j, "dna.practice.propose", "");
+    let r = receipt(j, a);
+    std::test::assert(r.state == "recorded" && r.proposal_state == "pending" && r.candidate_digest == "" && r.review_state == "unavailable", "recorded is not created");
+    event(j, "practice.proposed", a.command.request_id, proposed_body(a));
+    std::test::assert_eq_str(receipt(j, a).state, "recorded", "caller request key cannot replace scoped native command entity");
+    let mut uncertain = a; uncertain.unknown = true;
+    std::test::assert(receipt(j, uncertain).state == "outcome_unknown" && receipt(j, uncertain).proposal_state == "unknown", "uncertain acceptance stays unknown");
+    let other = dna::MemJournal { }; let verdict = admission(other, "dna.review.verdict", "approve");
+    let v = receipt(other, verdict);
+    std::test::assert(v.state == "recorded" && v.proposal_state == "" && v.verdict_state == "pending", "review receipt has only its own variant");
+    uncertain = verdict; uncertain.unknown = true;
+    std::test::assert(receipt(other, uncertain).verdict_state == "unknown" && receipt(other, uncertain).proposal_state == "", "uncertain review retains branch distinction");
+}
+fn test_practice_lifecycle() {
+    let j = dna::MemJournal { }; let a = admission(j, "dna.practice.propose", ""); candidate(j); requested(j, CANDIDATE);
+    event(j, "practice.proposed", a.command_id, proposed_body(a));
+    let created = receipt(j, a);
+    std::test::assert(created.state == "succeeded" && created.proposal_state == "created" && created.candidate_digest == CANDIDATE && created.review_id == REVIEW, "exact native proposal and real candidate Review establish creation");
+    std::test::assert(created.review_state == "pending" && created.activation_state == "unknown", "proposal success does not imply approval");
+    settled(j, "approve", "board-member");
+    std::test::assert_eq_str(receipt(j, a).activation_state, "pending", "approval awaits native adoption");
+    ratified(j, "board-member");
+    std::test::assert_eq_str(receipt(j, a).activation_state, "pending", "ratification alone does not finish replacement");
+    retired(j, "unrelated-predecessor", CANDIDATE, "board-member");
+    std::test::assert_eq_str(receipt(j, a).activation_state, "pending", "unrelated retirement cannot finish replacement");
+    retired(j, BASE, CANDIDATE, "board-member");
+    std::test::assert_eq_str(receipt(j, a).activation_state, "adopted", "ratification plus exact predecessor retirement proves adoption");
+}
+fn test_incomplete_and_refused_proposals() {
+    let missing = dna::MemJournal { }; let a = admission(missing, "dna.practice.propose", ""); candidate(missing);
+    event(missing, "practice.proposed", a.command_id, proposed_body(a));
+    std::test::assert(receipt(missing, a).state == "outcome_unknown" && receipt(missing, a).candidate_digest == "", "no fabricated Review when request fact is missing");
+    requested(missing, "another-subject");
+    std::test::assert_eq_str(receipt(missing, a).state, "outcome_unknown", "Review subject must exactly match candidate");
+    let denied = dna::MemJournal { }; let b = admission(denied, "dna.practice.propose", "");
+    event(denied, "practice.refused", "other-command", SECRET);
+    std::test::assert_eq_str(receipt(denied, b).state, "recorded", "another command refusal is unrelated");
+    event(denied, "practice.refused", b.command_id, SECRET);
+    std::test::assert(receipt(denied, b).state == "refused" && receipt(denied, b).proposal_state == "refused", "exact native refusal projected without private prose");
+    event(denied, "practice.proposed", b.command_id, proposed_body(b));
+    std::test::assert_eq_str(receipt(denied, b).state, "outcome_unknown", "contradictory command outcomes cannot pick a convenient success");
+}
+fn test_verdict_adoption() {
+    let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", "approve");
+    event(j, "review.command_decided", a.command_id, decision(a, true, true, ""));
+    let accepted = receipt(j, a);
+    std::test::assert(accepted.state == "succeeded" && accepted.verdict_state == "accepted" && accepted.review_state == "pending" && accepted.activation_state == "pending", "durable decision precedes generic settlement and adoption");
+    settled(j, "approve", "alice"); ratified(j, "alice");
+    std::test::assert_eq_str(receipt(j, a).activation_state, "pending", "review command also waits for predecessor retirement");
+    retired(j, BASE, CANDIDATE, "alice");
+    std::test::assert_eq_str(receipt(j, a).activation_state, "adopted", "exact deciding command sees completed adoption");
+}
+fn test_refusal_beside_approval() {
+    let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", "approve");
+    event(j, "review.command_decided", "another-command", decision(a, true, true, ""));
+    settled(j, "approve", "another-reviewer"); ratified(j, "another-reviewer"); retired(j, BASE, CANDIDATE, "another-reviewer");
+    std::test::assert_eq_str(receipt(j, a).state, "recorded", "generic Review approval never completes this command");
+    event(j, "review.command_decided", a.command_id, decision(a, false, false, SECRET));
+    let refused = receipt(j, a);
+    std::test::assert(refused.state == "refused" && refused.verdict_state == "refused" && refused.review_outcome == "approve" && refused.activation_state == "unknown", "refused command cannot borrow another approval or adoption");
+    event(j, "receipt.classified", CANDIDATE, "{\"class\":\"customer\"}"); event(j, "receipt.redacted", BASE, "{}");
+    event(j, "ledger.adopted", "ledger", "{}"); event(j, "ledger.abandoned", "ledger", "{}");
+    std::test::assert_eq_str(receipt(j, a).reason, refused.reason, "protection and abandonment expose only safe static refusal explanation");
+}
+fn test_other_verdict(verdict: String) {
+    let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", verdict);
+    event(j, "review.command_decided", a.command_id, decision(a, true, true, "")); settled(j, verdict, "alice");
+    ratified(j, "unrelated-reviewer"); retired(j, BASE, CANDIDATE, "unrelated-reviewer");
+    let r = receipt(j, a);
+    std::test::assert(r.state == "succeeded" && r.verdict_state == "accepted" && r.review_outcome == verdict && r.activation_state == "unknown", verdict + " acceptance does not mean adoption or adoption refusal");
+}
+fn test_adoption_refusal_and_wrong_retirement() {
+    let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", "approve");
+    event(j, "review.command_decided", a.command_id, decision(a, true, true, "")); settled(j, "approve", "alice"); adoption_refused(j, "alice");
+    let r = receipt(j, a);
+    std::test::assert(r.state == "succeeded" && r.verdict_state == "accepted" && r.activation_state == "refused", "native adoption refusal leaves command acceptance and approval intact");
+    event(j, "receipt.withheld", CANDIDATE, "{\"class\":\"internal\"}");
+    std::test::assert_eq_str(receipt(j, a).activation_reason, r.activation_reason, "adoption refusal does not expose native why text");
+    let other = dna::MemJournal { }; candidate(other); requested(other, CANDIDATE); let b = admission(other, "dna.review.verdict", "approve");
+    event(other, "review.command_decided", b.command_id, decision(b, true, true, "")); settled(other, "approve", "alice"); ratified(other, "alice"); retired(other, BASE, "wrong-candidate", "alice");
+    std::test::assert_eq_str(receipt(other, b).activation_state, "unknown", "retirement must name exact adopting candidate");
+}
+fn test_mismatched_decision(field: String) {
+    let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", "approve");
+    let body = decision(a, true, true, ""); let raw = std::json::find_field_raw(body, field); let q = std::json::Builder { };
+    event(j, "review.command_decided", a.command_id, std::str::replace(body, raw, q.quote("wrong-value")));
+    std::test::assert_eq_str(receipt(j, a).state, "outcome_unknown", "decision must exactly match original " + field);
+}
+fn test_malformed_decisions() {
+    let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", "approve");
+    event(j, "review.command_decided", a.command_id, "{\"review_id\":\"\\ud800\"}");
+    std::test::assert_eq_str(receipt(j, a).state, "outcome_unknown", "strict syntax before native decision decode");
+    let typed = dna::MemJournal { }; candidate(typed); requested(typed, CANDIDATE); let b = admission(typed, "dna.review.verdict", "approve");
+    let body = decision(b, true, true, "");
+    event(typed, "review.command_decided", b.command_id, std::str::replace(body, "\"accepted\": true", "\"accepted\": \"true\""));
+    std::test::assert_eq_str(receipt(typed, b).state, "outcome_unknown", "decision booleans are typed");
+    let conflict = dna::MemJournal { }; candidate(conflict); requested(conflict, CANDIDATE); let c = admission(conflict, "dna.review.verdict", "approve");
+    event(conflict, "review.command_decided", c.command_id, decision(c, true, true, ""));
+    event(conflict, "review.command_decided", c.command_id, decision(c, false, false, "contradiction"));
+    std::test::assert_eq_str(receipt(conflict, c).state, "outcome_unknown", "conflicting exact command decisions fail closed");
+}
+fn main() {
+    test_recorded_and_unknown(); test_practice_lifecycle(); test_incomplete_and_refused_proposals(); test_verdict_adoption();
+    test_refusal_beside_approval(); test_other_verdict("reject"); test_other_verdict("revise"); test_adoption_refusal_and_wrong_retirement();
+    test_mismatched_decision("command_id"); test_mismatched_decision("review_id"); test_mismatched_decision("subject_digest"); test_mismatched_decision("verdict");
+    test_mismatched_decision("reviewer"); test_mismatched_decision("authority"); test_mismatched_decision("comment"); test_malformed_decisions();
+}

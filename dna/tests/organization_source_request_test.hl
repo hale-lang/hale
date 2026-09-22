@@ -1,0 +1,193 @@
+// Real native source preparation: admitted Record, leased Git worktree, shared
+// source guard and Hale verification. Faults alter only replies/writes at named
+// journal stages; no proposal, candidate or Review outcomes are fabricated.
+import "../core" as dna;
+import "../operations" as ops;
+import "../organization_source" as source;
+
+const ORIGINAL: String = "main locus Org {\n    params { title: String = \"Original\"; }\n    run() { }\n}\nfn main() { Org { }; }\n";
+const PREPARED: String = "// Exact équipe 🧭 <literal>\r\nmain locus Org {\n    params { title: String = \"Prepared\"; }\n    run() { }\n}\nfn main() { Org { }; }\n";
+
+// The fault-injecting journal an assembly owns for one lifetime (an
+// assembly literal owns its journal and reclaims it when it dies, so a
+// wrapper is never shared across assemblies); the fault count survives
+// in a file under the repository, read by `faults_of`.
+locus SourceStageJournal {
+    params {
+        inner: dna::GitJournal = dna::GitJournal { };
+        stage: String = "";
+        entity_prefix: String = "";
+        blocked: Bool = false;
+        lost_reply: Bool = false;
+        faults: Int = 0;
+        faults_path: String = "";
+    }
+    fn fault() {
+        self.faults = self.faults + 1;
+        if len(self.faults_path) > 0 { std::io::fs::write_file(self.faults_path, to_string(self.faults)) or discard; }
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn matches(kind: String, entity: String) -> Bool { return kind == self.stage && std::str::starts_with(entity, self.entity_prefix); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && self.matches(kind, entity) { self.fault(); return dna::AppendResult { error: "io" }; }
+        let result = self.inner.append(expected, kind, entity, body);
+        if self.lost_reply && self.matches(kind, entity) && result.ok { self.fault(); self.lost_reply = false; return dna::AppendResult { error: "io" }; }
+        return result;
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && self.matches(kind, entity) { self.fault(); return dna::AppendResult { error: "io" }; }
+        let result = self.inner.append_exact(expected, kind, entity, body);
+        if self.lost_reply && self.matches(kind, entity) && result.ok { self.fault(); self.lost_reply = false; return dna::AppendResult { error: "io" }; }
+        return result;
+    }
+}
+
+fn source_event(j: dna::Journal, kind: String, id: String) -> dna::Event { let codec = dna::OrganizationSourceRequestCodec { }; return codec.fact(j, kind, id); }
+fn source_count(j: dna::Journal, kind: String, id: String) -> Int {
+    let mut count = 0; let mut i = 0;
+    while i < j.revision() { let e = j.read(i); if e.kind == kind && (id == "" || e.entity == id) { count = count + 1; } i = i + 1; }
+    return count;
+}
+type Stage { stage: String = ""; entity_prefix: String = ""; blocked: Bool = false; lost_reply: Bool = false; }
+
+fn faults_path(repo: String) -> String { return repo + "/.hale/dna/stage-faults"; }
+fn faults_of(repo: String) -> Int { return std::str::parse_int(dna::trim_nl(std::io::fs::read_file(faults_path(repo)) or "0")) or 0; }
+// A fresh reader over the repository's record, for one statement.
+fn reader(repo: String) -> dna::GitJournal { return dna::GitJournal { repo: repo }; }
+
+fn source_body(repo: String, st: Stage, request_id: String, owner: String, owners: String) {
+    let made = dna::run_tool("mkdir\n-p\n" + repo + "/.hale/dna");
+    let body = dna::Dna {
+        journal: SourceStageJournal { inner: dna::GitJournal { repo: repo }, stage: st.stage, entity_prefix: st.entity_prefix, blocked: st.blocked, lost_reply: st.lost_reply, faults: faults_of(repo), faults_path: faults_path(repo) },
+        organization_source_facts: ops::StrictOrganizationSourceFacts { },
+        organization_source_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
+        ownership: dna::Ownership { text: owners, me: owner, me_env: "" },
+        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+    };
+    if len(request_id) > 0 { body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
+}
+
+main locus App {
+    fn repo(label: String, owners: String) -> String {
+        let repo = "/tmp/dna-source-request-" + to_string(std::process::pid()) + "-" + label;
+        let cleaned = dna::run_tool("rm\n-rf\n" + repo);
+        let dirs = dna::run_tool("mkdir\n-p\n" + repo + "/dna/org");
+        std::io::fs::write_file(repo + "/dna/org/main.hl", ORIGINAL) or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n/vendor/\n") or discard;
+        if len(owners) > 0 { std::io::fs::write_file(repo + "/dna/org/owners", owners) or discard; }
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let added = dna::run_tool("git\n-C\n" + repo + "\nadd\n-A");
+        let committed = dna::run_tool("git\n-C\n" + repo + "\n-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(committed.code, 0, "native source base committed"); return repo;
+    }
+    fn request(repo: String, j: dna::Journal, label: String, owner: String) -> dna::OrganizationSourceRequest {
+        let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity");
+        let input = source::OrganizationSource { root: repo, allow_drafts: true }; let basis = input.read(); std::test::assert(basis.ok, "real captured Organization basis: " + basis.error);
+        let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
+        let c = ops::GovernanceCommand { application_id: context.application_id, request_id: label, operation: "dna.organization.propose", target_kind: "dna.organization.module", target_id: "dna/org/main.hl",
+            subject_digest: basis.module_digest, source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest,
+            record_head: std::str::clone(j.head()), source_text: PREPARED, rationale: "Prepare exact Organization source." };
+        let codec = ops::OrganizationCommandCodec { }; let guard = source::OrganizationPublicationInputs { root: repo, source_owner: owner };
+        let r = codec.request(context, c, ops::GovernanceGrant { allowed: true, authority: "organization-editor", basis: "native-source-test-policy" }, owner);
+        let prepared = guard.prepare(r); std::test::assert(prepared.ok, "shared guard accepts exact candidate inputs: " + prepared.code);
+        let fact = codec.fact(context, c, prepared.request); std::test::assert(len(fact) > 0, "strict native incoming fact");
+        let written = j.append_exact(j.revision(), "organization.source.requested", prepared.request.request_id, fact);
+        std::test::assert(written.ok, "request admitted before source effects"); return prepared.request;
+    }
+    fn check_proposal(repo: String, j: dna::Journal, r: dna::OrganizationSourceRequest) -> String {
+        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
+        let proposed = source_event(reader(repo), "organization.source.proposed", r.request_id); let candidate = dna::native_json_string(proposed.body, "candidate_commit");
+        std::test::assert(len(candidate) > 0 && proposed.body == codec.proposed(r, candidate), "exact native proposal acknowledgement");
+        let review = source_event(reader(repo), "review.requested", "review:" + id);
+        std::test::assert(review.seq < proposed.seq && dna::native_json_string(review.body, "subject_digest") == candidate, "exact native Review precedes proposal ack");
+        std::test::assert_eq_str(dna::native_json_string(review.body, "author"), "alice", "actual human author governs independence");
+        std::test::assert_eq_str(dna::native_json_string(review.body, "organization_source_request_id"), r.request_id, "Review retains source request identity");
+        let raw = dna::run_tool("git\n-C\n" + repo + "\nshow\n" + candidate + ":dna/org/main.hl"); std::test::assert_eq_str(raw.stdout, PREPARED, "candidate preserves exact Unicode/CRLF/literal source");
+        let head = dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nHEAD"); std::test::assert_eq_str(dna::trim_nl(head.stdout), r.source_head, "Review creation does not publish source");
+        std::test::assert_eq_int(source_count(reader(repo), "mutation.candidate", id), 1, "one exact candidate ack");
+        let pointer = dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nrefs/dna/candidates/" + codec.candidate_key(r));
+        std::test::assert_eq_str(dna::trim_nl(pointer.stdout), candidate, "exact candidate remains reachable under Git-safe native key");
+        std::test::assert_eq_int(source_count(reader(repo), "review.requested", "review:" + id), 1, "one exact Review");
+        std::test::assert_eq_int(source_count(reader(repo), "model.called", ""), 0, "prepared source never goes through a model rewrite");
+        std::test::assert_eq_int(source_count(reader(repo), "mutation.applied", id), 0, "proposal is not application");
+        std::test::assert(len(source_event(reader(repo), "organization.source.started", r.request_id).body) < 1024, "started pins identity instead of duplicating source");
+        return candidate;
+    }
+    fn exact_and_recovery(stage: String, lost: Bool) {
+        let repo = self.repo(if stage == "" { "exact" } else { stage }, ""); let mut st = Stage { };
+        let r = self.request(repo, reader(repo), "exact-source", "");
+        source_body(repo, st, "", "", ""); std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "raw admitted row never bypasses trusted delivery");
+        st.stage = stage; st.blocked = len(stage) > 0 && !lost; st.lost_reply = lost;
+        source_body(repo, st, r.request_id, "", "");
+        if len(stage) > 0 { std::test::assert(faults_of(repo) > 0, "requested native interruption reached"); }
+        if st.blocked { std::test::assert_eq_int(source_count(reader(repo), "organization.source.proposed", r.request_id), 0, "failed storage cannot claim candidate Review complete"); }
+        source_body(repo, Stage { }, "", "", "");
+        let candidate = self.check_proposal(repo, reader(repo), r); source_body(repo, Stage { }, r.request_id, "", "");
+        std::test::assert_eq_int(source_count(reader(repo), "organization.source.proposed", r.request_id), 1, "same trigger cannot duplicate proposal");
+        let codec = dna::OrganizationSourceRequestCodec { }; let wt = repo + "/.hale/dna/worktrees/" + codec.mutation_id(r);
+        let commits = dna::run_tool("git\n-C\n" + wt + "\nrev-list\n--count\n" + r.source_head + ".." + candidate);
+        std::test::assert_eq_str(dna::trim_nl(commits.stdout), "1", "recovery never creates a second candidate commit");
+        std::test::assert(reader(repo).verify_chain(), "Record remains valid"); let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn unknown_claim() {
+        let repo = self.repo("unknown", ""); let mut st = Stage { };
+        let r = self.request(repo, reader(repo), "unknown-commit", ""); st.stage = "effect.requested"; st.entity_prefix = "commit:"; st.lost_reply = true;
+        source_body(repo, st, r.request_id, "", ""); std::test::assert_eq_int(faults_of(repo), 1, "commit claim reply was lost before dispatch");
+        source_body(repo, Stage { }, "", "", "");
+        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r); let effect = dna::effect_status(reader(repo), "commit:" + id + ":prepared-source");
+        std::test::assert(effect.unknown, "no external commit proof remains unknown");
+        std::test::assert_eq_int(source_count(reader(repo), "mutation.candidate", id), 0, "unknown claim is never blindly dispatched");
+        std::test::assert_eq_int(source_count(reader(repo), "organization.source.failed", r.request_id), 0, "unknown effect is not a domain failure");
+        std::test::assert_eq_int(source_count(reader(repo), "organization.source.proposed", r.request_id), 0, "unknown effect is not a created Review");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn stale_source() {
+        let repo = self.repo("stale", ""); let mut st = Stage { };
+        let r = self.request(repo, reader(repo), "stale", "");
+        std::io::fs::write_file(repo + "/README", "another commit\n") or discard; let add = dna::run_tool("git\n-C\n" + repo + "\nadd\nREADME");
+        let commit = dna::run_tool("git\n-C\n" + repo + "\n-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\ncompeting");
+        source_body(repo, st, r.request_id, "", "");
+        let refusal = source_event(reader(repo), "organization.source.refused", r.request_id);
+        std::test::assert_eq_str(dna::native_json_string(refusal.body, "reason_code"), "stale_subject", "competing source base refuses without rebasing");
+        std::test::assert_eq_int(source_count(reader(repo), "mutation.worktree", ""), 0, "stale source creates no worktree");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn owner_and_default() {
+        let owners = "org = north\nnorth: board-member\nsouth: other\n";
+        let repo = self.repo("owners", owners); let mut st = Stage { };
+        let r = self.request(repo, reader(repo), "owners", "north");
+        source_body(repo, st, r.request_id, "south", owners);
+        std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "another owner cannot start whole-module source work");
+        std::test::assert_eq_int(source_count(reader(repo), "organization.source.refused", r.request_id), 0, "another owner cannot falsely finish it");
+        let closed = dna::Dna { journal: dna::GitJournal { repo: repo }, ownership: dna::Ownership { text: owners, me: "north", me_env: "" } };
+        closed.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: r.request_id });
+        std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "default fact adapter is unavailable");
+        let codec = dna::OrganizationSourceRequestCodec { };
+        std::test::assert(!codec.owner_token("../north") && !codec.owner_token("north\\south") && !codec.owner_token("north:else"), "owner identity cannot traverse or change mutation namespace");
+        let owner = std::bytes::BytesBuilder { }; let mut length = 0;
+        while length < 183 { owner.append_str("n"); length = length + 1; }
+        std::test::assert(codec.owner_token(std::str::from_bytes(owner.snapshot())), "183-byte owner fits exact native mutation basename");
+        owner.append_str("n");
+        std::test::assert(!codec.owner_token(std::str::from_bytes(owner.snapshot())), "184-byte owner would exceed native basename and is refused");
+        source_body(repo, st, r.request_id, "north", owners); let candidate = self.check_proposal(repo, reader(repo), r);
+        std::test::assert(std::str::starts_with(codec.mutation_id(r), "north:source-"), "native owner-qualified mutation routing preserved");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    run() {
+        let selected = std::env::var("HALE_ORGANIZATION_TEST_CASE");
+        if selected == "" || selected == "exact" { self.exact_and_recovery("", false); eprintln("PASS exact"); }
+        if selected == "" || selected == "candidate-recovery" { self.exact_and_recovery("mutation.candidate", false); eprintln("PASS candidate-recovery"); }
+        if selected == "" || selected == "review-recovery" { self.exact_and_recovery("review.requested", false); eprintln("PASS review-recovery"); }
+        if selected == "" || selected == "lost-proposal" { self.exact_and_recovery("organization.source.proposed", true); eprintln("PASS lost-proposal"); }
+        if selected == "" || selected == "unknown" { self.unknown_claim(); eprintln("PASS unknown"); }
+        if selected == "" || selected == "stale" { self.stale_source(); eprintln("PASS stale"); }
+        if selected == "" || selected == "owner" { self.owner_and_default(); eprintln("PASS owner"); }
+    }
+}
+fn main() { App { }; }

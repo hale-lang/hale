@@ -1,0 +1,128 @@
+// Record-only human handoffs. This projection makes no source-position or
+// minting-owner inference; eligibility is a separate fixed authority decision.
+import "../core" as dna;
+
+type TaskRow {
+    id: String = ""; outcome: String = ""; state: String = ""; assignee: String = ""; obligation: String = "";
+    acceptance_digest: String = ""; acceptance_bound: Bool = false; evidence_required: Bool = false;
+    evidence_ref: String = ""; waiting: String = ""; assignment_digest: String = ""; reassignment_supported: Bool = false;
+}
+type TaskAssignmentRow { event_id: String = ""; sequence: Int = -1; kind: String = ""; from: String = ""; to: String = ""; by: String = ""; }
+type TaskEntry { row: TaskRow = TaskRow { }; handed: Bool = false; visible: Bool = true; transfer: Bool = false; transfer_body: String = ""; history: Int = 0; }
+type TaskHistoryEntry { task: String = ""; row: TaskAssignmentRow = TaskAssignmentRow { }; }
+@form(vec) locus TaskEntries { capacity { heap rows of TaskEntry; } }
+@form(vec) locus TaskHistories { capacity { heap rows of TaskHistoryEntry; } }
+
+locus TaskProjection {
+    params { j: dna::Journal; visibility: Queries; entries: TaskEntries = TaskEntries { }; histories: TaskHistories = TaskHistories { }; code: String = "task_source_unavailable"; loaded: Bool = false; }
+    fn text(body: String, key: String) -> String { let wire = GovernanceCommandCodec { }; return wire.string(body, key); }
+    fn visible(id: String) -> Bool { return id == "" || self.visibility.receipt_status(id) == "available"; }
+    fn relevant(kind: String) -> Bool { return std::str::starts_with(kind, "task.") || dna::word_in(kind, "decision.reported completion.linked completion.excepted exception.authorized"); }
+    fn index(id: String) -> Int { let mut i = 0; while i < self.entries.len() { if (self.entries.get(i) or TaskEntry { }).row.id == id { return i; } i = i + 1; } return -1; }
+    fn terminal(state: String) -> Bool { return dna::word_in(state, "done failed cancelled refused decided declined timeout escalated"); }
+    fn object(body: String) -> Bool { let syntax = OrganizationJson { }; return std::str::starts_with(body, "{") && syntax.valid(body); }
+    fn strings(body: String, keys: String, size: Int, controls: Bool) -> Bool {
+        let wire = GovernanceCommandCodec { }; let mut i = 0;
+        while i < dna::word_count(keys) { let key = dna::nth_word(keys, i); let raw = std::json::find_field_raw(body, key);
+            if raw != "" && (!std::str::starts_with(raw, "\"") || !wire.bounded(self.text(body, key), size, false, controls)) { return false; } i = i + 1; }
+        return true;
+    }
+    fn references(body: String) -> Bool {
+        let keys = "acceptance evidence evidence_ref practice receipt digest work context_digest inputs_ref result_ref"; let mut i = 0;
+        while i < dna::word_count(keys) { if !self.visible(self.text(body, dna::nth_word(keys, i))) { return false; } i = i + 1; }
+        return true;
+    }
+    fn basis(previous: String, e: dna::Event) -> String {
+        let wire = GovernanceCommandCodec { }; let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":\"dna.task-assignment/1\",\"previous\":"); b.append_str(wire.quote(previous));
+        b.append_str(",\"event_id\":"); b.append_str(wire.quote(e.digest)); b.append_str(",\"sequence\":"); b.append_str(to_string(e.seq));
+        b.append_str(",\"kind\":"); b.append_str(wire.quote(e.kind)); b.append_str(",\"entity\":"); b.append_str(wire.quote(e.entity));
+        b.append_str(",\"body\":"); b.append_str(wire.quote(e.body)); b.append_str("}"); return dna::digest_of(std::str::from_bytes(b.snapshot()));
+    }
+    fn apply(e: dna::Event) -> String {
+        let wire = GovernanceCommandCodec { }; let at = self.index(e.entity);
+        if !wire.bounded(e.entity, 256, true, false) || !wire.bounded(e.digest, 256, true, false) { return "task_source_invalid"; }
+        if e.kind == "task.born" {
+            if at >= 0 || !wire.bounded(e.body, 8192, true, true) { return "task_source_invalid"; }
+            if self.entries.len() >= 512 { return "task_read_limit"; }
+            self.entries.push(TaskEntry { row: TaskRow { id: e.entity, outcome: e.body, state: "active", assignment_digest: self.basis("", e) }, visible: self.visible(e.entity) && self.visible(e.digest) }); return "";
+        }
+        if at < 0 { return "task_source_invalid"; }
+        let mut entry = self.entries.get(at) or TaskEntry { }; let mut row = entry.row;
+        entry.visible = entry.visible && self.visible(e.entity) && self.visible(e.digest);
+        let terminal = self.terminal(row.state);
+        if dna::word_in(e.kind, "task.pending task.planned task.resumed") {
+            if terminal { return "task_source_invalid"; }
+        } else if e.kind == "task.handed" || e.kind == "task.transfer_requested" {
+            if terminal || !self.object(e.body) || !self.strings(e.body, "assignee obligation by owner to retired_assignee transferred_from accepted_by", 256, false)
+                || !self.strings(e.body, "acceptance", 256, true) { return "task_source_invalid"; }
+            let evidence = std::json::find_field_raw(e.body, "evidence_required");
+            if evidence != "" && evidence != "true" && evidence != "false" { return "task_source_invalid"; }
+            if e.kind == "task.transfer_requested" { if self.text(e.body, "owner") == "" || self.text(e.body, "to") == "" || self.text(e.body, "assignee") == "" { return "task_source_invalid"; } entry.transfer = true; entry.transfer_body = e.body; row.state = "transfer_requested"; }
+            else {
+                if entry.history >= 128 { return "task_read_limit"; }
+                self.histories.push(TaskHistoryEntry { task: e.entity, row: TaskAssignmentRow { event_id: e.digest, sequence: e.seq, kind: e.kind, from: row.assignee, to: self.text(e.body, "assignee"), by: self.text(e.body, "by") } });
+                entry.history = entry.history + 1; entry.handed = true; row.state = "handed"; row.assignee = self.text(e.body, "assignee"); row.obligation = self.text(e.body, "obligation");
+                row.acceptance_digest = self.text(e.body, "acceptance"); row.acceptance_bound = std::json::find_field_raw(e.body, "acceptance") != ""; row.evidence_required = evidence == "true";
+                if self.text(e.body, "transferred_from") != "" || self.text(e.body, "accepted_by") != "" { entry.transfer = true; }
+            }
+            entry.visible = entry.visible && self.references(e.body) && self.visible(self.text(e.body, "assignee")) && self.visible(self.text(e.body, "by"));
+        } else if e.kind == "task.transfer_accepted" {
+            let schema = DefinitionCodec { };
+            if row.state != "transfer_requested" || !self.object(e.body) || !schema.fields(e.body, "owner from by assignee note", "")
+                || !self.strings(e.body, "owner from by assignee", 256, false) || self.text(e.body, "by") == ""
+                || self.text(e.body, "owner") != self.text(entry.transfer_body, "to") || self.text(e.body, "from") != self.text(entry.transfer_body, "owner")
+                || self.text(e.body, "assignee") != self.text(entry.transfer_body, "assignee") { return "task_source_invalid"; }
+            entry.transfer = true; row.state = "transfer_accepted";
+        } else if e.kind == "task.reassigned" {
+            if row.state != "handed" || !self.object(e.body) || !self.strings(e.body, "from to by", 256, false)
+                || self.text(e.body, "from") != row.assignee || self.text(e.body, "to") == "" || self.text(e.body, "by") == "" { return "task_source_invalid"; }
+            if std::json::find_field_raw(e.body, "command_id") != "" || std::json::find_field_raw(e.body, "command_payload") != "" {
+                let codec = TaskCommandCodec { }; let fact = codec.decode_fact(e);
+                if !fact.valid || fact.context.application_id != self.j.read(0).digest { return "task_source_invalid"; }
+            }
+            entry.visible = entry.visible && self.visible(self.text(e.body, "from")) && self.visible(self.text(e.body, "to")) && self.visible(self.text(e.body, "by"));
+            if entry.history >= 128 { return "task_read_limit"; }
+            self.histories.push(TaskHistoryEntry { task: e.entity, row: TaskAssignmentRow { event_id: e.digest, sequence: e.seq, kind: e.kind, from: row.assignee, to: self.text(e.body, "to"), by: self.text(e.body, "by") } });
+            entry.history = entry.history + 1; row.assignee = self.text(e.body, "to");
+        } else if e.kind == "decision.reported" {
+            if row.state != "handed" || !self.object(e.body) || !self.strings(e.body, "why", 2048, true) { return "task_source_invalid"; }
+            let accepted = std::json::find_field_raw(e.body, "accepted"); if accepted != "true" && accepted != "false" { return "task_source_invalid"; }
+            if accepted == "true" { row.state = "decided"; row.waiting = ""; } else { row.waiting = self.text(e.body, "why"); }
+            entry.visible = entry.visible && self.references(e.body);
+        } else if dna::word_in(e.kind, "completion.linked completion.excepted exception.authorized") {
+            if row.state != "handed" || !self.object(e.body) || !self.strings(e.body, "evidence", 256, true) { return "task_source_invalid"; }
+            if e.kind == "completion.linked" { row.evidence_ref = self.text(e.body, "evidence"); }
+            entry.visible = entry.visible && self.references(e.body);
+        } else if dna::word_in(e.kind, "task.done task.failed task.cancelled task.refused task.declined task.timeout task.escalated") {
+            if terminal || e.body == "" { return "task_source_invalid"; } row.state = e.kind[5..len(e.kind)];
+        } else { return "task_source_unsupported"; }
+        row.assignment_digest = self.basis(row.assignment_digest, e); row.reassignment_supported = row.state == "handed" && !entry.transfer;
+        entry.row = row; self.entries.set(at, entry) or discard; return "";
+    }
+    fn load() -> Bool {
+        if self.loaded { return self.code == ""; } self.loaded = true;
+        let n = self.j.revision(); let head = self.j.head();
+        if n < 1 || !self.j.verify_chain() { self.code = "task_source_invalid"; return false; }
+        if n > 10000 { self.code = "task_read_limit"; return false; }
+        let mut bytes = 0; let mut relevant = 0; let mut i = 0;
+        while i < n {
+            let e = self.j.read(i); bytes = bytes + len(e.body);
+            if bytes > 16777216 || len(e.body) > 262144 { self.code = "task_read_limit"; return false; }
+            if e.seq != i || e.digest == "" { self.code = "task_source_invalid"; return false; }
+            if e.kind == "ledger.adopted" { self.code = "task_source_unavailable"; return false; }
+            if self.relevant(e.kind) {
+                relevant = relevant + 1; if relevant > 2048 || len(e.body) > 65536 { self.code = "task_read_limit"; return false; }
+                let error = self.apply(e); if error != "" { self.code = error; return false; }
+            }
+            i = i + 1;
+        }
+        if self.j.head() != head || self.j.revision() != n { self.code = "task_source_unavailable"; return false; }
+        self.code = ""; return true;
+    }
+    fn count() -> Int { let mut count = 0; let mut i = 0; while i < self.entries.len() { let e = self.entries.get(i) or TaskEntry { }; if e.handed && e.visible { count = count + 1; } i = i + 1; } return if self.code == "" { count } else { 0 }; }
+    fn at(index: Int) -> TaskRow { let mut count = 0; let mut i = 0; if self.code != "" { return TaskRow { }; } while i < self.entries.len() { let e = self.entries.get(i) or TaskEntry { }; if e.handed && e.visible { if count == index { return e.row; } count = count + 1; } i = i + 1; } return TaskRow { }; }
+    fn task_of(id: String) -> TaskRow { let at = self.index(id); if self.code != "" || at < 0 { return TaskRow { }; } let e = self.entries.get(at) or TaskEntry { }; return if e.handed && e.visible { e.row } else { TaskRow { } }; }
+    fn history_count(id: String) -> Int { if self.task_of(id).id == "" { return 0; } let e = self.entries.get(self.index(id)) or TaskEntry { }; return e.history; }
+    fn history_at(id: String, index: Int) -> TaskAssignmentRow { if self.task_of(id).id == "" { return TaskAssignmentRow { }; } let mut n = 0; let mut i = 0; while i < self.histories.len() { let e = self.histories.get(i) or TaskHistoryEntry { }; if e.task == id { if n == index { return e.row; } n = n + 1; } i = i + 1; } return TaskAssignmentRow { }; }
+}

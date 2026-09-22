@@ -1,0 +1,68 @@
+// Native acceptance Body. Run with cwd set to the disposable project root.
+// The bootstrap calls the actual Practice/Review domain; no outcome is seeded.
+import "../../../../core" as dna;
+import "../../../../operations" as ops;
+
+main locus Body {
+    params {
+        core: dna::Dna = dna::Dna {
+            journal: dna::GitJournal { repo: "." },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+            membrane: dna::Board { who: "board" },
+            binding_policy_syntax: ops::OrganizationJson { },
+            edge_facts: ops::StrictKnowledgeDirectEdgeFacts { }
+        };
+    }
+    bus { publish dna::ReviewVerdict; }
+    bindings {
+        dna::PracticeRequested: unix(".hale/dna/hale-dna.practice.requested.sock", role: listen);
+        dna::KnowledgeNodeRequested: unix(".hale/dna/hale-dna.knowledge.node.requested.sock", role: listen);
+        dna::KnowledgeBindingRequested: unix(".hale/dna/hale-dna.knowledge.binding.requested.sock", role: listen);
+        dna::KnowledgeEdgeRequested: unix(".hale/dna/hale-dna.knowledge.edge.requested.sock", role: listen);
+        dna::ReviewVerdict: unix(".hale/dna/hale-dna.review.verdict.sock", role: listen);
+        dna::IntentOffered: unix(".hale/dna/hale-dna.intent.offered.sock", role: listen);
+        dna::ExpressionObserved: unix(".hale/dna/hale-dna.expression.observed.sock", role: listen);
+        dna::PressureRaised: unix(".hale/dna/hale-dna.pressure.raised.sock", role: listen);
+        dna::ConcernRaised: unix(".hale/dna/hale-dna.concern.raised.sock", role: listen);
+    }
+    fn bootstrap() {
+        self.core.on_practice_requested(dna::PracticeRequest {
+            request_id: "native-command-bootstrap", name: "practice/receipts",
+            text: "Collect the exact receipt.\nKeep its provenance.",
+            by: "fixture-author", because: "Native command acceptance bootstrap."
+        });
+        let proposed = self.core.governance_event("practice.proposed", "native-command-bootstrap");
+        let digest = std::json::find_string_field(proposed.body, "digest");
+        if len(digest) == 0 { eprintln("native command Body: bootstrap proposal is incomplete"); std::process::exit(2); }
+        if !self.core.knowledge_ratified(digest) {
+            dna::ReviewVerdict <- dna::Verdict {
+                command_id: "native-command-bootstrap-review",
+                review_id: std::json::find_string_field(proposed.body, "review_id"),
+                subject_digest: digest, verdict: "approve", reviewer: "fixture-board", authority: "board",
+                comment: "Approve the initial native acceptance Practice."
+            };
+        }
+        let mut ticks = 0;
+        while !self.core.knowledge_ratified(digest) && ticks < 400 {
+            std::time::sleep(25ms);
+            ticks = ticks + 1;
+        }
+        if !self.core.knowledge_ratified(digest) { eprintln("native command Body: bootstrap Review did not ratify"); std::process::exit(2); }
+        let ready = std::json::Builder { };
+        ready.begin_object();
+        ready.bool_field("ready", true);
+        ready.string_field("bootstrap_digest", digest);
+        ready.string_field("practice_id", self.core.practice_in_force("practice/receipts"));
+        ready.end_object();
+        println(ready.result());
+    }
+    run() {
+        self.bootstrap();
+        while true {
+            std::time::sleep(100ms);
+            self.core.request_tick(std::time::monotonic_ns() / 1000000);
+        }
+    }
+}
+
+fn main() { Body { }; }

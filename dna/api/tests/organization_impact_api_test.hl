@@ -1,0 +1,116 @@
+// Exact read adapter over an owned mirror of actual source/Host evidence.
+// A deterministic planner supplies only a Plan; Dna.ask writes the real Task
+// birth and handoff. No candidate, application, workflow, or completion outcome
+// is authored by this test. This does not start Host or rehydrate that history.
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+
+locus ImpactPlanner {
+    params { }
+    bus { subscribe dna::PlanRequested as plan where key == "impact-fixture"; publish dna::TaskPlanned; }
+    fn plan(r: dna::PlanRequest) {
+        dna::TaskPlanned <- dna::Plan { org: r.org, task_id: r.task_id, work_id: r.work_id, kind: "person", change_class: "none", target: "none", count: 1,
+            assignee: "mara", obligation: "impact-proof", narrative: "A person retains this responsibility until reporting completion.", by: "fixture-planner", parsed: true };
+    }
+}
+locus ImpactWork {
+    params { body: dna::Dna = dna::Dna { planned: true, org_id: "impact-fixture", initiative: false }; planner: ImpactPlanner = ImpactPlanner { }; }
+    // Birth saw only an empty memory Journal. Binding here deliberately avoids
+    // recovery over the retained fixture's original external worktree paths.
+    fn bind(j: dna::Journal, receipts: dna::Receipts) { self.body.journal = j; self.body.review_journal.bind(j); self.body.verification.receipts = receipts; self.body.ownership.me = "impact-fixture"; }
+    fn ask() -> String { return self.body.ask(dna::Intent { id: "impact-native-request", from: "requester", to: "org", outcome: "A bounded human responsibility" }); }
+}
+locus OrganizationImpactApiCases {
+    params { }
+    fn request(root: String, id: String, authority: ops::FixedOrganizationAuthority, name: String, suffix: String) -> std::http::Response {
+        let record = dna::GitRecord { repo: root }; let reader = api::OrganizationCandidateWire { authority: authority };
+        let head = api::Api { root: root, local_name: name, organization_candidates: reader };
+        return head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + record.identity() + "/dna/organization/source-impact?id=" + dna::url_encode(id) + suffix });
+    }
+    fn event(j: dna::Journal, kind: String, id: String) -> dna::Event {
+        let refreshed = j.refresh(); let mut n = 0;
+        while n < j.revision() { let e = j.read(n); if e.kind == kind && e.entity == id { return e; } n = n + 1; }
+        return dna::Event { };
+    }
+    fn run_cases(root: String, metadata: String, evidence: String) {
+        let w = api::CommandWire { }; let meta = std::io::fs::read_file(metadata) or raise; let id = w.text(meta, "mutation_id");
+        let record = dna::GitRecord { repo: root }; let app = record.identity();
+        std::test::assert(id != "" && app == w.text(meta, "application_id"), "actual retained source fixture identity");
+        let codec = ops::OrganizationAuthorityPolicyCodec { };
+        let policy = codec.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"reviewer\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":false,\"recover\":true}]}", app, "local");
+        std::test::assert(policy.valid, "explicit recovery-only source read grant"); let authority = ops::FixedOrganizationAuthority { policy: policy };
+        let suffix = "&snapshot=" + record.head("journal"); let baseline = self.request(root, id, authority, "reviewer", suffix);
+        std::test::assert_eq_int(baseline.status, 200, baseline.body); let initial = w.raw(baseline.body, "data");
+        std::test::assert_eq_str(w.text(initial, "profile"), "dna.organization.source-impact.v1", "typed responsibility read");
+        std::test::assert_eq_str(w.text(initial, "review_id"), id, "exact Review"); std::test::assert_eq_str(w.text(initial, "mutation_id"), id, "exact mutation");
+        std::test::assert_eq_str(w.text(w.raw(initial, "source"), "candidate_commit"), w.text(meta, "candidate_commit"), "same retained native candidate");
+        let basis = w.raw(initial, "basis"); let outer = w.raw(baseline.body, "source");
+        std::test::assert_eq_str(w.text(basis, "record_head"), w.text(outer, "record_head"), "one captured Record head");
+        std::test::assert_eq_str(w.text(basis, "record_revision"), w.text(outer, "record_revision"), "one captured revision");
+        std::test::assert_eq_str(w.text(basis, "position_binding"), "unavailable", "no source-to-live-position binding invented");
+        std::test::assert_eq_str(w.text(basis, "admission_fence"), "unavailable", "read did not acquire a writer fence");
+        // Exact native body ownership and healthy pressure diagnostics remain
+        // in the complete history; neither establishes a work completion/fence.
+        std::test::assert_eq_str(w.text(initial, "state"), "none_observed", "complete intact baseline has no outstanding responsibility");
+        std::test::assert_eq_str(w.text(initial, "reason_code"), "impact_none_observed", "explicit read-only zero observation");
+        let empty_counts = w.raw(initial, "counts");
+        std::test::assert_eq_str(w.text(empty_counts, "legacy_tasks"), "0", "no initial Task");
+        std::test::assert_eq_str(w.text(empty_counts, "pending_effects"), "0", "native prepared effects were acknowledged");
+        std::test::assert_eq_str(w.text(empty_counts, "unknown_effects"), "0", "no unresolved initial external effect");
+        std::test::assert(!std::str::contains(baseline.body, "request_id") && !std::str::contains(baseline.body, root) && !std::str::contains(baseline.body, "safe_to_apply"), "no private command key, local paths or apply authorization");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&snapshot=stale").status, 409, "snapshot fence");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&limit=1").status, 400, "closed nonpaged query");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&request_id=private").status, 400, "no raw request alias");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&id=duplicate").status, 400, "duplicate exact identity");
+        let absent = ops::FixedOrganizationAuthority { };
+        std::test::assert_eq_int(self.request(root, id, absent, "reviewer", "").status, 403, "default denied");
+        std::test::assert_eq_int(self.request(root, "missing", authority, "outsider", "").status, 403, "authority precedes existence");
+        std::test::assert_eq_int(self.request(root, "missing", authority, "reviewer", "").status, 404, "missing canonical source");
+        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root }; let work = ImpactWork { };
+        work.bind(journal, receipts); let task = work.ask(); let mut tries = 0;
+        while self.event(journal, "task.handed", task).kind == "" && tries < 100 { std::time::sleep(20ms); tries = tries + 1; }
+        let born = self.event(journal, "task.born", task); let handed = self.event(journal, "task.handed", task);
+        std::test::assert(born.kind == "task.born" && handed.kind == "task.handed" && born.seq < handed.seq, "real native admission precedes real human handoff");
+        std::test::assert_eq_str(w.text(handed.body, "assignee"), "mara", "the actual planner's human responsibility");
+        std::test::assert_eq_str(self.event(journal, "task.done", task).kind, "", "human responsibility remains unsettled");
+        let response = self.request(root, id, authority, "reviewer", ""); std::test::assert_eq_int(response.status, 200, response.body);
+        let data = w.raw(response.body, "data"); let counts = w.raw(data, "counts");
+        std::test::assert_eq_str(w.text(data, "state"), "obligations_observed", "actual human handoff is outstanding responsibility");
+        std::test::assert_eq_str(w.text(data, "reason_code"), "impact_obligations_observed", "actual native obligation reason");
+        std::test::assert_eq_str(w.text(counts, "legacy_tasks"), "1", "one actual native Task");
+        std::test::assert_eq_str(w.text(counts, "open_legacy_tasks"), "1", "native handoff did not complete its Task");
+        std::test::assert_eq_str(w.text(counts, "handed_tasks"), "1", "one actual outstanding human handoff");
+        std::test::assert_eq_str(w.text(counts, "workflow_tasks"), "0", "legacy Task is not invented as a recursive workflow");
+        std::test::assert_eq_str(w.text(counts, "pending_effects"), "0", "diagnostics did not create unknown effects");
+        std::test::assert_eq_str(w.text(counts, "unresolved_intents"), "0", "real Task resolved only the admission intent");
+        let capture = ops::GovernanceCommands { record: record }; let snapshot = capture.capture(); let view = ops::GovernanceJournal { snapshot: snapshot }; let source_view = ops::OrganizationProjection { }; let candidate = source_view.candidate(view, id, snapshot.text);
+        // Serialization-only probes: partial/internal totals must not leak.
+        let wire = api::OrganizationImpactWire { };
+        let partial = wire.document(candidate, snapshot, ops::OrganizationImpactAssessment { details_visible: true, code: "impact_read_limit", legacy_tasks: 9, handed_tasks: 4 });
+        std::test::assert_eq_str(w.raw(partial, "counts"), "null", "partial internal counts suppressed");
+        let private = wire.document(candidate, snapshot, ops::OrganizationImpactAssessment { available: true, details_visible: false, code: "impact_visibility_unavailable", legacy_tasks: 9, handed_tasks: 4 });
+        std::test::assert_eq_str(w.raw(private, "counts"), "null", "private internal counts suppressed"); std::test::assert_eq_str(w.text(private, "reason_code"), "impact_source_unavailable", "private reason collapsed");
+        if evidence != "" {
+            let reader = api::OrganizationCandidateWire { authority: authority }; let head = api::Api { root: root, local_name: "reviewer", organization_candidates: reader };
+            let reviews = head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + app + "/dna/reviews?id=" + dna::url_encode(id) + "&snapshot=" + w.text(w.raw(response.body, "source"), "record_head") });
+            std::test::assert_eq_int(reviews.status, 200, reviews.body); std::test::assert_eq_str(w.raw(reviews.body, "source"), w.raw(response.body, "source"), "Review and impact exports share exact source");
+            std::io::fs::write_file(evidence + "/impact-response.json", response.body) or raise; std::io::fs::write_file(evidence + "/impact-data.json", data) or raise;
+            std::io::fs::write_file(evidence + "/reviews-response.json", reviews.body) or raise; std::io::fs::write_file(evidence + "/handed-task.json", handed.body) or raise;
+        }
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: task, author: "test", body: "{}" }, false, "").ok, "owned operational privacy input");
+        let hidden_task = self.request(root, id, authority, "reviewer", ""); std::test::assert_eq_int(hidden_task.status, 200, hidden_task.body); std::test::assert_eq_str(w.raw(w.raw(hidden_task.body, "data"), "counts"), "null", "protected operational evidence cannot expose partial counts");
+        std::test::assert_eq_str(w.text(w.raw(hidden_task.body, "data"), "state"), "unavailable", "private responsibility suppresses the entire assessment");
+        std::test::assert_eq_str(w.text(w.raw(hidden_task.body, "data"), "reason_code"), "impact_source_unavailable", "private operational reason is collapsed");
+        let support = self.event(journal, "mutation.candidate", id); std::test::assert(support.kind != "", "actual candidate support row");
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: support.digest, author: "test", body: "{}" }, false, "").ok, "owned candidate-support privacy input");
+        let hidden = self.request(root, id, authority, "reviewer", ""); let missing = self.request(root, "missing", authority, "reviewer", "");
+        std::test::assert_eq_int(hidden.status, 404, hidden.body); std::test::assert_eq_str(hidden.body, missing.body, "protected candidate support and absent source indistinguishable");
+        println("PASS source-impact API: exact retained candidate/Review, default-denied grant, snapshot/query guards, intact baseline, real native handed-task counts, partial/private suppression and hidden candidate support");
+    }
+}
+// This program consumes a retained fixture (a root, its metadata and its evidence) the harness produced; under `hale test` there is none, and it says so.
+fn main() {
+    if len(std::env::arg(1)) == 0 { eprintln("skipped: needs a retained fixture root as its first argument"); return; }
+    let cases = OrganizationImpactApiCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, ""));
+}

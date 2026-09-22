@@ -482,7 +482,7 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     // the organization consults the service for org/knowing and folds the
     // ratified practice into the editor's objective (the editor here has
     // no key, so the attempt fails after — the consult is what is asserted)
-    let (ok, out) = hale(&["dna", "ask", "document", "the", "Echo", "locus", "in", "main.hl"], &app, &[]);
+    let (ok, out) = hale(&["dna", "task", "create", "document", "the", "Echo", "locus", "in", "main.hl"], &app, &[]);
     assert!(ok, "ask: {out}");
     let consulted = wait_row(&app, 60, "knowledge.consulted", "m1");
     // ---- K2: a concern raised three times from a path under the

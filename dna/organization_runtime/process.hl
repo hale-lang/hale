@@ -1,0 +1,14 @@
+// Read-only view of the exact host-owned process files. No launch or stop API.
+import "../core" as dna;
+
+type OrganizationProcess { pid: Int = -1; dir: String = ""; name: String = ""; }
+
+fn organization_exit_code(p: OrganizationProcess) -> Int {
+    if p.pid <= 0 { return -1; }
+    let text = std::io::fs::read_file(p.dir + "/" + p.name + ".exit") or "";
+    if len(dna::trim_nl(text)) == 0 {
+        if dna::run_tool("kill\n-0\n" + to_string(p.pid)).code == 0 { return -2; }
+        return -1;
+    }
+    return std::str::parse_int(dna::trim_nl(text)) or - 1;
+}

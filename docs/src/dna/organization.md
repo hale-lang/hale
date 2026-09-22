@@ -71,6 +71,17 @@ an ordinary ask for you to decide, or records that the state is clean.
 It never proposes a large restructure unprompted, and never creates
 work for the sake of activity.
 
+The live organization's loop calls
+`self.core.request_tick(std::time::monotonic_ns() / 1000000)`.
+This queues cadence processing with incoming work, so a task cannot enter
+while a journal refresh is rebuilding its cached view. After upgrading an
+older project, replace `self.core.tick(` with `self.core.request_tick(` in
+`dna/org/main.hl`'s loop; keep the same millisecond clock. `hale dna upgrade`
+reports this change but leaves your organization's source for you to edit.
+Synchronous `tick` remains available for isolated callers or code already
+running in the owner's handler. Organizations in the same process use
+distinct `org_id` values for cadence and plan routing.
+
 Some asks are nobody's software change. When the Leader plans one as a
 person's job, the organization hands it on and the record keeps it
 *handed* — to the person the Leader named — until that person reports
@@ -188,7 +199,7 @@ north: bob
 A position not named takes its nearest named ancestor's owner. Each
 body says which owner it is (`git config dna.owner acme`) or `hale dna
 run` refuses to start it, and it admits intents only for positions its
-owner holds. `hale dna ask --to org/collections` from acme's clone does
+owner holds. `hale dna task create --to org/collections` from acme's clone does
 not go to acme's body: it goes into the record, where north's controller
 relays it, and `hale dna status` in acme's clone shows it as
 `[unadmitted]` with north's name until then. Changing the map is a

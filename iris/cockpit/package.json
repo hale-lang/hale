@@ -1,0 +1,15 @@
+{
+  "name": "hale-iris-cockpit-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "test:browser": "node tests/run.mjs",
+    "test:runtime": "playwright test --config tests/playwright.config.mjs runtime.spec.mjs",
+    "test:application": "playwright test --config tests/playwright.config.mjs application.spec.mjs",
+    "test:runtime-application": "playwright test --config tests/playwright.config.mjs runtime-application.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

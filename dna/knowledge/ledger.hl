@@ -124,7 +124,7 @@ locus MemLedger {
     fn last_error() -> String { return self.error; }
     fn revision() -> Int { return self.j.revision(); }
     fn head() -> String { return self.j.head(); }
-    fn refresh() -> Bool { return false; }
+    fn refresh() -> Bool { self.error = ""; return false; }
     @unbounded
     fn claimed(kind: String, entity: String) -> Bool {
         if !claim_kind(kind) { return false; }
@@ -318,7 +318,7 @@ locus PqLedger {
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             if len(dna::trim_nl(line)) == 0 { continue; }
             let seq = std::json::find_int_field(line, "seq");
-            if seq != self.rows.len() { continue; }
+            if seq != self.rows.len() { self.error = "load: Ledger sequence is not contiguous"; return; }
             self.rows.push(dna::Event {
                 seq: seq,
                 kind: std::json::find_string_field(line, "kind"),
@@ -337,11 +337,27 @@ locus PqLedger {
         return e.digest;
     }
     fn refresh() -> Bool {
-        if !self.opened { return false; }
-        let n = self.run_one("SELECT count(*) FROM ledger_rows");
+        // last_error describes this read, not an earlier refused command.
+        self.error = "";
+        if !self.opened { self.error = "refresh: Ledger is not open"; return false; }
+        // Count alone misses a deletion paired with another append. Inspect
+        // density and the authoritative tail in the same database statement.
+        let n = self.run_one("SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM ledger_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM ledger_rows");
         if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
-        if (std::str::parse_int(dna::trim_nl(n.data)) or 0) == self.rows.len() { return false; }
+        let row = dna::trim_nl(n.data);
+        let count = std::str::parse_int(tab_field(row, 0)) or - 1;
+        let first = std::str::parse_int(tab_field(row, 1)) or - 1;
+        let last = std::str::parse_int(tab_field(row, 2)) or - 2;
+        let head = tab_field(row, 3);
+        if count < 0 || first != 0 || last != count - 1 { self.error = "refresh: Ledger sequence is not contiguous"; return false; }
+        if count < self.rows.len() { self.error = "refresh: Ledger row count moved backwards"; return false; }
+        if count == self.rows.len() {
+            if head != self.head() { self.error = "refresh: Ledger history changed at the same revision"; }
+            return false;
+        }
         self.load();
+        if len(self.error) > 0 { return false; }
+        if self.rows.len() != count || self.head() != head { self.error = "refresh: Ledger changed during read or rows are incomplete"; return false; }
         return true;
     }
     fn read(i: Int) -> dna::Event { return self.rows.get(i) or dna::Event { }; }
@@ -425,7 +441,8 @@ locus PqLedger {
         let a = db::Args { };
         a.add(key);
         let rows = self.run_q("SELECT value FROM ledger_meta WHERE key = $1", a);
-        if !rows.ok || rows.n == 0 { return ""; }
+        if !rows.ok { self.error = "meta " + key + ": " + rows.err.kind + " " + rows.err.detail; return ""; }
+        if rows.n == 0 { return ""; }
         return dna::trim_nl(first_line(rows.csv));
     }
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {

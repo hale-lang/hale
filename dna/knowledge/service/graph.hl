@@ -1,0 +1,314 @@
+// Authenticated private graph reads. The public head supplies its authenticated
+// reader; the state service owns projection, visibility and graph consistency.
+import "../../operations" as ops;
+
+type GraphRequest {
+    ok: Bool = false;
+    record_id: String = "";
+    record_head: String = "";
+    record_revision: String = "";
+    reader: String = "";
+    kind: String = "nodes";
+    id: String = "";
+    target: String = "";
+    limit: Int = 25;
+    cursor: String = "";
+    snapshot: String = "";
+    first: String = "";
+    second: String = "";
+    third: String = "";
+}
+
+locus NoGraphStore {
+    params { }
+    fn projection_basis() -> know::GraphProjection { return know::GraphProjection { }; }
+    fn begin_projection(previous: know::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
+    fn checkpoint_projection(previous: know::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
+    fn graph_generation() -> Int { return -1; }
+    fn read_graph(query: know::GraphQuery, policy: know::KnowledgeReadPolicy, sink: know::GraphSink) -> know::GraphPage {
+        return know::GraphPage { error: "knowledge_unsupported" };
+    }
+}
+
+locus GraphHttp {
+    params { syntax: ops::OrganizationJson = ops::OrganizationJson { }; }
+    fn response(status: Int, body: String) -> std::http::Response {
+        return std::http::Response { status: status, content_type: "application/json; charset=utf-8", headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff", body: body };
+    }
+    fn error(status: Int, code: String) -> std::http::Response {
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("api_version", "hale.v1"); b.begin_object_field("error");
+        b.string_field("code", code);
+        b.string_field("message", if status == 400 { "Invalid Knowledge query." } else if status == 404 { "No such Knowledge node." } else if status == 409 { "Knowledge changed; begin a new read." } else { "Knowledge is unavailable for this read." });
+        b.bool_field("retryable", status == 409 || status == 503);
+        b.end_object(); b.end_object();
+        return self.response(status, b.result());
+    }
+    fn plain(text: String, maximum: Int) -> Bool {
+        let n = len(text);
+        if n > maximum { return false; }
+        let mut i = 0;
+        while i < n {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 32 || c == 127 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn authorized(req: std::http::Request, key: String) -> Bool {
+        if len(key) < 32 || !self.plain(key, 4096) { return false; }
+        let supplied = std::http::header(req, "Authorization");
+        let expected = "Bearer " + key;
+        let n = len(expected);
+        if len(supplied) != n { return false; }
+        let mut difference = 0;
+        let mut i = 0;
+        while i < n {
+            if std::str::byte_at_unchecked(supplied, i) != std::str::byte_at_unchecked(expected, i) { difference = difference + 1; }
+            i = i + 1;
+        }
+        return difference == 0;
+    }
+    fn fields(body: String, strings: String, integers: String) -> Bool {
+        if !self.syntax.valid(body) || !std::str::starts_with(std::str::trim(body), "{") { return false; }
+        let mut it = std::json::object_first(body);
+        while !it.done {
+            let key = std::json::obj_key_string(it, body);
+            let mut found = false;
+            let mut i = 0;
+            while i < dna::word_count(strings + " " + integers) {
+                if dna::nth_word(strings + " " + integers, i) == key { found = true; }
+                i = i + 1;
+            }
+            if !found { return false; }
+            it = std::json::object_next(it, body);
+        }
+        let mut i = 0;
+        while i < dna::word_count(strings) {
+            let raw = std::json::find_field_raw(body, dna::nth_word(strings, i));
+            if len(raw) < 2 || !std::str::starts_with(raw, "\"") { return false; }
+            i = i + 1;
+        }
+        i = 0;
+        while i < dna::word_count(integers) {
+            let raw = std::json::find_field_raw(body, dna::nth_word(integers, i));
+            let value = std::str::parse_int(raw) or - 1;
+            if to_string(value) != raw { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn text(body: String, key: String) -> String { return self.syntax.decode(std::json::find_field_raw(body, key)); }
+    fn unhex(raw: String) -> String {
+        let n = len(raw);
+        if n == 0 || n > 8192 || n % 2 != 0 { return ""; }
+        let bytes = std::bytes::BytesBuilder { };
+        let mut i = 0;
+        while i < n {
+            let a = std::str::byte_at_unchecked(raw, i);
+            let b = std::str::byte_at_unchecked(raw, i + 1);
+            if !self.syntax.hex(a) || !self.syntax.hex(b) { return ""; }
+            let value = self.syntax.hex_value(a) * 16 + self.syntax.hex_value(b);
+            if value == 0 { return ""; }
+            bytes.append_u8(value);
+            i = i + 2;
+        }
+        return std::str::from_bytes(bytes.snapshot());
+    }
+    fn request(body: String) -> GraphRequest {
+        if len(body) > 16384 || !self.fields(body, "record_id record_head record_revision reader kind id target cursor snapshot", "limit") { return GraphRequest { }; }
+        let mut r = GraphRequest {
+            record_id: self.text(body, "record_id"), record_head: self.text(body, "record_head"), record_revision: self.text(body, "record_revision"),
+            reader: self.text(body, "reader"), kind: self.text(body, "kind"), id: self.text(body, "id"), target: self.text(body, "target"),
+            limit: std::json::find_int_field(body, "limit"), cursor: self.text(body, "cursor"), snapshot: self.text(body, "snapshot")
+        };
+        if len(r.record_id) == 0 || !self.plain(r.record_id, 128) || len(r.record_head) == 0 || !self.plain(r.record_head, 128) || len(r.reader) == 0 || !self.plain(r.reader, 256) || !self.plain(r.target, 1024) { return GraphRequest { }; }
+        let revision = std::str::parse_int(r.record_revision) or - 1;
+        if revision < 1 || to_string(revision) != r.record_revision || r.limit < 1 || r.limit > 100 { return GraphRequest { }; }
+        if r.kind != "nodes" && r.kind != "edges" && r.kind != "bindings" && r.kind != "dependents" { return GraphRequest { }; }
+        if (r.kind != "nodes" && len(r.id) == 0) || (len(r.id) > 0 && !dna::digest_well_formed(r.id)) { return GraphRequest { }; }
+        if len(r.snapshot) > 0 && !dna::digest_well_formed(r.snapshot) { return GraphRequest { }; }
+        if len(r.cursor) > 0 {
+            if len(r.snapshot) == 0 { return GraphRequest { }; }
+            let cursor = self.unhex(r.cursor);
+            if !self.fields(cursor, "snapshot kind id target limit first second third", "") { return GraphRequest { }; }
+            if self.text(cursor, "snapshot") != r.snapshot || self.text(cursor, "kind") != r.kind || self.text(cursor, "id") != r.id || self.text(cursor, "target") != r.target || self.text(cursor, "limit") != to_string(r.limit) { return GraphRequest { }; }
+            r.first = self.text(cursor, "first"); r.second = self.text(cursor, "second"); r.third = self.text(cursor, "third");
+        }
+        let rules = know::GraphRules { };
+        if len(rules.validate(self.query(r))) > 0 { return GraphRequest { }; }
+        r.ok = true;
+        return r;
+    }
+    fn query(r: GraphRequest) -> know::GraphQuery {
+        // Edges are incident relationships, not target applicability claims.
+        // Keep target in the public basis while filtering bindings/nodes only.
+        return know::GraphQuery { kind: if r.kind == "dependents" { "bindings" } else { r.kind }, id: r.id, target: if r.kind == "edges" { "" } else { r.target }, after_first: r.first, after_second: r.second, after_third: r.third, limit: r.limit };
+    }
+    fn record_budget(record: dna::Journal) -> Bool {
+        let n = record.revision();
+        if n < 1 || n > 10000 { return false; }
+        let mut remaining = 8388608;
+        let mut i = 0;
+        while i < n {
+            let e = record.read(i);
+            let size = len(e.kind) + len(e.entity) + len(e.body);
+            if size > remaining { return false; }
+            remaining = remaining - size;
+            i = i + 1;
+        }
+        return true;
+    }
+    fn cursor(r: GraphRequest, page: know::GraphPage, snapshot: String) -> String {
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("snapshot", snapshot); b.string_field("kind", r.kind); b.string_field("id", r.id); b.string_field("target", r.target);
+        b.string_field("limit", to_string(r.limit)); b.string_field("first", page.last_first); b.string_field("second", page.last_second); b.string_field("third", page.last_third); b.end_object();
+        return dna::hex(std::bytes::from_string(b.result()));
+    }
+    fn basis(r: GraphRequest, policy: know::KnowledgeVisibilityBasis, page: know::GraphPage) -> String {
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("record_id", r.record_id); b.string_field("projection_record_head", r.record_head);
+        b.string_field("projection_record_revision", r.record_revision); b.string_field("projection_watermark", to_string(page.watermark)); b.string_field("store_generation", to_string(page.generation));
+        b.string_field("routing_version", to_string(policy.routing)); b.string_field("visibility_record_head", policy.record_head); b.string_field("visibility_record_revision", to_string(policy.record_revision));
+        if policy.routing > 0 { b.string_field("visibility_ledger_head", policy.ledger_head); b.string_field("visibility_ledger_revision", to_string(policy.ledger_revision)); }
+        else { b.field("visibility_ledger_head", "null"); b.field("visibility_ledger_revision", "null"); }
+        b.string_field("reader_scope", dna::digest_of("knowledge-reader/1\n" + r.reader)); b.string_field("target", r.target); b.string_field("coverage", "native_ideas_edges_bindings"); b.end_object();
+        return b.result();
+    }
+}
+
+// Projection reads pin each receipt ref to a blob and inspect its size before
+// transporting its body. A read must not trigger unlimited catch-up work before
+// the graph query's own row/byte bounds can run. This adapter never writes.
+locus GraphReceipts {
+    params { source: dna::GitReceipts; remaining: Int = 8388608; error: String = ""; }
+    fn kind() -> String { return "git"; }
+    fn store(text: String) -> String { self.error = "knowledge_projection_unavailable"; return ""; }
+    fn erase(digest: String) -> Bool { self.error = "knowledge_projection_unavailable"; return false; }
+    fn read(digest: String) -> String {
+        if len(self.error) > 0 { return ""; }
+        if len(digest) != 64 || !dna::digest_well_formed("sha256:" + digest) { self.error = "knowledge_projection_unavailable"; return ""; }
+        let record = self.source.record;
+        let object = record.git_out("rev-parse\n-q\n--verify\n" + record.ref_of("receipts/" + digest));
+        if len(object) == 0 { return ""; }
+        // cat-file with an expected type can peel a tag. Size and body must
+        // refer to the exact same blob, never a small tag over a large body.
+        let kind = record.git("cat-file\n-t\n" + object);
+        if kind.code != 0 || dna::trim_nl(kind.stdout) != "blob" { self.error = "knowledge_projection_unavailable"; return ""; }
+        let sized = record.git("cat-file\n-s\n" + object);
+        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or - 1;
+        if sized.code != 0 || size < 0 { self.error = "knowledge_projection_unavailable"; return ""; }
+        if size > self.remaining { self.error = "knowledge_read_limit"; return ""; }
+        let body = record.git("cat-file\nblob\n" + object);
+        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + digest { self.error = "knowledge_projection_unavailable"; return ""; }
+        self.remaining = self.remaining - size;
+        return body.stdout;
+    }
+}
+
+locus GraphItems {
+    params { policy: know::KnowledgeReadPolicy; bytes: std::bytes::BytesBuilder = std::bytes::BytesBuilder { }; count: Int = 0; size: Int = 0; target: String = ""; }
+    // Native graph text can approach the response budget. The current stdlib
+    // quote helper retains one growing String prefix per byte; encode each
+    // value with a byte buffer before passing its raw JSON to the fixed shape.
+    fn quote(value: String) -> String {
+        let bytes = std::bytes::BytesBuilder { };
+        let size = len(value);
+        bytes.append_u8(34);
+        let mut at = 0;
+        while at < size {
+            let c = std::str::byte_at_unchecked(value, at);
+            if c == 34 { bytes.append_str("\\\""); }
+            else if c == 92 { bytes.append_str("\\\\"); }
+            else if c == 8 { bytes.append_str("\\b"); }
+            else if c == 12 { bytes.append_str("\\f"); }
+            else if c == 10 { bytes.append_str("\\n"); }
+            else if c == 13 { bytes.append_str("\\r"); }
+            else if c == 9 { bytes.append_str("\\t"); }
+            else if c < 32 {
+                bytes.append_str("\\u00");
+                bytes.append_u8(std::str::byte_at_unchecked("0123456789abcdef", c / 16));
+                bytes.append_u8(std::str::byte_at_unchecked("0123456789abcdef", c % 16));
+            } else { bytes.append_u8(c); }
+            at = at + 1;
+        }
+        bytes.append_u8(34);
+        return std::str::from_bytes(bytes.snapshot());
+    }
+    fn append(item: String) -> Bool {
+        if len(item) > 1000000 - self.size || self.count >= 100 { return false; }
+        if self.count > 0 { self.bytes.append_str(","); }
+        self.bytes.append_str(item); self.count = self.count + 1; self.size = self.size + len(item) + 1;
+        return true;
+    }
+    fn node(row: know::Stored) -> Bool {
+        let i = row.idea;
+        if len(i.id) + len(i.kind) + len(i.text) + len(i.author) + len(i.name) + len(i.supersedes) + len(i.provenance) > 1000000 - self.size { return false; }
+        let b = std::json::Builder { };
+        b.begin_object(); b.field("id", self.quote(i.id)); b.field("kind", self.quote(i.kind)); b.field("text", self.quote(i.text)); b.field("author", self.quote(i.author));
+        b.field("projection_state", self.quote(i.provenance)); b.string_field("revision", to_string(i.revision)); b.bool_field("accepted", i.accepted);
+        b.field("name", self.quote(i.name)); b.field("supersedes", self.quote(if self.policy.visible(i.supersedes) { i.supersedes } else { "" })); b.string_field("ratified_seq", to_string(row.ratified_seq)); b.field("source_provenance", "null"); b.end_object();
+        return self.append(b.result());
+    }
+    fn edge(e: dna::KnowledgeEdge) -> Bool {
+        let key = std::json::Builder { };
+        key.begin_array(); key.value(self.quote(e.from)); key.value(self.quote(e.to)); key.value(self.quote(e.rel)); key.end_array();
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("id", dna::digest_of(key.result())); b.field("from_id", self.quote(e.from)); b.field("to_id", self.quote(e.to)); b.field("rel", self.quote(e.rel)); b.end_object();
+        return self.append(b.result());
+    }
+    fn binding(v: dna::KnowledgeBinding) -> Bool {
+        let key = std::json::Builder { };
+        key.begin_array(); key.value(self.quote(v.idea)); key.value(self.quote(v.target)); key.value(self.quote(v.author)); key.end_array();
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("id", dna::digest_of(key.result())); b.field("idea_id", self.quote(v.idea)); b.field("target", self.quote(v.target)); b.field("author", self.quote(v.author)); b.field("class", self.quote(v.class));
+        b.string_field("applicability", if len(self.target) == 0 { "unfiltered" } else if v.target == self.target { "exact" } else { "ancestor" }); b.end_object();
+        return self.append(b.result());
+    }
+    fn result() -> String { return "[" + std::str::clone(self.bytes.text_view()) + "]"; }
+}
+
+fn graph_read(r: GraphRequest, store: know::KnowledgeStore, graph: know::GraphStore, record: dna::GitJournal, ledger: know::Ledger) -> std::http::Response {
+    let http = GraphHttp { };
+    if record.genesis() != r.record_id || store.record() != r.record_id { return http.error(503, "knowledge_scope_mismatch"); }
+    if record.head() != r.record_head || to_string(record.revision()) != r.record_revision { return http.error(409, "snapshot_changed"); }
+    if !http.record_budget(record) { return http.error(503, "knowledge_read_limit"); }
+    let mut seq = 0;
+    while seq < record.revision() {
+        let e = record.read(seq);
+        if e.kind == "person.retired" && e.entity == r.reader { return http.error(403, "knowledge_unavailable"); }
+        seq = seq + 1;
+    }
+    let policy = know::KnowledgeVisibility { record: record, ledger: ledger, syntax: ops::OrganizationJson { } };
+    let captured = policy.load();
+    if !captured.available { return http.error(if captured.error == "snapshot_changed" { 409 } else { 503 }, captured.error); }
+    if captured.record_head != r.record_head || to_string(captured.record_revision) != r.record_revision { return http.error(409, "snapshot_changed"); }
+    let items = GraphItems { target: r.target, policy: policy };
+    let page = graph.read_graph(http.query(r), policy, items);
+    if !page.ok { return http.error(if page.error == "invalid_query" { 400 } else { 503 }, if page.error == "read_limit" { "knowledge_read_limit" } else if page.error == "knowledge_unsupported" || page.error == "invalid_query" { page.error } else { "knowledge_unavailable" }); }
+    if page.record != r.record_id { return http.error(503, "knowledge_scope_mismatch"); }
+    if page.projection_pending_watermark != 0 || len(page.projection_pending_head) > 0 || page.watermark != captured.record_revision || page.projection_watermark != page.watermark || page.projection_head != r.record_head { return http.error(503, "knowledge_projection_unavailable"); }
+    let basis = http.basis(r, captured, page);
+    let snapshot = dna::digest_of(basis);
+    if len(r.snapshot) > 0 && r.snapshot != snapshot { return http.error(409, "snapshot_changed"); }
+    // Check existence only after comparing the complete basis: a Ledger
+    // restriction can hide this node without moving the Record. An old view
+    // must then refresh, rather than mistaking that change for a stable 404.
+    let absent = len(r.id) > 0 && (!page.subject_present || (r.kind == "nodes" && items.count == 0));
+    let cursor = if page.has_more { http.cursor(r, page, snapshot) } else { "" };
+    if len(cursor) > 8192 { return http.error(503, "knowledge_read_limit"); }
+    let b = std::json::Builder { };
+    b.begin_object(); b.string_field("api_version", "hale.v1"); b.begin_object_field("source"); b.string_field("record_id", r.record_id); b.string_field("record_head", r.record_head); b.string_field("record_revision", r.record_revision); b.end_object();
+    b.begin_object_field("data"); b.field("items", items.result()); b.begin_object_field("page"); b.int_field("limit", r.limit); b.int_field("returned", items.count); b.bool_field("has_more", page.has_more);
+    if page.has_more { b.string_field("next_cursor", cursor); } else { b.field("next_cursor", "null"); }
+    b.string_field("snapshot", snapshot); b.end_object(); b.field("basis", basis); b.begin_object_field("coverage");
+    b.string_field("bindings", "complete"); b.string_field("runs", "unavailable"); b.string_field("definitions", "unavailable"); b.string_field("practices", "unavailable"); b.end_object(); b.end_object(); b.end_object();
+    let body = b.result();
+    if len(body) > 1048576 { return http.error(503, "knowledge_read_limit"); }
+    let generation = graph.graph_generation();
+    if generation < 0 { return http.error(503, "knowledge_unavailable"); }
+    if generation != page.generation { return http.error(409, "snapshot_changed"); }
+    if !policy.unchanged() { return http.error(if policy.basis.error == "snapshot_changed" { 409 } else { 503 }, policy.basis.error); }
+    if absent { return http.error(404, "knowledge_not_found"); }
+    return http.response(200, body);
+}

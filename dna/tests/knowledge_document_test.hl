@@ -1,0 +1,46 @@
+// Canonical document bytes are historical identity. Compare the linear native
+// encoder against the old Builder on small inputs and pin a legacy digest.
+import "../core" as dna;
+
+fn previous_document(i: dna::Idea, target: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", i.kind); b.string_field("text", i.text); b.string_field("author", i.author);
+    b.string_field("target", target); b.string_field("provenance", if len(i.provenance) > 0 { i.provenance } else { "proposed" });
+    if len(i.name) > 0 { b.string_field("name", i.name); }
+    if len(i.supersedes) > 0 { b.string_field("supersedes", i.supersedes); }
+    b.end_object(); return b.result();
+}
+fn question_document(question: String, linear: Bool) -> String {
+    let q = std::json::Builder { };
+    q.begin_object();
+    if linear { q.field("question", dna::record_json_quote(question)); } else { q.string_field("question", question); }
+    q.string_field("subject_digest", "sha256:exact"); q.string_field("required_authority", "board"); q.string_field("author", "org");
+    q.string_field("knowledge_digest", "sha256:exact"); q.string_field("kind", "concept"); q.string_field("target", "org"); q.string_field("class", "initiative");
+    q.end_object(); return q.result();
+}
+fn check() {
+    let b = std::bytes::BytesBuilder { }; let mut i = 1;
+    while i < 32 { b.append_u8(i); i = i + 1; }
+    b.append_u8(127); b.append_str(" / \\ \" équipe 🧭 <literal> \\n\r\n");
+    let text = std::str::from_bytes(b.snapshot());
+    let quotes = std::json::Builder { };
+    std::test::assert_eq_str(dna::record_json_quote(text), quotes.quote(text), "linear quote preserves old control, slash, quote and Unicode spelling");
+    let simple = dna::Idea { kind: "idea", text: text, author: "org" };
+    std::test::assert_eq_str(dna::knowledge_document(simple, "org"), previous_document(simple, "org"), "default provenance and omitted optionals preserve exact bytes");
+    let named = dna::Idea { kind: "concept", text: text, author: "org/support", name: "concept/équipe 🧭", provenance: "proposed by \"riley\"" };
+    std::test::assert_eq_str(dna::knowledge_document(named, "org"), previous_document(named, "org"), "named native document preserves field order and spaces");
+    let retirement = dna::Idea { kind: "retirement", text: text, author: "org", supersedes: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+    std::test::assert_eq_str(dna::knowledge_document(retirement, "org"), previous_document(retirement, "org"), "unnamed retirement retains exact supersession bytes");
+    let legacy = dna::Idea {
+        kind: "concept", text: "First\r\n\t\"quoted\" \\ slash / 🧭", author: "org/support", provenance: "proposed by riley",
+        name: "concept/équipe", supersedes: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    };
+    let digest = "sha256:46546f721686391dfff60bddeded00e5a6d9bfca225ebee94ccf884a7194a739";
+    std::test::assert_eq_str(dna::digest_of(previous_document(legacy, "org")), digest, "static fixture pins the previous encoder's legacy digest");
+    std::test::assert_eq_str(dna::digest_of(dna::knowledge_document(legacy, "org")), digest, "linear encoder preserves the legacy digest");
+    let question = "ratify concept `" + text + "` as a initiative for org?";
+    std::test::assert_eq_str(question_document(question, true), question_document(question, false), "linear Review question field preserves the complete native request bytes");
+}
+main locus App { run() { check(); } }
+fn main() { App { }; }

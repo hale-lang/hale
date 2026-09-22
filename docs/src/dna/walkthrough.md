@@ -34,7 +34,7 @@ hale dna dev: expression chat (pid 1874991) under LOTUS_OBS=1
 ## 3 and 4. Ask; a Task is born
 
 ```text
-$ hale dna ask document the chat server in main.hl
+$ hale dna task create document the chat server in main.hl
 task t1 born for intent i1a08c0786c5 [pending]
 ```
 

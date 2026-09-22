@@ -1,0 +1,230 @@
+// Prepared Organization host evidence. Canonical records describe historical
+// attempts; only a fresh owning-host process read can assert current running.
+type OrganizationLaunchAttempt {
+    attempt_id: String = "";
+    application_id: String = "";
+    request_id: String = "";
+    command_fingerprint: String = "";
+    source_owner: String = "";
+    mutation_id: String = "";
+    candidate_commit: String = "";
+    source_digest: String = "";
+    applied_event_id: String = "";
+    restart_event_id: String = "";
+    body_holder: String = "";
+    body_token: Int = 0;
+    host_pid: Int = 0;
+    host_started: String = "";
+    binary_digest: String = "";
+    topology_digest: String = "";
+    topology_shape: String = "";
+    observation_seconds: Int = 0;
+}
+type OrganizationLaunchReceipt {
+    valid: Bool = false;
+    attempt: OrganizationLaunchAttempt = OrganizationLaunchAttempt { };
+    launch_event_id: String = "";
+    pid: Int = 0;
+    process_key: String = "";
+    process_started: String = "";
+}
+type OrganizationLaunchObservation {
+    valid: Bool = false;
+    outcome: String = "";
+    window_started: Int = 0;
+    window_ended: Int = 0;
+}
+type OrganizationLaunchExit { valid: Bool = false; pid: Int = 0; code: Int = -1; }
+type OrganizationRollbackRequest {
+    valid: Bool = false;
+    failure_event_id: String = "";
+    base_commit: String = "";
+}
+type OrganizationRollbackLaunch {
+    valid: Bool = false;
+    event_id: String = "";
+    rollback_event_id: String = "";
+    binary_digest: String = "";
+    topology_digest: String = "";
+}
+type OrganizationRollbackReceipt {
+    valid: Bool = false;
+    launch_event_id: String = "";
+    pid: Int = 0;
+    process_key: String = "";
+    process_started: String = "";
+}
+type OrganizationRuntimeAssociation {
+    available: Bool = false;
+    profile: String = "dna.organization-runtime/1";
+    application_id: String = "";
+    request_id: String = "";
+    attempt_id: String = "";
+    launch_event_id: String = "";
+    candidate_commit: String = "";
+    binary_digest: String = "";
+    topology_digest: String = "";
+    topology_shape: String = "";
+    pid: Int = 0;
+    process_key: String = "";
+}
+locus OrganizationLaunchCodec {
+    params { }
+    fn hex(value: String, size: Int) -> Bool {
+        if len(value) != size { return false; }
+        let mut i = 0;
+        while i < size { let c = std::str::byte_at_unchecked(value, i); if !(c >= 48 && c <= 57) && !(c >= 97 && c <= 102) { return false; } i = i + 1; }
+        return true;
+    }
+    fn commit(value: String) -> Bool { return self.hex(value, 40) || self.hex(value, 64); }
+    fn attempt_id(restart_event_id: String) -> String { return "organization-launch:" + hex_digest(restart_event_id); }
+    fn key(attempt_id: String) -> String { return hex_digest(attempt_id); }
+    fn valid(a: OrganizationLaunchAttempt) -> Bool {
+        let text = KnowledgeNodeRequestCodec { }; let source = OrganizationSourceRequestCodec { };
+        return a.attempt_id == self.attempt_id(a.restart_event_id) && self.commit(a.application_id)
+            && text.bounded(a.request_id, 256, true, false) && digest_well_formed(a.command_fingerprint)
+            && source.owner_token(a.source_owner) && a.mutation_id == own_prefix(a.source_owner) + "source-" + hex_digest(a.request_id)
+            && self.commit(a.candidate_commit) && digest_well_formed(a.source_digest)
+            && self.commit(a.applied_event_id) && self.commit(a.restart_event_id)
+            && text.bounded(a.body_holder, 4096, true, false) && a.body_token > 0 && a.host_pid > 0
+            && text.bounded(a.host_started, 32, true, false) && (std::str::parse_int(a.host_started) or - 1) >= 0
+            && digest_well_formed(a.binary_digest) && digest_well_formed(a.topology_digest)
+            && text.bounded(a.topology_shape, 256, true, false) && a.observation_seconds >= 0 && a.observation_seconds <= 3600;
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) {
+        b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(record_json_quote(value));
+    }
+    fn number(b: std::bytes::BytesBuilder, key: String, value: Int) {
+        b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(to_string(value));
+    }
+    fn attempt_body(a: OrganizationLaunchAttempt) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launch/1\"");
+        self.field(b, "attempt_id", a.attempt_id);
+        self.field(b, "application_id", a.application_id);
+        self.field(b, "request_id", a.request_id);
+        self.field(b, "command_fingerprint", a.command_fingerprint);
+        self.field(b, "source_owner", a.source_owner);
+        self.field(b, "mutation_id", a.mutation_id);
+        self.field(b, "candidate_commit", a.candidate_commit);
+        self.field(b, "source_digest", a.source_digest);
+        self.field(b, "applied_event_id", a.applied_event_id);
+        self.field(b, "restart_event_id", a.restart_event_id);
+        self.field(b, "body_holder", a.body_holder);
+        self.number(b, "body_token", a.body_token);
+        self.number(b, "host_pid", a.host_pid);
+        self.field(b, "host_started", a.host_started);
+        self.field(b, "binary_digest", a.binary_digest);
+        self.field(b, "topology_digest", a.topology_digest);
+        self.field(b, "topology_shape", a.topology_shape);
+        self.number(b, "observation_seconds", a.observation_seconds);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_attempt(e: Event) -> OrganizationLaunchAttempt {
+        if e.kind != "organization.source.launch_requested" || len(e.body) > 16384 { return OrganizationLaunchAttempt { }; }
+        let a = OrganizationLaunchAttempt {
+            attempt_id: native_json_string(e.body, "attempt_id"),
+            application_id: native_json_string(e.body, "application_id"),
+            request_id: native_json_string(e.body, "request_id"),
+            command_fingerprint: native_json_string(e.body, "command_fingerprint"),
+            source_owner: native_json_string(e.body, "source_owner"),
+            mutation_id: native_json_string(e.body, "mutation_id"),
+            candidate_commit: native_json_string(e.body, "candidate_commit"),
+            source_digest: native_json_string(e.body, "source_digest"),
+            applied_event_id: native_json_string(e.body, "applied_event_id"),
+            restart_event_id: native_json_string(e.body, "restart_event_id"),
+            body_holder: native_json_string(e.body, "body_holder"),
+            body_token: std::json::find_int_field(e.body, "body_token"),
+            host_pid: std::json::find_int_field(e.body, "host_pid"),
+            host_started: native_json_string(e.body, "host_started"),
+            binary_digest: native_json_string(e.body, "binary_digest"),
+            topology_digest: native_json_string(e.body, "topology_digest"),
+            topology_shape: native_json_string(e.body, "topology_shape"),
+            observation_seconds: std::json::find_int_field(e.body, "observation_seconds")
+        };
+        return if self.valid(a) && e.entity == a.attempt_id && e.body == self.attempt_body(a) { a } else { OrganizationLaunchAttempt { } };
+    }
+    fn launch_body(a: OrganizationLaunchAttempt, pid: Int, process_key: String, process_started: String) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launched/1\"");
+        self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
+        self.number(b, "pid", pid); self.field(b, "process_key", process_key); self.field(b, "process_started", process_started);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_launch(e: Event, a: OrganizationLaunchAttempt) -> OrganizationLaunchReceipt {
+        if len(e.body) > 4096 { return OrganizationLaunchReceipt { }; }
+        let pid = std::json::find_int_field(e.body, "pid"); let key = native_json_string(e.body, "process_key"); let started = native_json_string(e.body, "process_started");
+        if !self.valid(a) || e.kind != "organization.source.launched" || e.entity != a.attempt_id || !self.commit(e.digest)
+            || pid < 1 || !self.hex(key, 64) || len(started) == 0 || len(started) > 32 || (std::str::parse_int(started) or - 1) < 0
+            || e.body != self.launch_body(a, pid, key, started) { return OrganizationLaunchReceipt { }; }
+        return OrganizationLaunchReceipt { valid: true, attempt: a, launch_event_id: e.digest, pid: pid, process_key: key, process_started: started };
+    }
+    fn observation_body(l: OrganizationLaunchReceipt, outcome: String, started: Int, ended: Int) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launch-observation/1\"");
+        self.field(b, "attempt_id", l.attempt.attempt_id); self.field(b, "launch_event_id", l.launch_event_id);
+        self.number(b, "pid", l.pid); self.field(b, "process_key", l.process_key); self.field(b, "outcome", outcome);
+        self.number(b, "window_started", started); self.number(b, "window_ended", ended); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_observation(e: Event, l: OrganizationLaunchReceipt) -> OrganizationLaunchObservation {
+        if len(e.body) > 4096 { return OrganizationLaunchObservation { }; }
+        let outcome = native_json_string(e.body, "outcome"); let started = std::json::find_int_field(e.body, "window_started"); let ended = std::json::find_int_field(e.body, "window_ended");
+        if !l.valid || e.kind != "organization.source.launch_observed" || e.entity != l.attempt.attempt_id
+            || (outcome != "healthy" && outcome != "crashed") || started < 1 || ended < started
+            || (outcome == "healthy" && ended - started < l.attempt.observation_seconds)
+            || e.body != self.observation_body(l, outcome, started, ended) { return OrganizationLaunchObservation { }; }
+        return OrganizationLaunchObservation { valid: true, outcome: outcome, window_started: started, window_ended: ended };
+    }
+    fn exit_body(a: OrganizationLaunchAttempt, pid: Int, code: Int) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-launch-exit/1\"");
+        self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
+        self.number(b, "pid", pid); self.number(b, "code", code); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_exit(e: Event, a: OrganizationLaunchAttempt) -> OrganizationLaunchExit {
+        if len(e.body) > 4096 { return OrganizationLaunchExit { }; }
+        let pid = std::json::find_int_field(e.body, "pid"); let code = std::json::find_int_field(e.body, "code");
+        if !self.valid(a) || e.kind != "organization.source.launch_exited" || e.entity != a.attempt_id || pid < 1 || code < 0 || code > 255
+            || e.body != self.exit_body(a, pid, code) { return OrganizationLaunchExit { }; }
+        return OrganizationLaunchExit { valid: true, pid: pid, code: code };
+    }
+    fn rollback_body(a: OrganizationLaunchAttempt, failure: String, base: String) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-rollback/1\"");
+        self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
+        self.field(b, "failure_event_id", failure); self.field(b, "base_commit", base); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_rollback(e: Event, a: OrganizationLaunchAttempt) -> OrganizationRollbackRequest {
+        if len(e.body) > 4096 { return OrganizationRollbackRequest { }; }
+        let failure = native_json_string(e.body, "failure_event_id"); let base = native_json_string(e.body, "base_commit");
+        return if self.valid(a) && e.kind == "organization.source.rollback_requested" && e.entity == a.attempt_id
+            && self.commit(failure) && self.commit(base) && e.body == self.rollback_body(a, failure, base) {
+                OrganizationRollbackRequest { valid: true, failure_event_id: failure, base_commit: base }
+            } else { OrganizationRollbackRequest { } };
+    }
+    fn rollback_launch_body(a: OrganizationLaunchAttempt, rolled_back: String, binary: String, topology: String) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-rollback-launch/1\"");
+        self.field(b, "attempt_id", a.attempt_id); self.field(b, "attempt_digest", digest_of(self.attempt_body(a)));
+        self.field(b, "rollback_event_id", rolled_back); self.field(b, "binary_digest", binary); self.field(b, "topology_digest", topology);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_rollback_launch(e: Event, a: OrganizationLaunchAttempt) -> OrganizationRollbackLaunch {
+        if len(e.body) > 4096 { return OrganizationRollbackLaunch { }; }
+        let effect = native_json_string(e.body, "rollback_event_id"); let binary = native_json_string(e.body, "binary_digest"); let topology = native_json_string(e.body, "topology_digest");
+        return if self.valid(a) && e.kind == "organization.source.rollback_launch_requested" && e.entity == a.attempt_id && self.commit(e.digest)
+            && self.commit(effect) && digest_well_formed(binary) && digest_well_formed(topology) && e.body == self.rollback_launch_body(a, effect, binary, topology) {
+                OrganizationRollbackLaunch { valid: true, event_id: e.digest, rollback_event_id: effect, binary_digest: binary, topology_digest: topology }
+            } else { OrganizationRollbackLaunch { } };
+    }
+    fn rollback_launched_body(a: OrganizationLaunchAttempt, claim: String, pid: Int, key: String, started: String) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-rollback-launched/1\"");
+        self.field(b, "attempt_id", a.attempt_id); self.field(b, "launch_event_id", claim); self.number(b, "pid", pid);
+        self.field(b, "process_key", key); self.field(b, "process_started", started); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_rollback_launched(e: Event, a: OrganizationLaunchAttempt) -> OrganizationRollbackReceipt {
+        if len(e.body) > 4096 { return OrganizationRollbackReceipt { }; }
+        let claim = native_json_string(e.body, "launch_event_id"); let pid = std::json::find_int_field(e.body, "pid");
+        let key = native_json_string(e.body, "process_key"); let started = native_json_string(e.body, "process_started");
+        return if self.valid(a) && e.kind == "organization.source.rollback_launched" && e.entity == a.attempt_id && self.commit(claim)
+            && pid > 0 && self.hex(key, 64) && len(started) > 0 && len(started) <= 32 && (std::str::parse_int(started) or - 1) >= 0
+            && e.body == self.rollback_launched_body(a, claim, pid, key, started) {
+                OrganizationRollbackReceipt { valid: true, launch_event_id: claim, pid: pid, process_key: key, process_started: started }
+            } else { OrganizationRollbackReceipt { } };
+    }
+
+}
