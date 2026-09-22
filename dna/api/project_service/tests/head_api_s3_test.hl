@@ -10,9 +10,7 @@
 // local body starts as a long-lived child (202), settles `succeeded`
 // once its membrane is up, shows `running` with `membrane_up` in the
 // head's children and blocks a second start, an attach of another
-// project and a detach; the observer starts over the membrane and
-// answers on its origin, then stops; the body stops through its host's
-// own teardown (`body.released`) and the head shows it `exited`. Every
+// project and a detach; the body stops through its host's own teardown (`body.released`) and the head shows it `exited`. Every
 // response is validated against the contract's head definitions.
 //
 // Silent on stdout: a passing fixture prints nothing.
@@ -142,7 +140,6 @@ locus S3HeadCases {
         beta_id: String = "";
         beta_url: String = "";
         body_id: String = "";
-        observer_ran: Bool = false;
     }
 
     fn sources() -> String { return self.f.home + "/.config/hale-dna/sources"; }
@@ -189,12 +186,8 @@ locus S3HeadCases {
         self.f.json.eq(self.f.json.raw(children, "body"), "state", "stopped");
         self.f.json.is_bool(self.f.json.raw(children, "body"), "membrane_up", false);
         self.f.json.eq(self.f.json.raw(children, "body"), "mode", "");
-        self.f.json.eq(self.f.json.raw(children, "observer"), "state", "stopped");
-        self.f.json.eq(self.f.json.raw(children, "observer"), "origin", "http://127.0.0.1:" + to_string(self.f.observer_port));
         self.state_of(state, "dna.body.local.start", true, "");
         self.state_of(state, "dna.body.local.stop", false, "body_not_running");
-        self.state_of(state, "dna.observer.start", false, "membrane_down");
-        self.state_of(state, "dna.observer.stop", true, "");
         self.state_of(state, "dna.secret.set", false, "source_missing");
         self.state_of(state, "dna.secret.rotate", false, "source_missing");
         self.state_of(state, "dna.connection.propose", true, "");
@@ -214,7 +207,7 @@ locus S3HeadCases {
         self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-value-only", "dna.secret.set", self.alpha_id, "{\"name\":\"OPENAI_API_KEY\",\"value\":\"never-on-the-wire\"}"), 400, "invalid_command");
         self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-source-kind", "dna.secret.set", self.alpha_id, "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"stdin\",\"name\":\"openai\"}}"), 400, "invalid_command");
         self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-mode", "dna.body.local.start", self.alpha_id, "{\"mode\":\"prod\"}"), 400, "invalid_command");
-        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-extra", "dna.observer.start", self.alpha_id, "{\"port\":1}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-extra", "dna.handoff.sync", self.alpha_id, "{\"port\":1}"), 400, "invalid_command");
         self.f.error("GET", HEAD + "/commands?request_id=s3-value-top", "", "", 404, "command_not_found");
         let journal = std::io::fs::read_file(self.f.state + "/receipts.jsonl") or "";
         std::test::assert(!std::str::contains(journal, "s3-value") && !std::str::contains(journal, "never-on-the-wire"), "a request refused at the door is not recorded: " + journal);
@@ -366,7 +359,6 @@ locus S3HeadCases {
         self.f.json.eq(state, "busy", "");
         self.state_of(state, "dna.body.local.start", false, "body_running");
         self.state_of(state, "dna.body.local.stop", true, "");
-        self.state_of(state, "dna.observer.start", true, "");
         let again = self.submit("s3-body-start-again", "dna.body.local.start", "{\"mode\":\"dev\"}", 200);
         self.f.json.eq(again, "state", "refused");
         self.f.json.eq(again, "reason_code", "body_running");
@@ -381,46 +373,6 @@ locus S3HeadCases {
         self.f.json.eq(detach, "reason_code", "body_running");
         // the detail read shows the same body
         self.f.json.eq(self.f.json.raw(self.detail(), "body"), "state", "running");
-    }
-
-    // The observer over the membrane: a child, 202, `succeeded` once
-    // `GET /` answers on its origin; stopped inline.
-    fn observer() {
-        // fuse-hl into the shared cache first, so the child's thirty
-        // seconds are the observer's boot and not a build
-        let warm = dna::run_tool("timeout\n600\n" + toolchain() + "\niris\n--build-only");
-        std::test::assert_eq_int(warm.code, 0, "hale iris --build-only: " + warm.stderr);
-        let submitted = self.submit("s3-observer-start", "dna.observer.start", "{}", 202);
-        self.f.json.eq(submitted, "state", "running");
-        self.f.json.eq(self.f.json.raw(submitted, "run"), "kind", "observer");
-        let id = self.f.json.string(submitted, "command_id");
-        let receipt = self.f.settled("s3-observer-start", dna::wait_secs(60));
-        self.f.json.eq(receipt, "state", "succeeded");
-        let outcome = self.f.json.raw(receipt, "outcome");
-        let pid = self.f.json.integer(outcome, "pid");
-        let origin = self.f.json.string(outcome, "origin");
-        std::test::assert(pid > 0 && pid == self.f.child_pid("observer") && self.f.child_alive("observer"), "the observer child: " + outcome);
-        std::test::assert_eq_str(origin, "http://127.0.0.1:" + to_string(self.f.observer_port), "its origin");
-        let page = fixture::curl("GET", origin + "/", "", "");
-        std::test::assert_eq_int(page.status, 200, "GET / on the observer: " + page.body);
-        let state = self.f.head_state();
-        let observer = self.f.json.raw(self.f.json.raw(state, "children"), "observer");
-        self.f.json.eq(observer, "state", "running");
-        self.f.json.is_int(observer, "pid", pid);
-        self.f.json.eq(observer, "origin", origin);
-        self.f.json.eq(observer, "command_id", id);
-        // started again, a running observer is the effect: inline, the same pid
-        let again = self.submit("s3-observer-again", "dna.observer.start", "{}", 200);
-        self.f.json.eq(again, "state", "succeeded");
-        self.f.json.eq(self.f.json.raw(again, "run"), "kind", "inline");
-        self.f.json.is_int(self.f.json.raw(again, "outcome"), "pid", pid);
-        let stopped = self.submit("s3-observer-stop", "dna.observer.stop", "{}", 200);
-        self.f.json.eq(stopped, "state", "succeeded");
-        self.f.json.eq(self.f.json.raw(stopped, "run"), "kind", "inline");
-        std::test::assert(!self.f.child_alive("observer"), "its process is gone");
-        std::test::assert((std::io::tcp::connect("127.0.0.1", self.f.observer_port) or - 1) < 0, "nothing listens on its port");
-        self.f.json.eq(self.f.json.raw(self.f.json.raw(self.f.head_state(), "children"), "observer"), "state", "exited");
-        self.observer_ran = true;
     }
 
     // The body stopped through its host's own teardown.
@@ -447,13 +399,9 @@ locus S3HeadCases {
         self.f.json.is_int(body, "pid", pid);
         self.state_of(state, "dna.body.local.start", true, "");
         self.state_of(state, "dna.body.local.stop", false, "body_not_running");
-        self.state_of(state, "dna.observer.start", false, "membrane_down");
         let again = self.submit("s3-body-stop-again", "dna.body.local.stop", "{}", 200);
         self.f.json.eq(again, "state", "refused");
         self.f.json.eq(again, "reason_code", "body_not_running");
-        let down = self.submit("s3-observer-down", "dna.observer.start", "{}", 200);
-        self.f.json.eq(down, "state", "refused");
-        self.f.json.eq(down, "reason_code", "membrane_down");
     }
 
     // After the runs: the detail read carries every projection and the
@@ -488,7 +436,7 @@ fn main() {
         std::io::fs::mkdir(home + "/.config") or discard;
         std::io::fs::mkdir(home + "/dna") or discard;
         let cache = if std::env::var_exists("XDG_CACHE_HOME") { std::env::var("XDG_CACHE_HOME") } else { std::env::var("HOME") + "/.cache" };
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_IRIS_HEAD_STATE\n-u\nHALE_IRIS_OBSERVER_ORIGIN\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_IRIS_HEAD_STATE\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
                 + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nUSER=tester\nLOGNAME=tester"
                 + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME=" + home
                 + "\nHALE_HEAD_S3_TEST_CLEAN=1\nHALE_HEAD_S3_TEST_ROOT=" + root + "\n" + std::env::arg_or(0, ""));
@@ -509,9 +457,8 @@ fn main() {
     cases.secret();
     cases.connection();
     cases.body();
-    cases.observer();
     cases.body_stop();
     cases.detail_after();
     cases.f.stop();
-    eprintln(if cases.observer_ran { "head S3 api cases passed" } else { "head S3 api cases passed" });
+    eprintln("head S3 api cases passed");
 }

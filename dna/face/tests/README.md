@@ -137,48 +137,6 @@ and compares its full catalog encoding. Browser export alone does not establish
 that a source fragment compiles. Draft validation/export does not prove original
 source roundtrip, governed publication, activation or real DNA command recovery.
 
-## Runtime observation without DNA
-
-`runtime.spec.mjs` uses a static host with the same eleven assets and configured
-observer metadata/CSP. It creates no DNA Record or service. Scripted HTTP
-observations cover explicit connection, credential/referrer omission, literal
-text, bounded/unsafe input, process departures, topic-shape ambiguity,
-unchanged/regressing timestamps, timeouts, redirects, hidden-page cleanup,
-reconnection and narrow keyboard use. These scripts establish browser behavior,
-not native collection correctness.
-
-Recursive navigation cases check immediate children separately from all
-descendants, parent-based breadcrumbs, unresolved parents, independent inspection,
-route/list switching, bounded expansion, departures and reported restarts.
-Keyboard/mobile checks verify that explicit entry reveals the new scope while
-polling preserves the user's scroll position.
-
-The optional native case runs the real observer with a plain Hale application
-and enters the real process and its root locus, checking immediate observed
-children and topics before exercising disconnect cleanup:
-
-```sh
-HALE_COCKPIT_OBSERVER_BIN=/absolute/path/to/fuse-hl \
-HALE_COCKPIT_PLAIN_APP_BIN=/absolute/path/to/inspect-demo \
-  npm --prefix dna/face run test:runtime
-```
-
-Use the existing observer and a built `iris/examples/inspect-demo` for this
-gate. No implicit observer/compiler build occurs. Both binaries must be
-compatible with the installed observation protocol. Without explicit paths the
-native case is visibly skipped. `test:runtime` does not build a Record fixture.
-
-The native helper requires Linux `/usr/bin/bwrap` with user namespaces. It runs
-both binaries together with private PID/IPC namespaces and private `/dev/shm`,
-plus an isolated registration directory. The emitter sweeps stale shared-memory
-segments at startup, so a registration-directory override alone is insufficient.
-There is no host fallback. Each native process retains the fixture limits:
-512MiB address space, 30CPU seconds, no core; Playwright bounds the case lifetime.
-The supervisor checks the actual listener marker, detects premature child exit
-and kills only its own namespace on cleanup. The real integration demonstrates
-observation without DNA; it does not establish generic command administration,
-restart-stable application identity or complete loss-free coverage.
-
 ## Practice command conformance
 
 `commands.spec.mjs` uses native practice reads with scripted command capability
@@ -297,7 +255,7 @@ CI runs the suite on partition 1 after the compiler and API have been built.
 
 `application.spec.mjs` uses the real native [intake-control application](../../../iris/examples/intake-control/README.md)
 and generic application API, in separate processes over a fresh application-owned
-SQLite database. No DNA Record, provider, model discovery or observer is started.
+SQLite database. No DNA Record, provider or model discovery is started.
 
 ```sh
 HALE_COCKPIT_APPLICATION_BIN=/absolute/path/to/intake-control npm run test:application
@@ -332,19 +290,7 @@ pending keys in browser reads; that conformance overlay does not claim native
 admission or persistence. Other successful reads use the native recorded fixture.
 The launcher skips this lane visibly unless the native fixture is supplied.
 
-## Same-application Runtime and controls
-
-`runtime-application.spec.mjs` uses the native observer and intake-control app
-plus its native API inside one private PID/IPC/mount namespace and `/dev/shm`.
-Supply both `HALE_COCKPIT_OBSERVER_BIN` (built from `iris/consumer/fuse-hl`) and
-`HALE_COCKPIT_APPLICATION_BIN`, then run `npm run test:runtime-application`.
-Only the target application has `LOTUS_OBS=1`; there is no host-observer fallback.
-
-The lane matches native process evidence, navigates through the browser to a
-real pause and effective work change, replaces the target process, and exercises
-missing/mismatched identities and revoked state access. Fault injection changes
-only browser transport responses. The app identity, observed process and command
-decisions otherwise come from native running services, without DNA fixtures.
+## Organization source and startup
 
 `organization-structure.spec.mjs` uses the same real native Organization draft
 API as the source editor. It checks child creation and exact export, shared-field
@@ -646,7 +592,7 @@ do not override the separate encoded whole-request limit.
 
 Native services use the existing 512 MiB/30 CPU-second process bounds without
 holding the compiler lock during HTTP activity. Their environments exclude
-observer, bus, model and service settings inherited from the caller. Every owned
+observation, bus, model and service settings inherited from the caller. Every owned
 process group is stopped in cleanup. The retained run directory contains the Git
 project, journal, canonical candidate blobs, native logs, request transcript,
 receipts, binary hashes and `result.json`; a failed case exits nonzero. This is
@@ -682,7 +628,7 @@ sample-preparation hooks: their initial Practice and every tested outcome are
 produced by the real Body. The Record-only, fixed-authority deployment limits
 remain the same as the native service acceptance above.
 
-### Organization status and exact Runtime navigation
+### Organization status
 
 `organization-status.spec.mjs` reads retained, unmodified native status and
 matching Review responses. Set `HALE_ORGANIZATION_STATUS_EVIDENCE` to a directory
@@ -694,13 +640,10 @@ transport failures, current-running and rollback variants are explicitly
 scripted browser contracts; this is not live publication or Host acceptance.
 The cases cover independent Review-based reads, reload without command recovery
 identity, authority/outage clearing, exact snapshot/candidate/artifact joins,
-unknown launch evidence, rollback separation and contextual Runtime navigation.
+unknown launch evidence and rollback separation.
 
-`organization-runtime-navigation.spec.mjs` uses the local observer fixture to
-check exact process-key focus. The link is a read-only selection hint: a reused
-PID/name, ended process, ambiguous identity or stale/unavailable observer cannot
-provide a match or application-control authority. Neither browser suite builds
-native services. Live API/Host composition needs its separate native gate.
+This browser suite builds no native services. Live API/Host composition needs
+its separate native gate.
 
 ### Organization responsibility reads
 
@@ -787,7 +730,7 @@ restored as a GET-only lookup, a lost POST response followed by lookups until
 it settles, and a busy head. `projects-read.spec.mjs` runs the real plain
 `dna/api/api` through `harness.mjs`: the shell's single head probe answers 404,
 the page continues to Practices with the Projects entry hidden, the workspace
-opened by hand says no project service answers, Runtime never probes, no
+opened by hand says no project service answers, no
 request other than GET is sent and the Record's refs are unchanged.
 
 ```sh

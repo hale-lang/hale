@@ -31,7 +31,7 @@ export async function applicationFixture() {
   const db = path.join(root, 'application.sqlite');
   const env = isolatedEnvironment();
   for (const key of Object.keys(env)) if (/^(HALE_DNA_|HALE_IRIS_|LOTUS_)/.test(key)) delete env[key];
-  // No observer is enabled: an observed fixture requires private /dev/shm.
+  // Observation stays off: no LOTUS_ variable reaches the application.
   const children = new Set();
   let log = '', app, api, identity;
   let principal = 'operator';

@@ -36,22 +36,6 @@ fn sources_dir_of() -> String {
     return base + "/hale-dna/sources";
 }
 
-// The observer's port from `HALE_IRIS_OBSERVER_ORIGIN`, 8787 when absent;
-// the origin itself was already validated by the assets.
-fn observer_port_of() -> Int {
-    let origin = std::str::lower(std::env::var("HALE_IRIS_OBSERVER_ORIGIN"));
-    if len(origin) == 0 { return 8787; }
-    let scheme = if std::str::starts_with(origin, "https://") { 8 } else if std::str::starts_with(origin, "http://") { 7 } else { 0 };
-    if scheme == 0 { return 8787; }
-    let authority = origin[scheme..len(origin)];
-    let mut i = len(authority);
-    while i > 0 && authority[(i - 1)..i] != ":" && authority[(i - 1)..i] != "]" { i = i - 1; }
-    if i == 0 || authority[(i - 1)..i] != ":" { return if scheme == 8 { 443 } else { 80 }; }
-    let http = api::Http { };
-    let port = http.integer(authority[i..len(authority)], 65535);
-    return if port < 1 { 8787 } else { port };
-}
-
 // A private directory (`umask 077 && mkdir -p`), created when absent.
 fn private_dir(path: String) -> Bool {
     return dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$1\"\nsh\n" + path).code == 0;
@@ -193,7 +177,7 @@ fn main() {
     }
     let user = std::env::var("USER");
     let cfg = HeadConfig { port: port, api_port: api_port, api_binary: api_binary, hale: hale, state_dir: state_dir, sources_dir: sources_dir_of(),
-        principal_mode: "local", principal_name: if len(user) > 0 { user } else { "local" }, observer_port: observer_port_of() };
+        principal_mode: "local", principal_name: if len(user) > 0 { user } else { "local" } };
     std::io::fs::write_file(state_dir + "/head.pid", to_string(std::process::pid()) + "\n") or discard;
     let boot = Startup { cfg: cfg };
     let fatal = boot.prepare(if count > 5 { project_root } else { "" });

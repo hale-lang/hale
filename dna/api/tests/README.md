@@ -72,10 +72,8 @@ Coverage includes:
   traversal and source-path refusal, unsupported methods, incomplete or empty
   webroot rejection, startup-loaded assets and unchanged API-only behavior.
   The shell is public without Record data; OIDC still gates API reads, and the
-  successful sign-in callback lands on the served shell. Public observer metadata
-  exposes only the profile and configured origin; strict origin validation,
-  startup-captured configuration and the exact CSP connection source are covered.
-  API-only startup ignores the unused observer setting.
+  successful sign-in callback lands on the served shell, whose CSP connects to
+  its own origin only.
 
 The identity-provider fixture follows the existing principal OIDC test's direct
 token-endpoint trust model. It does not test a production provider, TLS or token

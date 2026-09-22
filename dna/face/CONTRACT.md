@@ -25,15 +25,14 @@ semantic `/dna/positions` or viewing/acting permission contract proposed below.
 
 Iris is an independently built browser application. The public API belongs to
 Hale/DNA services and is shared with remote CLI clients. Its DNA adapter may be
-served by an evolved head and composed with the native Iris collector.
-Separate deployment does not require a new database or message broker.
+served by an evolved head. Inspecting a running Hale binary is `hale iris`'s
+job, not this application's. Separate deployment does not require a new database or message broker.
 
 | Component | Owns |
 | --- | --- |
 | Browser | Navigation, active viewing position, visual layout, unsent drafts, presentation |
 | Hale/DNA API head | Authenticated sessions, scoped projections, typed operation dispatch, request recovery |
 | Domain services | Canonical definitions, admission, policy, execution, durable facts, command outcomes |
-| Native observer | Attachment to running Hale processes and observation snapshots/events |
 
 The head adapts existing operations. It must not acquire a second workflow
 engine, policy interpreter or writable copy of the knowledge graph. Durable
@@ -72,7 +71,6 @@ conformance fixtures, before a UI advertises them.
 | `GET /applications` | Accessible applications, environment/record identity and adapter versions |
 | `GET /applications/{app}/capabilities` | Implemented query/command contracts, their versions and service availability |
 | `GET /applications/{app}/context?position_id=…` | Person, selected position, permitted contexts and effective contextual capabilities |
-| `GET /applications/{app}/runtime` | Versioned observer projection, coverage, freshness and declared/observed identities |
 | `GET /applications/{app}/dna/positions` | Scoped positions and explicit responsibility/ownership relationships |
 | `GET /applications/{app}/dna/knowledge` | Bounded graph neighborhood, ideas, bindings and provenance |
 | `GET /applications/{app}/dna/practices` | Practice versions, applicability and proposal/review lineage |
@@ -340,7 +338,7 @@ and competing supersession; duplicate request recovery after a lost reply;
 same request id/different content refused; failure and unknown effect shown
 truthfully; unavailable sources distinguished from empty; and ordinary Hale
 use without DNA. Hosted mutations also need the deployment's session, origin
-and CSRF protections rather than relying on the local observer's trust model.
+and CSRF protections rather than relying on the trusted-local model.
 
 Each adapter must specify its durable request-to-command mapping and retention,
 source-watermark/cursor formats, authoritative session-to-position capability

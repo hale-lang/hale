@@ -35,11 +35,10 @@
     check(closed(value.head, ["profile", "principal", "active"]) && value.head.profile === PROFILE && principalOK(value.head.principal));
     check(value.head.active === "" || hex40(value.head.active));
   }
-  function validChild(value, observer) {
-    check(closed(value, observer ? ["state", "pid", "since", "command_id", "origin"] : ["state", "pid", "since", "command_id", "membrane_up", "mode", "exit_code"]));
-    check((observer ? ["stopped", "running", "exited"] : ["stopped", "running", "exited", "external"]).includes(value.state) && int(value.pid) && int(value.since) && text(value.command_id, 256));
-    if (observer) check(text(value.origin, 2048));
-    else check(bool(value.membrane_up) && ["run", "dev", ""].includes(value.mode) && int(value.exit_code));
+  function validBody(value) {
+    check(closed(value, ["state", "pid", "since", "command_id", "membrane_up", "mode", "exit_code"]));
+    check(["stopped", "running", "exited", "external"].includes(value.state) && int(value.pid) && int(value.since) && text(value.command_id, 256));
+    check(bool(value.membrane_up) && ["run", "dev", ""].includes(value.mode) && int(value.exit_code));
   }
   function validHeadData(data, active) {
     check(closed(data, ["state", "active", "state_dir", "sources_dir", "projects_dir", "children", "credentials", "busy", "operations"]));
@@ -49,8 +48,8 @@
       check(closed(data.active.api, ["port", "state", "pid"]) && int(data.active.api.port) && ["starting", "ready", "down"].includes(data.active.api.state) && int(data.active.api.pid));
       check(active === data.active.application_id);
     } else check(data.active === null && active === "");
-    check(closed(data.children, ["body", "observer"]));
-    validChild(data.children.body, false); validChild(data.children.observer, true);
+    check(closed(data.children, ["body"]));
+    validBody(data.children.body);
     check(closed(data.credentials, ["needed", "file_sources", "env_present"]) && strings(data.credentials.needed) && strings(data.credentials.file_sources) && strings(data.credentials.env_present));
     check(Array.isArray(data.operations) && data.operations.length <= 64);
     const names = new Set();
@@ -65,7 +64,7 @@
     check(closed(r.context, ["head", "application_id"]) && r.context.head === "local" && (r.context.application_id === "" || hex40(r.context.application_id)));
     check(closed(r.target, ["kind", "id"]) && ((r.target.kind === "dna.head" && r.target.id === "local") || (r.target.kind === "dna.project" && hex40(r.target.id))));
     check(/^sha256:[a-f0-9]{64}$/.test(r.fingerprint) && STATES.includes(r.state) && text(r.reason_code, 256) && text(r.reason, 131072) && int(r.submitted_at) && int(r.updated_at));
-    if (r.run !== null) check(closed(r.run, ["kind", "pid", "deadline", "external", "exit_code", "log"]) && ["run", "body", "observer", "inline"].includes(r.run.kind) && int(r.run.pid) && int(r.run.deadline) && bool(r.run.external) && int(r.run.exit_code) && r.run.log === "/head/logs?run=" + r.command_id);
+    if (r.run !== null) check(closed(r.run, ["kind", "pid", "deadline", "external", "exit_code", "log"]) && ["run", "body", "inline"].includes(r.run.kind) && int(r.run.pid) && int(r.run.deadline) && bool(r.run.external) && int(r.run.exit_code) && r.run.log === "/head/logs?run=" + r.command_id);
     check(r.outcome !== null && typeof r.outcome === "object" && !Array.isArray(r.outcome) && bytes(JSON.stringify(r.outcome)) <= 1048576);
   }
   function validProject(item) {
@@ -74,7 +73,7 @@
     check(detail || closed(item, summary));
     check(hex40(item.application_id) && text(item.name, 256) && text(item.root, 4096) && int(item.attached_at) && bool(item.active));
     if (item.record !== null) check(closed(item.record, ["head", "revision"]) && hex40(item.record.head) && (int(item.record.revision) || (typeof item.record.revision === "string" && /^(0|[1-9]\d*)$/.test(item.record.revision))));
-    validChild(item.body, false);
+    validBody(item.body);
     check(closed(item.forge, ["github", "board"]) && text(item.forge.github, 256) && strings(item.forge.board, 64));
     check(Array.isArray(item.recent) && item.recent.length <= 10);
     for (const entry of item.recent) check(closed(entry, ["command_id", "request_id", "operation", "state", "updated_at"]) && /^command-[a-f0-9]+$/.test(entry.command_id) && safe(entry.request_id, 128) && /^dna\.[a-z][a-z_.]*$/.test(entry.operation) && STATES.includes(entry.state) && int(entry.updated_at));
@@ -166,9 +165,7 @@
     { operation: "dna.handoff.accept", title: "Accept handoff", submit: "Accept handoff", project: true, fields: [
       { key: "id", label: "Handoff id", kind: "text", valid: word },
       { key: "note", label: "Note (optional)", kind: "text", valid: optional(value => safe(value, 4096)) }] },
-    { operation: "dna.handoff.sync", title: "Sync handoffs", submit: "Sync handoffs", project: true, fields: [] },
-    { operation: "dna.observer.start", title: "Start observer", submit: "Start observer", project: true, fields: [] },
-    { operation: "dna.observer.stop", title: "Stop observer", submit: "Stop observer", project: true, fields: [] }
+    { operation: "dna.handoff.sync", title: "Sync handoffs", submit: "Sync handoffs", project: true, fields: [] }
   ];
   const STAGES = { queued: "Queued in this browser", recorded: "Recorded", admitted: "Admitted", refused: "Refused", running: "Running", succeeded: "Succeeded", failed: "Failed", outcome_unknown: "Outcome unknown" };
 
@@ -325,8 +322,6 @@
         case "dna.forge.configure": return Boolean(project) && project.forge.github === o.github && JSON.stringify(project.forge.board) === JSON.stringify(o.board);
         case "dna.body.local.start": return data.children.body.state === "running";
         case "dna.body.local.stop": return data.children.body.state !== "running";
-        case "dna.observer.start": return data.children.observer.state === "running";
-        case "dna.observer.stop": return data.children.observer.state !== "running";
         case "dna.secret.set": case "dna.secret.rotate": return Boolean(project) && project.secrets.includes(o.name) && recordMoved();
         case "dna.connection.propose": return Boolean(project) && project.connections.some(c => c.name === o.name) && recordMoved();
         case "dna.connection.close": return Boolean(project) && !project.connections.some(c => c.name === o.name && c.state !== "closed") && recordMoved();
@@ -452,7 +447,6 @@
       fact(summary, "Head state", d.state);
       fact(summary, "Active project", d.state === "attached" ? d.active.name + " · " + d.active.root : "none");
       fact(summary, "Body", d.children.body.state + (d.children.body.mode ? " · " + d.children.body.mode : "") + (d.children.body.state === "running" ? (d.children.body.membrane_up ? " · membrane up" : " · membrane not up") : "") + (d.children.body.state === "exited" ? " · exit " + d.children.body.exit_code : ""));
-      fact(summary, "Observer", d.children.observer.state + (d.children.observer.state === "running" && d.children.observer.origin ? " · " + d.children.observer.origin : ""));
       fact(summary, "State directory", d.state_dir, true);
       fact(summary, "Secret sources", d.sources_dir + (d.credentials.file_sources.length ? " · " + d.credentials.file_sources.join(", ") : " · none"), true);
       fact(summary, "Credentials needed", d.credentials.needed.length ? d.credentials.needed.map(name => name + (d.credentials.env_present.includes(name) ? " (exported)" : "")).join(", ") : "none declared");
@@ -667,9 +661,9 @@
     }
     function renderLogs() {
       logPanel.replaceChildren(); logPanel.hidden = !state; if (!state) return;
-      logPanel.append(append(el("header", "panel-heading"), el("h2", "", "Head logs"), el("span", "", "api · body · observer · runs")));
+      logPanel.append(append(el("header", "panel-heading"), el("h2", "", "Head logs"), el("span", "", "api · body · runs")));
       const actions = el("div", "intervention-actions");
-      for (const child of ["api", "body", "observer"]) actions.append(button("Show " + child + " log", () => readLog("child=" + child)));
+      for (const child of ["api", "body"]) actions.append(button("Show " + child + " log", () => readLog("child=" + child)));
       logPanel.append(actions);
       if (logs.error) logPanel.append(el("p", "intervention-error", logs.error));
       if (logs.name) {

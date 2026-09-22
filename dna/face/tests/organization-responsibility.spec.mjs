@@ -3,7 +3,7 @@
 // source grants, complete history, admission safety or real service freshness.
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { httpFixture } from './runtime-harness.mjs';
+import { httpFixture } from './http-fixture.mjs';
 
 const SOURCE = { record_id: 'a'.repeat(40), record_head: 'b'.repeat(40), record_revision: '90' };
 const REVIEW = { id: 'source-' + 'c'.repeat(64), organization_source: true, subject_digest: 'd'.repeat(40), organization_source_digest: 'sha256:' + 'e'.repeat(64) };

@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   expect(checked.data.module.text).toBe(request.source_text); expect(checked.data.module.digest).not.toBe(original.data.module.digest);
   expect(checked.data.base).toEqual(original.data.base); expect(organization.source).toEqual(original.source); expect(checked.source).toEqual(original.source);
   native = { bytes, capabilities, organization, original, request, checked, application: original.source.record_id, principal: original.data.principal };
-  const assets = new Set(['index.html', 'styles.css', 'app.js', 'runtime.js', 'application.js', 'definition-draft.js', 'organization-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js']);
+  const assets = new Set(['index.html', 'styles.css', 'app.js', 'application.js', 'definition-draft.js', 'organization-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js']);
   server = createServer(async (req, res) => {
     try {
       const pathname = new URL(req.url, 'http://localhost').pathname, file = pathname === '/' ? 'index.html' : pathname.slice(1);

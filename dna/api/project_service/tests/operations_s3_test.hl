@@ -4,7 +4,7 @@
 // with `hale dna new` under a private HOME, then drives `s3_plan` and
 // the S2 journal exactly as the head does — a `run` plan is written
 // 0600 and started under `timeout -k 10 <secs> sh -e` through
-// `children.hl`, a `body` or `observer` plan is a detached child polled
+// `children.hl`, a `body` plan is a detached child polled
 // to readiness, an inline plan is its own effect — and settles each
 // receipt through `s3_outcome`.
 //
@@ -16,11 +16,10 @@
 // script), and the refusals `source_unsafe`, `source_missing`,
 // `name_not_env_var`, `name_invalid`; the local body started in `run`
 // mode to its membrane (`body.claimed`, `children/body.pid`), its logs
-// through the local transport, `body_running`, the observer started
-// over its membrane (`GET /` answers) and stopped, the body stopped
+// through the local transport, `body_running`, the body stopped
 // through the host's own teardown (`body.released`, `org.pid` gone, the
 // exit recorded), a body started by hand seen as `external` and stopped
-// the same way, `membrane_down`; a connection proposed to a second
+// the same way; a connection proposed to a second
 // record over a git-url peer, put in force by the Board, a receipt
 // handed across, accepted there, read back, and the connection closed —
 // each step visible in `s3_project_detail_json`, pinned against the
@@ -47,10 +46,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 }
 
 fn dna_cli(root: String, args: String) -> dna::RunResult { return in_dir(root, toolchain() + "\ndna\n" + args); }
-
-fn http_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-    return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
-}
 
 // The rows of `kind` in a record's journal.
 fn count_rows(repo: String, kind: String) -> Int {
@@ -167,14 +162,13 @@ locus S3Cases {
         alpha_id: String = "";
         beta: String = "";
         beta_id: String = "";
-        observer_port: Int = 0;
         external_host: Int = -1;
     }
 
     fn ctx_for(root: String, id: String, name: String) -> head::HeadContext {
         return head::HeadContext {
             principal_mode: "local", principal_name: PRINCIPAL, active_id: id, active_root: root, active_name: name,
-            state_dir: self.state, sources_dir: self.sources, children_dir: self.child_dir, hale: toolchain(), observer_port: self.observer_port
+            state_dir: self.state, sources_dir: self.sources, children_dir: self.child_dir, hale: toolchain()
         };
     }
 
@@ -229,7 +223,7 @@ locus S3Cases {
             std::test::assert_eq_int(j.settle(std::time::now(), outcomes), 1, "the run settled: " + request_id);
             return j.find(id);
         }
-        // body | observer: a long-lived child, ready or exited
+        // body: a long-lived child, ready or exited
         let kind = plan.kind;
         head::write_cmd(self.child_dir, kind, plan.argv);
         let p = head::start(self.child_dir, kind, plan.cwd, self.envs() + extra, plan.argv);
@@ -268,17 +262,15 @@ locus S3Cases {
         let b = dna::GitRecord { repo: self.beta };
         self.beta_id = b.identity();
         std::test::assert(len(self.beta_id) == 40 && self.beta_id != self.alpha_id, "two records");
-        self.observer_port = dna::free_port(1);
-        std::test::assert(self.observer_port > 0, "an observer port");
     }
 
     // The table itself.
     fn table_cases() {
-        std::test::assert(head::s3_known("dna.body.local.start") && head::s3_known("dna.observer.stop") && head::s3_known("dna.handoff.sync") && !head::s3_known("dna.project.sync") && !head::s3_known(""), "the sixteen names");
+        std::test::assert(head::s3_known("dna.body.local.start") && head::s3_known("dna.body.logs") && head::s3_known("dna.handoff.sync") && !head::s3_known("dna.project.sync") && !head::s3_known(""), "the fourteen names");
         std::test::assert_eq_str(head::s3_arguments("dna.body.provision"), "target dsn dir dry_run", "provision's allowlist, in fingerprint order");
         std::test::assert_eq_str(head::s3_arguments("dna.secret.set"), "name source body", "secret's allowlist");
         std::test::assert_eq_str(head::s3_arguments("dna.connection.propose"), "record_url name position purpose classes", "propose's allowlist");
-        std::test::assert_eq_str(head::s3_arguments("dna.observer.start"), "", "no arguments for the observer");
+        std::test::assert_eq_str(head::s3_arguments("dna.handoff.sync"), "", "no arguments for the handoff sync");
         let detached = head::HeadContext { principal_name: PRINCIPAL, state_dir: self.state, children_dir: self.child_dir, sources_dir: self.sources, hale: toolchain() };
         std::test::assert_eq_str(head::s3_available(detached, "dna.body.local.start"), "detached", "nothing is available detached");
         let refused = head::s3_plan(detached, "dna.handoff.sync", "{}");
@@ -402,10 +394,9 @@ locus S3Cases {
         std::test::assert(std::json::find_string_field(started.outcome, "mode") == "run" && std::json::find_int_field(started.outcome, "membrane_up_at") > 0, "mode and membrane_up_at: " + started.outcome);
         std::test::assert(count_rows(self.alpha, "body.claimed") >= 1, "the host claimed the body");
         std::test::assert(head::s3_child_ready(c, "body"), "the membrane's sockets exist");
-        let view = head::s3_children_json(c, child_view(self.child_dir, "body"), child_view(self.child_dir, "observer"));
+        let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
         std::test::assert(std::json::find_string_field(body, "state") == "running" && std::json::find_bool_field(body, "membrane_up") && std::json::find_string_field(body, "mode") == "run" && std::json::find_int_field(body, "pid") == pid, "the children view: " + view);
-        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(view, "observer"), "state"), "stopped", "no observer yet");
         std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "body_running", "a second body is refused");
         let again = self.drive(c, "s3-body-start-again", "dna.body.local.start", "{\"mode\":\"run\"}");
         std::test::assert(again.state == "refused" && again.reason_code == "body_running", "refused while it runs: " + again.reason_code);
@@ -423,37 +414,6 @@ locus S3Cases {
         std::test::assert(!logs.external, "logs are a read");
     }
 
-    // The observer over the membrane: `GET /` answers, then not.
-    fn observer_cases() {
-        let c = self.ctx();
-        // fuse-hl into the shared cache first, so the child's thirty
-        // seconds are the observer's boot and not a build
-        let warm = dna::run_tool("timeout\n600\n" + toolchain() + "\niris\n--build-only");
-        std::test::assert_eq_int(warm.code, 0, "hale iris --build-only: " + warm.stderr);
-        std::test::assert_eq_str(head::s3_available(c, "dna.observer.start"), "", "the membrane is up");
-        let started = self.drive(c, "s3-observer-start", "dna.observer.start", "{}");
-        std::test::assert_eq_str(started.state, "succeeded", "the observer answers: " + started.reason_code + " " + started.reason);
-        let pid = std::json::find_int_field(started.outcome, "pid");
-        let origin = std::json::find_string_field(started.outcome, "origin");
-        std::test::assert(pid > 0 && pid == pid_in(self.child_dir + "/observer.pid") && origin == "http://127.0.0.1:" + to_string(self.observer_port), "pid and origin: " + started.outcome);
-        let resp = std::http::get(origin + "/") or http_failed(err);
-        std::test::assert_eq_int(resp.status, 200, "GET / on the observer");
-        let view = head::s3_children_json(c, child_view(self.child_dir, "body"), child_view(self.child_dir, "observer"));
-        let observer = std::json::find_field_raw(view, "observer");
-        std::test::assert(std::json::find_string_field(observer, "state") == "running" && std::json::find_string_field(observer, "origin") == origin, "the observer in the children view: " + view);
-        // started again, it is the effect that already exists
-        let again = self.drive(c, "s3-observer-start-again", "dna.observer.start", "{}");
-        std::test::assert(again.state == "succeeded" && len(again.run_kind) == 0 && std::json::find_int_field(again.outcome, "pid") == pid, "a running observer is the outcome: " + again.outcome);
-        let stopped = self.drive(c, "s3-observer-stop", "dna.observer.stop", "{}");
-        std::test::assert(stopped.state == "succeeded" && len(stopped.run_kind) == 0, "the observer stopped: " + stopped.reason);
-        std::test::assert(!pid_alive(pid), "its process is gone");
-        std::test::assert((std::io::tcp::connect("127.0.0.1", self.observer_port) or - 1) < 0, "nothing listens on its port");
-        let after = head::s3_children_json(c, child_view(self.child_dir, "body"), child_view(self.child_dir, "observer"));
-        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(after, "observer"), "state"), "exited", "the observer exited");
-        let idle = self.drive(c, "s3-observer-stop-again", "dna.observer.stop", "{}");
-        std::test::assert_eq_str(idle.state, "succeeded", "stopping a stopped observer is done");
-    }
-
     // The local body stopped through the host's own teardown.
     fn body_stop_cases() {
         let c = self.ctx();
@@ -467,14 +427,11 @@ locus S3Cases {
         std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 1, "the host appended body.released");
         std::test::assert_eq_str(head::s3_available(c, "dna.body.local.stop"), "body_not_running", "nothing runs");
         std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "", "a body can start again");
-        let view = head::s3_children_json(c, child_view(self.child_dir, "body"), child_view(self.child_dir, "observer"));
+        let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
         std::test::assert(std::json::find_string_field(body, "state") == "exited" && std::json::find_int_field(body, "exit_code") == 143 && !std::json::find_bool_field(body, "membrane_up") && std::json::find_string_field(body, "mode") == "run", "the children view after the stop: " + view);
         let again = self.drive(c, "s3-body-stop-again", "dna.body.local.stop", "{}");
         std::test::assert(again.state == "refused" && again.reason_code == "body_not_running", "a second stop is refused");
-        std::test::assert_eq_str(head::s3_available(c, "dna.observer.start"), "membrane_down", "no membrane without a body");
-        let down = self.drive(c, "s3-observer-start-down", "dna.observer.start", "{}");
-        std::test::assert(down.state == "refused" && down.reason_code == "membrane_down", "the observer needs the membrane: " + down.reason_code);
     }
 
     // A body the head did not start: seen as external, stopped the same way.
@@ -492,7 +449,7 @@ locus S3Cases {
         }
         std::test::assert(head::s3_child_ready(c, "body"), "the hand-started body is up: " + (std::io::fs::read_file(self.root + "/external.log") or ""));
         let org = pid_in(self.alpha + "/.hale/dna/org.pid");
-        let view = head::s3_children_json(c, child_view(self.child_dir, "body"), child_view(self.child_dir, "observer"));
+        let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
         std::test::assert(std::json::find_string_field(body, "state") == "external" && std::json::find_int_field(body, "pid") == org && std::json::find_bool_field(body, "membrane_up"), "an external body: " + view);
         std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "body_running", "no second body beside an external one");
@@ -502,7 +459,7 @@ locus S3Cases {
         while left < 30000 && pid_alive(self.external_host) { std::time::sleep(100ms); left = left + 100; }
         std::test::assert(!pid_alive(self.external_host) && !pid_alive(org) && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the hand-started host ended");
         std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 2, "its host appended body.released too");
-        let after = head::s3_children_json(c, child_view(self.child_dir, "body"), child_view(self.child_dir, "observer"));
+        let after = head::s3_children_json(c, child_view(self.child_dir, "body"));
         std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(after, "body"), "state"), "exited", "no external body any more");
     }
 
@@ -602,8 +559,6 @@ locus S3Cases {
     fn sweep() {
         let body = head::Proc { pid: pid_in(self.child_dir + "/body.pid"), dir: self.child_dir, name: "body" };
         if head::alive(body) { head::stop_proc(body); }
-        let observer = head::Proc { pid: pid_in(self.child_dir + "/observer.pid"), dir: self.child_dir, name: "observer" };
-        if head::alive(observer) { head::stop_proc(observer); }
         if pid_alive(self.external_host) { head::kill_tree(to_string(self.external_host)); }
         let d = self.alpha + "/.hale/dna";
         head::kill_tree(dna::trim_nl(std::io::fs::read_file(d + "/org.pid") or ""));
@@ -646,7 +601,6 @@ fn main() {
     cases.models_cases();
     cases.secret_cases();
     cases.body_start_cases();
-    cases.observer_cases();
     cases.body_stop_cases();
     cases.external_cases();
     cases.connection_cases();

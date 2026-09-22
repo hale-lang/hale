@@ -17,20 +17,19 @@ type HeadContext {
     sources_dir: String = "";
     children_dir: String = "";
     hale: String = "";
-    observer_port: Int = 8787;
 }
 
 // An operation's answer to a validated request: refused, or how to
-// execute it. `kind` is inline | run | body | observer.
+// execute it. `kind` is inline | run | body.
 type Plan {
     ok: Bool = false;
     refused: String = "";
     reason: String = "";
-    // inline | run | body | observer
+    // inline | run | body
     kind: String = "run";
     // run: the script body (sh -e); the head writes it 0600 and wraps it in timeout
     script: String = "";
-    // body | observer: the child's newline-separated argv
+    // body: the child's newline-separated argv
     argv: String = "";
     cwd: String = "";
     // extra NAME=value lines beyond the common set
@@ -75,7 +74,7 @@ type Receipt {
     reason: String = "";
     submitted_at: Int = 0;
     updated_at: Int = 0;
-    // run | body | observer | inline; "" before the receipt ran
+    // run | body | inline; "" before the receipt ran
     run_kind: String = "";
     pid: Int = -1;
     argv_digest: String = "";

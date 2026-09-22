@@ -2,7 +2,7 @@
 // Native authority, reassignment admission and durable recovery are separate gates.
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { httpFixture } from './runtime-harness.mjs';
+import { httpFixture } from './http-fixture.mjs';
 
 const row = () => ({
   id: 'support:t-41', outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', state: 'handed', assignee: 'noor',

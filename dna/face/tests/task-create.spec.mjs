@@ -2,7 +2,7 @@
 // the organism's answer and durable recovery are separate gates.
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { httpFixture } from './runtime-harness.mjs';
+import { httpFixture } from './http-fixture.mjs';
 
 const positions = () => [{ position: 'org/support', owner: 'partner' }, { position: 'org', owner: 'acme' }, { position: 'org/finance', owner: 'acme' }];
 const region = page => page.getByRole('region', { name: 'New task', exact: true });

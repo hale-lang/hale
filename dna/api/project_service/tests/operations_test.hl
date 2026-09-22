@@ -77,7 +77,7 @@ locus OperationCases {
             rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
             n = n + 1;
         }
-        std::test::assert_eq_int(n, 25, "twenty-five operations");
+        std::test::assert_eq_int(n, 23, "twenty-three operations");
     }
 
     fn create_and_init() {

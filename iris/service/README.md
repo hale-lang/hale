@@ -36,12 +36,11 @@ with that configured identity before operation dispatch. Capabilities remain
 advisory: providers recheck current access for both commands and recovery.
 This does not provide hosted sessions, OIDC or remote multi-user authentication.
 
-With a webroot, the head loads the eleven fixed browser assets once, injects the
+With a webroot, the head loads the ten fixed browser assets once, injects the
 constant `data-iris-profile="application"` on the HTML element and serves the
-same cockpit shell. Asset reads precede provider access. Runtime observation
-remains separately configured by `HALE_IRIS_OBSERVER_ORIGIN`, with the shared
-exact-origin CSP policy; the head does not proxy the observer. Restart the head
-after changing assets or configuration.
+same cockpit shell. Asset reads precede provider access. The shell has no
+runtime view; inspect the running application with `hale iris`. Restart the
+head after changing assets or configuration.
 
 ## Wire contract
 
