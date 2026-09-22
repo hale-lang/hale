@@ -1,5 +1,5 @@
 {
-  "name": "hale-iris-cockpit-browser-tests",
+  "name": "hale-face-browser-tests",
   "private": true,
   "type": "module",
   "scripts": {

@@ -15,11 +15,11 @@ post-observer editor vision in
 
 The human cockpit proposal is tracked in
 [#690](https://github.com/hale-lang/hale/issues/690). Its proposed browser/API
-boundary is in [`COCKPIT-CONTRACT.md`](./COCKPIT-CONTRACT.md), and its visual
-direction is in [`cockpit/DESIGN.md`](./cockpit/DESIGN.md). The issue defines the
+boundary is in [`dna/face/CONTRACT.md`](../dna/face/CONTRACT.md), and its visual
+direction is in [`dna/face/DESIGN.md`](../dna/face/DESIGN.md). The issue defines the
 full product scope.
 
-The [browser cockpit](cockpit/README.md) reads declared Organization structure,
+The [browser cockpit](../dna/face/README.md) reads declared Organization structure,
 real Practices and Reviews through
 the [DNA read API](../dna/api/README.md). It serves from the same origin as the
 Hale API, shows source revisions and content availability, and connects to a
@@ -31,7 +31,7 @@ from an explicitly composed command provider; the standalone API remains read-on
 Static declarations do not establish semantic position authority. Runtime
 observation itself continues to work independently of DNA.
 
-From a checkout, `./iris/cockpit/start.sh PROJECT` builds and starts the native
+From a checkout, `./dna/face/start.sh PROJECT` builds and starts the native
 DNA API with the browser. An application's composed API can be supplied through
 `--api BINARY`; existing body/state/observer processes remain independent.
 

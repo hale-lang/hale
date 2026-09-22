@@ -594,10 +594,10 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: iris/cockpit/package-lock.json
+          cache-dependency-path: dna/face/package-lock.json
 
       - name: Iris cockpit browser integration
-        working-directory: iris/cockpit
+        working-directory: dna/face
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
@@ -611,8 +611,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: iris-cockpit-browser-failures
-          path: iris/cockpit/test-results
+          name: face-browser-failures
+          path: dna/face/test-results
           if-no-files-found: ignore
           retention-days: 7
 

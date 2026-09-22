@@ -14,11 +14,11 @@ appends nothing to any Record itself.
 hale build dna/api/practice_review
 hale build dna/api/project_service
 HALE_BIN="$(command -v hale)" \
-  ./dna/api/project_service/project_service 8792 iris/cockpit/web \
+  ./dna/api/project_service/project_service 8792 dna/face/web \
   dna/api/practice_review/practice_review 8793 [/absolute/path/project]
 ```
 
-`iris/cockpit/start.sh [PROJECT]` does the build and the launch. The
+`dna/face/start.sh [PROJECT]` does the build and the launch. The
 routes, envelopes and operations are described in
 [`dna/api/README.md`](../README.md#head-project-service) and pinned by
 [`dna/api/contract/v1`](../contract/v1/README.md#head).

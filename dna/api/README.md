@@ -11,15 +11,15 @@ does not invoke CLI operational commands or parse terminal rendering. Organizati
 inspection uses the native compiler's machine-readable topology export.
 
 This is an experimental source-built service. An optional
-[Iris cockpit](../../iris/cockpit/README.md) browses these reads from the same
-origin. The checkout provides a [cockpit launcher](../../iris/cockpit/README.md#run-locally);
+[Iris cockpit](../face/README.md) browses these reads from the same
+origin. The checkout provides a [cockpit launcher](../face/README.md#run-locally);
 there is no installed `hale dna api` subcommand or Compose service profile yet.
 Product scope and remaining service work are tracked in
 [#690](https://github.com/hale-lang/hale/issues/690).
 
 ## Run
 
-For the browser and the services together, `./iris/cockpit/start.sh [PROJECT]`
+For the browser and the services together, `./dna/face/start.sh [PROJECT]`
 builds this checkout's [project service](#head-project-service) (the head) and
 its per-project native API (`dna/api/practice_review`) in temporary storage and
 serves the eleven browser assets from the head. The project is optional: without it
@@ -47,7 +47,7 @@ curl http://127.0.0.1:8792/api/hale/v1/applications
 To serve the cockpit as well, pass its static directory as the third argument:
 
 ```sh
-./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/iris/cockpit/web"
+./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/dna/face/web"
 ```
 
 Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/runtime.js`, `/application.js`,
@@ -65,7 +65,7 @@ connections. A valid configured origin is returned in the public
 `connect-src`; the API does not fetch or proxy it. Nonempty invalid configuration
 refuses shell startup. Paths (including a trailing slash), userinfo, queries,
 fragments, wildcard/encoded hosts and whitespace are rejected. Scheme/host and
-default ports normalize. See [Runtime setup](../../iris/cockpit/README.md#native-runtime-connection).
+default ports normalize. See [Runtime setup](../face/README.md#native-runtime-connection).
 
 Use the returned id in the following routes:
 
@@ -365,7 +365,7 @@ as the attached project's API child, with the two policies it synthesized
 under `<root>/.hale/dna/iris/` when the operator wrote none:
 
 ```sh
-iris/cockpit/start.sh /absolute/path/project --api /absolute/path/practice_review --port 8792
+dna/face/start.sh /absolute/path/project --api /absolute/path/practice_review --port 8792
 ```
 
 `/capabilities` exposes the optional `task_commands` profile
@@ -435,7 +435,7 @@ the children whose command line matches what it recorded.
 hale build dna/api/practice_review
 hale build dna/api/project_service
 HALE_BIN="$(command -v hale)" \
-  ./dna/api/project_service/project_service 8792 iris/cockpit/web dna/api/practice_review/practice_review 8793 [/absolute/path/project]
+  ./dna/api/project_service/project_service 8792 dna/face/web dna/api/practice_review/practice_review 8793 [/absolute/path/project]
 ```
 
 Four routes, described in `contract/v1` beside the Record routes, all under the

@@ -31,8 +31,6 @@ fn hale(sub: &str, dir: &str) -> (bool, String) {
 /// Seeds that must `hale check` clean. (`examples/wasm-flower` targets
 /// wasm32 and is covered by the wasm example tests, not here.)
 const CHECKED: &[&str] = &[
-    "cockpit/tests/organization",
-    "cockpit/tests/record",
     "consumer/fuse-hl",
     "examples/claims-demo/app",
     "examples/claims-demo/rogue",
