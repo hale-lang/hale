@@ -126,17 +126,17 @@ locus CommandCases {
         std::test::assert_eq_str(wire.text(wire.raw(revised, "review"), "outcome"), "revise", "accepted revision outcome distinct");
         let context = self.host.saved_context; let command = self.host.saved_command;
         let good = self.host.result(context, command);
-        // GH #713: `let` copies, so each case below is one real invalidity on a pristine copy.
-        let mut bad1 = good; bad1.receipt.proposal_state = "adopted"; self.bad_receipt(context, command, bad1);
-        let mut bad2 = good; bad2.receipt.proposal_state = "created"; bad2.receipt.candidate_digest = "PRIVATE-CANARY"; bad2.receipt.review_id = ""; self.bad_receipt(context, command, bad2);
-        let mut bad3 = good; bad3.receipt.target_kind = "dna.review"; self.bad_receipt(context, command, bad3);
+        // GH #713: `let` copies, so each case is one invalidity on a pristine copy of a verdict receipt.
+        let mut bad1 = good; bad1.receipt.proposal_state = "pending"; self.bad_receipt(context, command, bad1);
+        let mut bad2 = good; bad2.receipt.candidate_digest = "PRIVATE-CANARY"; self.bad_receipt(context, command, bad2);
+        let mut bad3 = good; bad3.receipt.target_kind = "dna.practice"; self.bad_receipt(context, command, bad3);
         let mut bad4 = good; bad4.receipt.subject_digest = "PRIVATE-CANARY"; self.bad_receipt(context, command, bad4);
         let mut bad5 = good; bad5.receipt.review_subject_digest = "PRIVATE-CANARY"; self.bad_receipt(context, command, bad5);
         let mut bad6 = good; bad6.receipt.verdict_value = "approve"; self.bad_receipt(context, command, bad6);
         let mut bad7 = good; bad7.receipt.verdict_state = "pending"; self.bad_receipt(context, command, bad7);
         let mut bad8 = good; bad8.receipt.state = "refused"; self.bad_receipt(context, command, bad8);
         let mut bad9 = good; bad9.receipt.activation_state = "adopted"; self.bad_receipt(context, command, bad9);
-        let mut bad10 = good; bad10.receipt.operation = "dna.review.verdict"; self.bad_receipt(context, command, bad10);
+        let mut bad10 = good; bad10.receipt.operation = "dna.practice.propose"; self.bad_receipt(context, command, bad10);
         let mut lookup_bad = good; lookup_bad.receipt.proposal_state = "created";
         std::test::assert_eq_int(wire.response(context, api::CommandRequest { request_id: command.request_id }, lookup_bad, false).status, 503, "lookup rejects mixed receipt variants too");
         self.host.mode = "recorded";
