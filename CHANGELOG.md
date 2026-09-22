@@ -8,6 +8,40 @@ behavior.
 
 ## Unreleased
 
+### The body fence stops sessions: orphaned tools are reached on every platform (GH #970)
+
+The fence stops everything an organization started, including a tool
+it orphaned by crashing. It found such a tool by a mark in the tool's
+environment, and macOS with SIP never discloses another process's
+environment (`ps -E` and `sysctl(KERN_PROCARGS2)` alike return the
+arguments alone), so on a Mac an orphaned tool outlived the lease.
+
+Every process a body starts now begins a **session** of its own
+(`dna::in_new_session`: `setsid(1)`, or perl's `POSIX::setsid` where there
+is none, forking first when the caller leads a process group, as
+`setsid(1)` does). A tool keeps its session through everything a
+process group does not survive — `run_tool` gives each tool a group of
+its own, and a tool whose organism died is reparented — and only an
+explicit `setsid` leaves it. `kill_tree` (both copies, host and API
+service) stops the process's tree **and** its session
+(`dna::session_members`, by `getsid(2)` through a new runtime function,
+`lotus_process_session`, typed `int64_t` both ways for a Hale `@ffi`
+declaration). The environment mark stays as a second net for a tool that
+did `setsid` itself, where the machine discloses environments.
+
+- `body_scan` proves disclosure on a child of the probe, not on the
+  probing shell: macOS shows a process its own environment and no one
+  else's, so the self-probe reported `ps` where the scan then found
+  nothing.
+- `body_scan_test` proves the session everywhere — an orphaned tool in
+  a group of its own is found by its session, in no other, and stopped
+  by it — and the mark where the machine discloses environments. Its
+  tool is a script: a copy of a system binary is killed on start by
+  macOS.
+- On an Apple Silicon Mac `body_scan_test`, `body_lease_start_test` and
+  `body_lease_blocked_test` now pass. GitHub's macOS runners do disclose
+  environments, which is why CI never saw the gap.
+
 ### DNA runs on a Mac: the macOS gaps in the host and the runtime (GH #970)
 
 On an Apple Silicon Mac, every DNA fixture now passes except the three
@@ -50,14 +84,6 @@ What was wrong, and where:
   gives working directories), and the guard's own regression test runs
   on macOS too.
 
-Still open: the body fence finds processes orphaned by a dead
-organization by the mark in their environment, and macOS (with SIP)
-never shows another process's environment — `ps -E` and
-`sysctl(KERN_PROCARGS2)` alike return arguments only. On a Mac the
-fence stops the organization and what still hangs off it, and says so;
-`body_scan_test`, `body_lease_start_test` and `body_lease_blocked_test`
-fail there. GitHub's macOS runners do show environments, which is why
-the macOS workflow's fence step passes.
 
 ### `async_io` pools on macOS: the kqueue backend (GH #970)
 

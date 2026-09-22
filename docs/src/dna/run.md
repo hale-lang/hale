@@ -91,11 +91,14 @@ off at the deadline the lease allows. It never waits on
 the host: when the lease is someone else's, or it cannot prove the
 lease within five seconds of its expiry, or the host is gone, it
 kills the organization and the expression, with every tool they
-started (even one whose organization already crashed: everything the
-body starts carries its mark in `HALE_DNA_BODY`, and the fence finds
-it by that mark through `/proc` on Linux or `ps -E` on macOS — on a
-machine offering neither it says so at startup and reaches only what
-hangs off a living organization), and writes why to
+started — even one whose organization already crashed. Everything the
+body starts begins a session of its own, and a tool stays in its
+organization's session however it is regrouped or reparented, so the
+fence stops the whole session, on Linux and macOS alike. Everything the
+body starts also carries a mark in `HALE_DNA_BODY`, a second net for a
+tool that left the session on purpose (`setsid`), read through `/proc`
+on Linux; a Mac shows no other process's environment, and the host says
+at startup that such a tool is out of reach. The fence writes why to
 `.hale/dna/body.fence.status`. The host reads that file at the top of
 every tick, before it relays anything onto the membrane or restarts
 anything, and again the moment before it starts a process, and exits

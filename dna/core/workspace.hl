@@ -33,6 +33,62 @@ fn reap_on_exit(dir: String) {
     let r = run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; ps -eo pid=,args= | awk -v d=\"$2/\" 'index($0, d) {print $1}' | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + me + "\n" + dir);
 }
 
+// ---- a body's processes, by the session they were born in -----------
+//
+// Everything a body starts begins a session of its own (`in_new_session`),
+// and everything THAT starts stays in it: a child that takes a process
+// group of its own — every `std::process::run` child does — keeps its
+// session, and so does one reparented when its parent dies. Only an
+// explicit `setsid` leaves. So the processes of a body's organization are
+// the processes of its session, on every POSIX system, and a fence that
+// stops "the session led by the organization's pid" stops the tool an
+// organism orphaned when it crashed (GH #970). This is the mechanism; the
+// environment mark below is a second net where a machine discloses
+// environments (Linux), for a tool that did `setsid` itself.
+
+// getsid(2), from the lotus runtime (every Hale program links it): the
+// session `pid` is in, -1 when it cannot be read.
+@ffi("c") fn lotus_process_session(pid: Int) -> Int;
+
+// `argv` (newline-separated), run as the leader of a new session. Linux
+// has `setsid(1)`; macOS has none, and perl does what it does: a process
+// that already leads a process group cannot begin a session, so it forks
+// first and the child begins it (the parent exits 0); otherwise it begins
+// one in place. Either way the program is exec'd, so its command line and
+// the environment it was given are its own — and from `start`, whose
+// child never leads a group, so is its pid.
+fn in_new_session(argv: String) -> String {
+    return "sh\n-c\nif command -v setsid >/dev/null 2>&1; then exec setsid \"$@\"; fi; exec perl -MPOSIX -e 'if (getpgrp() == $$) { defined(my $k = fork) or die \"fork: $!\\n\"; exit 0 if $k } POSIX::setsid() >= 0 or die \"setsid: $!\\n\"; exec @ARGV or die \"exec $ARGV[0]: $!\\n\"' \"$@\"\nsh\n" + argv;
+}
+
+// Every process in the session `leader` began, newline-separated ("" when
+// none, or when `leader` began no session). The leader itself, while it
+// lives, is among them. Never this process.
+@unbounded
+fn session_members(leader: String) -> String {
+    let sid = std::str::parse_int(leader) or 0;
+    if sid <= 0 { return ""; }
+    let me = std::process::pid();
+    let mut rest = run_tool("ps\n-A\n-o\npid=").stdout;
+    let mut out = "";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let word = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let p = std::str::parse_int(word) or 0;
+        if p > 0 && p != me && lotus_process_session(p) == sid { out = out + to_string(p) + "\n"; }
+    }
+    return trim_nl(out);
+}
+
+// Two newline-separated lists as one, with no empty line between them —
+// an empty argument would make `kill` refuse the call.
+fn join_lines(a: String, b: String) -> String {
+    if len(a) == 0 { return b; }
+    if len(b) == 0 { return a; }
+    return a + "\n" + b;
+}
+
 // ---- a body's processes, wherever they were reparented -------------
 
 // The mark a body puts in the environment of everything it starts
@@ -48,14 +104,19 @@ fn body_mark(holder: String, token: Int, host_pid: Int) -> String {
 // longer reaches it — but only if this machine will show it:
 //
 //   `proc`  Linux: /proc/<pid>/environ.
-//   `ps`    macOS and the BSDs: `ps -E`, proved here on a process of this
-//           call's own, since the answer depends on what the kernel will
-//           disclose, not on the flag parsing.
+//   `ps`    the BSDs, and a macOS that discloses environments (GitHub's
+//           runners do; a Mac with SIP does not): `ps -E`, proved here on
+//           a child of this call's, since the answer depends on what the
+//           kernel will disclose about another process, not on the flag.
 //   ""      neither: a body finds only what still hangs off a living
 //           parent (`kill_tree`), and the host says so at startup.
 fn body_scan() -> String {
     if std::io::fs::file_exists("/proc/self/environ") { return "proc"; }
-    let probe = run_tool("env\nHALE_DNA_SCAN_PROBE=yes\nsh\n-c\nps -E -ww -o pid=,command= -p $$ 2>/dev/null | grep -c HALE_DNA_SCAN_PROBE=yes");
+    // Proved on ANOTHER process — a child carrying the probe — never on the
+    // probing shell itself: macOS shows a process its own environment and
+    // no one else's, so a self-probe said "ps" where the scan then found
+    // nothing (GH #970).
+    let probe = run_tool("env\nHALE_DNA_SCAN_PROBE=yes\nsh\n-c\nsleep 5 & p=$!; n=$(ps -E -ww -o command= -p $p 2>/dev/null | grep -c HALE_DNA_SCAN_PROBE=yes); kill $p 2>/dev/null; echo $n");
     if probe.code == 0 && trim_nl(probe.stdout) != "0" { return "ps"; }
     return "";
 }

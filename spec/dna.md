@@ -1971,25 +1971,33 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   else's or released, when the fence cannot prove it within 5s of its
   expiry, or when the host is gone, the fence kills the organization
   and the expression (by their pid files), each with every process it
-  started — the tree frozen, then killed, since a tool run through
-  `run_tool` has a process group of its own — and every process carrying
-  the body's mark (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in
-  the environment of everything the host starts and inherited by every
-  tool they start, so a tool whose organism already died and which was
-  reparented is found too) — and says why (the
+  started — the tree and the **session** frozen, then killed. Every
+  process the host starts begins a session of its own
+  (`dna::in_new_session`: `setsid(1)`, or perl's `POSIX::setsid` where
+  there is none), and a tool keeps its session through everything a
+  process group does not survive: `run_tool` gives each tool a group of
+  its own, and a tool whose organism died is reparented, but both stay
+  in the session its organism began, and only a tool that calls `setsid`
+  itself leaves it (#970). Then every process carrying the body's mark
+  (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in the environment of
+  everything the host starts and inherited by every tool they start) —
+  the second net, for that `setsid` tool, where the machine discloses
+  environments — and says why (the
   host does the same, before it stops the fence, on every exit it takes
   once it holds the lease: a failed build, a refused start, its
   organization's exit), and the host
-  exits 3 when it next looks. **Reaching a reparented tool asks the
-  machine for another process's environment, and what a machine will
-  give differs (#638).** `body_scan` says which it has: `proc` —
-  Linux's `/proc/<pid>/environ`; `ps` — `ps -E`, on macOS and the BSDs,
-  proved at the time of asking on a process of the call's own, since
-  the answer is what the kernel discloses and not whether the flag
-  parses; or none, where the fence stops the organization, the
-  expression and what still hangs off them, a tool orphaned by an
-  organization that died is not among them, and the host says so at
-  startup. A host blocked in a sync, a build or an
+  exits 3 when it next looks. **The session reaches a reparented tool on
+  every POSIX machine; the mark needs the machine to disclose another
+  process's environment, and what a machine will give differs (#638).**
+  `body_scan` says which it has: `proc` — Linux's `/proc/<pid>/environ`;
+  `ps` — `ps -E`, proved at the time of asking on a child of the call's,
+  since the answer is what the kernel discloses about another process
+  and not whether the flag parses (macOS shows a process its own
+  environment and, with SIP, no one else's — GitHub's runners do show
+  it); or none, where the fence still stops the sessions — every tool
+  the organization and the expression started, orphaned or not — and
+  only a tool that began a session of its own is out of reach, which the
+  host says at startup (#970). A host blocked in a sync, a build or an
   observation window therefore cannot keep its organism executing past
   the lease; while the remote cannot be reached the lease is kept
   unrenewed until then: a partitioned body executes nothing past its

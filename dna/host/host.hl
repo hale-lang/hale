@@ -627,12 +627,14 @@ locus Host {
         self.fence = start(self.dna_dir, "fence", self.root, "HALE_DNA_GIT_TIMEOUT=8",
             bin + "\nbody-fence\n.\n.\n-\n-\n--holder\n" + self.holder + "\n--token\n" + to_string(self.lease.token) + "\n--expires\n" + to_string(self.lease.expires) + "\n--host-pid\n" + to_string(std::process::pid()));
         if self.fence.pid <= 0 { self.say("the body fence did not start; a body that cannot fence its organism runs nothing"); std::process::exit(3); }
-        // #638: what the fence can reach on this machine. Without a way to
-        // read another process's environment it finds only what still hangs
-        // off a living organization, so a tool orphaned by one that died
-        // can outlive the lease.
+        // #638, #970: what the fence can reach on this machine. It stops
+        // the sessions the organization and the expression began, which
+        // hold every tool they started however it was regrouped or
+        // reparented; only a tool that began a session of its own escapes
+        // that, and the environment mark catches it where this machine
+        // discloses another process's environment.
         if len(dna::body_scan()) == 0 {
-            self.say("this machine has no way to read another process's environment (no /proc, no `ps -E`), so the body fence stops the organization, the expression and what still hangs off them — a tool orphaned by an organization that died is not among them (GH #638)");
+            self.say("the body fence stops the organization's and the expression's sessions — every tool they started, orphaned or not; this machine shows no other process's environment, so a tool that began a session of its own (`setsid`) is not among them (GH #970)");
         }
     }
     fn stop_fence() {

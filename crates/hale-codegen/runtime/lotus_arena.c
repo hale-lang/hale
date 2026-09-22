@@ -19336,6 +19336,26 @@ int lotus_process_try_wait(
     return 0;
 }
 
+/* The session `pid` belongs to (getsid(2)), -1 when it cannot be read
+ * (the pid is gone, or the kernel will not say). A session survives
+ * everything a process group does not: a child that `setpgid`s itself —
+ * every one `lotus_process_spawn` makes — and a child reparented when its
+ * parent dies both keep the session they were born in, and only an
+ * explicit `setsid` leaves it. So "every process in session S" is what a
+ * body's fence stops, on every POSIX system: macOS never discloses another
+ * process's environment, where a mark would otherwise be read (GH #970).
+ * `int64_t` both ways so a Hale `@ffi("c")` declaration (Int <-> int64_t)
+ * matches this signature exactly. */
+int64_t lotus_process_session(int64_t pid) {
+    if (pid <= 0 || pid > INT32_MAX) return -1;
+#if defined(__wasm__)
+    return -1;
+#else
+    pid_t sid = getsid((pid_t)pid);
+    return sid < 0 ? -1 : (int64_t)sid;
+#endif
+}
+
 /* signal (2026-07-17, promoted from pond/subprocess's Process.signal
  * surface): send an arbitrary signal to the child. Targets the pid
  * (not the process group — group escalation stays kill_escalate's
