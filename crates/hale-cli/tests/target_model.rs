@@ -461,7 +461,35 @@ fn the_existing_aliases_are_unchanged() {
 
     // `wasm32` still names its output `.wasm`, which is now the target's
     // convention rather than a `with_extension` at one call site.
+    //
+    // The wasm build compiles its runtime with the `clang` (or `clang-18`)
+    // on PATH, and Apple's has no wasm32 backend; on such a box this half
+    // is skipped, as the wasm suite skips without its toolchain (GH #970).
+    // CI's clang is LLVM 18 with every backend, so it runs there.
+    if !clang_targets_wasm32() {
+        eprintln!("SKIP the_existing_aliases_are_unchanged (wasm32 half): the clang on PATH has no wasm32 backend");
+        return;
+    }
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", "wasm32"]);
     assert_eq!(code, 0, "wasm build failed: {stderr}");
     assert!(src.with_extension("wasm").exists(), "no .wasm output");
+}
+
+/// Whether the clang the wasm build resolves (`clang`, else `clang-18`)
+/// can emit wasm32: compile an empty C unit for it.
+fn clang_targets_wasm32() -> bool {
+    ["clang", "clang-18"].iter().any(|cc| {
+        let mut child = match Command::new(cc)
+            .args(["--target=wasm32", "-x", "c", "-c", "-", "-o", "/dev/null"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        drop(child.stdin.take());
+        child.wait().map(|s| s.success()).unwrap_or(false)
+    })
 }

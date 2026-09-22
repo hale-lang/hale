@@ -8,6 +8,21 @@
 import "../core" as dna;
 import "../operations" as ops;
 
+// Before append attempt `tries`: nothing on the first, then (tries-1) ×
+// 100ms. A living organism appends to its record every few seconds — a
+// schedule firing, a model call — and each attempt here is a read and an
+// exact append, slower still on a loaded machine; sixteen back-to-back
+// attempts could all land inside the organism's writes and give up with
+// "the Record kept changing" (the full DNA suite on a laptop did, GH #970).
+// Waiting a little longer each time lets one land; the sixteen together
+// wait about twelve seconds at most.
+fn stale_pause(tries: Int) {
+    let mut w = 1;
+    while w < tries {
+        std::time::sleep(100ms);
+        w = w + 1;
+    }
+}
 fn who_am_i() -> String {
     let u = std::env::var("USER");
     if len(u) == 0 { return "human"; }
@@ -91,6 +106,7 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
+        stale_pause(tries);
         let p = open_projection(root, seed, "");
         let read_at = p.j.record.head();
         let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
@@ -201,6 +217,7 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
+        stale_pause(tries);
         let p = open_projection(root, seed, "");
         let read_at = p.j.record.head();
         let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
@@ -257,6 +274,7 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
+        stale_pause(tries);
         let p = open_projection(root, seed, "");
         let read_at = p.j.record.head();
         let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
@@ -381,6 +399,7 @@ fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_fl
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
+        stale_pause(tries);
         let p = open_projection(root, seed, "");
         let read_at = p.j.record.head();
         let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
@@ -430,6 +449,7 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
+        stale_pause(tries);
         let p = open_projection(root, seed, "");
         let read_at = p.j.record.head();
         let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };

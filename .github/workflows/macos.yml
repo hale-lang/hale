@@ -12,7 +12,8 @@ name: macos
 #   (a) builds the workspace,
 #   (b) compiles + RUNS a hello-world .hl,
 #   (c) compiles + RUNS a cooperative-pool + bus .hl,
-#   (d) builds + RUNS a `where async_io` .hl — the kqueue backend.
+#   (d) builds + RUNS a `where async_io` .hl — the kqueue backend,
+#   and then cross-builds a Linux binary and runs the whole DNA suite.
 #
 # Kept in its own workflow so it runs on push/PR without gating the
 # Linux-only required checks in tests.yml.
@@ -256,3 +257,25 @@ jobs:
           file /tmp/hlci/coop_bus | tee /tmp/hlci/cross-file.out
           grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/hlci/cross-file.out
           test ! -e /tmp/hlci/coop_bus.o
+
+      - name: (h) GH #970 — the whole DNA suite on macOS
+        # The DNA fixtures on a Mac: until this ran here, every macOS gap
+        # DNA had — a refused connect that spent its socket, `timeout` and
+        # `sha256sum` missing, a fence that started the compiler, /tmp
+        # being an alias of /private/tmp, a fence that could not reach an
+        # orphaned tool — was invisible to CI, which ran the suite on
+        # Linux alone. The test binaries link libzstd from Homebrew's lib,
+        # which only hale-cli's build script adds for itself, hence
+        # LIBRARY_PATH. The runner has fewer cores than a laptop running
+        # the same slices, so every fixture wait is widened a little more
+        # than the suite's own default (2).
+        #
+        # One difference from a developer's Mac remains: this runner shows
+        # another process's environment (SIP is off), so the body fence's
+        # environment mark works here as on Linux. The fence does not
+        # depend on it — it stops sessions — and body_scan_test proves the
+        # session path on every platform.
+        env:
+          LIBRARY_PATH: /opt/homebrew/lib
+          HALE_DNA_WAIT_SCALE: "3"
+        run: cargo test --release -p hale-cli --test dna_native_suite

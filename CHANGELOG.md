@@ -8,6 +8,38 @@ behavior.
 
 ## Unreleased
 
+### macOS in CI, and the last Mac-only test failures (GH #970)
+
+- **The DNA suite runs on macOS in CI** (`macos.yml` step h). Every DNA
+  gap fixed for the Mac so far was invisible to CI, which ran the suite
+  on Linux alone.
+- **A machine without `timeout` runs the DNA suite.** Sixteen fixtures
+  cap a background host with `timeout <secs>`, which is GNU coreutils
+  and not on a stock Mac; each failed to start its host at all. The
+  suite puts a stand-in on the fixtures' PATH where there is none, with
+  GNU's semantics rather than just its name: the command runs in a
+  process group of its own, and expiry or a signal to `timeout` reaches
+  the whole group (124 on expiry, 128+n on a signal). A first stand-in
+  that exec'd the command under an alarm let a stopped host's children
+  run on, and `books_slice` and `two_heads` read their record still
+  moving after the organism was down.
+- `process_child_adopt_test` skips its procfs-only reap counts silently:
+  the note it printed failed it on every Mac, since a passing test prints
+  nothing.
+- `the_existing_aliases_are_unchanged` skips its wasm32 half when the
+  `clang` on PATH has no wasm32 backend (Apple's), as the wasm suite skips
+  without its toolchain; CI's LLVM 18 clang runs it.
+- **`hale dna task done` / `authorize` / `decide` / `reassign` / `accept`
+  wait between append attempts.** Each tried sixteen times back to back
+  and gave up with "the Record kept changing" when a busy organism's own
+  writes landed inside every one — the full DNA suite on a laptop hit it.
+  Attempt *k* now waits (k−1)×100 ms first, about twelve seconds across
+  all sixteen at most.
+- `organization_source_request_test` grants its guard a 120 s inspection
+  budget (`INSPECTION`). Production keeps its 30 s bound; the whole suite
+  in parallel on a laptop pushed one candidate check past it
+  (`organization_unavailable`) while the fixture passed alone.
+
 ### The body fence stops sessions: orphaned tools are reached on every platform (GH #970)
 
 The fence stops everything an organization started, including a tool
