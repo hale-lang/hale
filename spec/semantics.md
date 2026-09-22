@@ -1236,6 +1236,32 @@ so the holder's teardown reclaimed the handed-in instance (its owner
 then read freed memory, or reclaimed it a second time) and the default
 leaked.
 
+**A borrow outlives its holder (GH #730, 2026-09-22).** A handle
+stored by name into a locus-carrying param field — `LocusRef`,
+`interface`, `perspective(P)` — is borrowed, never the holder's to
+reclaim, so what owns it must outlive the holder. Ownership is
+structural and reclamation a tree cascade, so `hale check` decides
+this from position, with no annotation:
+
+| the handle comes from | holder owned by the frame | by `self` (a field, an accepted child) | by the caller (returned) |
+|---|---|---|---|
+| a field of `self` | sound | sound | refused |
+| a `let` of this frame | sound while the binding is in scope | refused | refused |
+| a bus handler's payload | sound | refused (GH #712) | refused |
+| a parameter | sound | every caller is asked | left alone |
+
+For a parameter, every call site of the method is classified by the
+same table; the first caller that hands a `let` of its own frame or a
+handler payload is the witness the refusal names, and a parameter at
+the caller recurses to a bounded depth. Nothing else is refused: a
+chain the walk cannot follow is left alone, never guessed at. A
+borrow the holder reads only in `birth()` is birth-scoped and sound —
+the instantiation runs inside the frame that owns the handle — which
+is the shape a resident uses to copy what it was handed before the
+dispatch ends. Not decided here: a borrow across thread domains, and
+a container (not a locus) a handler built and handed to a resident's
+form-typed field; both are named in GH #730 and #712.
+
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not
 a value to hand around.** Ordinary `let`-bound loci — including
