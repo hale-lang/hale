@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### `let` copies a struct value (GH #713)
+
+- `crates/hale-codegen/src/codegen.rs`, the `let` lowering: a struct read from a place — a field of `self` or of a child, a local, an element — is now copied into the frame's own region at the binding (Strings and Bytes cloned, nested structs copied, locus handles left as handles), the way a returned struct already was. Before, the binding was a view of the storage: `let saved = self.row; self.row = Row { };` emptied `saved`, and `let mut copy = original; copy.x = …` wrote the original. A literal or a call result is bound as it is. The ruling of 2026-09-20. Spec: `spec/types.md` § "A struct binding is a copy". Test: `tests/hale/struct_let_copies_test.hl` — same-locus and child fields, replacement, mutation through the binding and through the source, Int and String fields, a nested struct, a local-to-local copy.
+
 ### Docs: the DNA book learns the workflow; four small rules written down
 
 - `docs/src/dna/workflow.md` (new chapter, in the under-the-hood section): what an ask becomes — the admission, definitions in code with the canonical close-month example and the limits, how an execution runs (registered member sets, attempts and their one claim, delayed replies, failure and the drain policy, cancellation), people's jobs as cases closed with `task done`, edits as Mutations bound to their attempt, what a restart keeps and how uncertain effects are reconciled, what the conformance baseline promises, and where the cockpit (GH #690) takes these surfaces. `index.md`, `working.md` (the ask), `limits.md`, `troubleshooting.md` (`[planning]`, `intent.unrecovered`, a case that waits) and `run.md` (the cockpit direction) point at it; `reference.md`'s vocabulary gains the workflow, step, attempt, work, case, `mutation.requested`, `effect.redelivered` and `lease.taken` rows.
