@@ -31,6 +31,14 @@ grant, format, check, a commit there, and then the verification. It
 takes seconds; the next command tells you when there is something
 to look at.
 
+Behind the line, the ask is a workflow: admitted as one
+(`workflow.admitted` names the definition and the Leader's plan), run
+by the organization's engine, settled when its work is. `[planning]`
+means the Leader has not yet said what kind of work it is; a
+person's job comes back as a handed Task on `hale dna board` rather
+than a change to review. A restart resumes it where the record left
+it. [The workflow](./workflow.md) has the shapes and the promises.
+
 ## On a schedule
 
 Some asks recur: reconcile the books every night, export the week on

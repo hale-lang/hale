@@ -23,6 +23,11 @@ Plainly, so you can decide whether it fits.
   Board review, a restart.
 - Record all of it, in order, on a branch of your repository that
   syncs like code.
+- Run work as workflows you define in code: ordered steps, units
+  of work with retries, child workflows, people's jobs as handed
+  Tasks, edits as reviewed changes — and resume every one of them,
+  under the same ids, from the record after a restart
+  ([The workflow](./workflow.md)).
 
 ## It won't
 
@@ -53,6 +58,16 @@ Plainly, so you can decide whether it fits.
 - **Run without git.** The record is a branch, changes are commits,
   rollbacks are resets. Nodes and teammates need a remote to share
   it through.
+- **Promise an external effect happened once.** A transition is
+  exactly-once in the record; whether a performer's effect ran once
+  across a restart is its adapter's to say. An adapter that kept
+  its own record is not asked again; one that cannot say leaves the
+  attempt waiting for a person.
+- **Close a person's job for them.** A case waits for its person's
+  `task done`, through a restart and however long it takes; nothing
+  in the organization settles it in their place.
+- **Cancel an execution from the terminal.** The engine can; the
+  CLI has no verb for it yet.
 
 ## What the evidence supports
 

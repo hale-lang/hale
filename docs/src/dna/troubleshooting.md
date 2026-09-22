@@ -30,6 +30,23 @@ model. The same happens when the budget is spent: `history` shows
 `budget.exhausted`, `ask` is refused with the spend, and the review
 is yours until the next window.
 
+**`task t1 born … [planning]`**, and it stays there. The Leader is
+asked what kind of work the intent is before it is admitted, and the
+Leader decides with a model. With no key, or a spent budget, the
+word never comes; give the Leader a model or answer as the Board.
+The intent is not lost and is not offered twice.
+
+**`intent.unrecovered` in `history`.** An intent was offered before
+a stop and no admission names it. It is noted once and never
+re-offered, because work may already have run for it. Ask again if
+you still want it.
+
+**A handed Task that never settles.** A person's job is a case, and
+only that person's `hale dna task done <id> --as <them>` closes it —
+with the evidence or the authorized exception its acceptance
+practice requires (`hale dna board` says which). A restart does not
+close it; neither does anyone else's report.
+
 **`refused: budget exhausted (spent … of … micro-dollars this
 day …)`** from `ask`. The organization's allowance for the window is
 spent; nothing model-backed is routed until the next one. Raise

@@ -79,6 +79,7 @@
 - [The record](./dna/record.md)
 - [The host, the membrane, the nodes](./dna/run.md)
 - [The twelve steps, with the record](./dna/walkthrough.md)
+- [The workflow](./dna/workflow.md)
 - [The Review in detail](./dna/review.md)
 - [Apply, express, observe](./dna/apply.md)
 - [Autonomy: the vector and the rules](./dna/autonomy.md)
