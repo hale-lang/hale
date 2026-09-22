@@ -516,14 +516,15 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-  # The Iris cockpit and the DNA service API (GH #690): the read
+  # The face and the DNA service API (GH #690, #998): the read
   # contract's fixtures and validator, the API's own native tests, the
-  # shared query layer's Git-record fixtures, and the cockpit's browser
-  # cases against the real API. Its own job, on the same build the dna
-  # partitions make, so its ~3 min never sits on the critical path of a
-  # partition that is already the longest.
-  cockpit:
-    name: cockpit (DNA API + Iris browser)
+  # head's tests, the shared query layer's Git-record fixtures, and the
+  # face's browser cases (dna/face) against the real API. The face has
+  # no observer, so this job never builds iris (fuse-hl). Its own job,
+  # on the same build the dna partitions make, so its minutes never sit
+  # on the critical path of a partition that is already the longest.
+  face:
+    name: face (DNA API + browser)
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -556,11 +557,13 @@ jobs:
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: Warm the DNA toolchain cache
-        # The head fixtures and the browser fixtures create fresh projects
-        # with hale dna new under their own budgets; the first host build of
-        # this binary is paid once here, not inside one of them.
+        # The head fixtures and the face's browser fixtures create fresh
+        # projects with hale dna new under their own budgets; the first host
+        # build of this binary is paid once here, not inside one of them.
+        # Nothing here runs the observer, so its build is skipped.
         env:
           HALE_DNA_DISCOVER: "off"
+          HALE_WARM_SKIP_IRIS: "1"
         run: scripts/warm-dna-cache.sh ./target/release/hale
 
       - name: DNA read API contract and integration
@@ -581,7 +584,7 @@ jobs:
           ./target/release/hale build dna/api/project_service
           HALE_API_BIN="$PWD/dna/api/api" \
             ./target/release/hale test dna/api/tests
-          # The cockpit head (GH #965): its fixtures spawn the built head over
+          # The head (GH #965): its fixtures spawn the built head over
           # the plain API and exec this compiler's `hale dna` verbs detached.
           HALE_HEAD_BIN="$PWD/dna/api/project_service/project_service" \
             HALE_API_BIN="$PWD/dna/api/api" \
@@ -589,14 +592,14 @@ jobs:
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
 
-      - name: Set up Node for cockpit browser tests
+      - name: Set up Node for face browser tests
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: dna/face/package-lock.json
 
-      - name: Iris cockpit browser integration
+      - name: Face browser integration
         working-directory: dna/face
         run: |
           npm ci
@@ -607,7 +610,7 @@ jobs:
             HALE_NATIVE_HEAD_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
             npm test
 
-      - name: Preserve cockpit browser failure evidence
+      - name: Preserve face browser failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
         with:
