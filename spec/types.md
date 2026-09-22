@@ -66,7 +66,13 @@ nested structs copied the same way, locus handles left as handles. The
 binding then follows nothing: replacing the source (`self.row = Row {
 }`) leaves `b` as it was read, and writing through the binding (`let
 mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
-a call result is fresh already and is bound as it is. This finishes
+a call result is fresh already and is bound as it is. Assignment
+reads the same way (GH #992): `b = <place>` on a struct local, and
+`arr[i] = <place>` or `b.inner = <place>` under one, store a copy.
+And a write through a local never reaches another (GH #993): a copy
+may share an unchanged `String` with its source, so a `String` or
+`Bytes` field under a local root is replaced, never overwritten in
+place — only a locus's own storage takes the in-place path. This finishes
 for structs the single-owner rule `spec/memory.md` states for
 `String` and `Bytes` stores (2026-09-22; before it the binding was a
 view of the storage, and an acknowledgement body read after the

@@ -18408,10 +18408,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // left as handles. A literal or a call result is fresh
                 // already and is bound as it is.
                 if matches!(ty, CodegenTy::TypeRef(_))
-                    && matches!(
-                        value_to_lower,
-                        Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. }
-                    )
+                    && Self::expr_is_place(value_to_lower)
                 {
                     let dest = self.current_arena_ptr()?;
                     val = self.emit_return_value_deep_copy(val, &ty, dest)?;
@@ -18876,7 +18873,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let (slot_ptr, slot_ty, slot_name) =
                             self.resolve_lvalue_chain(target, scope)?;
                         return self.finish_lvalue_assign(
-                            slot_ptr, slot_ty, slot_name, op, value, scope,
+                            slot_ptr, slot_ty, slot_name, op, value, scope, true,
                         );
                     }
                     let field_name = match &target.tail[0] {
@@ -19067,7 +19064,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (slot_ptr, slot_ty, slot_name) =
                         self.resolve_lvalue_chain(target, scope)?;
                     return self.finish_lvalue_assign(
-                        slot_ptr, slot_ty, slot_name, op, value, scope,
+                        slot_ptr, slot_ty, slot_name, op, value, scope, false,
                     );
                 };
 
@@ -19114,6 +19111,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
                     v
+                };
+                // GH #992: `x = <place>` on a struct-typed local copies
+                // as `let x = <place>` does (GH #713). Storing the
+                // place's pointer made the local a view of the source,
+                // so a write through it reached the source, and a
+                // write made through the local before the assignment
+                // survived it. The same for an element of a local
+                // array, `arr[i] = <place>`. A literal or a call
+                // result is fresh and is stored as it is.
+                let local_value_slot = target.head.name != "self"
+                    && (target.tail.is_empty()
+                        || (target.tail.len() == 1
+                            && matches!(target.tail[0], LValueSeg::Index(_))));
+                let new_val = if local_value_slot
+                    && matches!(op, AssignOp::Eq)
+                    && matches!(slot_ty, CodegenTy::TypeRef(_))
+                    && Self::expr_is_place(value)
+                {
+                    let dest = self.current_arena_ptr()?;
+                    self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?
+                } else {
+                    new_val
                 };
                 // `self.X = expr` for a heap-typed field gets the
                 // in-place anchor + memcpy treatment from
@@ -33858,6 +33877,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// A struct read from a PLACE — a binding, a field, an element —
+    /// lowers to the pointer of that storage; a literal or a call
+    /// result is fresh. The `let` (GH #713) and assignment (GH #992,
+    /// #993) rules copy the first shape and bind the second as it is.
+    pub(crate) fn expr_is_place(e: &Expr) -> bool {
+        matches!(e, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. })
+    }
+
+    /// The tail of an lvalue assignment the chain walker resolved:
+    /// `self.a.b = v` and `local.a = v` alike. `root_is_self` says
+    /// which. A self-rooted slot is locus storage and takes the
+    /// in-place path (anchored in `self.__arena`, single-owner,
+    /// String bytes overwritten when the new value fits). A slot
+    /// under a LOCAL root is the frame's own value and never that:
+    /// GH #993 — a `let` copy of a struct (GH #713) shares a String
+    /// blob that already lives in the frame's arena with the binding
+    /// it was copied from, so an in-place overwrite through the copy
+    /// (`bad.id = "…"`, routed here with `self.__arena` as the arena)
+    /// rewrote the bytes the source, and every other local sharing
+    /// them, still read. A local's String or Bytes field is REPLACED:
+    /// the new value cloned into the frame's arena, the slot's
+    /// pointer stored over. A local's struct field takes a copy of a
+    /// place (as `let` does) or the fresh value itself, again by
+    /// pointer. Nothing under a local root is ever mutated in place,
+    /// so what two locals share is never observable.
     fn finish_lvalue_assign(
         &mut self,
         slot_ptr: PointerValue<'ctx>,
@@ -33866,6 +33910,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         op: &AssignOp,
         value: &Expr,
         scope: &Scope<'ctx>,
+        root_is_self: bool,
     ) -> Result<BlockEnd, CodegenError> {
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
         let new_val = if matches!(op, AssignOp::Eq) {
@@ -33899,6 +33944,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
             v
         };
+        if !root_is_self {
+            match &slot_ty {
+                // Every operator: `+=` builds a fresh String, and the
+                // in-place path would still write it into the locus
+                // arena rather than the frame's.
+                CodegenTy::String | CodegenTy::Bytes => {
+                    let dest = self.current_arena_ptr()?;
+                    let owned =
+                        self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?;
+                    self.builder
+                        .build_store(slot_ptr, owned)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(BlockEnd::Open);
+                }
+                CodegenTy::TypeRef(_) if matches!(op, AssignOp::Eq) => {
+                    let v = if Self::expr_is_place(value) {
+                        let dest = self.current_arena_ptr()?;
+                        self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?
+                    } else {
+                        new_val
+                    };
+                    self.builder
+                        .build_store(slot_ptr, v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(BlockEnd::Open);
+                }
+                _ => {}
+            }
+        }
         self.emit_self_field_inplace_assign(slot_ptr, new_val, &slot_ty)?;
         Ok(BlockEnd::Open)
     }
