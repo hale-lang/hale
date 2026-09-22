@@ -28,18 +28,16 @@ full product scope.
 The [browser cockpit](../dna/face/README.md) reads declared Organization structure,
 real Practices and Reviews through
 the [DNA read API](../dna/api/README.md). It serves from the same origin as the
-Hale API, shows source revisions and content availability, and connects to a
-configured native Runtime observer for in-cockpit process/locus inspection.
-Runtime also works from an independent static host without DNA. Knowledge and Definitions views require compatible
+Hale API and shows source revisions and content availability; it has no
+runtime view, since inspecting a running binary is iris's job. Knowledge and Definitions views require compatible
 providers advertising their read capabilities. Practice proposals and
 exact-candidate Review decisions each require their own advertised capability
 from an explicitly composed command provider; the standalone API remains read-only.
-Static declarations do not establish semantic position authority. Runtime
-observation itself continues to work independently of DNA.
+Static declarations do not establish semantic position authority.
 
 From a checkout, `./dna/face/start.sh PROJECT` builds and starts the native
 DNA API with the browser. An application's composed API can be supplied through
-`--api BINARY`; existing body/state/observer processes remain independent.
+`--api BINARY`; existing body and state processes remain independent.
 
 Ordinary Hale applications can compose the [generic application service](service/README.md)
 and expose an application-owned control in the same cockpit. The

@@ -64,8 +64,7 @@ navigation.
 **Ledger** is the intended active-work plane: admitted runs, attempts, barriers
 and observed delivery associated with exact structural identities. The flower
 and flow instruments require measured channels, pressure and causal evidence.
-An unavailable plane needs a clear explanation. Joining an independent runtime
-observer to a Record requires an established application and instance identity.
+An unavailable plane needs a clear explanation.
 
 **Record** is the intended durable evidence plane, with inspectable decisions and
 historical context. Practices, Reviews and Knowledge must retain exact identities

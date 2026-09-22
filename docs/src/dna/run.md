@@ -245,10 +245,9 @@ passes its deadline, never a failure it cannot prove.
 The head keeps its files under
 `${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-~/.local/state}/hale/iris/head}`:
 the registry, the receipt journal, one directory per run, and the
-pid files of its children — the API child, a local body started
-with `hale dna run|dev … --no-iris`, and the observer (plain `hale iris` on the
-current artifact) it can start once the membrane is up. A body or observer
-the head started outlives it; the next head over the same directory
+pid files of its children — the API child and a local body started
+with `hale dna run|dev … --no-iris`. A body the head started
+outlives it; the next head over the same directory
 re-adopts them. Secrets never enter the head: `dna.secret.set` names
 a *source* — a `0600` one-line file under
 `${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`, consumed once

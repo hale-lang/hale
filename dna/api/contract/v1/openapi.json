@@ -3491,7 +3491,7 @@
     "/api/hale/v1/head/commands": {
       "post": {
         "operationId": "submitHeadCommand",
-        "summary": "Submit a head command: project, record, forge, body, secret, model, connection, handoff or observer operation",
+        "summary": "Submit a head command: project, record, forge, body, secret, model, connection or handoff operation",
         "description": "The head records the command (command-<digest> identity, fingerprint over the canonical request), admits or refuses it, then executes it: inline operations answer 200 with a terminal receipt; runs and long-lived children answer 202 and settle on the next request. A known request identity with an equal fingerprint returns the stored receipt and never re-executes; a different fingerprint is 409 request_conflict. An inline attach may block up to 15 s while the API child becomes ready.",
         "parameters": [
           {
@@ -3691,8 +3691,7 @@
               "type": "string",
               "enum": [
                 "api",
-                "body",
-                "observer"
+                "body"
               ]
             }
           },

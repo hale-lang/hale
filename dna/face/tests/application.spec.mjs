@@ -92,7 +92,7 @@ async function prepare(page, value = 'Paused') {
 }
 const savedRequests = page => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('iris.application-recovery.v1:')).map(key => JSON.parse(localStorage.getItem(key))));
 
-test('Application cockpit: actual control and effect, literal evidence, independent Runtime', async ({ page, application: app }, testInfo) => {
+test('Application cockpit: actual control and effect, literal evidence', async ({ page, application: app }, testInfo) => {
   const paths = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) paths.push(new URL(request.url()).pathname); });
   await page.goto(app.origin);
@@ -112,9 +112,6 @@ test('Application cockpit: actual control and effect, literal evidence, independ
   expect(saved[0]).not.toHaveProperty('arguments'); expect(saved[0]).not.toHaveProperty('value');
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: testInfo.outputPath('application-result.png'), fullPage: true });
-  await page.getByRole('button', { name: 'Open runtime observer', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Runtime', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Back to application', exact: true }).click();
   await expect(recovery(page)).toContainText('Command succeeded');
   expect(paths.every(path => !path.includes('/dna/'))).toBe(true);
 });

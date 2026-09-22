@@ -2,7 +2,7 @@
 // joins, historical action gating and graph navigation. No native outcomes,
 // authority, publication, persistence or recovery are established by this file.
 import { test as base, expect } from '@playwright/test';
-import { cockpitHost } from './runtime-harness.mjs';
+import { cockpitHost } from './http-fixture.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), HEAD = 'b'.repeat(40);
 const ITEM = 'sha256:' + 'c'.repeat(64), OTHER = 'sha256:' + 'd'.repeat(64), EDGE = 'sha256:' + 'e'.repeat(64);

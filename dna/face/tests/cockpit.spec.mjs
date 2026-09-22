@@ -211,11 +211,11 @@ test('obsolete detail response cannot restore content after workspace navigation
   try {
     await page.getByRole('link', { name: service.name, exact: true }).click();
     await started;
-    await page.getByRole('link', { name: 'Runtime', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Runtime', exact: true })).toBeVisible();
+    await page.getByRole('link', { name: 'Organization', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Organization', exact: true })).toBeVisible();
     release();
     await complete;
-    await expect(page.getByRole('heading', { name: 'Runtime', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Organization', exact: true })).toBeVisible();
     await expect(page.locator('body')).not.toContainText(service.text);
     await expect(page.getByRole('heading', { name: service.name, exact: true })).toHaveCount(0);
   } finally { release(); }
@@ -256,20 +256,4 @@ test('a late authenticated response cannot restore content after session loss', 
     await expect(page.locator('body')).not.toContainText(service.text);
     await expect(page.locator('body')).not.toContainText(service.name);
   } finally { release(); }
-});
-
-test('Runtime is usable while DNA is unavailable and only accepts safe observer URLs', async ({ page, service }) => {
-  await page.route('**/api/hale/v1/**', route => route.fulfill({
-    status: 401, contentType: 'application/json', body: JSON.stringify(errorBody('authentication_required', 'Sign in')),
-  }));
-  await page.goto(service.url('runtime'));
-  await expect(page.getByRole('heading', { name: 'Runtime', exact: true })).toBeVisible();
-  const input = page.getByLabel('Observer URL', { exact: true });
-  await input.fill('javascript:window.__injected=true');
-  await page.getByRole('button', { name: 'Connect observer', exact: true }).click();
-  await expect(page.getByRole('link', { name: 'Open runtime observer', exact: true })).toHaveCount(0);
-  await input.fill('http://127.0.0.1:8787');
-  await page.getByRole('button', { name: 'Connect observer', exact: true }).click();
-  await expect(page.getByRole('link', { name: 'Open runtime observer', exact: true })).toHaveAttribute('href', /^http:\/\/127\.0\.0\.1:8787\/?$/);
-  expect(await page.evaluate(() => window.__injected)).toBeUndefined();
 });

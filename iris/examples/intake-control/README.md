@@ -21,14 +21,14 @@ The API binds 127.0.0.1; its principal comes only from startup configuration. A
 viewer may inspect, but only the stored owner may submit or recover commands.
 The host account and database file permissions are this trusted-local example's
 security boundary; this is not hosted authentication. Disable `LOTUS_OBS` for
-ordinary tests; observed examples require the separately documented isolated
-observer environment.
+ordinary tests; an observed example needs a private `/dev/shm`, because the
+emitter sweeps stale observation segments at startup.
 
 When observed, the application writes `DB.runtime.json` with its app/incarnation
 and local process evidence. The provider checks the current SQLite incarnation,
 fresh heartbeat and independently captured process key before exposing the
 association. This optional sidecar is not command storage; stale, absent or
-unreadable evidence omits the link. It never changes receipt recovery or authority.
+unreadable evidence omits the association. It never changes receipt recovery or authority.
 
 A missing store is initialized once. Existing empty, incompatible, corrupt, or
 wrong-owner stores refuse startup; they are never silently reset. The stable

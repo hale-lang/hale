@@ -23,7 +23,7 @@ test.beforeAll(async () => {
   expect(status.data.current_running.available).toBe(false);
   expect(status.data.observation.state).toBe('healthy');
   native = { statusText, reviewsText, status, reviews, review, app: status.source.record_id };
-  const assets = new Set(['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js']);
+  const assets = new Set(['index.html', 'app.js', 'styles.css', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js']);
   server = createServer(async (request, response) => {
     const name = new URL(request.url, 'http://localhost').pathname.slice(1) || 'index.html';
     if (!assets.has(name)) { response.writeHead(404); response.end(); return; }
@@ -75,7 +75,6 @@ test('Organization status: real retained history stays useful without source tex
   const script = await fixture(page); await open(page);
   await expect(region(page)).toContainText('Healthy during window');
   await expect(region(page).getByRole('button', { name: 'Running', exact: true })).toContainText('Not established');
-  await expect(region(page).getByRole('link', { name: 'Inspect exact process in Runtime' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
   expect(script.reads).toEqual([{ method: 'GET', query: [['id', native.review.id], ['snapshot', native.status.source.record_head]] }]);
   expect(await page.evaluate(() => localStorage.length)).toBe(0);
@@ -89,7 +88,7 @@ test('Organization status: real retained history stays useful without source tex
   expect(script.reads.length).toBe(3); expect(script.commands).toEqual([]); expect(script.errors).toEqual([]);
 });
 
-test('Organization status: access loss and outages clear prior history and process links', async ({ page }) => {
+test('Organization status: access loss and outages clear prior history', async ({ page }) => {
   const script = await fixture(page, { response: currentScenario() }); await open(page);
   await expect(region(page)).toContainText('Verified at this read');
   for (const mode of ['protected', 'forbidden', 'outage']) {
@@ -111,21 +110,8 @@ test('Organization status: a different candidate, snapshot or process artifact c
     script.response = currentScenario(); mutate(script.response); await open(page);
     await expect(page.getByRole('heading', { name: 'Response could not be verified' })).toBeVisible();
     await expect(region(page)).toHaveCount(0);
-    await expect(page.getByRole('link', { name: 'Inspect exact process in Runtime' })).toHaveCount(0);
   }
   expect(script.commands).toEqual([]); expect(script.errors).toEqual([]);
-});
-
-test('Organization status: exact process navigation keeps Review context and grants no application controls', async ({ page }) => {
-  const script = await fixture(page, { response: currentScenario() }); await open(page);
-  const jump = region(page).getByRole('link', { name: 'Inspect exact process in Runtime' });
-  const href = await jump.getAttribute('href'), query = new URLSearchParams(href.split('?')[1]);
-  expect(query.get('process')).toBe('a'.repeat(64)); expect(query.get('review')).toBe(native.review.id); expect(query.get('app')).toBe(native.app);
-  await jump.click(); await expect(page.getByRole('region', { name: 'Runtime observer', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Open application controls', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Back to Organization change', exact: true }).click();
-  await expect(region(page)).toContainText('Verified at this read');
-  expect(script.reads.length).toBe(2); expect(script.commands).toEqual([]); expect(script.errors).toEqual([]);
 });
 
 test('Organization status: unknown launch stays unresolved without inheriting healthy history', async ({ page }) => {

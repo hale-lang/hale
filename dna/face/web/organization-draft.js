@@ -924,7 +924,7 @@
     else check(empty(c, runtimeKeys));
     return data;
   }
-  function statusJourney(data, { recordHead, inspectedAt, onRefresh, runtimeHref } = {}) {
+  function statusJourney(data, { recordHead, inspectedAt, onRefresh } = {}) {
     const frame = el("section", "organization-status"); frame.setAttribute("role", "region"); frame.setAttribute("aria-label", "Organization change status");
     const heading = append(el("header", "source-review-heading"), el("p", "eyebrow accent", "ORGANIZATION / CHANGE JOURNEY"), el("h3", "", "From Review to running"));
     heading.append(el("p", "detail-note", "Follow this exact candidate through its decision, source change and host. Select a stage to inspect its evidence."));
@@ -937,7 +937,7 @@
       { key: "handoff", title: "Handoff", value: h.state, tone: tone(h.state), text: "The owning host was asked to restart only when this handoff is recorded. A request does not prove that a process started.", facts: [["Handoff event", h.event_id]] },
       { key: "launch", title: "Launch", value: l.state, tone: tone(l.state), text: "A launch acknowledgment identifies the exact attempt and built artifacts. An unacknowledged claim can remain unknown; refreshing reads its evidence without starting another process.", facts: [["Attempt", l.attempt_id], ["Launch request", l.request_event_id], ["Launch event", l.event_id], ["Binary digest", l.binary_digest], ["Topology digest", l.topology_digest]] },
       { key: "observation", title: "Observation", value: o.state === "healthy" ? "Healthy during window" : o.state, tone: tone(o.state), text: "This is a completed observation window for the exact launch. It remains part of history after a process exits.", facts: [["Observation event", o.event_id], ["Window start (Unix seconds)", o.window_started], ["Window end (Unix seconds)", o.window_ended]] },
-      { key: "running", title: "Running", value: c.available ? "Verified at this read" : "Not established", tone: c.available ? "confirmed" : "unknown", text: c.available ? "The service matched this candidate, binary and exact live process when this view was read. Runtime will look for that same process key in a new observation; refresh here to recheck the Organization association." : "The service did not establish a current process association. Healthy history, source application and missing exit evidence cannot fill in this result.", facts: [["Process key", c.process_key], ["Exact candidate", data.source.candidate_commit]] }
+      { key: "running", title: "Running", value: c.available ? "Verified at this read" : "Not established", tone: c.available ? "confirmed" : "unknown", text: c.available ? "The service matched this candidate, binary and exact live process when this view was read. Refresh here to recheck the Organization association." : "The service did not establish a current process association. Healthy history, source application and missing exit evidence cannot fill in this result.", facts: [["Process key", c.process_key], ["Exact candidate", data.source.candidate_commit]] }
     ];
     if (x.state !== "unavailable" || b.state !== "unavailable" || b.launch_state !== "unavailable") stages.push({ key: "recovery", title: "Exit & rollback", value: b.state === "applied" ? "Base source restored" : x.state === "exited" ? "Process exited" : "Recovery not established", tone: b.state === "applied" ? "confirmed" : "unknown", text: "A process exit, resetting source to the original base and launching that base are separate facts. A base launch does not establish that the base process is currently healthy or running.", facts: [["Exit", x.state + (x.code ? " · code " + x.code : "")], ["Exit event", x.event_id], ["Source rollback", b.state], ["Rollback event", b.event_id], ["Restored base", b.base_commit], ["Base process launch", b.launch_state], ["Base launch event", b.launch_event_id]] });
     const map = el("div", "command-outcome-map organization-status-map"), trail = el("ol", "intervention-stage-list"), inspector = el("div", "outcome-inspector");
@@ -950,7 +950,6 @@
       const facts = el("dl", "fact-grid");
       for (const [label, value] of stage.facts) if (value) facts.append(append(el("div", "wide"), el("dt", "", label), el("dd", "mono", value)));
       if (facts.childElementCount) inspector.append(append(el("details", "source-review-evidence"), el("summary", "", "Stage evidence"), facts));
-      if (key === "running" && c.available && runtimeHref) { const link = el("a", "button secondary", "Inspect exact process in Runtime"); link.href = runtimeHref; inspector.append(link); }
     };
     for (const [index, stage] of stages.entries()) {
       const control = button("", () => choose(stage.key), "outcome-stage"); control.dataset.stage = stage.key; control.dataset.state = stage.tone; control.setAttribute("aria-label", stage.title);

@@ -151,9 +151,3 @@ fn api_ready(api_port: Int, identity: String) -> Bool {
     let source = std::json::find_field_raw(up.body, "source");
     return std::json::find_string_field(source, "record_id") == identity;
 }
-
-// Whether anything answers HTTP at all on `port` (the observer's readiness).
-fn answers_http(port: Int) -> Bool {
-    let up = exchange(port, "GET", "/", "", "", PROBE_TIMEOUT_NS);
-    return up.ok;
-}

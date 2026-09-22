@@ -9,9 +9,8 @@ const SHELL_TASK_ADMINISTRATION_JS: String = "window.fixtureTaskAdministration =
 const SHELL_PROJECTS_JS: String = "window.IrisProjects = Object.freeze({ fixture: true });";
 const SHELL_TASK_CREATE_JS: String = "window.fixtureTaskCreate = true;";
 const SHELL_ORGANIZATION_DRAFT_JS: String = "window.fixtureOrganizationDraft = true;";
-const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/runtime.js\" defer></script><script src=\"/application.js\" defer></script><script src=\"/definition-draft.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/application.js\" defer></script><script src=\"/definition-draft.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
 const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
-const SHELL_RUNTIME_JS: String = "window.IrisRuntime = Object.freeze({ fixture: true });";
 const SHELL_APPLICATION_JS: String = "window.IrisApplication = Object.freeze({ fixture: true });";
 const SHELL_DEFINITION_DRAFT_JS: String = "window.IrisDefinitionDraft = Object.freeze({ fixture: true });";
 const SHELL_CSS: String = "main { color: navy; }";
@@ -92,7 +91,6 @@ locus Fixture {
         oidc: Bool = false;
         web_requested: Bool = false;
         webroot: String = "";
-        observer_origin: String = "";
         api: std::process::Child = std::process::Child { };
         journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-api-fixture" };
         receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/hale-api-fixture" };
@@ -138,7 +136,6 @@ locus Fixture {
         std::io::fs::mkdir(self.webroot) or discard;
         std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
         std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
-        std::io::fs::write_file(self.webroot + "/runtime.js", SHELL_RUNTIME_JS) or discard;
         std::io::fs::write_file(self.webroot + "/application.js", SHELL_APPLICATION_JS) or discard;
         std::io::fs::write_file(self.webroot + "/definition-draft.js", SHELL_DEFINITION_DRAFT_JS) or discard;
         std::io::fs::write_file(self.webroot + "/organization-draft.js", SHELL_ORGANIZATION_DRAFT_JS) or discard;
@@ -151,7 +148,7 @@ locus Fixture {
     fn spawn() {
         let binary = std::env::var("HALE_API_BIN");
         std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
-        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret HALE_IRIS_OBSERVER_ORIGIN=\"${6#origin=}\" && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot + "\norigin=" + self.observer_origin;
+        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.

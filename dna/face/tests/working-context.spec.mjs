@@ -101,7 +101,7 @@ test('The context picker works on a narrow viewport and remains separate from ge
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   await context(page).scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('context-mobile.png') });
-  await page.locator('#nav-runtime').click();
+  await page.goto(service.url('application'));
   await expect(context(page)).toBeHidden();
   expect(query(page).has('locus')).toBe(false);
   await page.goBack();

@@ -78,8 +78,8 @@
     }
   };
   const APPLICATION_HOST = document.documentElement.dataset.irisProfile === "application";
-  const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "runtime", "projects"]);
-  const independentView = (view) => view === "runtime" || view === "application" || view === "projects";
+  const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "projects"]);
+  const independentView = (view) => view === "application" || view === "projects";
   // The operator-machine head answers this path; a plain Record API does not.
   const HEAD_API = "/api/hale/v1/head";
   const OUTCOMES = { approve: "Approved", reject: "Rejected", revise: "Revision requested", abstain: "Abstained" };
@@ -97,12 +97,9 @@
   let generation = 0;
   let controller = null;
   let lastStarted = 0;
-  let runtimeController = null;
   let applicationController = null;
-  let runtimeApplication = null;
-  let applicationReturn = null;
   // The head is probed once per page, and only for views that read the
-  // Record or the Projects workspace; Runtime stays free of API requests.
+  // Record or the Projects workspace.
   let headState = null;
   let headProbed = false;
   let headRedirect = false;
@@ -1724,22 +1721,13 @@
     const query = new URLSearchParams(cut < 0 ? "" : raw.slice(cut + 1));
     const offsetRaw = query.get("offset") || "0";
     const offset = /^(0|[1-9]\d{0,6})$/.test(offsetRaw) && Number(offsetRaw) <= 1000000 ? Number(offsetRaw) : 0;
-    const selected = APPLICATION_HOST ? (view === "runtime" ? "runtime" : "application") : VIEWS.has(view) ? view : "practices";
+    const selected = APPLICATION_HOST ? "application" : VIEWS.has(view) ? view : "practices";
     const practiceAction = selected === "knowledge" && ["create", "revise", "retire", "applicability"].includes(query.get("practice_action")) ? query.get("practice_action") : "";
-    return { view: selected, app: query.get("app") || "", assignee: selected === "tasks" ? query.get("assignee") || "" : "", assignee_invalid: selected === "tasks" && query.has("assignee") && (query.getAll("assignee").length !== 1 || !commandID(query.get("assignee"))), practice_action: practiceAction, process: selected === "runtime" && /^[a-f0-9]{64}$/.test(query.get("process") || "") ? query.get("process") : "", review: selected === "runtime" && commandID(query.get("review")) ? query.get("review") : "", locus: query.get("locus") || "", branch: selected === "organization" ? query.get("branch") || "" : "", worknode: query.get("node") || "", workattempt: selected === "workflows" ? query.get("attempt") || "" : "", id: query.get("id") || "", offset, snapshot: query.get("snapshot") || "", scope: query.get("scope") === "all" ? "all" : "positions", cursor: query.get("cursor") || "", target: query.get("target") || "", edges_cursor: query.get("edges_cursor") || "", bindings_cursor: query.get("bindings_cursor") || "" };
+    return { view: selected, app: query.get("app") || "", assignee: selected === "tasks" ? query.get("assignee") || "" : "", assignee_invalid: selected === "tasks" && query.has("assignee") && (query.getAll("assignee").length !== 1 || !commandID(query.get("assignee"))), practice_action: practiceAction, locus: query.get("locus") || "", branch: selected === "organization" ? query.get("branch") || "" : "", worknode: query.get("node") || "", workattempt: selected === "workflows" ? query.get("attempt") || "" : "", id: query.get("id") || "", offset, snapshot: query.get("snapshot") || "", scope: query.get("scope") === "all" ? "all" : "positions", cursor: query.get("cursor") || "", target: query.get("target") || "", edges_cursor: query.get("edges_cursor") || "", bindings_cursor: query.get("bindings_cursor") || "" };
   }
   function routeHash(route) {
     if (route.view === "application") return "#/application";
     if (route.view === "projects") return "#/projects";
-    if (route.view === "runtime") {
-      const query = new URLSearchParams();
-      if (/^[a-f0-9]{64}$/.test(route.process || "")) {
-        query.set("process", route.process);
-        if (route.app) query.set("app", route.app);
-        if (commandID(route.review)) query.set("review", route.review);
-      }
-      return "#/runtime" + (query.size ? "?" + query.toString() : "");
-    }
     const query = new URLSearchParams();
     if (route.app) query.set("app", route.app);
     if (route.locus) query.set("locus", route.locus);
@@ -2239,9 +2227,7 @@
     }
     return { apps, app, capabilities, workingContext, source: collectionResponse.source, collection, person, personError, detail, detailError, organizationBranch, organizationBranchError, reviewCandidate, reviewCandidateError, organizationStatus, organizationStatusError, organizationImpact, organizationImpactError, route };
   }
-  function destroyRuntime() {
-    runtimeController?.destroy();
-    runtimeController = null;
+  function destroyIndependent() {
     applicationController?.destroy();
     applicationController = null;
     projectsController?.destroy();
@@ -2306,7 +2292,7 @@
   function cancel() {
     destroyKnowledgeDraft();
     destroyOrganizationDraft();
-    destroyRuntime();
+    destroyIndependent();
     destroyDefinitionDraft();
     clearIntervention();
     clearKnowledgeCommand();
@@ -2403,24 +2389,23 @@
     // editor caret; route/access changes already destroy the controller.
     const draftFocus = (definitionDraftHost?.contains(document.activeElement) || ownershipDraftHost?.contains(document.activeElement) || organizationDraftHost?.contains(document.activeElement) || knowledgeDraftHost?.contains(document.activeElement)) ? document.activeElement : null;
     const draftCaret = draftFocus && typeof draftFocus.selectionStart === "number" ? [draftFocus.selectionStart, draftFocus.selectionEnd, draftFocus.selectionDirection] : null;
-    destroyRuntime();
+    destroyIndependent();
     if (state.phase !== "ready" || state.route.view !== "definitions" || !state.detail || state.error) destroyDefinitionDraft();
     if (state.phase !== "ready" || state.route.view !== "organization" || state.error) destroyOrganizationDraft();
     if (state.phase !== "ready" || state.route.view !== "knowledge" || state.error) destroyKnowledgeDraft();
-    const runtime = state.route.view === "runtime";
     const application = state.route.view === "application";
     const projects = state.route.view === "projects";
-    const independent = runtime || application || projects;
+    const independent = application || projects;
     const practiceAdministration = state.route.view === "knowledge" && state.route.practice_action;
     const workspace = WORKSPACES[state.route.view];
-    const title = runtime ? "Runtime" : application ? "Application" : projects ? "Projects" : practiceAdministration ? "Practice administration" : workspace.title;
+    const title = application ? "Application" : projects ? "Projects" : practiceAdministration ? "Practice administration" : workspace.title;
     document.title = title + " · Iris";
     document.body.dataset.view = state.route.view;
     document.body.classList.toggle("practice-operating", ["practices", "reviews"].includes(state.route.view) && Boolean(state.detail));
     ui["workspace-title"].textContent = title;
     ui["breadcrumb-current"].textContent = title;
-    ui["workspace-kicker"].textContent = runtime ? "THE RUNNING SYSTEM" : application ? "APPLICATION CONTROL" : projects ? "OPERATOR MACHINE" : practiceAdministration ? "PRACTICES / SCOPE & LIFECYCLE" : workspace.kicker;
-    ui["workspace-description"].textContent = runtime ? "Inspect observed processes, containment, topics and routes independently of any application Record." : application ? "Understand current behavior, make a deliberate change, and follow the application's own result." : projects ? "Create, attach and operate DNA projects on this machine through the project service. Every action is the CLI verb, recorded as a durable receipt and read back before it is shown." : practiceAdministration ? "Shape a practice in context: its exact text, applicability, governing Review and retained history." : workspace.description;
+    ui["workspace-kicker"].textContent = application ? "APPLICATION CONTROL" : projects ? "OPERATOR MACHINE" : practiceAdministration ? "PRACTICES / SCOPE & LIFECYCLE" : workspace.kicker;
+    ui["workspace-description"].textContent = application ? "Understand current behavior, make a deliberate change, and follow the application's own result." : projects ? "Create, attach and operate DNA projects on this machine through the project service. Every action is the CLI verb, recorded as a durable receipt and read back before it is shown." : practiceAdministration ? "Shape a practice in context: its exact text, applicability, governing Review and retained history." : workspace.description;
     ui.refresh.hidden = independent;
     ui.content.setAttribute("aria-busy", String(state.phase === "loading"));
     ui.notice.hidden = !state.notice;
@@ -2429,7 +2414,7 @@
       const nav = $("nav-" + view);
       if (!nav) continue;
       if (view === "projects") nav.hidden = APPLICATION_HOST || !state.head;
-      else nav.hidden = APPLICATION_HOST || application ? !independentView(view) : runtime ? view !== "runtime" : view === "application";
+      else nav.hidden = APPLICATION_HOST || application ? !independentView(view) : view === "application";
       if (view === (practiceAdministration ? "practices" : state.route.view === "tasks" ? "workflows" : state.route.view)) nav.setAttribute("aria-current", "page");
       else nav.removeAttribute("aria-current");
       nav.href = routeHash(workspaceRoute(view === "workflows" && (state.route.view === "tasks" || state.capabilities?.reads?.workflows !== true && state.capabilities?.reads?.tasks === true) ? "tasks" : view));
@@ -2443,7 +2428,7 @@
     $("knowledge-nav-status").hidden = !knowledgeUnavailable;
     $("model-note").hidden = independent || !knowledgeUnavailable;
     ui.application.closest(".application-control").hidden = independent;
-    document.querySelector(".brand").href = APPLICATION_HOST || application ? "#/application" : runtime ? "#/runtime" : routeHash(workspaceRoute("practices"));
+    document.querySelector(".brand").href = APPLICATION_HOST || application ? "#/application" : routeHash(workspaceRoute("practices"));
     if (knowledgeUnavailable) {
       knowledgeNav.setAttribute("aria-disabled", "true");
       knowledgeNav.setAttribute("aria-describedby", "model-note");
@@ -2470,20 +2455,11 @@
     renderStrata(independent);
     renderSource();
     renderWorkingContext();
-    ui["workspace-footer"].replaceChildren(node("span", "", runtime ? "Hale · runtime observer" : application ? "Hale · application service" : projects ? "Hale · project service" : "Hale API · v1"), node("span", "", runtime ? "Runtime evidence and application state have separate sources." : application ? "The application owns its controls, authority, state, and command outcomes." : projects ? "Every operation is the CLI verb, run by the head and journaled as a receipt. Effects are read back from the head before they are shown." : state.route.view === "organization" ? "Source, dependencies, and Record are pinned separately. Drafts require validation before export." : state.route.view === "definitions" ? "Definitions are code-authored. This workspace reads the host's loaded catalog." : state.route.view === "knowledge" ? "Knowledge, relationships, and bindings share one inspected snapshot." : state.route.view === "tasks" ? "Reassignment preserves each Task’s obligation and assignment history." : commandEnabled ? "Commands require explicit submission. Review settlement and adoption remain separate." : "State is read from the local Record. No changes are made here."));
-    if (runtime) {
-      const mount = node("div");
-      ui.content.replaceChildren(mount);
-      const sourceReturn = !APPLICATION_HOST && state.route.process && state.route.review && state.route.app;
-      if (window.IrisRuntime) runtimeController = window.IrisRuntime.mount(mount, { expectedProcessKey: state.route.process || "", applicationHost: APPLICATION_HOST || Boolean(runtimeApplication), expectedApplication: runtimeApplication, onApplication: (binding) => { applicationReturn = binding; navigate({ view: "application" }); }, backLabel: APPLICATION_HOST ? "Back to application" : sourceReturn ? "Back to Organization change" : "Back to DNA inspection", onBack: () => navigate({ view: APPLICATION_HOST ? "application" : sourceReturn ? "reviews" : "practices", app: state.route.app || "", id: sourceReturn ? state.route.review : "", offset: 0, snapshot: "" }) });
-      else mount.append(stateCard("Runtime instrument unavailable", "The observer browser module could not be loaded. Reload this page to try again."));
-    }
-    else if (application) {
+    ui["workspace-footer"].replaceChildren(node("span", "", application ? "Hale · application service" : projects ? "Hale · project service" : "Hale API · v1"), node("span", "", application ? "The application owns its controls, authority, state, and command outcomes." : projects ? "Every operation is the CLI verb, run by the head and journaled as a receipt. Effects are read back from the head before they are shown." : state.route.view === "organization" ? "Source, dependencies, and Record are pinned separately. Drafts require validation before export." : state.route.view === "definitions" ? "Definitions are code-authored. This workspace reads the host's loaded catalog." : state.route.view === "knowledge" ? "Knowledge, relationships, and bindings share one inspected snapshot." : state.route.view === "tasks" ? "Reassignment preserves each Task’s obligation and assignment history." : commandEnabled ? "Commands require explicit submission. Review settlement and adoption remain separate." : "State is read from the local Record. No changes are made here."));
+    if (application) {
       const mount = node("div");
       ui.content.replaceChildren(mount);
       if (window.IrisApplication) applicationController = window.IrisApplication.mount(mount, {
-        expectedRuntime: applicationReturn,
-        onRuntime: (binding) => { runtimeApplication = binding; navigate({ view: "runtime" }); },
         onContext: (context) => {
           if (state.route.view !== "application") return;
           ui.principal.textContent = context?.principal ? "Local · " + context.principal.name : "Not connected";
@@ -2547,15 +2523,15 @@
       if (draftCaret) draftFocus.setSelectionRange(...draftCaret);
     }
   }
-  function renderStrata(runtime) {
+  function renderStrata(independent) {
     const strata = $("strata");
-    strata.hidden = runtime;
+    strata.hidden = independent;
     const structure = ["organization", "definitions"].includes(state.route.view);
     const app = state.app?.id || state.route.app;
     const structural = link("01 / Structure", routeHash(workspaceRoute("organization", { app })), "stratum");
     const recorded = link("03 / Record", routeHash(workspaceRoute("practices", { app })), "stratum");
     const workView = ["tasks", "workflows"].includes(state.route.view);
-    if (!runtime && !workView) (structure ? structural : recorded).setAttribute("aria-current", "page");
+    if (!independent && !workView) (structure ? structural : recorded).setAttribute("aria-current", "page");
     const workAvailable = state.capabilities?.reads?.workflows === true || state.capabilities?.reads?.tasks === true;
     const ledger = workAvailable ? link("02 / Work", routeHash(workspaceRoute(state.route.view === "tasks" || state.capabilities?.reads?.workflows !== true ? "tasks" : "workflows")), "stratum") : button("02 / Work", () => {}, "stratum");
     ledger.disabled = !workAvailable;
@@ -2563,7 +2539,7 @@
     ledger.setAttribute("aria-describedby", "ledger-plane-hint");
     const hint = node("span", "strata-note", state.route.view === "tasks" ? "Task responsibility · exact assignment history" : workAvailable ? "Recorded execution · live overlay unavailable" : "Work reader unavailable");
     hint.id = "ledger-plane-hint";
-    const mode = node("span", "strata-mode", runtime ? "Independent runtime instrument" : structure ? "Declared structure" : state.route.view === "tasks" ? "Task responsibility" : state.route.view === "workflows" ? "Execution evidence" : "Recorded evidence");
+    const mode = node("span", "strata-mode", structure ? "Declared structure" : state.route.view === "tasks" ? "Task responsibility" : state.route.view === "workflows" ? "Execution evidence" : "Recorded evidence");
     strata.replaceChildren(structural, ledger, recorded, hint, mode);
   }
   function renderWorkingContext() {
@@ -2611,12 +2587,12 @@
     if (view === "definitions") return item.steps.some(step => step.members.some(member => member.kind === "leaf" && member.leaf.target === locus));
     return false;
   }
-  function renderConnection(runtime) {
+  function renderConnection(independent) {
     const select = ui.application;
     const projects = state.route.view === "projects";
     const head = state.head;
     select.replaceChildren();
-    if (state.apps.length && !runtime) {
+    if (state.apps.length && !independent) {
       for (const app of state.apps) {
         const option = node("option", "", display(app.name, short(app.id)));
         option.value = app.id;
@@ -2625,12 +2601,12 @@
       }
       select.disabled = false;
     } else {
-      select.append(node("option", "", projects ? "Project service" : runtime ? "Runtime connection" : state.phase === "loading" ? "Connecting…" : "No Record connected"));
+      select.append(node("option", "", projects ? "Project service" : independent ? "Application service" : state.phase === "loading" ? "Connecting…" : "No Record connected"));
       select.disabled = true;
     }
-    ui["connection-caption"].textContent = projects ? (head ? head.data.state === "attached" ? "Head · attached to " + head.data.active.name : "Head · no project attached" : "No project service behind this API") : runtime ? "No DNA connection required" : state.app ? "DNA · local Record" : state.phase === "loading" ? "Reading the local service" : "Application data unavailable";
+    ui["connection-caption"].textContent = projects ? (head ? head.data.state === "attached" ? "Head · attached to " + head.data.active.name : "Head · no project attached" : "No project service behind this API") : independent ? "No DNA connection required" : state.app ? "DNA · local Record" : state.phase === "loading" ? "Reading the local service" : "Application data unavailable";
     const principal = state.capabilities?.principal;
-    ui.principal.textContent = projects ? (head ? "Local · " + head.principal.name : "Not connected") : runtime ? "Independent observer" : principal ? (principal.mode === "oidc" ? "Signed in · " : "Local · ") + principal.name : state.error?.status === 401 ? "Sign in required" : state.phase === "loading" ? "Connecting" : "Not connected";
+    ui.principal.textContent = projects ? (head ? "Local · " + head.principal.name : "Not connected") : principal ? (principal.mode === "oidc" ? "Signed in · " : "Local · ") + principal.name : state.error?.status === 401 ? "Sign in required" : state.phase === "loading" ? "Connecting" : "Not connected";
     ui["sign-out"].hidden = !principal || principal.mode !== "oidc";
   }
   function renderSource() {
@@ -4053,8 +4029,7 @@
     );
     if (r.organization_source) {
       if (state.organizationStatus) {
-        const current = state.organizationStatus.current_running;
-        detail.append(window.IrisOrganizationStatus.render(state.organizationStatus, { recordHead: state.source.record_head, inspectedAt: state.inspectedAt, onRefresh: refresh, runtimeHref: current.available ? routeHash({ view: "runtime", app: state.app.id, process: current.process_key, review: r.id }) : "" }));
+        detail.append(window.IrisOrganizationStatus.render(state.organizationStatus, { recordHead: state.source.record_head, inspectedAt: state.inspectedAt, onRefresh: refresh }));
       } else {
         const status = append(node("section", "organization-status"), node("h3", "", "Change status unavailable"), node("p", "detail-note", state.organizationStatusError || "Application and running-process evidence could not be read."), button("Refresh change status", refresh));
         status.setAttribute("role", "region"); status.setAttribute("aria-label", "Organization change status"); detail.append(status);
@@ -4093,7 +4068,7 @@
       actions.push(link("Sign in", "/auth/login", "button"));
     } else if (error.status === 401) {
       title = "Sign in to read this application";
-      description = "Your session is missing or has expired. Application data has been cleared. Runtime observation remains available independently.";
+      description = "Your session is missing or has expired. Application data has been cleared.";
       actions.push(link("Sign in", "/auth/login", "button"));
     } else if (error.code === "head_detached") {
       title = "No project is attached";
@@ -4125,7 +4100,6 @@
     if (error.code === "working_context_unavailable") { title = "Working context unavailable"; actions.unshift(button("Clear working context", () => changeWorkingContext(""))); }
     if (state.route.view === "knowledge" && error.status === 400 && state.route.target) actions.push(button("Clear context", () => navigate({ ...firstPageRoute(state.route), id: "", locus: "", target: "" })));
     actions.push(button("Retry", refresh));
-    if (!detail) actions.push(link("Open Runtime", "#/runtime"));
     const card = stateCard(title, description, error.status === 401 ? "◇" : "!", actions, detail ? "compact" : "");
     if (detail) card.prepend(backToList());
     return card;

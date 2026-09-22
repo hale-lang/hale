@@ -114,20 +114,7 @@
     if (reconstructed !== metadata.request_binding_sha256 || reconstructed !== receipt.fingerprint) throw new Failure("request_binding_mismatch");
     return receipt;
   }
-  function observedBinding(data, principal) {
-    return data?.online && data.runtime ? { application: data.application, principal, runtime: data.runtime } : null;
-  }
-  async function runtimeBinding(read) {
-    const discovered = await read(API);
-    const data = envelope(discovered);
-    assert(closed(data, ["items"]) && Array.isArray(data.items) && data.items.length <= 1);
-    if (!data.items.length) return null;
-    const app = application(data.items[0]);
-    const state = appState(envelope(await read(API + "/" + app.id + "/state"), discovered.principal), app.id);
-    if (state.application.incarnation_id !== app.incarnation_id) throw new Failure("identity_changed");
-    return observedBinding(state, discovered.principal);
-  }
-  function mount(container, { onRuntime, onContext, expectedRuntime = null } = {}) {
+  function mount(container, { onContext } = {}) {
     let disposed = false, generation = 0, timer = null, stateReading = false, busy = false;
     const controllers = new Set();
     let context = null, currentState = null, stateError = "", screenError = "", loading = true;
@@ -249,14 +236,9 @@
           stage = "idle";
           notice = "Application configuration, incarnation or availability changed. The prepared draft was cleared; inspect the fresh state before preparing another change.";
         }
-        if (expectedRuntime && (next.application.id !== expectedRuntime.application.id || next.application.incarnation_id !== expectedRuntime.application.incarnation_id || !sameActor(context.principal, expectedRuntime.principal))) {
-          notice = "The application or access changed since Runtime was inspected. These controls describe the newly verified application state; prepare any change again.";
-          expectedRuntime = null;
-        }
         currentState = next;
         stateError = "";
         announceContext();
-        if (!previous || previous.runtime?.process_key !== next.runtime?.process_key) renderHeader();
         renderEvidence();
         if (!previous || previous.control.id !== next.control.id || previous.control.value !== next.control.value || previous.control.revision !== next.control.revision || previous.application.incarnation_id !== next.application.incarnation_id || previous.online !== next.online) renderIntervention();
       } catch (error) {
@@ -440,7 +422,7 @@
     function renderHeader() {
       header.replaceChildren();
       const title = append(node("div"), node("p", "eyebrow", "APPLICATION-OWNED CONTROL"), node("h2", "", context?.app.name || "Application connection"));
-      const controls = append(node("div", "application-actions"), button("Refresh application", () => load()), button(currentState?.runtime ? "Inspect this running application" : "Open runtime observer", () => onRuntime?.(observedBinding(currentState, context?.principal))));
+      const controls = append(node("div", "application-actions"), button("Refresh application", () => load()));
       header.append(title, controls);
       header.append(node("p", "application-boundary", "Change desired configuration, then observe what the application has applied."));
     }
@@ -559,5 +541,5 @@
     if (!document.hidden) void load(); else pause();
     return { destroy() { disposed = true; abortAll(); clearPrivate(); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("pagehide", pause); window.removeEventListener("pageshow", pageShow); container.replaceChildren(); } };
   }
-  window.IrisApplication = Object.freeze({ mount, runtimeBinding });
+  window.IrisApplication = Object.freeze({ mount });
 })();

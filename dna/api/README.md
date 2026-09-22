@@ -22,7 +22,7 @@ Product scope and remaining service work are tracked in
 For the browser and the services together, `./dna/face/start.sh [PROJECT]`
 builds this checkout's [project service](#head-project-service) (the head) and
 its per-project native API (`dna/api/practice_review`) in temporary storage and
-serves the eleven browser assets from the head. The project is optional: without it
+serves the ten browser assets from the head. The project is optional: without it
 the head starts detached and the browser's Projects workspace creates,
 initializes or attaches one. Use `--api BINARY` for an existing
 application-composed API and `--head BINARY` for a built head. The launcher
@@ -50,22 +50,14 @@ To serve the cockpit as well, pass its static directory as the third argument:
 ./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/dna/face/web"
 ```
 
-Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/runtime.js`, `/application.js`,
-`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
-URLs never become filesystem paths. All eleven assets must exist and be nonempty
+Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/application.js`,
+`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`.
+URLs never become filesystem paths. All ten assets must exist and be nonempty
 at startup. They are loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
-cross-origin API contract.
-
-Optional `HALE_IRIS_OBSERVER_ORIGIN` supplies one trusted HTTP(S) origin for
-the browser's independent native observation. Empty/unset permits only same-origin
-connections. A valid configured origin is returned in the public
-`/iris/observer.json` profile `hale.iris.observer.v0` and added exactly to CSP
-`connect-src`; the API does not fetch or proxy it. Nonempty invalid configuration
-refuses shell startup. Paths (including a trailing slash), userinfo, queries,
-fragments, wildcard/encoded hosts and whitespace are rejected. Scheme/host and
-default ports normalize. See [Runtime setup](../face/README.md#native-runtime-connection).
+cross-origin API contract, and the CSP's `connect-src` is the API's own origin
+only.
 
 Use the returned id in the following routes:
 
@@ -442,7 +434,7 @@ Four routes, described in `contract/v1` beside the Record routes, all under the
 head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","active"},"data"}`:
 
 - `GET /api/hale/v1/head` — detached or attached, the active project and its
-  API child, the body and observer children, credentials **by name** (what the
+  API child, the body child, credentials **by name** (what the
   catalog needs, which file sources exist, which names are set), the running
   receipt (`busy`), and every operation with its availability.
 - `GET /api/hale/v1/head/projects[?id=…]` — the registry; with `id`, the
@@ -460,7 +452,7 @@ head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","activ
   deadline `timed_out` — `outcome_unknown` when the verb is external (a push,
   a sync, a probe), never a fabricated failure. Row-writing operations carry
   `outcome.record = {head_before, head_after, rows}`.
-- `GET /api/hale/v1/head/logs?run=<command_id>|child=api|body|observer[&offset=N]` —
+- `GET /api/hale/v1/head/logs?run=<command_id>|child=api|body[&offset=N]` —
   64 KiB pages of a run's or a child's log.
 
 Operations (all version 1): `dna.project.create` / `init` (600 s runs of
@@ -468,8 +460,8 @@ Operations (all version 1): `dna.project.create` / `init` (600 s runs of
 (inline; attach validates the worktree, the Record, the `dna/` seed, and
 refuses `principal_unsupported` / `trust_unsupported` for OIDC or signed
 projects), `dna.project.sync` / `publish` (a commit and push of the genome,
-then a sync), `dna.forge.configure` / `sync`, and the sixteen body, secret,
-model, connection, handoff and observer operations of the head's contract.
+then a sync), `dna.forge.configure` / `sync`, and the fourteen body, secret,
+model, connection and handoff operations of the head's contract.
 A secret is never a value on this wire: `dna.secret.set` names a **source** —
 a 0600 one-line file under `${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/`
 or an environment variable the run's shell reads — and the file is unlinked
@@ -562,8 +554,7 @@ through this server. A mapped member has the existing Record-reading scope;
 position-scoped permissions and remote CLI tokens are future work.
 
 The optional cockpit shell and assets are public static content with no Record
-data. They can show the sign-in state and independent Runtime connection before
-authentication. Record reads still require a valid session in OIDC mode. After
+data. They can show the sign-in state before authentication. Record reads still require a valid session in OIDC mode. After
 successful sign-in the existing callback redirects to `/`, where the cockpit
 loads the authenticated API data.
 
