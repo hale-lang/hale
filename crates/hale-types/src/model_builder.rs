@@ -2778,15 +2778,22 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             // in discovery order, each body's events in body order —
             // so the judgment replays BFS layering (and therefore
             // hole-vs-hit timing) exactly.
+            // The interface is rendered as the interface rows of the same
+            // dispatch render it (`calls.dispatch_site` holds them to
+            // one identity): a program's OWN interface keeps its
+            // declared spelling; a stdlib interface demangles to its
+            // public path. The stdlib's own seeds are harvested into
+            // the corpus, and there `__StdHttpHandler` is the program's
+            // declaration, not a mangled stdlib name (GH #730, first
+            // half, made those seeds check clean).
             let entry_dispatch =
                 edge.via_interface.as_ref().map(|i| {
-                    (
-                        crate::stdlib_bodies::demangle_str(
-                            i,
-                            &bundle.import_renames,
-                        ),
-                        next.fn_name.clone(),
-                    )
+                    let shown = if ast.interfaces.iter().any(|(n, _)| *n == i.as_str()) {
+                        i.clone()
+                    } else {
+                        crate::stdlib_bodies::demangle_str(i, &bundle.import_renames)
+                    };
+                    (shown, next.fn_name.clone())
                 });
             let entry_in_loop = edge.loop_depth > 0;
             let entry_group = edge.dispatch_group;

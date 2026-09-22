@@ -2653,7 +2653,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // (`given == iface`).
                 if given != iface {
                     return Err(CodegenError::Unsupported(format!(
-                        "field `{}.{}`: an interface value of `{}` into a                          slot of `{}` — only the same interface is identity",
+                        "field `{}.{}`: an interface value of `{}` into a slot of `{}` — only the same interface is identity",
                         locus_name, fname, given, iface
                     )));
                 }
