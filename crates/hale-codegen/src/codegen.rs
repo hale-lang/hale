@@ -18385,6 +18385,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_arena_override = saved_override_for_returned;
                 self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
+                // GH #713: `let` copies a struct value. A struct read
+                // from a PLACE — a field, a local, an element — lowers
+                // to the pointer of that storage, so the binding used
+                // to be a view: `let saved = self.row; self.row = Row
+                // { };` emptied `saved`, and `let mut copy = original;
+                // copy.x = …` wrote the original. The ruling of
+                // 2026-09-20 finishes the String single-owner rule for
+                // structs: the binding is a copy in this frame's
+                // arena (the method scratch, or the caller's arena for
+                // a binding the fn hands back), Strings and Bytes
+                // inside cloned, nested structs copied, locus handles
+                // left as handles. A literal or a call result is fresh
+                // already and is bound as it is.
+                if matches!(ty, CodegenTy::TypeRef(_))
+                    && matches!(
+                        value_to_lower,
+                        Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. }
+                    )
+                {
+                    let dest = self.current_arena_ptr()?;
+                    val = self.emit_return_value_deep_copy(val, &ty, dest)?;
+                }
                 // GH #383: a let-bound call to a proven-fresh locus
                 // factory is owned by THIS binding, so it dissolves
                 // at this scope's exit like any let-bound locus.

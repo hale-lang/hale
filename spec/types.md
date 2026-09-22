@@ -50,11 +50,28 @@ the lifetime contract.
 | Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
-| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record. Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
+| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
+
+### A struct binding is a copy (GH #713)
+
+`let b = <place>;` where the place holds a struct — a field of `self`
+or of a child, a local, an element — binds a **copy**: a fresh struct
+in the frame's own region (a method's scratch; the caller's arena for
+a binding the fn hands back), its `String` and `Bytes` fields cloned,
+nested structs copied the same way, locus handles left as handles. The
+binding then follows nothing: replacing the source (`self.row = Row {
+}`) leaves `b` as it was read, and writing through the binding (`let
+mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
+a call result is fresh already and is bound as it is. This finishes
+for structs the single-owner rule `spec/memory.md` states for
+`String` and `Bytes` stores (2026-09-22; before it the binding was a
+view of the storage, and an acknowledgement body read after the
+proposal field was cleared came back empty). A deliberate view has no
+spelling yet; read the field again when the current value is wanted.
 
 ## Type aliases
 
