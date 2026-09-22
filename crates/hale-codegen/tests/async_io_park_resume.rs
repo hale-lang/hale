@@ -118,8 +118,20 @@ fn async_io_pool_multiplexes_two_listeners() {
     // Connect to A and B. Each connection: send a byte, read the
     // response. With async_io, both should succeed.
     let connect = |port: u16, send_byte: u8| -> Vec<u8> {
-        let mut s = TcpStream::connect(("127.0.0.1", port))
-            .expect("connect");
+        // Retry until the listener is up rather than trusting the
+        // sleep above: a freshly built binary's first launch on macOS
+        // is scanned before it runs and can take longer than 150ms.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut s = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(s) => break s,
+                Err(e) if std::time::Instant::now() < deadline => {
+                    let _ = e;
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => panic!("connect: {e:?}"),
+            }
+        };
         s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         s.write_all(&[send_byte]).expect("write");
         let mut buf = vec![0u8; 16];

@@ -4,17 +4,15 @@ name: macos
 #
 # The compiler (Rust/inkwell) already builds on macOS in the release
 # workflow; what this job validates is the RUNTIME + codegen link line:
-# the lotus C runtime is now guarded so everything EXCEPT the epoll-based
-# `async_io` pool compiles + runs on macOS, and `where async_io` is
-# rejected at compile time with a clear diagnostic.
+# the lotus C runtime compiles + runs on macOS, `async_io` pools
+# included (kqueue, GH #970).
 #
 # This is the real validator for the macOS work (the dev box is Linux and
 # cannot compile for macOS). It:
 #   (a) builds the workspace,
 #   (b) compiles + RUNS a hello-world .hl,
 #   (c) compiles + RUNS a cooperative-pool + bus .hl,
-#   (d) asserts a `where async_io` .hl FAILS to build with the
-#       "aren't supported on macOS" diagnostic (proving the gate).
+#   (d) builds + RUNS a `where async_io` .hl — the kqueue backend.
 #
 # Kept in its own workflow so it runs on push/PR without gating the
 # Linux-only required checks in tests.yml.
@@ -146,39 +144,15 @@ jobs:
           echo "$out" | grep -q "worker got tick 7"
           echo "$out" | grep -q "main done"
 
-      - name: (c) `where async_io` is rejected with the macOS diagnostic
+      - name: (c) `where async_io` builds and runs (kqueue backend)
         run: |
           set -eux
-          cat > /tmp/hlci/async_io.hl <<'HL'
-          fn ignore_conn(s: std::io::tcp::Stream) { }
-
-          main locus App {
-              params {
-                  listener: std::io::tcp::Listener = std::io::tcp::Listener {
-                      host:          "127.0.0.1",
-                      port:          0,
-                      max_accepts:   -1,
-                      on_connection: ignore_conn,
-                  };
-              }
-              placement {
-                  listener: cooperative(pool = io) where async_io;
-              }
-          }
-
-          fn main() { App { }; }
-          HL
-          # Must FAIL to build, and the failure must be OUR diagnostic (not
-          # a link error / crash). Capture combined output; assert non-zero
-          # exit AND the guidance text.
-          set +e
-          out="$(cargo run -q -p hale-cli --bin hale -- build /tmp/hlci/async_io.hl 2>&1)"
-          rc=$?
-          set -e
-          echo "build output: $out"
-          echo "build exit code: $rc"
-          test "$rc" -ne 0
-          echo "$out" | grep -q "aren't supported on macOS"
+          # The in-language async_io test: a listener on an async_io
+          # pool, a client, a handler that parks on the fd. It used to
+          # be the program this step asserted FAILED to build.
+          cargo run -q -p hale-cli --bin hale -- test tests/hale/async_handler_payload_test.hl
+          # And the corpus example that places one.
+          cargo run -q -p hale-cli --bin hale -- run crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl
 
       - name: (d) GH 231 — emitted binaries link OpenSSL statically
         run: |

@@ -92,7 +92,7 @@ fn recv_into_parks_until_readable_on_async_io() {
         .spawn()
         .expect("spawn");
     thread::sleep(Duration::from_millis(150));
-    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut s = connect_when_up(port);
     // Idle for 300ms — the parked window — then send 5 bytes.
     thread::sleep(Duration::from_millis(300));
     s.write_all(b"hello").expect("write");
@@ -129,7 +129,7 @@ fn recv_into_honors_recv_deadline_on_async_io() {
         .expect("spawn");
     thread::sleep(Duration::from_millis(150));
     let started = Instant::now();
-    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut s = connect_when_up(port);
     // Send nothing; wait for the handler's DONE response, which it
     // writes right after recv_into returns.
     let mut resp = Vec::new();
@@ -240,7 +240,7 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
         .expect("spawn");
     thread::sleep(Duration::from_millis(150));
     let started = Instant::now();
-    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut s = connect_when_up(port);
     let mut resp = Vec::new();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     use std::io::Read;
@@ -261,4 +261,21 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
         "recv_bytes deadline mistimed: {:?}",
         elapsed
     );
+}
+
+/// Connect once the program's listener is up. The tests sleep before
+/// connecting, but a freshly built binary's first launch on macOS is
+/// scanned before it runs and can outlast any fixed sleep; retrying for
+/// a bounded time keeps the test about the park, not about startup.
+fn connect_when_up(port: u16) -> TcpStream {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(s) => return s,
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => panic!("connect: {e:?}"),
+        }
+    }
 }

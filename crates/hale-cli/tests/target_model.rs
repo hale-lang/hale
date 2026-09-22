@@ -323,8 +323,8 @@ fn run_refuses_a_foreign_native_triple() {
 
 /// `where async_io` is a property of the TARGET (GH #970). The check used
 /// to ask `cfg!(target_os = "macos")` — the host — so a Mac refused an
-/// `async_io` pool bound for Linux, and a Linux host accepted one bound
-/// for macOS, whose runtime has no such backend.
+/// `async_io` pool bound for Linux. macOS has the backend now (kqueue);
+/// musl is the target without one, and the check refuses it by name.
 #[test]
 fn async_io_is_judged_against_the_target() {
     const PROG: &str = r#"
@@ -370,9 +370,12 @@ fn main() { App { }; }
         );
     }
 
+    // Darwin has the backend too (kqueue). From a Linux host the build
+    // ends at an object; from a Mac it links. Either way the check
+    // must not refuse it.
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", darwin]);
-    assert_ne!(code, 0, "{darwin} has no async_io, the check accepted it");
-    assert!(stderr.contains("aren't supported on macOS"), "{stderr}");
+    assert_eq!(code, 0, "{darwin} has async_io, the build failed: {stderr}");
+    assert!(!stderr.contains("aren't supported"), "{stderr}");
 
     // musl declares ucontext and implements none of it: no backend.
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", musl]);

@@ -311,15 +311,16 @@ impl TargetSpec {
     }
 
     /// Whether the lotus runtime has the `async_io` pool backend here.
-    /// Mirrors the runtime's `LOTUS_HAVE_ASYNC_IO` (glibc Linux, and
-    /// wasm's POSIX shim); the checker refuses `where async_io`
-    /// elsewhere. musl declares `<ucontext.h>` and implements none of
-    /// it, so the coroutine backend has nothing to stand on there.
+    /// Mirrors the runtime's `LOTUS_HAVE_ASYNC_IO`: glibc Linux (epoll),
+    /// macOS (kqueue, GH #970) and wasm's POSIX shim; the checker
+    /// refuses `where async_io` elsewhere. musl declares `<ucontext.h>`
+    /// and implements none of it, so the coroutine backend has nothing
+    /// to stand on there; Windows has no runtime yet (GH #445).
     pub fn has_async_io(&self) -> bool {
         match self.os {
             TargetOs::Linux => self.env != TargetEnv::Musl,
-            TargetOs::None => true,
-            TargetOs::MacOs | TargetOs::Windows => false,
+            TargetOs::MacOs | TargetOs::None => true,
+            TargetOs::Windows => false,
         }
     }
 
@@ -632,16 +633,18 @@ mod tests {
         assert!(!TargetSpec::parse("x86_64-unknown-linux-gnu").unwrap().is_musl());
     }
 
-    /// The async_io backend is glibc Linux's (and wasm's shim): musl and
-    /// macOS have none, and the diagnostic names them.
+    /// The async_io backend is glibc Linux's, macOS's (kqueue) and wasm's
+    /// shim: musl has none, and the diagnostic names it.
     #[test]
     fn async_io_follows_the_libc() {
         let t = |s: &str| TargetSpec::parse(s).unwrap();
         assert!(t("x86_64-unknown-linux-gnu").has_async_io());
         assert!(t("aarch64-unknown-linux-gnu").has_async_io());
+        assert!(t("aarch64-apple-darwin").has_async_io());
+        assert!(t("x86_64-apple-darwin").has_async_io());
         assert!(t("wasm32").has_async_io());
         assert!(!t("x86_64-unknown-linux-musl").has_async_io());
-        assert!(!t("aarch64-apple-darwin").has_async_io());
+        assert!(!t("x86_64-pc-windows-msvc").has_async_io());
         assert_eq!(t("x86_64-unknown-linux-musl").platform_label(), "musl Linux");
         assert_eq!(t("aarch64-apple-darwin").platform_label(), "macOS");
     }
