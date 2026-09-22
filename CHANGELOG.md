@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### An interface value flows into a field of the same interface (GH #730, first half)
+
+- `crates/hale-types/src/check.rs`, `crates/hale-codegen/src/locus/instantiation.rs`: `Attempt { performer: self.performer }` where both are `Performer` — an interface VALUE into a field of the same interface — is identity now (it was refused as "type `Performer` cannot satisfy interface `Performer`", dna/FRICTION.md F.3). The holder stores a fresh `{data, vtable}` pair of its own and owns nothing: the impl is a borrow, as F.39 reads a name in a field initialiser and as the assignment form has been since #967. The same at an `or <substitute>`. A value of a different interface is still refused. The F.3 reproducer runs clean under ASan; `dna/core/assembly.hl` hands its journal to the engine at construction and the `adopt` workaround is gone. Spec: `spec/types.md`, the coercion sites. The remaining half of #730 — the checker's lifetime rule for borrows — is separate.
+
 ### `let` copies a struct value (GH #713)
 
 - `crates/hale-codegen/src/codegen.rs`, the `let` lowering: a struct read from a place — a field of `self` or of a child, a local, an element — is now copied into the frame's own region at the binding (Strings and Bytes cloned, nested structs copied, locus handles left as handles), the way a returned struct already was. Before, the binding was a view of the storage: `let saved = self.row; self.row = Row { };` emptied `saved`, and `let mut copy = original; copy.x = …` wrote the original. A literal or a call result is bound as it is. The ruling of 2026-09-20. Spec: `spec/types.md` § "A struct binding is a copy". Test: `tests/hale/struct_let_copies_test.hl` — same-locus and child fields, replacement, mutation through the binding and through the source, Int and String fields, a nested struct, a local-to-local copy.
