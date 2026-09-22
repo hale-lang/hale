@@ -1415,6 +1415,13 @@ pub fn desugar_omitted_run(program: &mut Program) {
         for item in items.iter_mut() {
             match item {
                 TopDecl::Locus(l) => {
+                    // An `@export` locus is a wasm singleton the host
+                    // drives through its exported methods; it never runs
+                    // and codegen refuses a `run` on it. It is never a
+                    // flow child either, so nothing here applies to it.
+                    if l.export {
+                        continue;
+                    }
                     let has_run = l.members.iter().any(|m| {
                         matches!(m, LocusMember::Lifecycle(d) if d.kind == LifecycleKind::Run)
                     });
