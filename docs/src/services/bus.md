@@ -296,7 +296,12 @@ reaches only the `Feed` instances that subscribed with
   `String` key yourself.)
 - **`where key == EXPR`** on a subscribe filters that subscriber.
   `EXPR` can be a literal, a `const`, or `self.<field>` — the
-  common case, one instance per shard. It can also be the bare
+  common case, one instance per shard. The key is read **when the
+  subscription is registered, at construction and before
+  `birth()` runs**: pass it as a param at the literal
+  (`Feed { symbol_id: 7 }`). A field left at its default and
+  assigned in `birth()` registers the default, and a later
+  assignment to the field does not retarget the subscription. It can also be the bare
   word **`replica`**: the instance's 0-based replica index, so a
   `pinned(..., replicas = K)` fan-out shards an Int-keyed topic
   with one subscribe line (see the concurrency chapter's

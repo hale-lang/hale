@@ -673,6 +673,18 @@ any parent declares `release(c: T)`, every `T` reclaims on
 run-completion, and an owner that declares no `release` simply has
 no bookend called.
 
+Whether `T` is a flow is decided over the whole program, imported
+seeds included; an explanation names every `release(c: T)` clause
+(GH #736).
+
+**A resident and what a handler hands it.** A payload delivered to a
+handler, and any container the handler builds while it runs, belong
+to that dispatch and are reclaimed when the handler returns. A child
+born from the handler that must keep them copies them in its own
+`birth()` — cloning Strings, rebuilding rows — into storage it owns;
+holding the handler's pointers past the dispatch is a use after
+free, and the checker does not yet diagnose it (GH #712).
+
 `release` has the same shape as `accept` — one typed child
 param — and the same fn signature `(parent_self, child_self)`.
 
@@ -1197,6 +1209,32 @@ Three remedies, all existing shapes:
   means for its resource (which descriptors, whose teardown, in which
   order). A locus with no external resource has nothing to transfer
   and needs none of this.
+
+**Contract-typed fields hold a borrow when assigned a handle (GH
+#967).** An `interface`- or `perspective(P)`-typed field cannot be
+assigned a locus literal (the literal's type is not the field's), and
+the only values that reach `self.<field> = v` are interface VALUES —
+a parameter, another field: a handle somebody else owns. That store
+is a **borrow**, the same decision F.39 makes for a name in a field
+initialiser (`Owner::Borrowed`), applied to assignment:
+
+1. The instance the field owned until then — its default, or a
+   literal it was built with — is reclaimed, break-before-make as
+   above.
+2. The field is marked borrowed: the holder's cascade never reclaims
+   what it now points at. The handle's own owner does, at its own
+   time.
+3. The handle is stored.
+
+A field that already held a borrow releases nothing when assigned
+again. What the rule does not decide is lifetime: the borrowed
+instance has to outlive the holder, exactly as one passed by name at
+construction has to — that is the contract of every handle, and the
+checker's question in GH #730. Before this rule the store was a plain
+value store: the field kept describing the default it was built with,
+so the holder's teardown reclaimed the handed-in instance (its owner
+then read freed memory, or reclaimed it a second time) and the default
+leaked.
 
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not
@@ -2231,6 +2269,13 @@ Static checks at typecheck:
    typo'd filters.
 4. `where key == _` is forbidden except on topics with
    `on_unmatched: fallback`.
+
+The key expression is evaluated once, when the subscription is
+registered: at the instance's construction, before `birth()` runs.
+A key a locus computes in `birth()` is therefore not the registered
+one — the field's default is — and assigning the field later does
+not retarget the subscription (GH #737). A key comes in as a param
+at the literal.
 5. `fail` topics: every `Topic <- value` send site must carry an
    `or` disposition clause (`or raise` / `or discard` at v0.1
    of the impl; `or handler(err)` / `or fail <p>` reserved for

@@ -197,7 +197,12 @@ do not wait. It reads nothing itself and decides nothing, so with or
 without a host it shows what the CLI shows. Iris stays the observer:
 attached to the organization's process it renders the org as the
 live topology it is, with the status projection as a third source
-beside the segment and the artifact.
+beside the segment and the artifact. The cockpit
+([GH #690](https://github.com/hale-lang/hale/issues/690)) is where
+the page and iris are headed: one shell over the same record and
+status projection, with workspaces for the organization, its
+knowledge and practices, and the workflow's definitions and
+executions. Its commands are the verbs of this book.
 
 On a domain, the surface is a hosted head and asks who you are. Set
 the principal source to your identity provider and map the subjects

@@ -26,7 +26,8 @@ hale dna review m1 approve --as riley  # your call — or the Leader's, inside i
 
 1. **Someone asks.** In a sentence, from any clone, from GitHub, or
    from the page `hale dna ui` serves. The organization turns it into
-   a task.
+   a task — one execution of a workflow the record keeps
+   ([The workflow](./workflow.md)).
 2. **It proposes.** In a sandbox copy of the repository, with a
    model, under a grant that is read, edit, format and check and
    nothing more, it edits the files, and commits the candidate there.
