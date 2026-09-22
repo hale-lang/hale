@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment } from './environment.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const webroot = path.join(repo, 'iris/cockpit/web');
+const webroot = path.join(repo, 'dna/face/web');
 const required = ['API', 'BODY', 'RELAY', 'MEMBRANE'];
 const binaries = Object.fromEntries(required.map(name => {
   const value = process.env[`HALE_NATIVE_COMMAND_${name}`];

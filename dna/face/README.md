@@ -14,7 +14,7 @@ and its visual acceptance requirements.
 From this checkout, start Iris against an existing DNA project with one command:
 
 ```sh
-./iris/cockpit/start.sh /absolute/path/to/dna-project --source-drafts
+./dna/face/start.sh /absolute/path/to/dna-project --source-drafts
 ```
 
 The project argument is optional. With one, the launcher serves that project
@@ -44,7 +44,7 @@ To use an already-built API, including an application's own catalog and command
 provider composition:
 
 ```sh
-./iris/cockpit/start.sh /absolute/path/to/dna-project --api /absolute/path/to/hale-api
+./dna/face/start.sh /absolute/path/to/dna-project --api /absolute/path/to/hale-api
 ```
 
 `HALE_API_BIN` is the equivalent environment setting. That binary must accept
@@ -64,7 +64,7 @@ to the application.
 The native API can also be invoked directly:
 
 ```sh
-/absolute/path/to/hale-api /absolute/path/to/dna-project 8792 "$PWD/iris/cockpit/web"
+/absolute/path/to/hale-api /absolute/path/to/dna-project 8792 "$PWD/dna/face/web"
 ```
 
 Open <http://127.0.0.1:8792/>. The API binds to loopback. Omitting the final
@@ -88,15 +88,15 @@ CLI subcommand, complete Compose profile or hosted deployment.
 
 ### Ordinary Hale application controls
 
-The [generic application service](../service/README.md) serves the same shell
-with Application and Runtime workspaces. The [intake-control example](../examples/intake-control/README.md)
+The [generic application service](../../iris/service/README.md) serves the same shell
+with Application and Runtime workspaces. The [intake-control example](../../iris/examples/intake-control/README.md)
 provides a real application-owned mode control, durable receipts and a work loop
 whose intake follows the committed mode. Build it using that example's SQLite
 development prerequisites, then run two processes:
 
 ```sh
 iris/examples/intake-control/intake-control run /tmp/intake.sqlite operator
-iris/examples/intake-control/intake-control serve /tmp/intake.sqlite 8793 "$PWD/iris/cockpit/web" operator
+iris/examples/intake-control/intake-control serve /tmp/intake.sqlite 8793 "$PWD/dna/face/web" operator
 ```
 
 Open <http://127.0.0.1:8793/>. The generic host selects `#/application`; this
@@ -275,7 +275,7 @@ origin when starting the API's static shell:
 
 ```sh
 HALE_IRIS_OBSERVER_ORIGIN=http://127.0.0.1:8787 \
-  /absolute/path/to/hale-api /absolute/path/to/dna-project 8792 "$PWD/iris/cockpit/web"
+  /absolute/path/to/hale-api /absolute/path/to/dna-project 8792 "$PWD/dna/face/web"
 ```
 
 Open `/#/runtime` and select **Connect observer**. Configuration allows that one
@@ -505,7 +505,7 @@ From the repository root, with a compiler and API already available:
 ```sh
 export HALE_BIN="/absolute/path/to/hale"
 export HALE_API_BIN="/absolute/path/to/hale-api"
-cd iris/cockpit
+cd dna/face
 npm ci
 npx playwright install chromium --only-shell
 npm test

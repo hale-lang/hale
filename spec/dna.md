@@ -2906,7 +2906,7 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
-The cockpit's head (`dna/api/project_service`, `iris/cockpit/start.sh
+The cockpit's head (`dna/api/project_service`, `dna/face/start.sh
 [project]`) is the surface's counterpart for the operator's machine:
 one loopback process that serves the browser shell, keeps a registry
 of projects and a journal of receipts under a state directory, and

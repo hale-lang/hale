@@ -9,7 +9,7 @@
 //   project_service <port 1..65535> <webroot> <api-binary> [<api-port> = 8793] [<project-root>]
 //
 // Build: hale build dna/api/project_service
-// Run:   HALE_BIN=/abs/hale ./dna/api/project_service/project_service 8792 iris/cockpit/web dna/api/practice_review/practice_review
+// Run:   HALE_BIN=/abs/hale ./dna/api/project_service/project_service 8792 dna/face/web dna/api/practice_review/practice_review
 import ".." as api;
 import "../../core" as dna;
 import "../../operations" as ops;

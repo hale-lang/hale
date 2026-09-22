@@ -121,7 +121,7 @@ request metadata in memory and returns scripted proposal/review/adoption states
 selected by `ROOT/command-mode`. It does not write domain facts or provide durable
 recovery. The browser tests verify real API transport and reload recovery against
 the same process; they do not prove native admission, restart recovery or the
-complete administration loop. See the [browser test README](../../../iris/cockpit/tests/README.md).
+complete administration loop. See the [browser test README](../../face/tests/README.md).
 
 Build and run `commands_api_test.hl` as a focused native test with the same shared
 lock and per-process limits above. Do not infer production command capability

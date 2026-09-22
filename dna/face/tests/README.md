@@ -11,7 +11,7 @@ available from a Hale build or upstream artifact:
 ```sh
 export HALE_BIN="/absolute/path/to/hale"
 export HALE_API_BIN="/absolute/path/to/hale-api"
-cd iris/cockpit
+cd dna/face
 npm ci
 npx playwright install chromium --only-shell
 npm test
@@ -67,8 +67,8 @@ Chromium as above:
 ```sh
 HALE_ORGANIZATION_PUBLICATION_EVIDENCE="/absolute/path/to/draft-api" \
 HALE_ORGANIZATION_REVIEW_EVIDENCE="/absolute/path/to/candidate-api" \
-  node iris/cockpit/node_modules/@playwright/test/cli.js test \
-  --config iris/cockpit/tests/playwright.config.mjs \
+  node dna/face/node_modules/@playwright/test/cli.js test \
+  --config dna/face/tests/playwright.config.mjs \
   organization-publication.spec.mjs organization-source-controls.spec.mjs
 ```
 
@@ -106,9 +106,9 @@ the repository root:
 
 ```sh
 HALE_COCKPIT_CATALOG_BIN="/absolute/path/to/catalog-provider" \
-  npm --prefix iris/cockpit test -- definitions.spec.mjs
+  npm --prefix dna/face test -- definitions.spec.mjs
 HALE_COCKPIT_KNOWLEDGE_BIN="/absolute/path/to/knowledge-provider" \
-  npm --prefix iris/cockpit test -- knowledge.spec.mjs
+  npm --prefix dna/face test -- knowledge.spec.mjs
 ```
 
 Supply both provider variables and omit the final spec argument to include both
@@ -129,7 +129,7 @@ altered responses establish browser refusal behavior only.
 
 ```sh
 HALE_COCKPIT_CATALOG_BIN="/absolute/path/to/catalog-provider" \
-  npm --prefix iris/cockpit test -- definitions.spec.mjs definition-drafts.spec.mjs
+  npm --prefix dna/face test -- definitions.spec.mjs definition-drafts.spec.mjs
 ```
 
 The native operations proof separately compiles the generated registration fragment
@@ -160,7 +160,7 @@ children and topics before exercising disconnect cleanup:
 ```sh
 HALE_COCKPIT_OBSERVER_BIN=/absolute/path/to/fuse-hl \
 HALE_COCKPIT_PLAIN_APP_BIN=/absolute/path/to/inspect-demo \
-  npm --prefix iris/cockpit run test:runtime
+  npm --prefix dna/face run test:runtime
 ```
 
 Use the existing observer and a built `iris/examples/inspect-demo` for this
@@ -204,7 +204,7 @@ and supply its executable to enable this lane:
 
 ```sh
 HALE_COCKPIT_COMMAND_BIN="/absolute/path/to/scripted-command-api" \
-  npm --prefix iris/cockpit test -- commands-native.spec.mjs
+  npm --prefix dna/face test -- commands-native.spec.mjs
 ```
 
 The harness starts it as `COMMAND_BIN ROOT PORT WEBROOT` with
@@ -295,7 +295,7 @@ CI runs the suite on partition 1 after the compiler and API have been built.
 
 ## Ordinary Hale application administration
 
-`application.spec.mjs` uses the real native [intake-control application](../../examples/intake-control/README.md)
+`application.spec.mjs` uses the real native [intake-control application](../../../iris/examples/intake-control/README.md)
 and generic application API, in separate processes over a fresh application-owned
 SQLite database. No DNA Record, provider, model discovery or observer is started.
 
@@ -408,7 +408,7 @@ publication, service admission, authority or durable command outcomes.
 
 `native-knowledge-browser.spec.mjs` drives the existing relationship map and
 editor against the public API and real native Knowledge command service. Supply
-three prebuilt, absolute binary paths and run from `iris/cockpit`:
+three prebuilt, absolute binary paths and run from `dna/face`:
 
 ```sh
 HALE_KNOWLEDGE_API_BIN=/absolute/path/to/knowledge-api \
@@ -481,7 +481,7 @@ successful command execution belongs to the separate native browser proof.
 revision and retirement through their actual proposals, canonical Reviews and
 native activation. It composes `native-knowledge-node-harness.mjs` with the
 existing Body/relay/membrane owner. Supply matching prebuilt binaries and run
-from `iris/cockpit`:
+from `dna/face`:
 
 ```sh
 HALE_NATIVE_COMMAND_API=/absolute/path/to/composed-review-api \
@@ -619,7 +619,7 @@ HALE_NATIVE_COMMAND_BODY=/absolute/path/to/body \
 HALE_NATIVE_COMMAND_RELAY=/absolute/path/to/relay \
 HALE_NATIVE_COMMAND_MEMBRANE=/absolute/path/to/membrane \
 HALE_NATIVE_COMMAND_EVIDENCE=/absolute/path/to/evidence \
-node iris/cockpit/tests/native-commands.mjs
+node dna/face/tests/native-commands.mjs
 ```
 
 The body and relay sources are `dna/api/practice_review/tests/body/main.hl` and
@@ -657,7 +657,7 @@ local Record/body/host acceptance, not routing-1 Ledger or multi-clone evidence.
 `native-command-browser.spec.mjs` drives the existing cockpit against that real
 service stack. It uses `native-command-harness.mjs`, independently of the
 scripted command fixtures. Supply the same four absolute binary paths above and
-run from `iris/cockpit`:
+run from `dna/face`:
 
 ```sh
 node node_modules/@playwright/test/cli.js test \
@@ -730,7 +730,7 @@ envelopes: exact confirmation, identity storage before POST, separate fresh Task
 observation, lost-response GET-only reload recovery, authority/privacy clearing,
 malformed receipts and the shared unresolved-command slot.
 
-Run these two browser contracts from `iris/cockpit`, with an available Playwright
+Run these two browser contracts from `dna/face`, with an available Playwright
 Chromium browser; no native binary or build is needed:
 
 ```sh
@@ -813,7 +813,7 @@ the exact `dna.task.create` envelope with the captured `record_head`, the
 organism's answer followed through lookup (`requested` then `born` with its Task
 id), a refusal as a completed request, lost-response GET-only reload recovery,
 inconsistent capabilities, malformed receipts and the shared unresolved slot.
-Both run binary-free from `iris/cockpit`:
+Both run binary-free from `dna/face`:
 
 ```sh
 node node_modules/@playwright/test/cli.js test \
@@ -850,7 +850,7 @@ is empty. Owner names are source context, not a Task-owner, position-occupant or
 command-authority mapping. Counts are limited to visible native Tasks in the
 requested scope.
 
-Run either or both from `iris/cockpit` with an available Chromium browser:
+Run either or both from `dna/face` with an available Chromium browser:
 
 ```sh
 node node_modules/@playwright/test/cli.js test \

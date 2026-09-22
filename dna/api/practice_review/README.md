@@ -27,7 +27,7 @@ available through the native service's safe outcome projection.
 ```sh
 hale build dna/api/practice_review
 HALE_DNA_COMMAND_POLICY=/path/to/authority.json \
-  iris/cockpit/start.sh /path/to/project \
+  dna/face/start.sh /path/to/project \
   --api dna/api/practice_review/practice_review --port 8792
 ```
 

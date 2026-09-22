@@ -227,7 +227,7 @@ as it always has.
 
 ### The cockpit head
 
-`iris/cockpit/start.sh [project]` starts the cockpit's own head,
+`dna/face/start.sh [project]` starts the cockpit's own head,
 `dna/api/project_service`: one loopback process the browser talks
 to, which serves the shell, keeps a registry of your projects, and
 proxies the Record reads and commands to a per-project API child.

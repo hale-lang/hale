@@ -7,7 +7,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: iris/cockpit/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
+Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
 
 Starts Iris at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
 given, it is attached at startup; without it the head starts detached and the

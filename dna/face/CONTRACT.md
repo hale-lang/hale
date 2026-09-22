@@ -4,15 +4,15 @@ Design draft for [#690](https://github.com/hale-lang/hale/issues/690).
 This document proposes the browser/service boundary; it does **not** describe
 implemented HTTP routes or freeze DNA's internal types. The issue defines
 the broader product scope.
-Implemented reads are documented in [dna/api](../dna/api/README.md), with
-executable schemas in `dna/api/contract/v1`; the [browser documentation](cockpit/README.md)
+Implemented reads are documented in [dna/api](../api/README.md), with
+executable schemas in `dna/api/contract/v1`; the [browser documentation](README.md)
 describes their presentation. Broader routes and commands below are design
 requirements, not a declaration that a service exposes them.
 
 The branch also implements the deliberately smaller `hale.application.v1`
-[generic service profile](service/README.md). It registers an application-owned
+[generic service profile](../../iris/service/README.md). It registers an application-owned
 control provider, serves captured state and capabilities, accepts one guarded
-enum change and recovers an exact request receipt. The [plain Hale intake example](examples/intake-control/README.md)
+enum change and recovers an exact request receipt. The [plain Hale intake example](../../iris/examples/intake-control/README.md)
 owns its SQLite configuration, authority and durable outcomes; Iris has no
 universal command database. This implementation does not imply the broader
 runtime joins, contextual authority or DNA operations below are available.
