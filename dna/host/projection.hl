@@ -364,7 +364,8 @@ locus Projection {
         if sp < 0 { return dna::trim_nl(r.stdout); }
         return r.stdout[0..sp];
     }
-    // `status.json`, as the surface and iris read it.
+    // `status.json`, as `hale dna status --json` prints it and the
+    // surface reads it.
     @unbounded
     fn json() -> String {
         self.build();

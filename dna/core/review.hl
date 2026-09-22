@@ -145,8 +145,8 @@ locus Review {
         expose refused: Int;
         expose last_refusal: String;
     }
-    // GH #527 B6: a verdict crossing the membrane (a human in Iris,
-    // `hale dna review`) arrives on the typed channel, keyed to THIS
+    // GH #527 B6: a verdict crossing the membrane (a human at
+    // `hale dna review` or the page) arrives on the typed channel, keyed to THIS
     // review, and goes through the same admission as a local one.
     // Nothing about authority or the TOCTOU pin is relaxed for a
     // remote verdict — the reviewer's claimed authority is checked

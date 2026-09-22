@@ -117,8 +117,7 @@ $ hale dna review
 
 `hale dna review m1` renders the source diff, the semantic diff, the
 evidence table and the magnitude — [The Review in
-detail](./review.md) shows it in full. The page, iris's organism
-panel, a teammate's clone after `hale dna sync`, and a pull request
+detail](./review.md) shows it in full. The page, a teammate's clone after `hale dna sync`, and a pull request
 when GitHub is configured all show the same Review from the same
 record.
 

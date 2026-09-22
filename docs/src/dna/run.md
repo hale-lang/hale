@@ -19,7 +19,7 @@ at a time. It cuts a fresh artifact
 of the application (`.hale/dna/current.topology`), builds the
 organization and execs it under `LOTUS_OBS=1` from the project root
 with `HALE_BIN` set to the toolchain that started it, waits for the
-membrane sockets, attaches iris, and then supervises. Each tick it
+membrane sockets, attaches iris to inspect it, and then supervises. Each tick it
 syncs the record, mirrors GitHub when configured, relays the
 membrane rows in the record, re-projects `status.json`, and answers
 the organization's restart requests. It holds no Task state; when
@@ -162,8 +162,8 @@ The organization binds four typed topics on unix sockets under
 
 | topic | subject | who publishes |
 |---|---|---|
-| `ReviewVerdict` | `dna.review.verdict` | `hale dna review <id> <verdict>`, the page, iris; the host, relaying a `review.verdict` row |
-| `IntentOffered` | `dna.intent.offered` | `hale dna task create`, the page, iris; the host, relaying an `intent.requested` row |
+| `ReviewVerdict` | `dna.review.verdict` | `hale dna review <id> <verdict>`, the page; the host, relaying a `review.verdict` row |
+| `IntentOffered` | `dna.intent.offered` | `hale dna task create`, the page; the host, relaying an `intent.requested` row |
 | `ExpressionObserved` | `dna.expression.observed` | the host, after an observation window |
 | `PressureRaised` | `dna.pressure.raised` | `hale dna pressure raise`, the page, a metrics relay |
 
@@ -246,8 +246,8 @@ The head keeps its files under
 `${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-~/.local/state}/hale/iris/head}`:
 the registry, the receipt journal, one directory per run, and the
 pid files of its children — the API child, a local body started
-with `hale dna run|dev … --no-iris`, and the observer (`hale iris
---membrane`) it can start once the membrane is up. A body or observer
+with `hale dna run|dev … --no-iris`, and the observer (plain `hale iris` on the
+current artifact) it can start once the membrane is up. A body or observer
 the head started outlives it; the next head over the same directory
 re-adopts them. Secrets never enter the head: `dna.secret.set` names
 a *source* — a `0600` one-line file under

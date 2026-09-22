@@ -11,7 +11,7 @@ not settle it, and neither does the transport.
 ```sh
 hale dna review              # the pending Reviews, one line each
 hale dna review m1           # source diff · semantic diff · evidence table · magnitude
-hale dna review m1 --iris    # the same diff in iris, beside the status and the membrane form
+hale dna review m1 --iris    # the same diff in iris's review view; the verdict is still given here
 hale dna review m1 approve --as riley --comment "fine"
 hale dna review m1 approve --digest bf94e503c1c0   # name the candidate you looked at
 hale dna review m1 approve --no-wait               # send it; the answer lands in the record
@@ -166,8 +166,8 @@ wins.
 ## On the page and in iris
 
 `hale dna ui` renders this same text under *Review* and sends the
-verdict form the way the CLI does. Iris, attached by the host, shows
-the pending Review in its organism panel with the candidate the
-verdict must name, and `hale dna review m1 --iris` opens the review
-perspective on the Mutation's semantic diff document. Either way the
-Review decides; the surfaces only publish.
+verdict form the way the CLI does. `hale dna review m1 --iris` opens
+iris's review perspective on the Mutation's semantic diff document:
+iris shows the diff, and the verdict is given with `hale dna review
+m1 approve|revise|reject|abstain`, which the verb prints. Either way
+the Review decides; the surfaces only publish.

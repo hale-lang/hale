@@ -1,6 +1,7 @@
 // dna/host/host.hl — `hale dna run` / `hale dna dev`: the stateless
 // host beside the organization (GH #566 F8). It builds and starts the
-// organization, waits for its membrane, attaches iris, and then ticks:
+// organization, waits for its membrane, attaches iris (the inspector,
+// on the organization's process like any Hale binary), and then ticks:
 // sync the record, mirror GitHub, relay the membrane rows in the
 // record, re-project `status.json`, answer restart requests — under
 // `dev` by rebuilding and restarting the application and watching the
@@ -805,9 +806,8 @@ locus Host {
         let current = self.dna_dir + "/current.topology";
         let mut argv = self.hale + "\niris\n" + self.port + "\n" + current;
         if len(diff_from) > 0 { argv = argv + "\n--diff\n" + diff_from + "\n" + current; }
-        argv = argv + "\n--membrane\n" + self.dna_dir + "\n--organism\n" + self.status_path;
         self.observer = start(self.dna_dir, "iris", self.root, "", argv);
-        if self.observer.pid > 0 { eprintln("hale dna run: iris at http://127.0.0.1:", self.port, "/  (l law · 4 review · 5 organism · m membrane)"); }
+        if self.observer.pid > 0 { eprintln("hale dna run: iris at http://127.0.0.1:", self.port, "/"); }
         else { eprintln("hale dna run: could not launch hale iris"); }
     }
     // The membrane over the record: an `intent.requested`, a

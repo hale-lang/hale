@@ -11,9 +11,6 @@
 //!   hale iris [port] [artifact]         fusion + HTTP/SSE at :port (8787)
 //!     --diff <a.topology> <b.topology>  review view: diff the pair here
 //!     --diff <diff.json>                … or carry a ready diff document
-//!     --membrane <dir>                  control channel: publish verdicts and
-//!                                       intent to an organism's sockets in <dir>
-//!     --organism <status.json>          the organism's status projection (B7)
 //!   hale iris inspect <artifact> [url]  artifact-side inspector
 //!   hale iris --where                   print the cache directory
 //!   hale iris --build-only              materialize + build, print the binary
@@ -35,10 +32,10 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
 }
 
 /// Build `seed` under the materialized cache `root` once, under the
-/// cache's build lock, and return its binary. The DNA's membrane client
-/// and surface share the cache with the observer and build the same
-/// way (GH #566 F7: two commands racing to build one binary exec'd a
-/// half-written file — `Permission denied`).
+/// cache's build lock, and return its binary. `hale dna` builds its
+/// own programs from the same cache the same way (GH #566 F7: two
+/// commands racing to build one binary exec'd a half-written file —
+/// `Permission denied`).
 pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) -> Result<PathBuf, String> {
     let bin_path = root.join(bin);
     // One build per cache, ever: two `hale iris` (or a test shard's
@@ -102,12 +99,9 @@ impl Drop for BuildLock<'_> {
     }
 }
 
-fn exec(bin: &Path, args: &[String], envs: &[(String, String)]) -> ExitCode {
+fn exec(bin: &Path, args: &[String]) -> ExitCode {
     let mut cmd = Command::new(bin);
     cmd.args(args);
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
     // fuse-hl is our child, not a peer: `hale iris` is a supervisor
     // that only waits. Without this, killing `hale iris` (which is
     // what `hale run --observe` does when the program ends, and what
@@ -130,7 +124,7 @@ fn exec(bin: &Path, args: &[String], envs: &[(String, String)]) -> ExitCode {
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") => {
-            eprintln!("usage: hale iris [port] [artifact.json] [--diff <a.topology> <b.topology> | --diff <diff.json>] [--membrane <dir>] [--organism <status.json>]");
+            eprintln!("usage: hale iris [port] [artifact.json] [--diff <a.topology> <b.topology> | --diff <diff.json>]");
             eprintln!("       hale iris inspect <artifact.json> [http://host:port]");
             eprintln!("       hale iris --where | --build-only");
             ExitCode::SUCCESS
@@ -163,7 +157,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            exec(&bin, &args[1..], &[])
+            exec(&bin, &args[1..])
         }
         _ => {
             // GH #527 B5: `--diff a b` diffs the pair HERE (one
@@ -173,27 +167,9 @@ pub fn run(args: &[String]) -> ExitCode {
             // B side is the artifact the law view runs against.
             let mut positional: Vec<String> = Vec::new();
             let mut diff_paths: Vec<String> = Vec::new();
-            let mut membrane: Option<String> = None;
-            let mut organism: Option<String> = None;
             let mut it = args.iter();
             while let Some(a) = it.next() {
-                if a == "--organism" {
-                    match it.next() {
-                        Some(p) => organism = Some(p.clone()),
-                        None => {
-                            eprintln!("hale iris: --organism needs a status.json path");
-                            return ExitCode::from(2);
-                        }
-                    }
-                } else if a == "--membrane" {
-                    match it.next() {
-                        Some(d) => membrane = Some(d.clone()),
-                        None => {
-                            eprintln!("hale iris: --membrane needs a directory");
-                            return ExitCode::from(2);
-                        }
-                    }
-                } else if a == "--diff" {
+                if a == "--diff" {
                     for x in it.by_ref() {
                         if x.starts_with("--") {
                             break;
@@ -221,39 +197,6 @@ pub fn run(args: &[String]) -> ExitCode {
                     }
                 },
             };
-            // GH #527 B6: the typed control channel. The observer's
-            // publishes of `dna.review.verdict` / `dna.intent.offered`
-            // are routed to the organism's listen sockets with a
-            // LOTUS_BUS_CONFIG file — env-configured connect routes
-            // (spec/runtime.md), so an observer started without an
-            // organism has nothing to fail on, and one started WITH
-            // `--membrane` refuses to boot if the sockets are not
-            // there (a route that was asked for may not silently not
-            // exist).
-            let mut envs: Vec<(String, String)> = Vec::new();
-            if let Some(dir) = &membrane {
-                let dir = dir.trim_end_matches('/').to_string();
-                let conf = std::env::temp_dir().join(format!("hale-iris-membrane-{}.conf", std::process::id()));
-                let body = format!(
-                    "# hale iris --membrane {dir}\n\
-                     dna.review.verdict = unix://{dir}/{} : connect\n\
-                     dna.intent.offered = unix://{dir}/{} : connect\n",
-                    MEMBRANE_VERDICT_SOCK, MEMBRANE_INTENT_SOCK
-                );
-                if let Err(e) = std::fs::write(&conf, body) {
-                    eprintln!("hale iris: cannot write {}: {e}", conf.display());
-                    return ExitCode::from(2);
-                }
-                envs.push(("LOTUS_BUS_CONFIG".into(), conf.display().to_string()));
-                envs.push(("HALE_IRIS_MEMBRANE".into(), dir.clone()));
-                eprintln!("hale iris: membrane at {dir} (verdicts and intent publish to the organism)");
-            }
-            // GH #528 PR 28 (B7): the organism's status projection —
-            // a JSON file `hale dna run` re-projects from the Journal —
-            // is the observer's third source beside shm and the artifact.
-            if let Some(p) = &organism {
-                envs.push(("HALE_IRIS_DNA_STATUS".into(), p.clone()));
-            }
             let (root, bin) = match ensure_built(hale_iris::FUSE_SEED, hale_iris::FUSE_BIN) {
                 Ok(x) => x,
                 Err(e) => {
@@ -274,15 +217,10 @@ pub fn run(args: &[String]) -> ExitCode {
             } else if let Some(artifact) = artifact {
                 fargs.push(artifact);
             }
-            exec(&bin, &fargs, &envs)
+            exec(&bin, &fargs)
         }
     }
 }
-
-/// The organism's membrane sockets, by name inside the membrane
-/// directory (`dna/organism/main.hl` binds them under `/tmp`).
-pub const MEMBRANE_VERDICT_SOCK: &str = "hale-dna.review.verdict.sock";
-pub const MEMBRANE_INTENT_SOCK: &str = "hale-dna.intent.offered.sock";
 
 /// Diff two topology artifacts with the compiler's own engine and
 /// write the document where fuse-hl can watch it.

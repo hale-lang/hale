@@ -416,8 +416,8 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         let wrote = write_text(doc_path, doc.text) or false;
         if !wrote { return fail("--iris: cannot write " + doc_path); }
         let hale = std::env::var("HALE_BIN");
-        let launched = dna::run_tool("sh\n-c\ncd " + p.root + " && nohup " + hale + " iris --diff " + doc_path + " --membrane " + p.root + "/.hale/dna --organism " + p.root + "/.hale/dna/status.json >/dev/null 2>&1 & echo $!");
-        out = out + "iris: review perspective [4] on " + r.diff_json + " (pid " + dna::trim_nl(launched.stdout) + "); the membrane form sends the verdict\n";
+        let launched = dna::run_tool("sh\n-c\ncd " + p.root + " && nohup " + hale + " iris --diff " + doc_path + " >/dev/null 2>&1 & echo $!");
+        out = out + "iris: review perspective [4] on " + r.diff_json + " (pid " + dna::trim_nl(launched.stdout) + "); iris shows the diff, the verdict is given with hale dna review " + id + " approve|revise|reject|abstain\n";
     }
     return answer(out);
 }
