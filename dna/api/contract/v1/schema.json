@@ -10972,7 +10972,7 @@
         "arguments"
       ],
       "additionalProperties": false,
-      "description": "The ask `hale dna ask` makes, raised from the cockpit: an outcome (natively at most 8192 UTF-8 bytes, control bytes preserved) for a position, conditioned on the Record head it was prepared against. The asker is the authenticated principal; the expected principal confers no authority. No caller-supplied intent id, from, via or Task id."
+      "description": "The ask `hale dna ask` makes, raised from the face: an outcome (natively at most 8192 UTF-8 bytes, control bytes preserved) for a position, conditioned on the Record head it was prepared against. The asker is the authenticated principal; the expected principal confers no authority. No caller-supplied intent id, from, via or Task id."
     },
     "TaskCreateCommandCapabilities": {
       "type": "object",

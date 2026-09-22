@@ -92,7 +92,7 @@ integration coverage. The fixture re-executes with inherited Git plumbing and
 private store/auth settings removed before making temporary Record writes.
 
 During recovery validation, serialize native builds/runs with
-`flock /tmp/iris-native-validation.lock`. Build with hard address space 2 GiB,
+`flock /tmp/face-native-validation.lock`. Build with hard address space 2 GiB,
 CPU 30 seconds and wall 40 seconds; run the focused binary with hard address
 space 512 MiB, CPU 10 seconds and wall 15 seconds, with core dumps disabled.
 The same run limits apply to the native contract checker and validator tests.
@@ -114,7 +114,7 @@ separate from observed Review settlement and adoption. Both operations use one
 lookup namespace; script-only cross-operation key conflict is conformance evidence.
 
 `commands/main.hl` is an opt-in HTTP fixture for browser conformance. It requires
-`HALE_COCKPIT_SCRIPTED_COMMANDS=1` and takes `ROOT PORT WEBROOT`. Its provider holds
+`HALE_FACE_SCRIPTED_COMMANDS=1` and takes `ROOT PORT WEBROOT`. Its provider holds
 request metadata in memory and returns scripted proposal/review/adoption states
 selected by `ROOT/command-mode`. It does not write domain facts or provide durable
 recovery. The browser tests verify real API transport and reload recovery against

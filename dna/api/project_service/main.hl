@@ -1,4 +1,4 @@
-// dna/api/project_service/main.hl — the cockpit head's entrypoint
+// dna/api/project_service/main.hl — the head's entrypoint
 // (GH #965, §2.1 of the head's contract). One process the browser
 // talks to: it serves the shell, owns the project registry and the
 // receipt journal under a state directory, and proxies the Record
@@ -14,19 +14,19 @@ import ".." as api;
 import "../../core" as dna;
 import "../../operations" as ops;
 
-const USAGE: String = "hale iris head: expected <port 1..65535> <webroot> <api-binary> [<api-port> = 8793] [<project-root>], with HALE_BIN naming the compiler by an absolute path";
+const USAGE: String = "hale dna head: expected <port 1..65535> <webroot> <api-binary> [<api-port> = 8793] [<project-root>], with HALE_BIN naming the compiler by an absolute path";
 
 fn path_ok(p: String) -> Bool {
     return len(p) > 0 && !std::str::contains(p, "\n") && !std::str::contains(p, "\r");
 }
 
-// `STATE = ${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/iris/head}`
+// `STATE = ${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}`
 fn state_dir_of() -> String {
-    let chosen = std::env::var("HALE_IRIS_HEAD_STATE");
+    let chosen = std::env::var("HALE_DNA_HEAD_STATE");
     if len(chosen) > 0 { return chosen; }
     let xdg = std::env::var("XDG_STATE_HOME");
     let base = if len(xdg) > 0 { xdg } else { std::env::var("HOME") + "/.local/state" };
-    return base + "/hale/iris/head";
+    return base + "/hale/dna/head";
 }
 
 // `SOURCES = ${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources`
@@ -104,20 +104,20 @@ locus Startup {
     // `project_root` when given, settles. "" or what stops the head.
     fn prepare(project_root: String) -> String {
         let kept = readopt_children(self.cfg);
-        if len(kept) > 0 { eprintln("hale iris head: re-adopted " + kept); }
+        if len(kept) > 0 { eprintln("hale dna head: re-adopted " + kept); }
         let reg = Registry { state_dir: self.cfg.state_dir };
         let restore = reg.restore();
         if restore.ok {
             let outcome = self.attach("restart-" + to_string(std::process::pid()), restore.root);
             if len(outcome) > 0 {
-                eprintln("hale iris head: " + restore.name + " could not be re-attached (" + outcome + "); starting detached");
+                eprintln("hale dna head: " + restore.name + " could not be re-attached (" + outcome + "); starting detached");
                 let d = reg.deactivate(restore.application_id, "");
                 stop_child(self.cfg, "api");
             }
         }
         if len(project_root) > 0 {
             let outcome = self.attach("startup-" + to_string(std::process::pid()), project_root);
-            if len(outcome) > 0 { return "hale iris head: cannot attach " + project_root + ": " + outcome; }
+            if len(outcome) > 0 { return "hale dna head: cannot attach " + project_root + ": " + outcome; }
         }
         settle_all(self.cfg);
         std::io::fs::write_file(self.cfg.state_dir + "/head.url", head_origin(self.cfg) + "\n") or discard;
@@ -135,7 +135,7 @@ locus Startup {
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             projects = projects + 1;
         }
-        return "hale iris head: " + head_origin(self.cfg) + "/ (trusted local; " + to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" }) + ")";
+        return "hale dna head: " + head_origin(self.cfg) + "/ (trusted local; " + to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" }) + ")";
     }
 }
 
@@ -162,17 +162,17 @@ fn main() {
     }
     let web = api::WebAssets { };
     if !web.load(webroot) {
-        eprintln("hale iris head: " + web.error + "; refusing to start");
+        eprintln("hale dna head: " + web.error + "; refusing to start");
         std::process::exit(2);
     }
     let state_dir = state_dir_of();
     if !path_ok(state_dir) || !private_dir(state_dir) || !private_dir(state_dir + "/runs") || !private_dir(state_dir + "/children") {
-        eprintln("hale iris head: cannot create the state directory " + state_dir);
+        eprintln("hale dna head: cannot create the state directory " + state_dir);
         std::process::exit(1);
     }
     let holder = other_head(state_dir);
     if holder > 0 {
-        eprintln("hale iris head: already running at " + dna::trim_nl(std::io::fs::read_file(state_dir + "/head.url") or "") + " (pid " + to_string(holder) + ")");
+        eprintln("hale dna head: already running at " + dna::trim_nl(std::io::fs::read_file(state_dir + "/head.url") or "") + " (pid " + to_string(holder) + ")");
         std::process::exit(2);
     }
     let user = std::env::var("USER");

@@ -1,4 +1,4 @@
-// dna/api/project_service/head.hl — the cockpit head's handler
+// dna/api/project_service/head.hl — the head's handler
 // (GH #965, §2.4 of the head's contract). One process the browser
 // talks to: it serves the static shell through the API's own
 // `WebAssets`, owns the four head routes (`/api/hale/v1/head`,

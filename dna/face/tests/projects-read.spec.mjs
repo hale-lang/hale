@@ -1,5 +1,5 @@
 // Real plain Record API: no operator-machine head stands behind it, so the
-// shell's head probe answers 404 and the cockpit continues unchanged.
+// shell's head probe answers 404 and the face continues unchanged.
 import { test, expect } from './harness.mjs';
 
 test('real Record API without a head: the shell continues to Practices, hides Projects and sends nothing but reads', async ({ page, service }) => {

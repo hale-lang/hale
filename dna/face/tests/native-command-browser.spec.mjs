@@ -16,7 +16,7 @@ const test = base.extend({
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await use(page);
-    expect(errors, 'No unhandled cockpit JavaScript error').toEqual([]);
+    expect(errors, 'No unhandled face JavaScript error').toEqual([]);
   },
 });
 test.skip(!nativeCommandEnvironmentPresent(), 'Supply explicit HALE_NATIVE_COMMAND_API/BODY/RELAY/MEMBRANE binaries for real native browser acceptance.');

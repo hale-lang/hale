@@ -29,11 +29,11 @@ export async function startKnowledgeService(options = {}) {
   const native = options.service || process.env.HALE_KNOWLEDGE_SERVICE_BIN;
   const seed = options.seed || process.env.HALE_KNOWLEDGE_SEED_BIN;
   if (![api, native, seed].every(value => value?.startsWith('/'))) throw new Error('Supply absolute Knowledge API, service and seed binary paths.');
-  const root = await mkdtemp('/tmp/hale-iris-browser.knowledge-command.');
+  const root = await mkdtemp('/tmp/hale-face-browser.knowledge-command.');
   const env = isolatedEnvironment();
   const actor = options.actor || 'alice';
   env.USER = actor;
-  env.XDG_CACHE_HOME = resolve(root, '.hale/cockpit-cache');
+  env.XDG_CACHE_HOME = resolve(root, '.hale/face-cache');
   const seeded = boundedNative(seed, [root, 'seed', String(options.count ?? 3)]);
   const result = spawnSync(seeded.command, seeded.args, { env, encoding: 'utf8', timeout: 40_000, maxBuffer: 2_097_152 });
   if (result.status !== 0) throw new Error(`Knowledge seed failed: ${result.stderr || result.error || result.stdout}`);
@@ -46,8 +46,8 @@ export async function startKnowledgeService(options = {}) {
   const policyPath = resolve(root, 'knowledge-authority.json');
   env.HALE_DNA_KNOWLEDGE_DSN = 'memory';
   env.HALE_DNA_KNOWLEDGE_URL = privateOrigin;
-  env.HALE_DNA_KNOWLEDGE_READ_KEY = 'iris-native-knowledge-read-fixture-key';
-  env.HALE_DNA_KNOWLEDGE_COMMAND_KEY = 'iris-native-knowledge-write-fixture-key';
+  env.HALE_DNA_KNOWLEDGE_READ_KEY = 'face-native-knowledge-read-fixture-key';
+  env.HALE_DNA_KNOWLEDGE_COMMAND_KEY = 'face-native-knowledge-write-fixture-key';
   env.HALE_DNA_KNOWLEDGE_COMMAND_POLICY = policyPath;
   const policy = {
     format: 'dna.knowledge-authority/1', application_id: refs.application,

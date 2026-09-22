@@ -1,5 +1,5 @@
 // Library head: explicit application composition, no process discovery or DNA.
-import "../../dna/api/web" as assets;
+import "../../api/web" as assets;
 
 locus ApplicationApi {
     params {

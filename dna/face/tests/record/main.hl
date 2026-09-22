@@ -8,7 +8,7 @@ import "../../../../dna/api/tests/fixture" as fixtures;
 fn main() {
     let root = std::env::arg_or(1, "");
     let action = std::env::arg_or(2, "seed");
-    std::test::assert(std::str::starts_with(root, "/tmp/hale-iris-browser."), "browser fixture must own its scratch");
+    std::test::assert(std::str::starts_with(root, "/tmp/hale-face-browser."), "browser fixture must own its scratch");
     if action == "seed" {
         // Port is unused; supplying it avoids probing sockets during seeding.
         let f = fixtures::Fixture { root: root, port: 1 };

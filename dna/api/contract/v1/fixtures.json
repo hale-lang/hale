@@ -24183,7 +24183,7 @@
       "data": {
         "state": "detached",
         "active": null,
-        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "state_dir": "/home/riley/.local/state/hale/dna/head",
         "sources_dir": "/home/riley/.config/hale-dna/sources",
         "projects_dir": "/home/riley/dna",
         "children": {
@@ -24372,7 +24372,7 @@
             "pid": 4242
           }
         },
-        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "state_dir": "/home/riley/.local/state/hale/dna/head",
         "sources_dir": "/home/riley/.config/hale-dna/sources",
         "projects_dir": "/home/riley/dna",
         "children": {
@@ -25172,7 +25172,7 @@
       "data": {
         "state": "detached",
         "active": null,
-        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "state_dir": "/home/riley/.local/state/hale/dna/head",
         "sources_dir": "/home/riley/.config/hale-dna/sources",
         "projects_dir": "/home/riley/dna",
         "children": {

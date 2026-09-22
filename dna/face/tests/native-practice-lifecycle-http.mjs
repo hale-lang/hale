@@ -59,7 +59,7 @@ async function approve(proposal) {
 }
 const timer = setTimeout(async () => { console.error('Compact Practice lifecycle exceeded 90 seconds.'); try { await service?.stop(); } finally { process.exit(124); } }, 90_000);
 try {
-  service = await startBindingService({ grants: [grant], evidenceParent: evidence, rootPrefix: '/tmp/hale-iris-browser.practice-lifecycle.' });
+  service = await startBindingService({ grants: [grant], evidenceParent: evidence, rootPrefix: '/tmp/hale-face-browser.practice-lifecycle.' });
   let initial, revision, retirement, extra;
   await check('create kind Practice through native node admission and independent exact Review', async () => {
     initial = await propose('node.propose', originalText);

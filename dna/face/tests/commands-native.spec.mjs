@@ -3,7 +3,7 @@
 import { test, expect } from './harness.mjs';
 
 test.use({ commandSubject: true, commandAdapter: true });
-test.skip(!process.env.HALE_COCKPIT_COMMAND_BIN, 'Supply the explicit scripted native command-adapter fixture.');
+test.skip(!process.env.HALE_FACE_COMMAND_BIN, 'Supply the explicit scripted native command-adapter fixture.');
 
 async function submit(page, service) {
   await page.goto(service.url('practices', { id: service.practice }));

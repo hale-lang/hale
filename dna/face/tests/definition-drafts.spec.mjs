@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { test, expect, errorBody } from './harness.mjs';
 
-test.skip(!process.env.HALE_COCKPIT_CATALOG_BIN, 'Definition authoring needs an explicitly supplied native application catalog.');
+test.skip(!process.env.HALE_FACE_CATALOG_BIN, 'Definition authoring needs an explicitly supplied native application catalog.');
 test.use({ definitions: true });
 const revision = '9007199254740993';
 const next = '9007199254740994';

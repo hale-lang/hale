@@ -1,7 +1,9 @@
-# Iris cockpit
+# The face
 
-A browser cockpit for ordinary Hale application controls, plus DNA
-organization, workflow definitions, Knowledge, practices and reviews. It has no
+The face is the DNA organism's people surface, served by the head
+(`dna/api/project_service`): a browser surface for ordinary Hale
+application controls, plus DNA organization, workflow definitions,
+Knowledge, practices and reviews. It has no
 runtime observer: inspecting a running Hale binary is `hale iris`'s job.
 The frontend is ten static files, served beside the native Hale API or by an
 independent static host. It has no
@@ -12,7 +14,7 @@ and its visual acceptance requirements.
 
 ## Run locally
 
-From this checkout, start Iris against an existing DNA project with one command:
+From this checkout, start the face against an existing DNA project with one command:
 
 ```sh
 ./dna/face/start.sh /absolute/path/to/dna-project --source-drafts
@@ -37,7 +39,7 @@ project, adopts its Ledger, starts infrastructure or fetches dependencies.
 For a fresh project, create it with `hale dna new /absolute/path/to/project` and
 commit the generated source before inspecting Organization. Organization reads
 use committed source and existing vendored dependencies; they exclude local
-uncommitted edits. Launching Iris itself does not require a running body or a
+uncommitted edits. Launching the face itself does not require a running body or a
 database for Record/source reads. The generated Compose file supplies Postgres;
 it does not currently launch this browser/API or the full DNA service stack.
 
@@ -49,7 +51,7 @@ provider composition:
 ```
 
 `HALE_API_BIN` is the equivalent environment setting. That binary must accept
-`PROJECT PORT WEBROOT` and implement the public cockpit API. The standalone API
+`PROJECT PORT WEBROOT` and implement the face's public API. The standalone API
 keeps Definitions and durable commands unavailable until a real application
 provider supplies them; the launcher never substitutes a sample catalog.
 
@@ -82,12 +84,12 @@ The existing API can be supplied from a Hale build or an upstream artifact.
 Definitions and Knowledge need a service that advertises and implements their
 read contracts. Unsupported connections retain explicit unavailable states.
 This checkout launcher is separate from `hale iris`. Its project service is
-the operator-machine head; there is still no `hale dna api` or `hale dna cockpit`
+the operator-machine head; there is still no `hale dna api` or `hale dna face`
 CLI subcommand, complete Compose profile or hosted deployment.
 
 ### Ordinary Hale application controls
 
-The [generic application service](../../iris/service/README.md) serves the same shell
+The [generic application service](service/README.md) serves the same shell
 with the Application workspace. The [intake-control example](../../iris/examples/intake-control/README.md)
 provides a real application-owned mode control, durable receipts and a work loop
 whose intake follows the committed mode. Build it using that example's SQLite
@@ -140,7 +142,7 @@ system, arbitrary source editor or universal command store.
   assignment history; an explicitly authorized local profile can reassign a
   supported open Task to an eligible person. A native command head also lets
   the signed-in principal raise work with the **New task** form, the
-  cockpit's `hale dna ask`; the organism's answer is a separate, later fact.
+  face's `hale dna ask`; the organism's answer is a separate, later fact.
 - **Practices:** paged proposals and revisions, available document text,
   lifecycle, provenance, rationale, governing Review and superseded digest.
 - **Reviews:** exact subject, required authority and recorded decision, linked
@@ -284,7 +286,7 @@ inspectable without offering a new change against an inactive version.
 
 The standalone API does not provide this replacement profile, so its proposal action is disabled.
 A composed application must advertise the exact `dna.practice.propose.v1`
-profile, its availability and the current person's authorization before Iris
+profile, its availability and the current person's authorization before the face
 enables submission. Selecting an organization position does not grant that
 authorization. This adapter currently supports replacing a readable, ratified,
 current practice whose author and target are `org`; it does not edit the stored
@@ -302,7 +304,7 @@ preserving the complete text, Unicode and captured line endings. Returning to
 editing retains the unsent draft. Large changed regions use a bounded, grouped
 comparison without truncating either document.
 
-Before sending, Iris reserves a recovery identity under an exclusive browser
+Before sending, the face reserves a recovery identity under an exclusive browser
 lock and verifies its local-storage write. The saved fields identify the
 application, principal, request, operation/version, position, target and exact
 subject; proposed text, rationale and returned receipt content remain in memory.
@@ -311,7 +313,7 @@ must be available to submit. Drafts clear when the view reloads or changes.
 Concurrent tabs cannot overwrite that scoped unresolved request reservation.
 
 An interrupted request is recovered by its original ID through authenticated
-GET, including after a reload. Iris does not automatically resend a POST or
+GET, including after a reload. The face does not automatically resend a POST or
 mint another ID. An unavailable or not-yet-found receipt retains the reservation.
 The result presents proposal creation, exact-candidate Review and adoption as
 separate facts. Manual status checks fetch current evidence; approval alone never
@@ -345,7 +347,7 @@ at decision time, or authorize source application. Those require the owning
 service's position binding and apply-time admission barrier.
 
 The independent `dna.review.verdict.v1` capability enables decisions on pending
-practice-candidate Reviews. Iris fetches the canonical practice at the Review's
+practice-candidate Reviews. The face fetches the canonical practice at the Review's
 exact source snapshot and checks its digest, Review link, pending state and
 organization-wide author/target before enabling confirmation. A question or an
 authority label alone cannot authorize a decision or substitute for candidate
@@ -376,7 +378,7 @@ legacy version1 practice metadata remains readable without
 rewriting or deleting it. The original storage key and lock are retained so old
 and new tabs cannot reserve independent slots. Unknown metadata stays blocked.
 Dismiss a validated completed request explicitly before starting the next one;
-Iris then refreshes domain reads before checking eligibility for another action.
+The face then refreshes domain reads before checking eligibility for another action.
 404 and unavailable lookup cannot release an unresolved reservation. Recovery
 remains available during unrelated collection failures and write revocation.
 

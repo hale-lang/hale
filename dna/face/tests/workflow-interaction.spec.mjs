@@ -3,7 +3,7 @@
 // browser does not invent a destination for an unknown or ambiguous key.
 import { test, expect } from './harness.mjs';
 
-test.skip(!process.env.HALE_COCKPIT_WORKFLOWS_BIN, 'Requires the explicitly supplied native recorded workflow fixture.');
+test.skip(!process.env.HALE_FACE_WORKFLOWS_BIN, 'Requires the explicitly supplied native recorded workflow fixture.');
 test.use({ workflows: true, organization: true });
 
 const detail = page => page.getByRole('region', { name: 'Execution', exact: true });

@@ -1,4 +1,4 @@
-# Knowledge projection and cockpit reads
+# Knowledge projection and face reads
 
 `KnowledgeStore` is the service-owned projection of native knowledge decisions.
 `Mem` and `Pq` retain native idea names and exact supersession digests on insert,
@@ -10,7 +10,7 @@ document's provenance.
 Postgres adds `name` and `supersedes` with idempotent migrations. Existing rows
 receive empty values. This migration does not reconstruct metadata previously
 discarded by the tail: an explicit projection rebuild/backfill is still needed
-for that history. The cockpit must not invent missing lineage. Memory binding
+for that history. The face must not invent missing lineage. Memory binding
 replacement now matches Postgres: the same `(idea, target, author)` triple updates
 its class without adding another binding or changing applicability.
 An identical class is a row-level no-op. `unbind` removes only that exact triple;

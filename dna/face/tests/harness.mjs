@@ -13,7 +13,7 @@ const executeNative = (command, args, options, limits) => {
   const bounded = boundedNative(command, args, limits);
   return execute(bounded.command, bounded.args, options);
 };
-const cockpit = fileURLToPath(new URL('../', import.meta.url));
+const face = fileURLToPath(new URL('../', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function availablePort() {
   const server = net.createServer();
@@ -39,7 +39,7 @@ export const test = base.extend({
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await use(page);
-    expect(errors, 'the cockpit raised no unhandled JavaScript errors').toEqual([]);
+    expect(errors, 'the face raised no unhandled JavaScript errors').toEqual([]);
   },
   recordCount: [3, { option: true }],
   organization: [false, { option: true }],
@@ -50,13 +50,13 @@ export const test = base.extend({
   commandSubject: [false, { option: true }],
   commandAdapter: [false, { option: true }],
   service: async ({ recordCount, organization, organizationDrafts, definitions, knowledge, workflows, commandSubject, commandAdapter }, use, testInfo) => {
-    const root = await mkdtemp('/tmp/hale-iris-browser.');
+    const root = await mkdtemp('/tmp/hale-face-browser.');
     const env = isolatedEnvironment();
-    if (organizationDrafts) env.HALE_IRIS_ORG_DRAFTS = "1";
-    env.XDG_CACHE_HOME = path.join(root, '.hale/cockpit-cache');
-    const native = workflows ? process.env.HALE_COCKPIT_WORKFLOWS_BIN : knowledge ? process.env.HALE_COCKPIT_KNOWLEDGE_BIN : process.env.HALE_COCKPIT_RECORD_BIN;
-    const api = commandAdapter ? process.env.HALE_COCKPIT_COMMAND_BIN : definitions ? process.env.HALE_COCKPIT_CATALOG_BIN : process.env.HALE_API_BIN;
-    if (commandAdapter) env.HALE_COCKPIT_SCRIPTED_COMMANDS = '1';
+    if (organizationDrafts) env.HALE_DNA_ORG_DRAFTS = "1";
+    env.XDG_CACHE_HOME = path.join(root, '.hale/face-cache');
+    const native = workflows ? process.env.HALE_FACE_WORKFLOWS_BIN : knowledge ? process.env.HALE_FACE_KNOWLEDGE_BIN : process.env.HALE_FACE_RECORD_BIN;
+    const api = commandAdapter ? process.env.HALE_FACE_COMMAND_BIN : definitions ? process.env.HALE_FACE_CATALOG_BIN : process.env.HALE_API_BIN;
+    if (commandAdapter) env.HALE_FACE_SCRIPTED_COMMANDS = '1';
     if (!native || !api) throw new Error('Use npm test: it prepares the native Record writer and API paths.');
     let child;
     let knowledgeChild;
@@ -101,7 +101,7 @@ export const test = base.extend({
       };
       if (knowledge) {
         env.HALE_DNA_KNOWLEDGE_DSN = 'memory';
-        env.HALE_DNA_KNOWLEDGE_READ_KEY = 'iris-browser-private-read-key-fixture-only';
+        env.HALE_DNA_KNOWLEDGE_READ_KEY = 'face-browser-private-read-key-fixture-only';
         await startKnowledge();
         env.HALE_DNA_KNOWLEDGE_URL = knowledgeOrigin;
       }
@@ -112,7 +112,7 @@ export const test = base.extend({
       let originalDependency;
       if (organization === true || organization === 'large') {
         await mkdir(path.dirname(orgSource), { recursive: true });
-        await copyFile(path.join(cockpit, 'tests/organization/main.hl'), orgSource);
+        await copyFile(path.join(face, 'tests/organization/main.hl'), orgSource);
         originalOrganization = await readFile(orgSource, 'utf8');
         if (organization === 'large') {
           const members = Array.from({ length: 30 }, (_, i) => `        extra_${String(i).padStart(2, '0')}: Reviewer = Reviewer { };`).join('\n');
@@ -139,7 +139,7 @@ export const test = base.extend({
       for (let attempt = 0; attempt < 3 && !origin; attempt++) {
         const port = await availablePort();
         const candidate = `http://127.0.0.1:${port}`;
-        const bounded = boundedNative(api, [root, String(port), path.join(cockpit, 'web')], { lock: false });
+        const bounded = boundedNative(api, [root, String(port), path.join(face, 'web')], { lock: false });
         child = spawn(bounded.command, bounded.args, {
           env, cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
         });

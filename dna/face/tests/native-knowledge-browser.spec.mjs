@@ -19,7 +19,7 @@ const test = base.extend({
   },
   page: async ({ page }, use) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    await use(page); expect(errors, 'No unhandled cockpit error').toEqual([]);
+    await use(page); expect(errors, 'No unhandled face error').toEqual([]);
   },
 });
 test.skip(!['API', 'SERVICE', 'SEED'].every(name => process.env[`HALE_KNOWLEDGE_${name}_BIN`]?.startsWith('/')), 'Supply explicit native Knowledge API/service/seed binaries.');
