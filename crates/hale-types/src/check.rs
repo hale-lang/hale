@@ -9477,16 +9477,17 @@ impl<'a> Checker<'a> {
             for c in &entry.constraints {
                 match c.kind {
                     PlacementConstraint::AsyncIo => {
-                        // Phase-1 macOS portability: the async_io pool
-                        // backend is epoll/eventfd/ucontext-based and
-                        // Linux-only. When the build TARGETS macOS,
-                        // reject `where async_io` at compile time with
-                        // actionable guidance — mirroring the
-                        // wasm-target stdlib gating. The C runtime's
-                        // async_io functions are inert stubs on macOS
-                        // (LOTUS_HAVE_ASYNC_IO == 0), so this diagnostic
-                        // is the clean-failure path (vs a link error).
-                        // The target, not the host: this asked
+                        // The async_io pool backend is epoll (Linux)
+                        // or kqueue (macOS, GH #970) over ucontext
+                        // coroutines. Where the TARGET's runtime has
+                        // none — musl, whose libc declares ucontext and
+                        // implements nothing — reject `where async_io`
+                        // at compile time with actionable guidance,
+                        // mirroring the wasm-target stdlib gating: the
+                        // C runtime's async_io functions are inert stubs
+                        // there (LOTUS_HAVE_ASYNC_IO == 0), so this is
+                        // the clean-failure path (vs a link error). The
+                        // target, not the host: this asked
                         // `cfg!(target_os = "macos")` until GH #970.
                         if !self.target_has_async_io {
                             self.diags.push(Diag::ty(
@@ -9495,9 +9496,10 @@ impl<'a> Checker<'a> {
                                     "placement entry `{}`: `async_io` pools \
                                      aren't supported on {} yet — use a \
                                      cooperative pool (drop `where async_io`), \
-                                     or build for a glibc Linux target. (The \
-                                     backend is epoll + ucontext; a kqueue/poll \
-                                     one is planned.)",
+                                     or build for glibc Linux or macOS. (The \
+                                     backend is epoll or kqueue over ucontext \
+                                     coroutines; this target's libc has no \
+                                     ucontext.)",
                                     entry.field.name, self.target_label
                                 ),
                             ));

@@ -28,6 +28,19 @@
  */
 
 #define _GNU_SOURCE
+/* macOS: <ucontext.h> declares getcontext/makecontext/swapcontext only
+ * under _XOPEN_SOURCE (they are deprecated there, and work — the
+ * async_io coroutines stand on them, GH #970), and _XOPEN_SOURCE alone
+ * hides the BSD extensions the rest of this TU uses; _DARWIN_C_SOURCE
+ * brings those back. */
+#if defined(__APPLE__)
+#define _XOPEN_SOURCE 700
+#define _DARWIN_C_SOURCE 1
+/* Apple marks the ucontext family deprecated (since 10.6) and keeps
+ * shipping it; the coroutines use nothing else, and a warning per call
+ * site says nothing a reader can act on. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #ifdef __wasm__
 /* WASM plan, Phase 1: the browser/full-stack-web target has no POSIX
  * and no external libc sysroot. Replace the hosted/POSIX include block
@@ -105,32 +118,37 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <ucontext.h>
+#elif defined(__APPLE__)
+#include <sys/event.h>   /* kqueue: the async_io poller here (GH #970) */
+#include <ucontext.h>
 #endif
 #endif /* __wasm__ */
 
-/* async_io pool backend availability. The per-pool epoll fd + eventfd
- * wake channel + ucontext coroutines exist on glibc Linux and behind the
- * wasm POSIX shim (which stubs the syscalls); they are ABSENT on macOS /
- * other BSDs, and on musl, which declares <ucontext.h> but implements
- * none of it (GH #970: a static musl binary linked from another host
- * failed on getcontext/makecontext/swapcontext alone). When unavailable,
- * the async_io functions below become inert stubs and `where async_io`
- * is rejected at compile time — the cooperative and classic-pinned pool
- * backends stay available everywhere. */
-#if (defined(__linux__) && defined(__GLIBC__)) || defined(__wasm__)
+/* async_io pool backend availability. The per-pool readiness poller +
+ * wake channel + ucontext coroutines exist on glibc Linux (epoll +
+ * eventfd), behind the wasm POSIX shim (which stubs the epoll calls),
+ * and on macOS (kqueue + a self-pipe, GH #970 — Darwin's ucontext is
+ * deprecated and works); they are ABSENT on musl, which declares
+ * <ucontext.h> but implements none of it (a static musl binary linked
+ * from another host failed on getcontext/makecontext/swapcontext alone).
+ * When unavailable, the async_io functions below become inert stubs and
+ * `where async_io` is rejected at compile time — the cooperative and
+ * classic-pinned pool backends stay available everywhere. */
+#if (defined(__linux__) && defined(__GLIBC__)) || defined(__wasm__) \
+    || defined(__APPLE__)
 #define LOTUS_HAVE_ASYNC_IO 1
 #else
 #define LOTUS_HAVE_ASYNC_IO 0
-/* Inert epoll event-flag values so the portable socket/listener code's
- * park-on-fd call sites still compile; lotus_coop_park_on_fd is a stub
- * that always returns -1 here (never parks), so these are never used to
- * actually wait on an fd. */
+#endif
+/* The park-on-fd vocabulary is epoll's bitmask, EPOLLIN / EPOLLOUT, on
+ * every platform: the kqueue poller translates, and where there is no
+ * poller at all lotus_coop_park_on_fd is a stub that returns -1 (never
+ * parks), so the values are never used to wait on an fd there. */
 #ifndef EPOLLIN
 #define EPOLLIN  0x001
 #endif
 #ifndef EPOLLOUT
 #define EPOLLOUT 0x004
-#endif
 #endif
 
 /* F.32-1γ-v2 session 2 (2026-05-26): TSAN suppressions.
@@ -7760,6 +7778,10 @@ typedef struct lotus_coop_pool {
      * shutdown, and cancels its parked coros instead of hanging the
      * join. -1 until async_io is enabled. */
     int               wake_fd;
+    /* macOS: the wake channel is a self-pipe; wake_fd is its read end
+     * (registered in the kqueue) and this its write end. -1 on Linux,
+     * where the eventfd is both. */
+    int               wake_wr_fd;
 #if LOTUS_HAVE_ASYNC_IO
     ucontext_t        drain_ctx;
     lotus_coro_t     *current_coro;
@@ -7805,6 +7827,12 @@ typedef struct lotus_coop_pool {
     int32_t           aff_cores[64];
     int32_t           aff_count;
 } lotus_coop_pool_t;
+
+#if LOTUS_HAVE_ASYNC_IO
+/* The wake channel, defined with the rest of the poller below; the
+ * producer path posts to it before that point in the file. */
+static void lotus_wake_post(lotus_coop_pool_t *p);
+#endif
 
 /* F.35 Slice 1: per-coro stack size. 64 KiB is the same default the
  * pthread library uses for "small" stacks; covers handler bodies
@@ -7906,6 +7934,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->async_io_enabled = 0;
     p->epoll_fd         = -1;
     p->wake_fd          = -1;
+    p->wake_wr_fd       = -1;
 #if LOTUS_HAVE_ASYNC_IO
     p->current_coro     = NULL;
     p->parked_head      = NULL;
@@ -8052,8 +8081,9 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
                  * missed-wakeup-safe: even if the worker hasn't yet entered
                  * epoll_wait, the pending count returns it immediately. The
                  * parked/cond handshake does NOT apply to the epoll path. */
-                uint64_t one = 1;
-                (void)write(p->wake_fd, &one, sizeof(one));
+#if LOTUS_HAVE_ASYNC_IO
+                lotus_wake_post(p);
+#endif
             } else {
                 /* classic pool: signal-only-when-parked wake. The seq_cst
                  * fence orders the release-publish of the cell (inside
@@ -8201,6 +8231,153 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
  * public entry points become -1 stubs — see the #else at the block end —
  * and `where async_io` is rejected at compile time by the type checker. */
 #if LOTUS_HAVE_ASYNC_IO
+/* ---- The readiness poller behind async_io (GH #970) -------------------
+ *
+ * One pool, one poller fd, one wake channel. The drain loops and the
+ * park path speak this small vocabulary and never epoll or kqueue by
+ * name, so the two backends differ only here:
+ *
+ *   Linux / wasm  epoll; the wake channel is an eventfd registered in it
+ *                 with ptr == pool, level-triggered (its counter is
+ *                 durable until read).
+ *   macOS         kqueue; the wake channel is a self-pipe whose read end
+ *                 is registered with udata == pool — level-triggered
+ *                 like the eventfd, so a post before the worker enters
+ *                 the wait is still seen on entry. EVFILT_USER would do
+ *                 as well; the pipe keeps the fd shape and the same
+ *                 missed-wakeup reasoning as Linux.
+ *
+ * `lotus_poll_add` takes the caller's EPOLLIN / EPOLLOUT bitmask; the
+ * kqueue side registers one filter per bit and reports each as that
+ * bit. Registration is one park at a time and removed on resume, so a
+ * kqueue EV_ADD on an already-registered fd (an update, where epoll
+ * says EEXIST) never arises. */
+typedef struct {
+    void    *ptr;
+    uint32_t events;
+} lotus_pollev_t;
+
+#if defined(__APPLE__)
+static int lotus_poll_create(void) {
+    int kq = kqueue();
+    if (kq >= 0) (void)fcntl(kq, F_SETFD, FD_CLOEXEC);
+    return kq;
+}
+static int lotus_poll_add(int pfd, int fd, uint32_t events, void *ptr) {
+    struct kevent ch[2];
+    int n = 0;
+    if (events & EPOLLIN)  EV_SET(&ch[n++], fd, EVFILT_READ,  EV_ADD, 0, 0, ptr);
+    if (events & EPOLLOUT) EV_SET(&ch[n++], fd, EVFILT_WRITE, EV_ADD, 0, 0, ptr);
+    if (n == 0) return -1;
+    return kevent(pfd, ch, n, NULL, 0, NULL) < 0 ? -1 : 0;
+}
+static void lotus_poll_del(int pfd, int fd) {
+    /* Either filter may be absent; each delete is its own change so a
+     * missing one (ENOENT) does not veto the other. */
+    struct kevent ch;
+    EV_SET(&ch, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    (void)kevent(pfd, &ch, 1, NULL, 0, NULL);
+    EV_SET(&ch, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    (void)kevent(pfd, &ch, 1, NULL, 0, NULL);
+}
+static int lotus_poll_wait(int pfd, lotus_pollev_t *out, int cap, int timeout_ms) {
+    struct kevent evs[16];
+    if (cap > 16) cap = 16;
+    struct timespec ts, *tp = NULL;
+    if (timeout_ms >= 0) {
+        ts.tv_sec  = timeout_ms / 1000;
+        ts.tv_nsec = (long)(timeout_ms % 1000) * 1000000L;
+        tp = &ts;
+    }
+    int n = kevent(pfd, NULL, 0, evs, cap, tp);
+    if (n < 0) return -1;
+    for (int i = 0; i < n; i++) {
+        out[i].ptr = evs[i].udata;
+        /* EV_ERROR / EV_EOF on the fd still mean "the wait is over" —
+         * the resumed coro's read/write reports what happened, as the
+         * epoll caller sees EPOLLERR / EPOLLHUP folded into readiness. */
+        out[i].events = evs[i].filter == EVFILT_WRITE ? EPOLLOUT : EPOLLIN;
+    }
+    return n;
+}
+static int lotus_wake_open(lotus_coop_pool_t *p) {
+    int pfds[2];
+    if (pipe(pfds) < 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        (void)fcntl(pfds[i], F_SETFD, FD_CLOEXEC);
+        (void)fcntl(pfds[i], F_SETFL, fcntl(pfds[i], F_GETFL) | O_NONBLOCK);
+    }
+    if (lotus_poll_add(p->epoll_fd, pfds[0], EPOLLIN, p) < 0) {
+        close(pfds[0]);
+        close(pfds[1]);
+        return -1;
+    }
+    p->wake_fd    = pfds[0];
+    p->wake_wr_fd = pfds[1];
+    return 0;
+}
+static void lotus_wake_post(lotus_coop_pool_t *p) {
+    char one = 1;
+    /* A full pipe means the worker already has more wake bytes than it
+     * can miss; EAGAIN is not a lost wake. */
+    (void)write(p->wake_wr_fd, &one, 1);
+}
+static void lotus_wake_drain(lotus_coop_pool_t *p) {
+    char buf[64];
+    while (read(p->wake_fd, buf, sizeof(buf)) > 0) {}
+}
+static void lotus_wake_close(lotus_coop_pool_t *p) {
+    if (p->wake_fd >= 0)    { close(p->wake_fd);    p->wake_fd = -1; }
+    if (p->wake_wr_fd >= 0) { close(p->wake_wr_fd); p->wake_wr_fd = -1; }
+}
+#else /* Linux, wasm: epoll + eventfd */
+static int lotus_poll_create(void) {
+    return epoll_create1(EPOLL_CLOEXEC);
+}
+static int lotus_poll_add(int pfd, int fd, uint32_t events, void *ptr) {
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events   = events;
+    ev.data.ptr = ptr;
+    return epoll_ctl(pfd, EPOLL_CTL_ADD, fd, &ev) < 0 ? -1 : 0;
+}
+static void lotus_poll_del(int pfd, int fd) {
+    (void)epoll_ctl(pfd, EPOLL_CTL_DEL, fd, NULL);
+}
+static int lotus_poll_wait(int pfd, lotus_pollev_t *out, int cap, int timeout_ms) {
+    struct epoll_event evs[16];
+    if (cap > 16) cap = 16;
+    int n = epoll_wait(pfd, evs, cap, timeout_ms);
+    if (n < 0) return -1;
+    for (int i = 0; i < n; i++) {
+        out[i].ptr    = evs[i].data.ptr;
+        out[i].events = evs[i].events;
+    }
+    return n;
+}
+static int lotus_wake_open(lotus_coop_pool_t *p) {
+    int wfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (wfd < 0) return -1;
+    if (lotus_poll_add(p->epoll_fd, wfd, EPOLLIN, p) < 0) {
+        close(wfd);
+        return -1;
+    }
+    p->wake_fd = wfd;
+    return 0;
+}
+static void lotus_wake_post(lotus_coop_pool_t *p) {
+    uint64_t one = 1;
+    (void)write(p->wake_fd, &one, sizeof(one));
+}
+static void lotus_wake_drain(lotus_coop_pool_t *p) {
+    uint64_t v;
+    (void)read(p->wake_fd, &v, sizeof(v));
+}
+static void lotus_wake_close(lotus_coop_pool_t *p) {
+    if (p->wake_fd >= 0) { close(p->wake_fd); p->wake_fd = -1; }
+}
+#endif
+
 int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
     if (!p) return -1;
     if (p->async_io_enabled) return 0;
@@ -8208,29 +8385,20 @@ int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
      * the recording's scheduling-step stream (see
      * lotus_coop_pool_drain_one_async_replay below), so the old
      * loud refusal is gone. */
-    int fd = epoll_create1(EPOLL_CLOEXEC);
+    int fd = lotus_poll_create();
     if (fd < 0) {
         return -1;
     }
     p->epoll_fd = fd;
-    /* 2026-05-30 wakeable park: a shutdown/cancel wake channel. An
-     * eventfd registered in this epoll with data.ptr == p (never a
-     * coro ptr, so the drain loop tells them apart). Lets shutdown
-     * unblock a worker sitting in epoll_wait(-1). Non-fatal if the
-     * eventfd can't be created — the pool just falls back to the
-     * prior leak-parked-coros-at-exit behavior. */
-    int wfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (wfd >= 0) {
-        struct epoll_event wev;
-        memset(&wev, 0, sizeof(wev));
-        wev.events   = EPOLLIN;
-        wev.data.ptr = p;
-        if (epoll_ctl(fd, EPOLL_CTL_ADD, wfd, &wev) < 0) {
-            close(wfd);
-            wfd = -1;
-        }
+    /* 2026-05-30 wakeable park: a shutdown/cancel wake channel,
+     * registered in this poller with ptr == p (never a coro ptr, so
+     * the drain loop tells them apart). Lets shutdown unblock a worker
+     * sitting in the wait with no timeout. Non-fatal if the channel
+     * can't be created — the pool just falls back to the prior
+     * leak-parked-coros-at-exit behavior. */
+    if (lotus_wake_open(p) < 0) {
+        p->wake_fd = -1;
     }
-    p->wake_fd = wfd;
     /* Publish epoll_fd + enable flag together via release fence so
      * the worker thread (which checks the flag without holding the
      * pool lock) sees a consistent pair. */
@@ -8450,11 +8618,7 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) {
         return 1;
     }
-    struct epoll_event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.events   = events;
-    ev.data.ptr = c;
-    if (epoll_ctl(p->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+    if (lotus_poll_add(p->epoll_fd, fd, events, c) < 0) {
         return -1;
     }
     c->parked_fd        = fd;
@@ -8675,7 +8839,7 @@ static lotus_coro_t *lotus_async_take_ord(lotus_coro_t **head,
 static void lotus_async_resume_coro(lotus_coop_pool_t *p,
                                     lotus_coro_t *c, int timed_out) {
     if (c->parked_fd >= 0) {
-        (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL, c->parked_fd, NULL);
+        lotus_poll_del(p->epoll_fd, c->parked_fd);
         c->parked_fd = -1;
     }
     c->next = NULL;
@@ -8705,7 +8869,7 @@ static int lotus_rp_pending_pop_oldest(lotus_bus_cell_t *out) {
  * shutdown-and-empty, 1 = advanced), plus -1 = the recorded step
  * tape is dry — caller falls through to the live drain. */
 static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
-    struct epoll_event events[16];
+    lotus_pollev_t events[16];
     uint32_t kind;
     uint64_t val;
     if (!lotus_replay_async_step_peek(&kind, &val)) {
@@ -8745,8 +8909,7 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
             while (c) {
                 lotus_coro_t *next = c->next;
                 if (c->parked_fd >= 0) {
-                    (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
-                                    c->parked_fd, NULL);
+                    lotus_poll_del(p->epoll_fd, c->parked_fd);
                 }
                 lotus_coro_free(c);
                 c = next;
@@ -8856,23 +9019,19 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
         /* Wait for the world to move: readiness harvested here may
          * satisfy this step or a later one (ready_head). The wake
          * eventfd covers cross-pool enqueues. */
-        int n = epoll_wait(p->epoll_fd, events, 16, 10);
+        int n = lotus_poll_wait(p->epoll_fd, events, 16, 10);
         if (n < 0) {
             if (errno != EINTR) return 0;
             n = 0;
         }
         for (int i = 0; i < n; i++) {
-            if (events[i].data.ptr == p) {
-                if (p->wake_fd >= 0) {
-                    uint64_t v;
-                    (void)read(p->wake_fd, &v, sizeof(v));
-                }
+            if (events[i].ptr == p) {
+                if (p->wake_fd >= 0) lotus_wake_drain(p);
                 continue;
             }
-            lotus_coro_t *rc = (lotus_coro_t *)events[i].data.ptr;
+            lotus_coro_t *rc = (lotus_coro_t *)events[i].ptr;
             if (!rc) continue;
-            (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL, rc->parked_fd,
-                            NULL);
+            lotus_poll_del(p->epoll_fd, rc->parked_fd);
             lotus_coro_t **pp = &p->parked_head;
             while (*pp && *pp != rc) pp = &(*pp)->next;
             if (*pp == rc) *pp = rc->next;
@@ -8934,8 +9093,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
         while (c) {
             lotus_coro_t *next = c->next;
             if (c->parked_fd >= 0) {
-                (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
-                                c->parked_fd, NULL);
+                lotus_poll_del(p->epoll_fd, c->parked_fd);
             }
             lotus_coro_free(c);
             c = next;
@@ -8991,8 +9149,8 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
                 timeout_ms = 100;
             }
         }
-        struct epoll_event events[16];
-        int n = epoll_wait(p->epoll_fd, events, 16, timeout_ms);
+        lotus_pollev_t events[16];
+        int n = lotus_poll_wait(p->epoll_fd, events, 16, timeout_ms);
         if (n < 0) {
             if (errno != EINTR) {
                 /* epoll error — bail to caller; worker exits. */
@@ -9004,18 +9162,15 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             /* The wake eventfd uses data.ptr == p (never a coro) — it only
              * exists to unblock epoll_wait so the top-of-loop checks rerun.
              * Drain it and skip. */
-            if (events[i].data.ptr == p) {
-                if (p->wake_fd >= 0) {
-                    uint64_t v;
-                    (void)read(p->wake_fd, &v, sizeof(v));
-                }
+            if (events[i].ptr == p) {
+                if (p->wake_fd >= 0) lotus_wake_drain(p);
                 continue;
             }
-            lotus_coro_t *c = (lotus_coro_t *)events[i].data.ptr;
+            lotus_coro_t *c = (lotus_coro_t *)events[i].ptr;
             if (!c) continue;
             /* Deregister fd; level-triggered semantics mean we MUST
              * detach now to avoid re-firing on the next epoll_wait. */
-            (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL, c->parked_fd, NULL);
+            lotus_poll_del(p->epoll_fd, c->parked_fd);
             /* Detach from parked list. */
             lotus_coro_t **pp = &p->parked_head;
             while (*pp && *pp != c) pp = &(*pp)->next;
@@ -9064,8 +9219,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             }
             if (!expired) break;
             if (expired->parked_fd >= 0) {
-                (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
-                                expired->parked_fd, NULL);
+                lotus_poll_del(p->epoll_fd, expired->parked_fd);
             }
             expired->next           = NULL;
             expired->parked_fd      = -1;
@@ -9286,8 +9440,9 @@ void lotus_coop_pool_shutdown_all(void) {
          * join below hangs. */
         if (__atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE)
             && p->wake_fd >= 0) {
-            uint64_t one = 1;
-            (void)write(p->wake_fd, &one, sizeof(one));
+#if LOTUS_HAVE_ASYNC_IO
+            lotus_wake_post(p);
+#endif
         }
     }
     for (size_t i = 0; i < g_coop_pool_count; i++) {
@@ -9326,10 +9481,9 @@ void lotus_coop_pool_destroy_all(void) {
         pthread_cond_destroy(&p->not_empty);
         pthread_cond_destroy(&p->not_full);
         pthread_mutex_destroy(&p->lock);
-        if (p->wake_fd >= 0) {
-            close(p->wake_fd);
-            p->wake_fd = -1;
-        }
+#if LOTUS_HAVE_ASYNC_IO
+        lotus_wake_close(p);
+#endif
         if (p->epoll_fd >= 0) {
             close(p->epoll_fd);
             p->epoll_fd = -1;

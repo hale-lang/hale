@@ -8,6 +8,32 @@ behavior.
 
 ## Unreleased
 
+### `async_io` pools on macOS: the kqueue backend (GH #970)
+
+`where async_io` builds and runs on macOS. The runtime's async_io pool
+was epoll + eventfd + ucontext, and Linux-only for the first two; it is
+now a small poller vocabulary — `lotus_poll_{create,add,del,wait}`,
+`lotus_wake_{open,post,drain,close}` — with two backends that differ
+only there: epoll + eventfd on Linux (and the wasm shim), kqueue + a
+self-pipe on macOS. The self-pipe is level-triggered like the eventfd,
+so the missed-wakeup reasoning the drain loops rest on is unchanged; the
+kqueue side registers one filter per EPOLLIN / EPOLLOUT bit and reports
+each as that bit, and EV_EOF / EV_ERROR resume the coro as readiness
+does, its read or write reporting what happened. Darwin's ucontext is
+deprecated and works (arm64 included); the arena TU defines
+`_XOPEN_SOURCE 700` + `_DARWIN_C_SOURCE` to see it. The drain loops,
+the park path, replay and shutdown are untouched.
+
+- `TargetSpec::has_async_io` is true for macOS; the check's default is
+  true on every host that runs the compiler. musl stays refused — the
+  diagnostic now says what the backend is and why the target lacks it.
+- On a Mac: `hale test tests/hale` gains `async_handler_payload_test`,
+  the corpus oracle runs example 88, the codegen async_io suites pass
+  (parked-at-shutdown, sleep park, replay), and the two `hale-types`
+  corpus sweeps that refused async_io programs on a Mac host pass.
+- The macOS workflow's step (c) turns from "async_io is refused" into
+  "an async_io program builds and runs".
+
 ### Iris: the project service, onboarding from the browser (GH #965)
 
 - A new head, `dna/api/project_service`, is the one process the cockpit talks

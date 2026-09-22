@@ -174,7 +174,7 @@ build for musl: `hale build --target x86_64-unknown-linux-musl app.hl`
 static file that runs on any Linux — Alpine, a `scratch` container, an
 old glibc — with no libc to match. One carve-out: `async_io` pools are
 refused for musl at check time (its libc has no `ucontext`, which the
-coroutine backend needs), as they are for macOS. `hale run` and `hale test` refuse a
+coroutine backend needs). `hale run` and `hale test` refuse a
 foreign target (nothing it builds runs here); `LOTUS_ASAN` and the
 other sanitizers are host-only. Without zig or the sysroot the build
 fails before linking and says which one is missing. `HALE_TARGET_GLIBC`
@@ -188,7 +188,7 @@ runs, and what changes about a program compiled there.
 |---|---|
 | **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
 | **Linux ARM64** (glibc) | Supported, prebuilt — the release matrix builds it on a native aarch64 runner (AWS Graviton, EKS arm64 nodes, Ampere). Same feature set as x86_64. |
-| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic when the build *targets* macOS (use a cooperative pool, or build for Linux — a Mac building `--target x86_64-unknown-linux-gnu` may place one). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). Neither the prebuilt toolchain nor what it emits needs Homebrew on the machine that runs it: the release tarball carries its libunwind beside `hale`, and emitted binaries link OpenSSL statically (`otool -L` shows only libSystem and libz). Building the compiler *from source* needs `brew install llvm@18 openssl@3`. Intel Macs run the arm64 build via Rosetta 2. |
+| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, all pool backends included: **`async_io` pools** run on kqueue (Linux's on epoll; same coroutines, same semantics). One carve-out. **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). Neither the prebuilt toolchain nor what it emits needs Homebrew on the machine that runs it: the release tarball carries its libunwind beside `hale`, and emitted binaries link OpenSSL statically (`otool -L` shows only libSystem and libz). Building the compiler *from source* needs `brew install llvm@18 openssl@3`. Intel Macs run the arm64 build via Rosetta 2. |
 | **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler now *names* `x86_64-pc-windows-msvc` (`hale --list-targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
 | **wasm32** | `hale build --target wasm32` for the browser. |
 

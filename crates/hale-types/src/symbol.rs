@@ -54,8 +54,9 @@ pub struct Bundle<'a> {
     /// A property of the TARGET. [`Bundle::new`] defaults it to the
     /// host's answer, which is the target for every build that does not
     /// name another; `hale build --target <triple>` sets the named
-    /// target's (GH #970) — a Mac building for Linux may place an
-    /// `async_io` pool, and a Linux host building for macOS may not.
+    /// target's (GH #970). Every host that runs the compiler has the
+    /// backend — Linux's epoll, macOS's kqueue — so the default is
+    /// true; a musl target is where it turns false.
     pub target_has_async_io: bool,
     /// The target's platform as the `async_io` diagnostic names it
     /// ("macOS", "musl Linux"). Set beside `target_has_async_io`.
@@ -89,7 +90,7 @@ impl<'a> Bundle<'a> {
             import_renames: Vec::new(),
             sources: Vec::new(),
             // The host is the target unless a build says otherwise.
-            target_has_async_io: !cfg!(target_os = "macos"),
+            target_has_async_io: true,
             target_label: if cfg!(target_os = "macos") { "macOS" } else { "Linux" },
         }
     }
