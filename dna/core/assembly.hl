@@ -369,8 +369,10 @@ locus Dna {
         self.define_asks();
         self.work.bind_scope(self.org_id);
         if self.runs_engine {
-            self.runtime = WorkflowRuntime { scope: self.org_id, work: self.work };
-            self.runtime.adopt(self.journal);
+            // the record and the performers are the assembly's, handed
+            // to the engine as borrows at its construction (GH #730: an
+            // interface value into a same-interface field; F.3 closed)
+            self.runtime = WorkflowRuntime { scope: self.org_id, work: self.work, journal: self.journal };
             self.executions = Executions { scope: self.org_id };
         }
         self.rehydrate();

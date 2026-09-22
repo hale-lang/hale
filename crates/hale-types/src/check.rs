@@ -15601,12 +15601,17 @@ impl<'a> Checker<'a> {
                                 self.top.lookup(iface_name),
                                 Some(TopSymbol::Interface(_))
                             ) {
+                                // GH #730: the same interface is identity.
+                                if rhs_name == iface_name {
+                                    true
+                                } else {
                                 match self.check_structural_impl(rhs_name, iface_name) {
                                     Ok(()) => true,
                                     Err(msg) => {
                                         self.diags.push(Diag::ty(rhs.span(), msg));
                                         true
                                     }
+                                }
                                 }
                             } else {
                                 false
@@ -16801,6 +16806,14 @@ impl<'a> Checker<'a> {
                             self.top.lookup(iface_name),
                             Some(TopSymbol::Interface(_))
                         ) {
+                            // GH #730: an interface VALUE into a field of
+                            // the same interface is identity — a handle
+                            // somebody else owns, stored as a borrow (F.39;
+                            // the assignment form since GH #967). The
+                            // structural check is for a concrete locus.
+                            if arg_name == iface_name {
+                                true
+                            } else {
                             match self.check_structural_impl(arg_name, iface_name) {
                                 Ok(()) => true,
                                 Err(msg) => {
@@ -16810,6 +16823,7 @@ impl<'a> Checker<'a> {
                                     ));
                                     true
                                 }
+                            }
                             }
                         } else {
                             false

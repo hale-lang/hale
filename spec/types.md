@@ -373,6 +373,17 @@ following positions:
 - **Locus `params` / field initializers.** Same shape as
   above for locus param defaults and `locus L { params { t:
   Tower; } }` slots.
+- **An interface VALUE into a field of the same interface (GH
+  #730, 2026-09-22).** `Attempt { performer: self.performer }` where
+  both are `Performer`: identity, no structural check, no
+  fat-pointer rebuild from a locus. The holder stores its own
+  `{data, vtable}` pair and owns nothing — the impl is a **borrow**,
+  exactly as a name in a field initialiser is (F.39) and as the
+  assignment form `self.f = handle` has been since GH #967. The
+  impl must outlive the holder; that is the same contract every
+  borrowed handle carries, and the checker's lifetime pass for it is
+  #730's remaining work. A value of a *different* interface is still
+  refused.
 - **`@form(vec)` cell `push`.** A `Registry @form(vec) of
   Tower` accepts pushes of any satisfying LocusRef.
 - **`or <substitute>` fallback expressions.** When a fallible

@@ -2636,6 +2636,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )?;
                 (fat.into(), declared_ty.clone())
             } else if let (
+                CodegenTy::Interface(iface),
+                CodegenTy::Interface(given),
+            ) = (&declared_ty, &val_ty)
+            {
+                // GH #730: an interface VALUE into a field of the same
+                // interface — `Attempt { performer: self.performer }`.
+                // The impl behind it is somebody else's: the field holds
+                // a fresh {data, vtable} pair in this locus's arena
+                // (never the handle's own pair, which its owner may
+                // overwrite in place), `owned_child_impl` stays None so
+                // the reclaim slot is null, and the owned bit stays
+                // clear — a borrow, as F.39 reads a name in a field
+                // initialiser and as the assignment form has been
+                // since GH #967. The checker admits only the identity
+                // (`given == iface`).
+                if given != iface {
+                    return Err(CodegenError::Unsupported(format!(
+                        "field `{}.{}`: an interface value of `{}` into a                          slot of `{}` — only the same interface is identity",
+                        locus_name, fname, given, iface
+                    )));
+                }
+                let fat = self.clone_iface_fat(
+                    val.into_pointer_value(),
+                    &format!("{}.{}", locus_name, fname),
+                )?;
+                (fat.into(), declared_ty.clone())
+            } else if let (
                 CodegenTy::Perspective(persp),
                 CodegenTy::LocusRef(impl_locus),
             ) = (&declared_ty, &val_ty)
