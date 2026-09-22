@@ -8,6 +8,9 @@ behavior.
 
 ## Unreleased
 
+### Docs: the book catches up with the week
+
+- `docs/src/everyday/records.md` says a `let` of a record, and an assignment, is a copy (GH #713, #992); `docs/src/services/lifecycle.md` says an omitted `run()` is an empty one (GH #735), that a handle stored into a contract-typed field or handed to a field of its own interface is a borrow (GH #967, #730), and which positions `hale check` refuses because the borrow would not outlive its holder (GH #730); `docs/src/reference.md`'s command table gains `hale replay`, `hale iris`, `hale dna` and `hale inputs`; `spec/projects.md`'s surface table gains `hale check --strict-fallible` (GH #738). The install chapter, the spec and the DNA book were already current for cross-compilation, `Time`, the stdlib additions and the workflow.
 ### A write through a struct local never reaches another (GH #993, #992)
 
 - `crates/hale-codegen/src/codegen.rs`: a field write under a local root (`bad.id = "…"`, `bad.inner.id = "…"`, `grown.id += "…"`) inside a locus method took the locus field's in-place String path, so it overwrote bytes in place. A `let` copy of a struct (GH #713) may share an unchanged String with its source, so the write reached the source and every local sharing that String: after `let command = self.host.saved; let good = self.host.result(command); let mut bad = good; bad.id = "PRIVATE-CANARY";`, `command.id` read the canary. A String or Bytes field under a local root is now replaced: the new value is cloned into the frame's arena and the pointer stored over. The P1 regression from #980, reported against the cockpit branch's commands API test. The String stored into the locus field was already an owned clone in the locus arena, and the reproducer runs clean under ASan.
