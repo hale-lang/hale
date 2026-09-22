@@ -10,7 +10,7 @@
 #
 #   scripts/warm-dna-cache.sh <hale> [<cache dir>]
 set -euo pipefail
-hale=${1:?the hale binary}
+hale=$(realpath -- "${1:?the hale binary}") # the knowledge service starts from another directory
 cache=${2:-${XDG_CACHE_HOME:-$HOME/.cache}}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm.XXXXXX")
 trap 'if [[ -f "$tmp/knowledge.pid" ]]; then kill "$(cat "$tmp/knowledge.pid")" 2>/dev/null || true; fi; rm -rf -- "$tmp"' EXIT
