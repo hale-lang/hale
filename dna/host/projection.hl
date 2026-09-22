@@ -358,11 +358,7 @@ locus Projection {
     fn build_digest() -> String {
         let bin = self.app_binary();
         if !std::io::fs::file_exists(bin) { return ""; }
-        let r = dna::run_tool("sha256sum\n" + bin);
-        if r.code != 0 { return ""; }
-        let sp = std::str::index_of(r.stdout, " ");
-        if sp < 0 { return dna::trim_nl(r.stdout); }
-        return r.stdout[0..sp];
+        return dna::sha256_file(bin);
     }
     // `status.json`, as `hale dna status --json` prints it and the
     // surface reads it.

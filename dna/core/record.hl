@@ -603,7 +603,7 @@ locus GitRecord {
                 if left <= 0 { return RunResult { code: 124, stdout: "", stderr: "the body lease's deadline has passed; no more transfers are tried" }; }
                 if left < secs { secs = left; }
             }
-            return run_tool("timeout\n" + to_string(secs) + "\ngit\n-C\n" + self.repo + "\n" + args);
+            return run_tool_timeout(secs, "git\n-C\n" + self.repo + "\n" + args);
         }
         return run_tool("git\n-C\n" + self.repo + "\n" + args);
     }

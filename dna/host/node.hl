@@ -103,8 +103,8 @@ locus Node {
                         let bin = self.build(seed_dir, artifact);
                         if len(bin) == 0 { return false; }
                         let shape = shape_of(artifact);
-                        let sha = dna::run_tool("sha256sum\n" + bin);
-                        let build_digest = if sha.code == 0 && len(sha.stdout) >= 12 { sha.stdout[0..12] } else { "" };
+                        let sha = dna::sha256_file(bin);
+                        let build_digest = if len(sha) >= 12 { sha[0..12] } else { "" };
                         if idx >= 0 {
                             let old = self.instances.get(idx) or Instance { };
                             stop_proc(old.proc);

@@ -12542,6 +12542,16 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
                 close(sock);
                 return NULL;
             }
+            /* A refused connect(2) spends the socket on macOS / the
+             * BSDs (Linux lets it try again): retry on a fresh one,
+             * or the retry fails EISCONN / EINVAL (GH #970). */
+            close(sock);
+            sock = socket(AF_UNIX, use_stream ? SOCK_STREAM : SOCK_SEQPACKET, 0);
+            if (sock < 0) {
+                perror("lotus_transport_create: socket");
+                return NULL;
+            }
+            lotus_set_cloexec(sock);
             nanosleep(&backoff, NULL);
         }
         fprintf(stderr,
@@ -12896,6 +12906,16 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
             close(sock);
             return NULL;
         }
+        /* A refused connect(2) spends the socket on macOS / the BSDs
+         * (Linux lets it try again): retry on a fresh one, or the
+         * retry fails EISCONN / EINVAL (GH #970). */
+        close(sock);
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("lotus_tcp_create: socket");
+            return NULL;
+        }
+        lotus_set_cloexec(sock);
         nanosleep(&backoff, NULL);
     }
     fprintf(stderr,
@@ -13209,24 +13229,32 @@ int lotus_tcp_connect(const char *host, uint16_t port) {
         addr.sin_addr = resolved->sin_addr;
         freeaddrinfo(res);
     }
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("lotus_tcp_connect: socket");
-        return -1;
-    }
-    lotus_set_cloexec(sock);
     struct timespec backoff = { 0, 5L * 1000L * 1000L };
     int attempts = 200;
     while (attempts-- > 0) {
+        /* A fresh socket per attempt. After a refused connect(2) POSIX
+         * leaves the socket's state unspecified: Linux lets the same
+         * socket try again, but on macOS / the BSDs it is spent, and
+         * the retry fails "Socket is already connected" (EISCONN) or
+         * EINVAL — so a client that raced its server's listen() failed
+         * outright there instead of retrying (GH #970). */
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("lotus_tcp_connect: socket");
+            return -1;
+        }
+        lotus_set_cloexec(sock);
         if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
             int nodelay = 1;
             (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
                              &nodelay, sizeof(nodelay));
             return sock;
         }
-        if (errno != ECONNREFUSED && errno != EAGAIN) {
+        int err = errno;
+        close(sock);
+        if (err != ECONNREFUSED && err != EAGAIN) {
+            errno = err;
             perror("lotus_tcp_connect: connect");
-            close(sock);
             return -1;
         }
         nanosleep(&backoff, NULL);
@@ -13234,7 +13262,7 @@ int lotus_tcp_connect(const char *host, uint16_t port) {
     fprintf(stderr,
             "lotus_tcp_connect: connect to %s:%u timed out\n",
             h, (unsigned)port);
-    close(sock);
+    errno = ETIMEDOUT;
     return -1;
 }
 

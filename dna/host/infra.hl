@@ -50,7 +50,12 @@ locus LocalTransport {
     params { home: String = ""; scratch: String = ".hale/dna"; }
     fn kind() -> String { return "local"; }
     fn probe(target: String) -> dna::Facts {
-        let r = dna::run_tool("sh\n-c\ncommand -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm");
+        // Asked in the body's environment, as `execute` runs there: the
+        // fixture's home and its stubs first on PATH. Asking this
+        // machine's own PATH answered for the developer's box — no
+        // systemd on a Mac — instead of for the body (GH #970).
+        let env = if len(self.home) > 0 { "export HOME=\"" + self.home + "\" PATH=\"" + self.home + "/.hale/bin:$PATH\"; " } else { "" };
+        let r = dna::run_tool("sh\n-c\n" + env + "command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm");
         return dna::Facts { reachable: true, facts: r.stdout };
     }
     fn execute(target: String, script: String, stdin: String) -> dna::RunResult {
@@ -101,7 +106,7 @@ locus ReferenceInfrastructure {
         return self.ssh.execute(self.target, script, stdin);
     }
     fn probe(target: String) -> dna::Facts {
-        if transport_kind() == "local" { return self.local.probe(target); }
+        if transport_kind() == "local" { self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME"); return self.local.probe(target); }
         return self.ssh.probe(target);
     }
     // The knowledge database, from dna/compose.yaml, brought up when it

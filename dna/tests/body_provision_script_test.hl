@@ -67,7 +67,7 @@ main locus App {
         let unit = std::io::fs::read_file(home + "/.config/systemd/user/hale-dna-" + key + ".service") or "";
         std::test::assert(std::str::contains(unit, "WorkingDirectory=%h/dna/prov\n"), "the unit runs where the clone is: " + unit);
         std::test::assert(std::str::contains(std::io::fs::read_file(home + "/.config/hale-dna/" + key + ".env") or "", "HALE_DNA_KNOWLEDGE_DSN=postgres://books:s3cret@db.invalid/books"), "the DSN landed in the body's env file");
-        std::test::assert_eq_str(dna::trim_nl(in_dir(app, fake, "sh\n-c\nls .hale/dna/provision.*.sh 2>/dev/null | wc -l").stdout), "0", "and the script file is gone here");
+        std::test::assert_eq_str(dna::trim_nl(in_dir(app, fake, "sh\n-c\nls .hale/dna/provision.*.sh 2>/dev/null | wc -l | tr -d ' '").stdout), "0", "and the script file is gone here");
 
         // a second record whose directory has the same name gets a unit and a
         // secrets file of its own (#635)

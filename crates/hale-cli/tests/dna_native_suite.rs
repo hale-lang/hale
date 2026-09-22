@@ -94,7 +94,7 @@ fn dna_scratch_root(text: &str) -> Option<String> {
 /// the scope is exactly what it was before #872 minus the neighbours.
 fn leftover_processes(tag: &str) -> Vec<String> {
     let Ok(procfs) = std::fs::read_dir("/proc") else {
-        return unscoped_leftover_processes();
+        return ledger_leftover_processes(tag);
     };
     let stamp = format!("{SLICE_TAG}={tag}");
     let mut left = Vec::new();
@@ -120,22 +120,77 @@ fn leftover_processes(tag: &str) -> Vec<String> {
     left
 }
 
-/// The pre-#872 filter, for a platform with no procfs to read a
-/// process's environment from (macOS; CI runs this suite on Linux).
-/// Nothing there can tell one runner's processes from another's, so
-/// this keeps the unscoped filter rather than no guard at all — it
-/// over-blames where it cannot attribute, which is the failure mode a
-/// developer can see and diagnose.
-fn unscoped_leftover_processes() -> Vec<String> {
+/// The guard where no process's environment can be read — macOS,
+/// which returns another process's arguments and never its
+/// environment, `ps -E` and `sysctl(KERN_PROCARGS2)` alike (GH #970).
+/// It used to fall back to blaming every process under any
+/// `/tmp/dna-` root, which blamed the slices running beside it for
+/// their live organisms and every fixture's reaper on its way out.
+///
+/// The slice's own roots stand in for its stamp: `dna::scratch_register`
+/// records each in the slice's ledger ([`roots_ledger`]), and a
+/// process is this slice's leak when its command line or its working
+/// directory (`lsof -d cwd`, readable for the same user) names one of
+/// them.
+fn ledger_leftover_processes(tag: &str) -> Vec<String> {
+    let roots = ledger_roots(tag);
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    // A root may appear as itself or through the /private/tmp symlink.
+    let names = |text: &str| -> Option<&String> {
+        roots.iter().find(|r| {
+            [r.to_string(), format!("/private{r}")].iter().any(|p| {
+                text.match_indices(p.as_str()).any(|(i, _)| {
+                    matches!(text[i + p.len()..].chars().next(), None | Some('/') | Some(' '))
+                })
+            })
+        })
+    };
+    let mut cwd_of: std::collections::HashMap<String, String> = Default::default();
+    if let Ok(out) = Command::new("lsof").args(["-a", "-d", "cwd", "-Fpn"]).output() {
+        let mut pid = String::new();
+        for l in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(p) = l.strip_prefix('p') {
+                pid = p.to_string();
+            } else if let Some(n) = l.strip_prefix('n') {
+                cwd_of.insert(pid.clone(), n.to_string());
+            }
+        }
+    }
     let ps = Command::new("ps").args(["-eo", "pid=,args="]).output().expect("ps");
     let me = std::process::id().to_string();
-    let mut left: Vec<String> = String::from_utf8_lossy(&ps.stdout)
-        .lines()
-        .filter(|l| l.contains("/tmp/dna-") && l.split_whitespace().next() != Some(me.as_str()))
-        .map(|l| format!("  {}", l.trim()))
-        .collect();
+    let mut left = Vec::new();
+    for l in String::from_utf8_lossy(&ps.stdout).lines() {
+        let l = l.trim();
+        let pid = l.split_whitespace().next().unwrap_or("").to_string();
+        if pid == me {
+            continue;
+        }
+        let root = names(l).or_else(|| cwd_of.get(&pid).and_then(|c| names(c)));
+        if let Some(root) = root {
+            left.push(format!("  {root}: pid {l}"));
+        }
+    }
     left.sort();
     left
+}
+
+/// Every scratch root a slice's fixtures made, kept when a fixture
+/// passes (unlike [`scratch_registry`], whose entry goes with it):
+/// `/tmp/dna-suite-<tag>.all`, one file per root holding its path.
+fn roots_ledger(tag: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/dna-suite-{tag}.all"))
+}
+
+fn ledger_roots(tag: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(roots_ledger(tag)) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .map(|r| r.trim().to_string())
+        .filter(|r| r.starts_with("/tmp/dna-") && !r.contains(".."))
+        .collect()
 }
 
 /// Where a fixture of this slice records the scratch root it made (GH
@@ -191,6 +246,7 @@ fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
         }
     }
     let _ = std::fs::remove_dir_all(&reg);
+    let _ = std::fs::remove_dir_all(roots_ledger(tag));
     swept.sort();
     swept
 }
@@ -521,7 +577,10 @@ fn the_slices_cover_every_fixture_once() {
 /// Before the scoping every guard saw every `/tmp/dna-` process on the
 /// box, so B failed for A's leak and both failed for the stranger's.
 /// Cheap by construction: no fixture runs, the leak is a `sleep`.
-#[cfg(target_os = "linux")]
+///
+/// On macOS the same scoping holds through the slice's roots ledger
+/// rather than the environment stamp (GH #970), so it runs there too.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn the_leftover_guard_blames_only_its_own_slice() {
     let pid = std::process::id();
@@ -533,6 +592,11 @@ fn the_leftover_guard_blames_only_its_own_slice() {
     let mut running = Vec::new();
     for (root, tag) in [(&root_a, tag_a.as_str()), (&root_stranger, tag_stranger.as_str())] {
         std::fs::create_dir_all(root).expect("a scratch root for the guard's regression");
+        // What `dna::scratch_register` records for a fixture's root; the
+        // macOS guard attributes by it, having no stamp to read.
+        let ledger = roots_ledger(tag);
+        std::fs::create_dir_all(&ledger).expect("the slice's roots ledger");
+        std::fs::write(ledger.join(root.trim_start_matches("/tmp/")), root).expect("record the root");
         running.push(
             Command::new("sleep")
                 .arg("120")
@@ -573,6 +637,8 @@ fn the_leftover_guard_blames_only_its_own_slice() {
     }
     let _ = std::fs::remove_dir_all(&root_a);
     let _ = std::fs::remove_dir_all(&root_stranger);
+    let _ = std::fs::remove_dir_all(roots_ledger(&tag_a));
+    let _ = std::fs::remove_dir_all(roots_ledger(&tag_stranger));
 
     assert_eq!(left_a.len(), 1, "slice A is blamed for its own leak and for nothing else, got:\n{}", left_a.join("\n"));
     assert!(left_a[0].contains(&root_a), "slice A's message names the scratch root that owns the leak, got:\n{}", left_a[0]);
