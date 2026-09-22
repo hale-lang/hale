@@ -3695,6 +3695,32 @@ statement-position recognition is also parser-gated to a
 fallible-body scope (so `let fail = 0;` outside such a body
 stays admissible).
 
+### A bare stdlib call is a warning, then an error (GH #738)
+
+Every stdlib entry point the signature table marks `fallible` can be
+called with no `or`. That call keeps the **legacy form** — the
+success value, or an Int status for the write fns — and the corpus
+relies on it, so it has always been accepted. The ruling of
+2026-09-20 stages its end, in three steps:
+
+1. **Now:** the bare call is a *warning* naming the callee, the
+   payload and the missing disposition, and the shapes that address
+   it (`or raise`, `or <fallback>`, `or discard`, `or handler(err)`).
+   `hale verify`, which gates on every advisory, fails on it.
+2. **`hale check --strict-fallible`:** the same finding is an error,
+   the shape of `--strict-secret`.
+3. **The next minor:** the default becomes the error, with a
+   migration note in the changelog and the book.
+
+The typing of the bare call is unchanged through all three: `hale
+build` lowers it as it always did. A handled call and a deliberately
+discarded one (`or discard`) are not reported. The inventory of the
+entry points concerned is the table itself (`stdlib_surface.rs`, the
+rows with a payload): 94 at the time of the ruling, across
+`std::io::fs`, `std::process`, `std::http::client`, `std::io::tcp`,
+`std::compress`, `std::tar`, `std::bytes`, `std::str` and
+`std::time`.
+
 ### `or` disposition
 
 `<expr> or <disp>` evaluates `<expr>`. If the result is a
