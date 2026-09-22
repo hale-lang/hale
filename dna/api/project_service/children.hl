@@ -30,6 +30,10 @@ fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> 
     std::io::fs::unlink(dir + "/" + name + ".pid") or discard;
     // the inner shell: run the program, record its pid, wait, record its code
     let script = "cd " + shq(cwd) + " && exec env " + env_words(envs) + " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
+    // a session of its own: what it starts stays in it, however it is
+    // regrouped or reparented, and `kill_tree` stops the whole session
+    // (GH #970)
+    let argv = dna::in_new_session(argv);
     let outer = "( sh -c " + shq("\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > " + shq(dir + "/" + name + ".exit")) + " sh sh -c " + shq(script) + " sh " + argv_words(argv) + " ) >/dev/null 2>&1 &";
     let r = dna::run_tool("sh\n-c\n" + outer);
     let mut waited = 0;
@@ -107,11 +111,15 @@ fn descendants(pid: String) -> String {
 
 // A process and everything it started, at once: frozen first, so nothing
 // in the tree starts more, then the frozen tree read again and killed.
+// "Everything it started" is its tree AND its session (`start` makes every
+// child a session leader): a tool the process started and then orphaned —
+// the organism crashed — is out of the tree's reach but still in the
+// session, on every platform (GH #970).
 fn kill_tree(pid: String) {
     if len(pid) == 0 || pid == "0" || pid == "-1" { return; }
-    let first = descendants(pid);
+    let first = dna::join_lines(descendants(pid), dna::session_members(pid));
     let s = dna::run_tool("kill\n-STOP\n" + first);
-    let all = descendants(pid);
+    let all = dna::join_lines(descendants(pid), dna::session_members(pid));
     let k = dna::run_tool("kill\n-KILL\n" + first + "\n" + all);
 }
 
