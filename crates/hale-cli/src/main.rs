@@ -5016,6 +5016,8 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--warn-resource-leak", false),
     // GH #436
     ("--strict-secret", false),
+    // GH #738
+    ("--strict-fallible", false),
     ("--sealable", false),
     ("--workspace", false),
     // GH #409
@@ -5078,6 +5080,7 @@ fn check_usage(verify: bool) {
     println!("Advisories:");
     println!("  --warn-resource-leak            enable the resource-leak lint");
     println!("  --strict-secret                 fail-closed `@secret` containment check");
+    println!("  --strict-fallible               a bare fallible stdlib call is an error, not a warning");
     println!("  --sealable                      report which loci could be `@sealed`");
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
@@ -6541,6 +6544,16 @@ fn run_check_impl_labelled(
         let progs: Vec<&hale_syntax::ast::Program> =
             bundle.programs.values().copied().collect();
         diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags(&progs));
+    }
+    // GH #738: a bare fallible stdlib call — no `or` — is a warning by
+    // default and an error under `--strict-fallible`; the default
+    // flips at the next minor. The typing of the bare call is
+    // unchanged (the legacy form still builds); this is the notice.
+    {
+        let strict = std::env::args().any(|a| a == "--strict-fallible");
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        diags.extend(hale_types::bare_fallible::bare_fallible_calls(&progs, strict));
     }
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits
     // NDJSON diagnostics on STDOUT (one object per line: file,
