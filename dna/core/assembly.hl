@@ -361,8 +361,12 @@ locus Dna {
     // the membrane reaches exactly it. The Journal is the authority:
     // a pending mutation Review is re-born from it at birth, so an
     // organism restarted mid-review can still be answered.
+    // A Review is a resident: it stays for a re-approval after it has
+    // settled, and lives until the assembly does. No `release` is
+    // declared for it — that would make it a flow, reclaimed the moment
+    // its (empty) run completed (GH #735). `reviews_open` counts the
+    // Reviews born, as it always did in practice.
     accept(r: Review) { self.reviews_open = self.reviews_open + 1; }
-    release (r: Review) { self.reviews_open = self.reviews_open - 1; }
     birth() {
         // card 18: the ask definitions — one edit leaf, one person's job —
         // and the engine of this scope, over this record and these performers

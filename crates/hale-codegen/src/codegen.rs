@@ -1109,6 +1109,15 @@ pub fn build_executable_with_options(
     // with `check`, which answers the same question in one hop from
     // its own expanded table.
     crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
+    // GH #735: an omitted `run` is an empty `run`, so a flow child is
+    // reclaimed when its (empty) run completes on both spellings. On
+    // the MERGED program, so a bundled stdlib locus is treated as a
+    // user one: pass A2 declares lifecycle methods from whichever
+    // declaration of a name it keeps, and a user seed that spells a
+    // stdlib locus's name (the stdlib's own seeds, harvested into
+    // the corpus) would otherwise carry a `run` its bundled twin
+    // lacked, and the body lowering would find no declaration.
+    hale_syntax::desugar::desugar_omitted_run(&mut merged);
 
     // GH #921 A2: the ownership pre-pass, over the merged and
     // desugared program and before anything borrows it. It numbers

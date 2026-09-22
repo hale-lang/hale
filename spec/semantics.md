@@ -1079,6 +1079,14 @@ run other loci while this run is yielded.
 If run() returns naturally, the locus exits run-state and
 proceeds to drain.
 
+A locus that declares no `run()` has an empty one: the two
+spellings are the same program (GH #735, 2026-09-22). In particular
+a flow child — a type some parent `release`s — is reclaimed when its
+empty run completes, right after its birth, whether the empty `run()
+{ }` is written or omitted; it does not live until its owner's exit
+because the hook was left out. A resident is unaffected: an empty
+run means "ready" either way.
+
 If run() panics, parent's `on_failure(self, StructuralFailure
 { ... })` invoked.
 

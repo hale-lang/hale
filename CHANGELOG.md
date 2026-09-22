@@ -19,6 +19,9 @@ behavior.
 ### `let` copies a struct value (GH #713)
 
 - `crates/hale-codegen/src/codegen.rs`, the `let` lowering: a struct read from a place — a field of `self` or of a child, a local, an element — is now copied into the frame's own region at the binding (Strings and Bytes cloned, nested structs copied, locus handles left as handles), the way a returned struct already was. Before, the binding was a view of the storage: `let saved = self.row; self.row = Row { };` emptied `saved`, and `let mut copy = original; copy.x = …` wrote the original. A literal or a call result is bound as it is. The ruling of 2026-09-20. Spec: `spec/types.md` § "A struct binding is a copy". Test: `tests/hale/struct_let_copies_test.hl` — same-locus and child fields, replacement, mutation through the binding and through the source, Int and String fields, a nested struct, a local-to-local copy.
+### An omitted `run` is an empty `run` (GH #735)
+
+- `crates/hale-syntax/src/desugar.rs` (`desugar_omitted_run`, called from codegen beside the topic desugars): every locus that declares no `run()` gets an empty one, so the two spellings lower identically. The visible change is for a flow child — a type some parent `release`s — that declared no `run`: it is now reclaimed (released, dissolved) when its empty run completes, right after its birth, exactly as one with a written `run() { }` is, instead of living until its owner's `run` returned. The ruling of 2026-09-20 on the issue. Residents are unaffected; an empty run that is not a flow's is still elided. Spec: `spec/semantics.md` under `run()`. Test: `tests/hale/omitted_run_is_empty_run_test.hl`, the issue's paired owners, asserting the same counts.
 
 ### Docs: the DNA book learns the workflow; four small rules written down
 
