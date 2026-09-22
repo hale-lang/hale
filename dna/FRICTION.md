@@ -101,6 +101,11 @@ is not one). Even if it were admitted, the ownership question is
 open: the field and the frame that produced the value would both
 claim the impl (the same ambiguity the locus-typed-field guard
 rejects, which returns early for interfaces — `check.rs:9540`).
+*Update (GH #967, 2026-09-21):* the ownership half is decided for
+the store that IS admitted — an interface value assigned to an
+interface-typed field (`self.journal = j`) is a borrow: the field's
+own child is reclaimed at the store and the holder never reclaims
+the handle. The identity coercion itself is still missing.
 
 **Reproducer:** `dna/friction/f3-interface-value-into-field/`.
 

@@ -19096,6 +19096,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && target.tail.len() == 1
                     && matches!(target.tail[0], LValueSeg::Field(_))
                 {
+                    // GH #967: a handle written into a contract-typed
+                    // field (`interface` / `perspective(P)`) is a
+                    // BORROW — F.39's rule for a name in a field
+                    // initialiser, applied to assignment. The child
+                    // the field owned until now is reclaimed here
+                    // (break-before-make, as WS1#4 does for a locus
+                    // literal), and the field's owned bit and reclaim
+                    // slot are cleared so the holder's cascade leaves
+                    // the borrowed impl to its own owner. Without
+                    // this the slot kept naming the DEFAULT's
+                    // `__reclaim_<Impl>` and the cascade tore down
+                    // whatever the field pointed at — the assembly
+                    // reclaiming a journal it was handed.
+                    if matches!(op, AssignOp::Eq)
+                        && matches!(
+                            slot_ty,
+                            CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                        )
+                    {
+                        if let LValueSeg::Field(f) = &target.tail[0] {
+                            self.emit_contract_field_borrow(&f.name)?;
+                        }
+                    }
                     self.emit_self_field_inplace_assign(
                         slot_ptr, new_val, &slot_ty,
                     )?;
@@ -33708,6 +33731,100 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_store(field_slot, new_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(BlockEnd::Open)
+    }
+
+    /// GH #967: `self.<contract field> = <handle>`. Runs the teardown
+    /// of the child the field owns (gated on the F.29 owned bit and
+    /// the GH #871 reclaim slot, so a field that already held a
+    /// borrow releases nothing), then marks the field borrowed: the
+    /// owned bit cleared, the reclaim slot nulled. The caller stores
+    /// the handle afterwards. A field with no owned bit (a locus with
+    /// no locus-carrying params) has nothing to release.
+    fn emit_contract_field_borrow(
+        &mut self,
+        fname: &str,
+    ) -> Result<(), CodegenError> {
+        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "contract-field assignment outside a locus method"
+                    .to_string(),
+            )
+        })?;
+        let info =
+            self.user_loci.get(&cs.locus_name).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no locus `{}` for contract-field assignment",
+                    cs.locus_name
+                ))
+            })?;
+        let (field_idx, field_ty) =
+            cs.fields.get(fname).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no field `{}` on locus self",
+                    fname
+                ))
+            })?;
+        let via_fat_pointer = matches!(field_ty, CodegenTy::Interface(_));
+        self.emit_owned_contract_child_reclaim(
+            &info,
+            cs.self_ptr,
+            &cs.locus_name,
+            fname,
+            field_idx,
+            via_fat_pointer,
+        )?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        if let Some(&bit_pos) = info.locus_ref_bit_per_field.get(fname) {
+            let i64_t = self.context.i64_type();
+            let mask_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    info.locus_ref_owned_mask_field_idx,
+                    &format!("{}.{}.borrow.mask.ptr", cs.locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let prev = self
+                .builder
+                .build_load(
+                    i64_t,
+                    mask_ptr,
+                    &format!("{}.{}.borrow.mask", cs.locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let cleared = self
+                .builder
+                .build_and(
+                    prev,
+                    i64_t.const_int(!(1u64 << bit_pos), false),
+                    &format!("{}.{}.borrow.mask.cleared", cs.locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(mask_ptr, cleared)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(&slot_idx) = info.owned_child_reclaim_field_idxs.get(fname)
+        {
+            let slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    slot_idx,
+                    &format!(
+                        "{}.{}.__owned_child_reclaim.borrow.ptr",
+                        cs.locus_name, fname
+                    ),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(slot, ptr_t.const_null())
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(())
     }
 
     fn finish_lvalue_assign(

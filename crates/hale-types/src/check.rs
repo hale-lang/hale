@@ -11747,6 +11747,12 @@ impl<'a> Checker<'a> {
         }
         let want = self.lvalue_ty(target);
         let Ty::Named(tname) = &want else { return };
+        // An `interface`- or `perspective(P)`-typed field returns here:
+        // only an interface VALUE (a param, a field — a fat pointer
+        // somebody else owns) can reach such a store, and codegen
+        // treats the store as a borrow (GH #967): the field's own
+        // child is reclaimed, the holder never reclaims the handle.
+        // The locus-typed case below is the ambiguous one.
         if !matches!(self.top.lookup(tname), Some(TopSymbol::Locus(_))) {
             return;
         }

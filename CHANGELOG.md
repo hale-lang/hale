@@ -8,6 +8,11 @@ behavior.
 
 ## Unreleased
 
+### Ownership: a handle stored into a contract-typed field is a borrow (GH #967)
+
+- `crates/hale-codegen/src/codegen.rs`: `self.<field> = <handle>` on an `interface`- or `perspective(P)`-typed field now does what a name in a field initialiser does (F.39 `Owner::Borrowed`): the child the field owned until then is reclaimed at the store (break-before-make, as a locus literal's reassignment is), the field's F.29 owned bit and GH #871 reclaim slot are cleared, and the holder's cascade leaves the handle to its owner. Before, the store was a plain value store — the slot kept naming the default's `__reclaim_<Impl>`, so the holder's teardown reclaimed whatever it had been handed (an assembly reclaimed a journal shared with the next assembly, which read freed memory; a let-bound journal was reclaimed a second time by its binding and the program segfaulted at exit) and the default leaked. `hale check` said nothing and still says nothing: the store is sound now; the lifetime question (the handle must outlive the holder, as at construction) stays GH #730's.
+- Spec: `spec/semantics.md` (the contract-typed paragraph under *Reassigning a locus-typed field*), `spec/decisions.md` F.39 (assignment follows initialisation). Regression: `crates/hale-codegen/tests/gh967_contract_field_borrow.rs` — the issue's three shapes and its let-bound crash, with the `dissolve()` hook as the oracle (the default reclaimed at the store, the borrowed impl once by its owner, a second handle releasing nothing of the first).
+
 ### musl targets: a static Linux binary from any host (GH #970, third step)
 
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` join the
