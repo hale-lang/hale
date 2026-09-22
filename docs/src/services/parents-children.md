@@ -190,6 +190,19 @@ locus Server {
   returning means "ready," and it lives until the parent
   dissolves. That's the right shape for a fixed cohort of
   long-lived workers spun up at boot.
+- Flow or resident is a **type-wide** fact. `release(c: T)`
+  declared on *any* parent in the program — including one that is
+  never instantiated, or one in an imported seed — makes every `T`
+  a flow, whoever accepted it. Removing the clause from one owner
+  does not make its children residents while another owner still
+  declares it; if a child you meant to keep is reclaimed when its
+  `run()` returns, search the whole program for `release(c: T)`.
+- What a handler hands a resident lives only for that dispatch.
+  The payload and any container a handler builds (`@form(vec)` rows,
+  Strings) are reclaimed when the handler returns, so a resident
+  born from a handler that must keep them copies them in its own
+  `birth()`, cloning the Strings, into storage it owns. Reading them
+  later from the handler's arena is a use after free.
 - A locus can also end *itself* early with **`terminate;`** —
   the locus analogue of `return`. It exits the method and lets
   the runtime tear the locus down.

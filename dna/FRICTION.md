@@ -101,6 +101,11 @@ is not one). Even if it were admitted, the ownership question is
 open: the field and the frame that produced the value would both
 claim the impl (the same ambiguity the locus-typed-field guard
 rejects, which returns early for interfaces — `check.rs:9540`).
+*Update (GH #967, 2026-09-21):* the ownership half is decided for
+the store that IS admitted — an interface value assigned to an
+interface-typed field (`self.journal = j`) is a borrow: the field's
+own child is reclaimed at the store and the holder never reclaims
+the handle. The identity coercion itself is still missing.
 
 **Reproducer:** `dna/friction/f3-interface-value-into-field/`.
 
@@ -657,6 +662,23 @@ down:
   (F.19): a child workflow is created by the owner of Tasks on a request
   over the bus, not by the step that wants it.
 
+**Resolution (DNA workflow card 19, 2026-09-21): FIXED.** The shape
+above is the engine (cards 03–18): a Work, a step, a workflow and a Task
+are residents beside the assembly, born from handlers, hearing their
+replies from handlers, ending from handlers; `Dna.ask` admits a
+workflow and runs it in that engine (card 18), and the routed
+`pending` settlement, the journaled `task.pending` and the flow types
+that could not wait are deleted. Nothing of an execution depends on a
+delivery across an off-thread binding any more: the membrane's intent
+reaches `Dna.ask` over the bound socket (`dna_run.rs`), and from there
+every transition is a resident's own. The baseline is qualified by
+`dna/tests/workflow_conformance_test.hl` — the canonical example under
+immediate, delayed, out-of-order, duplicate, stale, failed and
+cancelled replies, in process, over a git record with a restart
+mid-flight, over two memories reconstructed mid-flight, under a fenced
+lease, and across a real process-stop boundary (`conformance/runner.hl`,
+killed at three cuts and resumed by the assembly).
+
 **Compiler bugs fixed in this track:** F.2 (`@unbounded` ignored by the
 hot-path lint), F.6 (release dispatch by child type alone — memory
 corruption).
@@ -678,10 +700,9 @@ rewrite: a library cannot use its own enums or perspectives until they
 are.
 
 **Recorded, by design:** F.5 (a bus reply reaches a flow child at
-drain, so the retry loop lives with whoever owns the performers),
-F.15 (a flow child cannot await an asynchronous reply: routed Work
-settles pending, the assembly settles the durable Task from the
-Journal).
+drain; the engine's residents are not flow children, so nothing of a
+workflow waits on one). F.15 was recorded here by design until the
+engine existed; it is FIXED (card 19, above).
 
 **Runtime limitations, FIXED:** F.12 (keyed subscriptions now hear
 wire deliveries — receive-side key derivation), F.13 (a listen
