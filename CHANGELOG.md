@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### Docs: the book catches up with the week
+
+- `docs/src/everyday/records.md` says a `let` of a record is a copy (GH #713); `docs/src/services/lifecycle.md` says an omitted `run()` is an empty one (GH #735), that a handle stored into a contract-typed field or handed to a field of its own interface is a borrow (GH #967, #730), and which positions `hale check` refuses because the borrow would not outlive its holder (GH #730); `docs/src/reference.md`'s command table gains `hale replay`, `hale iris`, `hale dna` and `hale inputs`; `spec/projects.md`'s surface table gains `hale check --strict-fallible` (GH #738). The install chapter, the spec and the DNA book were already current for cross-compilation, `Time`, the stdlib additions and the workflow.
+
 ### A borrow must outlive its holder (GH #730, second half)
 
 - `crates/hale-types/src/borrow_lifetime.rs` (new), `hale check`: a handle stored by name into a locus-carrying param field (`LocusRef`, `interface`, `perspective(P)`) is borrowed, never the holder's to reclaim, so `check` refuses the positions where nothing outlives the holder — a `let` of the frame or a bus handler's payload into a child of `self` (a field reassigned, an accepted child), a field of `self` or a frame `let` into a returned literal, a `let` of an inner block into an outer binding — and, for a parameter, asks every call site: the first caller that hands a `let` of its own frame or a handler payload is the witness the refusal names, a parameter at the caller recursing to a bounded depth. A borrow the holder reads only in `birth()` is birth-scoped and sound (the engine's residents copy what they are handed there). Errors; nothing the walk cannot follow is refused. Beside it, a GH #737 notice: a subscription keyed by `self.f` read its key when it was registered, at construction, so an assignment to `f` in `birth()` did not retarget it. Spec: `spec/semantics.md` § "A borrow outlives its holder", `spec/decisions.md` F.39. Test: `crates/hale-cli/tests/check_borrow_lifetime.rs`. Not decided here: a borrow across thread domains, and the container case of #712.
