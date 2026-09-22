@@ -254,15 +254,18 @@ locus __StdTextFileSink {
         path: String = "";
     }
 
+    // A failed append is discarded on purpose: this is a best-effort
+    // writer over a path its owner chose (GH #738 — a bare fallible
+    // call is a warning now, and says so).
     fn write(s: String) {
-        std::io::fs::write_file_append(self.path, s);
+        std::io::fs::write_file_append(self.path, s) or discard;
     }
 
     fn line(s: String) {
-        std::io::fs::write_file_append(self.path, s + "\n");
+        std::io::fs::write_file_append(self.path, s + "\n") or discard;
     }
 
     fn newline() {
-        std::io::fs::write_file_append(self.path, "\n");
+        std::io::fs::write_file_append(self.path, "\n") or discard;
     }
 }

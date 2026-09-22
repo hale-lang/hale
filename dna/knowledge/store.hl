@@ -41,6 +41,11 @@ interface KnowledgeStore {
     // The next record seq to apply (0 = nothing applied yet).
     fn watermark() -> Int;
     fn set_watermark(seq: Int) -> Bool;
+    // The projection is derived and rebuildable: drop every projected row
+    // and every projection stamp, so the next apply starts from row 0. The
+    // record's identity and the store's scope stay. A reconcile that
+    // re-appended rows beneath a stamped prefix is the reason this exists.
+    fn rebuild() -> Bool;
     // Idempotent by id: a second write with the same id updates in place.
     fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool;
     // The idea is no longer accepted (a ratified supersession retired
@@ -361,6 +366,22 @@ locus Mem {
     }
     fn watermark() -> Int { return self.mark; }
     fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
+    fn rebuild() -> Bool {
+        while self.ideas.len() > 0 { let gone = self.ideas.pop() or dna::Idea { }; }
+        while self.seqs.len() > 0 { let gone = self.seqs.pop() or 0; }
+        while self.embeds.len() > 0 { let gone = self.embeds.pop() or ""; }
+        while self.bindings.len() > 0 { let gone = self.bindings.pop() or dna::KnowledgeBinding { }; }
+        while self.edges.len() > 0 { let gone = self.edges.pop() or dna::KnowledgeEdge { }; }
+        while self.signal_rows.len() > 0 { let gone = self.signal_rows.pop() or Signal { }; }
+        while self.structure.len() > 0 { let gone = self.structure.pop() or Structure { }; }
+        self.mark = 0;
+        self.projection_mark = 0;
+        self.projection_head = "";
+        self.projection_pending_mark = 0;
+        self.projection_pending_head = "";
+        self.graph_version = self.graph_version + 1;
+        return true;
+    }
     @unbounded
     fn index_of(id: String) -> Int {
         let mut i = 0;
@@ -1015,6 +1036,16 @@ locus Pq {
         let committed = self.conn.commit();
         if !committed.ok { self.note("graph commit", committed.err); return self.graph_abort("read_failed"); }
         return page;
+    }
+    fn rebuild() -> Bool {
+        if !self.opened { self.error = "rebuild: the store is not open"; return false; }
+        let sql = "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals;"
+            + " UPDATE knowledge_meta SET value = '0' WHERE key IN ('watermark', 'graph_projection_watermark', 'graph_projection_pending_watermark');"
+            + " UPDATE knowledge_meta SET value = '' WHERE key IN ('graph_projection_head', 'graph_projection_pending_head');"
+            + " UPDATE knowledge_meta SET value = (value::bigint + 1)::text WHERE key = 'graph_generation'";
+        let r = self.conn.exec(sql);
+        if !r.ok { self.note("rebuild", r.err); return false; }
+        return true;
     }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");

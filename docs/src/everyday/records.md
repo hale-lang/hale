@@ -40,6 +40,22 @@ never a silently defaulted field. That holds for a record you
 imported from another seed too, where you spell the type
 `alias::Config { ... }`.
 
+**A binding is a copy.** `let saved = self.row;` copies the record
+into the frame — its Strings and Bytes cloned, nested records copied,
+a locus handle inside it left as a handle — the way a returned record
+already was. Replace the field afterwards and `saved` still reads
+what it read; write through a `let mut copy` and the original is
+untouched. A literal or a call result is bound as it is, since it was
+already yours. Assignment is the same: `copy = saved` copies too, and
+a write through one local never shows up in another.
+
+```hale,fragment
+let saved = self.row;
+self.row = Row { };           // saved is unchanged
+let mut copy = saved;
+copy.score = 9;               // saved.score is unchanged
+```
+
 Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the
 signal to promote it to a [locus](./locus-gently.md).

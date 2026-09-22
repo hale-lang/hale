@@ -50,11 +50,34 @@ the lifetime contract.
 | Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
-| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record. Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
+| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
+
+### A struct binding is a copy (GH #713)
+
+`let b = <place>;` where the place holds a struct — a field of `self`
+or of a child, a local, an element — binds a **copy**: a fresh struct
+in the frame's own region (a method's scratch; the caller's arena for
+a binding the fn hands back), its `String` and `Bytes` fields cloned,
+nested structs copied the same way, locus handles left as handles. The
+binding then follows nothing: replacing the source (`self.row = Row {
+}`) leaves `b` as it was read, and writing through the binding (`let
+mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
+a call result is fresh already and is bound as it is. Assignment
+reads the same way (GH #992): `b = <place>` on a struct local, and
+`arr[i] = <place>` or `b.inner = <place>` under one, store a copy.
+And a write through a local never reaches another (GH #993): a copy
+may share an unchanged `String` with its source, so a `String` or
+`Bytes` field under a local root is replaced, never overwritten in
+place — only a locus's own storage takes the in-place path. This finishes
+for structs the single-owner rule `spec/memory.md` states for
+`String` and `Bytes` stores (2026-09-22; before it the binding was a
+view of the storage, and an acknowledgement body read after the
+proposal field was cleared came back empty). A deliberate view has no
+spelling yet; read the field again when the current value is wanted.
 
 ## Type aliases
 
@@ -356,6 +379,17 @@ following positions:
 - **Locus `params` / field initializers.** Same shape as
   above for locus param defaults and `locus L { params { t:
   Tower; } }` slots.
+- **An interface VALUE into a field of the same interface (GH
+  #730, 2026-09-22).** `Attempt { performer: self.performer }` where
+  both are `Performer`: identity, no structural check, no
+  fat-pointer rebuild from a locus. The holder stores its own
+  `{data, vtable}` pair and owns nothing — the impl is a **borrow**,
+  exactly as a name in a field initialiser is (F.39) and as the
+  assignment form `self.f = handle` has been since GH #967. The
+  impl must outlive the holder; that is the same contract every
+  borrowed handle carries, and the checker's lifetime pass for it is
+  #730's remaining work. A value of a *different* interface is still
+  refused.
 - **`@form(vec)` cell `push`.** A `Registry @form(vec) of
   Tower` accepts pushes of any satisfying LocusRef.
 - **`or <substitute>` fallback expressions.** When a fallible

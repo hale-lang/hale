@@ -137,6 +137,44 @@ locus GraphCases {
         std::test::assert_eq_str(completed.pending_head, "", "successful exact replay clears pending head");
         std::test::assert_eq_str(completed.head, target.record_head, "successful exact replay stamps the intended head");
     }
+    // A reconcile re-appends the local rows on top of the remote's head:
+    // same rows, new digests, one remote row among them (GH #603). The
+    // projection stamped before it must not refuse forever; it rebuilds.
+    fn chain_rebuilt() {
+        let store = know::Mem { }; let ledger = know::MemLedger { };
+        let service = svc::Service { root: self.f.root, store: store, graph: store, ledger: ledger, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        let earlier = self.seed("an earlier practice", "org", "knowledge.ratified", "");
+        let id = self.seed("a practice the reconcile keeps", "org", "knowledge.ratified", "");
+        let first = self.read(service, self.query(), 200);
+        self.json.eq(self.json.first(first), "text", "a practice the reconcile keeps");
+        let stamped = store.projection_basis();
+        std::test::assert(stamped.watermark > 1, "the projection is stamped past genesis");
+        // rebuild the chain: keep everything before the last two rows, insert a
+        // remote row, re-append the last two with their bodies unchanged
+        let moved = self.f.journal.refresh();
+        let n = self.f.journal.revision();
+        std::test::assert(n >= 3, "genesis, then rows to rebuild: " + to_string(n));
+        let r = self.f.journal.record;
+        let mut chain = self.f.journal.read(n - 3).digest;
+        chain = r.build(chain, dna::Row { kind: "instance.up", entity: "remote-0", body: "{}", author: "node" }, false, "");
+        std::test::assert(len(chain) > 0, "the remote row builds");
+        let mut i = n - 2;
+        while i < n {
+            let e = self.f.journal.read(i);
+            chain = r.build(chain, dna::Row { kind: e.kind, entity: e.entity, body: e.body, author: self.f.journal.author_of(i) }, false, "Rebuilt-From: " + e.digest);
+            std::test::assert(len(chain) > 0, "row " + to_string(i) + " re-appends");
+            i = i + 1;
+        }
+        std::test::assert(r.move_chain("journal", chain, stamped.head), "the rebuilt chain is swapped in");
+        let after = self.query();
+        std::test::assert_eq_str(after.record_head, chain, "the record's head is the rebuilt chain's");
+        let recovered = self.read(service, after, 200);
+        self.json.eq(self.json.first(recovered), "text", "a practice the reconcile keeps");
+        let rebuilt = store.projection_basis();
+        std::test::assert_eq_str(rebuilt.head, chain, "the projection is stamped at the rebuilt head");
+        std::test::assert_eq_int(rebuilt.watermark, n + 1, "and past every row of the rebuilt chain");
+        std::test::assert_eq_int(rebuilt.pending_watermark, 0, "with nothing pending");
+    }
     fn syntax_and_auth() {
         let unopened = know::Mem { };
         let absent = svc::Service { root: "/no-such-graph-root", store: unopened, graph: unopened, read_key: READ_KEY, j: dna::GitJournal { repo: "/no-such-graph-root" } };
@@ -194,7 +232,9 @@ locus GraphCases {
         self.json.is_bool(self.json.page(last), "has_more", false);
         std::test::assert(!std::str::contains(first, self.json.string(self.json.first(last), "id")), "continuation never repeats a visible row");
         // Reconciliation may replace a chain without changing its length or
-        // genesis. A stale cached graph must not acquire the replacement head.
+        // genesis. A stale cached graph must not acquire the replacement head:
+        // the projection is rebuilt from the replaced chain, and what it
+        // serves is the replacement's, never the stale rows under a new head.
         let original = self.f.journal.head();
         let parent = self.f.git("rev-parse\n" + original + "^");
         let mut row = self.f.journal.record.row_of(original);
@@ -204,10 +244,12 @@ locus GraphCases {
         std::test::assert(self.f.journal.record.move_chain("journal", replacement, original), "replace only owned fixture chain");
         let changed = self.query();
         std::test::assert_eq_str(changed.record_revision, q.record_revision, "replacement preserves revision count");
-        let lineage = self.read(service, changed, 503);
-        self.json.eq(self.json.raw(lineage, "error"), "code", "knowledge_projection_unavailable");
+        let lineage = self.read(service, changed, 200);
+        std::test::assert_eq_str(store.projection_basis().head, replacement, "the projection was rebuilt onto the replacement chain");
+        std::test::assert(std::str::contains(lineage, "\"record_head\": \"" + replacement + "\""), "the read names the replacement head");
         std::test::assert(self.f.journal.record.move_chain("journal", original, replacement), "restore fixture chain");
         self.read(service, self.query(), 200);
+        std::test::assert_eq_str(store.projection_basis().head, original, "and rebuilt again onto the restored chain");
         q.target = "org/finance"; self.read(service, q, 400);
         q = self.query(); q.id = secret;
         let hidden = self.read(service, q, 404);
@@ -342,6 +384,9 @@ fn run_cases() {
     let interrupted = fixture::Fixture { root: root + "/interrupted-projection", port: 1 };
     let interrupted_cases = GraphCases { f: interrupted };
     interrupted_cases.interrupted_projection();
+    let rebuilt = fixture::Fixture { root: root + "/chain-rebuilt", port: 1 };
+    let rebuilt_cases = GraphCases { f: rebuilt };
+    rebuilt_cases.chain_rebuilt();
 }
 
 fn run_isolated() {
