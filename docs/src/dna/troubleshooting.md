@@ -2,7 +2,7 @@
 
 **`organism: not running — reading the Journal`** in `status`. No
 host is up here. `status`, `review <id>`, `history`, `board`,
-`fleet` and `ui` work from the record; `ask` and a verdict go into
+`fleet` and `ui` work from the record; `task create` and a verdict go into
 the record when the repository has a remote (an organization
 elsewhere answers), and need `hale dna run` or `dev` in another
 terminal when it doesn't.
@@ -27,7 +27,7 @@ editor's router at a local or scripted model in `dna/org/models.hl`
 model; with no key it cannot, and the review waits. Answer it as the
 Board (`hale dna review m1 approve --as you`), or give the Leader a
 model. The same happens when the budget is spent: `history` shows
-`budget.exhausted`, `ask` is refused with the spend, and the review
+`budget.exhausted`, `task create` is refused with the spend, and the review
 is yours until the next window.
 
 **`task t1 born … [planning]`**, and it stays there. The Leader is
@@ -48,11 +48,11 @@ practice requires (`hale dna board` says which). A restart does not
 close it; neither does anyone else's report.
 
 **`refused: budget exhausted (spent … of … micro-dollars this
-day …)`** from `ask`. The organization's allowance for the window is
+day …)`** from `task create`. The organization's allowance for the window is
 spent; nothing model-backed is routed until the next one. Raise
 `allowance_micros` in `org_budget()` (`dna/org/models.hl`), or wait.
 
-**`needs board`** on every review. Requests through `ask` are
+**`needs board`** on every review. Requests through `task create` are
 `application` changes, and the default grant is `refactor docs`.
 It's the expected posture for a new organization: you are asked, and
 told why. Widen `classes` in `dna/org/main.hl` when you want the

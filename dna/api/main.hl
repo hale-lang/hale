@@ -96,6 +96,9 @@ locus Wire {
         return self.capabilities_with_people(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, false, CommandCapability { });
     }
     fn capabilities_with_people(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability) -> String {
+        return self.capabilities_with_task_create(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, people, person_capability, false, CommandCapability { });
+    }
+    fn capabilities_with_task_create(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability, task_create: Bool, task_create_capability: CommandCapability) -> String {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("application_id", source.identity);
@@ -106,7 +109,8 @@ locus Wire {
         let can_source_review = source_commands.configured && source_commands.review.available && source_commands.review.authorized && command_wire.origin_valid(command_origin);
         let can_reassign = tasks && command_wire.task_writable(task_capability, command_origin);
         let can_retire = people && command_wire.task_writable(person_capability, command_origin);
-        b.bool_field("read_only", !(can_propose || can_verdict || knowledge_write || can_source || can_source_review || can_reassign || can_retire));
+        let can_create = task_create && task_create_capability.available && task_create_capability.authorized && command_wire.origin_valid(command_origin);
+        b.bool_field("read_only", !(can_propose || can_verdict || knowledge_write || can_source || can_source_review || can_reassign || can_retire || can_create));
         b.begin_object_field("principal");
         b.string_field("mode", mode);
         b.string_field("name", name);
@@ -126,6 +130,7 @@ locus Wire {
         b.bool_field("review_verdict", can_verdict);
         if tasks { b.bool_field("task_reassign", can_reassign); }
         if people { b.bool_field("person_retire", can_retire); }
+        if task_create { b.bool_field("task_create", can_create); }
         if source_commands.configured { b.bool_field("organization_propose", can_source); b.bool_field("organization_review_verdict", can_source_review); }
         b.end_object();
         if source_commands.configured {
@@ -136,6 +141,7 @@ locus Wire {
         if review_commands { b.field("review_commands", command_wire.capability_json(review_capability, command_origin, "dna.review.verdict")); }
         if tasks { b.field("task_commands", command_wire.task_capability_json(task_capability, command_origin)); }
         if people { let person_wire = PersonWire { }; b.field("person_commands", person_wire.capability(person_capability, command_origin)); }
+        if task_create { b.field("task_create_commands", command_wire.task_create_capability_json(task_create_capability, command_origin)); }
         if definitions && command_wire.origin_valid(command_origin) {
             let drafts = DefinitionDraftWire { };
             b.field("definition_drafts", drafts.capability());
@@ -187,7 +193,7 @@ locus Api {
         // Preserve the standalone head's existing unsupported-mutation behavior.
         // A command provider opens command submission. Draft POST is separate
         // read preparation and requires a real catalog plus a configured origin.
-        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path || (commands_path && (self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1"))))) { return http.error(405, "method_not_allowed", "this mutation route is not supported", false); }
+        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path || (commands_path && (self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1"))))) { return http.error(405, "method_not_allowed", "this mutation route is not supported", false); }
         // The optional shell is public and static, so Runtime inspection can
         // work without a DNA session. Every Record read still passes auth below.
         if self.web.serves(path) { return self.web.response(path); }
@@ -260,7 +266,9 @@ locus Api {
             let task_capability = if tasks { self.commands.capability(command_context, "dna.task.reassign", "1") } else { CommandCapability { } };
             let people = self.commands.supported("dna.person.retire", "1");
             let person_capability = if people { self.commands.capability(command_context, "dna.person.retire", "1") } else { CommandCapability { } };
-            let capabilities = wire.capabilities_with_people(source, self.mode, actor, self.organization.declared(), self.definitions.supported(), self.knowledge.supported(), supported, capability, review_supported, review_capability, self.command_origin, knowledge_write, source_capabilities, tasks, task_capability, people, person_capability);
+            let creates = self.commands.supported("dna.task.create", "1");
+            let create_capability = if creates { self.commands.capability(command_context, "dna.task.create", "1") } else { CommandCapability { } };
+            let capabilities = wire.capabilities_with_task_create(source, self.mode, actor, self.organization.declared(), self.definitions.supported(), self.knowledge.supported(), supported, capability, review_supported, review_capability, self.command_origin, knowledge_write, source_capabilities, tasks, task_capability, people, person_capability, creates, create_capability);
             let authoring = OrganizationDraftWire { };
             let command_wire = CommandWire { };
             if self.organization.allow_drafts && self.organization.declared() && command_wire.origin_valid(self.command_origin) {
@@ -332,7 +340,7 @@ locus Api {
     }
     fn command_handle(req: std::http::Request, query: String, context: CommandContext) -> std::http::Response {
         let wire = CommandWire { };
-        if !(self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1")) { return wire.error("commands_unsupported"); }
+        if !(self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1")) { return wire.error("commands_unsupported"); }
         if req.method == "GET" {
             let request_id = wire.lookup_id(query);
             if len(request_id) == 0 { return wire.error("invalid_query"); }

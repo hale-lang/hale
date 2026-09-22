@@ -6,6 +6,8 @@ import "../../contract/v1/validator" as wire_contract;
 const APPLICATIONS: String = "/api/hale/v1/applications";
 const SHELL_KNOWLEDGE_DRAFT_JS: String = "window.fixtureKnowledgeDraft = true;";
 const SHELL_TASK_ADMINISTRATION_JS: String = "window.fixtureTaskAdministration = true;";
+const SHELL_PROJECTS_JS: String = "window.IrisProjects = Object.freeze({ fixture: true });";
+const SHELL_TASK_CREATE_JS: String = "window.fixtureTaskCreate = true;";
 const SHELL_ORGANIZATION_DRAFT_JS: String = "window.fixtureOrganizationDraft = true;";
 const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/runtime.js\" defer></script><script src=\"/application.js\" defer></script><script src=\"/definition-draft.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
 const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
@@ -142,6 +144,8 @@ locus Fixture {
         std::io::fs::write_file(self.webroot + "/organization-draft.js", SHELL_ORGANIZATION_DRAFT_JS) or discard;
         std::io::fs::write_file(self.webroot + "/knowledge-draft.js", SHELL_KNOWLEDGE_DRAFT_JS) or discard;
         std::io::fs::write_file(self.webroot + "/task-administration.js", SHELL_TASK_ADMINISTRATION_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/projects.js", SHELL_PROJECTS_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/task-create.js", SHELL_TASK_CREATE_JS) or discard;
         std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
     }
     fn spawn() {

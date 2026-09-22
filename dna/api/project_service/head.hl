@@ -1,0 +1,779 @@
+// dna/api/project_service/head.hl — the cockpit head's handler
+// (GH #965, §2.4 of the head's contract). One process the browser
+// talks to: it serves the static shell through the API's own
+// `WebAssets`, owns the four head routes (`/api/hale/v1/head`,
+// `/head/projects`, `/head/commands`, `/head/logs`) and reverse-proxies
+// every `/api/hale/v1/applications…` request to the attached
+// project's API child on the loopback. Before answering anything it
+// settles every `running` receipt from its run and child files, so
+// a receipt is only ever as stale as the last request.
+//
+// The head keeps no state of its own that a file does not hold: the
+// active project is the registry's, the children are their pid files,
+// receipts are the journal's. A restarted head over the same state
+// directory sees exactly what the last one did.
+
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+
+const HEAD_PREFIX: String = "/api/hale/v1/head";
+const APPLICATIONS_PREFIX: String = "/api/hale/v1/applications";
+const HEAD_PROFILE: String = "dna.head.v1";
+// A log page is at most this many bytes.
+const LOG_PAGE_BYTES: Int = 65536;
+// The API child's readiness budget (§2.1), in 100 ms steps.
+const API_READY_STEPS: Int = 150;
+
+// What the head was started with: its port, the API child's binary
+// and port, the compiler every run execs, where its files are, and
+// whom it acts as. Plain values, so every part of the head can hold
+// a copy.
+type HeadConfig {
+    port: Int = 8792;
+    api_port: Int = 8793;
+    api_binary: String = "";
+    hale: String = "";
+    state_dir: String = "";
+    sources_dir: String = "";
+    principal_mode: String = "local";
+    principal_name: String = "local";
+    observer_port: Int = 8787;
+}
+
+// How an attach ended: refused (a reason_code), failed (`ok` false
+// with a reason), or attached with its outcome.
+type AttachResult {
+    ok: Bool = false;
+    refused: String = "";
+    reason: String = "";
+    application_id: String = "";
+    root: String = "";
+    name: String = "";
+    authority_written: Bool = false;
+    outcome: String = "{}";
+}
+
+type DetachResult {
+    ok: Bool = false;
+    refused: String = "";
+    reason: String = "";
+}
+
+fn head_origin(cfg: HeadConfig) -> String { return "http://127.0.0.1:" + to_string(cfg.port); }
+fn children_dir(cfg: HeadConfig) -> String { return cfg.state_dir + "/children"; }
+
+// What every operation sees: the principal, the active project, the
+// directories — read from the registry now.
+fn context_of(cfg: HeadConfig) -> HeadContext {
+    let reg = Registry { state_dir: cfg.state_dir };
+    let active = reg.active();
+    return HeadContext {
+        principal_mode: cfg.principal_mode, principal_name: cfg.principal_name,
+        active_id: if active.ok { active.application_id } else { "" },
+        active_root: if active.ok { active.root } else { "" },
+        active_name: if active.ok { active.name } else { "" },
+        state_dir: cfg.state_dir, sources_dir: cfg.sources_dir, children_dir: children_dir(cfg),
+        hale: cfg.hale, observer_port: cfg.observer_port
+    };
+}
+
+// The environment lines every child gets (§2.6). `kind` is run | api |
+// body | observer: the Knowledge DSN reaches the body only, and
+// observation is never attached to a child the head starts. `env -u`
+// options come first, where `env` reads them.
+fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
+    let p = cfg.principal_name;
+    let mut out = "-u\nLOTUS_OBS\n";
+    if kind != "body" { out = out + "-u\nHALE_DNA_KNOWLEDGE_DSN\n"; }
+    out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
+    return out + policy_env(root);
+}
+
+// ---- children ----------------------------------------------------------
+
+fn pid_file(cfg: HeadConfig, name: String) -> String { return children_dir(cfg) + "/" + name + ".pid"; }
+
+fn recorded_pid(cfg: HeadConfig, name: String) -> Int {
+    let text = dna::trim_nl(std::io::fs::read_file(pid_file(cfg, name)) or "");
+    if len(text) == 0 { return -1; }
+    return std::str::parse_int(text) or - 1;
+}
+
+// The mtime of `path` as unix seconds, 0 when absent.
+fn mtime_of(path: String) -> Int {
+    let r = dna::run_tool("stat\n-c\n%Y\n" + path);
+    if r.code != 0 { return 0; }
+    return std::str::parse_int(dna::trim_nl(r.stdout)) or 0;
+}
+
+// One child as the head sees it now: its recorded pid, whether it is
+// alive, its exit code once it ended, when it started, and the
+// receipt that started it.
+fn child_view(cfg: HeadConfig, name: String) -> ChildView {
+    let pid = recorded_pid(cfg, name);
+    let p = Proc { pid: pid, dir: children_dir(cfg), name: name };
+    let j = HeadJournal { state_dir: cfg.state_dir };
+    return ChildView { name: name, pid: pid, alive: pid > 0 && alive(p), exit_code: exit_code(p), since: mtime_of(pid_file(cfg, name)), command_id: j.last_child(name) };
+}
+
+// TERM, five seconds, KILL; the pid file goes so the child is not
+// re-adopted. The log, the exit and the cmd files stay for the logs read.
+fn stop_child(cfg: HeadConfig, name: String) {
+    let pid = recorded_pid(cfg, name);
+    if pid > 0 { stop_proc(Proc { pid: pid, dir: children_dir(cfg), name: name }); }
+    std::io::fs::unlink(pid_file(cfg, name)) or discard;
+}
+
+// Whether the project's own body or observer child is alive.
+fn body_or_observer_alive(cfg: HeadConfig) -> Bool {
+    return child_view(cfg, "body").alive || child_view(cfg, "observer").alive;
+}
+
+// At startup: a live pid whose command line is the one recorded in
+// `.cmd` is re-adopted; anything else is forgotten (its pid file removed).
+@unbounded
+fn readopt_children(cfg: HeadConfig) -> String {
+    let mut kept = "";
+    let mut rest = "api body observer";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let name = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        let pid = recorded_pid(cfg, name);
+        if pid <= 0 { continue; }
+        if cmd_matches(children_dir(cfg), name, pid) { kept = kept + (if len(kept) > 0 { " " } else { "" }) + name; continue; }
+        std::io::fs::unlink(pid_file(cfg, name)) or discard;
+    }
+    return kept;
+}
+
+// ---- the API child ---------------------------------------------------------
+
+// Starts `<api-binary> <root> <api-port>` as `children/api` and waits
+// for its readiness (§2.1): 200 on `/applications` naming `identity`,
+// within 15 s; the child exiting first is a failure with its log tail.
+@unbounded
+fn start_api(cfg: HeadConfig, root: String, identity: String) -> AttachResult {
+    let dir = children_dir(cfg);
+    std::io::fs::mkdir(dir) or discard;
+    let argv = cfg.api_binary + "\n" + root + "\n" + to_string(cfg.api_port);
+    write_cmd(dir, "api", argv);
+    let p = start(dir, "api", root, common_env(cfg, root, "api"), argv);
+    if p.pid <= 0 { return AttachResult { reason: "the API child could not be started" }; }
+    let mut step = 0;
+    while step < API_READY_STEPS {
+        if api_ready(cfg.api_port, identity) { return AttachResult { ok: true }; }
+        if !alive(p) {
+            let tail = log_tail(dir + "/api.log");
+            std::io::fs::unlink(pid_file(cfg, "api")) or discard;
+            return AttachResult { reason: "the API child exited (" + to_string(exit_code(p)) + ") before it was ready" + (if len(tail) > 0 { "\n" + tail } else { "" }) };
+        }
+        std::time::sleep(100ms);
+        step = step + 1;
+    }
+    stop_child(cfg, "api");
+    return AttachResult { reason: "the API child did not become ready within 15 s\n" + log_tail(dir + "/api.log") };
+}
+
+// The canonical form of a directory path (`pwd -P`), "" when it is not one.
+fn canonical_dir(path: String) -> String {
+    if !std::str::starts_with(path, "/") { return ""; }
+    let r = dna::run_tool("sh\n-c\ncd -- \"$1\" && pwd -P\nsh\n" + path);
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(r.stdout);
+}
+
+// Attach (§2.7): validate the root, synthesize the policies, replace
+// the API child, register and activate. Idempotent for the project
+// that is already active with a live child.
+fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> AttachResult {
+    let root = canonical_dir(root_in);
+    if len(root) == 0 { return AttachResult { refused: "path_invalid", reason: "root must be an existing absolute directory" }; }
+    let record = dna::GitRecord { repo: root };
+    let top = record.root();
+    if len(top) == 0 || canonical_dir(top) != root { return AttachResult { refused: "not_a_toplevel", reason: "root must be the top level of a Git worktree, not a subdirectory" }; }
+    if !record.git_ok("rev-parse\n--verify\nrefs/dna/journal^{commit}") { return AttachResult { refused: "no_record", reason: "the project has no DNA Record; create or initialize it first" }; }
+    if dna::run_tool("test\n-d\n" + root + "/dna").code != 0 { return AttachResult { refused: "no_seed", reason: "the project has no dna/ seed" }; }
+    let principal = record.setting("principal");
+    if len(principal) > 0 && principal != "local" { return AttachResult { refused: "principal_unsupported", reason: "the head is trusted-local; dna.principal is " + principal }; }
+    let trust = record.setting("trust");
+    if len(trust) > 0 && trust != "local" { return AttachResult { refused: "trust_unsupported", reason: "the head manages no signing key; dna.trust is " + trust }; }
+    let identity = record.identity();
+    if len(identity) == 0 { return AttachResult { refused: "no_record", reason: "the Record has no genesis" }; }
+    let reg = Registry { state_dir: cfg.state_dir };
+    let current = reg.active();
+    let same = current.ok && current.application_id == identity;
+    if current.ok && !same && body_or_observer_alive(cfg) { return AttachResult { refused: "body_running", reason: "stop the active project's body and observer before attaching another" }; }
+    let authority_written = write_policies(root, identity, cfg.principal_name);
+    let api = child_view(cfg, "api");
+    let mut attached = AttachResult { ok: true };
+    if !(same && api.alive && api_ready(cfg.api_port, identity)) {
+        stop_child(cfg, "api");
+        attached = start_api(cfg, root, identity);
+        if !attached.ok { return attached; }
+    }
+    let registered = reg.register(identity, root, basename(root), command_id);
+    let activated = reg.activate(identity, command_id);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("application_id", identity);
+    b.string_field("root", root);
+    b.string_field("name", basename(root));
+    b.int_field("api_port", cfg.api_port);
+    b.bool_field("authority_written", authority_written);
+    b.end_object();
+    return AttachResult { ok: true, application_id: identity, root: root, name: basename(root), authority_written: authority_written, outcome: b.result() };
+}
+
+// Detach (§2.7): refused while the body or the observer runs; else the
+// API child stops and the project is `deactivated`.
+fn detach_project(cfg: HeadConfig, command_id: String) -> DetachResult {
+    let reg = Registry { state_dir: cfg.state_dir };
+    let current = reg.active();
+    if !current.ok { return DetachResult { refused: "detached", reason: "no project is attached" }; }
+    if body_or_observer_alive(cfg) { return DetachResult { refused: "body_running", reason: "stop the body and the observer before detaching" }; }
+    stop_child(cfg, "api");
+    let d = reg.deactivate(current.application_id, command_id);
+    return DetachResult { ok: true };
+}
+
+// ---- runs ----------------------------------------------------------------
+
+// A run (§2.6): the script 0600 under `runs/<id>/`, wrapped in
+// `timeout -k 10 <secs> sh -e`, detached with the common environment
+// and the plan's own; cwd is the plan's, else the active root.
+fn start_run(cfg: HeadConfig, ctx: HeadContext, command_id: String, plan: Plan) -> Proc {
+    let j = HeadJournal { state_dir: cfg.state_dir };
+    let dir = j.run_dir(command_id);
+    std::io::fs::mkdir(j.runs_dir()) or discard;
+    std::io::fs::mkdir(dir) or discard;
+    if !write_private(dir + "/script.sh", plan.script + "\n") { return Proc { pid: -1, dir: dir, name: "run" }; }
+    let argv = "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + dir + "/script.sh";
+    write_cmd(dir, "run", argv);
+    let cwd = if len(plan.cwd) > 0 { plan.cwd } else { ctx.active_root };
+    return start(dir, "run", cwd, common_env(cfg, ctx.active_root, "run") + plan.envs, argv);
+}
+
+// A body or observer child (§2.7) from the plan's argv.
+fn start_long_child(cfg: HeadConfig, ctx: HeadContext, plan: Plan) -> Proc {
+    let dir = children_dir(cfg);
+    std::io::fs::mkdir(dir) or discard;
+    write_cmd(dir, plan.kind, plan.argv);
+    let cwd = if len(plan.cwd) > 0 { plan.cwd } else { ctx.active_root };
+    return start(dir, plan.kind, cwd, common_env(cfg, ctx.active_root, plan.kind) + plan.envs, plan.argv);
+}
+
+// ---- settle ----------------------------------------------------------------
+
+// The journal's outcome hook: the second file's parser for its operations, this file's for
+// its own (a create or init that exited 0 is attached here), and the
+// `record` evidence on every row-writing operation.
+locus HeadOutcomes {
+    params { cfg: HeadConfig = HeadConfig { }; }
+    fn outcome(receipt: Receipt, exit_code: Int, log_tail: String) -> String {
+        let ctx = context_of(self.cfg);
+        let base = if s3_known(receipt.operation) { s3_outcome(ctx, receipt.operation, exit_code, log_tail) } else { own_outcome(self.cfg, receipt, exit_code, log_tail) };
+        if !writes_rows(receipt.operation) || len(receipt.application_id) == 0 { return base; }
+        let reg = Registry { state_dir: self.cfg.state_dir };
+        let project = reg.find(receipt.application_id);
+        if !project.ok || len(project.root) == 0 { return base; }
+        return with_field(base, "record", record_evidence(project.root, receipt.head_before));
+    }
+}
+
+// Every `running` receipt that can be settled from its files is (§2.3):
+// runs from `run.{pid,exit,log}` and their deadlines, body and observer
+// children from their liveness and the operations file's readiness predicate.
+@unbounded
+fn settle_all(cfg: HeadConfig) {
+    let j = HeadJournal { state_dir: cfg.state_dir };
+    let outcomes = HeadOutcomes { cfg: cfg };
+    let now = std::time::now();
+    let settled = j.settle(now, outcomes);
+    let ctx = context_of(cfg);
+    let mut kinds = "body observer";
+    while len(kinds) > 0 {
+        let sp = std::str::index_of(kinds, " ");
+        let kind = if sp < 0 { kinds } else { kinds[0..sp] };
+        kinds = if sp < 0 { "" } else { kinds[(sp + 1)..len(kinds)] };
+        let mut rest = j.running_ids(kind);
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let id = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let view = child_view(cfg, kind);
+            let ready = view.alive && s3_child_ready(ctx, kind);
+            let tail = log_tail(children_dir(cfg) + "/" + kind + ".log");
+            let done = j.settle_child(id, view.alive, ready, view.exit_code, tail, now, outcomes);
+        }
+    }
+}
+
+// ---- JSON of the reads -------------------------------------------------------
+
+// The last `n` of a newline-separated list, in order.
+fn last_of(list: String, n: Int) -> String {
+    let mut count = 0;
+    let mut i = 0;
+    while i < len(list) {
+        if std::str::byte_at_unchecked(list, i) == 10 { count = count + 1; }
+        i = i + 1;
+    }
+    if len(list) > 0 { count = count + 1; }
+    let mut skip = if count > n { count - n } else { 0 };
+    let mut rest = list;
+    while skip > 0 && len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        skip = skip - 1;
+    }
+    return rest;
+}
+
+// A pid alive that is not one of the head's children: the body state
+// `external`, from `<root>/.hale/dna/org.pid`.
+fn external_body(cfg: HeadConfig, root: String) -> Bool {
+    if len(root) == 0 { return false; }
+    let text = dna::trim_nl(std::io::fs::read_file(root + "/.hale/dna/org.pid") or "");
+    if len(text) == 0 { return false; }
+    let pid = std::str::parse_int(text) or - 1;
+    if pid <= 0 || pid == child_view(cfg, "body").pid { return false; }
+    return dna::run_tool("kill\n-0\n" + to_string(pid)).code == 0;
+}
+
+fn child_state(view: ChildView) -> String {
+    if view.alive { return "running"; }
+    if view.exit_code >= 0 { return "exited"; }
+    return "stopped";
+}
+
+// The `children` object when the operations file answers `{}`: the two children
+// from their files, with the operations file's fields at their defaults.
+fn children_fallback(cfg: HeadConfig, root: String, body: ChildView, observer: ChildView) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.begin_object_field("body");
+    b.string_field("state", if !body.alive && external_body(cfg, root) { "external" } else { child_state(body) });
+    b.int_field("pid", body.pid);
+    b.int_field("since", body.since);
+    b.string_field("command_id", body.command_id);
+    b.bool_field("membrane_up", false);
+    b.string_field("mode", "");
+    b.int_field("exit_code", body.exit_code);
+    b.end_object();
+    b.begin_object_field("observer");
+    b.string_field("state", child_state(observer));
+    b.int_field("pid", observer.pid);
+    b.int_field("since", observer.since);
+    b.string_field("command_id", observer.command_id);
+    b.string_field("origin", "http://127.0.0.1:" + to_string(cfg.observer_port));
+    b.end_object();
+    b.end_object();
+    return b.result();
+}
+
+fn children_json(cfg: HeadConfig, ctx: HeadContext) -> String {
+    let body = child_view(cfg, "body");
+    let observer = child_view(cfg, "observer");
+    let s3 = s3_children_json(ctx, body, observer);
+    if std::json::valid_object(s3) && len(std::json::find_field_raw(s3, "body")) > 0 { return s3; }
+    return children_fallback(cfg, ctx.active_root, body, observer);
+}
+
+// `recent` (≤ `n` receipts) or `receipts` (full) for one project.
+fn receipts_json(cfg: HeadConfig, application_id: String, n: Int, full: Bool) -> String {
+    let j = HeadJournal { state_dir: cfg.state_dir };
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = last_of(j.ids(application_id), n);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let id = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let r = j.find(id);
+        if !r.ok { continue; }
+        if full { b.value(j.json(r)); continue; }
+        b.begin_object();
+        b.string_field("command_id", r.command_id);
+        b.string_field("request_id", r.request_id);
+        b.string_field("operation", r.operation);
+        b.string_field("state", r.state);
+        b.int_field("updated_at", r.updated_at);
+        b.end_object();
+    }
+    b.end_array();
+    return b.result();
+}
+
+// One `GET /head/projects` item; `detail` adds the `?id=` fields.
+fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) -> String {
+    let record = dna::GitRecord { repo: r.root };
+    let head = record.head("journal");
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("application_id", r.application_id);
+    b.string_field("name", r.name);
+    b.string_field("root", r.root);
+    b.int_field("attached_at", if r.activated_at > 0 { r.activated_at } else { r.registered_at });
+    b.bool_field("active", r.active);
+    if len(head) > 0 {
+        b.begin_object_field("record");
+        b.string_field("head", head);
+        b.int_field("revision", record.count("journal"));
+        b.end_object();
+    } else {
+        b.null_field("record");
+    }
+    let children = if r.active { children_json(cfg, ctx) } else { children_fallback(cfg, r.root, ChildView { name: "body" }, ChildView { name: "observer" }) };
+    b.field("body", std::json::find_field_raw(children, "body"));
+    b.begin_object_field("forge");
+    b.string_field("github", record.setting("github"));
+    b.field("board", logins_json(record.setting("github.board")));
+    b.end_object();
+    b.field("recent", receipts_json(cfg, r.application_id, 10, false));
+    if detail {
+        b.field("authority", authority_json(r.root, r.application_id));
+        let projected = s3_project_detail_json(ctx, r.root);
+        let connections = std::json::find_field_raw(projected, "connections");
+        let handoffs = std::json::find_field_raw(projected, "handoffs");
+        let secrets = std::json::find_field_raw(projected, "secrets");
+        b.field("connections", if std::str::starts_with(std::str::trim(connections), "[") { connections } else { "[]" });
+        b.field("handoffs", if std::str::starts_with(std::str::trim(handoffs), "[") { handoffs } else { "[]" });
+        b.field("secrets", if std::str::starts_with(std::str::trim(secrets), "[") { secrets } else { "[]" });
+        b.field("receipts", receipts_json(cfg, r.application_id, 50, true));
+    }
+    b.end_object();
+    return b.result();
+}
+
+// ---- the handler ---------------------------------------------------------------
+
+locus Head {
+    params {
+        cfg: HeadConfig = HeadConfig { };
+        web: api::WebAssets = api::WebAssets { };
+        // the API child pid the head last saw answer, and the one it last saw refuse a connection
+        api_ready_pid: Int = -1;
+        api_failed_pid: Int = -1;
+    }
+
+    fn error(status: Int, code: String, message: String, retryable: Bool) -> std::http::Response {
+        let http = api::Http { };
+        return http.error(status, code, message, retryable);
+    }
+
+    // The head envelope (§2.4) around `data`.
+    fn envelope(status: Int, active_id: String, data: String) -> std::http::Response {
+        let http = api::Http { };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("api_version", "hale.v1");
+        b.begin_object_field("head");
+        b.string_field("profile", HEAD_PROFILE);
+        b.begin_object_field("principal");
+        b.string_field("mode", self.cfg.principal_mode);
+        b.string_field("name", self.cfg.principal_name);
+        b.end_object();
+        b.string_field("active", active_id);
+        b.end_object();
+        b.field("data", data);
+        b.end_object();
+        return http.response(status, b.result());
+    }
+
+    // The command wire's error table (§2.7), extended with the head's codes.
+    fn command_error(code: String) -> std::http::Response {
+        if code == "invalid_command" { return self.error(400, code, "invalid command fields, values, or required headers", false); }
+        if code == "invalid_query" { return self.error(400, code, "lookup requires exactly one request_id", false); }
+        if code == "forbidden" { return self.error(403, code, "this command operation is not authorized", false); }
+        if code == "invalid_origin" { return self.error(403, code, "the command origin is not permitted", false); }
+        if code == "command_not_found" { return self.error(404, code, "no visible command was found for this request identity", false); }
+        if code == "project_not_found" { return self.error(404, code, "no registered project has that application_id", false); }
+        if code == "request_conflict" { return self.error(409, code, "this request identity belongs to different command content", false); }
+        if code == "command_context_changed" { return self.error(409, code, "the expected principal is not the head's; review the command under the current identity", false); }
+        if code == "detached" { return self.error(409, code, "the command names a project that is not the attached one", false); }
+        if code == "head_busy" { return self.error(409, code, "another command is running; wait for its receipt to settle", false); }
+        if code == "command_too_large" { return self.error(413, code, "the command body exceeds the supported byte limit", false); }
+        if code == "unsupported_media_type" { return self.error(415, code, "commands require Content-Type application/json", false); }
+        if code == "commands_unsupported" { return self.error(503, code, "the head's command origin is not configured", false); }
+        return self.error(503, "head_detached", "no project is attached; attach one from the Projects workspace", true);
+    }
+
+    // The API child's state for `GET /head`: down when its pid is dead
+    // or last refused a connection, ready once it answered, else starting.
+    fn api_state(pid: Int, identity: String) -> String {
+        if pid <= 0 { return "down"; }
+        if pid == self.api_ready_pid { return "ready"; }
+        if pid == self.api_failed_pid { return "down"; }
+        if api_ready(self.cfg.api_port, identity) { self.api_ready_pid = pid; return "ready"; }
+        return "starting";
+    }
+
+    fn head_read(raw_query: String) -> std::http::Response {
+        if len(raw_query) > 0 { return self.error(400, "invalid_query", "the head read takes no query fields", false); }
+        let ctx = context_of(self.cfg);
+        let j = HeadJournal { state_dir: self.cfg.state_dir };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("state", if len(ctx.active_id) > 0 { "attached" } else { "detached" });
+        if len(ctx.active_id) > 0 {
+            let api = child_view(self.cfg, "api");
+            b.begin_object_field("active");
+            b.string_field("application_id", ctx.active_id);
+            b.string_field("root", ctx.active_root);
+            b.string_field("name", ctx.active_name);
+            b.begin_object_field("api");
+            b.int_field("port", self.cfg.api_port);
+            b.string_field("state", if api.alive { self.api_state(api.pid, ctx.active_id) } else { "down" });
+            b.int_field("pid", api.pid);
+            b.end_object();
+            b.end_object();
+        } else {
+            b.null_field("active");
+        }
+        b.string_field("state_dir", self.cfg.state_dir);
+        b.string_field("sources_dir", self.cfg.sources_dir);
+        b.string_field("projects_dir", std::env::var("HOME") + "/dna");
+        b.field("children", children_json(self.cfg, ctx));
+        b.field("credentials", credentials_json(self.cfg, ctx.active_root));
+        let running = j.running_ids("");
+        let nl = std::str::index_of(running, "\n");
+        b.string_field("busy", if nl < 0 { running } else { running[0..nl] });
+        b.begin_array_field("operations");
+        let mut rest = all_operations();
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let name = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            let reason = if s3_known(name) { s3_available(ctx, name) } else { own_available(ctx, name) };
+            b.begin_object();
+            b.string_field("name", name);
+            b.string_field("version", "1");
+            b.bool_field("available", len(reason) == 0);
+            b.string_field("reason_code", reason);
+            b.end_object();
+        }
+        b.end_array();
+        b.end_object();
+        return self.envelope(200, ctx.active_id, b.result());
+    }
+
+    fn projects_read(raw_query: String) -> std::http::Response {
+        let http = api::Http { };
+        let mut id = "";
+        if len(raw_query) > 0 {
+            if !std::str::starts_with(raw_query, "id=") || std::str::contains(raw_query, "&") || len(raw_query) > 1024 { return self.error(400, "invalid_query", "the projects read takes one optional id", false); }
+            let decoded = http.decode(raw_query[3..len(raw_query)]);
+            if !decoded.ok || len(decoded.text) == 0 || len(decoded.text) > 256 { return self.error(400, "invalid_query", "id must be a bounded application_id", false); }
+            id = decoded.text;
+        }
+        let ctx = context_of(self.cfg);
+        let reg = Registry { state_dir: self.cfg.state_dir };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.begin_array_field("items");
+        if len(id) > 0 {
+            let one = reg.find(id);
+            if !one.ok || one.forgotten { return self.command_error("project_not_found"); }
+            b.value(project_json(self.cfg, ctx, one, true));
+        } else {
+            let mut rest = reg.ids();
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let each = if nl < 0 { rest } else { rest[0..nl] };
+                rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+                let r = reg.find(each);
+                if r.ok && !r.forgotten { b.value(project_json(self.cfg, ctx, r, false)); }
+            }
+        }
+        b.end_array();
+        b.end_object();
+        return self.envelope(200, ctx.active_id, b.result());
+    }
+
+    fn logs_read(raw_query: String) -> std::http::Response {
+        let http = api::Http { };
+        let mut run_id = "";
+        let mut child = "";
+        let mut offset = 0;
+        let mut seen = "|";
+        let mut rest = raw_query;
+        if len(raw_query) == 0 || len(raw_query) > 1024 { return self.error(400, "invalid_query", "the logs read takes run=<command_id> or child=api|body|observer, and an optional offset", false); }
+        while len(rest) > 0 {
+            let amp = std::str::index_of(rest, "&");
+            let pair = if amp < 0 { rest } else { rest[0..amp] };
+            rest = if amp < 0 { "" } else { rest[(amp + 1)..len(rest)] };
+            let eq = std::str::index_of(pair, "=");
+            if eq <= 0 { return self.error(400, "invalid_query", "query fields require a name and value", false); }
+            let key = pair[0..eq];
+            let value = http.decode(pair[(eq + 1)..len(pair)]);
+            if !value.ok || std::str::contains(seen, "|" + key + "|") { return self.error(400, "invalid_query", "invalid or duplicate query field", false); }
+            seen = seen + key + "|";
+            if key == "run" { run_id = value.text; }
+            else if key == "child" { child = value.text; }
+            else if key == "offset" { offset = http.integer(value.text, 1000000000); if offset < 0 { return self.error(400, "invalid_query", "offset must be a non-negative integer", false); } }
+            else { return self.error(400, "invalid_query", "unsupported query field", false); }
+        }
+        if (len(run_id) > 0) == (len(child) > 0) { return self.error(400, "invalid_query", "name exactly one of run or child", false); }
+        let ctx = context_of(self.cfg);
+        let mut path = "";
+        let mut name = "";
+        if len(run_id) > 0 {
+            let j = HeadJournal { state_dir: self.cfg.state_dir };
+            let r = j.find(run_id);
+            if !r.ok || r.principal_mode != self.cfg.principal_mode || r.principal_name != self.cfg.principal_name { return self.command_error("command_not_found"); }
+            path = j.run_dir(run_id) + "/run.log";
+            name = run_id;
+        } else {
+            if child != "api" && child != "body" && child != "observer" { return self.error(400, "invalid_query", "child must be api, body or observer", false); }
+            path = children_dir(self.cfg) + "/" + child + ".log";
+            name = child;
+        }
+        let page = read_log(path, offset, LOG_PAGE_BYTES);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("name", name);
+        b.int_field("offset", page.offset);
+        b.int_field("next_offset", page.next_offset);
+        b.string_field("text", page.text);
+        b.bool_field("complete", page.complete);
+        b.end_object();
+        return self.envelope(200, ctx.active_id, b.result());
+    }
+
+    // The receipt on the wire: 200 when terminal, else 202 on a submission.
+    fn receipt_response(r: Receipt, submitting: Bool) -> std::http::Response {
+        let j = HeadJournal { state_dir: self.cfg.state_dir };
+        let ctx = context_of(self.cfg);
+        let status = if submitting && !j.terminal(r) { 202 } else { 200 };
+        return self.envelope(status, ctx.active_id, j.json(r));
+    }
+
+    fn lookup(raw_query: String) -> std::http::Response {
+        let wire = api::CommandWire { };
+        let request_id = wire.lookup_id(raw_query);
+        if len(request_id) == 0 { return self.command_error("invalid_query"); }
+        let j = HeadJournal { state_dir: self.cfg.state_dir };
+        let r = j.lookup(self.cfg.principal_mode, self.cfg.principal_name, request_id);
+        if !r.ok { return self.command_error("command_not_found"); }
+        return self.receipt_response(r, false);
+    }
+
+    // POST /head/commands (§2.3, §2.5): the guard, the shape, the
+    // principal, the project, then the journal's identity and replay
+    // rules, then the plan and its execution.
+    fn submit(req: std::http::Request) -> std::http::Response {
+        let wire = api::CommandWire { };
+        let syntax = ops::OrganizationJson { };
+        let guard = wire.guard(req, head_origin(self.cfg));
+        if len(guard) > 0 { return self.command_error(guard); }
+        let body = req.body;
+        if !syntax.valid(body) || !wire.fields(body, "request_id operation operation_version context target preconditions arguments", 7) { return self.error(400, "invalid_command", "the request must be a JSON object with exactly request_id, operation, operation_version, context, target, preconditions and arguments", false); }
+        let operation = wire.text(body, "operation");
+        let version = wire.text(body, "operation_version");
+        let known = own_known(operation) || s3_known(operation);
+        if !known || version != "1" { return self.error(400, "invalid_command", "unknown operation or operation_version", false); }
+        let request_id = wire.text(body, "request_id");
+        if !wire.bounded(request_id, 128, true, false) { return self.error(400, "invalid_command", "request_id must be 1..128 bytes without control characters", false); }
+        let context = wire.raw(body, "context");
+        let target = wire.raw(body, "target");
+        let conditions = wire.raw(body, "preconditions");
+        if !wire.fields(context, "head application_id", 2) || wire.text(context, "head") != "local" || !wire.fields(target, "kind id", 2) || !wire.fields(conditions, "principal", 1) { return self.error(400, "invalid_command", "context is {head:\"local\", application_id}, target is {kind, id}, preconditions is {principal}", false); }
+        let expected = wire.raw(conditions, "principal");
+        if !wire.fields(expected, "mode name", 2) || !wire.is_text(wire.raw(expected, "mode")) || !wire.is_text(wire.raw(expected, "name")) { return self.error(400, "invalid_command", "preconditions.principal is {mode, name}", false); }
+        if wire.text(expected, "mode") != self.cfg.principal_mode || wire.text(expected, "name") != self.cfg.principal_name { return self.command_error("command_context_changed"); }
+        let application_id = wire.text(context, "application_id");
+        let target_kind = wire.text(target, "kind");
+        let target_id = wire.text(target, "id");
+        let ctx = context_of(self.cfg);
+        if head_scoped(operation) {
+            if len(application_id) > 0 || target_kind != "dna.head" || target_id != "local" { return self.error(400, "invalid_command", "a head-scoped operation has an empty context.application_id and targets dna.head local", false); }
+        } else {
+            if len(ctx.active_id) == 0 || application_id != ctx.active_id { return self.command_error("detached"); }
+            if target_kind != "dna.project" || target_id != application_id { return self.error(400, "invalid_command", "a project operation targets dna.project with the attached application_id", false); }
+        }
+        let allowlist = if s3_known(operation) { s3_arguments(operation) } else { own_arguments(operation) };
+        let arguments = wire.raw(body, "arguments");
+        let shape = arguments_shape(arguments, allowlist);
+        if len(shape) > 0 { return self.error(400, "invalid_command", shape, false); }
+        let j = HeadJournal { state_dir: self.cfg.state_dir };
+        let id = j.identity(self.cfg.principal_mode, self.cfg.principal_name, request_id);
+        if len(id) == 0 { return self.command_error("invalid_command"); }
+        let existing = j.find(id);
+        if !existing.ok {
+            let running = j.running_ids("");
+            if len(running) > 0 { return self.command_error("head_busy"); }
+        }
+        let mut head_before = "";
+        if len(ctx.active_root) > 0 {
+            let record = dna::GitRecord { repo: ctx.active_root };
+            head_before = record.head("journal");
+        }
+        let s = j.submit(self.cfg.principal_mode, self.cfg.principal_name, body, allowlist, head_before);
+        if s.code == "request_conflict" { return self.command_error("request_conflict"); }
+        if len(s.code) > 0 { return self.command_error("invalid_command"); }
+        if s.replayed { return self.receipt_response(s.receipt, true); }
+        let plan = if s3_known(operation) { s3_plan(ctx, operation, arguments) } else { own_plan(self.cfg, ctx, id, operation, arguments) };
+        if len(plan.refused) > 0 {
+            j.refuse(id, plan.refused, plan.reason);
+            return self.receipt_response(j.find(id), true);
+        }
+        j.admit(id);
+        let deadline = std::time::now() + plan.deadline_secs;
+        if plan.kind == "inline" {
+            j.running(id, "inline", -1, "", deadline, plan.external);
+            if plan.ok { j.finish(id, "succeeded", 0, "", "", plan.outcome); }
+            else { j.finish(id, "failed", -1, "", plan.reason, plan.outcome); }
+        } else if plan.kind == "run" {
+            let p = start_run(self.cfg, ctx, id, plan);
+            if p.pid <= 0 { j.finish(id, "failed", -1, "", "the run could not be started", "{}"); }
+            else { j.running(id, "run", p.pid, cmd_digest("timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + p.dir + "/script.sh"), deadline, plan.external); }
+        } else if plan.kind == "body" || plan.kind == "observer" {
+            let p = start_long_child(self.cfg, ctx, plan);
+            if p.pid <= 0 { j.finish(id, "failed", -1, "", "the " + plan.kind + " child could not be started", "{}"); }
+            else { j.running(id, plan.kind, p.pid, cmd_digest(plan.argv), deadline, plan.external); }
+        } else {
+            j.finish(id, "failed", -1, "", "the plan names no execution kind", "{}");
+        }
+        return self.receipt_response(j.find(id), true);
+    }
+
+    // The proxy (§2.4): no live child → 503 head_detached; a foreign
+    // Origin on a POST → 403 here, never forwarded.
+    fn proxy(req: std::http::Request) -> std::http::Response {
+        let wire = api::CommandWire { };
+        let ctx = context_of(self.cfg);
+        let child = child_view(self.cfg, "api");
+        if len(ctx.active_id) == 0 || !child.alive { return self.command_error("head_detached"); }
+        if req.method == "POST" {
+            let origin = wire.header(req.headers, "Origin");
+            if !origin.valid || origin.count > 1 || (origin.count == 1 && origin.value != head_origin(self.cfg)) { return self.command_error("invalid_origin"); }
+        }
+        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg));
+        if up.ok { self.api_ready_pid = child.pid; }
+        else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
+        return proxied_response(up);
+    }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let cut = std::str::index_of(req.path, "?");
+        let path = if cut < 0 { req.path } else { req.path[0..cut] };
+        let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
+        if req.method != "GET" && req.method != "POST" { return self.error(405, "method_not_allowed", "the head answers GET and POST only", false); }
+        if req.method == "GET" && self.web.serves(path) { return self.web.response(path); }
+        settle_all(self.cfg);
+        if path == HEAD_PREFIX || path == HEAD_PREFIX + "/projects" || path == HEAD_PREFIX + "/logs" {
+            if req.method != "GET" { return self.error(405, "method_not_allowed", "this head route is a read", false); }
+            if path == HEAD_PREFIX { return self.head_read(raw_query); }
+            if path == HEAD_PREFIX + "/projects" { return self.projects_read(raw_query); }
+            return self.logs_read(raw_query);
+        }
+        if path == HEAD_PREFIX + "/commands" {
+            if req.method == "POST" { return self.submit(req); }
+            return self.lookup(raw_query);
+        }
+        if path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/") { return self.proxy(req); }
+        return self.error(404, "not_found", "no such head route", false);
+    }
+}

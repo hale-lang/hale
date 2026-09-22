@@ -156,5 +156,31 @@ fn test_typed_adapter() {
     std::test::assert_eq_int(native.calls, 2, "invalid contexts never dispatch");
     let rejected = adapter.result(context, ops::GovernanceResult { ok: true, application_id: "application/other", head: "head", revision: 1 });
     std::test::assert(!rejected.ok, "foreign service evidence rejected");
+    // raising work: the ask's fields cross the adapter exactly, and the
+    // organism's answer comes back in its own branch
+    let created = ops::GovernanceReceipt {
+        command_id: "command/create", request_id: "create/id", application_id: APP, operation: "dna.task.create", operation_version: "1",
+        principal_mode: "oidc", principal_name: "alice/équipe", position_id: "org", target_kind: "dna.record", target_id: APP, subject_digest: "head/before",
+        fingerprint: "sha256:create", state: "succeeded", proposal_state: "", review_state: "unavailable", activation_state: "unknown",
+        task_create: ops::TaskCreateOutcome { intent_id: "i1f4", intent_state: "born", task_id: "org:t7", event_id: "event/create" }
+    };
+    native.value = ops::GovernanceResult { ok: true, application_id: APP, head: "captured-create", revision: 12, receipt: created };
+    let ask = api::CommandRequest {
+        valid: true, request_id: "create/id", operation: "dna.task.create", operation_version: "1", application_id: APP, position_id: "org", target_kind: "dna.record", target_id: APP,
+        subject_digest: "head/before", record_head: "head/before", expected_principal_mode: "oidc", expected_principal_name: "alice/équipe", outcome: "  Raise é 🧭\r\nExactly.  ", to: "org/support"
+    };
+    // `other = context` above aliases and mutates the shared context: bind a fresh one
+    let asking = api::CommandContext { root: "/project", source: api::Source { ok: true, identity: APP, head: "before", revision: 8, name: "Application" }, principal_mode: "oidc", principal_name: "alice/équipe" };
+    let raised = adapter.submit(asking, ask);
+    std::test::assert(raised.ok && raised.source.head == "captured-create", "create result preserved with the service's evidence");
+    std::test::assert_eq_str(native.observed_command.outcome, ask.outcome, "outcome forwarded exactly");
+    std::test::assert_eq_str(native.observed_command.to, "org/support", "position forwarded exactly");
+    std::test::assert_eq_str(native.observed_command.record_head, "head/before", "head precondition forwarded");
+    std::test::assert_eq_str(native.observed_command.target_kind, "dna.record", "Record target forwarded");
+    let t = raised.receipt.task_create;
+    std::test::assert(t.intent_id == "i1f4" && t.intent_state == "born" && t.task_id == "org:t7" && t.event_id == "event/create", "task_create outcome mapped exactly");
+    let wire = api::CommandWire { };
+    std::test::assert(wire.inactive_task(raised.receipt) && wire.inactive_person(raised.receipt) && wire.inactive_organization(raised.receipt), "other branches stay inactive");
+    std::test::assert(wire.inactive_task_create(response.receipt), "a verdict receipt carries no create branch");
 }
 fn main() { test_explicit_authority(); test_strict_policy(); test_typed_adapter(); }

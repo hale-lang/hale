@@ -97,7 +97,7 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
         let _ = host.kill();
         let _ = host.wait();
     };
-    let (ok, out) = hale(&["dna", "ask", "--no-wait", "call", "the", "supplier", "about", "the", "delayed", "pallets"], &app);
+    let (ok, out) = hale(&["dna", "task", "create", "--no-wait", "call", "the", "supplier", "about", "the", "delayed", "pallets"], &app);
     assert!(ok, "{out}");
     // the leader planned it a person's job, and the organism handed it on
     let dl = Instant::now() + Duration::from_secs(60);
@@ -135,7 +135,7 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let (ok, out) = hale(&["dna", "task", "done", "t1.s0.p", "--as", "dev"], &app);
     assert!(!ok && out.contains("is done, not handed"), "{out}");
     // retirement: a second job handed to noor moves to dev when noor retires, as rows
-    let (ok, out) = hale(&["dna", "ask", "--no-wait", "call", "the", "supplier", "again", "next", "week"], &app);
+    let (ok, out) = hale(&["dna", "task", "create", "--no-wait", "call", "the", "supplier", "again", "next", "week"], &app);
     assert!(ok, "{out}");
     let dl = Instant::now() + Duration::from_secs(60);
     let mut handed2 = false;

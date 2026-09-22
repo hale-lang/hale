@@ -1,0 +1,540 @@
+// dna/api/project_service/operations.hl — the head's own operations
+// (GH #965, §2.7 of the head's contract): the project registry verbs
+// (create, init, attach, detach, forget), the record's sync and
+// publish, and the forge's configure and sync. Every verb that does
+// anything is the CLI verb, run detached under `timeout … sh -e`
+// from a script the head wrote; the four inline operations only move
+// the registry, the policy files and the API child. What is common to
+// every operation lives here too: the closed argument lists in
+// fingerprint order, the request-shape check every operation passes
+// through before it is recorded (a shape error is an HTTP 400, never
+// a receipt), the fixed list of operations that write Record rows,
+// and the `record` evidence — the rows `refs/dna/journal` gained
+// between the receipt's `head_before` and the moment it settled.
+
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+
+// The nine project and forge operations, and the four that are head-scoped (their
+// `context.application_id` is empty and their target is the head).
+const OWN_OPERATIONS: String = " dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync ";
+const HEAD_SCOPED: String = " dna.project.create dna.project.init dna.project.attach dna.project.forget ";
+// Every operation of the head's contract, both files', in the order `GET /head` lists them.
+const ALL_OPERATIONS: String = "dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync dna.observer.start dna.observer.stop";
+// The operations whose verbs append Record rows: their outcome carries
+// the `record` evidence object.
+const ROW_WRITING: String = " dna.project.sync dna.project.publish dna.forge.sync dna.body.local.start dna.body.local.stop dna.body.provision dna.secret.set dna.secret.rotate dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync ";
+// Argument keys by type, for the shape check (§2.5); every other key
+// is a bounded string.
+const BOOL_KEYS: String = " discover dry_run confirm_spend ";
+const ARRAY_KEYS: String = " board classes ";
+const OBJECT_KEYS: String = " source ";
+const PATH_KEYS: String = " parent root dir ";
+// The keys whose bound is not the default 256 bytes.
+const LONG_KEYS: String = " message note purpose ";
+
+fn own_known(operation: String) -> Bool { return std::str::contains(OWN_OPERATIONS, " " + operation + " "); }
+fn head_scoped(operation: String) -> Bool { return std::str::contains(HEAD_SCOPED, " " + operation + " "); }
+fn writes_rows(operation: String) -> Bool { return std::str::contains(ROW_WRITING, " " + operation + " "); }
+fn all_operations() -> String { return ALL_OPERATIONS; }
+
+// The closed allowlist, space-separated, in fingerprint order.
+fn own_arguments(operation: String) -> String {
+    if operation == "dna.project.create" { return "parent name profile remote body discover"; }
+    if operation == "dna.project.init" || operation == "dna.project.attach" { return "root"; }
+    if operation == "dna.project.forget" { return "application_id"; }
+    if operation == "dna.project.publish" { return "remote message"; }
+    if operation == "dna.forge.configure" { return "github board"; }
+    return "";
+}
+
+// "" = available, else the reason_code `GET /head` reports.
+fn own_available(ctx: HeadContext, operation: String) -> String {
+    if head_scoped(operation) { return ""; }
+    if len(ctx.active_id) == 0 { return "detached"; }
+    return "";
+}
+
+// ---- the shape check (§2.5) -------------------------------------------
+
+fn sq(s: String) -> String { return "'" + std::str::replace(s, "'", "'\\''") + "'"; }
+
+// A bounded text argument: UTF-8, no C0/DEL, no leading `-`, at most
+// `maximum` bytes.
+fn text_ok(value: String, maximum: Int) -> Bool {
+    let codec = ops::GovernanceCommandCodec { };
+    if !codec.bounded(value, maximum, false, false) { return false; }
+    return !std::str::starts_with(value, "-");
+}
+
+fn enum_ok(key: String, value: String) -> Bool {
+    if key == "profile" { return value == "" || value == "local" || value == "remote-body"; }
+    if key == "mode" { return value == "run" || value == "dev"; }
+    if key == "kind" { return value == "task" || value == "receipt"; }
+    return true;
+}
+
+// "" when `arguments` is an object whose keys are all in `allowlist`
+// with the types and bounds of §2.5; else what is wrong with it.
+fn arguments_shape(arguments: String, allowlist: String) -> String {
+    let wire = api::CommandWire { };
+    let syntax = ops::OrganizationJson { };
+    if !std::str::starts_with(std::str::trim(arguments), "{") { return "arguments must be an object"; }
+    let mut it = std::json::object_first(arguments);
+    while !it.done {
+        let key = std::json::obj_key_string(it, arguments);
+        let raw = std::str::trim(std::json::obj_value_raw(it, arguments));
+        if len(key) == 0 || !std::str::contains(" " + allowlist + " ", " " + key + " ") { return "unknown argument " + key; }
+        if std::str::contains(BOOL_KEYS, " " + key + " ") {
+            if raw != "true" && raw != "false" { return key + " must be a boolean"; }
+        } else if std::str::contains(ARRAY_KEYS, " " + key + " ") {
+            if !std::str::starts_with(raw, "[") { return key + " must be an array"; }
+            let mut n = 0;
+            let mut items = std::json::array_first(raw);
+            while !items.done {
+                if !wire.is_text(items.element) || !text_ok(syntax.decode(items.element), 256) { return key + " must hold bounded strings"; }
+                n = n + 1;
+                items = std::json::array_next(items);
+            }
+            if n > 64 { return key + " holds too many items"; }
+        } else if std::str::contains(OBJECT_KEYS, " " + key + " ") {
+            if !wire.fields(raw, "kind name", 2) { return key + " must be {kind, name}"; }
+            let kind = wire.text(raw, "kind");
+            if (kind != "file" && kind != "env") || !wire.is_text(wire.raw(raw, "name")) || !text_ok(wire.text(raw, "name"), 256) { return key + " must name a file or env source"; }
+        } else {
+            if !wire.is_text(raw) { return key + " must be a string"; }
+            let value = syntax.decode(raw);
+            let maximum = if std::str::contains(LONG_KEYS, " " + key + " ") { 512 } else { 256 };
+            if !text_ok(value, maximum) { return key + " must be at most " + to_string(maximum) + " bytes without control characters or a leading dash"; }
+            if std::str::contains(PATH_KEYS, " " + key + " ") && len(value) > 0 && !std::str::starts_with(value, "/") { return key + " must be an absolute path"; }
+            if !enum_ok(key, value) { return key + " is not one of its allowed values"; }
+        }
+        it = std::json::object_next(it, arguments);
+    }
+    return "";
+}
+
+// ---- arguments -------------------------------------------------------
+
+fn argument(arguments: String, key: String) -> String {
+    let wire = api::CommandWire { };
+    return wire.text(arguments, key);
+}
+
+fn flag(arguments: String, key: String) -> Bool {
+    return std::str::trim(std::json::find_field_raw(arguments, key)) == "true";
+}
+
+fn is_dir(path: String) -> Bool {
+    return len(path) > 0 && dna::run_tool("test\n-d\n" + path).code == 0;
+}
+
+// `^[a-z0-9][a-z0-9._-]{0,63}$`
+fn project_name_ok(name: String) -> Bool {
+    if len(name) < 1 || len(name) > 64 { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let c = std::str::byte_at_unchecked(name, i);
+        let alnum = (c >= 97 && c <= 122) || (c >= 48 && c <= 57);
+        if i == 0 && !alnum { return false; }
+        if !alnum && c != 46 && c != 95 && c != 45 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
+fn github_ok(value: String) -> Bool {
+    let slash = std::str::index_of(value, "/");
+    if slash < 1 || slash == len(value) - 1 { return false; }
+    let mut i = 0;
+    let mut slashes = 0;
+    while i < len(value) {
+        let c = std::str::byte_at_unchecked(value, i);
+        if c == 47 { slashes = slashes + 1; }
+        else if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 46 || c == 45) { return false; }
+        i = i + 1;
+    }
+    return slashes == 1;
+}
+
+// `^[A-Za-z0-9-]{1,39}$`
+fn login_ok(value: String) -> Bool {
+    if len(value) < 1 || len(value) > 39 { return false; }
+    let mut i = 0;
+    while i < len(value) {
+        let c = std::str::byte_at_unchecked(value, i);
+        if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The board logins of a request, comma-joined as the setting holds
+// them; "!" when one is malformed.
+fn board_setting(arguments: String) -> String {
+    let syntax = ops::OrganizationJson { };
+    let raw = std::str::trim(std::json::find_field_raw(arguments, "board"));
+    let mut out = "";
+    let mut items = std::json::array_first(raw);
+    while !items.done {
+        let login = syntax.decode(items.element);
+        if !login_ok(login) { return "!"; }
+        out = out + (if len(out) > 0 { "," } else { "" }) + login;
+        items = std::json::array_next(items);
+    }
+    return out;
+}
+
+// A comma-joined setting as a JSON array of strings.
+fn logins_json(joined: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = joined;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let item = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
+        rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+        if len(item) > 0 { b.string_value(item); }
+    }
+    b.end_array();
+    return b.result();
+}
+
+fn basename(path: String) -> String {
+    let mut name = path;
+    let mut i = 0;
+    while i < len(path) {
+        if path[i..(i + 1)] == "/" && i + 1 < len(path) { name = path[(i + 1)..len(path)]; }
+        i = i + 1;
+    }
+    return name;
+}
+
+// ---- plans -----------------------------------------------------------
+
+// The head's own value of `HALE_DNA_DISCOVER`, exported into a create
+// or init that asked to discover; `off` otherwise.
+fn discover_env(discover: Bool) -> String {
+    if !discover { return "HALE_DNA_DISCOVER=off\n"; }
+    return "HALE_DNA_DISCOVER=" + std::env::var("HALE_DNA_DISCOVER") + "\n";
+}
+
+fn plan_create(cfg: HeadConfig, arguments: String) -> Plan {
+    let parent = argument(arguments, "parent");
+    let name = argument(arguments, "name");
+    let profile = argument(arguments, "profile");
+    let remote = argument(arguments, "remote");
+    let body = argument(arguments, "body");
+    if !std::str::starts_with(parent, "/") || !is_dir(parent) { return Plan { refused: "path_invalid", reason: "parent must be an existing absolute directory" }; }
+    if !project_name_ok(name) { return Plan { refused: "name_invalid", reason: "name must match ^[a-z0-9][a-z0-9._-]{0,63}$" }; }
+    let target = parent + "/" + name;
+    let occupied = dna::run_tool("sh\n-c\n[ -e \"$1\" ] && [ -n \"$(ls -A \"$1\")\" ]\nsh\n" + target);
+    if occupied.code == 0 { return Plan { refused: "directory_not_empty", reason: target + " exists and is not empty" }; }
+    let mut script = "exec \"$HALE_BIN\" dna new " + sq(target);
+    if len(profile) > 0 { script = script + " --profile " + sq(profile); }
+    if len(remote) > 0 { script = script + " --remote " + sq(remote); }
+    if len(body) > 0 { script = script + " --body " + sq(body); }
+    return Plan { ok: true, kind: "run", script: script, cwd: parent, envs: discover_env(flag(arguments, "discover")), deadline_secs: 600, external: false };
+}
+
+fn plan_init(cfg: HeadConfig, arguments: String) -> Plan {
+    let root = argument(arguments, "root");
+    if !std::str::starts_with(root, "/") || !is_dir(root) { return Plan { refused: "path_invalid", reason: "root must be an existing absolute directory" }; }
+    return Plan { ok: true, kind: "run", script: "exec \"$HALE_BIN\" dna init " + sq(root), cwd: root, envs: discover_env(flag(arguments, "discover")), deadline_secs: 600, external: false };
+}
+
+fn plan_attach(cfg: HeadConfig, command_id: String, arguments: String) -> Plan {
+    let a = attach_project(cfg, argument(arguments, "root"), command_id);
+    if len(a.refused) > 0 { return Plan { refused: a.refused, reason: a.reason, kind: "inline", deadline_secs: 20 }; }
+    if !a.ok { return Plan { kind: "inline", reason: a.reason, deadline_secs: 20 }; }
+    return Plan { ok: true, kind: "inline", deadline_secs: 20, outcome: a.outcome };
+}
+
+fn plan_detach(cfg: HeadConfig, command_id: String) -> Plan {
+    let d = detach_project(cfg, command_id);
+    if len(d.refused) > 0 { return Plan { refused: d.refused, reason: d.reason, kind: "inline", deadline_secs: 10 }; }
+    return Plan { ok: true, kind: "inline", deadline_secs: 10 };
+}
+
+fn plan_forget(cfg: HeadConfig, command_id: String, arguments: String) -> Plan {
+    let id = argument(arguments, "application_id");
+    let reg = Registry { state_dir: cfg.state_dir };
+    let known = reg.find(id);
+    if len(id) == 0 || !known.ok || known.forgotten { return Plan { refused: "project_unknown", reason: "no registered project has that application_id", kind: "inline", deadline_secs: 10 }; }
+    if known.active { return Plan { refused: "project_active", reason: "detach the project before forgetting it", kind: "inline", deadline_secs: 10 }; }
+    let forgot = reg.forget(id, command_id);
+    return Plan { ok: true, kind: "inline", deadline_secs: 10 };
+}
+
+fn plan_sync(ctx: HeadContext) -> Plan {
+    return Plan { ok: true, kind: "run", script: "exec \"$HALE_BIN\" dna sync " + sq(ctx.active_root), cwd: ctx.active_root, deadline_secs: 180, external: true };
+}
+
+fn plan_publish(cfg: HeadConfig, ctx: HeadContext, arguments: String) -> Plan {
+    let remote = argument(arguments, "remote");
+    let message = argument(arguments, "message");
+    if len(message) == 0 { return Plan { refused: "invalid_command", reason: "message must not be empty" }; }
+    let record = dna::GitRecord { repo: ctx.active_root };
+    let existing = record.remote_url("origin");
+    if len(remote) == 0 && len(existing) == 0 { return Plan { refused: "no_remote", reason: "the project has no origin remote; pass remote" }; }
+    if len(remote) > 0 && len(existing) > 0 && existing != remote { return Plan { refused: "remote_mismatch", reason: "origin is " + existing + ", not " + remote }; }
+    let p = cfg.principal_name;
+    let mut script = "";
+    if len(existing) == 0 { script = script + "git remote add origin " + sq(remote) + "\n"; }
+    script = script + "git add -A\n"
+        + "if [ -n \"$(git status --porcelain)\" ]; then\n"
+        + "  if git config user.name >/dev/null 2>&1; then git commit -q -m " + sq(message) + "; else git -c user.name=" + sq(p) + " -c user.email=" + sq(p + "@dna") + " commit -q -m " + sq(message) + "; fi\n"
+        + "  echo 'head: committed'\n"
+        + "else\n"
+        + "  echo 'head: nothing to commit'\n"
+        + "fi\n"
+        + "branch=$(git symbolic-ref -q HEAD || echo HEAD)\n"
+        + "git push -u origin HEAD\n"
+        + "echo \"head: pushed $branch\"\n"
+        + "exec \"$HALE_BIN\" dna sync " + sq(ctx.active_root);
+    return Plan { ok: true, kind: "run", script: script, cwd: ctx.active_root, deadline_secs: 180, external: true };
+}
+
+fn plan_forge_configure(ctx: HeadContext, arguments: String) -> Plan {
+    let github = argument(arguments, "github");
+    if len(github) > 0 && !github_ok(github) { return Plan { refused: "name_invalid", reason: "github must be owner/repo", kind: "inline", deadline_secs: 10 }; }
+    let board = board_setting(arguments);
+    if board == "!" { return Plan { refused: "name_invalid", reason: "every board login must match ^[A-Za-z0-9-]{1,39}$", kind: "inline", deadline_secs: 10 }; }
+    let record = dna::GitRecord { repo: ctx.active_root };
+    let mut ok = true;
+    if len(github) > 0 { ok = record.set_setting("github", github); } else if len(record.setting("github")) > 0 { ok = record.unset_setting("github"); }
+    if len(board) > 0 { ok = ok && record.set_setting("github.board", board); } else if len(record.setting("github.board")) > 0 { ok = ok && record.unset_setting("github.board"); }
+    if !ok { return Plan { kind: "inline", reason: "git config refused the forge settings", deadline_secs: 10 }; }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("github", record.setting("github"));
+    b.field("board", logins_json(record.setting("github.board")));
+    b.end_object();
+    return Plan { ok: true, kind: "inline", deadline_secs: 10, outcome: b.result() };
+}
+
+fn plan_forge_sync(ctx: HeadContext) -> Plan {
+    return Plan { ok: true, kind: "run", script: "exec \"$HALE_BIN\" dna github sync", cwd: ctx.active_root, envs: "GH_PROMPT_DISABLED=1\nGH_NO_UPDATE_NOTIFIER=1\n", deadline_secs: 180, external: true };
+}
+
+// The plan for one of this file's operations; the four inline ones have done
+// their effect when this returns.
+fn own_plan(cfg: HeadConfig, ctx: HeadContext, command_id: String, operation: String, arguments: String) -> Plan {
+    if operation == "dna.project.create" { return plan_create(cfg, arguments); }
+    if operation == "dna.project.init" { return plan_init(cfg, arguments); }
+    if operation == "dna.project.attach" { return plan_attach(cfg, command_id, arguments); }
+    if operation == "dna.project.detach" { return plan_detach(cfg, command_id); }
+    if operation == "dna.project.forget" { return plan_forget(cfg, command_id, arguments); }
+    if len(ctx.active_id) == 0 { return Plan { refused: "detached", reason: "no project is attached" }; }
+    if operation == "dna.project.sync" { return plan_sync(ctx); }
+    if operation == "dna.project.publish" { return plan_publish(cfg, ctx, arguments); }
+    if operation == "dna.forge.configure" { return plan_forge_configure(ctx, arguments); }
+    if operation == "dna.forge.sync" { return plan_forge_sync(ctx); }
+    return Plan { refused: "invalid_command", reason: "no such operation" };
+}
+
+// ---- outcomes ----------------------------------------------------------
+
+// The first line of `text` that starts with `prefix`; "" when none.
+fn line_starting(text: String, prefix: String) -> String {
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, prefix) { return line; }
+    }
+    return "";
+}
+
+fn first_line(text: String) -> String {
+    let nl = std::str::index_of(text, "\n");
+    return if nl < 0 { text } else { text[0..nl] };
+}
+
+// The sync verb's answer: the `record refs/dna/journal: …` line.
+fn sync_summary(log_tail: String) -> String {
+    let line = line_starting(log_tail, "record refs/dna/journal:");
+    if len(line) > 0 { return line; }
+    let local = line_starting(log_tail, "no remote:");
+    if len(local) > 0 { return local; }
+    return first_line(log_tail);
+}
+
+// The outcome of a settled run of one of this file's operations. A create or
+// init that exited 0 is attached here: the finalize is the same
+// routine as an inline attach, and idempotent.
+fn own_outcome(cfg: HeadConfig, receipt: Receipt, exit_code: Int, log_tail: String) -> String {
+    let operation = receipt.operation;
+    let arguments = std::json::find_field_raw(receipt.request, "arguments");
+    let b = std::json::Builder { };
+    b.begin_object();
+    if operation == "dna.project.create" || operation == "dna.project.init" {
+        let root = if operation == "dna.project.init" { argument(arguments, "root") } else { argument(arguments, "parent") + "/" + argument(arguments, "name") };
+        b.string_field("root", root);
+        b.string_field("name", basename(root));
+        if exit_code == 0 {
+            let a = attach_project(cfg, root, receipt.command_id);
+            b.string_field("application_id", a.application_id);
+            b.bool_field("attached", a.ok);
+            if !a.ok {
+                b.string_field("attach_reason_code", a.refused);
+                b.string_field("attach_reason", a.reason);
+            }
+        } else {
+            b.string_field("application_id", "");
+            b.bool_field("attached", false);
+        }
+        b.int_field("api_port", cfg.api_port);
+    } else if operation == "dna.project.sync" {
+        b.string_field("summary", sync_summary(log_tail));
+    } else if operation == "dna.project.publish" {
+        b.bool_field("committed", len(line_starting(log_tail, "head: committed")) > 0);
+        let pushed = line_starting(log_tail, "head: pushed ");
+        b.string_field("pushed_ref", if len(pushed) > 13 { pushed[13..len(pushed)] } else { "" });
+        b.string_field("sync_summary", sync_summary(log_tail));
+    } else if operation == "dna.forge.sync" {
+        b.string_field("text", log_tail);
+    }
+    b.end_object();
+    return b.result();
+}
+
+// ---- the record evidence -------------------------------------------------
+
+fn count_lines(text: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < len(text) {
+        if std::str::byte_at_unchecked(text, i) == 10 { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// `{"head_before","head_after","rows":[{seq,kind,entity,author}]}`:
+// the rows of `refs/dna/journal` at its head now beyond the count at
+// `head_before` (the reads the API's SourceReader does).
+fn record_evidence(root: String, head_before: String) -> String {
+    let record = dna::GitRecord { repo: root };
+    let head_after = record.head("journal");
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("head_before", head_before);
+    b.string_field("head_after", head_after);
+    b.begin_array_field("rows");
+    let before = if len(head_before) > 0 { count_lines(record.text_at(head_before)) } else { 0 };
+    let mut rest = record.text_at(head_after);
+    let mut seen = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        seen = seen + 1;
+        if seen <= before || !std::json::valid_object(line) { continue; }
+        b.begin_object();
+        b.int_field("seq", std::json::find_int_field(line, "seq"));
+        b.string_field("kind", std::json::find_string_field(line, "kind"));
+        b.string_field("entity", std::json::find_string_field(line, "entity"));
+        b.string_field("author", std::json::find_string_field(line, "author"));
+        b.end_object();
+    }
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
+// `json` (an object) with `key: raw` added or replaced.
+fn with_field(json: String, key: String, raw: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    let object = if std::str::starts_with(std::str::trim(json), "{") { json } else { "{}" };
+    let mut it = std::json::object_first(object);
+    while !it.done {
+        let name = std::json::obj_key_string(it, object);
+        if name != key { b.field(name, std::json::obj_value_raw(it, object)); }
+        it = std::json::object_next(it, object);
+    }
+    b.field(key, raw);
+    b.end_object();
+    return b.result();
+}
+
+// ---- credentials ---------------------------------------------------------
+
+// The model credentials the catalog names (`env_var: "X"` in
+// dna/org/models.hl), space-separated: the host's own scan.
+@unbounded
+fn catalog_credentials(root: String) -> String {
+    let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
+    let mut out = "";
+    let mut rest = catalog;
+    while true {
+        let at = std::str::index_of(rest, "env_var: \"");
+        if at < 0 { break; }
+        let after = rest[(at + 10)..len(rest)];
+        let q = std::str::index_of(after, "\"");
+        if q < 0 { break; }
+        let name = after[0..q];
+        if len(name) > 0 && !std::str::contains(" " + out + " ", " " + name + " ") { out = if len(out) == 0 { name } else { out + " " + name }; }
+        rest = after[(q + 1)..len(after)];
+    }
+    return out;
+}
+
+// The regular files under `dir`, space-separated names.
+@unbounded
+fn file_names(dir: String) -> String {
+    let n = std::io::fs::list_dir_count(dir) or 0;
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at(dir, i) or "";
+        if len(name) > 0 && !std::str::starts_with(name, ".") && dna::run_tool("test\n-f\n" + dir + "/" + name).code == 0 { out = out + (if len(out) > 0 { " " } else { "" }) + name; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// A space-separated list as a JSON array of strings.
+fn words_json(words: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = words;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let word = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(word) > 0 { b.string_value(word); }
+    }
+    b.end_array();
+    return b.result();
+}
+
+// The names among `words` that are set in this process's environment.
+@unbounded
+fn env_present(words: String) -> String {
+    let mut out = "";
+    let mut rest = words;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let word = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(word) > 0 && std::env::var_exists(word) { out = out + (if len(out) > 0 { " " } else { "" }) + word; }
+    }
+    return out;
+}
+
+// `GET /head`'s `credentials` object for the active project.
+fn credentials_json(cfg: HeadConfig, root: String) -> String {
+    let needed = if len(root) > 0 { catalog_credentials(root) } else { "" };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.field("needed", words_json(needed));
+    b.field("file_sources", words_json(file_names(cfg.sources_dir)));
+    b.field("env_present", words_json(env_present(needed)));
+    b.end_object();
+    return b.result();
+}

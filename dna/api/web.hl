@@ -1,4 +1,4 @@
-// The optional browser shell is nine static files, loaded before listening.
+// The optional browser shell is eleven static files, loaded before listening.
 // Observer metadata is trusted startup configuration, never a request URL or
 // credential. Exact origins reject trailing slashes; no network proxy exists.
 type ObserverOrigin { valid: Bool = false; value: String = ""; }
@@ -14,6 +14,8 @@ locus WebAssets {
         organization_draft: String = "";
         knowledge_draft: String = "";
         task_administration: String = "";
+        projects: String = "";
+        task_create: String = "";
         styles: String = "";
         observer_origin: String = "";
         error: String = "";
@@ -134,7 +136,7 @@ locus WebAssets {
     }
     fn load(root: String) -> Bool {
         self.enabled = false; self.observer_origin = "";
-        self.error = "iris-webroot must contain readable, nonempty index.html, runtime.js, application.js, definition-draft.js, organization-draft.js, knowledge-draft.js, task-administration.js, app.js and styles.css";
+        self.error = "iris-webroot must contain readable, nonempty index.html, runtime.js, application.js, definition-draft.js, organization-draft.js, knowledge-draft.js, task-administration.js, projects.js, task-create.js, app.js and styles.css";
         let origin = self.parse_origin(std::env::var("HALE_IRIS_OBSERVER_ORIGIN"));
         if !origin.valid {
             self.error = "HALE_IRIS_OBSERVER_ORIGIN must be an exact http(s) origin without credentials, path, trailing slash, query or fragment";
@@ -149,19 +151,21 @@ locus WebAssets {
         self.organization_draft = std::io::fs::read_file(root + "/organization-draft.js") or "";
         self.knowledge_draft = std::io::fs::read_file(root + "/knowledge-draft.js") or "";
         self.task_administration = std::io::fs::read_file(root + "/task-administration.js") or "";
+        self.projects = std::io::fs::read_file(root + "/projects.js") or "";
+        self.task_create = std::io::fs::read_file(root + "/task-create.js") or "";
         self.app = std::io::fs::read_file(root + "/app.js") or "";
         self.styles = std::io::fs::read_file(root + "/styles.css") or "";
-        self.enabled = len(self.index) > 0 && len(self.runtime) > 0 && len(self.application) > 0 && len(self.definition_draft) > 0 && len(self.organization_draft) > 0 && len(self.knowledge_draft) > 0 && len(self.task_administration) > 0 && len(self.app) > 0 && len(self.styles) > 0;
+        self.enabled = len(self.index) > 0 && len(self.runtime) > 0 && len(self.application) > 0 && len(self.definition_draft) > 0 && len(self.organization_draft) > 0 && len(self.knowledge_draft) > 0 && len(self.task_administration) > 0 && len(self.projects) > 0 && len(self.task_create) > 0 && len(self.app) > 0 && len(self.styles) > 0;
         if self.enabled { self.observer_origin = origin.value; self.error = ""; }
         return self.enabled;
     }
     fn serves(path: String) -> Bool {
-        return self.enabled && (path == "/" || path == "/runtime.js" || path == "/application.js" || path == "/definition-draft.js" || path == "/organization-draft.js" || path == "/knowledge-draft.js" || path == "/task-administration.js" || path == "/app.js" || path == "/styles.css" || path == "/iris/observer.json");
+        return self.enabled && (path == "/" || path == "/runtime.js" || path == "/application.js" || path == "/definition-draft.js" || path == "/organization-draft.js" || path == "/knowledge-draft.js" || path == "/task-administration.js" || path == "/projects.js" || path == "/task-create.js" || path == "/app.js" || path == "/styles.css" || path == "/iris/observer.json");
     }
     fn response(path: String) -> std::http::Response {
         let config = path == "/iris/observer.json";
-        let content_type = if config { "application/json; charset=utf-8" } else if path == "/" { "text/html; charset=utf-8" } else if path == "/app.js" || path == "/runtime.js" || path == "/application.js" || path == "/definition-draft.js" || path == "/organization-draft.js" || path == "/knowledge-draft.js" || path == "/task-administration.js" { "text/javascript; charset=utf-8" } else { "text/css; charset=utf-8" };
-        let body = if config { "{\"profile\":\"hale.iris.observer.v0\",\"origin\":\"" + self.observer_origin + "\"}" } else if path == "/" { self.index } else if path == "/runtime.js" { self.runtime } else if path == "/application.js" { self.application } else if path == "/definition-draft.js" { self.definition_draft } else if path == "/organization-draft.js" { self.organization_draft } else if path == "/knowledge-draft.js" { self.knowledge_draft } else if path == "/task-administration.js" { self.task_administration } else if path == "/app.js" { self.app } else { self.styles };
+        let content_type = if config { "application/json; charset=utf-8" } else if path == "/" { "text/html; charset=utf-8" } else if path == "/app.js" || path == "/runtime.js" || path == "/application.js" || path == "/definition-draft.js" || path == "/organization-draft.js" || path == "/knowledge-draft.js" || path == "/task-administration.js" || path == "/projects.js" || path == "/task-create.js" { "text/javascript; charset=utf-8" } else { "text/css; charset=utf-8" };
+        let body = if config { "{\"profile\":\"hale.iris.observer.v0\",\"origin\":\"" + self.observer_origin + "\"}" } else if path == "/" { self.index } else if path == "/runtime.js" { self.runtime } else if path == "/application.js" { self.application } else if path == "/definition-draft.js" { self.definition_draft } else if path == "/organization-draft.js" { self.organization_draft } else if path == "/knowledge-draft.js" { self.knowledge_draft } else if path == "/task-administration.js" { self.task_administration } else if path == "/projects.js" { self.projects } else if path == "/task-create.js" { self.task_create } else if path == "/app.js" { self.app } else { self.styles };
         let observer_source = if len(self.observer_origin) > 0 { " " + self.observer_origin } else { "" };
         return std::http::Response {
             status: 200,

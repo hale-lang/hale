@@ -68,7 +68,8 @@ locus PracticeReviewCommands {
                 mutation_id: value.organization.mutation_id, candidate_commit: value.organization.candidate_commit, application_state: value.organization.application_state,
                 application_reason_code: value.organization.application_reason_code, restart_handoff_state: value.organization.restart_handoff_state },
             task: api::TaskCommandOutcome { state: value.task.state, from: value.task.from, to: value.task.to, event_id: value.task.event_id },
-            person: api::PersonRetirementOutcome { state: value.person.state, from: value.person.from, to: value.person.to, event_id: value.person.event_id, transferred: value.person.transferred }
+            person: api::PersonRetirementOutcome { state: value.person.state, from: value.person.from, to: value.person.to, event_id: value.person.event_id, transferred: value.person.transferred },
+            task_create: api::TaskCreateOutcome { intent_id: value.task_create.intent_id, intent_state: value.task_create.intent_state, task_id: value.task_create.task_id, event_id: value.task_create.event_id }
         };
     }
     fn result(context: api::CommandContext, value: ops::GovernanceResult) -> api::CommandResult {
@@ -87,7 +88,8 @@ locus PracticeReviewCommands {
             expected_review_state: command.expected_review_state, verdict: command.verdict, comment: command.comment,
             source_head: command.source_head, dependency_source: command.dependency_source, dependency_digest: command.dependency_digest,
             record_head: command.record_head, source_text: command.source_text,
-            expected_assignee: command.expected_assignee, new_assignee: command.new_assignee
+            expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
+            outcome: command.outcome, to: command.to
         };
     }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {

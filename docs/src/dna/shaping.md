@@ -31,7 +31,7 @@ review_policy: dna::OrgPolicy { },
 ```
 
 - **`classes`** — the kinds of change the Leader may decide. A
-  request through `hale dna ask` is an `application` change; with
+  request through `hale dna task create` is an `application` change; with
   the default grant it *escalates* to the Board. Widen to
   `"refactor docs application"` and the Leader decides those too —
   and the record shows it did.

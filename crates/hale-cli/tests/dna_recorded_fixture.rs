@@ -293,7 +293,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     //         the ratified concern in hand: the organization consults
     //         the service for org/trio, folds it into the editor's
     //         objective, and the editor's evidence names the package
-    let (ok, out) = f.hale(&["dna", "ask", "document", "the", "Gateway", "locus", "in", "main.hl", "with", "a", "doc", "comment", "saying", "what", "it", "takes", "and", "where", "it", "hands", "it"], &app);
+    let (ok, out) = f.hale(&["dna", "task", "create", "document", "the", "Gateway", "locus", "in", "main.hl", "with", "a", "doc", "comment", "saying", "what", "it", "takes", "and", "where", "it", "hands", "it"], &app);
     if !ok {
         f.fail(&format!("ask: {out}"));
     }
@@ -364,7 +364,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     // ---- 3. a change to one service that breaks the fleet's law is
     //         denied, though the service itself still checks: the gateway
     //         renames the subject the api is routed on
-    let (ok, out) = f.hale(&["dna", "ask", "in", "main.hl", "change", "the", "Orders", "topic's", "subject", "from", "\"trio.orders\"", "to", "\"trio.orders.v2\"", "and", "nothing", "else"], &app);
+    let (ok, out) = f.hale(&["dna", "task", "create", "in", "main.hl", "change", "the", "Orders", "topic's", "subject", "from", "\"trio.orders\"", "to", "\"trio.orders.v2\"", "and", "nothing", "else"], &app);
     if !ok {
         f.fail(&format!("ask: {out}"));
     }

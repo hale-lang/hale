@@ -1,0 +1,130 @@
+// Raising work through the command surface (dna.task.create@1). The effect
+// fact is the `intent.requested` row `hale dna ask` writes, so the host beside
+// the organism relays it and the organism admits it exactly as it admits a
+// CLI ask (dna/host/host.hl, dna/core/assembly.hl); the command fields ride in
+// the same flat object and are the command's durable admission. The organism's
+// answer (intent.offered, task.born, intent.refused) is a separate fact,
+// re-derived from the Record on every read.
+import "../core" as dna;
+type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; }
+type TaskCreateFact { valid: Bool = false; context: GovernanceContext = GovernanceContext { }; command: GovernanceCommand = GovernanceCommand { }; grant: GovernanceGrant = GovernanceGrant { }; head: String = ""; intent_id: String = ""; }
+locus TaskCreateCommandCodec {
+    params { }
+    fn known(operation: String, version: String) -> Bool { return operation == "dna.task.create" && version == "1"; }
+    fn valid(context: GovernanceContext, c: GovernanceCommand) -> Bool {
+        let common = GovernanceCommandCodec { };
+        return self.known(c.operation, c.operation_version) && common.context_valid(context) && c.application_id == context.application_id && c.position_id == "org"
+            && c.target_kind == "dna.record" && c.target_id == context.application_id && common.bounded(c.request_id, 128, true, false)
+            && common.bounded(c.record_head, 256, true, false) && c.subject_digest == c.record_head
+            && common.bounded(c.outcome, 8192, true, true) && common.bounded(c.to, 256, true, false)
+            && c.expected_assignee == "" && c.new_assignee == "" && c.text == "" && c.rationale == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == ""
+            && c.source_head == "" && c.dependency_source == "" && c.dependency_digest == "" && c.source_text == "";
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
+    fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {
+        if !self.valid(context, c) { return ""; } let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.task-create-command/1\"");
+        self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
+        self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
+        self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id); self.field(b, "record_head", c.record_head);
+        self.field(b, "outcome", c.outcome); self.field(b, "to", c.to); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
+    fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        // An 8192-byte outcome can expand sixfold as JSON escapes.
+        if len(document) > 65536 || !syntax.valid(document) || !fields.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_kind target_id record_head outcome to", "")
+            || common.string(document, "format") != "dna.task-create-command/1" || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
+        let head = common.string(document, "record_head");
+        let c = GovernanceCommand { application_id: common.string(document, "application_id"), request_id: common.string(document, "request_id"), operation: common.string(document, "operation"), operation_version: common.string(document, "operation_version"),
+            position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"), target_id: common.string(document, "target_id"), subject_digest: head, record_head: head,
+            outcome: common.string(document, "outcome"), to: common.string(document, "to") };
+        return if self.valid(context, c) && self.canonical(context, c) == document { c } else { GovernanceCommand { } };
+    }
+    // No grant key: the authenticated principal is the authority, as it is
+    // for `hale dna ask`. Whether `to` is this organization's to admit is the
+    // organism's judgment, and its refusal arrives as an intent.refused row.
+    fn grant(context: GovernanceContext) -> GovernanceGrant {
+        let common = GovernanceCommandCodec { };
+        if !common.context_valid(context) { return GovernanceGrant { }; }
+        return GovernanceGrant { allowed: true, authority: context.principal_name, basis: "dna.task.create/1:authenticated-principal:" + context.principal_mode };
+    }
+    fn hex(n: Int) -> String {
+        if n <= 0 { return "0"; }
+        let digits = "0123456789abcdef"; let mut v = n; let mut out = "";
+        while v > 0 { let d = v % 16; out = digits[d..(d + 1)] + out; v = v / 16; }
+        return out;
+    }
+    fn intent_id_valid(id: String) -> Bool {
+        let size = len(id);
+        if size < 2 || size > 17 || std::str::byte_at_unchecked(id, 0) != 105 { return false; }
+        let mut i = 1;
+        while i < size { let c = std::str::byte_at_unchecked(id, i); if !(c >= 48 && c <= 57) && !(c >= 97 && c <= 102) { return false; } i = i + 1; }
+        return true;
+    }
+    // The id `hale dna ask` mints: "i" plus the lower-case hex of the monotonic
+    // milliseconds (dna/host/writers.hl). It is host-local, not globally
+    // unique: two asks in the same millisecond on one host mint the same id,
+    // and the organism admits one Task per id. The captured Journal is
+    // complete up to the head this row is appended at, so an id this Record
+    // already holds steps to the next millisecond; an ask written by another
+    // host's clock in the same millisecond stays outside this check.
+    @unbounded
+    fn intent_id(j: dna::Journal, millis: Int) -> String {
+        let mut offset = 0;
+        while offset <= j.revision() {
+            let candidate = "i" + self.hex(millis + offset);
+            let mut taken = false; let mut i = 0;
+            while i < j.revision() { let e = j.read(i); if e.kind == "intent.requested" && e.entity == candidate { taken = true; } i = i + 1; }
+            if !taken { return candidate; }
+            offset = offset + 1;
+        }
+        return "";
+    }
+    fn fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) -> String {
+        let common = GovernanceCommandCodec { };
+        if !self.valid(context, c) || !grant.allowed || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false) || !common.bounded(head, 256, true, false) { return ""; }
+        // The first three keys are the ones `hale dna ask` writes, in its
+        // order and spelling (std::json::Builder), so the row reads as an ask
+        // to the relay and to every intent scan; the command fields follow in
+        // the same flat object, and the relay splices `intent_id` before the
+        // last brace. No `via`: this head publishes nothing on the membrane.
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("outcome", c.outcome); b.string_field("from", context.principal_name); b.string_field("to", c.to);
+        b.string_field("command_format", "dna.task-create-command/1"); b.string_field("command_id", common.identity(context, c.request_id));
+        b.string_field("command_payload", self.canonical(context, c)); b.string_field("command_fingerprint", self.fingerprint(context, c));
+        b.string_field("command_authority", grant.authority); b.string_field("command_authority_basis", grant.basis); b.string_field("command_record_head", head);
+        b.end_object(); return b.result();
+    }
+    fn decode_fact(e: dna::Event) -> TaskCreateFact {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        if e.kind != "intent.requested" || len(e.body) > 262144 || !syntax.valid(e.body) || !fields.fields(e.body, "outcome from to command_format command_id command_payload command_fingerprint command_authority command_authority_basis command_record_head", "") { return TaskCreateFact { }; }
+        let payload = common.string(e.body, "command_payload"); if len(payload) > 65536 || !syntax.valid(payload) { return TaskCreateFact { }; }
+        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+        let c = self.decode(context, payload); let grant = GovernanceGrant { allowed: true, authority: common.string(e.body, "command_authority"), basis: common.string(e.body, "command_authority_basis") }; let head = common.string(e.body, "command_record_head");
+        if !self.valid(context, c) || !self.intent_id_valid(e.entity) || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false)
+            || head != e.prev || e.body != self.fact(context, c, grant, head) { return TaskCreateFact { }; }
+        return TaskCreateFact { valid: true, context: context, command: c, grant: grant, head: head, intent_id: e.entity };
+    }
+    // The organism's answer, re-derived from the Record: refused, offered, or
+    // born (dna/core/assembly.hl task_of_intent: the task.born whose body
+    // starts "<intent id>: "). A later row wins, so a schedule's re-offer after
+    // a refusal reads as offered again. `a.entity` is the intent id.
+    fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+        let c = a.command; let context = a.context;
+        let mut state = if a.unknown { "unknown" } else { "requested" }; let mut task = "";
+        if !a.unknown {
+            let mut i = if a.sequence < 0 { 0 } else { a.sequence + 1 };
+            while i < j.revision() {
+                let e = j.read(i);
+                if e.kind == "intent.refused" && e.entity == a.entity { state = "refused"; task = ""; }
+                else if e.kind == "intent.offered" && e.entity == a.entity { state = "offered"; task = ""; }
+                else if e.kind == "task.born" && std::str::starts_with(e.body, a.entity + ": ") { state = "born"; task = e.entity; }
+                i = i + 1;
+            }
+        }
+        return GovernanceReceipt { command_id: a.command_id, request_id: c.request_id, application_id: context.application_id, operation: c.operation, operation_version: c.operation_version,
+            principal_mode: context.principal_mode, principal_name: context.principal_name, position_id: c.position_id, target_kind: c.target_kind, target_id: c.target_id,
+            subject_digest: c.subject_digest, fingerprint: a.fingerprint, proposal_state: "", state: if a.unknown { "outcome_unknown" } else { "succeeded" },
+            task_create: TaskCreateOutcome { intent_id: if a.unknown { "" } else { a.entity }, intent_state: state, task_id: task, event_id: if a.unknown { "" } else { a.event_id } } };
+    }
+}

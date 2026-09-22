@@ -267,7 +267,7 @@ locus Ui {
         if std::http::is_route(ctx, "GET", "/api/history/:entity") {
             return text(run_dna("history\n" + clean(std::http::path_param(ctx.params, "entity"))));
         }
-        // the forms: a verdict, an intent, a pressure signal — each is
+        // the forms: a verdict, a task, a pressure signal — each is
         // the CLI's own verb, sent and not waited for
         if std::http::is_route(ctx, "POST", "/api/verdict") {
             let b = req.body;
@@ -282,12 +282,12 @@ locus Ui {
             if len(comment) > 0 { args = args + "\n--comment\n" + comment; }
             return text(run_dna(args));
         }
-        if std::http::is_route(ctx, "POST", "/api/ask") {
+        if std::http::is_route(ctx, "POST", "/api/task/create") {
             let b = req.body;
             let outcome = std::json::find_string_field(b, "outcome");
             let to = clean(std::json::find_string_field(b, "to"));
             if len(outcome) == 0 { return std::http::Response { status: 400, body: "say what should happen" }; }
-            let mut args = "ask\n--no-wait";
+            let mut args = "task\ncreate\n--no-wait";
             if len(to) > 0 { args = args + "\n--to\n" + to; }
             if len(signed_in) > 0 { args = args + "\n--as\n" + signed_in; }
             return text(run_dna(args + "\n" + outcome));

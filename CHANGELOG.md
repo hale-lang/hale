@@ -8,6 +8,48 @@ behavior.
 
 ## Unreleased
 
+### Iris: the project service, onboarding from the browser (GH #965)
+
+- A new head, `dna/api/project_service`, is the one process the cockpit talks
+  to: it serves the shell, keeps a registry of projects and a receipt journal
+  under a state directory, and proxies the Record routes to a per-project API
+  child (`dna/api/practice_review`) it starts under policies it synthesizes
+  when the operator wrote none. `iris/cockpit/start.sh` now takes an optional
+  project and builds both seeds; a detached head begins in the Projects
+  workspace, where a project is created, initialized or attached.
+- Every operation is the CLI verb run detached with pid, exit and log files —
+  create/init, attach/detach/forget, sync, publish (commit and push the genome),
+  forge configure/sync, the local and remote body, secrets by source name, the
+  model probe, connections, handoffs and the observer — each answering a
+  receipt (`recorded → admitted|refused → running → succeeded|failed|outcome_unknown`)
+  under a `command-<digest>` identity with identical-retry replay and
+  `request_conflict`. A deadline on a verb that reaches beyond the machine is
+  `outcome_unknown` with evidence, never a fabricated failure; row-writing
+  operations carry the rows the Record gained. Restarting the head interrupts
+  nothing: children are re-adopted and every earlier request answers the same
+  receipt. Secrets never cross the wire (a `value` key is refused; a 0600
+  source file is consumed once). Driver: a downstream handoff asking for
+  first commit, push and sync from the browser.
+- The contract gains the four head paths and their definitions (26 paths);
+  `dna/api/project_service/tests` runs the journal over a fake runner, the
+  operations without HTTP, and the head over HTTP with a restart. The book's
+  run chapter and reference, `spec/dna.md` and the API README describe the
+  head, its state directory and the sources directory.
+### Iris: raise work from the cockpit (GH #690)
+
+- `dna.task.create@1` is the command surface's `hale dna ask`. It admits the
+  same `intent.requested` row the CLI writes — entity the minted intent id,
+  author the acting principal, body `outcome`/`from`/`to` first and the command
+  fields after — so the relay and the organism treat a cockpit ask and a CLI
+  ask as one row. No policy grant: the authenticated principal is the
+  authority; the organism judges the position. The receipt succeeds once the
+  row is in the Record and re-derives the organism's answer (requested,
+  offered, refused, born with the Task id) on every lookup.
+- The cockpit's Handed Tasks register gains a "New task" form
+  (`web/task-create.js`) fed from the working-context loci, with the usual
+  identity-before-POST recovery. Contract, scripted HTTP, native API, domain
+  and browser cases cover it; the native browser lane proves the row bytes.
+
 ### Iris: inspect the declared organization (GH #690)
 
 - The Organization workspace browses exact static instances from a checked
@@ -37,6 +79,12 @@ behavior.
   Native boundary tests and real-browser tests cover serving, navigation,
   stale snapshots, suppressed content and connection failures. See
   [`iris/cockpit/README.md`](iris/cockpit/README.md).
+
+### DNA: `hale dna ask` is `hale dna task create`
+
+- The verb that asks the organization for an outcome is `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`; `hale dna ask` is gone, with no alias. Asking is one kind of task, and the cockpit exposes the same operation as `dna.task.create`, so the verb sits beside `task done`, `task accept` and the rest, and takes every word after the subverb as the outcome. Only the name and its strings change: the answer is still the execution whose admission names the intent (never the next birth in the record); the row kinds (`intent.requested`, `intent.offered`, `intent.refused`, `workflow.admitted`), the membrane kind `intent`, the topic `dna.intent.offered`, the sockets and `Dna.ask(Intent)` keep their names.
+- `--no-wait` returns once the row is in the record on both paths: beside a live organism (the row appended and published, no polling) as it already did from a clone with no organism (the row appended and synced). The one-line notice is the same on either.
+- The old head (`hale dna ui`) titles its form "New task" and posts `POST /api/task/create`, which runs the verb with `--no-wait`; the cockpit's read API still answers 405 on that path. Tests and fixtures spell the new verb: `dna_run`, `dna_record_sync`, `dna_record_trust`, `dna_task_done`, `dna_knowledge`, `dna_long_path`, `dna_status`, `dna_twelve_steps`, `dna_recorded_fixture`, `dna_ui`; `owners_test`, `two_owners_test`, `principal_oidc_test`, `b1_team_test`, `two_heads_test`, `read_api_test`, and the books acceptance program.
 
 ### DNA: cadence refresh runs on the organism's owner queue
 
@@ -231,7 +279,7 @@ foreign one was silently dropped; `hale --list-targets` listed it as
 
 - **Hard cutover, by ruling** (no backwards compatibility; no old records to care about): `Dna.ask(Intent)` admits a workflow for the intent (`workflow.admitted` under the intent's id as the admission's identity — offered again, the same execution) and runs it in the engine the assembly now owns for its scope (`runtime`, `executions`, born with it under `org_id`; `runs_engine: false` for a program that assembles them itself). Where the organism plans, the leader's word comes first and is bound into the admission's inputs — the objective, the kind, the class applied, the target, whom and under what obligation — so a person's job is admitted under `ask-person` (one human leaf, handed to whom the leader named with no second word asked) and anything else under `ask-edit` (one edit leaf, performed by the assembly's editor under the bound class and target); class `organization` for a child that is not the organism is refused before admission. Without a leader the ask is an application change. `Dna.run_workflow(WorkflowAsk)` is the authored-definition API: the admission (card 07) followed by the start.
 - **Deleted, not adapted**: `process.hl` (`Knobs`, `Attempt`, `Work`, `Step`, `Workflow`, `Task`, `Metabolism`), the routed exchange (`WorkRequested`, `WorkDone`, `TaskSettled`), the `WorkSystem`'s own retry loop and its counters (`max_attempts`, `requests`, `attempts_made`, `last_history`; the engine admits each attempt under the leaf's allowance and the router performs one), the `Settled` type, and the legacy recovery (`resume_work`, `pend_born_tasks`, `execute_plan`, `on_work_requested`, `on_task_settled`, `settle_task_of`, `task.pending` / `task.planned` / `task.resumed` rows). A restart asks the engine again for every admitted root of this owner's not yet settled; a Task with no admission is left where it is; an intent with no admission is noted once (`intent.unrecovered`). The `WorkSystem`'s `human` and `edit` performers are the assembly's relays (`HumanRelay`, `EditRelay`), scoped at the assembly's birth (`bind_scope`). The host's projection reads `workflow.settled` as an execution's terminal state. `status()` reports `executions_asked` / `executions_settled` instead of the tower's counters.
-- **Fixtures**: `fanout_join_test.hl`, `performers_test.hl` and `recursion_settlement_test.hl` (the in-tower controls) are gone; `workflow_public_admission_test.hl` runs intent through the membrane into the engine (no legacy row, the same intent again the same execution), the leader's word once for a person's job completed through the record, a restart that asks again and plans nothing while leaving a row of the old shape alone, and the authored-definition API with a delayed performer (the second step waits for the first's replies; seven attempts, one settlement). The contract's compatibility section records the ruling. Review: a performer kind is named for the exact Work (its bound id) and resolved by it, never by a member key two Works may share; a restart asks the engine again for a settled root whose tree still owes a Work settlement (a cancellation settles the root first), the engine counting the responsibilities outstanding anywhere in the tree — Works, and admitted children not yet settled, before their first attempt or after their last Work — so a cancelled parent drains its child, a reborn child reading its ancestor's cancellation from the record at its own state question (a fence published before it existed reached nobody) and settling itself cancelled, and a drained record is asked for nothing; the host's answer to `hale dna ask` is the execution whose admission names the ask, never the next birth in the record. The retained acceptance gates (`dna_run`, `dna_task_done`, `dna_twelve_steps`, `books_slice_test.hl`, `b1_team_test.hl`, `membrane_loss_test.hl`) read the engine's rows and the case ids.
+- **Fixtures**: `fanout_join_test.hl`, `performers_test.hl` and `recursion_settlement_test.hl` (the in-tower controls) are gone; `workflow_public_admission_test.hl` runs intent through the membrane into the engine (no legacy row, the same intent again the same execution), the leader's word once for a person's job completed through the record, a restart that asks again and plans nothing while leaving a row of the old shape alone, and the authored-definition API with a delayed performer (the second step waits for the first's replies; seven attempts, one settlement). The contract's compatibility section records the ruling. Review: a performer kind is named for the exact Work (its bound id) and resolved by it, never by a member key two Works may share; a restart asks the engine again for a settled root whose tree still owes a Work settlement (a cancellation settles the root first), the engine counting the responsibilities outstanding anywhere in the tree — Works, and admitted children not yet settled, before their first attempt or after their last Work — so a cancelled parent drains its child, a reborn child reading its ancestor's cancellation from the record at its own state question (a fence published before it existed reached nobody) and settling itself cancelled, and a drained record is asked for nothing; the host's answer to `hale dna task create` is the execution whose admission names the ask, never the next birth in the record. The retained acceptance gates (`dna_run`, `dna_task_done`, `dna_twelve_steps`, `books_slice_test.hl`, `b1_team_test.hl`, `membrane_loss_test.hl`) read the engine's rows and the case ids.
 
 
 ### DNA: the workflow resumes from accepted human completion (workflow card 17)

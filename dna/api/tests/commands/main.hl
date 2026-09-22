@@ -16,6 +16,8 @@ locus ScriptedCommands {
         review_supported: Bool = true;
         practice_authorized: Bool = true;
         review_authorized: Bool = true;
+        create_supported: Bool = true;
+        create_authorized: Bool = true;
         capability_calls: Int = 0;
         submit_calls: Int = 0;
         lookup_calls: Int = 0;
@@ -26,7 +28,7 @@ locus ScriptedCommands {
         result_head: String = "";
     }
     fn supported(operation: String, version: String) -> Bool {
-        return version == "1" && ((operation == "dna.practice.propose" && self.practice_supported) || (operation == "dna.review.verdict" && self.review_supported));
+        return version == "1" && ((operation == "dna.practice.propose" && self.practice_supported) || (operation == "dna.review.verdict" && self.review_supported) || (operation == "dna.task.create" && self.create_supported));
     }
     fn current_mode() -> String {
         let mode = if len(self.root) > 0 { std::io::fs::read_file(self.root + "/command-mode") or self.mode } else { self.mode };
@@ -35,13 +37,14 @@ locus ScriptedCommands {
     fn capability(context: api::CommandContext, operation: String, version: String) -> api::CommandCapability {
         self.capability_calls = self.capability_calls + 1;
         let mode = self.current_mode();
-        return api::CommandCapability { available: self.available && mode != "unavailable", authorized: self.authorized && (if operation == "dna.review.verdict" { self.review_authorized } else { self.practice_authorized }) && mode != "forbidden", reason: "Scripted adapter conformance provider; native durability is not implemented." };
+        return api::CommandCapability { available: self.available && mode != "unavailable", authorized: self.authorized && (if operation == "dna.review.verdict" { self.review_authorized } else if operation == "dna.task.create" { self.create_authorized } else { self.practice_authorized }) && mode != "forbidden", reason: "Scripted adapter conformance provider; native durability is not implemented." };
     }
     fn result(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         let mode = self.current_mode();
         if mode == "forbidden" || mode == "stale_subject" || mode == "request_conflict" || mode == "command_not_found" { return api::CommandResult { code: mode }; }
         if mode == "unavailable" || mode == "lookup_unavailable" { return api::CommandResult { }; }
         if command.operation == "dna.review.verdict" { return self.verdict_result(context, command, mode); }
+        if command.operation == "dna.task.create" { return self.create_result(context, command, mode); }
         let created = mode == "succeeded" || mode == "approve_pending" || mode == "adopted" || mode == "activation_refused";
         let approved = mode == "approve_pending" || mode == "adopted" || mode == "activation_refused";
         let receipt = api::CommandReceipt {
@@ -70,7 +73,26 @@ locus ScriptedCommands {
         b.string_field("target", command.target_id); b.string_field("subject", command.subject_digest);
         b.string_field("text", command.text); b.string_field("rationale", command.rationale);
         b.string_field("verdict", command.verdict); b.string_field("comment", command.comment);
+        b.string_field("record_head", command.record_head); b.string_field("outcome", command.outcome); b.string_field("to", command.to);
         b.end_object(); return dna::digest_of(b.result());
+    }
+    // A scripted ask: the mode names the organism's answer the receipt reports.
+    fn create_result(context: api::CommandContext, command: api::CommandRequest, mode: String) -> api::CommandResult {
+        let unknown = mode == "outcome_unknown";
+        let state = if unknown { "unknown" } else if mode == "task_born" { "born" } else if mode == "intent_offered" { "offered" } else if mode == "intent_refused" { "refused" } else { "requested" };
+        let receipt = api::CommandReceipt {
+            command_id: "scripted:" + command.request_id, request_id: command.request_id,
+            application_id: if mode == "malformed" { "another-application" } else { context.source.identity },
+            operation: command.operation, operation_version: command.operation_version,
+            principal_mode: context.principal_mode, principal_name: context.principal_name,
+            target_kind: "dna.record", target_id: command.target_id, subject_digest: command.subject_digest,
+            fingerprint: self.fingerprint(command), state: if unknown { "outcome_unknown" } else { "succeeded" }, reason: "",
+            proposal_state: "", review_state: "unavailable", activation_state: "unknown",
+            task_create: api::TaskCreateOutcome { intent_id: if unknown { "" } else { "i1f4" }, intent_state: state, task_id: if state == "born" { "org:t1" } else { "" }, event_id: if unknown { "" } else { "cccccccccccccccccccccccccccccccccccccccc" } }
+        };
+        let mut source = context.source;
+        if len(self.result_head) > 0 { source.head = self.result_head; source.revision = source.revision + 1; }
+        return api::CommandResult { ok: true, source: source, receipt: receipt };
     }
     fn verdict_result(context: api::CommandContext, command: api::CommandRequest, mode: String) -> api::CommandResult {
         let accepted = mode == "succeeded" || mode == "verdict_pending" || mode == "verdict_settled" || mode == "approve_pending" || mode == "activation_refused" || mode == "adopted";
@@ -99,7 +121,7 @@ locus ScriptedCommands {
     }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         self.submit_calls = self.submit_calls + 1; self.last_context = context; self.last_command = command;
-        if !self.authorized || (command.operation == "dna.review.verdict" && !self.review_authorized) || (command.operation == "dna.practice.propose" && !self.practice_authorized) { return api::CommandResult { code: "forbidden" }; }
+        if !self.authorized || (command.operation == "dna.review.verdict" && !self.review_authorized) || (command.operation == "dna.practice.propose" && !self.practice_authorized) || (command.operation == "dna.task.create" && !self.create_authorized) { return api::CommandResult { code: "forbidden" }; }
         // Deliberately bounded, process-local conformance state, not a durable
         // registry. The retained key shares one namespace across operations.
         if command.request_id == self.saved_command.request_id && context.source.identity == self.saved_context.source.identity && context.principal_mode == self.saved_context.principal_mode && context.principal_name == self.saved_context.principal_name && command.operation != self.saved_command.operation { return api::CommandResult { code: "request_conflict" }; }

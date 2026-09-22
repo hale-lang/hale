@@ -19,12 +19,16 @@ Product scope and remaining service work are tracked in
 
 ## Run
 
-For the browser and API together, `./iris/cockpit/start.sh PROJECT` builds this
-checkout's native API in temporary storage and serves its nine browser assets.
-Use `--api BINARY` for an existing application-composed head. The launcher
-inherits private service configuration and preserves the project's authentication
-mode; it starts no application body or infrastructure. See the cockpit README
-for fresh-project source capture and service configuration.
+For the browser and the services together, `./iris/cockpit/start.sh [PROJECT]`
+builds this checkout's [project service](#head-project-service) (the head) and
+its per-project native API (`dna/api/practice_review`) in temporary storage and
+serves the eleven browser assets from the head. The project is optional: without it
+the head starts detached and the browser's Projects workspace creates,
+initializes or attaches one. Use `--api BINARY` for an existing
+application-composed API and `--head BINARY` for a built head. The launcher
+inherits private service configuration; the head is trusted-local and refuses
+a project configured for OIDC. See the cockpit README for fresh-project source
+capture and service configuration.
 
 From the Hale source checkout, using a current Hale compiler:
 
@@ -47,8 +51,8 @@ To serve the cockpit as well, pass its static directory as the third argument:
 ```
 
 Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/runtime.js`, `/application.js`,
-`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
-URLs never become filesystem paths. All nine assets must exist and be nonempty
+`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
+URLs never become filesystem paths. All eleven assets must exist and be nonempty
 at startup. They are loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
@@ -347,13 +351,21 @@ needs the exact grant, not membership in the assignment group. `USER` supplies
 no grant. Restart the provider to load policy changes; Record admission does not
 atomically fence a mutable external policy file.
 
-With a matching source-built composed binary:
+With a matching source-built composed binary, run it directly with the
+policies in its environment:
 
 ```sh
 HALE_DNA_COMMAND_POLICY=/absolute/path/authority.json \
 HALE_DNA_TASK_POLICY=/absolute/path/task-authority.json \
-  iris/cockpit/start.sh /absolute/path/project \
-  --api /absolute/path/practice_review --port 8792
+  dna/api/practice_review/practice_review /absolute/path/project 8793
+```
+
+Under the launcher the [head](#head-project-service) starts this binary itself
+as the attached project's API child, with the two policies it synthesized
+under `<root>/.hale/dna/iris/` when the operator wrote none:
+
+```sh
+iris/cockpit/start.sh /absolute/path/project --api /absolute/path/practice_review --port 8792
 ```
 
 `/capabilities` exposes the optional `task_commands` profile
@@ -404,6 +416,136 @@ signed trust, Ledger-backed administration and source-to-live ownership joins
 need their own supported service contract. Existing CLI Task commands are not
 made part of this provider by these routes.
 
+## Head: project service
+
+`dna/api/project_service` is the cockpit head (GH #965): the one process the
+browser talks to. It serves the shell, owns the operator-machine state — a
+project registry, a receipt journal, run and child files under
+`${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/iris/head}` —
+and reverse-proxies every `/api/hale/v1/applications…` request to the attached
+project's API child (`practice_review <root> <api-port>`) on the loopback, so
+the browser has one origin and the child's exact-`Origin` guard holds untouched.
+Switching a project replaces the child. The head re-implements no verb: each
+operation runs `$HALE_BIN dna …` (or `git config` for the two forge keys) as a
+detached child under `timeout -k 10 <secs> sh -e`, with its pid, exit and log
+as files, so restarting the head interrupts nothing and the next head re-adopts
+the children whose command line matches what it recorded.
+
+```sh
+hale build dna/api/practice_review
+hale build dna/api/project_service
+HALE_BIN="$(command -v hale)" \
+  ./dna/api/project_service/project_service 8792 iris/cockpit/web dna/api/practice_review/practice_review 8793 [/absolute/path/project]
+```
+
+Four routes, described in `contract/v1` beside the Record routes, all under the
+head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","active"},"data"}`:
+
+- `GET /api/hale/v1/head` — detached or attached, the active project and its
+  API child, the body and observer children, credentials **by name** (what the
+  catalog needs, which file sources exist, which names are set), the running
+  receipt (`busy`), and every operation with its availability.
+- `GET /api/hale/v1/head/projects[?id=…]` — the registry; with `id`, the
+  policies' `authority` booleans, connections, handoffs, secret names and the
+  project's receipts, projected in-process from the Record.
+- `POST /api/hale/v1/head/commands` (the same `Origin` / `Content-Type` /
+  `X-Hale-Command: 1` guard as the Record commands) and `GET …?request_id=` —
+  one closed request `{request_id, operation, operation_version:"1", context:{head:"local",
+  application_id}, target, preconditions:{principal}, arguments}`, one receipt
+  `recorded → admitted|refused → running → succeeded|failed|outcome_unknown`.
+  Identity is `command-<digest>` over the principal and `request_id`; an
+  identical retry replays the stored receipt (never re-executed), a changed
+  request under the same id is 409 `request_conflict`. Runs settle on the next
+  request from their files: exit 0 succeeded, non-zero failed, 124 or a passed
+  deadline `timed_out` — `outcome_unknown` when the verb is external (a push,
+  a sync, a probe), never a fabricated failure. Row-writing operations carry
+  `outcome.record = {head_before, head_after, rows}`.
+- `GET /api/hale/v1/head/logs?run=<command_id>|child=api|body|observer[&offset=N]` —
+  64 KiB pages of a run's or a child's log.
+
+Operations (all version 1): `dna.project.create` / `init` (600 s runs of
+`hale dna new` / `init`, then an attach), `attach` / `detach` / `forget`
+(inline; attach validates the worktree, the Record, the `dna/` seed, and
+refuses `principal_unsupported` / `trust_unsupported` for OIDC or signed
+projects), `dna.project.sync` / `publish` (a commit and push of the genome,
+then a sync), `dna.forge.configure` / `sync`, and the sixteen body, secret,
+model, connection, handoff and observer operations of the head's contract.
+A secret is never a value on this wire: `dna.secret.set` names a **source** —
+a 0600 one-line file under `${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/`
+or an environment variable the run's shell reads — and the file is unlinked
+once the verb succeeded. A request carrying `value` anywhere is 400.
+
+The head is trusted-local: its principal is `USER`, every child runs as it,
+and it proxies no `/auth/*`. Restarting a head over the same state directory
+answers every earlier `request_id` with the same terminal receipt and
+re-attaches the last activated project. `tests/journal_test.hl`,
+`tests/operations_test.hl` and `tests/head_api_test.hl` run under
+`HALE_HEAD_BIN` and `HALE_API_BIN`; each makes its own scratch root.
+## Raising work
+
+`dna.task.create@1` is the cockpit's `hale dna ask`: it records the same
+`intent.requested` row the CLI writes, so the host beside the organism relays it
+and the organism admits it exactly as it admits a CLI ask. The row's entity is
+the intent id (`i` plus the lower-case hex of the current monotonic
+milliseconds, as the CLI mints it), its author is the acting principal, and its
+body is one flat JSON object whose first three keys are `outcome`, `from` (the
+principal) and `to`, followed by the command fields the other operations carry
+(`command_format: dna.task-create-command/1`, `command_id`, `command_payload`,
+`command_fingerprint`, `command_authority`, `command_authority_basis`,
+`command_record_head`). It carries no `via` and no `intent_id`: this head
+publishes nothing on the membrane, and the relay splices the id in before the
+last brace when it publishes.
+
+Every [native command head](practice_review/README.md) supports it; there is no
+policy grant. The authority is the authenticated principal, as with the CLI,
+and whether `to` is this organization's to admit is the organism's judgment,
+recorded as an `intent.refused` row. `/capabilities` exposes
+`task_create_commands` (`dna.task.create.v1`, `max_outcome_bytes` 8192,
+`max_identity_bytes` 256, `max_request_bytes` 32768) and `writes.task_create`,
+which contributes to `read_only`. Submit to the shared `POST /commands` route
+with the usual Origin, JSON and `X-Hale-Command: 1` requirements:
+
+```json
+{
+  "request_id": "create-1",
+  "operation": "dna.task.create",
+  "operation_version": "1",
+  "context": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "position_id": "org"},
+  "target": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "dna.record", "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "preconditions": {
+    "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "principal": {"mode": "local", "name": "riley"}
+  },
+  "arguments": {"outcome": "Confirm the supplier handover", "to": "org"}
+}
+```
+
+The target is the Record itself: the Task is minted by the organism after the
+ask is admitted, so the request can name only the application. `record_head`
+follows the `dna.organization.propose` precedent: the row lands at exactly the
+head the request was prepared against, or the request is refused with
+`stale_subject` (409) and must be prepared again against the current head.
+`outcome` is 1..8192 UTF-8 bytes with control bytes preserved; `to` is a
+position, 1..256 bytes. The whole request is bounded to 32768 encoded bytes.
+
+The receipt is `succeeded` once the row is appended (the ask is admitted; the
+organism's answer is a separate fact) or `outcome_unknown` when the append is
+uncertain. `subject_digest` is the Record head the request was prepared
+against. Its `task_create` object names the minted `intent_id`, the row's
+`event_id`, and re-derives the organism's answer from the Record on every read:
+`intent_state` is `requested` until the organism answers, then `offered`,
+`refused`, or `born` with `task_id` filled from the `task.born` row whose body
+starts with `<intent_id>: `. A born-but-unhanded Task is absent from
+`/dna/tasks`, so `GET /commands?request_id=...` is how the cockpit follows the
+ask; nothing else is re-read. After `ledger.adopted` new asks are refused
+(`commands_unsupported`) like every other operation here; recorded asks stay
+recoverable.
+
+Two asks minted in the same millisecond on one host would share an id and the
+organism admits one Task per id; this head steps an id its Record already holds
+to the next millisecond, which the CLI does not. A CLI ask beside a cockpit ask
+carries no command fields and is invisible to command lookup.
+
 ## Identity and content
 
 With no configured principal source, or `dna.principal=local`, loopback access is
@@ -449,6 +591,9 @@ hale test dna/api/contract/v1/tests
 hale check dna/api
 hale build dna/api
 HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/tests
+hale check dna/api/practice_review && hale build dna/api/practice_review
+hale check dna/api/project_service && hale build dna/api/project_service
+HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/dna/api/project_service/project_service" HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/project_service/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```

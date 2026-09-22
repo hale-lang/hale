@@ -69,7 +69,7 @@ locus RecordTaskWriterAdmission {
     }
 }
 
-// ---- ask ------------------------------------------------------------
+// ---- task create ----------------------------------------------------
 
 @unbounded
 // GH #596 W: a person reports a handed Task done. A row in the record
@@ -635,8 +635,12 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
     return answer("effect " + key + " " + body + "\n");
 }
 
-fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {
-    if len(outcome) == 0 { return fail("ask: say what should happen — `hale dna ask \"<intent>\"`"); }
+// `hale dna task create`: asking for an outcome is one kind of task (the
+// cockpit exposes the same operation as `dna.task.create`). The row kinds
+// it writes and reads (`intent.requested`, `intent.refused`,
+// `workflow.admitted`) and the membrane kind `intent` keep their names.
+fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {
+    if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
     let s0 = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, ".", "");
@@ -659,21 +663,24 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
     // it stays unanswered
     if local { b.string_field("via", "membrane"); }
     b.end_object();
+    // `--no-wait`: the one notice, on either path, once the row is in the record
+    let requested = "intent " + intent_id + " requested in the record" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
     if local {
         // GH #682: the durable fact precedes the act, on this path too — the
         // row lands first, so a publish the membrane loses is relayed by the
         // host beside the organism, which admits an intent once by its id
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "intent", b.result());
-        if len(e) > 0 { eprintln("hale dna ask: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
+        if len(e) > 0 { eprintln("hale dna task create: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
+        if no_wait { return answer(requested); }
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
-        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "ask: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
+        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let s = sync_record(root);
         if !s.ok { return fail(s.summary); }
-        if no_wait { return answer("intent " + intent_id + " requested in the record" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n"); }
+        if no_wait { return answer(requested); }
     }
     // the organism's answer, from the record
     let deadline = std::time::now() + (if local { 10 } else { 60 });

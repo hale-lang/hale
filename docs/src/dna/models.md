@@ -197,7 +197,7 @@ the organization starts (a restart loses nothing, and a position you
 add later is covered without doing anything), and when a window is
 spent:
 
-- `hale dna ask` is refused with the reason: `refused: budget
+- `hale dna task create` is refused with the reason: `refused: budget
   exhausted (spent 25000000 of 25000000 micro-dollars this day in 41
   call(s))`;
 - `budget.exhausted` is journaled once for the window and the

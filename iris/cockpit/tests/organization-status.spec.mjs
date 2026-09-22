@@ -23,7 +23,7 @@ test.beforeAll(async () => {
   expect(status.data.current_running.available).toBe(false);
   expect(status.data.observation.state).toBe('healthy');
   native = { statusText, reviewsText, status, reviews, review, app: status.source.record_id };
-  const assets = new Set(['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js']);
+  const assets = new Set(['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js']);
   server = createServer(async (request, response) => {
     const name = new URL(request.url, 'http://localhost').pathname.slice(1) || 'index.html';
     if (!assets.has(name)) { response.writeHead(404); response.end(); return; }

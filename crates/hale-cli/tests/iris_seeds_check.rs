@@ -119,7 +119,10 @@ fn the_seed_list_is_complete() {
         let mut has_hl = false;
         for e in std::fs::read_dir(dir).unwrap().flatten() {
             let p = e.path();
-            if p.is_dir() && !p.ends_with("handoffs") && p.file_name().map(|n| n != ".git").unwrap_or(true) {
+            // Playwright's output and node's modules are gitignored and may
+            // hold generated .hl files after a browser run; never seeds.
+            let generated = p.file_name().map(|n| n == ".git" || n == "test-results" || n == "node_modules").unwrap_or(false);
+            if p.is_dir() && !p.ends_with("handoffs") && !generated {
                 walk(&p, root, out);
             } else if p.extension().map(|x| x == "hl").unwrap_or(false) {
                 has_hl = true;

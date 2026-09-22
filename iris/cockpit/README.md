@@ -2,7 +2,7 @@
 
 A browser cockpit for ordinary Hale application controls and runtime observation,
 plus DNA organization, workflow definitions, Knowledge, practices and reviews.
-The frontend is nine static files, served beside the native Hale API or by an
+The frontend is eleven static files, served beside the native Hale API or by an
 independent static host. It has no
 build step, runtime package dependencies, database connection or domain engine.
 
@@ -16,6 +16,14 @@ From this checkout, start Iris against an existing DNA project with one command:
 ```sh
 ./iris/cockpit/start.sh /absolute/path/to/dna-project --source-drafts
 ```
+
+The project argument is optional. With one, the launcher serves that project
+through the composed API as before. Without one it runs the project service
+(`dna/api/project_service`): the operator-machine head that serves the same
+shell, answers `/api/hale/v1/head`, and proxies Record reads to a per-project
+API child once a project is attached. The browser then opens on **Projects**,
+where a project is created, initialized or attached from the browser; see
+[Projects and the project service](#projects-and-the-project-service).
 
 The launcher builds this checkout's native Hale API in temporary storage, serves
 the bundled browser, and prints its loopback URL. Set `HALE_BIN` if the compiler
@@ -61,7 +69,7 @@ The native API can also be invoked directly:
 
 Open <http://127.0.0.1:8792/>. The API binds to loopback. Omitting the final
 webroot argument preserves the API-only service. The webroot is this static asset
-directory, not the DNA project or its Record. Only the nine named assets and
+directory, not the DNA project or its Record. Only the eleven named assets and
 the observer connection metadata described below are served; the service is
 not a general file server.
 
@@ -74,8 +82,9 @@ callback must point to this service's `/auth/callback` on the same origin.
 The existing API can be supplied from a Hale build or an upstream artifact.
 Definitions and Knowledge need a service that advertises and implements their
 read contracts. Unsupported connections retain explicit unavailable states.
-This checkout launcher is separate from `hale iris` and does not add a
-`hale dna api` CLI subcommand, a complete Compose profile or a hosted deployment.
+This checkout launcher is separate from `hale iris`. Its project service is
+the operator-machine head; there is still no `hale dna api` or `hale dna cockpit`
+CLI subcommand, complete Compose profile or hosted deployment.
 
 ### Ordinary Hale application controls
 
@@ -119,10 +128,21 @@ keeps its own explicit connection and never establishes command authority.
 
 ## Current surface
 
+- **Projects:** when the project service answers behind the API, create,
+  initialize or attach a DNA project on this machine and operate the attached
+  one: sync and publish the Record, configure and sync the forge, start and
+  stop the local body, preview or run body provisioning, drive a remote body,
+  set or rotate secrets by source name, probe models with an explicit spend
+  confirmation, propose and close connections, publish, accept and sync
+  handoffs, and start or stop the observer. Every action is the CLI verb run by
+  the head; the browser shows its durable receipt and reads the head again
+  before it claims an effect.
 - **Work:** recorded workflow executions and a separate **Handed Tasks** view.
   Handed Tasks show the existing responsibility, acceptance requirements and
   assignment history; an explicitly authorized local profile can reassign a
-  supported open Task to an eligible person.
+  supported open Task to an eligible person. A native command head also lets
+  the signed-in principal raise work with the **New task** form, the
+  cockpit's `hale dna ask`; the organism's answer is a separate, later fact.
 - **Practices:** paged proposals and revisions, available document text,
   lifecycle, provenance, rationale, governing Review and superseded digest.
 - **Reviews:** exact subject, required authority and recorded decision, linked
@@ -191,11 +211,62 @@ original snapshot, and a 409 restarts the page sequence with a visible notice.
 Missing objects, unavailable sources, empty catalogs and sign-in requirements
 have distinct states. Old content is cleared when a request can no longer
 establish readable data. Documents and drafts are not persisted in browser
-storage; command recovery retains only the scoped request metadata described below.
+storage; command recovery retains only the scoped request metadata described below,
+and Projects keeps one separate slot per principal for its own request identity.
 
 Receipt visibility remains the API's decision, including current Ledger policy
 where applicable. The browser explains returned availability and provenance;
 it cannot restore suppressed text or infer hidden relationships.
+
+## Projects and the project service
+
+`web/projects.js` (`window.IrisProjects`) is the Projects workspace. It talks
+only to the four head paths under `/api/hale/v1/head`, validates their closed
+envelope (`api_version`, `head.profile === "dna.head.v1"`, principal, active
+project; an unexpected key anywhere is a different service) and never treats a
+head answer as a Record envelope.
+
+The shell probes `GET /api/hale/v1/head` once per page, before the first
+Record read or the Projects view. A plain Record API answers 404: the shell
+continues unchanged, the Projects entry stays hidden and nothing else is sent.
+A head that answers `detached` lands the page on Projects, because there is no
+Record to read; a head that answers `attached` keeps the requested view and
+shows the Projects entry. Runtime never probes. Record reads refused with
+`head_detached`, `head_api_unavailable` or `upstream_timeout` render their own
+state cards with an **Open Projects** action.
+
+The workspace shows the head's state, the registered projects with their
+Record head, body, forge and recent receipts, the onboarding forms (create
+pre-fills the head's `projects_dir`; `discover` is an explicit checkbox) and,
+for the attached project, one form per operation. Forms the head reports
+unavailable are disabled with the head's reason code; a busy head disables all
+of them and names the running command. Values are checked in the browser
+against the verbs' own grammars before anything is sent; an invalid value is
+listed beside its field and no request leaves the page.
+
+A submission reserves its identity first: one `localStorage` slot,
+`iris.projects-recovery.v1:<principal>`, holding only `{version, request_id,
+operation, target}`, taken under a Web Lock before the POST and cleared once
+the receipt is terminal. A reload restores it as a GET lookup, never a POST.
+The receipt lifecycle `queued → recorded → admitted|refused → running →
+succeeded|failed|outcome_unknown` renders as stages with an inspector; a
+non-terminal receipt is looked up every two seconds, and the head is re-read
+every two seconds while its API child is starting. `data-observation` on the
+request region becomes `observed` only after a fresh read of the head (and of
+the attached project) shows the effect: a fresh active project, a moved Record
+head, a running child, a stored secret name, a listed connection. An
+`outcome_unknown` receipt names the command, its target and run, links the run
+log and explains that nothing is retried automatically; there is no retry
+control. Refusals decided by the head before it recorded anything (400/409)
+release the slot; a lost response keeps it and is looked up until it settles.
+
+Secret values never enter the browser. `Set secret` and `Rotate secret` take a
+NAME (the credential names the head found in the project's model catalog, or a
+typed one) and a SOURCE the head advertises: a one-line 0600 file under the
+head's sources directory (`${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`)
+or a variable exported in the head's environment. The head pipes that source
+into `hale dna secret`; the form has no value field, and a request carrying one
+is refused by the head.
 
 ## Native Runtime connection
 
@@ -413,7 +484,7 @@ or running-state claim follows from successful catalog validation.
 ## Development and verification
 
 Edit `web/index.html`, `web/styles.css`, `web/runtime.js`, `web/application.js`,
-`web/definition-draft.js`, `web/organization-draft.js`, `web/knowledge-draft.js`, `web/task-administration.js` and `web/app.js`, restart the API to load
+`web/definition-draft.js`, `web/organization-draft.js`, `web/knowledge-draft.js`, `web/task-administration.js`, `web/projects.js`, `web/task-create.js` and `web/app.js`, restart the API to load
 the changed assets, then reload the browser.
 There are no external scripts, fonts or asset services. JavaScript renders
 native content as text. A connection without a compatible command provider cannot submit domain changes.
@@ -673,6 +744,34 @@ a stale snapshot requires a refresh. Restricted or unavailable evidence clears
 the affected details. Person retirement, cross-owner transfers, hosted or Ledger
 administration, and joins from declared source ownership to live responsibility
 are outside this profile. The policy's owner label is not such a join.
+
+### New task
+
+On **Work / Handed Tasks**, a native command head shows the **New tasks
+enabled** badge and a **New task** form: an outcome (**What should happen**,
+1..8192 bytes) and a locus (**For locus**), with the whole organization
+(`org`) offered first and the working context's declared loci after it, as
+`hale dna ask` without `--to` addresses the organization. **Review new task**
+shows the exact ask in the signed-in principal's name; **Confirm new task**
+submits it once. There is no separate grant: the authority is the
+authenticated principal, as with the CLI.
+
+The receipt records the ask, not its answer. The service appends the same
+`intent.requested` row the CLI writes, at the Record head the form was
+prepared against (a moved head refuses the request, and the form must be
+prepared again). Whether the locus is this organization's to admit is the
+organism's judgment, recorded separately; **Check request status** re-reads it
+through GET only and shows the intent as `requested`, `offered`, `refused` or
+`born`, naming the Task once it is born. A born Task joins the handed Tasks
+only after the leader hands it to a person, so the request panel is where a
+raised ask is followed until then.
+
+Recovery metadata uses version 7 in the existing shared request slot, holding
+the request identity and the prepared Record head; no outcome text is
+persisted. An unresolved request blocks a different submission. See
+[Raising work](../../dna/api/README.md#raising-work) for the row, the wire
+shape and the receipt.
+
 # Person responsibility and retirement
 
 Selecting a declared member opens their exact recorded assignments. When the

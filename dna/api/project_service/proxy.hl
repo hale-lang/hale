@@ -1,0 +1,159 @@
+// dna/api/project_service/proxy.hl — the head's one-connection HTTP
+// exchange with a loopback child (GH #965, §2.4 and §2.9 of the head's
+// contract). Every `/api/hale/v1/applications…` request the browser
+// sends is forwarded to the attached project's API child on the
+// loopback: the method, the path with its query, the body, and only
+// the headers the child's own guard reads (`Accept`, `Content-Type`,
+// `Content-Length`, `X-Hale-Command`); the browser's `Origin` is
+// rewritten to the child's origin exactly when it was the head's own,
+// and omitted otherwise, so the child's exact-origin guard holds
+// untouched. The answer comes back with its status, content type and
+// body, plus `Cache-Control` and `X-Content-Type-Options`; the server
+// recomputes framing itself.
+//
+// The exchange is one connected fd with a read deadline: the child
+// always answers `Connection: close` with a `Content-Length`, so the
+// response is read to EOF; a deadline that cuts the body short is an
+// upstream timeout, never a truncated success. The stdlib client is
+// not used: its timeout is declared and applied nowhere. The same
+// exchange is the readiness probe for the API child, and for anything
+// else on the loopback that answers HTTP.
+
+import ".." as api;
+import "../../core" as dna;
+
+// A response larger than this is cut and reported as a timeout.
+const MAX_UPSTREAM_BYTES: Int = 16777216;
+// The proxy's read deadline; the API's slowest read is well under it.
+const UPSTREAM_TIMEOUT_NS: Int = 20000000000;
+// The readiness probe's deadline: a listening child answers at once.
+const PROBE_TIMEOUT_NS: Int = 2000000000;
+
+// One exchange's result: `code` is "" when a whole response arrived,
+// else connect_failed (nothing listens), no_response (the connection
+// closed before a status line) or timeout (the deadline cut the body).
+type Upstream {
+    ok: Bool = false;
+    code: String = "";
+    status: Int = 0;
+    // CRLF-joined header lines, without the status line
+    headers: String = "";
+    body: String = "";
+}
+
+// The value of `name` in a CRLF header block, "" when absent or
+// ambiguous (the command wire's own case-insensitive lookup).
+fn upstream_header(headers: String, name: String) -> String {
+    let wire = api::CommandWire { };
+    let h = wire.header(headers, name);
+    if !h.valid || h.count != 1 { return ""; }
+    return h.value;
+}
+
+// `METHOD target` against 127.0.0.1:`port` with `headers` (CRLF lines,
+// each terminated) and `body`; read to EOF or `timeout_ns`.
+@unbounded
+fn exchange(port: Int, method: String, target: String, headers: String, body: String, timeout_ns: Int) -> Upstream {
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return Upstream { code: "connect_failed" }; }
+    let armed = std::io::tcp::__set_recv_timeout_ns(fd, timeout_ns);
+    let s = std::io::tcp::Stream { conn_fd: fd };
+    let head = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + to_string(port) + "\r\n" + headers + "Connection: close\r\n\r\n";
+    s.send(head + body) or discard;
+    let received = std::bytes::BytesBuilder { };
+    let mut total = 0;
+    let mut reading = true;
+    // recv answers empty for EOF and for the deadline alike: the clock
+    // tells them apart when nothing at all arrived
+    let started = std::time::monotonic_ns();
+    while reading {
+        let chunk = s.recv(65536) or "";
+        if len(chunk) == 0 {
+            reading = false;
+        } else {
+            received.append_str(chunk);
+            total = total + len(chunk);
+            if total > MAX_UPSTREAM_BYTES { reading = false; }
+        }
+    }
+    let raw = std::str::from_bytes(received.snapshot());
+    if total == 0 { return Upstream { code: if std::time::monotonic_ns() - started >= timeout_ns { "timeout" } else { "no_response" } }; }
+    if total > MAX_UPSTREAM_BYTES { return Upstream { code: "timeout" }; }
+    let split = std::str::index_of(raw, "\r\n\r\n");
+    if split < 0 { return Upstream { code: "timeout" }; }
+    let block = raw[0..split];
+    let body_text = raw[(split + 4)..len(raw)];
+    let nl = std::str::index_of(block, "\r\n");
+    let status_line = if nl < 0 { block } else { block[0..nl] };
+    let header_lines = if nl < 0 { "" } else { block[(nl + 2)..len(block)] };
+    let sp = std::str::index_of(status_line, " ");
+    if sp < 0 || len(status_line) < sp + 4 { return Upstream { code: "no_response" }; }
+    let http = api::Http { };
+    let status = http.integer(status_line[(sp + 1)..(sp + 4)], 999);
+    if status < 100 { return Upstream { code: "no_response" }; }
+    let declared = upstream_header(header_lines, "Content-Length");
+    if len(declared) > 0 {
+        let expected = http.integer(declared, MAX_UPSTREAM_BYTES);
+        if expected < 0 || expected > len(body_text) { return Upstream { code: "timeout" }; }
+    }
+    return Upstream { ok: true, status: status, headers: header_lines, body: body_text };
+}
+
+// One request header line for the upstream, when the browser sent it once.
+fn forwarded(req: std::http::Request, name: String) -> String {
+    let wire = api::CommandWire { };
+    let h = wire.header(req.headers, name);
+    if !h.valid || h.count != 1 { return ""; }
+    return name + ": " + h.value + "\r\n";
+}
+
+// The header block a proxied request carries: the whitelist, the
+// body's real length, and `Origin` rewritten to the child's origin
+// exactly when the browser sent the head's own.
+fn proxied_headers(req: std::http::Request, api_port: Int, head_origin: String) -> String {
+    let wire = api::CommandWire { };
+    let mut headers = forwarded(req, "Accept") + forwarded(req, "Content-Type") + forwarded(req, "X-Hale-Command");
+    if req.method == "POST" || len(req.body) > 0 { headers = headers + "Content-Length: " + to_string(len(req.body)) + "\r\n"; }
+    let origin = wire.header(req.headers, "Origin");
+    if origin.valid && origin.count == 1 && origin.value == head_origin { headers = headers + "Origin: http://127.0.0.1:" + to_string(api_port) + "\r\n"; }
+    return headers;
+}
+
+// Forwards `req` to the API child on `api_port`.
+fn proxy_exchange(req: std::http::Request, api_port: Int, head_origin: String) -> Upstream {
+    return exchange(api_port, req.method, req.path, proxied_headers(req, api_port, head_origin), req.body, UPSTREAM_TIMEOUT_NS);
+}
+
+// The browser's answer for an exchange: the child's status, content
+// type and body with the two cache headers passed through; a connect
+// failure is 503 `head_api_unavailable`, a cut body 504
+// `upstream_timeout`, both retryable.
+fn proxied_response(up: Upstream) -> std::http::Response {
+    let http = api::Http { };
+    if !up.ok {
+        if up.code == "timeout" { return http.error(504, "upstream_timeout", "the project's API did not answer within the head's deadline", true); }
+        return http.error(503, "head_api_unavailable", "the project's API child is not answering; the head will report it down", true);
+    }
+    let content_type = upstream_header(up.headers, "Content-Type");
+    let mut extra = "";
+    let cache = upstream_header(up.headers, "Cache-Control");
+    if len(cache) > 0 { extra = extra + "Cache-Control: " + cache; }
+    let sniff = upstream_header(up.headers, "X-Content-Type-Options");
+    if len(sniff) > 0 { extra = extra + (if len(extra) > 0 { "\r\n" } else { "" }) + "X-Content-Type-Options: " + sniff; }
+    return std::http::Response { status: up.status, content_type: if len(content_type) > 0 { content_type } else { "application/octet-stream" }, headers: extra, body: up.body };
+}
+
+// The API child's readiness (§2.1): `GET /api/hale/v1/applications`
+// answers 200 and names `identity` as its Record.
+fn api_ready(api_port: Int, identity: String) -> Bool {
+    let up = exchange(api_port, "GET", "/api/hale/v1/applications", "", "", PROBE_TIMEOUT_NS);
+    if !up.ok || up.status != 200 { return false; }
+    let source = std::json::find_field_raw(up.body, "source");
+    return std::json::find_string_field(source, "record_id") == identity;
+}
+
+// Whether anything answers HTTP at all on `port` (the observer's readiness).
+fn answers_http(port: Int) -> Bool {
+    let up = exchange(port, "GET", "/", "", "", PROBE_TIMEOUT_NS);
+    return up.ok;
+}

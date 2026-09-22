@@ -55,7 +55,7 @@ main locus App {
         std::test::assert_eq_str(refused, "refused: empty intent", "the membrane gates intent");
         let t = self.dna.ask(dna::Intent { id: "i1", outcome: "answer the audit", from: "human" });
         std::test::assert_eq_str(t, "t1", "task minted");
-        // the refusal is journaled too (GH #528: `hale dna ask` reads the answer back from the Journal)
+        // the refusal is journaled too (GH #528: `hale dna task create` reads the answer back from the Journal)
         std::test::assert_eq_int(self.dna.journal.revision(), 4, "intent.refused, intent.offered, workflow.admitted, task.born on the substituted journal");
         std::test::assert_eq_int(self.dna.executions_asked, 1, "and the ask runs in the assembly's own engine (card 18)");
 

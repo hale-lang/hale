@@ -1471,8 +1471,8 @@
       ],
       "post": {
         "operationId": "submitGovernanceCommand",
-        "summary": "Submit a governed Practice, Review, Organization or Task command",
-        "description": "Submit a known typed operation using an explicit native provider. Organization fixed-module preparation has a separate capability and source authority; its availability is disabled until deployment integration is enabled. Source Review uses the historical dna.review.verdict payload with the explicit organization_review_commands capability. Task reassignment uses the separate native Task capability, exact current assignment digest and assignee, and a recipient drawn from its explicit policy. Proposal completion does not establish application or activation.",
+        "summary": "Submit a governed Practice, Review, Organization or Task command, or raise work",
+        "description": "Submit a known typed operation using an explicit native provider. Organization fixed-module preparation has a separate capability and source authority; its availability is disabled until deployment integration is enabled. Source Review uses the historical dna.review.verdict payload with the explicit organization_review_commands capability. Task reassignment uses the separate native Task capability, exact current assignment digest and assignee, and a recipient drawn from its explicit policy. Raising work (dna.task.create) uses the task_create_commands capability, an outcome and a position, and the Record head it was prepared against; it admits the same intent.requested row the CLI writes, and the organism answers separately. Proposal completion does not establish application or activation.",
         "parameters": [
           {
             "name": "Origin",
@@ -1620,7 +1620,7 @@
       "get": {
         "operationId": "recoverPracticeCommand",
         "summary": "Recover a command receipt by caller request identity",
-        "description": "Recover supported operations through one provider-owned application/principal/request namespace. The returned operation-specific receipt is validated without reconstructing a command body. Current read permission is independent of write availability. A missing or unavailable lookup does not authorize resubmission; a Review settlement alone never proves this verdict command succeeded.",
+        "description": "Recover supported operations through one provider-owned application/principal/request namespace. The returned operation-specific receipt is validated without reconstructing a command body. Current read permission is independent of write availability. A missing or unavailable lookup does not authorize resubmission; a Review settlement alone never proves this verdict command succeeded. A raised-work receipt re-derives the organism's answer (requested, offered, refused or born with the Task id) from the Record on every lookup.",
         "parameters": [
           {
             "name": "request_id",
@@ -3386,6 +3386,370 @@
           }
         },
         "description": "Explicit local retirement policy. Exact id required; no paging. Complete visible supported responsibility plan or unavailable. The subsequent command must name this plan’s subject digest; admission rechecks native eligibility at one exact Record head."
+      }
+    },
+    "/api/hale/v1/head": {
+      "get": {
+        "operationId": "readHead",
+        "summary": "Read the head: the attached project, its children, credentials by name, and every operation's availability",
+        "description": "Trusted-local head state, not a Record read: no query fields. `state` is detached until a project is attached; `busy` names the running receipt; `operations` lists every head operation with its availability and reason code. Credentials are names only.",
+        "responses": {
+          "200": {
+            "description": "The head's state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/HeadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hale/v1/head/projects": {
+      "get": {
+        "operationId": "listHeadProjects",
+        "summary": "List the registered projects, or read one with its detail fields",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "description": "Exact application_id of one registered project; the item then carries authority, connections, handoffs, secrets and receipts.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "description": "The registry fold: registered projects with their Record head and revision, body state, forge settings and recent receipts. Projections are read in-process from the Record; nothing touches the network.",
+        "responses": {
+          "200": {
+            "description": "The registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/HeadProjectsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "project_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hale/v1/head/commands": {
+      "post": {
+        "operationId": "submitHeadCommand",
+        "summary": "Submit a head command: project, record, forge, body, secret, model, connection, handoff or observer operation",
+        "description": "The head records the command (command-<digest> identity, fingerprint over the canonical request), admits or refuses it, then executes it: inline operations answer 200 with a terminal receipt; runs and long-lived children answer 202 and settle on the next request. A known request identity with an equal fingerprint returns the stored receipt and never re-executes; a different fingerprint is 409 request_conflict. An inline attach may block up to 15 s while the API child becomes ready.",
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "Exactly the head's own origin; never inferred from Host. No null, empty or multiple origins.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "X-Hale-Command",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./schema.json#/$defs/HeadCommandRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Terminal receipt: succeeded, failed, refused or outcome_unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/HeadCommandResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "recorded, admitted or running receipt; not proof of completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/HeadCommandResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_command: malformed, unknown, oversize-field or inconsistent input, including a value key on a secret request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "invalid_origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "command_context_changed, detached, head_busy or request_conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "command_too_large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "unsupported_media_type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "head_detached or head_api_unavailable; retryable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "upstream_timeout; retryable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "recoverHeadCommand",
+        "summary": "Recover a head command receipt by caller request identity",
+        "description": "The stored receipt under the head's principal, settled first from its run and child files. Absence does not authorize resubmission.",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": true,
+            "description": "Exact opaque caller key; percent-encode query characters.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The receipt in any state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/HeadCommandResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "command_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hale/v1/head/logs": {
+      "get": {
+        "operationId": "readHeadLog",
+        "summary": "Read a page of a run's or a child's log",
+        "parameters": [
+          {
+            "name": "run",
+            "in": "query",
+            "required": false,
+            "description": "The command_id of a run; exactly one of run and child.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "child",
+            "in": "query",
+            "required": false,
+            "description": "A long-lived child's log.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "api",
+                "body",
+                "observer"
+              ]
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Byte offset of the page; default 0.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "description": "At most 65536 bytes from `offset`; `next_offset` continues, `complete` says the page reached the end of the file as it is now.",
+        "responses": {
+          "200": {
+            "description": "A log page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/HeadLogResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "command_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },

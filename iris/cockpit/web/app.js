@@ -78,8 +78,10 @@
     }
   };
   const APPLICATION_HOST = document.documentElement.dataset.irisProfile === "application";
-  const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "runtime"]);
-  const independentView = (view) => view === "runtime" || view === "application";
+  const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "runtime", "projects"]);
+  const independentView = (view) => view === "runtime" || view === "application" || view === "projects";
+  // The operator-machine head answers this path; a plain Record API does not.
+  const HEAD_API = "/api/hale/v1/head";
   const OUTCOMES = { approve: "Approved", reject: "Rejected", revise: "Revision requested", abstain: "Abstained" };
   const PRACTICE_STATES = { pending: "Pending", ratified: "Ratified", declined: "Declined", retired: "Retired", refused: "Refused" };
   const STATUS_REASONS = {
@@ -99,6 +101,12 @@
   let applicationController = null;
   let runtimeApplication = null;
   let applicationReturn = null;
+  // The head is probed once per page, and only for views that read the
+  // Record or the Projects workspace; Runtime stays free of API requests.
+  let headState = null;
+  let headProbed = false;
+  let headRedirect = false;
+  let projectsController = null;
   let definitionDraftController = null;
   let definitionDraftHost = null;
   let organizationDraftController = null;
@@ -128,6 +136,7 @@
   const ORGANIZATION_OPERATION = "dna.organization.propose";
   const TASK_OPERATION = "dna.task.reassign";
   const PERSON_OPERATION = "dna.person.retire";
+  const TASK_CREATE_OPERATION = "dna.task.create";
   const ORGANIZATION_MODULE = "dna/org/main.hl";
   const ORGANIZATION_BASE = ["source_head", "module_digest", "dependency_source", "dependency_digest", "record_head"];
   const VERDICTS = { approve: "Approve", reject: "Reject", revise: "Request revision" };
@@ -170,6 +179,11 @@
     return closedObject(base, ORGANIZATION_BASE) && sourceCommit(base.source_head) && sourceDigest(base.module_digest) && sourceDigest(base.dependency_digest) && ["none", "committed_source", "local_vendor_snapshot"].includes(base.dependency_source) && commandID(base.record_head);
   }
   function commandProfile(capabilities, operation) {
+    if (operation === TASK_CREATE_OPERATION) {
+      const c = capabilities?.task_create_commands;
+      const supported = closedObject(c, ["profile", "available", "authorized", "position_id", "recovery", "max_outcome_bytes", "max_identity_bytes", "max_request_bytes", "reason"]) && c.profile === "dna.task.create.v1" && typeof c.available === "boolean" && typeof c.authorized === "boolean" && c.position_id === "org" && c.recovery === "record_lifetime" && c.max_outcome_bytes === "8192" && c.max_identity_bytes === "256" && c.max_request_bytes === "32768" && unicodeText(c.reason) && byteLength(c.reason) <= 512;
+      return { supported, enabled: supported && c.available && c.authorized };
+    }
     if (operation === TASK_OPERATION || operation === PERSON_OPERATION) {
       const person = operation === PERSON_OPERATION;
       const c = person ? capabilities?.person_commands : capabilities?.task_commands;
@@ -196,8 +210,9 @@
     const sourceConsistent = !(sourceReview || organization) || typeof writes?.organization_propose === "boolean" && typeof writes.organization_review_verdict === "boolean" && (!(writes.organization_propose || writes.organization_review_verdict) || capabilities.read_only === false) && (!writes.organization_propose || sourceCommandProfile(capabilities, false).enabled) && (!writes.organization_review_verdict || sourceCommandProfile(capabilities, true).enabled);
     const taskConsistent = operation !== TASK_OPERATION || typeof writes?.task_reassign === "boolean" && (!writes.task_reassign || capabilities.read_only === false && commandProfile(capabilities, TASK_OPERATION).enabled);
     const personConsistent = operation !== PERSON_OPERATION || typeof writes?.person_retire === "boolean" && (!writes.person_retire || capabilities.read_only === false && commandProfile(capabilities, PERSON_OPERATION).enabled);
-    const supported = profile.supported && consistent && sourceConsistent && taskConsistent && personConsistent;
-    return { supported, allowed: state.phase === "ready" && supported && profile.enabled && writes[operation === PERSON_OPERATION ? "person_retire" : operation === TASK_OPERATION ? "task_reassign" : organization ? "organization_propose" : sourceReview ? "organization_review_verdict" : operation === REVIEW_OPERATION ? "review_verdict" : "practice_propose"] === true };
+    const createConsistent = operation !== TASK_CREATE_OPERATION || typeof writes?.task_create === "boolean" && (!writes.task_create || capabilities.read_only === false && commandProfile(capabilities, TASK_CREATE_OPERATION).enabled);
+    const supported = profile.supported && consistent && sourceConsistent && taskConsistent && personConsistent && createConsistent;
+    return { supported, allowed: state.phase === "ready" && supported && profile.enabled && writes[operation === TASK_CREATE_OPERATION ? "task_create" : operation === PERSON_OPERATION ? "person_retire" : operation === TASK_OPERATION ? "task_reassign" : organization ? "organization_propose" : sourceReview ? "organization_review_verdict" : operation === REVIEW_OPERATION ? "review_verdict" : "practice_propose"] === true };
   }
   function reviewCapability(review) {
     return commandCapability(state.capabilities, REVIEW_OPERATION, review?.organization_source === true);
@@ -225,7 +240,9 @@
     const organization = closedObject(metadata, [...common, "operation", "operation_version", "position_id", "target_kind", "base", "source_digest"]) && metadata.version === 4 && metadata.operation === ORGANIZATION_OPERATION && metadata.operation_version === "1" && metadata.position_id === "org" && metadata.target_kind === "dna.organization.module" && metadata.target_id === ORGANIZATION_MODULE && organizationBase(metadata.base) && metadata.base.module_digest === metadata.subject_digest && sourceDigest(metadata.source_digest);
     const task = closedObject(metadata, [...common, "operation", "operation_version", "position_id", "target_kind"]) && metadata.version === 5 && metadata.operation === TASK_OPERATION && metadata.operation_version === "1" && metadata.position_id === "org" && metadata.target_kind === "dna.task" && sourceDigest(metadata.subject_digest);
     const person = closedObject(metadata, [...common, "operation", "operation_version", "position_id", "target_kind"]) && metadata.version === 6 && metadata.operation === PERSON_OPERATION && metadata.operation_version === "1" && metadata.position_id === "org" && metadata.target_kind === "dna.person" && sourceDigest(metadata.subject_digest);
-    return (legacy || current || source || organization || task || person) && metadata.application_id === state.app?.id && closedObject(metadata.principal, ["mode", "name"]) && metadata.principal.mode === principal?.mode && metadata.principal.name === principal?.name && commandID(metadata.request_id, 128) && commandID(metadata.target_id) && commandID(metadata.subject_digest);
+    // A raised task targets the Record; its subject is the head it was prepared against.
+    const create = closedObject(metadata, [...common, "operation", "operation_version", "position_id", "target_kind"]) && metadata.version === 7 && metadata.operation === TASK_CREATE_OPERATION && metadata.operation_version === "1" && metadata.position_id === "org" && metadata.target_kind === "dna.record" && metadata.target_id === metadata.application_id;
+    return (legacy || current || source || organization || task || person || create) && metadata.application_id === state.app?.id && closedObject(metadata.principal, ["mode", "name"]) && metadata.principal.mode === principal?.mode && metadata.principal.name === principal?.name && commandID(metadata.request_id, 128) && commandID(metadata.target_id) && commandID(metadata.subject_digest);
   }
   function restoreIntervention() {
     intervention.scope = commandScope();
@@ -257,6 +274,7 @@
     return "Propose an organization-wide replacement. The service checks your current authority; viewing a position does not grant it.";
   }
   function validDraft(draft) {
+    if (draft?.operation === TASK_CREATE_OPERATION) return commandID(draft.record_head) && draft.subject === draft.record_head && commandID(draft.target) && unicodeText(draft.outcome) && byteLength(draft.outcome) > 0 && byteLength(draft.outcome) <= 8192 && commandID(draft.to);
     if (draft?.operation === PERSON_OPERATION) return sourceDigest(draft.subject) && commandID(draft.target) && (draft.to === "" || commandID(draft.to)) && draft.target !== draft.to;
     if (draft?.operation === TASK_OPERATION) return sourceDigest(draft.subject) && commandID(draft.target) && commandID(draft.from) && commandID(draft.to) && draft.from !== draft.to;
     if (draft?.operation === REVIEW_OPERATION) return typeof draft.verdict === "string" && Object.hasOwn(VERDICTS, draft.verdict) && unicodeText(draft.comment) && byteLength(draft.comment) <= 2048;
@@ -462,6 +480,7 @@
   }
   function currentDraftEligible(draft) {
     if (!draft || !commandCapability(state.capabilities, draft.operation, draft.source_review === true).allowed) return false;
+    if (draft.operation === TASK_CREATE_OPERATION) return state.route.view === "tasks" && state.source?.record_head === draft.record_head && state.app?.id === draft.target;
     if (draft.operation === ORGANIZATION_OPERATION) return state.route.view === "organization" && state.source?.record_head === draft.base.record_head && ["source_head", "dependency_source", "dependency_digest"].every(key => state.collection?.basis?.[key] === draft.base[key]) && organizationDraftController?.publicationMatches(draft.validation) === true;
     if (draft.operation === PERSON_OPERATION) return state.route.view === "tasks" && state.route.assignee === draft.target && state.person?.person === draft.target && state.person.subject_digest === draft.subject && state.person.state === "active" && state.person.authorized && (draft.to === "" ? state.person.tasks.length === 0 : state.person.recipients.includes(draft.to));
     if (draft.operation === TASK_OPERATION) return state.route.view === "tasks" && state.detail?.id === draft.target && state.detail.assignment_digest === draft.subject && state.detail.assignee === draft.from && state.detail.state === "handed" && state.detail.reassignment_supported === true && state.capabilities.task_commands.recipients.includes(draft.to);
@@ -624,7 +643,8 @@
     const isOrganization = metadata.operation === ORGANIZATION_OPERATION;
     const isTask = metadata.operation === TASK_OPERATION;
     const isPerson = metadata.operation === PERSON_OPERATION;
-    assert(closedObject(r, ["command_id", "request_id", "application_id", "operation", "operation_version", "principal", "context", "target", "subject_digest", "fingerprint", "state", "reason", isPerson ? "person" : isTask ? "task" : isOrganization ? "organization" : isVerdict ? "verdict" : "proposal", "review", "activation"]));
+    const isCreate = metadata.operation === TASK_CREATE_OPERATION;
+    assert(closedObject(r, ["command_id", "request_id", "application_id", "operation", "operation_version", "principal", "context", "target", "subject_digest", "fingerprint", "state", "reason", isCreate ? "task_create" : isPerson ? "person" : isTask ? "task" : isOrganization ? "organization" : isVerdict ? "verdict" : "proposal", "review", "activation"]));
     assert(commandID(r.command_id) && commandID(r.fingerprint) && r.request_id === metadata.request_id && r.application_id === metadata.application_id && r.operation === metadata.operation && r.operation_version === metadata.operation_version);
     assert(closedObject(r.principal, ["mode", "name"]) && r.principal.mode === metadata.principal.mode && r.principal.name === metadata.principal.name);
     assert(closedObject(r.context, ["application_id", "position_id"]) && r.context.application_id === metadata.application_id && r.context.position_id === metadata.position_id);
@@ -638,6 +658,10 @@
       assert(closedObject(r.task, ["state", "from", "to", "event_id"]) && commandID(r.task.from) && commandID(r.task.to) && r.task.from !== r.task.to);
       assert(r.task.state === "applied" ? r.state === "succeeded" && sourceCommit(r.task.event_id) : r.task.state === "unknown" && r.state === "outcome_unknown" && r.task.event_id === "");
       assert(method !== "POST" || expectedTask && r.task.from === expectedTask.from && r.task.to === expectedTask.to);
+    } else if (isCreate) {
+      const t = r.task_create;
+      assert(closedObject(t, ["intent_id", "intent_state", "task_id", "event_id"]) && ["requested", "offered", "refused", "born", "unknown"].includes(t.intent_state));
+      assert(t.intent_state === "unknown" ? r.state === "outcome_unknown" && t.intent_id === "" && t.task_id === "" && t.event_id === "" : r.state === "succeeded" && /^i[0-9a-f]{1,16}$/.test(t.intent_id) && sourceCommit(t.event_id) && (t.intent_state === "born" ? commandID(t.task_id) : t.task_id === ""));
     } else if (isOrganization) validOrganizationReceipt(r, metadata);
     else if (isVerdict) {
       assert(closedObject(r.verdict, ["value", "state"]) && typeof r.verdict.value === "string" && Object.hasOwn(VERDICTS, r.verdict.value) && ["pending", "accepted", "refused", "unknown"].includes(r.verdict.state));
@@ -652,12 +676,12 @@
       assert(r.state !== "refused" || r.proposal.state === "refused");
     }
     assert(closedObject(r.review, ["state", "outcome", "subject_digest"]) && ["unavailable", "pending", "settled"].includes(r.review.state) && ["", "approve", "reject", "revise", "abstain"].includes(r.review.outcome));
-    const exactSubject = isTask || isPerson ? "" : isVerdict ? metadata.subject_digest : isOrganization ? r.organization.candidate_commit : r.proposal.candidate_digest;
-    const created = !isTask && !isPerson && (isVerdict || (isOrganization ? r.organization.proposal_state === "created" : r.proposal.state === "created"));
+    const exactSubject = isTask || isPerson || isCreate ? "" : isVerdict ? metadata.subject_digest : isOrganization ? r.organization.candidate_commit : r.proposal.candidate_digest;
+    const created = !isTask && !isPerson && !isCreate && (isVerdict || (isOrganization ? r.organization.proposal_state === "created" : r.proposal.state === "created"));
     assert(r.review.state === "unavailable" ? r.review.outcome === "" && r.review.subject_digest === "" : created && r.review.subject_digest === exactSubject && (r.review.state === "pending" ? r.review.outcome === "" : r.review.outcome !== ""));
     assert(closedObject(r.activation, ["state", "reason"]) && ["unknown", "pending", "adopted", "refused"].includes(r.activation.state) && unicodeText(r.activation.reason));
-    assert(!(metadata.source_review === true || isOrganization || isTask || isPerson) || r.activation.state === "unknown" && r.activation.reason === "");
-    assert(!(isTask || isPerson) || r.review.state === "unavailable");
+    assert(!(metadata.source_review === true || isOrganization || isTask || isPerson || isCreate) || r.activation.state === "unknown" && r.activation.reason === "");
+    assert(!(isTask || isPerson || isCreate) || r.review.state === "unavailable");
     assert(r.activation.state !== "adopted" || (created && r.review.state === "settled" && r.review.outcome === "approve"));
     assert(method === "GET" ? status === 200 : status === (COMMAND_TERMINAL.has(r.state) ? 200 : 202));
     return r;
@@ -717,7 +741,7 @@
       intervention.phase = "result";
       refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
       refreshTask = refreshTask || metadata.operation === PERSON_OPERATION && result.receipt.person.state === "applied" && state.route.view === "tasks" && state.route.assignee === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
-      ui.announcement.textContent = metadata.operation === PERSON_OPERATION ? "Retirement status loaded. Inspect the recorded transfer and current person state." : metadata.operation === TASK_OPERATION ? "Reassignment status loaded. The Task remains responsible for its original obligation." : metadata.source_review || metadata.operation === ORGANIZATION_OPERATION ? "Request status loaded. The decision, owner quorum, source application and running result are separate facts." : "Request status loaded. Command outcome, Review settlement and adoption are separate facts.";
+      ui.announcement.textContent = metadata.operation === TASK_CREATE_OPERATION ? "New task status loaded. The organism answers separately; check again to follow the ask." : metadata.operation === PERSON_OPERATION ? "Retirement status loaded. Inspect the recorded transfer and current person state." : metadata.operation === TASK_OPERATION ? "Reassignment status loaded. The Task remains responsible for its original obligation." : metadata.source_review || metadata.operation === ORGANIZATION_OPERATION ? "Request status loaded. The decision, owner quorum, source application and running result are separate facts." : "Request status loaded. Command outcome, Review settlement and adoption are separate facts.";
     } catch (error) {
       if (!commandStillCurrent(token, scope, signal)) return;
       if (error.status === 401) { commandAuthenticationLost(); return; }
@@ -771,9 +795,12 @@
         if (isTask) { metadata.version = 5; metadata.target_kind = "dna.task"; }
         const isPerson = draft.operation === PERSON_OPERATION;
         if (isPerson) { metadata.version = 6; metadata.target_kind = "dna.person"; }
+        const isCreate = draft.operation === TASK_CREATE_OPERATION;
+        if (isCreate) { metadata.version = 7; metadata.target_kind = "dna.record"; }
         const payload = { request_id: metadata.request_id, operation: metadata.operation, operation_version: metadata.operation_version, context: { application_id: metadata.application_id, position_id: metadata.position_id }, target: { application_id: metadata.application_id, kind: metadata.target_kind, id: metadata.target_id }, preconditions: isOrganization ? { principal: { ...metadata.principal }, base: { ...metadata.base } } : { subject_digest: metadata.subject_digest, principal: { mode: metadata.principal.mode, name: metadata.principal.name }, ...(isVerdict ? { review_state: "pending" } : {}) }, arguments: isOrganization ? { source_text: draft.source_text, rationale: draft.rationale } : isVerdict ? { verdict: draft.verdict, comment: draft.comment } : { text: draft.text, rationale: draft.rationale } };
         if (isTask) { payload.preconditions.assignee = draft.from; payload.arguments = { to: draft.to }; }
         if (isPerson) payload.arguments = { to: draft.to };
+        if (isCreate) { payload.preconditions = { record_head: draft.record_head, principal: { mode: metadata.principal.mode, name: metadata.principal.name } }; payload.arguments = { outcome: draft.outcome, to: draft.to }; }
         if (byteLength(JSON.stringify(payload)) > 32768) return { error: "The JSON-encoded request exceeds 32768 bytes. Shorten its text before submitting; nothing was sent or saved." };
         const serialized = JSON.stringify(metadata);
         localStorage.setItem(key, serialized);
@@ -898,6 +925,7 @@
     if (!intervention.metadata && !intervention.blocked) return null;
     if (intervention.metadata?.operation === PERSON_OPERATION) return renderPersonRecovery();
     if (intervention.metadata?.operation === TASK_OPERATION) return renderTaskRecovery();
+    if (intervention.metadata?.operation === TASK_CREATE_OPERATION) return renderTaskCreateRecovery();
     const panel = node("section", "panel practice-intervention intervention-recovery");
     panel.id = "command-recovery";
     panel.tabIndex = -1;
@@ -1632,7 +1660,7 @@
     return append(panel, body);
   }
   function blankState(route) {
-    return { route, phase: "loading", apps: [], app: null, capabilities: null, workingContext: null, source: null, collection: null, detail: null, detailError: null, organizationBranch: null, organizationBranchError: null, reviewCandidate: null, reviewCandidateError: "", organizationStatus: null, organizationStatusError: "", organizationImpact: null, organizationImpactError: "", practiceContext: null, person: null, personError: "", relationships: null, bindings: null, error: null, notice: "", inspectedAt: null };
+    return { route, phase: "loading", apps: [], app: null, capabilities: null, workingContext: null, source: null, collection: null, detail: null, detailError: null, organizationBranch: null, organizationBranchError: null, reviewCandidate: null, reviewCandidateError: "", organizationStatus: null, organizationStatusError: "", organizationImpact: null, organizationImpactError: "", practiceContext: null, person: null, personError: "", relationships: null, bindings: null, error: null, notice: "", inspectedAt: null, head: headState };
   }
   function node(tag, className, text) {
     const el = document.createElement(tag);
@@ -1702,6 +1730,7 @@
   }
   function routeHash(route) {
     if (route.view === "application") return "#/application";
+    if (route.view === "projects") return "#/projects";
     if (route.view === "runtime") {
       const query = new URLSearchParams();
       if (/^[a-f0-9]{64}$/.test(route.process || "")) {
@@ -2215,6 +2244,42 @@
     runtimeController = null;
     applicationController?.destroy();
     applicationController = null;
+    projectsController?.destroy();
+    projectsController = null;
+  }
+  function setHead(head) {
+    headState = head;
+    state.head = head;
+    const nav = $("nav-projects");
+    if (nav) nav.hidden = APPLICATION_HOST || !head;
+    if (state.route.view === "projects") renderConnection(true);
+  }
+  async function probeHead(signal) {
+    if (headProbed || APPLICATION_HOST) return;
+    const pending = new AbortController();
+    const cancelRead = () => pending.abort();
+    signal.addEventListener("abort", cancelRead, { once: true });
+    if (signal.aborted) cancelRead();
+    const timeout = setTimeout(cancelRead, READ_TIMEOUT_MS);
+    let head = null;
+    try {
+      const response = await fetch(HEAD_API, { signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+      // Anything but a closed head envelope means no head stands behind this
+      // API: the shell continues unchanged rather than raising an error.
+      if (response.status === 200 && window.IrisProjects) {
+        const envelope = window.IrisProjects.validate(await response.json(), "head");
+        head = { principal: envelope.head.principal, data: envelope.data };
+      }
+    } catch (error) {
+      if (signal.aborted) throw new DOMException("Superseded read", "AbortError");
+      head = null;
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", cancelRead);
+    }
+    headProbed = true;
+    headRedirect = head?.data.state === "detached";
+    setHead(head);
   }
   function destroyDefinitionDraft() {
     definitionDraftController?.destroy();
@@ -2257,6 +2322,20 @@
     lastStarted = Date.now();
     state = blankState(route);
     state.notice = initialNotice;
+    if (route.view === "projects" || !independentView(route.view)) {
+      render();
+      try { await probeHead(signal); }
+      catch (error) { if (error.name === "AbortError" || token !== generation || signal.aborted) return; }
+      if (token !== generation || signal.aborted) return;
+      // A detached head has no Record to read: land on Projects once.
+      if (headRedirect && route.view !== "projects") {
+        route = { ...route, view: "projects" };
+        replaceRoute(route);
+        state = blankState(route);
+        state.notice = initialNotice;
+      }
+      headRedirect = false;
+    }
     if (independentView(route.view)) {
       definitionJourney = null;
       state.phase = "ready";
@@ -2330,17 +2409,18 @@
     if (state.phase !== "ready" || state.route.view !== "knowledge" || state.error) destroyKnowledgeDraft();
     const runtime = state.route.view === "runtime";
     const application = state.route.view === "application";
-    const independent = runtime || application;
+    const projects = state.route.view === "projects";
+    const independent = runtime || application || projects;
     const practiceAdministration = state.route.view === "knowledge" && state.route.practice_action;
     const workspace = WORKSPACES[state.route.view];
-    const title = runtime ? "Runtime" : application ? "Application" : practiceAdministration ? "Practice administration" : workspace.title;
+    const title = runtime ? "Runtime" : application ? "Application" : projects ? "Projects" : practiceAdministration ? "Practice administration" : workspace.title;
     document.title = title + " · Iris";
     document.body.dataset.view = state.route.view;
     document.body.classList.toggle("practice-operating", ["practices", "reviews"].includes(state.route.view) && Boolean(state.detail));
     ui["workspace-title"].textContent = title;
     ui["breadcrumb-current"].textContent = title;
-    ui["workspace-kicker"].textContent = runtime ? "THE RUNNING SYSTEM" : application ? "APPLICATION CONTROL" : practiceAdministration ? "PRACTICES / SCOPE & LIFECYCLE" : workspace.kicker;
-    ui["workspace-description"].textContent = runtime ? "Inspect observed processes, containment, topics and routes independently of any application Record." : application ? "Understand current behavior, make a deliberate change, and follow the application's own result." : practiceAdministration ? "Shape a practice in context: its exact text, applicability, governing Review and retained history." : workspace.description;
+    ui["workspace-kicker"].textContent = runtime ? "THE RUNNING SYSTEM" : application ? "APPLICATION CONTROL" : projects ? "OPERATOR MACHINE" : practiceAdministration ? "PRACTICES / SCOPE & LIFECYCLE" : workspace.kicker;
+    ui["workspace-description"].textContent = runtime ? "Inspect observed processes, containment, topics and routes independently of any application Record." : application ? "Understand current behavior, make a deliberate change, and follow the application's own result." : projects ? "Create, attach and operate DNA projects on this machine through the project service. Every action is the CLI verb, recorded as a durable receipt and read back before it is shown." : practiceAdministration ? "Shape a practice in context: its exact text, applicability, governing Review and retained history." : workspace.description;
     ui.refresh.hidden = independent;
     ui.content.setAttribute("aria-busy", String(state.phase === "loading"));
     ui.notice.hidden = !state.notice;
@@ -2348,7 +2428,8 @@
     for (const view of VIEWS) {
       const nav = $("nav-" + view);
       if (!nav) continue;
-      nav.hidden = APPLICATION_HOST || application ? !independentView(view) : runtime ? view !== "runtime" : view === "application";
+      if (view === "projects") nav.hidden = APPLICATION_HOST || !state.head;
+      else nav.hidden = APPLICATION_HOST || application ? !independentView(view) : runtime ? view !== "runtime" : view === "application";
       if (view === (practiceAdministration ? "practices" : state.route.view === "tasks" ? "workflows" : state.route.view)) nav.setAttribute("aria-current", "page");
       else nav.removeAttribute("aria-current");
       nav.href = routeHash(workspaceRoute(view === "workflows" && (state.route.view === "tasks" || state.capabilities?.reads?.workflows !== true && state.capabilities?.reads?.tasks === true) ? "tasks" : view));
@@ -2381,13 +2462,15 @@
     const organizationEnabled = !independent && commandCapability(state.capabilities, ORGANIZATION_OPERATION).allowed;
     const taskEnabled = !independent && commandCapability(state.capabilities, TASK_OPERATION).allowed;
     const personEnabled = !independent && commandCapability(state.capabilities, PERSON_OPERATION).allowed;
-    const commandEnabled = practiceEnabled || reviewEnabled || sourceReviewEnabled || organizationEnabled || taskEnabled || personEnabled;
+    const createEnabled = !independent && commandCapability(state.capabilities, TASK_CREATE_OPERATION).allowed;
+    const commandEnabled = practiceEnabled || reviewEnabled || sourceReviewEnabled || organizationEnabled || taskEnabled || personEnabled || createEnabled;
+    const taskActions = [createEnabled ? "New tasks" : "", personEnabled && taskEnabled ? "People & Task actions" : personEnabled ? "Retirement" : taskEnabled ? "Reassignment" : ""].filter(Boolean);
     const modeBadge = document.querySelector(".read-only");
-    modeBadge.textContent = state.route.view === "tasks" ? personEnabled ? taskEnabled ? "People & Task actions enabled" : "Retirement enabled" : taskEnabled ? "Reassignment enabled" : "Read only" : state.route.view === "knowledge" ? knowledgeAccessLabel() : state.route.view === "organization" ? organizationEnabled ? "Organization proposals enabled" : "Read only" : state.route.view === "reviews" && state.detail?.organization_source ? sourceReviewEnabled ? "Organization decisions enabled" : "Read only" : practiceEnabled && reviewEnabled ? "Proposals & decisions enabled" : practiceEnabled ? "Practice proposals enabled" : reviewEnabled ? "Review decisions enabled" : "Read only";
+    modeBadge.textContent = state.route.view === "tasks" ? taskActions.length ? taskActions.join(" & ") + " enabled" : "Read only" : state.route.view === "knowledge" ? knowledgeAccessLabel() : state.route.view === "organization" ? organizationEnabled ? "Organization proposals enabled" : "Read only" : state.route.view === "reviews" && state.detail?.organization_source ? sourceReviewEnabled ? "Organization decisions enabled" : "Read only" : practiceEnabled && reviewEnabled ? "Proposals & decisions enabled" : practiceEnabled ? "Practice proposals enabled" : reviewEnabled ? "Review decisions enabled" : "Read only";
     renderStrata(independent);
     renderSource();
     renderWorkingContext();
-    ui["workspace-footer"].replaceChildren(node("span", "", runtime ? "Hale · runtime observer" : application ? "Hale · application service" : "Hale API · v1"), node("span", "", runtime ? "Runtime evidence and application state have separate sources." : application ? "The application owns its controls, authority, state, and command outcomes." : state.route.view === "organization" ? "Source, dependencies, and Record are pinned separately. Drafts require validation before export." : state.route.view === "definitions" ? "Definitions are code-authored. This workspace reads the host's loaded catalog." : state.route.view === "knowledge" ? "Knowledge, relationships, and bindings share one inspected snapshot." : state.route.view === "tasks" ? "Reassignment preserves each Task’s obligation and assignment history." : commandEnabled ? "Commands require explicit submission. Review settlement and adoption remain separate." : "State is read from the local Record. No changes are made here."));
+    ui["workspace-footer"].replaceChildren(node("span", "", runtime ? "Hale · runtime observer" : application ? "Hale · application service" : projects ? "Hale · project service" : "Hale API · v1"), node("span", "", runtime ? "Runtime evidence and application state have separate sources." : application ? "The application owns its controls, authority, state, and command outcomes." : projects ? "Every operation is the CLI verb, run by the head and journaled as a receipt. Effects are read back from the head before they are shown." : state.route.view === "organization" ? "Source, dependencies, and Record are pinned separately. Drafts require validation before export." : state.route.view === "definitions" ? "Definitions are code-authored. This workspace reads the host's loaded catalog." : state.route.view === "knowledge" ? "Knowledge, relationships, and bindings share one inspected snapshot." : state.route.view === "tasks" ? "Reassignment preserves each Task’s obligation and assignment history." : commandEnabled ? "Commands require explicit submission. Review settlement and adoption remain separate." : "State is read from the local Record. No changes are made here."));
     if (runtime) {
       const mount = node("div");
       ui.content.replaceChildren(mount);
@@ -2408,6 +2491,28 @@
         }
       });
       else mount.append(stateCard("Application controls unavailable", "The application browser module could not be loaded. Reload this page to try again."));
+    }
+    else if (projects) {
+      const mount = node("div");
+      ui.content.replaceChildren(mount);
+      if (state.phase === "loading") mount.append(stateCard("Reading the project service", "Checking whether an operator-machine head answers behind this API.", "◌"));
+      else if (window.IrisProjects) {
+        const token = generation;
+        projectsController = window.IrisProjects.mount(mount, {
+          head: state.head, principal: state.head?.principal || null,
+          onHead(head) { if (token === generation) setHead(head); },
+          onAttached(applicationId) { if (token === generation) navigate(workspaceRoute("practices", { app: applicationId, locus: "", target: "" })); },
+          onInvalidate(error) {
+            if (token !== generation) return;
+            const message = error?.message || "The project service principal or access changed.";
+            if (error?.status === 401 || error?.status === 403 || error?.code === "command_context_changed") {
+              const route = state.route; cancel();
+              state = { ...blankState(route), phase: "error", error: new ReadError(error.status || 409, error.code || "unauthenticated", message) }; render();
+            } else loadRoute(state.route, message);
+          }
+        });
+      }
+      else mount.append(stateCard("Projects instrument unavailable", "The project browser module could not be loaded. Reload this page to try again."));
     }
     else if (state.phase === "loading") ui.content.replaceChildren(stateCard(state.route.view === "organization" ? "Reading the organization source" : state.route.view === "definitions" ? "Reading the definition catalog" : state.route.view === "knowledge" ? "Reading the knowledge graph" : "Reading the Record", state.route.view === "organization" ? "Checking this page against its committed source, captured dependencies, and Record snapshot. Previously displayed content has been cleared." : state.route.view === "definitions" ? "Checking the loaded catalog and its source basis. Previously displayed content has been cleared." : state.route.view === "knowledge" ? "Checking the visible items and their connections against one snapshot. Previously displayed content has been cleared." : "Loading this page and its source snapshot. Previously displayed content has been cleared.", "◌"));
     else if (state.error) ui.content.replaceChildren(errorCard(state.error));
@@ -2508,6 +2613,8 @@
   }
   function renderConnection(runtime) {
     const select = ui.application;
+    const projects = state.route.view === "projects";
+    const head = state.head;
     select.replaceChildren();
     if (state.apps.length && !runtime) {
       for (const app of state.apps) {
@@ -2518,12 +2625,12 @@
       }
       select.disabled = false;
     } else {
-      select.append(node("option", "", runtime ? "Runtime connection" : state.phase === "loading" ? "Connecting…" : "No Record connected"));
+      select.append(node("option", "", projects ? "Project service" : runtime ? "Runtime connection" : state.phase === "loading" ? "Connecting…" : "No Record connected"));
       select.disabled = true;
     }
-    ui["connection-caption"].textContent = runtime ? "No DNA connection required" : state.app ? "DNA · local Record" : state.phase === "loading" ? "Reading the local service" : "Application data unavailable";
+    ui["connection-caption"].textContent = projects ? (head ? head.data.state === "attached" ? "Head · attached to " + head.data.active.name : "Head · no project attached" : "No project service behind this API") : runtime ? "No DNA connection required" : state.app ? "DNA · local Record" : state.phase === "loading" ? "Reading the local service" : "Application data unavailable";
     const principal = state.capabilities?.principal;
-    ui.principal.textContent = runtime ? "Independent observer" : principal ? (principal.mode === "oidc" ? "Signed in · " : "Local · ") + principal.name : state.error?.status === 401 ? "Sign in required" : state.phase === "loading" ? "Connecting" : "Not connected";
+    ui.principal.textContent = projects ? (head ? "Local · " + head.principal.name : "Not connected") : runtime ? "Independent observer" : principal ? (principal.mode === "oidc" ? "Signed in · " : "Local · ") + principal.name : state.error?.status === 401 ? "Sign in required" : state.phase === "loading" ? "Connecting" : "Not connected";
     ui["sign-out"].hidden = !principal || principal.mode !== "oidc";
   }
   function renderSource() {
@@ -2749,6 +2856,68 @@
     const evidence = node("details", "intervention-evidence"); evidence.append(node("summary", "", "Request evidence"));
     const facts = node("dl", "fact-grid"); fact(facts, "Task", metadata.target_id, true, true); fact(facts, "Request identity", metadata.request_id, true, true); fact(facts, "Inspected Task basis", metadata.subject_digest, true, true);
     if (result) { fact(facts, "Command identity", result.receipt.command_id, true, true); fact(facts, "Record head", result.source.record_head, true, true); if (result.receipt.task.event_id) fact(facts, "Reassignment event", result.receipt.task.event_id, true, true); }
+    evidence.append(facts); panel.append(evidence); return panel;
+  }
+  // Raising work: the ask is recorded at once; the organism's answer arrives
+  // through GET lookup, re-derived from the Record on every check.
+  function prepareTaskCreate(ask) {
+    if (state.phase !== "ready" || state.route.view !== "tasks" || !state.app || !commandCapability(state.capabilities, TASK_CREATE_OPERATION).allowed || intervention.metadata || intervention.blocked || intervention.draft || !commandID(state.source?.record_head) || !window.IrisTaskCreate) throw new Error("Reload the handed Tasks and check the current authority before preparing a new task.");
+    const exact = window.IrisTaskCreate.validate(ask);
+    intervention.draft = { operation: TASK_CREATE_OPERATION, target: state.app.id, subject: state.source.record_head, record_head: state.source.record_head, outcome: exact.outcome, to: exact.to };
+    intervention.phase = "reviewing"; intervention.error = "";
+    render(); $("task-create-confirmation")?.focus();
+  }
+  function taskCreatePanel() {
+    const capability = commandCapability(state.capabilities, TASK_CREATE_OPERATION);
+    if (!capability.supported || !window.IrisTaskCreate) return null;
+    const frame = node("div", "task-create-frame");
+    frame.append(window.IrisTaskCreate.render({
+      canCreate: capability.allowed && !intervention.metadata && !intervention.blocked && !intervention.draft,
+      positions: state.workingContext?.available ? state.workingContext.positions : [], defaultTo: state.route.locus || "",
+      reason: !capability.allowed ? "Raising work is unavailable for this connection or signed-in principal. Viewing a locus does not grant it." : intervention.metadata ? "Check the saved request before raising another task." : intervention.blocked ? intervention.error : intervention.draft ? "Confirm or discard the prepared task first." : "",
+      onPrepare: ask => prepareTaskCreate(ask)
+    }));
+    const draft = intervention.draft;
+    if (draft?.operation === TASK_CREATE_OPERATION) {
+      const confirmation = node("section", "intervention-panel"); confirmation.id = "task-create-confirmation"; confirmation.tabIndex = -1;
+      confirmation.setAttribute("role", "group"); confirmation.setAttribute("aria-label", "Confirm new task");
+      confirmation.append(node("h3", "", "Raise this task"), node("p", "outcome-value task-literal", draft.outcome), node("p", "", "For " + (draft.to === "org" ? "the whole organization" : draft.to) + " · asked by " + state.capabilities.principal.name + ". The organism decides whether to admit it; its answer is recorded separately."));
+      const confirm = button("Confirm new task", () => submitIntervention(), "button");
+      const discard = button("Discard", () => { intervention.draft = null; intervention.phase = "idle"; intervention.error = ""; render(); });
+      confirm.disabled = Boolean(intervention.reserving) || !currentDraftEligible(draft); discard.disabled = Boolean(intervention.reserving);
+      confirmation.append(append(node("div", "intervention-actions"), confirm, discard));
+      if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); confirmation.append(error); }
+      frame.append(confirmation);
+    }
+    return frame;
+  }
+  function renderTaskCreateRecovery() {
+    const metadata = intervention.metadata, result = intervention.receipt;
+    const panel = node("section", "intervention-panel task-create-recovery"); panel.id = "command-recovery"; panel.tabIndex = -1;
+    panel.setAttribute("role", "region"); panel.setAttribute("aria-label", "New task request");
+    panel.append(node("h3", "", "New task"));
+    if (result) {
+      const r = result.receipt, t = r.task_create;
+      panel.dataset.intentState = t.intent_state;
+      panel.append(renderCommandStages([
+        { key: "command", title: "Request", value: r.state === "succeeded" ? "Recorded" : "Unconfirmed", tone: r.state === "succeeded" ? "confirmed" : "unknown", explanation: r.state === "succeeded" ? "The service recorded this ask once, in your name, at the Record head you prepared it against." : "Keep this request identity and check its status. No replacement request is sent automatically." },
+        { key: "intent", title: "Intent", value: t.intent_state === "unknown" ? "Not established" : t.intent_id + " · " + t.intent_state, tone: t.intent_state === "refused" ? "refused" : t.intent_state === "born" || t.intent_state === "offered" ? "confirmed" : t.intent_state === "requested" ? "pending" : "unknown", explanation: t.intent_state === "requested" ? "The ask is in the Record. The host beside the organism relays it; the organism's answer is a later fact." : t.intent_state === "offered" ? "The organism admitted the ask. Its Task is minted next." : t.intent_state === "refused" ? "The organism refused this ask; its reason is in the Record. This request is complete." : t.intent_state === "born" ? "The organism admitted the ask and minted its Task." : "No intent is named for an unconfirmed ask." },
+        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? "The Task exists. It joins the handed Tasks once the leader hands it to a person." : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
+      ], r));
+    } else panel.append(node("p", "detail-note", intervention.phase === "submitting" ? "Recording the ask…" : intervention.phase === "recovering" ? "Checking the saved request…" : "The request outcome is not yet confirmed."));
+    if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); panel.append(error); }
+    const actions = node("div", "intervention-actions");
+    const check = button("Check request status", checkCommandStatus); check.id = "command-check-status"; check.disabled = Boolean(commandController) || !recoveryCapability().supported;
+    actions.append(check);
+    if (result && COMMAND_TERMINAL.has(result.receipt.state)) actions.append(button("Dismiss completed request", dismissCompletedRequest));
+    panel.append(actions);
+    const evidence = node("details", "intervention-evidence"); evidence.append(node("summary", "", "Request evidence"));
+    const facts = node("dl", "fact-grid"); fact(facts, "Request identity", metadata.request_id, true, true); fact(facts, "Prepared against Record head", metadata.subject_digest, true, true);
+    if (result) {
+      const t = result.receipt.task_create;
+      fact(facts, "Command identity", result.receipt.command_id, true, true); fact(facts, "Record head", result.source.record_head, true, true);
+      if (t.intent_id) fact(facts, "Intent", t.intent_id, true, true); if (t.event_id) fact(facts, "Ask event", t.event_id, true, true); if (t.task_id) fact(facts, "Task", t.task_id, true, true);
+    }
     evidence.append(facts); panel.append(evidence); return panel;
   }
   function validWorkflow(item) {
@@ -3187,6 +3356,7 @@
       if (state.capabilities.reads.knowledge === true) listPanel.append(append(node("div", "intervention-actions"), navigationLink("Create practice", practiceAdministrationRoute("create"), "detail", "button primary")));
       else listPanel.append(node("p", "detail-note", "Practice creation and applicability require this connection's model administration service."));
     }
+    if (state.route.view === "tasks") { const raise = taskCreatePanel(); if (raise) listPanel.append(raise); }
     if (state.route.view === "organization" && state.route.branch) listPanel.append(organizationOutline());
     else if (!collection.items.length) listPanel.append(stateCard(workspace.empty, knowledge ? state.route.cursor ? "There are no knowledge items on this page. Return to the first page to continue." : workspace.emptyDescription : collection.page.total === 0 ? state.route.view === "tasks" && state.route.assignee ? "No visible Task has this recorded assignee in the inspected snapshot. This does not establish that the person has no other responsibilities." : workspace.emptyDescription : "There are no records on this page. Return to the first page to continue.", "◇", !knowledge && collection.page.total ? [button("First page", refresh)] : [], "compact"));
     else if (state.route.view === "organization") listPanel.append(organizationOutline());
@@ -3925,6 +4095,14 @@
       title = "Sign in to read this application";
       description = "Your session is missing or has expired. Application data has been cleared. Runtime observation remains available independently.";
       actions.push(link("Sign in", "/auth/login", "button"));
+    } else if (error.code === "head_detached") {
+      title = "No project is attached";
+      description = "The project service has no attached project, so there is no Record to read here. Attach or create one in Projects.";
+      actions.push(link("Open Projects", "#/projects", "button"));
+    } else if (error.code === "head_api_unavailable" || error.code === "upstream_timeout") {
+      title = "Project service unavailable";
+      description = (error.code === "upstream_timeout" ? "The attached project's API did not answer in time." : "The attached project's API could not be reached.") + " Inspect the attached project and its API child in Projects.";
+      actions.push(link("Open Projects", "#/projects", "button"));
     } else if (error.status === 404) {
       title = error.code === "application_not_found" ? "Application not found" : detail ? WORKSPACES[state.route.view].singular + " not found" : "Read endpoint not found";
       if (detail) description = state.route.view === "organization" ? "The exact instance in this link is absent from the inspected organization source. It has not been replaced with another instance." : state.route.view === "definitions" ? "The exact definition revision in this link is absent from the inspected catalog. It has not been replaced with a newer or different revision." : state.route.view === "knowledge" ? "This item is not available in the inspected knowledge view." : "The exact identifier in this link is absent from the inspected Record snapshot. It has not been replaced with another object.";

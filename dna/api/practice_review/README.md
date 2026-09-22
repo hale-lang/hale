@@ -96,6 +96,17 @@ restarting this deployment. Record head CAS protects admission against competing
 Record changes; it does not fence files or Git configuration. This head does not
 claim hot policy reload or atomic authority revocation.
 
+## Raising work needs no policy
+
+This head also supports `dna.task.create@1`, the cockpit's `hale dna ask`. It
+takes no grant from either policy file: the authenticated principal is the
+authority, as for the CLI, and the organism judges whether the position is this
+organization's to admit. Recovery of an ask by its request key follows the
+usual rule, so a principal with `recover: true` in `HALE_DNA_COMMAND_POLICY`
+can look up a key that never landed and read `command_not_found` instead of a
+denial. See the [API README](../README.md#raising-work) for the wire shape and
+the row it writes.
+
 ## The same operations from the CLI
 
 The source-built host uses this same policy and native command service for

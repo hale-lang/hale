@@ -18,7 +18,7 @@ const inspector = page => page.getByRole('group', { name: 'Selected assignment',
 const test = base.extend({
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
   host: async ({}, use) => {
-    const assets = new Map(await Promise.all(['task-administration.js', 'styles.css'].map(async name => [name, await readFile(new URL('../web/' + name, import.meta.url))])));
+    const assets = new Map(await Promise.all(['task-administration.js', 'projects.js', 'styles.css'].map(async name => [name, await readFile(new URL('../web/' + name, import.meta.url))])));
     const requests = [], host = await httpFixture((request, response) => {
       requests.push({ method: request.method, path: request.url }); response.setHeader('cache-control', 'no-store');
       if (request.url === '/') { response.setHeader('content-type', 'text/html; charset=utf-8'); response.end('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/styles.css"><script src="/task-administration.js" defer></script></head><body><main class="workspace"></main></body></html>'); return; }
