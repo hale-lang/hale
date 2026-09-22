@@ -1,0 +1,786 @@
+{
+  "description": "Illustrative adapter shape fixtures. These are not live application or restart-persistence evidence.",
+  "fixtures": [
+    {
+      "name": "discovery",
+      "schema": "ApplicationsResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "items": [
+            {
+              "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "hale",
+              "name": "Intake control",
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "captured-state",
+      "schema": "StateResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "application": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind": "hale",
+            "name": "Intake control",
+            "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "online": true,
+          "control": {
+            "kind": "application.control",
+            "id": "intake",
+            "label": "Intake mode",
+            "revision": "1",
+            "value": "paused",
+            "effective_revision": "1",
+            "effective_value": "paused"
+          },
+          "activity": {
+            "label": "Synthetic work accepted",
+            "count": "9007199254740993",
+            "observation_tick": "23"
+          }
+        }
+      }
+    },
+    {
+      "name": "capabilities",
+      "schema": "CapabilitiesResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "operations": [
+            {
+              "id": "example.intake.set_mode",
+              "version": "1",
+              "label": "Set intake mode",
+              "target": {
+                "kind": "application.control",
+                "id": "intake"
+              },
+              "supported": true,
+              "available": true,
+              "authorized": true,
+              "input": {
+                "profile": "enum-value.v1",
+                "label": "Intake mode",
+                "choices": [
+                  {
+                    "value": "running",
+                    "label": "Running"
+                  },
+                  {
+                    "value": "paused",
+                    "label": "Paused"
+                  }
+                ]
+              },
+              "preconditions": [
+                "incarnation_id",
+                "revision",
+                "principal"
+              ],
+              "success_meaning": "Desired configuration committed; current effect is reported separately.",
+              "recovery": {
+                "lookup": "request_id",
+                "retention": "application_store_lifetime"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "exact-request",
+      "schema": "CommandRequest",
+      "valid": true,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "0",
+          "principal": {
+            "mode": "trusted_local",
+            "name": "operator"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "committed-receipt",
+      "schema": "CommandResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "receipt": {
+            "command_id": "example-command-1",
+            "request_id": "example-1",
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "principal": {
+              "mode": "trusted_local",
+              "name": "operator"
+            },
+            "operation": "example.intake.set_mode",
+            "operation_version": "1",
+            "target": {
+              "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "application.control",
+              "id": "intake"
+            },
+            "preconditions": {
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": "0"
+            },
+            "arguments": {
+              "value": "paused"
+            },
+            "fingerprint": "sha256:d1df8fe9aabcb731347a15e079eb61fa2cbdcbd9b32b535507be2eb35cdd7a04",
+            "state": "succeeded",
+            "reason": "",
+            "result": {
+              "changed": true,
+              "revision": "1",
+              "value": "paused"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "retained-refusal-post",
+      "schema": "RefusalResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "receipt": {
+            "command_id": "example-command-1",
+            "request_id": "example-1",
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "principal": {
+              "mode": "trusted_local",
+              "name": "operator"
+            },
+            "operation": "example.intake.set_mode",
+            "operation_version": "1",
+            "target": {
+              "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "application.control",
+              "id": "intake"
+            },
+            "preconditions": {
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": "0"
+            },
+            "arguments": {
+              "value": "paused"
+            },
+            "fingerprint": "sha256:d1df8fe9aabcb731347a15e079eb61fa2cbdcbd9b32b535507be2eb35cdd7a04",
+            "state": "refused",
+            "reason": "stale_revision",
+            "result": {
+              "changed": false,
+              "revision": "5",
+              "value": "running"
+            }
+          }
+        },
+        "error": {
+          "code": "command_refused",
+          "message": "The application retained a refusal for this exact request."
+        }
+      }
+    },
+    {
+      "name": "retained-refusal-lookup",
+      "schema": "CommandResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "receipt": {
+            "command_id": "example-command-1",
+            "request_id": "example-1",
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "principal": {
+              "mode": "trusted_local",
+              "name": "operator"
+            },
+            "operation": "example.intake.set_mode",
+            "operation_version": "1",
+            "target": {
+              "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "application.control",
+              "id": "intake"
+            },
+            "preconditions": {
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": "0"
+            },
+            "arguments": {
+              "value": "paused"
+            },
+            "fingerprint": "sha256:d1df8fe9aabcb731347a15e079eb61fa2cbdcbd9b32b535507be2eb35cdd7a04",
+            "state": "refused",
+            "reason": "stale_revision",
+            "result": {
+              "changed": false,
+              "revision": "5",
+              "value": "running"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "not-found",
+      "schema": "ErrorResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "error": {
+          "code": "command_not_found",
+          "message": "No retained command exists for this actor and request identity. Do not resubmit automatically."
+        }
+      }
+    },
+    {
+      "name": "request-extra-authority",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "0",
+          "principal": {
+            "mode": "trusted_local",
+            "name": "operator"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        },
+        "authority": "admin"
+      }
+    },
+    {
+      "name": "request-extra-position",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "position_id": "org"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "0",
+          "principal": {
+            "mode": "trusted_local",
+            "name": "operator"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "request-unsafe-number",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": 9007199254740992,
+          "principal": {
+            "mode": "trusted_local",
+            "name": "operator"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "request-leading-zero",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "01",
+          "principal": {
+            "mode": "trusted_local",
+            "name": "operator"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "request-missing-principal",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "0"
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "request-observer-target",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "observer.pid",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "0",
+          "principal": {
+            "mode": "trusted_local",
+            "name": "operator"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "receipt-refusal-claims-change",
+      "schema": "CommandResponse",
+      "valid": false,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "receipt": {
+            "command_id": "example-command-1",
+            "request_id": "example-1",
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "principal": {
+              "mode": "trusted_local",
+              "name": "operator"
+            },
+            "operation": "example.intake.set_mode",
+            "operation_version": "1",
+            "target": {
+              "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "application.control",
+              "id": "intake"
+            },
+            "preconditions": {
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": "0"
+            },
+            "arguments": {
+              "value": "paused"
+            },
+            "fingerprint": "sha256:d1df8fe9aabcb731347a15e079eb61fa2cbdcbd9b32b535507be2eb35cdd7a04",
+            "state": "refused",
+            "reason": "stale_revision",
+            "result": {
+              "changed": true,
+              "revision": "5",
+              "value": "running"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "receipt-false-success-reason",
+      "schema": "CommandResponse",
+      "valid": false,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "receipt": {
+            "command_id": "example-command-1",
+            "request_id": "example-1",
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "principal": {
+              "mode": "trusted_local",
+              "name": "operator"
+            },
+            "operation": "example.intake.set_mode",
+            "operation_version": "1",
+            "target": {
+              "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "application.control",
+              "id": "intake"
+            },
+            "preconditions": {
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": "0"
+            },
+            "arguments": {
+              "value": "paused"
+            },
+            "fingerprint": "sha256:d1df8fe9aabcb731347a15e079eb61fa2cbdcbd9b32b535507be2eb35cdd7a04",
+            "state": "succeeded",
+            "reason": "stale_revision",
+            "result": {
+              "changed": true,
+              "revision": "1",
+              "value": "paused"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "response-dna-source",
+      "schema": "ApplicationsResponse",
+      "valid": false,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "items": [
+            {
+              "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "hale",
+              "name": "Intake control",
+              "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ]
+        },
+        "source": {
+          "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "record_head": "invented",
+          "record_revision": "0"
+        }
+      }
+    },
+    {
+      "name": "principal-outside-identifier-profile",
+      "schema": "CommandRequest",
+      "valid": false,
+      "value": {
+        "request_id": "example-1",
+        "operation": "example.intake.set_mode",
+        "operation_version": "1",
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "application.control",
+          "id": "intake"
+        },
+        "preconditions": {
+          "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "revision": "0",
+          "principal": {
+            "mode": "trusted_local",
+            "name": "two words"
+          }
+        },
+        "arguments": {
+          "value": "paused"
+        }
+      }
+    },
+    {
+      "name": "observed application process",
+      "schema": "StateResponse",
+      "valid": true,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "application": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind": "hale",
+            "name": "Intake control",
+            "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "online": true,
+          "control": {
+            "kind": "application.control",
+            "id": "intake",
+            "label": "Intake mode",
+            "revision": "1",
+            "value": "paused",
+            "effective_revision": "1",
+            "effective_value": "paused"
+          },
+          "activity": {
+            "label": "Synthetic work accepted",
+            "count": "9007199254740993",
+            "observation_tick": "23"
+          },
+          "runtime": {
+            "profile": "hale.iris.process.v1",
+            "process_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "pid": "12"
+          }
+        }
+      }
+    },
+    {
+      "name": "process PID alone",
+      "schema": "StateResponse",
+      "valid": false,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "application": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind": "hale",
+            "name": "Intake control",
+            "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "online": true,
+          "control": {
+            "kind": "application.control",
+            "id": "intake",
+            "label": "Intake mode",
+            "revision": "1",
+            "value": "paused",
+            "effective_revision": "1",
+            "effective_value": "paused"
+          },
+          "activity": {
+            "label": "Synthetic work accepted",
+            "count": "9007199254740993",
+            "observation_tick": "23"
+          },
+          "runtime": {
+            "profile": "hale.iris.process.v1",
+            "pid": "12"
+          }
+        }
+      }
+    },
+    {
+      "name": "offline association",
+      "schema": "StateResponse",
+      "valid": false,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "application": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind": "hale",
+            "name": "Intake control",
+            "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "online": false,
+          "control": {
+            "kind": "application.control",
+            "id": "intake",
+            "label": "Intake mode",
+            "revision": "1",
+            "value": "paused",
+            "effective_revision": "1",
+            "effective_value": "paused"
+          },
+          "activity": {
+            "label": "Synthetic work accepted",
+            "count": "9007199254740993",
+            "observation_tick": "23"
+          },
+          "runtime": {
+            "profile": "hale.iris.process.v1",
+            "process_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "pid": "12"
+          }
+        }
+      }
+    },
+    {
+      "name": "malformed process key",
+      "schema": "StateResponse",
+      "valid": false,
+      "value": {
+        "api_version": "hale.v1",
+        "profile": "hale.application.v1",
+        "principal": {
+          "mode": "trusted_local",
+          "name": "operator"
+        },
+        "data": {
+          "application": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind": "hale",
+            "name": "Intake control",
+            "incarnation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "online": true,
+          "control": {
+            "kind": "application.control",
+            "id": "intake",
+            "label": "Intake mode",
+            "revision": "1",
+            "value": "paused",
+            "effective_revision": "1",
+            "effective_value": "paused"
+          },
+          "activity": {
+            "label": "Synthetic work accepted",
+            "count": "9007199254740993",
+            "observation_tick": "23"
+          },
+          "runtime": {
+            "profile": "hale.iris.process.v1",
+            "process_key": "pid:12",
+            "pid": "12"
+          }
+        }
+      }
+    }
+  ]
+}

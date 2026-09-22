@@ -1,0 +1,228 @@
+// Admission commits one exact request/effect fact. Node requests then follow
+// native Review; direct and reviewed edge effects share the graph projection.
+import "../core" as dna;
+
+interface KnowledgeAuthority {
+    // Fixed for the service lifetime, or derived solely from the pinned Record.
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> KnowledgeGrant;
+}
+locus NoKnowledgeAuthority {
+    params { }
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> KnowledgeGrant { return KnowledgeGrant { }; }
+}
+type KnowledgeFound { ok: Bool = false; code: String = "command_not_found"; fact: KnowledgeFact = KnowledgeFact { }; event: dna::Event = dna::Event { }; }
+
+// A snapshot reader over a record handed in by parameter (F.3, GH #730).
+fn reader_over(record: GovernanceRecord, limits: GovernanceReadLimits) -> GovernanceCommands { return GovernanceCommands { record: record, limits: limits }; }
+locus KnowledgeCommands {
+    params {
+        record: GovernanceRecord = dna::MemRecord { };
+        authority: KnowledgeAuthority = NoKnowledgeAuthority { };
+        limits: GovernanceReadLimits = GovernanceReadLimits { };
+        sign: Bool = false;
+    }
+    fn capture() -> GovernanceSnapshot {
+        // A holder reclaims the record in its field when it dies (GH #967):
+        // the reader opens a record of its own over the same repository.
+        let reader = if len(self.record.location()) > 0 { GovernanceCommands { record: dna::GitRecord { repo: self.record.location() }, limits: self.limits } } else { reader_over(self.record, self.limits) };
+        return reader.capture();
+    }
+    fn unchanged(s: GovernanceSnapshot) -> Bool { return self.record.identity() == s.application_id && self.record.head("journal") == s.head; }
+    fn source_supported(j: dna::Journal) -> Bool {
+        let mut i = 0;
+        while i < j.revision() {
+            let kind = j.read(i).kind;
+            if kind == "ledger.adopted" || kind == "ledger.abandoned" { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn active_person(j: dna::Journal, name: String) -> Bool {
+        let mut i = 0;
+        while i < j.revision() { let e = j.read(i); if e.kind == "person.retired" && e.entity == name { return false; } i = i + 1; }
+        return true;
+    }
+    fn visible(j: dna::Journal, digest: String) -> Bool {
+        if !self.source_supported(j) { return false; }
+        let syntax = OrganizationJson { };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if raw_digest(e.entity) == raw_digest(digest) {
+                if e.kind == "receipt.redacted" || e.kind == "receipt.withheld" { return false; }
+                if e.kind == "receipt.classified" || e.kind == "receipt.filed" {
+                    if !syntax.valid(e.body) { return false; }
+                    // Match the graph reader's conservative classification
+                    // boundary exactly, including noncanonical class values.
+                    let class = std::json::find_field_raw(e.body, "class");
+                    if class != "\"public\"" && class != "\"internal\"" { return false; }
+                }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn endpoint(j: GovernanceJournal, digest: String, require_active: Bool) -> Bool {
+        if !self.visible(j, digest) { return false; }
+        // Graph nodes need not be named Practice proposals. The native graph
+        // also projects direct ratification rows whose metadata lives only in
+        // the canonical receipt. A blob alone never establishes membership.
+        let mut ratified = false; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.entity == digest {
+                // Retired, still-visible knowledge can have its old links
+                // removed. Creating a new link requires active endpoints.
+                if require_active && e.kind == "knowledge.retired" { return false; }
+                if e.kind == "knowledge.ratified" { ratified = true; }
+            }
+            i = i + 1;
+        }
+        if !ratified { return false; }
+        // The digest binds exact receipt bytes. Validate the native document
+        // schema directly; re-encoding a potentially large text field is not
+        // needed to establish its identity or membership.
+        let kept = self.record.body(raw_digest(digest));
+        let syntax = OrganizationJson { };
+        if !kept.present || len(kept.text) > 98304 || !syntax.valid(kept.text) || dna::digest_of(kept.text) != digest { return false; }
+        let wire = GovernanceCommandCodec { }; let fields = DefinitionCodec { };
+        let optional = (if len(std::json::find_field_raw(kept.text, "name")) > 0 { " name" } else { "" })
+            + (if len(std::json::find_field_raw(kept.text, "supersedes")) > 0 { " supersedes" } else { "" })
+            + (if len(std::json::find_field_raw(kept.text, "toolchain")) > 0 { " toolchain" } else { "" });
+        if !fields.fields(kept.text, "kind text author target provenance" + optional, "") { return false; }
+        let kind = wire.string(kept.text, "kind");
+        return len(kind) > 0 && kind != "retirement";
+    }
+    fn capability(context: GovernanceContext) -> KnowledgeCapability { return self.capability_for(context, "dna.knowledge.edge.link"); }
+    fn capability_for(context: GovernanceContext, operation: String) -> KnowledgeCapability {
+        let wire = GovernanceCommandCodec { }; let codec = KnowledgeCommandCodec { };
+        if !wire.context_valid(context) || len(codec.event_kind(operation)) == 0 { return KnowledgeCapability { reason: "Unsupported command context or operation." }; }
+        let s = self.capture();
+        if !s.ok || s.application_id != context.application_id { return KnowledgeCapability { reason: "The Record is unavailable." }; }
+        let j = GovernanceJournal { snapshot: s };
+        if !j.valid || !self.source_supported(j) { return KnowledgeCapability { reason: "Knowledge commands require complete Record authority; routed Ledger commands are not configured." }; }
+        let grant = self.authority.authorize(context, operation, false, j);
+        if !self.unchanged(s) { return KnowledgeCapability { reason: "The Record changed; refresh capabilities." }; }
+        let node = KnowledgeNodeCommandCodec { }; let policy = KnowledgePolicyCodec { };
+        let is_node = node.known(operation);
+        let binding = KnowledgeBindingCommandCodec { }; let scoped_review = is_node || binding.known(operation);
+        let allowed = codec.grant_valid(grant) && self.active_person(j, context.principal_name)
+            && (!scoped_review || (grant.mode == "review" && policy.scopes(grant.scopes)));
+        return KnowledgeCapability {
+            available: allowed, authorized: allowed, mode: if allowed { grant.mode } else { "unavailable" },
+            policy_basis: if allowed { grant.basis } else { "" },
+            reason: if !allowed { "This principal has no explicit grant for this Knowledge operation." } else { "" }
+        };
+    }
+    @unbounded
+    fn find(s: GovernanceSnapshot, j: GovernanceJournal, context: GovernanceContext, request_id: String) -> KnowledgeFound {
+        let codec = KnowledgeCommandCodec { }; let wire = GovernanceCommandCodec { };
+        let id = codec.identity(context, request_id); let mut found = KnowledgeFound { };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "knowledge.edge.linked" || e.kind == "knowledge.edge.unlinked" || e.kind == "knowledge.edge.requested" || e.kind == "knowledge.node.requested" || e.kind == "knowledge.binding.requested" {
+                let fact = codec.decode_fact(e);
+                if !fact.valid || fact.context.application_id != s.application_id || wire.string(dna::line_at(s.text, i), "author") != fact.context.principal_name { return KnowledgeFound { code: "command_history_invalid" }; }
+                if fact.command_id == id {
+                    if found.ok { return KnowledgeFound { code: "command_history_invalid" }; }
+                    found = KnowledgeFound { ok: true, code: "", fact: fact, event: e };
+                }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn result(s: GovernanceSnapshot, j: GovernanceJournal, found: KnowledgeFound) -> KnowledgeResult {
+        let f = found.fact; let c = f.command;
+        let node = KnowledgeNodeCommandCodec { }; let view = KnowledgeNodeProjection { };
+        let is_node = node.known(c.operation);
+        let binding = KnowledgeBindingCommandCodec { }; let binding_view = KnowledgeBindingProjection { }; let is_binding = binding.known(c.operation);
+        // The admitted fact selects the lifecycle forever. Current policy mode
+        // can change without reinterpreting a recovered direct effect.
+        let is_edge_review = found.event.kind == "knowledge.edge.requested"; let edge_view = KnowledgeEdgeProjection { };
+        let visible = if is_node { self.visible(j, f.node.candidate_digest) && (c.operation == "dna.knowledge.node.propose" || self.visible(j, c.target_id)) }
+        else if is_binding { self.visible(j, f.binding.candidate_digest) && self.visible(j, c.idea_id) }
+        else if is_edge_review { self.visible(j, f.edge.candidate_digest) && self.visible(j, c.from_id) && self.visible(j, c.to_id) }
+        else { self.visible(j, c.from_id) && self.visible(j, c.to_id) };
+        let outcome = if is_node { if visible { view.project(j, found) } else { view.unknown() } } else { KnowledgeNodeOutcome { } };
+        let binding_outcome = if is_binding { if visible { binding_view.project(self.record, j, found) } else { binding_view.unknown("") } } else { KnowledgeBindingOutcome { } };
+        let edge_outcome = if is_edge_review { if visible { edge_view.project(self.record, j, found) } else { edge_view.unknown() } } else { KnowledgeEdgeOutcome { } };
+        let proposal = if is_edge_review { edge_outcome.proposal_state } else if is_binding { binding_outcome.proposal_state } else { outcome.proposal_state };
+        let state = if (!is_node && !is_binding && !is_edge_review) || proposal == "pending" { "recorded" }
+        else if proposal == "created" { "succeeded" } else if proposal == "refused" { "refused" } else { "outcome_unknown" };
+        return KnowledgeResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision,
+            receipt: KnowledgeReceipt {
+                command_id: f.command_id, request_id: c.request_id, application_id: c.application_id,
+                principal_mode: f.context.principal_mode, principal_name: f.context.principal_name,
+                operation: c.operation, operation_version: c.operation_version, position_id: c.position_id,
+                target_id: if visible { c.target_id } else { "" }, fingerprint: f.fingerprint,
+                edge_id: if visible { f.edge_id } else { "" }, event_id: found.event.digest,
+                admission_head: c.record_head, sequence: found.event.seq,
+                authority: f.authority, authority_basis: f.authority_basis, details_visible: visible,
+                state: state, node: outcome, binding: binding_outcome, reviewed: is_edge_review, relationship: edge_outcome
+            }
+        };
+    }
+    @unbounded
+    fn execute(context: GovernanceContext, command: KnowledgeCommand, recovery: Bool) -> KnowledgeResult {
+        let codec = KnowledgeCommandCodec { };
+        if len(codec.identity(context, command.request_id)) == 0 || (!recovery && !codec.valid(context, command)) { return KnowledgeResult { code: "invalid_command" }; }
+        if self.limits.attempts < 1 || self.limits.attempts > 8 { return KnowledgeResult { code: "commands_unavailable" }; }
+        let mut attempt = 0; let mut uncertain = false;
+        while attempt < self.limits.attempts {
+            attempt = attempt + 1;
+            let s = self.capture();
+            if !s.ok { if s.code == "snapshot_changed" { continue; } return KnowledgeResult { code: if uncertain { "command_outcome_unknown" } else { s.code } }; }
+            if s.application_id != context.application_id { return KnowledgeResult { code: "command_context_changed" }; }
+            let j = GovernanceJournal { snapshot: s };
+            if !j.valid { return KnowledgeResult { code: "command_history_invalid" }; }
+            let found = self.find(s, j, context, command.request_id);
+            let grant = self.authority.authorize(context, if found.ok { found.fact.command.operation } else { command.operation }, recovery || found.ok || uncertain, j);
+            if !codec.grant_valid(grant) || !self.active_person(j, context.principal_name) { return KnowledgeResult { code: "forbidden" }; }
+            if !self.unchanged(s) { continue; }
+            if found.ok {
+                if !recovery && found.fact.fingerprint != codec.fingerprint(context, command) { return KnowledgeResult { code: "request_conflict" }; }
+                let result = self.result(s, j, found);
+                if !self.unchanged(s) { continue; }
+                return result;
+            }
+            if found.code != "command_not_found" || recovery { return KnowledgeResult { code: found.code }; }
+            if uncertain { return KnowledgeResult { code: "command_outcome_unknown" }; }
+            let node = KnowledgeNodeCommandCodec { }; let is_node = node.known(command.operation);
+            let binding = KnowledgeBindingCommandCodec { }; let is_binding = binding.known(command.operation);
+            let edge = KnowledgeEdgeCommandCodec { }; let is_edge_review = edge.known(command.operation) && grant.mode == "review";
+            if !self.source_supported(j) || ((is_node || is_binding) && grant.mode != "review") { return KnowledgeResult { code: "commands_unsupported" }; }
+            // A changed head NEVER rebases the user's checked command. A CAS
+            // race returns here only after checking for its original receipt.
+            if s.head != command.record_head { return KnowledgeResult { code: "stale_subject" }; }
+            let admission = KnowledgeNodeAdmission { };
+            let prepared = if is_node { admission.prepare(context, command, grant, self.record, j) } else { KnowledgeNodePreparation { ok: true } };
+            if !prepared.ok { return KnowledgeResult { code: prepared.code }; }
+            let binding_admission = KnowledgeBindingAdmission { };
+            let binding_prepared = if is_binding { binding_admission.prepare(context, command, grant, self.record, j) } else { KnowledgeBindingPreparation { ok: true } };
+            if !binding_prepared.ok { return KnowledgeResult { code: binding_prepared.code }; }
+            let edge_admission = KnowledgeEdgeAdmission { };
+            let edge_prepared = if is_edge_review { edge_admission.prepare(context, command, grant, self.record, j) } else { KnowledgeEdgePreparation { ok: true } };
+            if !edge_prepared.ok { return KnowledgeResult { code: edge_prepared.code }; }
+            let require_active = command.operation == "dna.knowledge.edge.link";
+            if !is_node && !is_binding && !is_edge_review && (!self.endpoint(j, command.from_id, require_active) || !self.endpoint(j, command.to_id, require_active)) { return KnowledgeResult { code: "stale_subject" }; }
+            let body = if is_node { node.fact(context, command, grant, prepared.request) } else if is_binding { binding.fact(context, command, grant, binding_prepared.request) }
+            else if is_edge_review { edge.fact(context, command, grant, edge_prepared.request) } else { codec.fact(context, command, grant) };
+            let entity = if is_node || is_binding || is_edge_review { codec.identity(context, command.request_id) } else { codec.edge_id(command.from_id, command.to_id, command.rel) };
+            if len(body) == 0 { return KnowledgeResult { code: "invalid_command" }; }
+            let kind = if is_edge_review { "knowledge.edge.requested" } else { codec.event_kind(command.operation) };
+            let appended = self.record.append("journal", command.record_head, dna::Row { kind: kind, entity: entity, body: body, author: context.principal_name }, self.sign, "");
+            if appended.ok && len(appended.id) > 0 {
+                let event = dna::Event { seq: s.revision, kind: kind, entity: entity, body: body, prev: command.record_head, digest: appended.id };
+                let fact = codec.decode_fact(event);
+                if !fact.valid { return KnowledgeResult { code: "command_outcome_unknown" }; }
+                return self.result(GovernanceSnapshot { ok: true, application_id: s.application_id, head: appended.id, revision: s.revision + 1 }, j, KnowledgeFound { ok: true, code: "", fact: fact, event: event });
+            }
+            if appended.error != "stale" { uncertain = true; }
+        }
+        return KnowledgeResult { code: if uncertain { "command_outcome_unknown" } else { "command_busy" } };
+    }
+    fn submit(context: GovernanceContext, command: KnowledgeCommand) -> KnowledgeResult { return self.execute(context, command, false); }
+    fn lookup(context: GovernanceContext, request_id: String) -> KnowledgeResult { return self.execute(context, KnowledgeCommand { request_id: request_id }, true); }
+}

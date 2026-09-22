@@ -1,0 +1,47 @@
+// A persisted native grant profile distinguishes executable-source Review
+// from existing Knowledge Review. The public command's canonical bytes stay
+// exactly dna.governance-command/1; only this admission envelope is extended.
+import "../core" as dna;
+
+type OrganizationReviewCommandFact {
+    valid: Bool = false;
+    context: GovernanceContext = GovernanceContext { };
+    command: GovernanceCommand = GovernanceCommand { };
+    grant: GovernanceGrant = GovernanceGrant { };
+    record_head: String = "";
+    verdict: dna::Verdict = dna::Verdict { };
+}
+
+locus OrganizationReviewCommandCodec {
+    params { }
+    fn profile() -> String { return "dna.organization-review/1"; }
+    fn fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) -> String {
+        let codec = GovernanceCommandCodec { }; let fields = OrganizationCommandCodec { };
+        if !codec.valid(context, c) || c.operation != "dna.review.verdict" || !grant.allowed
+            || !codec.bounded(grant.authority, 256, true, false) || !codec.bounded(grant.basis, 2048, true, false) || !codec.bounded(head, 256, true, false) { return ""; }
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"command_format\":\"dna.governance-command/1\"");
+        fields.field(b, "command_id", codec.identity(context, c.request_id)); fields.field(b, "command_payload", codec.canonical(context, c));
+        fields.field(b, "command_fingerprint", codec.fingerprint(context, c)); fields.field(b, "command_authority", grant.authority);
+        fields.field(b, "command_authority_basis", grant.basis); fields.field(b, "command_record_head", head);
+        fields.field(b, "review_id", c.target_id); fields.field(b, "subject_digest", c.subject_digest); fields.field(b, "verdict", c.verdict);
+        fields.field(b, "reviewer", context.principal_name); fields.field(b, "authority", grant.authority); fields.field(b, "comment", c.comment);
+        fields.field(b, "command_authority_profile", self.profile()); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode(e: dna::Event) -> OrganizationReviewCommandFact {
+        let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let schema = DefinitionCodec { };
+        if e.kind != "review.verdict" || len(e.body) > 196608 || !syntax.valid(e.body)
+            || !schema.fields(e.body, "command_format command_id command_payload command_fingerprint command_authority command_authority_basis command_record_head review_id subject_digest verdict reviewer authority comment command_authority_profile", "")
+            || codec.string(e.body, "command_authority_profile") != self.profile() { return OrganizationReviewCommandFact { }; }
+        let payload = codec.string(e.body, "command_payload");
+        if !syntax.valid(payload) { return OrganizationReviewCommandFact { }; }
+        let context = GovernanceContext { application_id: codec.string(payload, "application_id"), principal_mode: codec.string(payload, "principal_mode"), principal_name: codec.string(payload, "principal_name") };
+        let c = codec.decode(context, payload);
+        let grant = GovernanceGrant { allowed: true, authority: codec.string(e.body, "command_authority"), basis: codec.string(e.body, "command_authority_basis") };
+        let head = codec.string(e.body, "command_record_head");
+        if !codec.valid(context, c) || c.operation != "dna.review.verdict" || codec.canonical(context, c) != payload
+            || e.entity != c.target_id || e.prev != head || e.body != self.fact(context, c, grant, head) { return OrganizationReviewCommandFact { }; }
+        return OrganizationReviewCommandFact { valid: true, context: context, command: c, grant: grant, record_head: head,
+            verdict: dna::Verdict { command_id: codec.identity(context, c.request_id), review_id: c.target_id, subject_digest: c.subject_digest,
+                verdict: c.verdict, reviewer: context.principal_name, authority: grant.authority, comment: c.comment } };
+    }
+}

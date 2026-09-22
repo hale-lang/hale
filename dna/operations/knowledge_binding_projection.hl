@@ -1,0 +1,65 @@
+// An accepted Review and an applied binding are distinct. Only exact native
+// consequence evidence can establish the latter; the graph is observed later.
+import "../core" as dna;
+
+locus KnowledgeBindingProjection {
+    params { }
+    fn unknown(binding_id: String) -> KnowledgeBindingOutcome {
+        return KnowledgeBindingOutcome { binding_id: binding_id, proposal_state: "unknown" };
+    }
+    fn project(record: GovernanceRecord, j: GovernanceJournal, found: KnowledgeFound) -> KnowledgeBindingOutcome {
+        let r = found.fact.binding; let native = dna::KnowledgeBindingCodec { };
+        let view = GovernanceProjection { }; let wire = GovernanceCommandCodec { };
+        let proposed = view.fact(j, "knowledge.binding.proposed", r.request_id, false);
+        let refused = view.fact(j, "knowledge.binding.refused", r.request_id, false);
+        if proposed.invalid || refused.invalid || (proposed.found && refused.found) { return self.unknown(r.binding_id); }
+        if refused.found {
+            let why = wire.string(refused.body, "why"); let code = wire.string(refused.body, "reason_code");
+            if refused.sequence <= found.event.seq || !wire.bounded(why, 2048, true, true) || !wire.bounded(code, 128, true, false) || refused.body != native.refused(r, code, why) { return self.unknown(r.binding_id); }
+            return KnowledgeBindingOutcome { binding_id: r.binding_id, proposal_state: "refused", reason: "The native binding proposal was refused." };
+        }
+        if !proposed.found { return KnowledgeBindingOutcome { binding_id: r.binding_id }; }
+        if proposed.sequence <= found.event.seq || proposed.body != native.proposed(r) { return self.unknown(r.binding_id); }
+        let review = view.binding_review(j, r);
+        if !review.ok { return self.unknown(r.binding_id); }
+        let mut out = KnowledgeBindingOutcome {
+            binding_id: r.binding_id, proposal_state: "created", candidate_digest: r.candidate_digest, review_id: native.review_id(r.candidate_digest),
+            review_state: review.state, review_outcome: review.outcome,
+            effect_state: if review.state == "settled" { "pending" } else { "unknown" }
+        };
+        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
+        let mut terminal = ""; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.entity == r.request_id && (e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" || e.kind == "knowledge.binding.declined" || e.kind == "knowledge.binding.apply_refused") {
+                if terminal != "" && terminal != e.body { return self.unknown(r.binding_id); }
+                let effect = native.effect_of(j, e);
+                if !effect.ok || native.started(effect.request) != native.started(r) || review.state != "settled" || e.seq <= review.sequence || effect.decided_by != review.reviewer { return self.unknown(r.binding_id); }
+                if effect.state == "declined" {
+                    if review.outcome != "reject" && review.outcome != "revise" { return self.unknown(r.binding_id); }
+                } else if review.outcome != "approve" { return self.unknown(r.binding_id); }
+                if terminal == "" {
+                    // Validate the prefix that was applied, never the tuple's
+                    // later state. An inverse command does not erase a receipt.
+                    let basis = native.basis(j, receipts, r, e.seq);
+                    if !basis.ok { return self.unknown(r.binding_id); }
+                    if (effect.state == "bound" || effect.state == "unbound") && basis.event_id != r.binding_basis { return self.unknown(r.binding_id); }
+                    if effect.state == "refused" && effect.reason_code == "binding_changed" && (effect.observed_basis != basis.event_id || basis.event_id == r.binding_basis) { return self.unknown(r.binding_id); }
+                    let subject = native.subject_at(j, receipts, r.idea_id, e.seq);
+                    if !subject.ok { return self.unknown(r.binding_id); }
+                    let eligible = subject.ratified && (r.operation == "dna.knowledge.binding.unbind" || subject.active);
+                    if (effect.state == "bound" || effect.state == "unbound") && !eligible { return self.unknown(r.binding_id); }
+                    if effect.state == "refused" && effect.reason_code == "subject_inactive" && (eligible || basis.event_id != r.binding_basis || effect.observed_basis != basis.event_id) { return self.unknown(r.binding_id); }
+                    out.effect_state = effect.state;
+                    out.effect_reason = if effect.state == "declined" { "The Review declined this binding change." }
+                    else if effect.state == "refused" && effect.reason_code == "binding_changed" { "The exact binding changed while this Review was pending." }
+                    else if effect.state == "refused" && effect.reason_code == "subject_inactive" { "The Knowledge item is no longer active for this binding." }
+                    else if effect.state == "refused" { "The native binding effect was refused." } else { "" };
+                    terminal = e.body;
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}

@@ -1,0 +1,118 @@
+// Typed adapter/profile conformance. These scripted service outcomes are not
+// proof of native source publication, application, restart, or activation.
+import ".." as api;
+import "../practice_review" as head;
+import "../../operations" as ops;
+import "../../core" as dna;
+
+const APP: String = "source-app";
+const BASE: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CANDIDATE: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const ORIGIN: String = "http://127.0.0.1:8792";
+fn context() -> api::CommandContext { return api::CommandContext { root: "/project", source: api::Source { ok: true, identity: APP, head: "before", revision: 1 }, principal_mode: "local", principal_name: "alice" }; }
+fn command() -> api::CommandRequest {
+    return api::CommandRequest { valid: true, request_id: "source-key", operation: "dna.organization.propose", application_id: APP, target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: dna::digest_of("base"), expected_principal_mode: "local", expected_principal_name: "alice", source_head: BASE, dependency_source: "none", dependency_digest: dna::digest_of(""), record_head: "before", source_text: "source", rationale: "why" };
+}
+fn result(stage: String) -> ops::GovernanceResult {
+    let mut r = ops::GovernanceReceipt { command_id: "command-source", request_id: "source-key", application_id: APP, operation: "dna.organization.propose", principal_mode: "local", principal_name: "alice", target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: dna::digest_of("base"), fingerprint: dna::digest_of("fingerprint"), state: "recorded", proposal_state: "", organization: ops::OrganizationCommandOutcome { source_head: BASE, source_digest: dna::digest_of("source"), mutation_id: "source-mutation" } };
+    if stage == "verification" { r.state = "refused"; r.organization.proposal_state = "failed"; }
+    else if stage == "uncertain" { r.state = "outcome_unknown"; r.organization.proposal_state = "unknown"; r.organization.application_state = "unknown"; r.organization.restart_handoff_state = "unknown"; }
+    else if stage != "recorded" {
+        r.state = "succeeded"; r.organization.proposal_state = "created"; r.organization.candidate_commit = CANDIDATE; r.review_id = "source-mutation";
+        r.review_state = "pending"; r.review_subject_digest = CANDIDATE;
+        if stage != "created" {
+            r.review_state = "settled"; r.review_outcome = if stage == "declined" { "revise" } else { "approve" };
+            r.organization.application_state = stage;
+            if stage == "applied" { r.organization.restart_handoff_state = "requested"; }
+            if stage == "failed" { r.organization.application_reason_code = "native_apply_failed"; }
+            if stage == "refused" { r.organization.application_reason_code = "stale_subject"; }
+            if stage == "unknown" { r.organization.restart_handoff_state = "unknown"; }
+        }
+    }
+    return ops::GovernanceResult { ok: true, application_id: APP, head: "captured-after", revision: 9, receipt: r };
+}
+locus SourceService {
+    params { writes: Bool = true; calls: Int = 0; value: ops::GovernanceResult = ops::GovernanceResult { }; }
+    fn supported(operation: String, version: String) -> Bool { return version == "1" && (operation != "dna.organization.propose" || self.writes); }
+    fn capability(who: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability { return ops::GovernanceCapability { available: true, authorized: false, reason: "No ordinary grant." }; }
+    fn organization_capability(who: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability { return ops::GovernanceCapability { available: self.writes, authorized: who.principal_name == "alice", reason: if self.writes { "" } else { "Source writes disabled." } }; }
+    fn submit(who: ops::GovernanceContext, request: ops::GovernanceCommand) -> ops::GovernanceResult { self.calls = self.calls + 1; return self.value; }
+    fn lookup(who: ops::GovernanceContext, id: String) -> ops::GovernanceResult { self.calls = self.calls + 1; return self.value; }
+}
+locus SourceReceiptCases {
+    params { }
+    fn stage(name: String) {
+        let service = SourceService { value: result(name) }; let provider = head::PracticeReviewCommands { root: "/project", application_id: APP, service: service, source_capabilities: service, organization_configured: true }; let wire = api::CommandWire { };
+        let mapped = provider.submit(context(), command()); let response = wire.response(context(), command(), mapped, true);
+        std::test::assert_eq_int(response.status, if name == "recorded" || name == "uncertain" { 202 } else { 200 }, "source stage " + name + ": " + response.body);
+        let data = wire.raw(response.body, "data"); let outcome = wire.raw(data, "organization");
+        std::test::assert_eq_str(wire.raw(data, "proposal"), "", "source receipt has no Practice proposal variant");
+        std::test::assert_eq_str(wire.raw(data, "verdict"), "", "source receipt is not its Review decision");
+        std::test::assert_eq_str(wire.text(outcome, "source_head"), BASE, "original source parent retained");
+        std::test::assert_eq_str(wire.text(outcome, "source_digest"), dna::digest_of("source"), "exact submitted source digest retained");
+        std::test::assert_eq_str(wire.text(wire.raw(data, "activation"), "state"), "unknown", "application/handoff never infer activation");
+        std::test::assert_eq_str(mapped.source.head, "captured-after", "native outcome source kept");
+        if name == "applied" || name == "refused" || name == "declined" || name == "failed" || name == "unknown" {
+            std::test::assert_eq_str(wire.text(outcome, "proposal_state"), "created", "later application cannot rewrite created proposal");
+            std::test::assert_eq_str(wire.text(data, "state"), "succeeded", "outer success means proposal created only");
+            std::test::assert_eq_str(wire.text(outcome, "application_state"), name, "actual typed application evidence mapped");
+        }
+    }
+    fn invalid() {
+        let native = SourceService { }; let provider = head::PracticeReviewCommands { root: "/project", application_id: APP, service: native, source_capabilities: native, organization_configured: true }; let wire = api::CommandWire { };
+        let mut changed = provider.result(context(), result("applied")); changed.receipt.activation_state = "adopted";
+        std::test::assert(!wire.receipt_valid(context(), command(), changed, true), "handoff cannot manufacture activation");
+        changed = provider.result(context(), result("created")); changed.receipt.organization.restart_handoff_state = "requested";
+        std::test::assert(!wire.receipt_valid(context(), command(), changed, true), "no restart handoff before application");
+        changed = provider.result(context(), result("refused")); changed.receipt.organization.application_reason_code = "raw private diagnostics";
+        std::test::assert(!wire.receipt_valid(context(), command(), changed, true), "only sanitized native refusal codes");
+        changed = provider.result(context(), result("created")); changed.receipt.organization.source_digest = dna::digest_of("other source");
+        std::test::assert(!wire.receipt_valid(context(), command(), changed, true), "POST receipt pins exact submitted source");
+        changed = provider.result(context(), result("created")); changed.receipt.organization.candidate_commit = "not-commit";
+        std::test::assert(!wire.receipt_valid(context(), command(), changed, true), "candidate is exact Git identity");
+        changed = provider.result(context(), result("created")); changed.receipt.verdict_value = "approve";
+        std::test::assert(!wire.receipt_valid(context(), command(), changed, true), "mixed source/Review variants refused");
+        let other = api::CommandContext { root: "/project", source: context().source, principal_mode: "local", principal_name: "bob" };
+        std::test::assert_eq_str(provider.submit(other, command()).code, "command_context_changed", "trusted actor cannot be replaced by expected principal");
+        std::test::assert_eq_int(native.calls, 0, "invalid expected actor never dispatches");
+    }
+    fn old_receipt_bytes() {
+        let wire = api::CommandWire { };
+        let practice = api::CommandReceipt { command_id: "command-old", request_id: "old-key", application_id: APP, principal_mode: "local", principal_name: "alice", target_id: "opaque/practice", subject_digest: "opaque/practice", fingerprint: "fingerprint-old", state: "recorded" };
+        std::test::assert_eq_str(wire.receipt_json(practice), "{\"command_id\": \"command-old\", \"request_id\": \"old-key\", \"application_id\": \"source-app\", \"operation\": \"dna.practice.propose\", \"operation_version\": \"1\", \"principal\": {\"mode\": \"local\", \"name\": \"alice\"}, \"context\": {\"application_id\": \"source-app\", \"position_id\": \"org\"}, \"target\": {\"application_id\": \"source-app\", \"kind\": \"dna.practice\", \"id\": \"opaque/practice\"}, \"subject_digest\": \"opaque/practice\", \"fingerprint\": \"fingerprint-old\", \"state\": \"recorded\", \"reason\": \"\", \"proposal\": {\"state\": \"pending\", \"candidate_digest\": \"\", \"review_id\": \"\"}, \"review\": {\"state\": \"unavailable\", \"outcome\": \"\", \"subject_digest\": \"\"}, \"activation\": {\"state\": \"unknown\", \"reason\": \"\"}}", "historical Practice receipt bytes remain exact");
+        let review = api::CommandReceipt { command_id: "command-old", request_id: "old-key", application_id: APP, operation: "dna.review.verdict", principal_mode: "local", principal_name: "alice", target_kind: "dna.review", target_id: "opaque/review", subject_digest: "opaque/candidate", fingerprint: "fingerprint-old", state: "succeeded", proposal_state: "", verdict_value: "approve", verdict_state: "accepted", review_state: "pending", review_subject_digest: "opaque/candidate" };
+        std::test::assert_eq_str(wire.receipt_json(review), "{\"command_id\": \"command-old\", \"request_id\": \"old-key\", \"application_id\": \"source-app\", \"operation\": \"dna.review.verdict\", \"operation_version\": \"1\", \"principal\": {\"mode\": \"local\", \"name\": \"alice\"}, \"context\": {\"application_id\": \"source-app\", \"position_id\": \"org\"}, \"target\": {\"application_id\": \"source-app\", \"kind\": \"dna.review\", \"id\": \"opaque/review\"}, \"subject_digest\": \"opaque/candidate\", \"fingerprint\": \"fingerprint-old\", \"state\": \"succeeded\", \"reason\": \"\", \"verdict\": {\"value\": \"approve\", \"state\": \"accepted\"}, \"review\": {\"state\": \"pending\", \"outcome\": \"\", \"subject_digest\": \"opaque/candidate\"}, \"activation\": {\"state\": \"unknown\", \"reason\": \"\"}}", "historical Review receipt bytes remain exact");
+        let result = api::CommandResult { ok: true, source: context().source, receipt: review };
+        std::test::assert(wire.receipt_valid(context(), api::CommandRequest { request_id: "old-key" }, result, false), "historical Review variant valid");
+    }
+    fn profiles() {
+        let wire = api::CommandWire { }; let envelope = api::Wire { }; let service = SourceService { writes: false, value: result("created") };
+        let provider = head::PracticeReviewCommands { root: "/project", application_id: APP, service: service, source_capabilities: service, organization_configured: true };
+        let caps = provider.organization_capabilities(context());
+        let unsupported = provider.capability(context(), "dna.organization.propose", "2");
+        std::test::assert(!unsupported.available && !unsupported.authorized, "unknown Organization capability version is denied");
+        std::test::assert(caps.configured && !caps.proposal.available && caps.proposal.authorized && !caps.review.available && caps.review.authorized, "source availability independent from grant while writes disabled");
+        std::test::assert_eq_str(provider.submit(context(), command()).code, "commands_unsupported", "disabled new writes never dispatch");
+        let recovered = provider.lookup(context(), "source-key");
+        std::test::assert_eq_int(wire.response(context(), api::CommandRequest { request_id: "source-key" }, recovered, false).status, 200, "same namespace source recovery survives disabled writes");
+        std::test::assert_eq_int(service.calls, 1, "only exact lookup dispatched");
+        let available = api::OrganizationCommandCapabilities { configured: true, proposal: api::CommandCapability { available: false, authorized: true }, review: api::CommandCapability { available: true, authorized: true } };
+        let json = envelope.capabilities_with_source(context().source, "local", "alice", false, false, false, true, api::CommandCapability { available: true, authorized: false }, true, api::CommandCapability { available: true, authorized: false }, ORIGIN, false, available);
+        let writes = wire.raw(json, "writes");
+        std::test::assert_eq_str(wire.raw(writes, "review_verdict"), "false", "source grant never broadens ordinary Review capability");
+        std::test::assert_eq_str(wire.raw(writes, "organization_review_verdict"), "true", "separate source Review flag");
+        std::test::assert_eq_str(wire.raw(json, "read_only"), "false", "source Review alone makes app writable");
+        std::test::assert_eq_str(wire.text(wire.raw(json, "organization_review_commands"), "operation"), "dna.review.verdict", "source profile retains native verdict operation");
+        std::test::assert_eq_str(wire.text(wire.raw(json, "organization_review_commands"), "command_origin"), ORIGIN, "exact command origin exposed");
+        let missing = wire.organization_capability_json(available.review, "", true);
+        std::test::assert_eq_str(wire.raw(missing, "available"), "false", "missing trusted origin disables source writes");
+        let absent = envelope.capabilities(context().source, "local", "alice", false, false, false, false, api::CommandCapability { }, false, api::CommandCapability { }, ORIGIN, false);
+        std::test::assert_eq_str(absent, "{\"application_id\": \"source-app\", \"read_only\": true, \"principal\": {\"mode\": \"local\", \"name\": \"alice\"}, \"reads\": {\"practices\": true, \"reviews\": true, \"organization\": false, \"definitions\": false, \"knowledge\": false, \"workflows\": true, \"tasks\": true}, \"writes\": {\"practice_propose\": false, \"review_verdict\": false}, \"runtime_observation\": false, \"recursive_workflows\": false, \"receipt_text\": \"record_visibility_only\"}", "legacy capability bytes unchanged when optional source profile absent");
+        std::test::assert_eq_str(wire.raw(absent, "organization_commands"), "", "default profile absent");
+    }
+}
+fn main() {
+    let cases = SourceReceiptCases { };
+    cases.stage("recorded"); cases.stage("created"); cases.stage("applied"); cases.stage("refused"); cases.stage("declined"); cases.stage("failed"); cases.stage("unknown"); cases.stage("uncertain"); cases.stage("verification");
+    cases.invalid(); cases.old_receipt_bytes(); cases.profiles(); eprintln("PASS Organization receipt/profile adapter conformance");
+}

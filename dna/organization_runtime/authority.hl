@@ -1,0 +1,70 @@
+// The existing Host authority read, shared with the co-located runtime reader.
+// Remote reads refresh a local tracking cell; they never acquire/renew a lease.
+import "../core" as dna;
+
+const BODY_LEASE: String = "lease/body";
+const BODY_LEASE_TRACK: String = "remote/lease/body";
+const FENCE_MARGIN: Int = 5;
+
+type BodyLeaseView {
+    ok: Bool = true;
+    present: Bool = false;
+    holder: String = "";
+    token: Int = 0;
+    expires: Int = 0;
+    sha: String = "";
+}
+
+locus HostAuthority {
+    params { root: String = ""; }
+    fn record_head() -> String { let r = dna::GitRecord { repo: self.root }; return r.head("journal"); }
+    fn owner() -> String { let r = dna::GitRecord { repo: self.root }; return r.setting("owner"); }
+    fn trust() -> String { let r = dna::GitRecord { repo: self.root }; let t = r.setting("trust"); return if len(t) == 0 { "local" } else { t }; }
+    fn row_verified(sha: String) -> Bool { let r = dna::GitRecord { repo: self.root }; return r.signer(sha).verified; }
+    fn shared() -> Bool { let o = dna::Ownership { path: self.root + "/dna/org/owners", me: self.owner(), me_env: "" }; return o.shared(); }
+    fn routing() -> Int { let j = dna::GitJournal { repo: self.root, author: "host" }; return dna::routing_of(j); }
+    fn knowledge_url() -> String {
+        if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { return std::env::var("HALE_DNA_KNOWLEDGE_URL"); }
+        let saved = std::io::fs::read_file(self.root + "/.hale/dna/knowledge.url") or "";
+        return dna::trim_nl(saved);
+    }
+    fn lease_key() -> String { if self.shared() { return "owner/" + self.owner(); } return "body"; }
+    fn parse_lease(sha: String, text: String) -> BodyLeaseView {
+        if len(text) == 0 { return BodyLeaseView { }; }
+        let a = std::str::index_of(text, "\n");
+        if a < 0 { return BodyLeaseView { }; }
+        let holder = text[0..a];
+        let rest = text[(a + 1)..len(text)];
+        let b = std::str::index_of(rest, "\n");
+        if b < 0 { return BodyLeaseView { }; }
+        let token = std::str::parse_int(rest[0..b]) or 0;
+        let rest2 = rest[(b + 1)..len(rest)];
+        let c = std::str::index_of(rest2, "\n");
+        if c < 0 { return BodyLeaseView { }; }
+        let expires = std::str::parse_int(rest2[0..c]) or 0;
+        let present = dna::trim_nl(rest2[(c + 1)..len(rest2)]) == "1";
+        return BodyLeaseView { present: present, holder: holder, token: token, expires: expires, sha: sha };
+    }
+    fn store_lease() -> BodyLeaseView {
+        let sl = dna::ServiceLeases { url: self.knowledge_url() }; let l = sl.current(self.lease_key());
+        if !sl.reachable { return BodyLeaseView { ok: false }; }
+        if len(l.holder) == 0 && l.token == 0 { return BodyLeaseView { }; }
+        return BodyLeaseView { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };
+    }
+    fn body_lease() -> BodyLeaseView {
+        if self.routing() > 0 { return self.store_lease(); }
+        let r = dna::GitRecord { repo: self.root }; let remote = r.remote(); let mut key = BODY_LEASE;
+        if len(remote) > 0 {
+            let f = r.receive(remote, BODY_LEASE);
+            if !f.ok {
+                if !f.absent { return BodyLeaseView { ok: false }; }
+                let gone = r.drop_cell(BODY_LEASE_TRACK);
+                return BodyLeaseView { };
+            }
+            key = BODY_LEASE_TRACK;
+        }
+        let c = r.cell(key);
+        if !c.present { return BodyLeaseView { }; }
+        return self.parse_lease(c.version, c.text);
+    }
+}

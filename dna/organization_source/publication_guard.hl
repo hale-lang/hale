@@ -1,0 +1,485 @@
+// Exact prepared-source inputs, shared by admission and the owning Body.
+// The caller owns the native lease and durable materialization-stage claim.
+// This guard writes only content receipts, owned metadata and the exact leased
+// worktree; it does not admit commands, create commits, apply source or launch.
+import "../core" as dna;
+
+type OrganizationDependencyCapture { ok: Bool = false; receipt: String = ""; }
+type OrganizationDependencyManifest { ok: Bool = false; text: String = ""; }
+
+locus OrganizationPublicationInputs {
+    params {
+        root: String = ".";
+        compiler: String = "";
+        source_owner: String = "";
+        worktree_root: String = "";
+        inspection_seconds: Int = 30;
+    }
+    birth() {
+        let record = dna::GitRecord { repo: self.root };
+        let absolute = record.root();
+        if len(absolute) > 0 { self.root = absolute; }
+        self.compiler = dna::resolve_toolchain(self.compiler);
+        if len(self.worktree_root) == 0 { self.worktree_root = self.root + "/.hale/dna/worktrees"; }
+    }
+    fn available() -> Bool {
+        let codec = dna::OrganizationSourceRequestCodec { };
+        return self.source() && codec.owner_token(self.source_owner);
+    }
+    fn refusal(code: String) -> dna::OrganizationSourceCheck { return dna::OrganizationSourceCheck { code: code }; }
+    fn hex(text: String, size: Int) -> Bool {
+        if len(text) != size { return false; }
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn commit_id(text: String) -> Bool { return self.hex(text, 40) || self.hex(text, 64); }
+    fn component(text: String, empty: Bool) -> Bool {
+        if (len(text) == 0 && !empty) || len(text) > 256 || text == "." || text == ".." { return false; }
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 46 || c == 95 || c == 45 || c == 58) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn with_receipt(r: dna::OrganizationSourceRequest, receipt: String) -> dna::OrganizationSourceRequest {
+        return dna::OrganizationSourceRequest {
+            application_id: r.application_id, request_id: r.request_id, command_fingerprint: r.command_fingerprint,
+            principal_mode: r.principal_mode, by: r.by, authority: r.authority, authority_basis: r.authority_basis,
+            source_owner: r.source_owner, source_module: r.source_module, source_head: r.source_head, module_digest: r.module_digest,
+            dependency_source: r.dependency_source, dependency_digest: r.dependency_digest, dependency_receipt: receipt,
+            record_head: r.record_head, source_text: r.source_text, source_digest: r.source_digest, rationale: r.rationale
+        };
+    }
+    fn request_valid(r: dna::OrganizationSourceRequest, preparing: Bool) -> Bool {
+        let codec = dna::OrganizationSourceRequestCodec { };
+        // Before capture, the local snapshot receipt is not yet available.
+        // Supply only a syntactically valid placeholder to the native shape
+        // validator; it is never persisted or returned as captured evidence.
+        let checked = self.with_receipt(r, if preparing && r.dependency_source == "local_vendor_snapshot" && r.dependency_receipt == "" { dna::digest_of("uncaptured") } else { r.dependency_receipt });
+        if (r.dependency_source != "local_vendor_snapshot" && r.dependency_receipt != "") || !codec.valid(checked) || !self.commit_id(r.source_head) || !self.commit_id(r.record_head) || !self.component(self.source_owner, true) || r.source_owner != self.source_owner { return false; }
+        if codec.ownership(r) { let syntax = OwnershipSourceSyntax { }; if syntax.source_error(r.source_text) != "" { return false; } }
+        let record = dna::GitRecord { repo: self.root };
+        return len(self.root) > 1 && record.identity() == r.application_id;
+    }
+    fn owner(artifact: OrganizationArtifact) -> Bool {
+        let ownership = dna::Ownership { text: artifact.owners, me: self.source_owner, me_env: "" };
+        return ownership.admits("org");
+    }
+    fn basis(r: dna::OrganizationSourceRequest, a: OrganizationArtifact) -> Bool {
+        let codec = dna::OrganizationSourceRequestCodec { };
+        return a.ok && a.source_head == r.source_head && (if codec.ownership(r) { dna::digest_of(a.owners) } else { a.module_digest }) == r.module_digest
+            && a.dependency_source == r.dependency_source && a.dependency_digest == r.dependency_digest && self.owner(a);
+    }
+    // Owners is runtime input, so the compiler's input list cannot prove it.
+    // Read one fixed tracked regular file, including a genuinely empty blob.
+    fn ownership_blob(record: dna::GitRecord, commit: String) -> dna::Kept {
+        if !self.commit_id(commit) { return dna::Kept { }; }
+        let object = commit + ":dna/org/owners";
+        let hash = record.git_out("rev-parse\n--verify\n" + object);
+        if !self.commit_id(hash) || record.git_out("cat-file\n-t\n" + object) != "blob" { return dna::Kept { }; }
+        let mode = record.git("ls-tree\n" + commit + "\n--\ndna/org/owners");
+        if mode.code != 0 || mode.stdout != "100644 blob " + hash + "\tdna/org/owners\n" { return dna::Kept { }; }
+        let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + object)) or - 1;
+        if size < 0 || size > 16384 { return dna::Kept { }; }
+        let text = record.git("show\n" + object); let syntax = OwnershipSourceSyntax { };
+        if text.code != 0 || len(text.stdout) != size || syntax.source_error(text.stdout) != "" { return dna::Kept { }; }
+        return dna::Kept { present: true, text: text.stdout };
+    }
+    fn ownership_file(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection, edited: Bool) -> String {
+        let record = dna::GitRecord { repo: worktree }; let before = self.ownership_blob(record, r.source_head);
+        if !before.present || dna::digest_of(before.text) != r.module_digest { return "organization_candidate_invalid"; }
+        let at = self.ownership_blob(record, commit);
+        if !at.present { return "organization_candidate_invalid"; }
+        let plain = inspection.execute("sh\n-c\nfor p in \"$1/dna\" \"$1/dna/org\" \"$1/dna/org/owners\"; do [ ! -L \"$p\" ] || exit 1; done; [ -f \"$1/dna/org/owners\" ]\nsh\n" + worktree, "/", 4096);
+        if plain.code != 0 { return "organization_candidate_invalid"; }
+        let path = worktree + "/dna/org/owners"; let size = std::io::fs::file_size(path) or - 1;
+        let expected = if edited { r.source_text } else { before.text };
+        if size < 0 || size > 16384 || size != len(expected) || (std::io::fs::read_file(path) or "") != expected { return "organization_candidate_invalid"; }
+        let syntax = OwnershipSourceSyntax { };
+        return if syntax.source_error(expected) == "" { "" } else { "invalid_command" };
+    }
+    // Immutable quorum read: current HEAD or a cached live Ownership never
+    // substitutes for either map in the reviewed candidate. No source effect.
+    fn ownership_quorum(r: dna::OrganizationSourceRequest, candidate: String) -> dna::OrganizationSourceQuorum {
+        let codec = dna::OrganizationSourceRequestCodec { };
+        if !codec.ownership(r) || !self.request_valid(r, false) || !self.commit_id(candidate) { return dna::OrganizationSourceQuorum { }; }
+        let record = dna::GitRecord { repo: self.root };
+        if record.git_out("rev-list\n--parents\n-n\n1\n" + candidate) != candidate + " " + r.source_head { return dna::OrganizationSourceQuorum { }; }
+        let changed = record.git("diff\n--name-only\n--no-renames\n" + r.source_head + "\n" + candidate + "\n--");
+        if changed.code != 0 || (dna::trim_nl(changed.stdout) != "" && dna::trim_nl(changed.stdout) != codec.module_for(r)) { return dna::OrganizationSourceQuorum { }; }
+        let before = self.ownership_blob(record, r.source_head); let after = self.ownership_blob(record, candidate);
+        if !before.present || !after.present || dna::digest_of(before.text) != r.module_digest
+            || after.text != r.source_text || dna::digest_of(after.text) != r.source_digest { return dna::OrganizationSourceQuorum { }; }
+        let approvers = dna::ownership_approvers(before.text, after.text);
+        // Existing Review wire bounds remain unchanged. Empty member sets are
+        // preserved (unsatisfiable quorum), never downgraded to no quorum.
+        if len(approvers) > 8192 { return dna::OrganizationSourceQuorum { }; }
+        return dna::OrganizationSourceQuorum { ok: true, approvers: approvers };
+    }
+    fn source() -> Bool {
+        let inspection = OrganizationInspection { };
+        return inspection.plain_path(self.root) && inspection.plain_path(self.compiler)
+            && inspection.plain_path(self.worktree_root) && std::str::starts_with(self.worktree_root, self.root + "/") && !std::str::contains(self.worktree_root, "/../");
+    }
+    fn safe_metadata(inspection: OrganizationInspection) -> Bool {
+        // The root is configured and canonical. None of the owned metadata
+        // parents may redirect a write outside it.
+        return inspection.execute("sh\n-c\nfor p in \"$1/.hale\" \"$1/.hale/dna\" \"$1/.hale/dna/source-inputs\"; do [ ! -L \"$p\" ] || exit 1; [ ! -e \"$p\" ] || [ -d \"$p\" ] || exit 1; done; mkdir -p -- \"$1/.hale/dna/source-inputs\"\nsh\n" + self.root, "/", 4096).code == 0;
+    }
+    fn kept(record: dna::GitRecord, digest: String, maximum: Int) -> dna::Kept {
+        if !dna::digest_well_formed(digest) { return dna::Kept { }; }
+        let raw = digest[7..len(digest)]; let ref = record.ref_of("receipts/" + raw);
+        if record.git_out("cat-file\n-t\n" + ref) != "blob" { return dna::Kept { }; }
+        let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + ref)) or - 1;
+        if size < 0 || size > maximum { return dna::Kept { }; }
+        let body = record.body(raw);
+        if !body.present || len(body.text) != size || dna::digest_of(body.text) != digest { return dna::Kept { }; }
+        return body;
+    }
+    fn retain(record: dna::GitRecord, inspection: OrganizationInspection, text: String) -> String {
+        if !self.safe_metadata(inspection) { return ""; }
+        let temporary = record.tmp("receipt");
+        let clear = inspection.execute("sh\n-c\n[ ! -e \"$1\" ] && [ ! -L \"$1\" ]\nsh\n" + temporary, "/", 4096);
+        if clear.code != 0 { return ""; }
+        return record.keep(text);
+    }
+    fn file_receipt(record: dna::GitRecord, inspection: OrganizationInspection, path: String, size: Int, expected: String) -> String {
+        let bytes = std::io::fs::read_bytes(path) or b"";
+        if len(bytes) != size || dna::hex(std::crypto::sha256(bytes)) != expected { return ""; }
+        let encoded = std::text::base64::encode(bytes);
+        let raw = self.retain(record, inspection, encoded);
+        if !self.hex(raw, 64) { return ""; }
+        let saved = self.kept(record, "sha256:" + raw, 11184812);
+        if !saved.present || saved.text != encoded { return ""; }
+        return raw;
+    }
+    fn capture_vendor(record: dna::GitRecord, inspection: OrganizationInspection, expected: String) -> OrganizationDependencyCapture {
+        let before = inspection.tree(self.root + "/vendor");
+        if !before.ok || before.digest != expected { return OrganizationDependencyCapture { }; }
+        let list = inspection.execute("sh\n-c\nfind . -name .git -prune -o -type f -print >\"$1/dependency-files\" && LC_ALL=C sort \"$1/dependency-files\"\nsh\n" + inspection.scratch, self.root + "/vendor", 4096);
+        if list.code != 0 { return OrganizationDependencyCapture { }; }
+        let manifest = std::bytes::BytesBuilder { }; manifest.append_str("dna.organization.dependencies/1\n");
+        let mut rest = list.stdout; let mut count = 0; let mut total = 0;
+        while len(rest) > 0 {
+            let cut = std::str::index_of(rest, "\n"); if cut < 0 { return OrganizationDependencyCapture { }; }
+            let name = rest[0..cut]; rest = rest[(cut + 1)..len(rest)];
+            if !self.relative(name) { return OrganizationDependencyCapture { }; }
+            let path = self.root + "/vendor/" + name; let size = std::io::fs::file_size(path) or - 1;
+            count = count + 1; total = total + size;
+            if size < 0 || size > 8388608 || total > 67108864 || count > 8192 { return OrganizationDependencyCapture { }; }
+            let bytes = std::io::fs::read_bytes(path) or b"";
+            if len(bytes) != size { return OrganizationDependencyCapture { }; }
+            let hash = dna::hex(std::crypto::sha256(bytes)); let receipt = self.file_receipt(record, inspection, path, size, hash);
+            if len(receipt) == 0 { return OrganizationDependencyCapture { }; }
+            // Tabs and newlines cannot occur in an inspector-accepted path.
+            manifest.append_str(name + "\t" + to_string(size) + "\t" + hash + "\t" + receipt + "\n");
+        }
+        let after = inspection.tree(self.root + "/vendor");
+        if !after.ok || after.digest != expected { return OrganizationDependencyCapture { }; }
+        let document = std::str::from_bytes(manifest.snapshot());
+        if len(document) > 2097152 { return OrganizationDependencyCapture { }; }
+        let raw = self.retain(record, inspection, document);
+        if !self.hex(raw, 64) { return OrganizationDependencyCapture { }; }
+        let saved = self.kept(record, "sha256:" + raw, 2097152);
+        if !saved.present || saved.text != document { return OrganizationDependencyCapture { }; }
+        return OrganizationDependencyCapture { ok: true, receipt: "sha256:" + raw };
+    }
+    fn relative(name: String) -> Bool {
+        let inspection = OrganizationInspection { };
+        if !inspection.plain_path(name) || !std::str::starts_with(name, "./") || len(name) < 3 { return false; }
+        let mut rest = name[2..len(name)];
+        while len(rest) > 0 {
+            let slash = std::str::index_of(rest, "/"); let part = if slash < 0 { rest } else { rest[0..slash] };
+            if part == "" || part == "." || part == ".." || part == ".git" { return false; }
+            if slash < 0 { return true; } rest = rest[(slash + 1)..len(rest)];
+        }
+        return false;
+    }
+    fn manifest(r: dna::OrganizationSourceRequest, record: dna::GitRecord) -> OrganizationDependencyManifest {
+        let saved = self.kept(record, r.dependency_receipt, 2097152); let prefix = "dna.organization.dependencies/1\n";
+        if !saved.present || !std::str::starts_with(saved.text, prefix) { return OrganizationDependencyManifest { }; }
+        let digest = std::bytes::BytesBuilder { }; digest.append_str("hale-organization-dependencies-v1\n");
+        let mut rest = saved.text[len(prefix)..len(saved.text)]; let mut total = 0; let mut count = 0;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n"); if nl < 0 { return OrganizationDependencyManifest { }; }
+            let row = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+            let a = std::str::index_of(row, "\t"); if a < 1 { return OrganizationDependencyManifest { }; }
+            let name = row[0..a]; let after_name = row[(a + 1)..len(row)]; let b = std::str::index_of(after_name, "\t"); if b < 1 { return OrganizationDependencyManifest { }; }
+            let number = after_name[0..b]; let after_size = after_name[(b + 1)..len(after_name)]; let c = std::str::index_of(after_size, "\t"); if c < 1 { return OrganizationDependencyManifest { }; }
+            let hash = after_size[0..c]; let receipt = after_size[(c + 1)..len(after_size)]; let size = std::str::parse_int(number) or - 1;
+            count = count + 1; total = total + size;
+            if !self.relative(name) || size < 0 || size > 8388608 || total > 67108864 || count > 8192 || to_string(size) != number || !self.hex(hash, 64) || !self.hex(receipt, 64) { return OrganizationDependencyManifest { }; }
+            digest.append_str(to_string(len(name)) + ":" + name + ":" + number + ":" + hash + "\n");
+        }
+        if dna::digest_of(std::str::from_bytes(digest.snapshot())) != r.dependency_digest { return OrganizationDependencyManifest { }; }
+        return OrganizationDependencyManifest { ok: true, text: saved.text[len(prefix)..len(saved.text)] };
+    }
+    fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation {
+        if !self.source() || !self.request_valid(r, true) || r.dependency_receipt != "" { return dna::OrganizationSourcePreparation { code: "invalid_command" }; }
+        let record = dna::GitRecord { repo: self.root };
+        let head = record.head("journal");
+        if head == "" { return dna::OrganizationSourcePreparation { }; }
+        if head != r.record_head { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
+        let source = OrganizationSource { root: self.root, compiler: self.compiler, allow_drafts: true, inspection_seconds: self.inspection_seconds };
+        let base = source.read();
+        if !base.ok { return dna::OrganizationSourcePreparation { code: base.code }; }
+        if !self.owner(base) { return dna::OrganizationSourcePreparation { code: "forbidden" }; }
+        if !self.basis(r, base) { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
+        let profile = dna::OrganizationSourceRequestCodec { };
+        if profile.ownership(r) {
+            let syntax = OwnershipSourceSyntax { };
+            if syntax.source_error(r.source_text) != "" { return dna::OrganizationSourcePreparation { code: "invalid_command" }; }
+        } else {
+            let checked = source.draft(base, r.source_text);
+            if !checked.ok { return dna::OrganizationSourcePreparation { code: checked.code }; }
+        }
+        let scratch = source.scratch(); if len(scratch) == 0 { return dna::OrganizationSourcePreparation { }; }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        if !self.safe_metadata(inspection) { source.remove_scratch(scratch); return dna::OrganizationSourcePreparation { }; }
+        let capture = if r.dependency_source == "local_vendor_snapshot" { self.capture_vendor(record, inspection, r.dependency_digest) } else { OrganizationDependencyCapture { ok: true } };
+        source.remove_scratch(scratch);
+        if !capture.ok { return dna::OrganizationSourcePreparation { code: "organization_dependencies_unavailable" }; }
+        let prepared = self.with_receipt(r, capture.receipt);
+        if !self.request_valid(prepared, false) { return dna::OrganizationSourcePreparation { code: "invalid_command" }; }
+        let checked_current = self.current(prepared);
+        if !checked_current.ok { return dna::OrganizationSourcePreparation { code: checked_current.code }; }
+        let final_head = record.head("journal");
+        if final_head == "" { return dna::OrganizationSourcePreparation { }; }
+        if final_head != r.record_head { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
+        return dna::OrganizationSourcePreparation { ok: true, code: "", request: prepared };
+    }
+    fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck {
+        if !self.source() || !self.request_valid(r, false) { return self.refusal("invalid_command"); }
+        let source = OrganizationSource { root: self.root, compiler: self.compiler, allow_drafts: true, inspection_seconds: self.inspection_seconds };
+        let base = source.read();
+        if !base.ok { return self.refusal(base.code); }
+        if !self.owner(base) { return self.refusal("forbidden"); }
+        if !self.basis(r, base) { return self.refusal("stale_subject"); }
+        let scratch = source.scratch(); if len(scratch) == 0 { return self.refusal("organization_source_unavailable"); }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        let destination = self.destination(r, inspection); source.remove_scratch(scratch);
+        if !destination.ok { return destination; }
+        if r.dependency_source == "local_vendor_snapshot" {
+            let record = dna::GitRecord { repo: self.root }; if !self.manifest(r, record).ok { return self.refusal("organization_dependencies_unavailable"); }
+        }
+        let final_head = source.head();
+        if final_head == "" { return self.refusal("organization_source_unavailable"); }
+        if final_head != r.source_head { return self.refusal("stale_subject"); }
+        return dna::OrganizationSourceCheck { ok: true, code: "" };
+    }
+    // Destination checks use actual current bytes, including committed vendor:
+    // the read inspector intentionally ignores a dirty live vendor overlay.
+    fn destination(r: dna::OrganizationSourceRequest, inspection: OrganizationInspection) -> dna::OrganizationSourceCheck {
+        return self.destination_at(r, inspection, r.source_head, false);
+    }
+    fn destination_at(r: dna::OrganizationSourceRequest, inspection: OrganizationInspection, head: String, edited: Bool) -> dna::OrganizationSourceCheck {
+        let record = dna::GitRecord { repo: self.root };
+        let dirty = record.git("diff\n--name-only\n" + head + "\n--");
+        if dirty.code != 0 { return self.refusal("organization_source_unavailable"); }
+        if len(dirty.stdout) > 0 { return self.refusal("stale_subject"); }
+        if r.dependency_source == "none" {
+            let absent = inspection.execute("sh\n-c\n[ ! -e \"$1/vendor\" ] && [ ! -L \"$1/vendor\" ]\nsh\n" + self.root, "/", 4096);
+            if absent.code != 0 { return self.refusal("stale_subject"); }
+        } else {
+            let tree = inspection.tree(self.root + "/vendor");
+            if !tree.ok { return self.refusal("organization_dependencies_unavailable"); }
+            if tree.digest != r.dependency_digest { return self.refusal("stale_subject"); }
+        }
+        let code = self.inputs_exact(r, self.root, head, inspection, edited);
+        if code != "" { return self.refusal(code); }
+        return dna::OrganizationSourceCheck { ok: true, code: "" };
+    }
+    // Reuse native confinement first; additionally refuse ignored/untracked
+    // source files that could enter a real worktree or the destination build.
+    fn inputs_exact(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection, edited: Bool) -> String {
+        let profile = dna::OrganizationSourceRequestCodec { };
+        if profile.ownership(r) {
+            let map = self.ownership_file(r, worktree, commit, inspection, edited);
+            if map != "" { return map; }
+        }
+        let error = inspection.input_error(worktree, self.compiler);
+        if error != "" { return error; }
+        let listed = inspection.execute(self.compiler + "\ninputs\ndna/org", worktree, 4096);
+        if listed.code != 0 || listed.stdout == "" { return "organization_check_failed"; }
+        let record = dna::GitRecord { repo: worktree }; let mut rest = listed.stdout; let mut count = 0;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n"); if nl < 0 { return "organization_snapshot_unsupported"; }
+            let path = rest[0..nl]; rest = rest[(nl + 1)..len(rest)]; count = count + 1;
+            if count > 8192 || !std::str::starts_with(path, worktree + "/") { return "organization_snapshot_unsupported"; }
+            let relative = path[(len(worktree) + 1)..len(path)];
+            if !self.relative("./" + relative) { return "organization_snapshot_unsupported"; }
+            if std::str::starts_with(relative, "vendor/") {
+                if r.dependency_source == "none" { return "organization_snapshot_unsupported"; }
+            } else if edited && relative == profile.module_for(r) {
+                if (std::io::fs::read_file(path) or "") != r.source_text { return "organization_candidate_invalid"; }
+            } else {
+                let object = commit + ":" + relative;
+                if record.git_out("cat-file\n-t\n" + object) != "blob" { return "organization_snapshot_unsupported"; }
+                let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + object)) or - 1;
+                let hash = record.git_out("rev-parse\n--verify\n" + object);
+                if size < 0 || size > 16777216 || !self.commit_id(hash) || !inspection.blob_matches(path, size, hash) { return "organization_candidate_invalid"; }
+            }
+        }
+        return "";
+    }
+    fn owned(r: dna::OrganizationSourceRequest, worktree: String, inspection: OrganizationInspection) -> Bool {
+        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
+        if !self.component(id, false) || !inspection.plain_path(worktree) { return false; }
+        let expected = self.worktree_root + "/" + id;
+        let checked = inspection.execute("sh\n-c\n[ ! -L \"$1\" ] && [ ! -L \"$1/.git\" ] && [ -f \"$1/.git\" ] || exit 1; cd -- \"$1\" && pwd -P\nsh\n" + worktree, "/", 4096);
+        if checked.code != 0 || dna::trim_nl(checked.stdout) != expected { return false; }
+        let common = inspection.execute("git\n-C\n" + worktree + "\nrev-parse\n--path-format=absolute\n--git-common-dir", "/", 4096);
+        let record = dna::GitRecord { repo: self.root }; let expected_common = record.git_out("rev-parse\n--path-format=absolute\n--git-common-dir");
+        if common.code != 0 || dna::trim_nl(common.stdout) != expected_common { return false; }
+        if codec.ownership(r) && inspection.execute("sh\n-c\n[ ! -L \"$1/dna/org/owners\" ] && [ -f \"$1/dna/org/owners\" ]\nsh\n" + worktree, "/", 4096).code != 0 { return false; }
+        return inspection.execute("sh\n-c\nfor p in \"$1/dna\" \"$1/dna/org\" \"$1/dna/org/main.hl\" \"$1/vendor\"; do [ ! -L \"$p\" ] || exit 1; done; [ -f \"$1/dna/org/main.hl\" ]\nsh\n" + worktree, "/", 4096).code == 0;
+    }
+    fn only_module(record: dna::GitRecord, base: String, commit: String, module_path: String) -> Bool {
+        let changed = record.git("diff\n--name-only\n--no-renames\n" + base + (if len(commit) > 0 { "\n" + commit } else { "" }) + "\n--");
+        if changed.code != 0 { return false; }
+        let names = dna::trim_nl(changed.stdout);
+        if names != "" && names != module_path { return false; }
+        // Do not let untracked source inputs enter verification. The one
+        // admitted untracked tree is independently captured vendor content.
+        let extra = record.git("ls-files\n--others\n--exclude-standard");
+        if extra.code != 0 { return false; }
+        let mut rest = extra.stdout;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n"); if nl < 0 { return false; }
+            let name = rest[0..nl]; rest = rest[(nl + 1)..len(rest)]; if !std::str::starts_with(name, "vendor/") { return false; }
+        }
+        return true;
+    }
+    fn restore_vendor(r: dna::OrganizationSourceRequest, worktree: String, inspection: OrganizationInspection) -> Bool {
+        let record = dna::GitRecord { repo: self.root };
+        let document = if r.dependency_source == "local_vendor_snapshot" { self.manifest(r, record) } else { OrganizationDependencyManifest { ok: true } };
+        if !document.ok { return false; }
+        // Safe only after owned() and the Body's durable materialization claim.
+        if inspection.execute("rm\n-rf\n--\n" + worktree + "/vendor", "/", 4096).code != 0 { return false; }
+        if r.dependency_source == "none" { return true; }
+        if r.dependency_source == "committed_source" {
+            let archived = inspection.execute("git\n-C\n" + self.root + "\narchive\n--format=tar\n--output=" + inspection.scratch + "/vendor.tar\n" + r.source_head + "\nvendor", "/", 147456);
+            if archived.code != 0 || inspection.execute("tar\n-xf\n" + inspection.scratch + "/vendor.tar\n-C\n" + worktree, "/", 16384).code != 0 { return false; }
+        } else {
+            if inspection.execute("mkdir\n-p\n--\n" + worktree + "/vendor", "/", 4096).code != 0 { return false; }
+            let mut rest = document.text;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n"); let row = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+                let a = std::str::index_of(row, "\t"); let name = row[0..a]; let after_name = row[(a + 1)..len(row)]; let b = std::str::index_of(after_name, "\t");
+                let size = std::str::parse_int(after_name[0..b]) or - 1; let after_size = after_name[(b + 1)..len(after_name)]; let c = std::str::index_of(after_size, "\t");
+                let hash = after_size[0..c]; let receipt = after_size[(c + 1)..len(after_size)]; let kept = self.kept(record, "sha256:" + receipt, 11184812);
+                if !kept.present { return false; }
+                let bytes = std::text::base64::decode(kept.text);
+                if len(bytes) != size || dna::hex(std::crypto::sha256(bytes)) != hash || std::text::base64::encode(bytes) != kept.text { return false; }
+                let path = worktree + "/vendor/" + name;
+                let slash = dna::last_slash(path);
+                if slash < 0 || inspection.execute("mkdir\n-p\n--\n" + path[0..slash], "/", 4096).code != 0 { return false; }
+                std::io::fs::write_bytes(path, bytes) or discard;
+                let readback = std::io::fs::read_bytes(path) or b"";
+                if len(readback) != size || dna::hex(std::crypto::sha256(readback)) != hash { return false; }
+            }
+        }
+        let actual = inspection.tree(worktree + "/vendor"); return actual.ok && actual.digest == r.dependency_digest;
+    }
+    fn topology_path(r: dna::OrganizationSourceRequest) -> String {
+        let codec = dna::OrganizationSourceRequestCodec { }; let key = codec.candidate_key(r);
+        return if key != "" { self.root + "/.hale/dna/source-inputs/" + key + ".base.topology" } else { "" };
+    }
+    fn base_topology(r: dna::OrganizationSourceRequest, worktree: String, inspection: OrganizationInspection) -> dna::OrganizationSourceCheck {
+        let source = OrganizationSource { root: worktree, compiler: self.compiler, allow_drafts: true, inspection_seconds: self.inspection_seconds };
+        let record = dna::GitRecord { repo: worktree };
+        let base = source.inspect(record, r.source_head, inspection.scratch, inspection);
+        if !self.basis(r, base) || len(base.artifact) == 0 { return self.refusal("organization_source_unavailable"); }
+        if !self.safe_metadata(inspection) { return self.refusal("organization_source_unavailable"); }
+        let path = self.topology_path(r);
+        if path == "" { return self.refusal("organization_source_unavailable"); }
+        if inspection.execute("sh\n-c\n[ ! -L \"$1\" ] && { [ ! -e \"$1\" ] || [ -f \"$1\" ]; }\nsh\n" + path, "/", 4096).code != 0 { return self.refusal("organization_source_unavailable"); }
+        std::io::fs::write_file(path, base.artifact) or discard;
+        if (std::io::fs::read_file(path) or "") != base.artifact { return self.refusal("organization_source_unavailable"); }
+        return dna::OrganizationSourceCheck { ok: true, code: "", base_topology: path };
+    }
+    fn materialize(r: dna::OrganizationSourceRequest, worktree: String) -> dna::OrganizationSourceCheck {
+        if !self.source() || !self.request_valid(r, false) { return self.refusal("invalid_command"); }
+        let helper = OrganizationSource { root: self.root, compiler: self.compiler }; let scratch = helper.scratch();
+        if len(scratch) == 0 { return self.refusal("organization_source_unavailable"); }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        let result = self.materialize_at(r, worktree, inspection); helper.remove_scratch(scratch); return result;
+    }
+    fn materialize_at(r: dna::OrganizationSourceRequest, worktree: String, inspection: OrganizationInspection) -> dna::OrganizationSourceCheck {
+        let profile = dna::OrganizationSourceRequestCodec { };
+        let record = dna::GitRecord { repo: worktree };
+        if !self.owned(r, worktree, inspection) || record.git_out("rev-parse\nHEAD") != r.source_head || !self.only_module(record, r.source_head, "", profile.module_for(r)) || !inspection.source_ok(self.root, r.source_head) { return self.refusal("organization_worktree_invalid"); }
+        if !self.restore_vendor(r, worktree, inspection) { return self.refusal("organization_dependencies_unavailable"); }
+        let baseline = self.base_topology(r, worktree, inspection); if !baseline.ok { return baseline; }
+        let tools = dna::WorktreeTools { root: worktree, hale_bin: self.compiler };
+        if !tools.edit(profile.module_for(r), r.source_text) || tools.read(profile.module_for(r)) != r.source_text { return self.refusal("organization_materialization_failed"); }
+        if !self.owned(r, worktree, inspection) || record.git_out("rev-parse\nHEAD") != r.source_head || !self.only_module(record, r.source_head, "", profile.module_for(r)) { return self.refusal("organization_worktree_invalid"); }
+        let inputs = self.inputs_exact(r, worktree, r.source_head, inspection, true);
+        if inputs != "" { return self.refusal(inputs); }
+        return baseline;
+    }
+    fn candidate(r: dna::OrganizationSourceRequest, worktree: String, commit: String) -> dna::OrganizationSourceCheck {
+        if !self.source() || !self.request_valid(r, false) || !self.commit_id(commit) { return self.refusal("invalid_command"); }
+        let helper = OrganizationSource { root: self.root, compiler: self.compiler }; let scratch = helper.scratch();
+        if len(scratch) == 0 { return self.refusal("organization_source_unavailable"); }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        let result = self.candidate_at(r, worktree, commit, inspection); helper.remove_scratch(scratch); return result;
+    }
+    fn candidate_at(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection) -> dna::OrganizationSourceCheck {
+        let destination = self.current(r); if !destination.ok { return destination; }
+        return self.candidate_worktree(r, worktree, commit, inspection);
+    }
+    fn candidate_worktree(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection) -> dna::OrganizationSourceCheck {
+        let profile = dna::OrganizationSourceRequestCodec { };
+        let record = dna::GitRecord { repo: worktree };
+        if !self.owned(r, worktree, inspection) || record.git_out("rev-parse\nHEAD") != commit || record.git_out("rev-list\n--parents\n-n\n1\n" + commit) != commit + " " + r.source_head || !self.only_module(record, r.source_head, commit, profile.module_for(r)) || record.git_out("diff\n--name-only\nHEAD\n--") != "" || !inspection.source_ok(worktree, commit) { return self.refusal("organization_candidate_invalid"); }
+        let module_blob = record.git("show\n" + commit + ":" + profile.module_for(r));
+        if module_blob.code != 0 || module_blob.stdout != r.source_text || dna::digest_of(module_blob.stdout) != r.source_digest { return self.refusal("organization_candidate_invalid"); }
+        if r.dependency_source == "none" {
+            if inspection.execute("sh\n-c\n[ ! -e \"$1/vendor\" ] && [ ! -L \"$1/vendor\" ]\nsh\n" + worktree, "/", 4096).code != 0 { return self.refusal("organization_dependencies_unavailable"); }
+        } else {
+            let deps = inspection.tree(worktree + "/vendor"); if !deps.ok || deps.digest != r.dependency_digest { return self.refusal("organization_dependencies_unavailable"); }
+        }
+        let baseline = self.base_topology(r, worktree, inspection); if !baseline.ok { return baseline; }
+        let inputs = self.inputs_exact(r, worktree, r.source_head, inspection, true);
+        if inputs != "" { return self.refusal(inputs); }
+        return baseline;
+    }
+    // Separate recovery proof after native source apply. This never relaxes
+    // current/candidate's original-base checks, invokes apply, or reports a
+    // deployment. The caller must correlate its durable apply effect first.
+    fn applied(r: dna::OrganizationSourceRequest, worktree: String, commit: String) -> dna::OrganizationSourceCheck {
+        let profile = dna::OrganizationSourceRequestCodec { };
+        // Ownership Review is supported separately from live ownership handover.
+        if profile.ownership(r) { return self.refusal("organization_ownership_activation_unavailable"); }
+        if !self.source() || !self.request_valid(r, false) || !self.commit_id(commit) { return self.refusal("invalid_command"); }
+        let helper = OrganizationSource { root: self.root, compiler: self.compiler }; let scratch = helper.scratch();
+        if scratch == "" { return self.refusal("organization_source_unavailable"); }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        let result = self.applied_at(r, worktree, commit, inspection); helper.remove_scratch(scratch); return result;
+    }
+    fn applied_at(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection) -> dna::OrganizationSourceCheck {
+        let source = OrganizationSource { root: self.root, compiler: self.compiler, allow_drafts: true, inspection_seconds: self.inspection_seconds };
+        let head = source.head();
+        if head == "" { return self.refusal("organization_source_unavailable"); }
+        if head != commit { return self.refusal("stale_subject"); }
+        let baseline = self.candidate_worktree(r, worktree, commit, inspection); if !baseline.ok { return baseline; }
+        let actual = source.read();
+        if !actual.ok { return self.refusal(actual.code); }
+        if !self.owner(actual) { return self.refusal("forbidden"); }
+        if actual.source_head != commit || actual.module_digest != r.source_digest || actual.module_text != r.source_text
+            || actual.dependency_source != r.dependency_source || actual.dependency_digest != r.dependency_digest { return self.refusal("stale_subject"); }
+        let destination = self.destination_at(r, inspection, commit, true); if !destination.ok { return destination; }
+        let final_head = source.head();
+        if final_head == "" { return self.refusal("organization_source_unavailable"); }
+        if final_head != commit { return self.refusal("stale_subject"); }
+        return baseline;
+    }
+}

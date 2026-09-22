@@ -1,0 +1,124 @@
+// Exact prepared-source command content and its authoritative admission fact.
+// Sharing the existing governance identity prevents cross-operation key reuse;
+// a distinct canonical format preserves historical Practice/Review bytes.
+import "../core" as dna;
+
+type OrganizationCommandFact {
+    valid: Bool = false;
+    context: GovernanceContext = GovernanceContext { };
+    command: GovernanceCommand = GovernanceCommand { };
+    request: dna::OrganizationSourceRequest = dna::OrganizationSourceRequest { };
+}
+
+locus OrganizationCommandCodec {
+    params { }
+    fn known(operation: String, version: String) -> Bool { return (operation == "dna.organization.propose" || operation == "dna.organization.ownership.propose") && version == "1"; }
+    fn commit_id(value: String) -> Bool {
+        let size = len(value);
+        if size != 40 && size != 64 { return false; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if !(c >= 48 && c <= 57) && !(c >= 97 && c <= 102) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn valid(context: GovernanceContext, c: GovernanceCommand) -> Bool {
+        let common = GovernanceCommandCodec { };
+        return common.context_valid(context) && self.known(c.operation, c.operation_version)
+            && c.application_id == context.application_id && c.position_id == "org"
+            && c.target_kind == "dna.organization.module" && c.target_id == (if c.operation == "dna.organization.ownership.propose" { "dna/org/owners" } else { "dna/org/main.hl" })
+            && common.bounded(c.request_id, 128, true, false) && dna::digest_well_formed(c.subject_digest)
+            && self.commit_id(c.source_head) && common.bounded(c.record_head, 256, true, false)
+            && (c.dependency_source == "none" || c.dependency_source == "committed_source" || c.dependency_source == "local_vendor_snapshot")
+            && dna::digest_well_formed(c.dependency_digest)
+            && common.bounded(c.source_text, 16384, true, true) && common.bounded(c.rationale, 2048, true, true)
+            && c.expected_assignee == "" && c.new_assignee == "" && c.text == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == "";
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) {
+        let common = GovernanceCommandCodec { }; b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(common.quote(value));
+    }
+    fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {
+        if !self.valid(context, c) { return ""; }
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-command/1\"");
+        self.field(b, "application_id", context.application_id);
+        self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
+        self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version);
+        self.field(b, "position_id", c.position_id); self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id);
+        self.field(b, "subject_digest", c.subject_digest); self.field(b, "source_head", c.source_head);
+        self.field(b, "dependency_source", c.dependency_source); self.field(b, "dependency_digest", c.dependency_digest);
+        self.field(b, "record_head", c.record_head); self.field(b, "source_text", c.source_text); self.field(b, "rationale", c.rationale);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
+    fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
+        let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        if !common.context_valid(context) || len(document) > 131072 || !syntax.valid(document)
+            || !schema.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_kind target_id subject_digest source_head dependency_source dependency_digest record_head source_text rationale", "")
+            || common.string(document, "format") != "dna.organization-command/1"
+            || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
+        let c = GovernanceCommand {
+            request_id: common.string(document, "request_id"), operation: common.string(document, "operation"), operation_version: common.string(document, "operation_version"),
+            application_id: common.string(document, "application_id"), position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"), target_id: common.string(document, "target_id"),
+            subject_digest: common.string(document, "subject_digest"), source_head: common.string(document, "source_head"), dependency_source: common.string(document, "dependency_source"), dependency_digest: common.string(document, "dependency_digest"),
+            record_head: common.string(document, "record_head"), source_text: common.string(document, "source_text"), rationale: common.string(document, "rationale")
+        };
+        if !self.valid(context, c) || self.canonical(context, c) != document { return GovernanceCommand { }; }
+        return c;
+    }
+    fn request(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, owner: String) -> dna::OrganizationSourceRequest {
+        if !self.valid(context, c) { return dna::OrganizationSourceRequest { }; }
+        let common = GovernanceCommandCodec { };
+        return dna::OrganizationSourceRequest {
+            application_id: context.application_id, request_id: common.identity(context, c.request_id), command_fingerprint: self.fingerprint(context, c),
+            principal_mode: context.principal_mode, by: context.principal_name, authority: grant.authority, authority_basis: grant.basis, source_owner: owner,
+            source_module: if c.operation == "dna.organization.ownership.propose" { "dna/org/owners" } else { "" },
+            source_head: c.source_head, module_digest: c.subject_digest, dependency_source: c.dependency_source, dependency_digest: c.dependency_digest,
+            record_head: c.record_head, source_text: c.source_text, source_digest: dna::digest_of(c.source_text), rationale: c.rationale
+        };
+    }
+    fn matches(context: GovernanceContext, c: GovernanceCommand, r: dna::OrganizationSourceRequest) -> Bool {
+        let native = dna::OrganizationSourceRequestCodec { }; let common = GovernanceCommandCodec { };
+        return self.valid(context, c) && native.valid(r)
+            && native.module_for(r) == c.target_id
+            && r.application_id == context.application_id && r.principal_mode == context.principal_mode && r.by == context.principal_name
+            && r.request_id == common.identity(context, c.request_id) && r.command_fingerprint == self.fingerprint(context, c)
+            && r.source_head == c.source_head && r.module_digest == c.subject_digest && r.record_head == c.record_head
+            && r.dependency_source == c.dependency_source && r.dependency_digest == c.dependency_digest
+            && r.source_text == c.source_text && r.source_digest == dna::digest_of(c.source_text) && r.rationale == c.rationale
+            && (r.dependency_source == "local_vendor_snapshot" || r.dependency_receipt == "");
+    }
+    fn fact(context: GovernanceContext, c: GovernanceCommand, r: dna::OrganizationSourceRequest) -> String {
+        if !self.matches(context, c, r) { return ""; }
+        let native = dna::OrganizationSourceRequestCodec { }; let common = GovernanceCommandCodec { };
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.organization-source.request/1\",\"command_payload\":");
+        b.append_str(common.quote(self.canonical(context, c))); b.append_str(",\"request\":"); b.append_str(native.canonical(r)); b.append_str("}");
+        let out = std::str::from_bytes(b.snapshot()); return if len(out) <= 262144 { out } else { "" };
+    }
+    fn decode_fact(e: dna::Event) -> OrganizationCommandFact {
+        let syntax = OrganizationJson { }; let schema = AuthorityPolicyCodec { }; let common = GovernanceCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { };
+        if e.kind != "organization.source.requested" || len(e.body) > 262144 || !syntax.valid(e.body)
+            || !schema.fields(e.body, "format command_payload request", 3) || common.string(e.body, "format") != "dna.organization-source.request/1"
+            || !std::str::starts_with(std::json::find_field_raw(e.body, "request"), "{") { return OrganizationCommandFact { }; }
+        let payload = common.string(e.body, "command_payload");
+        if len(payload) > 131072 || !syntax.valid(payload) { return OrganizationCommandFact { }; }
+        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+        let c = self.decode(context, payload); let r = native.decode(std::json::find_field_raw(e.body, "request"));
+        if !self.matches(context, c, r) || !self.commit_id(r.source_head) || e.prev != r.record_head || e.entity != r.request_id
+            || e.body != self.fact(context, c, r) { return OrganizationCommandFact { }; }
+        return OrganizationCommandFact { valid: true, context: context, command: c, request: r };
+    }
+}
+
+locus StrictOrganizationSourceFacts {
+    params { }
+    fn decode(e: dna::Event) -> dna::OrganizationSourceRequest {
+        let codec = OrganizationCommandCodec { }; let fact = codec.decode_fact(e);
+        return if fact.valid { fact.request } else { dna::OrganizationSourceRequest { } };
+    }
+    fn verdict(e: dna::Event) -> dna::Verdict {
+        let codec = OrganizationReviewCommandCodec { }; let fact = codec.decode(e);
+        return if fact.valid { fact.verdict } else { dna::Verdict { } };
+    }
+}

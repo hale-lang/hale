@@ -293,6 +293,59 @@ type PracticeRequest {
 }
 topic PracticeRequested { payload: PracticeRequest; subject: "dna.practice.requested"; }
 
+// A scoped native command asks the Body to propose a generic Knowledge node.
+// Admission supplies the exact candidate and binding scope; Review still owns
+// adoption. request_id is the command's durable identity, not a graph node ID.
+type KnowledgeNodeRequest {
+    request_id: String = "";
+    operation: String = "";
+    kind: String = "";
+    name: String = "";
+    text: String = "";
+    author: String = "";
+    target: String = "";
+    supersedes: String = "";
+    by: String = "";
+    because: String = "";
+    candidate_digest: String = "";
+}
+topic KnowledgeNodeRequested { payload: KnowledgeNodeRequest; subject: "dna.knowledge.node.requested"; }
+
+// One reviewed change to an existing item's exact locus binding. The scoped
+// command and captured grant are distinct from the authoring locus.
+type KnowledgeBindingRequest {
+    application_id: String = ""; request_id: String = "";
+    command_fingerprint: String = ""; authority: String = ""; authority_basis: String = "";
+    operation: String = ""; idea_id: String = ""; binding_id: String = "";
+    author: String = ""; target: String = ""; by: String = ""; because: String = "";
+    binding_basis: String = ""; candidate_digest: String = "";
+}
+topic KnowledgeBindingRequested { payload: KnowledgeBindingRequest; subject: "dna.knowledge.binding.requested"; }
+
+// One exact directed relationship change under an independently settled Review.
+type KnowledgeEdgeRequest {
+    application_id: String = "";
+    request_id: String = "";
+    command_fingerprint: String = "";
+    authority: String = "";
+    authority_basis: String = "";
+    operation: String = "";
+    edge_id: String = "";
+    from_id: String = "";
+    to_id: String = "";
+    rel: String = "";
+    by: String = "";
+    because: String = "";
+    edge_basis: String = "";
+    candidate_digest: String = "";
+}
+topic KnowledgeEdgeRequested { payload: KnowledgeEdgeRequest; subject: "dna.knowledge.edge.requested"; }
+
+// The durable Organization source request is re-read by exact identity. Large
+// prepared source and retained dependency metadata never travel in argv.
+type OrganizationSourceTrigger { request_id: String = ""; }
+topic OrganizationSourceRequested { payload: OrganizationSourceTrigger; subject: "dna.organization.source.requested"; }
+
 // Review requests and verdicts cross the membrane (a human answers).
 type ReviewRequest {
     review_id: String = "";
@@ -314,6 +367,7 @@ type ReviewRequest {
 topic ReviewRequested { payload: ReviewRequest; subject: "dna.review.requested"; }
 
 type Verdict {
+    command_id: String = ""; // durable caller-scoped admission, empty for legacy verdicts
     review_id: String = "";
     subject_digest: String = ""; // must equal the request's, or the verdict is refused
     verdict: String = ""; // "approve" | "revise" | "reject" | "abstain"
@@ -327,6 +381,7 @@ topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by 
 // it, the assembly journals it. The decision stays with the Review;
 // this is the record of it (GH #528 `hale dna status`).
 type ReviewSettlement {
+    command_id: String = ""; // the exact review.command_decided that precedes this notification
     review_id: String = "";
     outcome: String = ""; // "approve" | "revise" | "reject" | "" when a verdict was refused
     decided_by: String = "";
@@ -386,6 +441,12 @@ type OrgReview {
     package: String = "";
     by: String = "";
 }
+// The parent supplies a clock; the organism processes it on the same
+// owner queue as incoming work. A tick may refresh the journal, whose
+// cached view must be complete before another handler reads or appends.
+type TickRequest { org: String = "org"; now: Int = 0; }
+topic TickRequested { payload: TickRequest; subject: "dna.tick.requested"; keyed_by org; }
+
 topic OptimizeRequested { payload: OptimizeRequest; subject: "dna.optimize.requested"; keyed_by org; }
 topic OrgReviewed { payload: OrgReview; subject: "dna.org.reviewed"; keyed_by org; }
 topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; keyed_by org; }

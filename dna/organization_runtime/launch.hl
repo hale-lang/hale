@@ -1,0 +1,112 @@
+// Exact prepared Organization evidence and fresh local runtime association.
+// Host and authorized API reads share this one proof; orchestration stays in Host.
+import "../core" as dna;
+import "../operations" as ops;
+import "../../iris/process_identity" as identity;
+
+type OrganizationLaunchBasis {
+    ok: Bool = false;
+    request: dna::OrganizationSourceRequest = dna::OrganizationSourceRequest { };
+    candidate: String = "";
+    worktree: String = "";
+    applied: dna::Event = dna::Event { };
+    handoff: dna::Event = dna::Event { };
+}
+locus OrganizationLaunchSource {
+    params { root: String = ""; }
+    fn basis(id: String) -> OrganizationLaunchBasis {
+        let authority = HostAuthority { root: self.root };
+        let j = dna::GitJournal { repo: self.root }; let view = ops::OrganizationProjection { }; let application = ops::OrganizationApplication { };
+        let candidate = view.candidate(j, id, j.text); if !candidate.ok { return OrganizationLaunchBasis { }; }
+        let reviewed = view.review_evidence(j, candidate, j.text); let applied = application.read(j, candidate, reviewed);
+        if applied.state != "applied" || applied.handoff_state != "requested" || applied.applied_sequence < 0 || applied.handoff_sequence < 0 { return OrganizationLaunchBasis { }; }
+        let request = candidate.request; let effect = j.read(applied.applied_sequence); let handoff = j.read(applied.handoff_sequence);
+        if request.source_owner != authority.owner() || authority.record_head() != j.head() { return OrganizationLaunchBasis { }; }
+        if authority.trust() == "signed" && (!authority.row_verified(j.read(candidate.request_sequence).digest)
+                || !authority.row_verified(effect.digest) || !authority.row_verified(handoff.digest)) { return OrganizationLaunchBasis { }; }
+        return OrganizationLaunchBasis { ok: true, request: request, candidate: candidate.candidate_commit,
+            worktree: dna::native_json_string(candidate.review_body, "worktree"), applied: effect, handoff: handoff };
+    }
+    fn directory(a: dna::OrganizationLaunchAttempt) -> String {
+        let codec = dna::OrganizationLaunchCodec { }; return self.root + "/.hale/dna/organization-launches/" + codec.key(a.attempt_id);
+    }
+    fn file_digest(path: String) -> String {
+        let raw = dna::run_tool("sha256sum\n" + path); let codec = dna::OrganizationLaunchCodec { };
+        return if raw.code == 0 && len(raw.stdout) >= 64 && codec.hex(raw.stdout[0..64], 64) { "sha256:" + raw.stdout[0..64] } else { "" };
+    }
+    fn matches(a: dna::OrganizationLaunchAttempt, b: OrganizationLaunchBasis) -> Bool {
+        let codec = dna::OrganizationLaunchCodec { }; let source = dna::OrganizationSourceRequestCodec { };
+        return b.ok && codec.valid(a) && a.application_id == b.request.application_id && a.request_id == b.request.request_id
+            && a.command_fingerprint == b.request.command_fingerprint && a.source_owner == b.request.source_owner
+            && a.mutation_id == source.mutation_id(b.request) && a.candidate_commit == b.candidate && a.source_digest == b.request.source_digest
+            && a.applied_event_id == b.applied.digest && a.restart_event_id == b.handoff.digest;
+    }
+    fn fact(kind: String, id: String) -> dna::Event {
+        let authority = HostAuthority { root: self.root };
+        let j = dna::GitJournal { repo: self.root }; let codec = dna::OrganizationSourceRequestCodec { }; let e = codec.fact(j, kind, id);
+        if e.kind != kind || dna::native_json_string(dna::line_at(j.text, e.seq), "author") != "host"
+            || (authority.trust() == "signed" && !authority.row_verified(e.digest)) { return dna::Event { }; }
+        return e;
+    }
+    fn attempt(b: OrganizationLaunchBasis) -> dna::OrganizationLaunchAttempt {
+        let codec = dna::OrganizationLaunchCodec { }; let id = codec.attempt_id(b.handoff.digest);
+        let e = self.fact("organization.source.launch_requested", id); let a = codec.decode_attempt(e);
+        return if e.seq > b.handoff.seq && self.matches(a, b) { a } else { dna::OrganizationLaunchAttempt { } };
+    }
+    fn process(a: dna::OrganizationLaunchAttempt) -> OrganizationProcess {
+        let dir = self.directory(a); let raw = std::str::trim(std::io::fs::read_file(dir + "/org.pid") or "");
+        return OrganizationProcess { pid: std::str::parse_int(raw) or - 1, dir: dir, name: "org" };
+    }
+    fn scope(a: dna::OrganizationLaunchAttempt) -> Bool {
+        let authority = HostAuthority { root: self.root };
+        let codec = dna::OrganizationLaunchCodec { }; let process = identity::Identity { };
+        if !codec.valid(a) || a.source_owner != authority.owner() || process.start_ticks(a.host_pid) != a.host_started { return false; }
+        let lease = authority.body_lease();
+        return lease.ok && lease.present && lease.holder == a.body_holder && lease.token == a.body_token && lease.expires > std::time::now() + FENCE_MARGIN;
+    }
+    fn live(a: dna::OrganizationLaunchAttempt) -> dna::OrganizationLaunchReceipt {
+        if !self.scope(a) { return dna::OrganizationLaunchReceipt { }; }
+        let p = self.process(a); if organization_exit_code(p) != -2 { return dna::OrganizationLaunchReceipt { }; }
+        let identity = identity::Identity { }; let before = identity.capture(p.pid);
+        if len(before.key) == 0 || self.file_digest("/proc/" + p.pid + "/exe") != a.binary_digest
+            || self.file_digest(self.directory(a) + "/program") != a.binary_digest
+            || self.file_digest(self.directory(a) + "/topology.json") != a.topology_digest { return dna::OrganizationLaunchReceipt { }; }
+        let after = identity.capture(p.pid);
+        if after.key != before.key || after.started != before.started || !self.scope(a) { return dna::OrganizationLaunchReceipt { }; }
+        return dna::OrganizationLaunchReceipt { valid: true, attempt: a, pid: p.pid, process_key: after.key, process_started: after.started };
+    }
+    fn launched(a: dna::OrganizationLaunchAttempt) -> dna::OrganizationLaunchReceipt {
+        let codec = dna::OrganizationLaunchCodec { }; let requested = self.fact("organization.source.launch_requested", a.attempt_id);
+        let e = self.fact("organization.source.launched", a.attempt_id);
+        return if e.seq > requested.seq && requested.body == codec.attempt_body(a) { codec.decode_launch(e, a) } else { dna::OrganizationLaunchReceipt { } };
+    }
+    fn observed(l: dna::OrganizationLaunchReceipt) -> dna::OrganizationLaunchObservation {
+        let codec = dna::OrganizationLaunchCodec { }; let e = self.fact("organization.source.launch_observed", l.attempt.attempt_id);
+        let launched = self.fact("organization.source.launched", l.attempt.attempt_id);
+        return if e.seq > launched.seq && launched.digest == l.launch_event_id { codec.decode_observation(e, l) } else { dna::OrganizationLaunchObservation { } };
+    }
+    fn exited(a: dna::OrganizationLaunchAttempt) -> dna::OrganizationLaunchExit {
+        let codec = dna::OrganizationLaunchCodec { }; let e = self.fact("organization.source.launch_exited", a.attempt_id);
+        let requested = self.fact("organization.source.launch_requested", a.attempt_id);
+        return if e.seq > requested.seq && requested.body == codec.attempt_body(a) { codec.decode_exit(e, a) } else { dna::OrganizationLaunchExit { } };
+    }
+}
+
+// Caller authorization remains the owning API's responsibility. All identity
+// arguments are checked against native Record evidence before inspecting a PID.
+locus OrganizationRuntime {
+    params { root: String = ""; }
+    fn current(application_id: String, request_id: String, attempt_id: String) -> dna::OrganizationRuntimeAssociation {
+        let source = OrganizationLaunchSource { root: self.root }; let codec = dna::OrganizationLaunchCodec { };
+        let e = source.fact("organization.source.launch_requested", attempt_id); let a = codec.decode_attempt(e);
+        if !codec.valid(a) || a.application_id != application_id || a.request_id != request_id || a.attempt_id != attempt_id { return dna::OrganizationRuntimeAssociation { }; }
+        let basis = source.basis(a.mutation_id); if !source.matches(a, basis) { return dna::OrganizationRuntimeAssociation { }; }
+        let launched = source.launched(a); let live = source.live(a);
+        let pid = std::str::parse_int(std::str::trim(std::io::fs::read_file(self.root + "/.hale/dna/org.pid") or "")) or - 1;
+        if !launched.valid || !live.valid || pid != launched.pid || live.pid != launched.pid || live.process_key != launched.process_key
+            || live.process_started != launched.process_started { return dna::OrganizationRuntimeAssociation { }; }
+        return dna::OrganizationRuntimeAssociation { available: true, application_id: application_id, request_id: request_id,
+            attempt_id: a.attempt_id, launch_event_id: launched.launch_event_id, candidate_commit: a.candidate_commit,
+            binary_digest: a.binary_digest, topology_digest: a.topology_digest, topology_shape: a.topology_shape, pid: live.pid, process_key: live.process_key };
+    }
+}

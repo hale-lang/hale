@@ -56,6 +56,10 @@ locus Service {
     params {
         root: String = ".";
         store: know::KnowledgeStore = know::Mem { };
+        graph: know::GraphStore = NoGraphStore { };
+        read_key: String = std::env::var("HALE_DNA_KNOWLEDGE_READ_KEY");
+        command_key: String = std::env::var("HALE_DNA_KNOWLEDGE_COMMAND_KEY");
+        commands: ops::KnowledgeCommands = ops::KnowledgeCommands { };
         // GH #606: the only keeper of protected bodies
         protected: know::ProtectedBodies = know::MemProtected { };
         j: dna::GitJournal = dna::GitJournal { repo: ".", author: "knowledge" };
@@ -129,9 +133,69 @@ locus Service {
         // record's identity as loaded, and what is applied is the same
         // loaded record
         let moved = self.j.refresh();
+        return self.project(false);
+    }
+    // A failed event can have written a node before its binding or watermark.
+    // Persist the intended Record suffix BEFORE any projection write. Until
+    // that entire suffix is complete, its pending fence survives errors and
+    // process restart. Reconciliation cannot turn partial effects into a clean
+    // projection merely by returning the Record to the old stamped prefix.
+    fn projection_refused(why: String, basis: know::GraphProjection) -> know::Applied {
+        self.last_error = "the Knowledge projection has no verified prefix and pending suffix of this Record; restore its source or rebuild its projection";
+        // Which check refused, on stderr: the fixtures dump it, and an
+        // operator reading the service log sees the numbers, not a riddle.
+        eprintln("hale dna knowledge: projection refused: ", why, " (stamped ", to_string(basis.watermark), " head ", basis.head, ", live ", to_string(basis.live_watermark), ", pending ", to_string(basis.pending_watermark), " head ", basis.pending_head, ", record ", to_string(self.j.revision()), ")");
+        return know::Applied { error: "knowledge_projection_unavailable" };
+    }
+    // The record's rows are identified by content and place among equals,
+    // never by commit: a reconcile re-appends local rows on top of the
+    // remote's and every one of them gets a new digest (GH #603). A
+    // projection stamped by digest is then behind a chain it cannot prove,
+    // and the graph is derived, so the honest move is to rebuild it from
+    // row 0 rather than refuse every read until an operator does.
+    fn chain_replaced(bounded: Bool, why: String, basis: know::GraphProjection) -> know::Applied {
+        eprintln("hale dna knowledge: ", why, " (stamped ", to_string(basis.watermark), " head ", basis.head, ", live ", to_string(basis.live_watermark), ", pending ", to_string(basis.pending_watermark), " head ", basis.pending_head, ", record ", to_string(self.j.revision()), ")");
+        if !self.store.rebuild() { return self.projection_refused("the store could not rebuild its projection: " + self.store.last_error(), basis); }
+        return self.project(bounded);
+    }
+    fn project(bounded: Bool) -> know::Applied {
         if !self.ensure_open() { return know::Applied { error: self.last_error }; }
+        let mut basis = self.graph.projection_basis();
+        if !basis.ok && bounded { return know::Applied { error: "knowledge_projection_unavailable" }; }
+        if basis.ok {
+            let mark = basis.live_watermark;
+            let revision = self.j.revision();
+            let prefix = if basis.watermark > 0 && basis.watermark <= revision { self.j.read(basis.watermark - 1).digest } else { "" };
+            if basis.watermark > 0 && basis.watermark <= revision && len(prefix) > 0 && basis.head != prefix { return self.chain_replaced(bounded, "the row at the stamp is not the one stamped (`" + prefix + "` now, head `" + self.j.head() + "`): the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0", basis); }
+            if basis.watermark < 0 || basis.watermark > revision || mark < basis.watermark || mark > revision || basis.head != prefix || (basis.watermark > 0 && len(prefix) == 0) { return self.projection_refused("the stamped prefix does not match the record: prefix digest `" + prefix + "`", basis); }
+            if basis.pending_watermark == 0 {
+                // A legacy count-only projection has no provenance to repair
+                // by guessing. Only an exactly stamped clean prefix can begin.
+                if len(basis.pending_head) > 0 || mark != basis.watermark { return self.projection_refused("live progress without a pending target", basis); }
+            } else {
+                if basis.pending_watermark <= basis.watermark || basis.pending_watermark > revision || mark > basis.pending_watermark || len(basis.pending_head) == 0 { return self.projection_refused("the pending target is not ahead of the stamp and within the record", basis); }
+                if self.j.read(basis.pending_watermark - 1).digest != basis.pending_head { return self.chain_replaced(bounded, "the row at the pending target is not the one begun: the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0", basis); }
+            }
+            if revision > basis.watermark || basis.pending_watermark > 0 {
+                let target = self.j.read(revision - 1).digest;
+                if len(target) == 0 || target != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + target + "`", basis); }
+                if !self.graph.begin_projection(basis, revision, target) { return self.projection_refused("the store refused to begin the projection at " + to_string(revision), basis); }
+                let pending = self.graph.projection_basis();
+                if !pending.ok || pending.watermark != basis.watermark || pending.head != basis.head || pending.pending_watermark != revision || pending.pending_head != target { return self.projection_refused("the store's pending basis is not the one just begun", basis); }
+                basis = pending;
+            }
+        }
         self.store.forget_error();
-        let r = know::apply_record(self.store, self.j, self.receipts);
+        let receipts = GraphReceipts { source: self.receipts };
+        let mut r = if bounded { know::apply_record(self.store, self.j, receipts) } else { know::apply_record(self.store, self.j, self.receipts) };
+        if len(receipts.error) > 0 { r.error = receipts.error; }
+        // An incomplete event leaves the pending target intact, even when
+        // earlier complete events advanced the live watermark. A retry may
+        // continue only after the exact pending suffix is proven above.
+        if basis.ok && len(r.error) == 0 {
+            if r.watermark != self.j.revision() { r.error = "knowledge_projection_unavailable"; }
+            else if basis.pending_watermark > 0 && !self.graph.checkpoint_projection(basis, r.watermark, self.j.head()) { r.error = "knowledge_projection_unavailable"; }
+        }
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;
         return r;
@@ -490,8 +554,30 @@ locus Service {
         return refusal(404, "no such ledger route");
     }
     fn handle(req: std::http::Request) -> std::http::Response {
+        if std::str::starts_with(req.path, "/graph/commands/") {
+            let wire = KnowledgeServiceWire { };
+            return wire.handle(req, self.commands, self.command_key, self.read_key);
+        }
         self.ticks = self.ticks + 1;
         let ctx = std::http::build_context(req);
+        if std::str::starts_with(req.path, "/graph/") {
+            // Authenticate the private head before even reading the Record or
+            // opening its store. The browser never holds this credential.
+            let http = GraphHttp { };
+            if !http.authorized(req, self.read_key) { return http.error(401, "unauthenticated"); }
+            if req.path != "/graph/read" { return http.error(404, "not_found"); }
+            if req.method != "POST" { return http.error(405, "method_not_allowed"); }
+            let query = http.request(req.body);
+            if !query.ok { return http.error(400, "invalid_query"); }
+            let moved = self.j.refresh();
+            if self.j.genesis() != query.record_id { return http.error(503, "knowledge_scope_mismatch"); }
+            if self.j.head() != query.record_head || to_string(self.j.revision()) != query.record_revision { return http.error(409, "snapshot_changed"); }
+            if !http.record_budget(self.j) { return http.error(503, "knowledge_read_limit"); }
+            if len(self.admission_refusal("knowledge.read", "", query.reader)) > 0 { return http.error(403, "knowledge_unavailable"); }
+            let fresh = self.project(true);
+            if len(fresh.error) > 0 { return http.error(503, if fresh.error == "knowledge_read_limit" { fresh.error } else { "knowledge_projection_unavailable" }); }
+            return graph_read(query, self.store, self.graph, self.j, self.ledger);
+        }
         // the ledger and the leases are answered from the store alone:
         // applying the record's knowledge first (below) is a read of the
         // whole record, and an organism asks for its ledger every tick
@@ -724,19 +810,25 @@ fn main() {
         eprintln("hale dna knowledge: HALE_DNA_KNOWLEDGE_DSN is not set (a postgres:// URL, or `memory` for a store that lives only as long as this process)");
         std::process::exit(2);
     }
+    let policy = knowledge_policy(root);
+    let authority = ops::FixedKnowledgeAuthority { policy: policy };
+    let record = dna::GitRecord { repo: root };
+    let commands = ops::KnowledgeCommands { record: record, authority: authority, sign: policy.sign };
     if dsn == "memory" {
         eprintln("hale dna knowledge: in-memory store at :", port, " over ", root, " (nothing durable; set a postgres:// DSN for a shared graph)");
+        let store = know::Mem { };
         Knowledge {
             root: root, port: port, dsn: dsn,
-            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, protected: know::MemProtected { }, ledger: know::MemLedger { }, leases: know::MemLeaseStore { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+            srv: std::http::Server { port: port, handler: Service { root: root, store: store, graph: store, commands: commands, protected: know::MemProtected { }, ledger: know::MemLedger { }, leases: know::MemLeaseStore { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
         };
         return;
     }
     let d = know::parse_dsn(dsn);
     if !d.ok { eprintln("hale dna knowledge: HALE_DNA_KNOWLEDGE_DSN: ", d.why); std::process::exit(2); }
     eprintln("hale dna knowledge: postgres at ", d.host, ":", d.port, "/", d.database, ", serving :", port, " over ", root);
+    let store = know::Pq { conn: know::pq_conn(d) };
     Knowledge {
         root: root, port: port, dsn: dsn,
-        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, protected: know::PqProtected { conn: know::pq_conn(d) }, ledger: know::PqLedger { conn: know::pq_conn(d) }, leases: know::PqLeaseStore { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+        srv: std::http::Server { port: port, handler: Service { root: root, store: store, graph: store, commands: commands, protected: know::PqProtected { conn: know::pq_conn(d) }, ledger: know::PqLedger { conn: know::pq_conn(d) }, leases: know::PqLeaseStore { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
     };
 }

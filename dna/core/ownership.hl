@@ -206,27 +206,34 @@ locus Ownership {
         if len(self.path) == 0 { return ""; }
         let before = self.source.read(self.path);
         let after = self.source.read_at(candidate, self.path);
-        if before == after { return ""; }
-        let affected = owners_affected(before, after);
-        if len(affected) == 0 { return ""; }
-        let was = Ownership { text: before, me_env: "" };
-        let will = Ownership { text: after, me_env: "" };
-        let mut out = "";
-        let mut i = 0;
-        while len(nth_word(affected, i)) > 0 {
-            let w = nth_word(affected, i);
-            let mut members = will.members_of(w);
-            if len(members) == 0 { members = was.members_of(w); }
-            out = word_add(out, w + "=" + commas(members));
-            i = i + 1;
-        }
-        return out;
+        return ownership_approvers(before, after);
     }
     fn describe() -> String {
         self.load();
         if !self.shared() { return "one owner"; }
         return "owners " + self.owners() + (if len(self.me) > 0 { " (this body: " + self.me + ")" } else { " (this body names none)" });
     }
+}
+
+// Shared native quorum semantics over exact retained maps. Candidate membership
+// wins; an owner removed from the candidate falls back to its original members.
+@unbounded
+fn ownership_approvers(before: String, after: String) -> String {
+    if before == after { return ""; }
+    let affected = owners_affected(before, after);
+    if len(affected) == 0 { return ""; }
+    let was = Ownership { text: before, me_env: "" };
+    let will = Ownership { text: after, me_env: "" };
+    let mut out = "";
+    let mut i = 0;
+    while len(nth_word(affected, i)) > 0 {
+        let w = nth_word(affected, i);
+        let mut members = will.members_of(w);
+        if len(members) == 0 { members = was.members_of(w); }
+        out = word_add(out, w + "=" + commas(members));
+        i = i + 1;
+    }
+    return out;
 }
 
 // Space-separated words as a comma list: "alice carol" -> "alice,carol".

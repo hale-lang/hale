@@ -1,0 +1,228 @@
+// Real native Body/Review outcomes. The fixture supplies only canonical incoming
+// relationship requests; production domain code writes proposal, decision and effects.
+import "../core" as dna;
+import "../operations" as ops;
+import "../knowledge" as know;
+
+locus EdgeStageJournal {
+    params {
+        inner: dna::GitJournal = dna::GitJournal { };
+        stage: String = "";
+        blocked: Bool = false;
+        lost_reply: Bool = false;
+        faults: Int = 0;
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && kind == self.stage { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && kind == self.stage { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
+        let result = self.inner.append_exact(expected, kind, entity, body);
+        if self.lost_reply && kind == self.stage && result.ok {
+            self.faults = self.faults + 1; self.lost_reply = false;
+            return dna::AppendResult { error: "io" };
+        }
+        return result;
+    }
+}
+
+fn event(j: dna::Journal, kind: String, id: String) -> dna::Event { let codec = dna::KnowledgeEdgeCodec { }; return codec.fact(j, kind, id, j.revision()); }
+fn count(j: dna::Journal, kind: String, id: String) -> Int {
+    let mut i = 0; let mut n = 0; while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { n = n + 1; } i = i + 1; } return n;
+}
+fn body_once(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest) {
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+    if len(r.request_id) > 0 { body.on_knowledge_edge_requested(r); }
+    body.reconcile_governance();
+}
+main locus App {
+    bus { publish dna::ReviewVerdict; }
+    fn repo(label: String) -> String {
+        let root = "/tmp/dna-edge-review-" + to_string(std::process::pid()) + "-" + label;
+        let clean = dna::run_tool("rm\n-rf\n" + root); std::io::fs::mkdir(root) or discard;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "temporary relationship Record"); return root;
+    }
+    fn wait(j: dna::Journal, kind: String, id: String) {
+        let mut n = 0; while len(event(j, kind, id).kind) == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; }
+        std::test::assert(len(event(j, kind, id).kind) > 0, "native " + kind + " arrived");
+    }
+    fn verdict(r: dna::KnowledgeEdgeRequest, id: String, value: String) {
+        let codec = dna::KnowledgeEdgeCodec { };
+        dna::ReviewVerdict <- dna::Verdict { command_id: id, review_id: codec.review_id(r.candidate_digest), subject_digest: r.candidate_digest, verdict: value, reviewer: "board-member", authority: "board", comment: "Exact relationship decision." };
+    }
+    fn bootstrap(repo: String, j: EdgeStageJournal) -> String {
+        let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity exists");
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/relationship", text: "Actual native knowledge.", author: "org" }, "org/source");
+        dna::ReviewVerdict <- dna::Verdict { command_id: "baseline/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
+        self.wait(j, "knowledge.ratified", digest); return digest;
+    }
+    fn request(repo: String, j: EdgeStageJournal, id: String, operation: String, from: String, to: String, rel: String) -> dna::KnowledgeEdgeRequest {
+        let native = dna::KnowledgeEdgeCodec { }; let common = ops::KnowledgeCommandCodec { }; let codec = ops::KnowledgeEdgeCommandCodec { };
+        let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
+        let c = ops::KnowledgeCommand { application_id: context.application_id, request_id: id, operation: "dna.knowledge.edge." + operation,
+            target_id: from, record_head: std::str::clone(j.head()), from_id: from, to_id: to, rel: rel,
+            edge_id: if operation == "unlink" { native.identity(from, to, rel) } else { "" }, rationale: "Exact équipe 🧭 \"relationship\"\r\n<literal>" };
+        let grant = ops::KnowledgeGrant { allowed: true, mode: "review", authority: "knowledge-editor", basis: "edge-review-test-policy" };
+        let mut r = dna::KnowledgeEdgeRequest { application_id: context.application_id, request_id: common.identity(context, id), command_fingerprint: common.fingerprint(context, c), authority: grant.authority, authority_basis: grant.basis,
+            operation: c.operation, edge_id: native.identity(from, to, rel), from_id: from, to_id: to, rel: rel, by: "alice", because: c.rationale };
+        let receipts = dna::GitReceipts { repo: repo }; let direct = ops::StrictKnowledgeDirectEdgeFacts { };
+        let basis = native.basis(j, receipts, direct, r, j.revision()); std::test::assert(basis.ok, "exact native edge basis");
+        r.edge_basis = basis.event_id; r.candidate_digest = dna::digest_of(native.document(r));
+        let fact = codec.fact(context, c, grant, r); std::test::assert(len(fact) > 0, "canonical native relationship request");
+        let recorded = j.append_exact(j.revision(), "knowledge.edge.requested", r.request_id, fact); std::test::assert(recorded.ok, "incoming relationship request recorded"); return r;
+    }
+    fn proposal(stage: String, lose: Bool) {
+        let repo = self.repo(stage + if lose { "-lost" } else { "-blocked" }); let j = EdgeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "proposal", "link", idea, idea, "self");
+        j.stage = stage; j.blocked = !lose; j.lost_reply = lose;
+        body_once(repo, j, dna::KnowledgeEdgeRequest { });
+        std::test::assert_eq_int(count(j, "knowledge.edge.started", r.request_id), 0, "raw request cannot bypass trusted delivery");
+        body_once(repo, j, r); std::test::assert(j.faults > 0, "exact proposal stage interrupted");
+        std::test::assert_eq_int(count(j, "knowledge.edge.refused", r.request_id), 0, "storage failure stays pending");
+        let fresh = EdgeStageJournal { inner: dna::GitJournal { repo: repo } }; body_once(repo, fresh, dna::KnowledgeEdgeRequest { });
+        if stage == "knowledge.edge.started" && !lose {
+            std::test::assert_eq_int(count(fresh, "knowledge.edge.started", r.request_id), 0, "no started proof means redelivery required"); body_once(repo, fresh, r);
+        }
+        body_once(repo, fresh, r); let codec = dna::KnowledgeEdgeCodec { };
+        std::test::assert_eq_str(event(fresh, "knowledge.edge.proposed", r.request_id).body, codec.proposed(r), "exact proposal recovered");
+        std::test::assert_eq_int(count(fresh, "knowledge.edge.started", r.request_id), 1, "one delivery proof");
+        std::test::assert_eq_int(count(fresh, "review.requested", "review:" + codec.review_id(r.candidate_digest)), 1, "one exact relationship Review");
+        std::test::assert_eq_int(count(fresh, "knowledge.proposed", r.candidate_digest), 0, "relationship candidate never becomes a graph idea");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn interrupted_effect(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest) {
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        body.on_knowledge_edge_requested(r); self.verdict(r, "effect/decision", "approve"); self.wait(j, "review.command_decided", "effect/decision");
+        let mut n = 0; while j.faults == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; } std::test::assert(j.faults > 0, "exact consequence stage interrupted");
+    }
+    fn recovery(stage: String, lose: Bool) {
+        let repo = self.repo("effect-" + stage + if lose { "-lost" } else { "-blocked" }); let j = EdgeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "effect", "link", idea, idea, "self"); j.stage = stage; j.blocked = !lose; j.lost_reply = lose;
+        self.interrupted_effect(repo, j, r);
+        let fresh = EdgeStageJournal { inner: dna::GitJournal { repo: repo } }; body_once(repo, fresh, dna::KnowledgeEdgeRequest { });
+        let e = event(fresh, "knowledge.edge.reviewed_linked", r.request_id); let codec = dna::KnowledgeEdgeCodec { };
+        std::test::assert(codec.effect_of(fresh, e).ok, "fresh Body resumes exact approved effect");
+        std::test::assert_eq_int(count(fresh, "knowledge.edge.reviewed_linked", r.request_id), 1, "lost reply cannot duplicate effect");
+        std::test::assert_eq_int(count(fresh, "knowledge.edge.apply_refused", r.request_id), 0, "own committed effect cannot become stale refusal");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn node(repo: String, j: EdgeStageJournal, label: String, target: String) -> String { return self.node_at(repo, j, label, "org", target); }
+    fn node_at(repo: String, j: EdgeStageJournal, label: String, author: String, target: String) -> String {
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/" + label, text: label, author: author }, target);
+        dna::ReviewVerdict <- dna::Verdict { command_id: label + "/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
+        self.wait(j, "knowledge.ratified", digest); return digest;
+    }
+    fn decide(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest, id: String, value: String, kind: String) {
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        body.on_knowledge_edge_requested(r); self.verdict(r, id, value); self.wait(j, kind, if kind == "review.command_decided" { id } else { r.request_id });
+    }
+    fn direct(j: EdgeStageJournal, id: String, op: String, from: String, to: String, rel: String) {
+        let codec = ops::KnowledgeCommandCodec { }; let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
+        let c = ops::KnowledgeCommand { application_id: context.application_id, request_id: id, operation: "dna.knowledge.edge." + op, target_id: from,
+            record_head: std::str::clone(j.head()), from_id: from, to_id: to, rel: rel, rationale: "Existing direct command.", edge_id: if op == "unlink" { codec.edge_id(from, to, rel) } else { "" } };
+        let body = codec.fact(context, c, ops::KnowledgeGrant { allowed: true, mode: "direct", authority: "editor", basis: "direct-policy" });
+        std::test::assert(len(body) > 0, "unchanged direct fact factory");
+        let written = j.append_exact(j.revision(), codec.event_kind(c.operation), codec.edge_id(from, to, rel), body);
+        std::test::assert(written.ok && codec.decode_fact(j.read(j.revision() - 1)).valid, "actual direct fact remains valid");
+    }
+    fn retire(repo: String, j: EdgeStageJournal, idea: String) {
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let digest = body.propose_knowledge(dna::Idea { kind: "retirement", text: "Retire through an actual Review.", author: "org", supersedes: idea }, "org/support");
+        dna::ReviewVerdict <- dna::Verdict { command_id: "retirement/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
+        self.wait(j, "knowledge.retired", idea);
+    }
+    fn mixed_history() {
+        let repo = self.repo("mixed"); let j = EdgeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let from = self.bootstrap(repo, j); let to = self.node(repo, j, "other", "org/support"); let label = "supports \"équipe 🧭\" <literal>";
+        let r = self.request(repo, j, "first", "link", from, to, label);
+        self.decide(repo, j, r, "first/approve", "approve", "knowledge.edge.reviewed_linked");
+        let codec = dna::KnowledgeEdgeCodec { }; let receipts = dna::GitReceipts { repo: repo }; let adapter = ops::StrictKnowledgeDirectEdgeFacts { };
+        std::test::assert(codec.effect_of(j, event(j, "knowledge.edge.reviewed_linked", r.request_id)).ok, "exact approved relationship effect");
+        std::test::assert_eq_int(count(j, "knowledge.edge.linked", r.edge_id), 0, "reviewed effect never impersonates direct fact");
+        self.direct(j, "reverse", "link", to, from, label); self.direct(j, "parallel", "link", from, to, "other label"); self.direct(j, "self", "link", from, from, label);
+        let stale = self.request(repo, j, "delayed", "unlink", from, to, label); body_once(repo, j, stale);
+        self.direct(j, "intervening-remove", "unlink", from, to, label); self.direct(j, "intervening-readd", "link", from, to, label);
+        self.decide(repo, j, stale, "delayed/approve", "approve", "knowledge.edge.apply_refused");
+        let refusal = codec.effect_of(j, event(j, "knowledge.edge.apply_refused", stale.request_id));
+        std::test::assert(refusal.ok && refusal.reason_code == "edge_changed", "same visible tuple after ABA still refuses delayed approval");
+        std::test::assert(std::json::find_bool_field(event(j, "review.command_decided", "delayed/approve").body, "accepted"), "Review approval remains a separate fact");
+        let remove = self.request(repo, j, "remove", "unlink", from, to, label);
+        self.decide(repo, j, remove, "remove/approve", "approve", "knowledge.edge.reviewed_unlinked");
+        let basis = codec.basis(j, receipts, adapter, remove, j.revision()); std::test::assert(basis.ok && !basis.present, "reviewed removal advances exact tuple basis");
+        let retiring = self.request(repo, j, "retiring-link", "link", from, to, "after-retirement"); body_once(repo, j, retiring);
+        self.retire(repo, j, to);
+        self.decide(repo, j, retiring, "retiring/approve", "approve", "knowledge.edge.apply_refused");
+        std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.edge.apply_refused", retiring.request_id).body, "reason_code"), "subject_inactive", "approval cannot link a newly retired endpoint");
+        let cleanup = self.request(repo, j, "retired-remove", "unlink", from, to, "other label");
+        self.decide(repo, j, cleanup, "retired-remove/approve", "approve", "knowledge.edge.reviewed_unlinked");
+        let store = know::Mem { }; store.scope(j.read(0).digest); let projected = know::apply_record(store, j, receipts);
+        std::test::assert_eq_str(projected.error, "", "mixed direct and reviewed facts project in order"); std::test::assert_eq_int(store.count("edges"), 2, "reverse and self edges survive exact retired parallel removal");
+        let generation = store.graph_generation(); store.mark = j.revision() - 1;
+        let retry = know::apply_record(store, j, receipts); std::test::assert_eq_str(retry.error, "", "lost removal watermark replays"); std::test::assert_eq_int(store.graph_generation(), generation, "absent exact tuple replay is idempotent");
+        let reopened = dna::GitJournal { repo: repo }; let rebuilt = know::Mem { }; rebuilt.scope(reopened.read(0).digest);
+        let replay = know::apply_record(rebuilt, reopened, receipts); std::test::assert_eq_str(replay.error, "", "fresh Mem rebuilds authoritative ordered Record"); std::test::assert_eq_int(rebuilt.count("edges"), 2, "rebuild never resurrects old link");
+        let corrupted = j.append_exact(j.revision(), "knowledge.edge.reviewed_linked", "wrong-request", codec.effect(r, "first/approve", "board-member"));
+        std::test::assert(corrupted.ok, "explicit malformed-effect fixture"); let stop = know::apply_record(store, j, receipts);
+        std::test::assert(len(stop.error) > 0 && stop.watermark == j.revision() - 1, "malformed reviewed effect stops before watermark");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn protected_endpoint(which: String) {
+        let repo = self.repo("protected-" + which); let j = EdgeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let from = self.bootstrap(repo, j); let to = self.node(repo, j, "protected-other", "org/support");
+        let r = self.request(repo, j, "protected", "link", from, to, "supports"); j.stage = "knowledge.edge.reviewed_linked"; j.blocked = true;
+        self.interrupted_effect(repo, j, r);
+        let protected = j.append_exact(j.revision(), "receipt.withheld", if which == "from" { from } else if which == "to" { to } else { r.candidate_digest }, "{\"class\":\"confidential\"}");
+        std::test::assert(protected.ok, "protection arrives after approval before effect"); j.blocked = false; body_once(repo, j, dna::KnowledgeEdgeRequest { });
+        std::test::assert_eq_int(count(j, "knowledge.edge.reviewed_linked", r.request_id), 0, "protected endpoint/candidate leaves effect pending");
+        std::test::assert_eq_int(count(j, "knowledge.edge.apply_refused", r.request_id), 0, "unavailable data is not domain refusal");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn ownership(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest, owners: String) {
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { },
+            ownership: dna::Ownership { text: owners, me: "acme", me_env: "" } };
+        body.on_knowledge_edge_requested(r);
+    }
+    fn owner_and_verdict() {
+        let repo = self.repo("owners"); let j = EdgeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let from = self.bootstrap(repo, j); let to = self.node(repo, j, "foreign", "org/support");
+        let r = self.request(repo, j, "owners", "link", from, to, "supports");
+        self.ownership(repo, j, r, "org = acme\norg/support = north\nacme: board-member\n");
+        std::test::assert_eq_int(count(j, "knowledge.edge.started", r.request_id), 0, "second endpoint's target owner is enforced");
+        std::test::assert_eq_int(count(j, "knowledge.edge.refused", r.request_id), 0, "another owner cannot refuse the request");
+        self.ownership(repo, j, r, "org = acme\norg/source = north\nacme: board-member\n");
+        std::test::assert_eq_int(count(j, "knowledge.edge.started", r.request_id), 0, "first endpoint's target owner is enforced too");
+        let authored = self.node_at(repo, j, "foreign-author", "org/support", "org");
+        let author_request = self.request(repo, j, "authors", "link", from, authored, "author-scoped");
+        self.ownership(repo, j, author_request, "org = acme\norg/support = north\nacme: board-member\n");
+        std::test::assert_eq_int(count(j, "knowledge.edge.started", author_request.request_id), 0, "second endpoint's author owner is enforced");
+        let reverse_request = self.request(repo, j, "reverse-authors", "link", authored, from, "author-scoped");
+        self.ownership(repo, j, reverse_request, "org = acme\norg/support = north\nacme: board-member\n");
+        std::test::assert_eq_int(count(j, "knowledge.edge.started", reverse_request.request_id), 0, "first endpoint's author owner is enforced");
+        let codec = dna::KnowledgeEdgeCodec { }; let receipts = dna::GitReceipts { repo: repo }; let e = codec.endpoints(j, receipts, r, j.revision());
+        std::test::assert_eq_str(e.from_target, "org/source", "first scope is receipt-derived"); std::test::assert_eq_str(e.to_target, "org/support", "second scope is receipt-derived");
+        self.ownership(repo, j, r, "org = acme\nacme: board-member\n");
+        std::test::assert_eq_int(count(j, "knowledge.edge.proposed", r.request_id), 1, "same owner handles both native endpoint scopes");
+        self.decide(repo, j, r, "abstain", "abstain", "review.command_decided");
+        std::test::assert_eq_int(count(j, "review.settled", codec.review_id(r.candidate_digest)), 0, "abstain has no settlement or relationship effect");
+        self.decide(repo, j, r, "reject", "reject", "knowledge.edge.declined");
+        self.decide(repo, j, r, "late-approve", "approve", "review.command_decided");
+        std::test::assert(!std::json::find_bool_field(event(j, "review.command_decided", "late-approve").body, "accepted"), "new command after settlement receives its own refusal");
+        std::test::assert_eq_int(count(j, "knowledge.edge.reviewed_linked", r.request_id), 0, "late approval cannot borrow another command's outcome");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    run() {
+        self.proposal("knowledge.edge.started", false); self.proposal("review.requested", false); self.proposal("knowledge.edge.proposed", true);
+        self.recovery("review.command_decided", true); self.recovery("review.settled", false); self.recovery("knowledge.edge.reviewed_linked", true);
+        self.mixed_history(); self.protected_endpoint("from"); self.protected_endpoint("to"); self.protected_endpoint("candidate"); self.owner_and_verdict();
+    }
+}
+
+fn main() { App { }; }

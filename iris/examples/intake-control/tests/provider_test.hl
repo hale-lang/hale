@@ -1,0 +1,159 @@
+// Focused app/provider proofs over real SQLite; no DNA state or mocked provider.
+import ".." as intake;
+import "../sqlite" as sqlite;
+import "../../../service" as service;
+
+locus Proof {
+    params { root: String = ""; }
+    fn path(name: String) -> String {
+        let p = self.root + "/" + name + ".db";
+        std::io::fs::unlink(p) or discard;
+        std::io::fs::unlink(p + "-journal") or discard;
+        return p;
+    }
+    fn command(s: service::ApplicationState, key: String, value: String) -> service::Command { return self.command_revision(s, key, value, s.revision); }
+    fn command_revision(s: service::ApplicationState, key: String, value: String, revision: String) -> service::Command {
+        return service::Command { valid: true, request_id: key, operation: "example.intake.set_mode", operation_version: "1", application_id: s.application_id, target_application_id: s.application_id, target_kind: "application.control", target_id: "intake", incarnation_id: s.incarnation_id, revision: revision, expected_principal_mode: "trusted_local", expected_principal_name: "operator", value: value };
+    }
+    fn recovery_and_effect() {
+        let p = self.path("recovery"); let app = intake::IntakeApp { path: p, owner: "operator" }; let start = app.start();
+        std::test::assert(start.ok, "fresh store starts");
+        std::test::assert(app.tick(start.application_id, start.incarnation), "running tick");
+        let actor = service::Actor { name: "operator" }; let provider = intake::IntakeProvider { path: p };
+        let state = provider.inspect(actor).state;
+        std::test::assert_eq_str(state.activity_count, "1", "one actual synthetic work accepted");
+        let c = self.command(state, "pause-1", "paused");
+        let first = provider.submit(actor, c);
+        std::test::assert(first.ok && first.receipt.changed, "atomic change admitted");
+        std::test::assert_eq_str(first.receipt.resulting_revision, "1", "single revision increment");
+        std::test::assert_eq_str(provider.inspect(actor).state.effective_value, "running", "commit does not fake effect");
+        std::test::assert(app.tick(start.application_id, start.incarnation), "paused tick observed");
+        let observed = provider.inspect(actor).state;
+        std::test::assert_eq_str(observed.activity_count, "1", "paused accepts no work");
+        std::test::assert_eq_str(observed.effective_value, "paused", "app observed committed pause");
+        std::test::assert_eq_str(observed.effective_revision, "1", "exact effective revision");
+        let retry = provider.submit(actor, c);
+        std::test::assert(retry.ok && retry.receipt.command_id == first.receipt.command_id, "same key returns original");
+        let restarted_provider = intake::IntakeProvider { path: p };
+        let recovered = restarted_provider.lookup(actor, "pause-1");
+        std::test::assert(recovered.ok && recovered.receipt.fingerprint == first.receipt.fingerprint, "response loss recovered by fresh provider");
+        let conflict = self.command(state, "pause-1", "running");
+        std::test::assert_eq_str(provider.submit(actor, conflict).code, "request_conflict", "changed payload conflicts");
+        let next_start = app.start();
+        std::test::assert(next_start.ok && next_start.incarnation != start.incarnation && next_start.application_id == start.application_id, "new incarnation stable application");
+        std::test::assert(!app.tick(start.application_id, start.incarnation), "old process fenced");
+        std::test::assert_eq_str(provider.inspect(actor).state.activity_count, "1", "fenced tick does no work");
+        let retry_after_restart = restarted_provider.submit(actor, c);
+        std::test::assert(retry_after_restart.ok && retry_after_restart.receipt.command_id == first.receipt.command_id, "equivalence before new incarnation/revision");
+        let old_inc = self.command(state, "old-incarnation", "paused");
+        let refused = provider.submit(actor, old_inc);
+        std::test::assert(refused.ok && refused.status == 409 && refused.receipt.reason == "stale_incarnation", "new old-incarnation command retained refusal");
+        std::test::assert(provider.lookup(actor, "old-incarnation").ok, "refusal recoverable");
+        let now = provider.inspect(actor).state;
+        let nochange = provider.submit(actor, self.command(now, "same-mode", "paused"));
+        std::test::assert(nochange.ok && !nochange.receipt.changed && nochange.receipt.resulting_revision == "1", "same mode succeeds without increment");
+        let stale = self.command_revision(now, "stale-same-mode", "paused", "0");
+        std::test::assert_eq_str(provider.submit(actor, stale).receipt.reason, "stale_revision", "same-mode still checks exact revision");
+        let resumed = provider.submit(actor, self.command(now, "resume-1", "running"));
+        std::test::assert(resumed.ok && resumed.receipt.resulting_revision == "2", "resume committed once");
+        std::test::assert(app.tick(next_start.application_id, next_start.incarnation), "new process effective tick");
+        std::test::assert_eq_str(provider.inspect(actor).state.activity_count, "2", "running accepts another work item");
+        let wire = service::ApplicationWire { };
+        std::test::assert_eq_str(first.receipt.fingerprint, wire.fingerprint(actor, c), "shared canonical fingerprint");
+    }
+    fn authority_and_offline() {
+        let p = self.path("authority"); let app = intake::IntakeApp { path: p, owner: "operator" }; let start = app.start();
+        std::test::assert(start.ok, "authority store");
+        let actor = service::Actor { name: "operator" }; let viewer = service::Actor { name: "viewer" }; let provider = intake::IntakeProvider { path: p };
+        let c = self.command(provider.inspect(actor).state, "owned", "paused");
+        std::test::assert(provider.submit(actor, c).ok, "owned receipt");
+        std::test::assert(provider.inspect(viewer).ok, "viewer may inspect");
+        std::test::assert(!provider.operation_at(viewer, 0).authorized, "viewer has no write grant");
+        std::test::assert_eq_int(provider.lookup(viewer, "owned").status, 403, "other actor receipt hidden");
+        let spoof = self.command(provider.inspect(actor).state, "spoof", "paused");
+        std::test::assert(!provider.submit(viewer, spoof).ok, "expected principal cannot spoof actor");
+        let wrong_owner = intake::IntakeApp { path: p, owner: "viewer" };
+        std::test::assert(!wrong_owner.start().ok, "startup cannot overwrite owner");
+        let db = sqlite::Db { path: p, create: false }; let store = intake::Store { db: db };
+        std::test::assert(store.exec("UPDATE intake_store SET heartbeat=0"), "offline fixture");
+        let offline = self.command(provider.inspect(actor).state, "offline", "running");
+        let refusal = provider.submit(actor, offline);
+        std::test::assert(refusal.ok && refusal.receipt.reason == "application_offline", "offline retained refusal");
+        std::test::assert(provider.lookup(actor, "owned").ok, "offline still recovers committed receipt");
+        std::test::assert(store.exec("UPDATE intake_store SET owner='replacement'"), "authority changed");
+        std::test::assert_eq_int(provider.lookup(actor, "owned").status, 403, "recovery rechecks current owner");
+        std::test::assert_eq_int(provider.submit(actor, c).status, 403, "retry rechecks current owner");
+    }
+    fn rollback_and_busy() {
+        let p = self.path("failure"); let app = intake::IntakeApp { path: p, owner: "operator" }; std::test::assert(app.start().ok, "failure store");
+        let actor = service::Actor { name: "operator" }; let provider = intake::IntakeProvider { path: p };
+        let c = self.command(provider.inspect(actor).state, "failure", "paused");
+        let db = sqlite::Db { path: p, create: false }; let store = intake::Store { db: db };
+        std::test::assert(store.begin(), "writer lock");
+        let begin = std::time::monotonic_ns(); let busy = provider.submit(actor, c); let elapsed = std::time::monotonic_ns() - begin;
+        std::test::assert(!busy.ok && busy.status == 503, "busy refusal never success");
+        std::test::assert(elapsed < 1000000000, "busy policy bounded under one second");
+        std::test::assert(store.exec("ROLLBACK"), "unlock");
+        std::test::assert_eq_int(provider.lookup(actor, "failure").status, 404, "busy did not admit");
+        std::test::assert(store.exec("CREATE TRIGGER fail_receipt BEFORE INSERT ON intake_receipts BEGIN SELECT RAISE(ABORT,'injected failure'); END"), "storage fault trigger");
+        std::test::assert(!provider.submit(actor, c).ok, "receipt write failure not success");
+        std::test::assert_eq_str(provider.inspect(actor).state.revision, "0", "receipt failure rolls back config");
+        std::test::assert_eq_int(provider.lookup(actor, "failure").status, 404, "receipt failure absent");
+        std::test::assert(store.exec("DROP TRIGGER fail_receipt"), "remove write fault");
+        // A reader holds the rollback-journal shared lock; COMMIT must fail BUSY.
+        std::test::assert(store.exec("BEGIN"), "reader transaction"); std::test::assert(store.state().ok, "reader snapshot locks");
+        std::test::assert(!provider.submit(actor, c).ok, "failed COMMIT never reported succeeded");
+        std::test::assert(store.exec("COMMIT"), "reader release");
+        std::test::assert_eq_str(provider.inspect(actor).state.revision, "0", "failed COMMIT rolled back");
+        std::test::assert_eq_int(provider.lookup(actor, "failure").status, 404, "failed COMMIT no receipt");
+        std::test::assert(provider.submit(actor, c).ok, "fresh explicit retry works after no admission");
+        std::test::assert(store.exec("UPDATE intake_receipts SET fingerprint='broken' WHERE request_id='failure'"), "matching receipt corruption");
+        std::test::assert_eq_int(provider.lookup(actor, "failure").status, 503, "corrupt matching receipt fails closed");
+        std::test::assert_eq_int(provider.submit(actor, c).status, 503, "corrupt matching fact not readmitted");
+    }
+    fn identity_schema_and_bounds() {
+        let p = self.path("identity"); let app = intake::IntakeApp { path: p, owner: "operator" }; let start = app.start(); std::test::assert(start.ok, "identity store");
+        let actor = service::Actor { name: "operator" }; let provider = intake::IntakeProvider { path: p };
+        let c = self.command(provider.inspect(actor).state, "identity-key", "paused"); std::test::assert(provider.submit(actor, c).ok, "identity receipt");
+        let archive = p + ".old"; std::io::fs::unlink(archive) or discard; std::io::fs::rename(p, archive) or discard;
+        let recreated = app.start(); std::test::assert(recreated.ok && recreated.application_id != start.application_id, "store recreation new identity");
+        std::test::assert(!provider.inspect(actor).ok, "bound provider refuses replacement");
+        std::test::assert_eq_int(provider.lookup(actor, "identity-key").status, 503, "replacement not receipt absence");
+        let replacement_provider = intake::IntakeProvider { path: p };
+        let bad = self.command(replacement_provider.inspect(actor).state, "x' OR 1=1 --", "paused");
+        std::test::assert_eq_int(replacement_provider.submit(actor, bad).status, 400, "unsafe direct key rejected");
+        let overflow = self.command_revision(replacement_provider.inspect(actor).state, "overflow", "paused", "9223372036854775808");
+        std::test::assert_eq_int(replacement_provider.submit(actor, overflow).status, 400, "revision Int64 bound");
+        let db = sqlite::Db { path: p, create: false }; let store = intake::Store { db: db };
+        std::test::assert(store.exec("UPDATE intake_store SET revision=9223372036854775807,effective_revision=-1,effective_value=''"), "max revision fixture");
+        let maxcmd = self.command(replacement_provider.inspect(actor).state, "max-revision", "paused");
+        std::test::assert_eq_str(replacement_provider.submit(actor, maxcmd).receipt.reason, "revision_exhausted", "increment cannot overflow");
+        std::test::assert(store.exec("ALTER TABLE intake_store RENAME TO incompatible_store"), "incompatible schema fixture");
+        std::test::assert(!app.start().ok && !replacement_provider.inspect(actor).ok, "no incompatible reset");
+    }
+    fn receipt_capacity() {
+        let p = self.path("capacity"); let app = intake::IntakeApp { path: p, owner: "operator" }; std::test::assert(app.start().ok, "capacity store");
+        let actor = service::Actor { name: "operator" }; let provider = intake::IntakeProvider { path: p };
+        let c = self.command(provider.inspect(actor).state, "retained", "running"); let original = provider.submit(actor, c); std::test::assert(original.ok, "retained original");
+        let db = sqlite::Db { path: p, create: false }; let store = intake::Store { db: db };
+        std::test::assert(store.begin(), "capacity fixture transaction");
+        // Populate actual valid immutable rows via the same prepared writer.
+        let mut i = 1; while i < 4096 { self.fill(store, original.receipt, i); i = i + 1; }
+        std::test::assert(store.commit() && store.count() == 4096, "exact receipt capacity");
+        let next = self.command(provider.inspect(actor).state, "over-capacity", "running");
+        std::test::assert(!provider.operation_at(actor, 0).available, "full store advertises unavailable for new commands");
+        std::test::assert_eq_str(provider.submit(actor, next).code, "receipt_capacity", "new identity refused at cap");
+        std::test::assert(provider.submit(actor, c).ok && provider.lookup(actor, "retained").ok, "capacity preserves equivalence and recovery");
+        std::test::assert_eq_int(provider.lookup(actor, "over-capacity").status, 404, "capacity creates no receipt");
+    }
+    fn fill(store: intake::Store, original: service::Receipt, index: Int) {
+        let rules = intake::Rules { }; let actor = service::Actor { name: "operator" };
+        let key = "filled-" + to_string(index);
+        let c = service::Command { valid: true, request_id: key, operation: original.operation, operation_version: original.operation_version, application_id: original.application_id, target_application_id: original.application_id, target_kind: original.target_kind, target_id: original.target_id, incarnation_id: original.incarnation_id, revision: original.expected_revision, expected_principal_mode: actor.mode, expected_principal_name: actor.name, value: original.value };
+        let fingerprint = rules.fingerprint(actor, c);
+        let r = service::Receipt { command_id: rules.digest("intake-receipt/1" + fingerprint), request_id: key, application_id: original.application_id, principal_mode: actor.mode, principal_name: actor.name, operation: original.operation, operation_version: original.operation_version, target_kind: original.target_kind, target_id: original.target_id, incarnation_id: original.incarnation_id, expected_revision: original.expected_revision, value: original.value, fingerprint: fingerprint, state: original.state, reason: original.reason, changed: original.changed, resulting_revision: original.resulting_revision, resulting_value: original.resulting_value };
+        std::test::assert(store.save(r), "prepared bounded receipt fixture");
+    }
+    fn run_all() { self.recovery_and_effect(); self.authority_and_offline(); self.rollback_and_busy(); self.identity_schema_and_bounds(); self.receipt_capacity(); }
+}
+fn main() { let proof = Proof { root: std::env::arg_or(1, "/tmp") }; proof.run_all(); }

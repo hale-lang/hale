@@ -1,0 +1,111 @@
+// Explicitly invoked by the registered native knowledge_store_test.hl entrypoint.
+import "../../core" as dna;
+import "../../knowledge" as know;
+import "../../operations" as ops;
+
+fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+    let r = j.append(j.revision(), kind, entity, body);
+    std::test::assert(r.ok, "fixture append");
+}
+
+fn adoption(j: dna::Journal, ledger: know::Ledger) {
+    let checkpoint = j.head();
+    std::test::assert(ledger.cutover(checkpoint, 0, dna::ROUTING_VERSION), "fixture cutover");
+    let b = std::json::Builder { };
+    b.begin_object(); b.int_field("routing", dna::ROUTING_VERSION); b.string_field("checkpoint", checkpoint); b.end_object();
+    append(j, "ledger.adopted", "org", b.result());
+}
+
+fn record_visibility() {
+    let j = dna::MemJournal { };
+    let public_id = dna::digest_of("public");
+    let secret = dna::digest_of("secret");
+    let gone = dna::digest_of("gone");
+    let unknown = dna::digest_of("unknown");
+    append(j, "receipt.classified", public_id, "{\"class\":\"internal\"}");
+    append(j, "receipt.classified", secret, "{\"class\":\"confidential\"}");
+    append(j, "receipt.classified", secret, "{\"class\":\"public\"}");
+    append(j, "receipt.redacted", gone, "{}");
+    append(j, "receipt.filed", unknown, "{\"class\":\"future-class\"}");
+    let p = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j };
+    std::test::assert(!p.visible(public_id), "no visibility before capture");
+    let basis = p.load();
+    std::test::assert(basis.available && basis.routing == 0 && basis.ledger_head == "", "Record-only complete basis");
+    std::test::assert(p.visible(public_id) && p.visible(public_id[7..71]), "canonical and bare receipt digest agree");
+    std::test::assert(!p.visible(secret) && !p.visible(gone) && !p.visible(unknown), "no body, label, endpoint or count from restricted nodes");
+    std::test::assert(!p.visible("arbitrary-id"), "unknown identity spelling cannot be visible");
+    std::test::assert(p.unchanged(), "captured policy remains current");
+    append(j, "receipt.redacted", public_id, "{}");
+    std::test::assert(!p.unchanged() && p.basis.error == "snapshot_changed", "concurrent Record restriction invalidates view");
+    std::test::assert(!p.visible(public_id), "invalidated view cannot keep disclosing");
+    let next = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j };
+    std::test::assert(next.load().available && !next.visible(public_id), "next request observes redaction");
+    std::test::assert(!next.load().available, "request index cannot be recaptured in place");
+}
+
+fn ledger_visibility() {
+    let j = dna::MemJournal { };
+    let ledger = know::MemLedger { };
+    let secret = dna::digest_of("only in Ledger");
+    let public_id = dna::digest_of("public after adoption");
+    adoption(j, ledger);
+    append(ledger, "receipt.withheld", secret, "{\"class\":\"customer\"}");
+    let p = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j, ledger: ledger };
+    let basis = p.load();
+    std::test::assert(basis.available && basis.routing == 1 && basis.ledger_revision == 1, "adopted Ledger participates in visibility basis");
+    std::test::assert(!p.visible(secret) && p.visible(public_id), "Ledger-only restriction hides projected text");
+    append(ledger, "receipt.redacted", public_id, "{}");
+    std::test::assert(!p.unchanged() && p.basis.error == "snapshot_changed", "concurrent Ledger restriction invalidates view");
+    let fresh = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j, ledger: ledger };
+    std::test::assert(fresh.load().available && !fresh.visible(public_id), "new request observes Ledger redaction");
+    std::test::assert(ledger.abandon(), "fixture abandons Ledger");
+    std::test::assert(!fresh.unchanged(), "cutover loss invalidates view even without Record change");
+    let missing = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j, ledger: ledger };
+    std::test::assert(!missing.load().available, "missing adopted Ledger is unavailable, not public");
+    append(j, "ledger.abandoned", "org", "{}");
+    let abandoned = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j, ledger: ledger };
+    std::test::assert(!abandoned.load().available, "abandonment cannot restore lost visibility history");
+}
+
+fn refusals() {
+    let j = dna::MemJournal { };
+    let ledger = know::MemLedger { };
+    adoption(j, ledger);
+    std::test::assert(ledger.cutover("wrong-record", 0, 1), "fixture mismatched cutover");
+    let mismatch = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: j, ledger: ledger };
+    std::test::assert(!mismatch.load().available, "another checkpoint cannot establish completeness");
+    let broken = dna::MemJournal { };
+    append(broken, "receipt.classified", "not-a-digest", "{\"class\":\"secret\"}");
+    let malformed = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: broken };
+    std::test::assert(!malformed.load().available && malformed.basis.error == "knowledge_visibility_unavailable", "unidentifiable restriction fails closed");
+    let rows = dna::MemJournal { };
+    append(rows, "event.one", "org", "{}"); append(rows, "event.two", "org", "{}");
+    let bounded = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: rows, max_rows: 1 };
+    std::test::assert(!bounded.load().available && bounded.basis.error == "knowledge_read_limit", "row budget refuses before scanning");
+    let bytes = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: rows, max_bytes: 1 };
+    std::test::assert(!bytes.load().available && bytes.basis.error == "knowledge_read_limit", "byte budget is an explicit refusal");
+    let invalid = dna::MemJournal { };
+    invalid.rows.push(dna::Event { kind: "ignored", prev: "genesis", digest: "not-a-chain" });
+    let chain = know::KnowledgeVisibility { syntax: ops::OrganizationJson { }, record: invalid };
+    std::test::assert(!chain.load().available, "unverified authority cannot grant visibility");
+    let missing_record = dna::GitJournal { repo: "/tmp/iris-no-such-record-" + to_string(std::process::pid()) };
+    let unavailable = know::KnowledgeVisibility { record: missing_record, syntax: ops::OrganizationJson { } };
+    std::test::assert(!unavailable.load().available && !unavailable.visible(dna::digest_of("cached text")), "inaccessible Record cannot grant visibility to cached graph");
+}
+
+fn malformed_policy(body: String) {
+    let j = dna::MemJournal { };
+    let id = dna::digest_of("must stay hidden");
+    append(j, "receipt.classified", id, body);
+    let p = know::KnowledgeVisibility { record: j, syntax: ops::OrganizationJson { } };
+    let loaded = p.load();
+    std::test::assert(!loaded.available && !p.visible(id), "malformed policy cannot grant visibility: " + body);
+}
+
+fn run_cases() {
+    record_visibility(); ledger_visibility(); refusals();
+    malformed_policy("{\"class\":public}");
+    malformed_policy("{\"class\":\"public\"");
+    malformed_policy("{\"class\":\"public\",\"class\":\"confidential\"}");
+    malformed_policy("{\"class\":\"public\",\"cl\\u0061ss\":\"confidential\"}");
+}

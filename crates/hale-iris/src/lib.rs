@@ -41,6 +41,7 @@ pub const FILES: &[EmbeddedFile] = &[
     EmbeddedFile { path: "iris/render/web/index.html", content: include_str!("../../../iris/render/web/index.html") },
     EmbeddedFile { path: "iris/render/web/app.js", content: include_str!("../../../iris/render/web/app.js") },
     EmbeddedFile { path: "iris/inspect/main.hl", content: include_str!("../../../iris/inspect/main.hl") },
+    EmbeddedFile { path: "iris/process_identity/main.hl", content: include_str!("../../../iris/process_identity/main.hl") },
 ];
 
 /// Everything `hale iris` materializes: the iris tree plus the DNA
@@ -57,6 +58,8 @@ pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
         .chain(std::iter::once((hale_dna::UI_MAIN.path, hale_dna::UI_MAIN.content)))
         .chain(std::iter::once((hale_dna::UI_HTML.path, hale_dna::UI_HTML.content)))
         .chain(hale_dna::HOST_FILES.iter().map(|f| (f.path, f.content)))
+        .chain(hale_dna::OPERATION_FILES.iter().map(|f| (f.path, f.content)))
+        .chain(hale_dna::ORGANIZATION_FILES.iter().map(|f| (f.path, f.content)))
 }
 
 /// The seed `hale build` compiles for `hale iris` (relative to the root).

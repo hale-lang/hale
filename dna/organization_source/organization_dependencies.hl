@@ -1,0 +1,157 @@
+// Owned, bounded inspection of filesystem inputs. No source lifecycle runs.
+// Hash every captured dependency file, conservatively including unused files;
+// excluding only .git metadata. A change can invalidate more than one seed.
+type OrganizationTree {
+    ok: Bool = false;
+    digest: String = "";
+    error: String = "organization dependency snapshot is unavailable";
+}
+
+locus OrganizationInspection {
+    params { scratch: String = ""; seconds: Int = 30; source_manifest: String = ""; }
+    fn execute(argv: String, cwd: String, blocks: Int) -> dna::RunResult {
+        let out = self.scratch + "/command.out";
+        let errors = self.scratch + "/command.err";
+        // Redirect before exec: a verbose child cannot fill an unread pipe.
+        // POSIX ulimit -f is in 512-byte blocks and also bounds archive output.
+        let command = "sh\n-c\nulimit -f \"$1\" || exit 125; shift; cd \"$1\" || exit 125; shift; exec \"$@\" >\"$0/command.out\" 2>\"$0/command.err\"\n" + self.scratch + "\n" + to_string(blocks) + "\n" + cwd + "\n" + argv;
+        let child = std::process::spawn(command) or std::process::Child { };
+        if child.pid <= 0 { return dna::RunResult { code: -1 }; }
+        let deadline = std::time::now() + self.seconds;
+        let mut code = -2;
+        while code == -2 && std::time::now() < deadline {
+            code = std::process::try_wait(child) or - 1;
+            if code == -2 { std::time::sleep(20ms); }
+        }
+        if code == -2 {
+            // Spawn owns a process group. Stop descendants of shell/git too,
+            // then let the native child owner reap its direct child.
+            let stopped = dna::run_tool("sh\n-c\nkill -TERM -\"$1\" 2>/dev/null || :\nsh\n" + to_string(child.pid));
+            std::process::kill(child) or discard;
+            let killed = dna::run_tool("sh\n-c\nkill -KILL -\"$1\" 2>/dev/null || :\nsh\n" + to_string(child.pid));
+            child.pid = -1;
+            return dna::RunResult { code: 124 };
+        }
+        child.pid = -1;
+        let size = std::io::fs::file_size(out) or - 1;
+        let error_size = std::io::fs::file_size(errors) or - 1;
+        if size < 0 || size > 2097152 || error_size < 0 || error_size > 2097152 { return dna::RunResult { code: 125 }; }
+        return dna::RunResult { code: code, stdout: std::io::fs::read_file(out) or "", stderr: std::io::fs::read_file(errors) or "" };
+    }
+    fn plain_path(path: String) -> Bool {
+        if len(path) == 0 || len(path) > 4096 { return false; }
+        let mut i = 0;
+        while i < len(path) {
+            let byte = std::str::byte_at_unchecked(path, i);
+            if byte < 32 || byte == 127 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn source_ok(root: String, head: String) -> Bool {
+        let listed = self.execute("git\n-C\n" + root + "\n-c\ncore.quotepath=false\nls-tree\n-r\n-l\n" + head, "/", 4096);
+        if listed.code != 0 { return false; }
+        let mut lines = listed.stdout;
+        let mut count = 0;
+        let mut total = 0;
+        while len(lines) > 0 {
+            let cut = std::str::index_of(lines, "\n");
+            if cut < 0 { return false; }
+            let line = lines[0..cut];
+            lines = lines[(cut + 1)..len(lines)];
+            let tab = std::str::index_of(line, "\t");
+            if tab < 0 || (!std::str::starts_with(line, "100644 blob ") && !std::str::starts_with(line, "100755 blob ")) { return false; }
+            let path = line[(tab + 1)..len(line)];
+            // Git quotes control characters/backslashes; reject those paths
+            // rather than interpreting a second path grammar.
+            if !self.plain_path(path) || std::str::starts_with(path, "\"") { return false; }
+            let mut at = tab - 1;
+            while at >= 0 && line[at..(at + 1)] != " " { at = at - 1; }
+            let size = std::str::parse_int(line[(at + 1)..tab]) or - 1;
+            if size < 0 || size > 16777216 { return false; }
+            count = count + 1;
+            total = total + size;
+            if count > 16384 || total > 134217728 { return false; }
+        }
+        if count > 0 { self.source_manifest = listed.stdout; }
+        return count > 0;
+    }
+    fn archive_ok(source: String) -> Bool {
+        // Git archive honors export-ignore/export-subst attributes. Check every
+        // captured byte against the original Git blob identity before trusting
+        // the archive as committed source. Hash native bytes, never text.
+        let mut lines = self.source_manifest;
+        if len(lines) == 0 { return false; }
+        while len(lines) > 0 {
+            let cut = std::str::index_of(lines, "\n");
+            let line = lines[0..cut];
+            lines = lines[(cut + 1)..len(lines)];
+            let tab = std::str::index_of(line, "\t");
+            let path = source + "/" + line[(tab + 1)..len(line)];
+            let tail = line[12..tab];
+            let end_oid = std::str::index_of(tail, " ");
+            if end_oid != 40 && end_oid != 64 { return false; }
+            let expected = tail[0..end_oid];
+            let size = std::str::parse_int(std::str::trim(tail[(end_oid + 1)..len(tail)])) or - 1;
+            if size < 0 || (std::io::fs::file_size(path) or - 1) != size { return false; }
+            if !self.blob_matches(path, size, expected) { return false; }
+        }
+        return true;
+    }
+    fn blob_matches(path: String, size: Int, expected: String) -> Bool {
+        let bytes = std::io::fs::read_bytes(path) or b"";
+        if len(bytes) != size { return false; }
+        let blob = std::bytes::BytesBuilder { };
+        blob.append_str("blob " + to_string(size));
+        blob.append_u8(0);
+        blob.append(bytes);
+        let actual = if len(expected) == 40 { dna::hex(std::crypto::sha1(blob.snapshot())) } else { dna::hex(std::crypto::sha256(blob.snapshot())) };
+        return actual == expected;
+    }
+    fn tree(path: String) -> OrganizationTree {
+        // find's argv preserves path boundaries while rejecting controls and
+        // links, before we use its newline-delimited listing. Never follow a
+        // link or open a FIFO/device as a file. Ignore VCS metadata at any depth.
+        let safe = self.execute("find\n.\n-name\n.git\n-prune\n-o\n-exec\nsh\n-c\nfor p do case \"$p\" in *[[:cntrl:]]*) printf unsafe;; esac; if [ -L \"$p\" ] || { [ ! -d \"$p\" ] && [ ! -f \"$p\" ]; }; then printf unsafe; fi; done\nsh\n{}\n+", path, 4096);
+        if safe.code != 0 || len(safe.stdout) != 0 { return OrganizationTree { error: "organization snapshots do not support links, special files, or control characters in dependency paths" }; }
+        let listed = self.execute("sh\n-c\nfind . -name .git -prune -o -type f -print >\"$1/files\" && LC_ALL=C sort \"$1/files\"\nsh\n" + self.scratch, path, 4096);
+        if listed.code != 0 { return OrganizationTree { }; }
+        let mut lines = listed.stdout;
+        let mut count = 0;
+        let mut total = 0;
+        let mut manifest = "hale-organization-dependencies-v1\n";
+        while len(lines) > 0 {
+            let cut = std::str::index_of(lines, "\n");
+            if cut < 0 { return OrganizationTree { }; }
+            let name = lines[0..cut];
+            lines = lines[(cut + 1)..len(lines)];
+            if !self.plain_path(name) || !std::str::starts_with(name, "./") { return OrganizationTree { }; }
+            let file = path + "/" + name;
+            let size = std::io::fs::file_size(file) or - 1;
+            count = count + 1;
+            total = total + size;
+            if size < 0 || size > 8388608 || total > 67108864 || count > 8192 { return OrganizationTree { error: "organization dependencies exceed the 8192-file, 8 MiB/file, or 64 MiB total snapshot bound" }; }
+            let bytes = std::io::fs::read_bytes(file) or b"";
+            if len(bytes) != size { return OrganizationTree { }; }
+            let hash = dna::hex(std::crypto::sha256(bytes));
+            manifest = manifest + to_string(len(name)) + ":" + name + ":" + to_string(size) + ":" + hash + "\n";
+        }
+        return OrganizationTree { ok: true, digest: dna::digest_of(manifest), error: "" };
+    }
+    fn input_error(source: String, compiler: String) -> String {
+        let inputs = self.execute(compiler + "\ninputs\ndna/org", source, 4096);
+        if inputs.code != 0 || len(inputs.stdout) == 0 { return "organization_check_failed"; }
+        let mut lines = inputs.stdout;
+        let mut count = 0;
+        while len(lines) > 0 {
+            let cut = std::str::index_of(lines, "\n");
+            if cut < 0 { return "organization_snapshot_unsupported"; }
+            let path = lines[0..cut];
+            lines = lines[(cut + 1)..len(lines)];
+            if !self.plain_path(path) || !std::str::starts_with(path, source + "/") || std::str::contains(path, "/../") { return "organization_snapshot_unsupported"; }
+            count = count + 1;
+            if count > 8192 { return "organization_snapshot_unsupported"; }
+        }
+        return if count > 0 { "" } else { "organization_check_failed" };
+    }
+}

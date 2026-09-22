@@ -1,0 +1,254 @@
+// Disposable definition authoring preparation. No source path IO, publication,
+// Record mutation, execution expansion, or original-module reconstruction.
+type DefinitionDraftResult {
+    status: Int = 503; code: String = "definitions_unavailable"; message: String = "The catalog is unavailable.";
+    basis_json: String = "null"; candidate_digest: String = ""; valid: Bool = false;
+    validation_code: String = ""; validation_message: String = ""; catalog_digest: String = "";
+    dependents_json: String = "[]"; artifact_text: String = ""; artifact_digest: String = "";
+}
+locus DefinitionDraftCapture {
+    params { value: DefinitionSnapshot = DefinitionSnapshot { }; }
+    fn supported() -> Bool { return self.value.supported; }
+    fn snapshot() -> DefinitionSnapshot { return self.value; }
+}
+locus DefinitionDraftCodec {
+    params { }
+    fn raw(object: String, key: String) -> String { return std::json::find_field_raw(object, key); }
+    fn text(object: String, key: String) -> String { let syntax = OrganizationJson { }; return syntax.decode(self.raw(object, key)); }
+    fn is_text(value: String) -> Bool { let codec = DefinitionCodec { }; return codec.text(value); }
+    fn fields(object: String, names: String, count: Int) -> Bool {
+        if !std::str::starts_with(std::str::trim(object), "{") { return false; }
+        let codec = DefinitionCodec { }; let mut it = std::json::object_first(object); let mut seen = 0;
+        while !it.done { if !codec.field_allowed(std::json::obj_key_string(it, object), names) { return false; } seen = seen + 1; it = std::json::object_next(it, object); }
+        return seen == count;
+    }
+    fn texts(object: String, names: String) -> Bool {
+        let mut i = 0;
+        while i < dna::word_count(names) { if !self.is_text(self.raw(object, dna::nth_word(names, i))) { return false; } i = i + 1; }
+        return true;
+    }
+    fn integer(value: String, unsigned: Bool) -> Bool {
+        let codec = DefinitionCodec { };
+        if !codec.integer(value) { return false; }
+        return !unsigned || !std::str::starts_with(value, "-");
+    }
+    fn basis_shape(basis: String) -> Bool {
+        let syntax = OrganizationJson { };
+        if len(basis) > 32768 || !syntax.valid(basis) || !self.fields(basis, "catalog_digest format provenance_kind source_revision source_path dependency_digest limits", 7) || !self.texts(basis, "catalog_digest format provenance_kind source_revision source_path dependency_digest") { return false; }
+        if self.text(basis, "format") != "dna.workflow-definitions/1" || self.text(basis, "provenance_kind") != "trusted_host_claims" { return false; }
+        let limits = self.raw(basis, "limits"); let keys = "max_depth max_steps max_members max_attempts max_works";
+        if !self.fields(limits, keys, 5) || !self.texts(limits, keys) { return false; }
+        let mut i = 0; while i < 5 { let value = self.text(limits, dna::nth_word(keys, i)); if !self.integer(value, true) || value == "0" { return false; } i = i + 1; }
+        return true;
+    }
+    fn basis_equal(a: String, b: String) -> Bool {
+        let keys = "catalog_digest format provenance_kind source_revision source_path dependency_digest";
+        let mut i = 0; while i < 6 { let key = dna::nth_word(keys, i); if self.text(a, key) != self.text(b, key) { return false; } i = i + 1; }
+        let la = self.raw(a, "limits"); let lb = self.raw(b, "limits"); let limits = "max_depth max_steps max_members max_attempts max_works";
+        i = 0; while i < 5 { let key = dna::nth_word(limits, i); if self.text(la, key) != self.text(lb, key) { return false; } i = i + 1; }
+        return true;
+    }
+    fn candidate_shape(raw: String) -> Bool {
+        let syntax = OrganizationJson { }; let codec = DefinitionCodec { };
+        if len(raw) > 32768 || !syntax.valid(raw) || !self.fields(raw, "id definition_id revision title steps", 5) || !self.texts(raw, "id definition_id revision title") || !self.integer(self.text(raw, "revision"), false) { return false; }
+        if len(self.text(raw, "id")) > 300 || len(self.text(raw, "definition_id")) > 256 { return false; }
+        let steps = self.raw(raw, "steps"); if !codec.array(steps) { return false; }
+        let mut step = std::json::array_first(steps); let mut index = 0; let mut count = 0;
+        while !step.done {
+            let s = step.element;
+            if !self.fields(s, "index members", 2) || !self.is_text(self.raw(s, "index")) || self.text(s, "index") != to_string(index) || !codec.array(self.raw(s, "members")) { return false; }
+            let mut member = std::json::array_first(self.raw(s, "members"));
+            while !member.done {
+                let m = member.element;
+                if !self.fields(m, "key kind leaf child", 4) || !self.texts(m, "key kind") || len(self.text(m, "key")) > 256 { return false; }
+                let kind = self.text(m, "kind"); let leaf = self.raw(m, "leaf"); let child = self.raw(m, "child");
+                if kind == "leaf" {
+                    let keys = "objective context_digest knowledge_bindings output_contract data_class requires target cost_ceiling attempts";
+                    if child != "null" || !self.fields(leaf, keys, 9) || !self.texts(leaf, keys) || !self.integer(self.text(leaf, "cost_ceiling"), false) || !self.integer(self.text(leaf, "attempts"), true) || self.text(leaf, "attempts") == "0" { return false; }
+                } else if kind == "child" {
+                    if leaf != "null" || !self.fields(child, "id definition_id revision", 3) || !self.texts(child, "id definition_id revision") || !self.integer(self.text(child, "revision"), false) || len(self.text(child, "definition_id")) > 256 { return false; }
+                    if self.text(child, "id") != self.text(child, "definition_id") + "@" + self.text(child, "revision") { return false; }
+                } else { return false; }
+                count = count + 1; member = std::json::array_next(member);
+            }
+            index = index + 1; step = std::json::array_next(step);
+        }
+        return self.text(raw, "id") == self.text(raw, "definition_id") + "@" + self.text(raw, "revision");
+    }
+    fn text_bytes(object: String, keys: String) -> Int {
+        let mut total = 0; let mut i = 0;
+        while i < dna::word_count(keys) {
+            let value = self.text(object, dna::nth_word(keys, i)); let size = len(value);
+            if size > 8192 { return -1; } total = total + size; if total > 16384 { return -1; } i = i + 1;
+        }
+        return total;
+    }
+    // Validated native catalog shape; lengths are decoded UTF-8 byte counts.
+    fn catalog_text_bytes(document: String) -> Int {
+        let mut total = 0; let mut it = std::json::array_first(self.raw(document, "workflows"));
+        while !it.done { let size = self.text_bytes(it.element, "id title"); if size < 0 { return -1; } total = total + size; if total > 16384 { return -1; } it = std::json::array_next(it); }
+        it = std::json::array_first(self.raw(document, "members"));
+        while !it.done { let size = self.text_bytes(it.element, "workflow key kind objective context_digest knowledge_bindings output_contract data_class requires target child"); if size < 0 { return -1; } total = total + size; if total > 16384 { return -1; } it = std::json::array_next(it); }
+        return total;
+    }
+    // Count the exact native rows this read DTO will append, including the
+    // constructor's inactive defaults and repeated parent definition id.
+    fn candidate_text_bytes(candidate: String) -> Int {
+        let mut total = self.text_bytes(candidate, "definition_id title"); if total < 0 { return -1; }
+        let parent = len(self.text(candidate, "definition_id")); let mut steps = std::json::array_first(self.raw(candidate, "steps"));
+        while !steps.done {
+            let mut members = std::json::array_first(self.raw(steps.element, "members"));
+            while !members.done {
+                let m = members.element; let size = self.text_bytes(m, "key kind"); if size < 0 { return -1; } total = total + size + parent;
+                if self.text(m, "kind") == "leaf" { let leaf = self.text_bytes(self.raw(m, "leaf"), "objective context_digest knowledge_bindings output_contract data_class requires target"); if leaf < 0 { return -1; } total = total + leaf; }
+                else { total = total + len(self.text(self.raw(m, "child"), "definition_id")) + 8; }
+                if total > 16384 { return -1; } members = std::json::array_next(members);
+            }
+            steps = std::json::array_next(steps);
+        }
+        return total;
+    }
+    fn step_count(raw: String) -> Int { let mut it = std::json::array_first(self.raw(raw, "steps")); let mut n = 0; while !it.done { n = n + 1; it = std::json::array_next(it); } return n; }
+    fn append(catalog: dna::WorkflowCatalog, raw: String) -> String {
+        let id = self.text(raw, "definition_id"); let revision = std::str::parse_int(self.text(raw, "revision")) or 0;
+        let error = catalog.define(id, revision, self.step_count(raw), self.text(raw, "title")); if error != "" { return error; }
+        let mut steps = std::json::array_first(self.raw(raw, "steps")); let mut step = 0;
+        while !steps.done {
+            let mut members = std::json::array_first(self.raw(steps.element, "members"));
+            while !members.done {
+                let m = members.element; let key = self.text(m, "key");
+                if self.text(m, "kind") == "leaf" {
+                    let l = self.raw(m, "leaf");
+                    let work = dna::WorkRequest { objective: self.text(l, "objective"), context_digest: self.text(l, "context_digest"), knowledge_bindings: self.text(l, "knowledge_bindings"), output_contract: self.text(l, "output_contract"), data_class: self.text(l, "data_class"), requires: self.text(l, "requires"), target: self.text(l, "target"), cost_ceiling: std::str::parse_int(self.text(l, "cost_ceiling")) or 0 };
+                    let gap = catalog.leaf(id, revision, step, key, work, std::str::parse_int(self.text(l, "attempts")) or 0); if gap != "" { return gap; }
+                } else {
+                    let c = self.raw(m, "child"); let gap = catalog.child(id, revision, step, key, self.text(c, "definition_id"), std::str::parse_int(self.text(c, "revision")) or 0); if gap != "" { return gap; }
+                }
+                members = std::json::array_next(members);
+            }
+            step = step + 1; steps = std::json::array_next(steps);
+        }
+        return "";
+    }
+    // Linear quoting for the API artifact field, independent of std JSON quote.
+    fn quote_json(text: String) -> String {
+        let b = std::bytes::BytesBuilder { }; let digits = "0123456789abcdef"; let size = len(text); b.append_u8(34); let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c == 34 || c == 92 { b.append_u8(92); b.append_u8(c); }
+            else if c < 32 { b.append_str("\\u00"); b.append_u8(std::str::byte_at_unchecked(digits, c / 16)); b.append_u8(std::str::byte_at_unchecked(digits, c % 16)); }
+            else { b.append_u8(c); }
+            i = i + 1;
+        }
+        b.append_u8(34); return std::str::from_bytes(b.snapshot());
+    }
+    fn hale_literal(text: String) -> String {
+        let b = std::bytes::BytesBuilder { }; let digits = "0123456789abcdef"; let size = len(text); b.append_u8(34); let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c == 34 || c == 92 { b.append_u8(92); b.append_u8(c); }
+            else if c < 32 || c == 127 { b.append_str("\\x"); b.append_u8(std::str::byte_at_unchecked(digits, c / 16)); b.append_u8(std::str::byte_at_unchecked(digits, c % 16)); }
+            else { b.append_u8(c); }
+            i = i + 1;
+        }
+        b.append_u8(34); return std::str::from_bytes(b.snapshot());
+    }
+    fn reason(message: String) -> String {
+        let bytes = std::bytes::BytesBuilder { }; let mut i = 0; let size = len(message);
+        while i < size && i < 512 { let c = std::str::byte_at_unchecked(message, i); bytes.append_u8(if c < 32 || c == 127 { 32 } else { c }); i = i + 1; }
+        let out = std::str::from_bytes(bytes.snapshot()); let syntax = OrganizationJson { }; let mut end = len(out);
+        while end > 0 && !syntax.utf8(out[0..end], end) { end = end - 1; }
+        return out[0..end];
+    }
+    fn representable(catalog: dna::WorkflowCatalog) -> Bool {
+        let mut i = 0; while i < catalog.member_count() {
+            let m = catalog.member_at(i);
+            if m.kind == "leaf" { if m.child != "" || m.child_revision != 0 { return false; } }
+            else if m.kind == "child" { if m.objective != "" || m.context_digest != "" || m.knowledge_bindings != "" || m.output_contract != "" || m.data_class != "internal" || m.requires != "" || m.target != "" || m.cost_ceiling != 0 || m.attempts != 1 { return false; } }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn hale_integer(value: Int) -> String { let text = to_string(value); return if text == "-9223372036854775808" { "(-9223372036854775807 - 1)" } else { text }; }
+    fn artifact(catalog: dna::WorkflowCatalog) -> String {
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("// Generated captured-catalog export; not the original source module.\n// Compose into a fresh catalog; the containing seed supplies its dna import.\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String {\n");
+        let mut i = 0;
+        while i < catalog.workflow_count() {
+            let d = catalog.workflow_at(i); let var = "definition_" + to_string(i);
+            b.append_str("    let " + var + " = catalog.define(" + self.hale_literal(d.id) + ", " + self.hale_integer(d.revision) + ", " + to_string(d.steps) + ", " + self.hale_literal(d.title) + ");\n    if len(" + var + ") > 0 { return " + var + "; }\n"); i = i + 1;
+        }
+        i = 0;
+        while i < catalog.member_count() {
+            let m = catalog.member_at(i); let var = "member_" + to_string(i);
+            b.append_str("    let " + var + " = catalog." + m.kind + "(" + self.hale_literal(m.workflow) + ", " + self.hale_integer(m.revision) + ", " + to_string(m.step) + ", " + self.hale_literal(m.key) + ", ");
+            if m.kind == "leaf" {
+                b.append_str("dna::WorkRequest { objective: " + self.hale_literal(m.objective) + ", context_digest: " + self.hale_literal(m.context_digest) + ", knowledge_bindings: " + self.hale_literal(m.knowledge_bindings) + ", output_contract: " + self.hale_literal(m.output_contract) + ", data_class: " + self.hale_literal(m.data_class) + ", requires: " + self.hale_literal(m.requires) + ", target: " + self.hale_literal(m.target) + ", cost_ceiling: " + self.hale_integer(m.cost_ceiling) + " }, " + to_string(m.attempts));
+            } else { b.append_str(self.hale_literal(m.child) + ", " + self.hale_integer(m.child_revision)); }
+            b.append_str(");\n    if len(" + var + ") > 0 { return " + var + "; }\n"); i = i + 1;
+        }
+        b.append_str("    return \"\";\n}\n"); return std::str::from_bytes(b.snapshot());
+    }
+    fn dependents(read: Definitions, base: String) -> String {
+        let b = std::json::Builder { }; b.begin_array(); let mut i = 0; let mut dep = read.dependent_at(base, i);
+        while dep.id != "" { b.begin_object(); b.string_field("id", dep.id); b.string_field("definition_id", dep.definition_id); b.string_field("revision", to_string(dep.revision)); b.string_field("step", to_string(dep.step)); b.string_field("key", dep.key); b.end_object(); i = i + 1; dep = read.dependent_at(base, i); }
+        b.end_array(); return b.result();
+    }
+}
+locus DefinitionDrafts {
+    params { provider: WorkflowCatalogProvider = NoWorkflowCatalog { }; }
+    fn failure(status: Int, code: String, message: String) -> DefinitionDraftResult { let codec = DefinitionDraftCodec { }; return DefinitionDraftResult { status: status, code: code, message: codec.reason(message) }; }
+    fn recapture(first: DefinitionSnapshot, result: DefinitionDraftResult) -> DefinitionDraftResult {
+        let latest = self.provider.snapshot();
+        if !latest.supported || !latest.available { return self.failure(503, "definitions_unavailable", "The catalog became unavailable during validation."); }
+        if len(latest.document) > 65536 { return self.failure(503, "definition_read_limit", "The current catalog exceeds the draft read budget."); }
+        if latest.digest != dna::digest_of(latest.document) { return self.failure(503, "definition_digest_mismatch", "The current catalog capture is inconsistent."); }
+        let a = first.limits; let b = latest.limits; let p = first.provenance; let q = latest.provenance;
+        if first.digest != latest.digest || p.source_revision != q.source_revision || p.source_path != q.source_path || p.dependency_digest != q.dependency_digest || a.max_depth != b.max_depth || a.max_steps != b.max_steps || a.max_members != b.max_members || a.max_attempts != b.max_attempts || a.max_works != b.max_works { return self.failure(409, "definition_basis_changed", "The catalog basis changed during validation."); }
+        return result;
+    }
+    fn semantic(first: DefinitionSnapshot, basis: String, digest: String, impact: String, code: String, message: String) -> DefinitionDraftResult {
+        let codec = DefinitionDraftCodec { };
+        return self.recapture(first, DefinitionDraftResult { status: 200, code: "", message: "", basis_json: basis, candidate_digest: digest, validation_code: code, validation_message: codec.reason(message), dependents_json: impact });
+    }
+    fn validate(base_id: String, basis: String, candidate: String) -> DefinitionDraftResult {
+        let codec = DefinitionDraftCodec { };
+        if len(base_id) > 300 || !codec.basis_shape(basis) || !codec.candidate_shape(candidate) { return self.failure(400, "definition_draft_invalid", "The draft or basis does not match the closed exact-value schema."); }
+        let candidate_text = codec.candidate_text_bytes(candidate);
+        if candidate_text < 0 { return self.failure(503, "definition_read_limit", "The draft exceeds the text-field or aggregate text resource budget."); }
+        let initial = self.provider.snapshot();
+        if !initial.supported { return self.failure(503, "definitions_unsupported", "The application does not supply a workflow catalog."); }
+        if !initial.available { return self.failure(503, "definitions_unavailable", "The application catalog is unavailable."); }
+        if len(initial.document) > 65536 { return self.failure(503, "definition_read_limit", "The captured catalog exceeds the draft byte budget."); }
+        let native_codec = DefinitionCodec { };
+        let shape = native_codec.shape(initial.document, DefinitionReadBounds { max_document_bytes: 65536 });
+        if shape != "" { return self.failure(503, if std::str::starts_with(shape, "reader budget:") { "definition_read_limit" } else { "definition_document_invalid" }, shape); }
+        let base_text = codec.catalog_text_bytes(initial.document);
+        if base_text < 0 || base_text + candidate_text > 16384 { return self.failure(503, "definition_read_limit", "The full candidate exceeds the text-field or aggregate text resource budget."); }
+        let base_capture = DefinitionDraftCapture { value: initial };
+        let read = Definitions { provider: base_capture, bounds: DefinitionReadBounds { max_document_bytes: 65536 } };
+        if !read.load() { return self.failure(503, read.code(), read.error()); }
+        let first = read.captured; let base_basis = read.basis_json();
+        if !codec.basis_equal(basis, base_basis) { return self.failure(409, "definition_basis_changed", "The draft basis differs from the captured catalog."); }
+        let base = read.definition_of(base_id);
+        if base.id == "" { return self.failure(404, "definition_not_found", "The exact base definition is absent."); }
+        if base.revision == 9223372036854775807 { return self.failure(400, "definition_revision_exhausted", "The base revision cannot be incremented within Int64."); }
+        if codec.text(candidate, "definition_id") != base.definition_id || codec.text(candidate, "revision") != to_string(base.revision + 1) { return self.failure(400, "definition_draft_invalid", "A draft must retain the definition identity and increment the exact base revision once."); }
+        let digest = dna::digest_of(candidate); let impact = codec.dependents(read, base_id);
+        if read.catalog.has(base.definition_id, base.revision + 1) { return self.semantic(first, base_basis, digest, impact, "definition_revision_exists", "The next revision already exists in the captured catalog."); }
+        if !codec.representable(read.catalog) { return self.failure(503, "definition_export_unsupported", "The catalog contains inactive fields that constructor-only export cannot preserve."); }
+        let error = codec.append(read.catalog, candidate);
+        if error != "" { return self.semantic(first, base_basis, digest, impact, "definition_invalid", error); }
+        if read.catalog.workflow_count() > 64 || read.catalog.member_count() > 1024 { return self.failure(503, "definition_read_limit", "The candidate exceeds the draft catalog row budget."); }
+        let document = read.catalog.encode();
+        if len(document) > 98304 { return self.failure(503, "definition_read_limit", "The candidate exceeds the draft catalog byte budget."); }
+        let captured = DefinitionDraftCapture { value: DefinitionSnapshot { supported: true, available: true, document: document, digest: dna::digest_of(document), limits: first.limits, provenance: first.provenance } };
+        let validated = Definitions { provider: captured, bounds: DefinitionReadBounds { max_document_bytes: 98304 } };
+        if !validated.load() {
+            if validated.status() == "unavailable" { return self.failure(503, validated.code(), validated.error()); }
+            return self.semantic(first, base_basis, digest, impact, validated.code(), validated.error());
+        }
+        let artifact = codec.artifact(validated.catalog);
+        return self.recapture(first, DefinitionDraftResult { status: 200, code: "", message: "", basis_json: base_basis, candidate_digest: digest, valid: true, catalog_digest: dna::digest_of(document), dependents_json: impact, artifact_text: artifact, artifact_digest: dna::digest_of(artifact) });
+    }
+}

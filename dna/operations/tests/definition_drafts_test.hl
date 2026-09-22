@@ -1,0 +1,155 @@
+import "../../core" as dna;
+import ".." as ops;
+
+locus DraftHost {
+    params { value: ops::DefinitionSnapshot = ops::DefinitionSnapshot { }; calls: Int = 0; move: String = ""; }
+    fn supported() -> Bool { return self.value.supported; }
+    fn snapshot() -> ops::DefinitionSnapshot {
+        self.calls = self.calls + 1;
+        if self.calls < 2 || self.move == "" { return self.value; }
+        let p = self.value.provenance; let l = self.value.limits;
+        return ops::DefinitionSnapshot { supported: true, available: self.move != "unavailable", document: self.value.document, digest: self.value.digest,
+            provenance: ops::DefinitionProvenance { source_revision: if self.move == "revision" { p.source_revision + "-moved" } else { p.source_revision }, source_path: p.source_path, dependency_digest: if self.move == "dependency" { "changed-dependency" } else { p.dependency_digest } },
+            limits: dna::AdmissionLimits { max_depth: l.max_depth, max_steps: l.max_steps, max_members: l.max_members, max_attempts: if self.move == "limits" { l.max_attempts + 1 } else { l.max_attempts }, max_works: l.max_works } };
+    }
+}
+locus DraftProof {
+    params { output: String = ""; }
+    fn provenance() -> ops::DefinitionProvenance { return ops::DefinitionProvenance { source_revision: "claimed-source", source_path: "/NEVER/read/or/write/claimed-source.hl", dependency_digest: "dependencies" }; }
+    fn populate(cat: dna::WorkflowCatalog) {
+        let a = cat.define("root", 1, 1, "Existing parent"); let b = cat.define("child", 9007199254740993, 1, "Original child"); let c = cat.define("tail", -3, 1, "Signed existing revision");
+        let d = cat.child("root", 1, 0, "collect", "child", 9007199254740993);
+        let e = cat.leaf("child", 9007199254740993, 0, "old", dna::WorkRequest { objective: "Original\x01 😀 field preserved" }, 1);
+        let f = cat.leaf("tail", -3, 0, "final", dna::WorkRequest { objective: "Signed cost", cost_ceiling: (-9223372036854775807 - 1) }, 1);
+    }
+    fn snapshot(cat: dna::WorkflowCatalog) -> ops::DefinitionSnapshot { let document = cat.encode(); return ops::DefinitionSnapshot { supported: true, available: true, document: document, digest: dna::digest_of(document), provenance: self.provenance() }; }
+    fn basis(value: ops::DefinitionSnapshot) -> String { let provider = ops::DefinitionDraftCapture { value: value }; let read = ops::Definitions { provider: provider }; std::test::assert(read.load(), "basis fixture valid"); return read.basis_json(); }
+    fn candidate(kind: String) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("id", "child@9007199254740994"); b.string_field("definition_id", "child"); b.string_field("revision", "9007199254740994"); b.string_field("title", "Draft équipe 😀"); b.begin_array_field("steps");
+        b.begin_object(); b.string_field("index", "0"); b.begin_array_field("members");
+        b.begin_object(); b.string_field("key", "changed"); b.string_field("kind", "leaf"); b.begin_object_field("leaf");
+        b.string_field("objective", "Literal <script>\"\\\n\t\x08\x0c\x01\x7f — 😀"); b.string_field("context_digest", "sha256:context"); b.string_field("knowledge_bindings", "opaque binding\nsecond line"); b.string_field("output_contract", "Evidence"); b.string_field("data_class", "restricted"); b.string_field("requires", "judgment verify"); b.string_field("target", "org/research"); b.string_field("cost_ceiling", "-9223372036854775808"); b.string_field("attempts", "2"); b.end_object(); b.field("child", "null"); b.end_object(); b.end_array(); b.end_object();
+        b.begin_object(); b.string_field("index", "1"); b.begin_array_field("members"); b.begin_object(); b.string_field("key", "nested"); b.string_field("kind", "child"); b.field("leaf", "null"); b.begin_object_field("child");
+        let id = if kind == "cycle" { "child" } else if kind == "missing" { "absent" } else { "tail" }; let rev = if kind == "cycle" { "9007199254740994" } else { "-3" };
+        b.string_field("id", id + "@" + rev); b.string_field("definition_id", id); b.string_field("revision", rev); b.end_object(); b.end_object(); b.end_array(); b.end_object(); b.end_array(); b.end_object(); return b.result();
+    }
+    fn validate(snapshot: ops::DefinitionSnapshot, basis: String, candidate: String) -> ops::DefinitionDraftResult { let host = DraftHost { value: snapshot }; let drafts = ops::DefinitionDrafts { provider: host }; return drafts.validate("child@9007199254740993", basis, candidate); }
+    fn valid_export() {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat); let snapshot = self.snapshot(cat); let basis = self.basis(snapshot); let candidate = self.candidate("");
+        let host = DraftHost { value: snapshot }; let drafts = ops::DefinitionDrafts { provider: host };
+        let result = drafts.validate("child@9007199254740993", basis, candidate);
+        let projected = ops::Definitions { provider: host }; std::test::assert(projected.load(), "read controls and supplementary Unicode");
+        std::test::assert_eq_str(projected.catalog.encode(), snapshot.document, "shared strict mapping preserves every captured byte value");
+        std::test::assert(result.status == 200 && result.valid, "valid next revision: " + result.code + " " + result.validation_message);
+        std::test::assert_eq_int(host.calls, 3, "initial capture and final recapture plus independent read");
+        std::test::assert_eq_str(result.candidate_digest, dna::digest_of(candidate), "exact candidate substring digest");
+        std::test::assert_eq_str(result.artifact_digest, dna::digest_of(result.artifact_text), "exact exported source digest");
+        std::test::assert_eq_str(cat.encode(), snapshot.document, "live catalog untouched");
+        std::test::assert_eq_int(cat.workflow_count(), 3, "no live new revision");
+        std::test::assert(std::str::contains(result.dependents_json, "root@1") && std::str::contains(result.dependents_json, "\"step\": \"0\""), "existing exact dependent retained");
+        let codec = ops::DefinitionDraftCodec { }; std::test::assert_eq_str(codec.append(cat, candidate), "", "construct independent expected catalog");
+        let expected = cat.encode(); std::test::assert_eq_str(result.catalog_digest, dna::digest_of(expected), "native canonical full catalog digest");
+        std::test::assert(std::str::contains(result.artifact_text, "(-9223372036854775807 - 1)") && std::str::contains(result.artifact_text, "9007199254740994") && std::str::contains(result.artifact_text, "\\x08"), "Hale literal integers and controls preserved");
+        if self.output != "" {
+            std::io::fs::write_file(self.output + "/workflows.generated.hl", result.artifact_text) or std::test::assert(false, "write proof artifact");
+            std::io::fs::write_file(self.output + "/expected-catalog.json", expected) or std::test::assert(false, "write expected catalog");
+        }
+        let again = self.validate(snapshot, basis, candidate); std::test::assert_eq_str(again.artifact_text, result.artifact_text, "deterministic export");
+        let escaped = std::str::replace(candidate, "😀", "\\ud83d\\ude00"); let other = self.validate(snapshot, basis, escaped);
+        std::test::assert(other.valid && other.artifact_text == result.artifact_text && other.candidate_digest != result.candidate_digest, "Unicode decoded once; exact candidate frame retained");
+    }
+    fn expect_shape(snapshot: ops::DefinitionSnapshot, basis: String, candidate: String, label: String) { let r = self.validate(snapshot, basis, candidate); std::test::assert(r.status == 400 && r.artifact_text == "", label); }
+    fn shapes() {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat); let s = self.snapshot(cat); let basis = self.basis(s); let c = self.candidate("");
+        self.expect_shape(s, basis, std::str::replace(c, "\"title\":", "\"unknown\": 1, \"title\":"), "unknown fields");
+        self.expect_shape(s, basis, std::str::replace(c, "\"title\":", "\"revision\": \"9007199254740994\", \"title\":"), "duplicate keys");
+        self.expect_shape(s, basis, std::str::replace(c, "\"title\":", "\"ti\\u0074le\":"), "escaped key");
+        self.expect_shape(s, basis, std::str::replace(c, "Draft équipe 😀", "bad\\u0000"), "NUL escape");
+        self.expect_shape(s, basis, std::str::replace(c, "\"attempts\": \"2\"", "\"attempts\": 2"), "numbers must be strings");
+        self.expect_shape(s, basis, std::str::replace(c, "\"attempts\": \"2\"", "\"attempts\": \"0\""), "attempts positive");
+        self.expect_shape(s, basis, std::str::replace(c, "-9223372036854775808", "-9223372036854775809"), "signed overflow");
+        self.expect_shape(s, basis, std::str::replace(c, "\"index\": \"1\"", "\"index\": \"2\""), "ordered indices contiguous");
+        self.expect_shape(s, basis, std::str::replace(c, "\"child\": null", "\"child\": {}"), "mixed variants");
+        self.expect_shape(s, basis, std::str::replace(c, "tail@-3", "tail@-2"), "child exact composite identity");
+        self.expect_shape(s, basis, std::str::replace(c, "9007199254740994", "9007199254740995"), "N+1 exact");
+        self.expect_shape(s, std::str::replace(basis, "\"max_depth\": \"8\"", "\"max_depth\": 8"), c, "basis exact shape");
+        let stale = self.validate(s, std::str::replace(basis, "claimed-source", "another-source"), c); std::test::assert_eq_int(stale.status, 409, "stale basis");
+        let host = DraftHost { value: s }; let drafts = ops::DefinitionDrafts { provider: host };
+        std::test::assert_eq_int(drafts.validate("absent@1", basis, c).status, 404, "exact missing base");
+    }
+    fn semantic() {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat); let s = self.snapshot(cat); let basis = self.basis(s);
+        let cycle = self.validate(s, basis, self.candidate("cycle")); std::test::assert(cycle.status == 200 && !cycle.valid && cycle.validation_message != "" && cycle.artifact_text == "" && cycle.catalog_digest == "", "native cycle invalid with no partial artifact");
+        let missing = self.validate(s, basis, self.candidate("missing")); std::test::assert(missing.status == 200 && !missing.valid, "missing exact child invalid");
+        let attempts = self.validate(s, basis, std::str::replace(self.candidate(""), "\"attempts\": \"2\"", "\"attempts\": \"9\"")); std::test::assert(attempts.status == 200 && !attempts.valid, "native attempt limit");
+        let add = cat.define("child", 9007199254740994, 1, "Already there off page"); let leaf = cat.leaf("child", 9007199254740994, 0, "prior", dna::WorkRequest { objective: "exists" }, 1);
+        let occupied = self.snapshot(cat); let duplicate = self.validate(occupied, self.basis(occupied), self.candidate("")); std::test::assert(duplicate.status == 200 && !duplicate.valid && duplicate.validation_code == "definition_revision_exists", "existing off-page N+1 rejected");
+        let bad = cat.define("unrelated", 1, 1, "Invalid unrelated root");
+        let broken = self.snapshot(cat); let unavailable = self.validate(broken, basis, self.candidate("")); std::test::assert(unavailable.status == 503 && unavailable.artifact_text == "", "whole captured base must be valid");
+    }
+    fn catalog_limits() {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat); let value = self.snapshot(cat);
+        let limited = ops::DefinitionSnapshot { supported: true, available: true, document: value.document, digest: value.digest, provenance: value.provenance, limits: dna::AdmissionLimits { max_steps: 1 } };
+        let result = self.validate(limited, self.basis(limited), self.candidate(""));
+        std::test::assert(result.status == 200 && !result.valid && result.artifact_text == "", "native candidate step limit");
+        let works = ops::DefinitionSnapshot { supported: true, available: true, document: value.document, digest: value.digest, provenance: value.provenance, limits: dna::AdmissionLimits { max_works: 1 } };
+        let rejected = self.validate(works, self.basis(works), self.candidate(""));
+        std::test::assert(rejected.status == 200 && !rejected.valid, "native candidate work bound");
+        let codec = ops::DefinitionDraftCodec { }; let candidate = self.candidate("");
+        let steps = std::json::array_first(codec.raw(candidate, "steps")); let members = codec.raw(steps.element, "members"); let first = std::json::array_first(members);
+        let doubled = std::str::replace(candidate, members, "[" + first.element + "," + first.element + "]");
+        std::test::assert(!self.validate(value, self.basis(value), doubled).valid, "native duplicate member key");
+        let empty = std::str::replace(candidate, members, "[]"); let no_member = self.validate(value, self.basis(value), empty);
+        std::test::assert(no_member.status == 200 && !no_member.valid, "native empty step");
+        let mut i = 0;
+        while i < 61 { let id = "additional-" + to_string(i); let a = cat.define(id, 1, 1, "Other revision"); let b = cat.leaf(id, 1, 0, "one", dna::WorkRequest { }, 1); i = i + 1; }
+        let full = self.snapshot(cat); let over = self.validate(full, self.basis(full), candidate);
+        std::test::assert_eq_str(over.code, "definition_read_limit", "65th definition is resource refusal");
+        let maximum = dna::WorkflowCatalog { }; let a = maximum.define("maximum", 9223372036854775807, 1, "Maximum"); let b = maximum.leaf("maximum", 9223372036854775807, 0, "one", dna::WorkRequest { }, 1);
+        let max_snapshot = self.snapshot(maximum); let host = DraftHost { value: max_snapshot }; let drafts = ops::DefinitionDrafts { provider: host };
+        std::test::assert_eq_str(drafts.validate("maximum@9223372036854775807", self.basis(max_snapshot), candidate).code, "definition_revision_exhausted", "N+1 cannot overflow");
+    }
+    fn recapture(kind: String) {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat); let s = self.snapshot(cat); let host = DraftHost { value: s, move: kind }; let drafts = ops::DefinitionDrafts { provider: host };
+        let r = drafts.validate("child@9007199254740993", self.basis(s), self.candidate(""));
+        std::test::assert(r.status == (if kind == "unavailable" { 503 } else { 409 }) && r.artifact_text == "", "final recapture " + kind);
+    }
+    fn budgets() {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat); let s = self.snapshot(cat); let basis = self.basis(s); let candidate = self.candidate("");
+        let b = std::bytes::BytesBuilder { }; let mut i = 0; while i < 65537 { b.append_u8(32); i = i + 1; }
+        let huge = ops::DefinitionSnapshot { supported: true, available: true, document: std::str::from_bytes(b.snapshot()), digest: "unneeded", provenance: self.provenance() };
+        std::test::assert_eq_str(self.validate(huge, basis, candidate).code, "definition_read_limit", "base byte budget before decode");
+        let unsupported = ops::DefinitionDrafts { }; std::test::assert_eq_str(unsupported.validate("child@9007199254740993", basis, candidate).code, "definitions_unsupported", "unsupported never fake valid");
+        let a = cat.define("inactive", 1, 1, "Inactive fields"); let l = cat.leaf("inactive", 1, 0, "leaf", dna::WorkRequest { }, 1);
+        let last = cat.member_count() - 1; let original = cat.member_at(last);
+        cat.members.set(last, dna::MemberDef { workflow: original.workflow, revision: original.revision, step: original.step, key: original.key, kind: "leaf", child: "unrepresented" }) or discard;
+        let noncanonical = self.snapshot(cat); std::test::assert_eq_str(self.validate(noncanonical, self.basis(noncanonical), candidate).code, "definition_export_unsupported", "do not discard inactive native fields");
+    }
+    fn repeated(count: Int) -> String { let b = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { b.append_u8(120); i = i + 1; } return std::str::from_bytes(b.snapshot()); }
+    fn with_objective(candidate: String, raw: String) -> String {
+        let codec = ops::DefinitionDraftCodec { }; let steps = std::json::array_first(codec.raw(candidate, "steps")); let members = std::json::array_first(codec.raw(steps.element, "members")); let leaf = codec.raw(members.element, "leaf");
+        return std::str::replace(candidate, codec.raw(leaf, "objective"), raw);
+    }
+    fn stress() {
+        let cat = dna::WorkflowCatalog { }; self.populate(cat);
+        cat.members.set(1, dna::MemberDef { workflow: "child", revision: 9007199254740993, step: 0, key: "old", kind: "leaf", objective: self.repeated(8192) }) or discard;
+        let s = self.snapshot(cat); let basis = self.basis(s); let codec = ops::DefinitionDraftCodec { };
+        let candidate = self.with_objective(self.candidate(""), codec.quote_json(self.repeated(7600)));
+        let total = codec.catalog_text_bytes(s.document) + codec.candidate_text_bytes(candidate);
+        std::test::assert(total <= 16384, "two independent large fields within aggregate budget");
+        let valid = self.validate(s, basis, candidate);
+        std::test::assert(valid.status == 200 && valid.valid && valid.artifact_text != "", "8192-byte base and7600-byte candidate complete native validation/export");
+        let aggregate = self.with_objective(self.candidate(""), codec.quote_json(self.repeated(8192)));
+        std::test::assert_eq_str(self.validate(s, basis, aggregate).code, "definition_read_limit", "combined aggregate refuses before native encode");
+        let excess = self.with_objective(self.candidate(""), "\"" + self.repeated(8191) + "\\u00e9\"");
+        let host = DraftHost { value: s }; let drafts = ops::DefinitionDrafts { provider: host };
+        std::test::assert_eq_str(drafts.validate("child@9007199254740993", basis, excess).code, "definition_read_limit", "decoded UTF8 byte count cannot be evaded by escapes");
+        std::test::assert_eq_int(host.calls, 0, "incoming field budget precedes trusted provider capture");
+        let excess_base = std::str::replace(s.document, codec.quote_json(self.repeated(8192)), codec.quote_json(self.repeated(8193)));
+        let long_base = ops::DefinitionSnapshot { supported: true, available: true, document: excess_base, digest: dna::digest_of(excess_base), provenance: self.provenance() };
+        std::test::assert_eq_str(self.validate(long_base, basis, self.candidate("")).code, "definition_read_limit", "captured field budget precedes native decode");
+    }
+
+    fn run_all() { self.valid_export(); self.shapes(); self.semantic(); self.catalog_limits(); self.recapture("revision"); self.recapture("dependency"); self.recapture("limits"); self.recapture("unavailable"); self.budgets(); }
+}
+fn main() { let proof = DraftProof { output: std::env::arg_or(1, "") }; if std::env::arg_or(2, "") == "stress" { proof.stress(); } else { proof.run_all(); } }

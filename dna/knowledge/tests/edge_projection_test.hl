@@ -1,0 +1,146 @@
+// Actual codec-generated command facts drive the native projection. Git owns
+// durable effects; these tests never treat the rebuilt Mem as durable storage.
+// Admission authorization/CAS and graph-read visibility have separate tests.
+import "../../core" as dna;
+import "../../operations" as ops;
+import ".." as know;
+
+const LEFT: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const RIGHT: String = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const LABEL: String = "supports \"équipe 🧭\" <literal> \\";
+
+// An edge fact carries its effect. Projection must not fetch endpoint bodies or
+// reauthorize the old command against today's receipt-visibility policy.
+locus NoEdgeReceipts {
+    params { reads: Int = 0; }
+    fn kind() -> String { return "test"; }
+    fn store(text: String) -> String { return ""; }
+    fn read(digest: String) -> String { self.reads = self.reads + 1; return ""; }
+    fn erase(digest: String) -> Bool { return false; }
+}
+
+locus EdgeProjectionCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        let r = j.append_exact(j.revision(), kind, entity, body);
+        std::test::assert(r.ok, "native Record append: " + r.error);
+    }
+    fn context(j: dna::Journal) -> ops::GovernanceContext {
+        return ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "graph-editor" };
+    }
+    fn command(j: dna::Journal, request_id: String, from_id: String, to_id: String, rel: String) -> ops::KnowledgeCommand {
+        return ops::KnowledgeCommand {
+            request_id: request_id, application_id: j.read(0).digest,
+            target_id: from_id, record_head: j.head(), from_id: from_id, to_id: to_id,
+            rel: rel, rationale: "Keep exact direction and label.\r\nNative fact 🧭."
+        };
+    }
+    fn body(context: ops::GovernanceContext, c: ops::KnowledgeCommand) -> String {
+        let codec = ops::KnowledgeCommandCodec { };
+        let body = codec.fact(context, c, ops::KnowledgeGrant { allowed: true, mode: "direct", authority: "graph-editor", basis: "fixed native projection-test grant" });
+        std::test::assert(len(body) > 0, "fixture is a complete native command fact");
+        return body;
+    }
+    fn link(j: dna::Journal, request_id: String, from_id: String, to_id: String, rel: String) {
+        let codec = ops::KnowledgeCommandCodec { };
+        let c = self.command(j, request_id, from_id, to_id, rel);
+        self.append(j, "knowledge.edge.linked", codec.edge_id(from_id, to_id, rel), self.body(self.context(j), c));
+        std::test::assert(codec.decode_fact(j.read(j.revision() - 1)).valid, "stored native edge fact validates");
+    }
+    fn edge(store: know::Mem, at: Int, from_id: String, to_id: String, rel: String) {
+        let e = store.edges.get(at) or dna::KnowledgeEdge { };
+        std::test::assert_eq_str(e.from, from_id, "projected source is exact");
+        std::test::assert_eq_str(e.to, to_id, "projected destination is exact");
+        std::test::assert_eq_str(e.rel, rel, "projected relationship text is exact");
+    }
+    fn assert_graph(store: know::Mem) {
+        std::test::assert_eq_int(store.count("edges"), 4, "ordered, parallel and self relationships remain distinct");
+        self.edge(store, 0, LEFT, RIGHT, LABEL);
+        self.edge(store, 1, RIGHT, LEFT, LABEL);
+        self.edge(store, 2, LEFT, LEFT, "self reference 🧭");
+        self.edge(store, 3, LEFT, RIGHT, "another relationship");
+    }
+    fn durable_replay() {
+        let root = "/tmp/dna-edge-projection-" + to_string(std::process::pid());
+        std::io::fs::mkdir(root) or discard;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "temporary native Git Record");
+        let j = dna::GitJournal { repo: root };
+        self.append(j, "application.started", "org", "{}");
+        self.link(j, "edge/forward", LEFT, RIGHT, LABEL);
+        self.link(j, "edge/reverse", RIGHT, LEFT, LABEL);
+        self.link(j, "edge/self", LEFT, LEFT, "self reference 🧭");
+        self.link(j, "edge/parallel", LEFT, RIGHT, "another relationship");
+        self.link(j, "edge/same-effect-new-command", LEFT, RIGHT, LABEL);
+        let receipts = NoEdgeReceipts { };
+        let store = know::Mem { };
+        store.scope(j.read(0).digest);
+        let applied = know::apply_record(store, j, receipts);
+        std::test::assert_eq_str(applied.error, "", "durable command facts project");
+        std::test::assert_eq_int(applied.watermark, j.revision(), "only successful projection advances to Record head");
+        self.assert_graph(store);
+        let generation = store.graph_generation();
+        let idle = know::apply_record(store, j, receipts);
+        std::test::assert_eq_int(idle.rows, 0, "up-to-date projection reads no rows");
+        std::test::assert_eq_int(store.graph_generation(), generation, "idle tail does not mutate graph");
+
+        // Simulate a crash after an edge write but before its checkpoint, then
+        // replay all rows into the same graph. Mem.link owns tuple idempotence.
+        store.mark = 0;
+        let replay = know::apply_record(store, j, receipts);
+        std::test::assert_eq_str(replay.error, "", "watermark-loss replay succeeds");
+        std::test::assert_eq_int(replay.watermark, j.revision(), "replayed checkpoint catches up");
+        std::test::assert_eq_int(store.graph_generation(), generation, "replay never rewrites an existing exact edge");
+        self.assert_graph(store);
+
+        // Reopen the actual durable Record and build entirely new memory.
+        let restarted = dna::GitJournal { repo: root };
+        let rebuilt = know::Mem { };
+        rebuilt.scope(restarted.read(0).digest);
+        let recovered = know::apply_record(rebuilt, restarted, receipts);
+        std::test::assert_eq_str(recovered.error, "", "fresh memory recovers from reopened Git Record");
+        std::test::assert_eq_int(recovered.watermark, restarted.revision(), "fresh memory reaches exact durable head");
+        self.assert_graph(rebuilt);
+        std::test::assert_eq_int(receipts.reads, 0, "edge projection does not disclose or fetch endpoint receipts");
+        let removed = dna::run_tool("rm\n-rf\n" + root);
+    }
+    fn rejects(mode: String) {
+        let j = dna::MemJournal { };
+        self.append(j, "application.started", "org", "{}");
+        self.link(j, "edge/good", LEFT, RIGHT, LABEL);
+        let codec = ops::KnowledgeCommandCodec { };
+        let mut c = self.command(j, "edge/invalid", RIGHT, LEFT, LABEL);
+        let mut context = self.context(j);
+        if mode == "foreign-application" { context.application_id = "another-native-record"; c.application_id = context.application_id; }
+        let body = self.body(context, c);
+        let mut entity = codec.edge_id(c.from_id, c.to_id, c.rel);
+        if mode == "wrong-edge" { entity = codec.edge_id(LEFT, LEFT, LABEL); }
+        if mode == "stale-predecessor" { self.append(j, "application.observed", "org", "{}"); }
+        let before = j.revision();
+        self.append(j, "knowledge.edge.linked", entity, if mode == "malformed" { "{\"format\":" } else { body });
+        self.link(j, "edge/after-invalid", LEFT, LEFT, "must not pass invalid row");
+        let receipts = NoEdgeReceipts { };
+        let store = know::Mem { };
+        let stopped = know::apply_record(store, j, receipts);
+        std::test::assert(len(stopped.error) > 0, mode + " returns a projection error");
+        std::test::assert_eq_int(stopped.watermark, before, mode + " reports last successful watermark");
+        std::test::assert_eq_int(store.watermark(), before, mode + " cannot checkpoint the invalid fact");
+        std::test::assert_eq_int(store.count("edges"), 1, mode + " has no partial edge effect and blocks later rows");
+        self.edge(store, 0, LEFT, RIGHT, LABEL);
+        let again = know::apply_record(store, j, receipts);
+        std::test::assert(len(again.error) > 0, mode + " remains refused on retry");
+        std::test::assert_eq_int(again.rows, 1, mode + " retries the offending fact first");
+        std::test::assert_eq_int(store.watermark(), before, mode + " retry preserves checkpoint");
+        std::test::assert_eq_int(store.count("edges"), 1, mode + " retry adds no graph row");
+    }
+    fn check() {
+        self.durable_replay();
+        self.rejects("malformed");
+        self.rejects("wrong-edge");
+        self.rejects("foreign-application");
+        self.rejects("stale-predecessor");
+    }
+}
+
+main locus App { run() { let cases = EdgeProjectionCases { }; cases.check(); } }
+fn main() { App { }; }

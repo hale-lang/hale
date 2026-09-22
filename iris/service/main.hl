@@ -1,0 +1,108 @@
+// Library head: explicit application composition, no process discovery or DNA.
+import "../../dna/api/web" as assets;
+
+locus ApplicationApi {
+    params {
+        actor: Actor;
+        provider: ApplicationProvider;
+        application_id: String;
+        host: String;
+        origin: String;
+        web: assets::WebAssets;
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let wire = ApplicationWire { };
+        let guard = wire.guard(req, self.host, self.origin);
+        if len(guard) > 0 { return wire.error(guard); }
+        let separator = std::str::index_of(req.path, "?");
+        let path = if separator < 0 { req.path } else { req.path[0..separator] };
+        let query = if separator < 0 { "" } else { req.path[(separator + 1)..len(req.path)] };
+        // Public static assets and observer metadata do not consult the provider.
+        if req.method == "GET" && len(query) == 0 && self.web.serves(path) { return self.web.response(path); }
+        let prefix = APPLICATION_PREFIX + "/" + self.application_id;
+        let commands = path == prefix + "/commands";
+        if req.method != "GET" && !(req.method == "POST" && commands) { return wire.error("method_not_allowed"); }
+        if path != APPLICATION_PREFIX && !std::str::starts_with(path, prefix + "/") { return wire.error("application_not_found"); }
+        if !wire.actor_ok(self.actor) || !wire.hex_id(self.application_id) || self.provider.application_id() != self.application_id { return wire.error("provider_unavailable"); }
+        if commands {
+            if req.method == "GET" {
+                let request_id = wire.lookup_id(query);
+                if len(request_id) == 0 { return wire.error("invalid_query"); }
+                let result = self.provider.lookup(self.actor, request_id);
+                if self.provider.application_id() != self.application_id { return wire.error("provider_unavailable"); }
+                return wire.command_response(self.actor, self.application_id, Command { request_id: request_id }, result, false);
+            }
+            if len(query) > 0 { return wire.error("invalid_query"); }
+            let command = wire.parse(req.body, self.application_id);
+            if !command.valid { return wire.error("invalid_command"); }
+            if command.expected_principal_mode != self.actor.mode || command.expected_principal_name != self.actor.name { return wire.error("command_context_changed"); }
+            let count = self.provider.operation_count();
+            if count < 0 || count > 16 { return wire.error("provider_unavailable"); }
+            let mut found = false; let mut i = 0;
+            while i < count {
+                let op = self.provider.operation_at(self.actor, i);
+                if !wire.operation_ok(op) { return wire.error("provider_unavailable"); }
+                if op.id == command.operation && op.version == command.operation_version {
+                    if found { return wire.error("provider_unavailable"); }
+                    if !op.supported { return wire.error("unsupported_operation"); }
+                    if op.target_kind != command.target_kind || op.target_id != command.target_id || !wire.choice(op.choices, command.value) { return wire.error("invalid_command"); }
+                    found = true;
+                }
+                i = i + 1;
+            }
+            if !found { return wire.error("unsupported_operation"); }
+            // Availability is advisory: an offline application may still recover
+            // a previous request. The provider rechecks current access itself.
+            let result = self.provider.submit(self.actor, command);
+            if self.provider.application_id() != self.application_id { return wire.error("provider_unavailable"); }
+            return wire.command_response(self.actor, self.application_id, command, result, true);
+        }
+        if len(query) > 0 { return wire.error("invalid_query"); }
+        if path == prefix + "/capabilities" {
+            let count = self.provider.operation_count();
+            if count < 0 || count > 16 { return wire.error("provider_unavailable"); }
+            let b = std::json::Builder { }; b.begin_object(); b.string_field("application_id", self.application_id); b.begin_array_field("operations");
+            let mut i = 0;
+            while i < count {
+                let op = self.provider.operation_at(self.actor, i);
+                if !wire.operation_ok(op) { return wire.error("provider_unavailable"); }
+                let mut j = 0;
+                while j < i {
+                    let prior = self.provider.operation_at(self.actor, j);
+                    if prior.id == op.id && prior.version == op.version { return wire.error("provider_unavailable"); }
+                    j = j + 1;
+                }
+                b.value(wire.operation(op)); i = i + 1;
+            }
+            b.end_array(); b.end_object();
+            if self.provider.application_id() != self.application_id { return wire.error("provider_unavailable"); }
+            return wire.success(self.actor, b.result());
+        }
+        if path != APPLICATION_PREFIX && path != prefix + "/state" { return wire.error("not_found"); }
+        let result = self.provider.inspect(self.actor);
+        if !result.ok { return wire.error(result.code); }
+        if self.provider.application_id() != self.application_id || !wire.state_ok(result.state, self.application_id) { return wire.error("provider_unavailable"); }
+        if path == prefix + "/state" { return wire.success(self.actor, wire.state(result.state)); }
+        let b = std::json::Builder { }; b.begin_object(); b.begin_array_field("items"); b.value(wire.application(result.state)); b.end_array(); b.end_object();
+        return wire.success(self.actor, b.result());
+    }
+}
+
+fn serve(port: Int, actor: Actor, provider: ApplicationProvider, webroot: String) {
+    let wire = ApplicationWire { };
+    let application_id = provider.application_id();
+    if port < 1 || port > 65535 || !wire.actor_ok(actor) || !wire.hex_id(application_id) {
+        eprintln("iris application service: invalid port, configured local actor, or provider application identity"); std::process::exit(2);
+    }
+    let web = assets::WebAssets { };
+    if len(webroot) > 0 {
+        if !web.load(webroot) { eprintln("iris application service: " + web.error); std::process::exit(2); }
+        if !std::str::contains(web.index, "<html ") || std::str::contains(web.index, "data-iris-profile=") {
+            eprintln("iris application service: expected the unprofiled Iris browser shell"); std::process::exit(2);
+        }
+        web.index = std::str::replace(web.index, "<html ", "<html data-iris-profile=\"application\" ");
+    }
+    let host = "127.0.0.1" + if port == 80 { "" } else { ":" + to_string(port) };
+    let api = ApplicationApi { actor: actor, provider: provider, application_id: application_id, host: host, origin: "http://" + host, web: web };
+    std::http::Server { host: "127.0.0.1", port: port, handler: api, ready_signal: "iris-application:listening" };
+}

@@ -129,7 +129,11 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id ");
+    if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
+        eprintln("hale dna: --request-id requires a nonempty value");
+        std::process::exit(1);
+    }
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -170,7 +174,7 @@ fn main() {
     if verb == "ask" {
         ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"));
     } else if verb == "verdict" {
-        ans = verdict_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"));
+        ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"), flag(a, "--request-id"));
     } else if verb == "raise" {
         ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)));
     } else if verb == "concern-raise" {
@@ -220,7 +224,7 @@ fn main() {
         else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as")); }
     } else if verb == "practice" {
         // GH #602: `hale dna practice [propose <name> --text <t> [--because …] [--supersedes <digest>]]`
-        ans = practice_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--text"), flag(a, "--because"), flag(a, "--supersedes"), flag(a, "--as"));
+        ans = practice_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--text"), flag(a, "--because"), flag(a, "--supersedes"), flag(a, "--as"), flag(a, "--request-id"), has_flag(a, "--no-wait"));
     } else if verb == "connect" {
         // GH #615: `hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <c,…>]`
         ans = connect_verb(root, seed, word(a, 0), flag(a, "--name"), flag(a, "--as"), flag(a, "--purpose"), flag(a, "--classes"), flag(a, "--by"));

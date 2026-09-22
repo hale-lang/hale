@@ -1,0 +1,497 @@
+// Command HTTP adaptation only. The injected provider owns native authority,
+// durable request identity, admission, and command-specific recovery.
+import "../operations" as ops;
+
+type CommandContext {
+    root: String = "";
+    source: Source = Source { };
+    principal_mode: String = "";
+    principal_name: String = "";
+}
+type CommandRequest {
+    valid: Bool = false;
+    request_id: String = "";
+    operation: String = "dna.practice.propose";
+    operation_version: String = "1";
+    application_id: String = "";
+    position_id: String = "org";
+    target_kind: String = "dna.practice";
+    target_id: String = "";
+    subject_digest: String = "";
+    expected_principal_mode: String = "";
+    expected_principal_name: String = "";
+    text: String = "";
+    rationale: String = "";
+    expected_review_state: String = "";
+    verdict: String = "";
+    comment: String = "";
+    // Exact Organization source fields. Deployment enablement is separate;
+    // historical Practice/Review payloads leave this branch empty.
+    source_head: String = "";
+    dependency_source: String = "";
+    dependency_digest: String = "";
+    record_head: String = "";
+    source_text: String = "";
+    expected_assignee: String = "";
+    new_assignee: String = "";
+}
+type CommandCapability {
+    available: Bool = false;
+    authorized: Bool = false;
+    reason: String = "";
+    recipients: String = "[]";
+}
+type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
+type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
+type OrganizationCommandCapabilities {
+    configured: Bool = false;
+    proposal: CommandCapability = CommandCapability { };
+    review: CommandCapability = CommandCapability { };
+}
+type OrganizationCommandOutcome {
+    proposal_state: String = "pending";
+    source_head: String = "";
+    source_digest: String = "";
+    mutation_id: String = "";
+    candidate_commit: String = "";
+    application_state: String = "pending";
+    application_reason_code: String = "";
+    restart_handoff_state: String = "pending";
+}
+type CommandReceipt {
+    command_id: String = "";
+    request_id: String = "";
+    application_id: String = "";
+    operation: String = "dna.practice.propose";
+    operation_version: String = "1";
+    principal_mode: String = "";
+    principal_name: String = "";
+    position_id: String = "org";
+    target_kind: String = "dna.practice";
+    target_id: String = "";
+    subject_digest: String = "";
+    fingerprint: String = "";
+    state: String = "";
+    reason: String = "";
+    // Only the branch selected by operation may contain values.
+    proposal_state: String = "pending";
+    verdict_value: String = "";
+    verdict_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "unavailable";
+    review_outcome: String = "";
+    review_subject_digest: String = "";
+    activation_state: String = "unknown";
+    activation_reason: String = "";
+    organization: OrganizationCommandOutcome = OrganizationCommandOutcome { };
+    task: TaskCommandOutcome = TaskCommandOutcome { };
+    person: PersonRetirementOutcome = PersonRetirementOutcome { };
+}
+type CommandResult {
+    ok: Bool = false;
+    code: String = "commands_unavailable";
+    source: Source = Source { };
+    receipt: CommandReceipt = CommandReceipt { };
+}
+interface CommandProvider {
+    fn supported(operation: String, version: String) -> Bool;
+    fn capability(context: CommandContext, operation: String, version: String) -> CommandCapability;
+    fn submit(context: CommandContext, command: CommandRequest) -> CommandResult;
+    fn lookup(context: CommandContext, request_id: String) -> CommandResult;
+}
+// Optional capability-only facet. The old command provider keeps its four
+// methods; composition binds this facet to the same named provider.
+interface OrganizationCapabilityProvider {
+    fn organization_capabilities(context: CommandContext) -> OrganizationCommandCapabilities;
+}
+locus NoOrganizationCapabilities {
+    params { }
+    fn organization_capabilities(context: CommandContext) -> OrganizationCommandCapabilities { return OrganizationCommandCapabilities { }; }
+}
+locus NoCommands {
+    params { }
+    fn supported(operation: String, version: String) -> Bool { return false; }
+    fn capability(context: CommandContext, operation: String, version: String) -> CommandCapability { return CommandCapability { }; }
+    fn submit(context: CommandContext, command: CommandRequest) -> CommandResult { return CommandResult { code: "commands_unsupported" }; }
+    fn lookup(context: CommandContext, request_id: String) -> CommandResult { return CommandResult { code: "commands_unsupported" }; }
+}
+
+type CommandHeader {
+    valid: Bool = true;
+    count: Int = 0;
+    value: String = "";
+}
+
+locus CommandWire {
+    params { }
+    fn raw(object: String, key: String) -> String { return std::json::find_field_raw(object, key); }
+    fn is_text(raw: String) -> Bool { return len(raw) >= 2 && std::str::starts_with(raw, "\"") && std::str::ends_with(raw, "\""); }
+    fn text(object: String, key: String) -> String {
+        let raw = self.raw(object, key);
+        if !self.is_text(raw) { return ""; }
+        let syntax = ops::OrganizationJson { };
+        return syntax.decode(raw);
+    }
+    // Call only after strict syntax validation. Every object has its own
+    // allowlist; permissive stdlib cursors alone are not schema validation.
+    fn fields(object: String, names: String, expected: Int) -> Bool {
+        if !std::str::starts_with(std::str::trim(object), "{") { return false; }
+        let mut count = 0;
+        let mut it = std::json::object_first(object);
+        while !it.done {
+            let key = std::json::obj_key_string(it, object);
+            if !std::str::contains(" " + names + " ", " " + key + " ") { return false; }
+            count = count + 1;
+            it = std::json::object_next(it, object);
+        }
+        return count == expected;
+    }
+    fn header(headers: String, name: String) -> CommandHeader {
+        let size = len(headers);
+        if size > 16384 { return CommandHeader { valid: false }; }
+        let mut result = CommandHeader { };
+        let mut start = 0;
+        while start < size {
+            let tail = headers[start..size];
+            let split = std::str::index_of(tail, "\r\n");
+            let line = if split < 0 { tail } else { tail[0..split] };
+            let colon = std::str::index_of(line, ":");
+            // Obsolete folded headers and malformed names are ambiguous.
+            if colon < 1 { return CommandHeader { valid: false }; }
+            let key = line[0..colon];
+            if key != std::str::trim(key) || std::str::contains(key, " ") || std::str::contains(key, "\t") { return CommandHeader { valid: false }; }
+            if std::str::lower(key) == std::str::lower(name) {
+                result.count = result.count + 1;
+                result.value = std::str::trim(line[(colon + 1)..len(line)]);
+            }
+            if split < 0 { break; }
+            start = start + split + 2;
+        }
+        return result;
+    }
+    fn origin_valid(origin: String) -> Bool {
+        let scheme = if std::str::starts_with(origin, "https://") { 8 } else if std::str::starts_with(origin, "http://") { 7 } else { 0 };
+        let size = len(origin);
+        if scheme == 0 || size <= scheme || size > 2048 { return false; }
+        let mut i = scheme;
+        while i < size {
+            let c = std::str::byte_at_unchecked(origin, i);
+            if c <= 32 || c >= 127 || c == 47 || c == 92 || c == 64 || c == 63 || c == 35 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fn bounded(value: String, maximum: Int, nonempty: Bool, controls: Bool) -> Bool {
+        let size = len(value);
+        let syntax = ops::OrganizationJson { };
+        if size > maximum || (nonempty && size == 0) || !syntax.utf8(value, size) { return false; }
+        if controls { return true; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c < 32 || c == 127 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn known_operation(operation: String, version: String) -> Bool {
+        return version == "1" && (operation == "dna.practice.propose" || operation == "dna.review.verdict" || operation == "dna.organization.propose" || operation == "dna.task.reassign" || operation == "dna.person.retire");
+    }
+    fn known_request(operation: String, version: String) -> Bool {
+        return self.known_operation(operation, version);
+    }
+    fn verdict_value(value: String) -> Bool { return value == "approve" || value == "reject" || value == "revise"; }
+    fn parse(body: String, application_id: String) -> CommandRequest {
+        let syntax = ops::OrganizationJson { };
+        if len(body) > 32768 || !syntax.valid(body) || !self.fields(body, "request_id operation operation_version context target preconditions arguments", 7) { return CommandRequest { }; }
+        let context = self.raw(body, "context");
+        let target = self.raw(body, "target");
+        let conditions = self.raw(body, "preconditions");
+        let arguments = self.raw(body, "arguments");
+        let operation = self.text(body, "operation");
+        let version = self.text(body, "operation_version");
+        if !self.known_request(operation, version) || !self.fields(context, "application_id position_id", 2) || !self.fields(target, "application_id kind id", 3) { return CommandRequest { }; }
+        let practice = operation == "dna.practice.propose";
+        let organization = operation == "dna.organization.propose";
+        let task = operation == "dna.task.reassign";
+        let person = operation == "dna.person.retire";
+        if person {
+            if !self.fields(conditions, "subject_digest principal", 2) || !self.fields(arguments, "to", 1) { return CommandRequest { }; }
+        } else if task {
+            if !self.fields(conditions, "subject_digest principal assignee", 3) || !self.fields(arguments, "to", 1) { return CommandRequest { }; }
+        } else if organization {
+            if !self.fields(conditions, "base principal", 2) || !self.fields(arguments, "source_text rationale", 2) { return CommandRequest { }; }
+        } else if practice {
+            if !self.fields(conditions, "subject_digest principal", 2) || !self.fields(arguments, "text rationale", 2) { return CommandRequest { }; }
+        } else {
+            if !self.fields(conditions, "subject_digest principal review_state", 3) || self.text(conditions, "review_state") != "pending" || !self.fields(arguments, "verdict comment", 2) { return CommandRequest { }; }
+        }
+        let kind = self.text(target, "kind");
+        if self.text(context, "position_id") != "org" || kind != if person { "dna.person" } else if task { "dna.task" } else if organization { "dna.organization.module" } else if practice { "dna.practice" } else { "dna.review" } { return CommandRequest { }; }
+        if self.text(context, "application_id") != application_id || self.text(target, "application_id") != application_id || !self.bounded(application_id, 256, true, false) { return CommandRequest { }; }
+        let expected = self.raw(conditions, "principal");
+        if !self.fields(expected, "mode name", 2) { return CommandRequest { }; }
+        let expected_mode = self.text(expected, "mode");
+        let expected_name = self.text(expected, "name");
+        if (expected_mode != "local" && expected_mode != "oidc") || !self.bounded(expected_name, 256, true, false) { return CommandRequest { }; }
+        let request_id = self.text(body, "request_id");
+        let target_id = self.text(target, "id");
+        let base = self.raw(conditions, "base");
+        let digest = if organization { self.text(base, "module_digest") } else { self.text(conditions, "subject_digest") };
+        if !self.bounded(request_id, 128, true, false) || !self.bounded(digest, 256, true, false) || !self.bounded(target_id, 256, true, false) { return CommandRequest { }; }
+        let mut command = CommandRequest { valid: true, request_id: request_id, operation: operation, application_id: application_id, target_kind: kind, target_id: target_id, subject_digest: digest, expected_principal_mode: expected_mode, expected_principal_name: expected_name };
+        if person {
+            command.new_assignee = self.text(arguments, "to");
+            if !dna::digest_well_formed(digest) || !self.is_text(self.raw(arguments, "to")) || !self.bounded(command.new_assignee, 256, false, false) || command.new_assignee == target_id { return CommandRequest { }; }
+        } else if task {
+            command.expected_assignee = self.text(conditions, "assignee"); command.new_assignee = self.text(arguments, "to");
+            if !dna::digest_well_formed(digest) || !self.bounded(command.expected_assignee, 256, true, false) || !self.bounded(command.new_assignee, 256, true, false) || command.expected_assignee == command.new_assignee { return CommandRequest { }; }
+        } else if organization {
+            if !self.fields(base, "source_head module_digest dependency_digest dependency_source record_head", 5) || target_id != "dna/org/main.hl" { return CommandRequest { }; }
+            command.source_head = self.text(base, "source_head");
+            command.dependency_source = self.text(base, "dependency_source"); command.dependency_digest = self.text(base, "dependency_digest");
+            command.record_head = self.text(base, "record_head"); command.source_text = self.text(arguments, "source_text"); command.rationale = self.text(arguments, "rationale");
+            let codec = ops::OrganizationCommandCodec { };
+            let native_context = ops::GovernanceContext { application_id: application_id, principal_mode: expected_mode, principal_name: expected_name };
+            let native = ops::GovernanceCommand { request_id: request_id, operation: operation, application_id: application_id, target_kind: kind, target_id: target_id,
+                subject_digest: digest, source_head: command.source_head, dependency_source: command.dependency_source, dependency_digest: command.dependency_digest,
+                record_head: command.record_head, source_text: command.source_text, rationale: command.rationale };
+            if !codec.valid(native_context, native) { return CommandRequest { }; }
+        } else if practice {
+            command.text = self.text(arguments, "text"); command.rationale = self.text(arguments, "rationale");
+            if target_id != digest || !self.bounded(command.text, 8192, true, true) || !self.bounded(command.rationale, 2048, true, true) { return CommandRequest { }; }
+        } else {
+            command.expected_review_state = "pending"; command.verdict = self.text(arguments, "verdict"); command.comment = self.text(arguments, "comment");
+            if !self.verdict_value(command.verdict) || !self.is_text(self.raw(arguments, "comment")) || !self.bounded(command.comment, 2048, false, true) { return CommandRequest { }; }
+        }
+        return command;
+    }
+    fn lookup_id(query: String) -> String {
+        if !std::str::starts_with(query, "request_id=") || std::str::contains(query, "&") || len(query) > 1024 { return ""; }
+        let http = Http { };
+        let id = http.decode(query[11..len(query)]);
+        if !id.ok || !self.bounded(id.text, 128, true, false) { return ""; }
+        return id.text;
+    }
+    fn guard(req: std::http::Request, origin: String) -> String {
+        if !self.origin_valid(origin) { return "commands_unsupported"; }
+        let supplied = self.header(req.headers, "Origin");
+        if !supplied.valid || supplied.count != 1 || supplied.value != origin { return "invalid_origin"; }
+        let content = self.header(req.headers, "Content-Type");
+        if !content.valid || content.count != 1 || std::str::lower(content.value) != "application/json" { return "unsupported_media_type"; }
+        let marker = self.header(req.headers, "X-Hale-Command");
+        if !marker.valid || marker.count != 1 || marker.value != "1" { return "invalid_command"; }
+        let length = self.header(req.headers, "Content-Length");
+        let transfer = self.header(req.headers, "Transfer-Encoding");
+        if !length.valid || length.count > 1 || !transfer.valid || transfer.count > 0 { return "invalid_command"; }
+        if length.count == 1 && length.value != to_string(len(req.body)) { return "invalid_command"; }
+        if len(req.body) > 32768 { return "command_too_large"; }
+        return "";
+    }
+    fn capability_json(capability: CommandCapability, origin: String, operation: String) -> String {
+        let available = capability.available && self.origin_valid(origin);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("profile", operation + ".v1");
+        b.bool_field("available", available); b.bool_field("authorized", capability.authorized);
+        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
+        if operation == "dna.practice.propose" {
+            b.string_field("max_text_bytes", "8192"); b.string_field("max_rationale_bytes", "2048");
+        } else { b.string_field("max_comment_bytes", "2048"); }
+        b.string_field("reason", if !self.origin_valid(origin) { "Command submission has no configured origin." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Command capability is unavailable." });
+        b.end_object(); return b.result();
+    }
+    fn organization_capability_json(capability: CommandCapability, origin: String, review: Bool) -> String {
+        let usable_origin = self.origin_valid(origin); let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", if review { "dna.organization.review.verdict.v1" } else { "dna.organization.propose.v1" });
+        if review { b.string_field("operation", "dna.review.verdict"); }
+        b.bool_field("available", capability.available && usable_origin); b.bool_field("authorized", capability.authorized);
+        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
+        b.string_field("command_origin", if usable_origin { origin } else { "" });
+        if review { b.string_field("max_comment_bytes", "2048"); }
+        else { b.string_field("module_path", "dna/org/main.hl"); b.string_field("max_source_bytes", "16384"); b.string_field("max_rationale_bytes", "2048"); b.string_field("max_request_bytes", "32768"); }
+        b.string_field("reason", if !usable_origin { "Command submission has no configured origin." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Source command capability is unavailable." });
+        b.end_object(); return b.result();
+    }
+    fn inactive_organization(r: CommandReceipt) -> Bool {
+        let o = r.organization;
+        return o.proposal_state == "pending" && o.source_head == "" && o.source_digest == "" && o.mutation_id == "" && o.candidate_commit == "" && o.application_state == "pending" && o.application_reason_code == "" && o.restart_handoff_state == "pending";
+    }
+    fn recipients_valid(value: String) -> Bool {
+        let syntax = ops::OrganizationJson { };
+        if len(value) > 65536 || !syntax.valid(value) || !std::str::starts_with(std::str::trim(value), "[") { return false; }
+        let mut it = std::json::array_first(value); let mut count = 0; let mut seen = "\n";
+        while !it.done {
+            if !self.is_text(it.element) { return false; }
+            let name = syntax.decode(it.element);
+            if !self.bounded(name, 256, true, false) || std::str::contains(seen, "\n" + name + "\n") || count >= 64 { return false; }
+            seen = seen + name + "\n"; count = count + 1; it = std::json::array_next(it);
+        }
+        return true;
+    }
+    fn task_writable(capability: CommandCapability, origin: String) -> Bool {
+        return capability.available && capability.authorized && self.origin_valid(origin) && self.recipients_valid(capability.recipients);
+    }
+    fn task_capability_json(capability: CommandCapability, origin: String) -> String {
+        let valid = self.recipients_valid(capability.recipients); let available = capability.available && valid && self.origin_valid(origin);
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", "dna.task.reassign.v1"); b.bool_field("available", available); b.bool_field("authorized", available && capability.authorized);
+        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
+        b.string_field("max_identity_bytes", "256"); b.string_field("max_request_bytes", "32768");
+        b.field("recipients", if available && capability.authorized { capability.recipients } else { "[]" });
+        b.string_field("reason", if !self.origin_valid(origin) { "Command submission has no configured origin." } else if !valid { "Task authority is unavailable." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Task capability is unavailable." });
+        b.end_object(); return b.result();
+    }
+    fn inactive_task(r: CommandReceipt) -> Bool {
+        return r.task.state == "" && r.task.from == "" && r.task.to == "" && r.task.event_id == "";
+    }
+    fn inactive_person(r: CommandReceipt) -> Bool {
+        return r.person.state == "" && r.person.from == "" && r.person.to == "" && r.person.event_id == "" && r.person.transferred == -1;
+    }
+    fn person_valid(r: CommandReceipt) -> Bool {
+        let p = r.person; let source = ops::OrganizationCommandCodec { };
+        if r.target_kind != "dna.person" || !dna::digest_well_formed(r.subject_digest) || p.from != r.target_id
+            || !self.bounded(p.to, 256, false, false) || p.from == p.to || r.proposal_state != "" || r.verdict_value != "" || r.verdict_state != ""
+            || r.candidate_digest != "" || r.review_id != "" || r.review_state != "unavailable" || r.activation_state != "unknown" || r.activation_reason != "" { return false; }
+        return if p.state == "applied" { r.state == "succeeded" && source.commit_id(p.event_id) && p.transferred >= 0 && p.transferred <= 32 && (p.transferred == 0 || p.to != "") }
+        else { p.state == "unknown" && r.state == "outcome_unknown" && p.event_id == "" && p.transferred == -1 };
+    }
+    fn task_valid(r: CommandReceipt) -> Bool {
+        let t = r.task; let source = ops::OrganizationCommandCodec { };
+        if r.target_kind != "dna.task" || !dna::digest_well_formed(r.subject_digest)
+            || !self.bounded(t.from, 256, true, false) || !self.bounded(t.to, 256, true, false) || t.from == t.to
+            || r.proposal_state != "" || r.verdict_value != "" || r.verdict_state != "" || r.candidate_digest != "" || r.review_id != ""
+            || r.review_state != "unavailable" || r.activation_state != "unknown" || r.activation_reason != "" { return false; }
+        return if t.state == "applied" { r.state == "succeeded" && source.commit_id(t.event_id) }
+        else { t.state == "unknown" && r.state == "outcome_unknown" && t.event_id == "" };
+    }
+    fn organization_valid(r: CommandReceipt) -> Bool {
+        let o = r.organization; let codec = ops::OrganizationCommandCodec { };
+        if r.target_kind != "dna.organization.module" || r.target_id != "dna/org/main.hl" || !dna::digest_well_formed(r.subject_digest)
+            || r.proposal_state != "" || r.verdict_value != "" || r.verdict_state != "" || r.candidate_digest != ""
+            || !codec.commit_id(o.source_head) || !dna::digest_well_formed(o.source_digest) || !self.bounded(o.mutation_id, 256, false, false)
+            || (o.candidate_commit != "" && !codec.commit_id(o.candidate_commit)) || r.activation_state != "unknown" || r.activation_reason != "" { return false; }
+        if o.proposal_state == "created" {
+            if r.state != "succeeded" || o.mutation_id == "" || o.candidate_commit == "" || r.review_id != o.mutation_id { return false; }
+        } else {
+            if r.review_id != "" || o.candidate_commit != "" || r.review_state != "unavailable" || o.application_reason_code != "" { return false; }
+            let expected = if o.proposal_state == "unknown" { "unknown" } else { "pending" };
+            if o.application_state != expected || o.restart_handoff_state != expected { return false; }
+            if o.proposal_state == "pending" { if r.state != "recorded" { return false; } }
+            else if o.proposal_state == "refused" || o.proposal_state == "failed" { if r.state != "refused" { return false; } }
+            else if o.proposal_state == "unknown" { if r.state != "outcome_unknown" { return false; } }
+            else { return false; }
+        }
+        if o.application_state != "pending" && o.application_state != "applied" && o.application_state != "refused" && o.application_state != "declined" && o.application_state != "failed" && o.application_state != "unknown" { return false; }
+        if o.restart_handoff_state != "pending" && o.restart_handoff_state != "requested" && o.restart_handoff_state != "unknown" { return false; }
+        if o.restart_handoff_state == "requested" && o.application_state != "applied" { return false; }
+        if o.application_state == "applied" || o.application_state == "refused" || o.application_state == "failed" {
+            if r.review_state != "settled" || r.review_outcome != "approve" { return false; }
+        }
+        if o.application_state == "declined" && (r.review_state != "settled" || (r.review_outcome != "reject" && r.review_outcome != "revise")) { return false; }
+        if o.application_state == "refused" {
+            let codes = ops::OrganizationApplication { }; if !codes.refusal_code(o.application_reason_code) { return false; }
+        } else if o.application_state == "failed" { if o.application_reason_code != "native_apply_failed" { return false; } }
+        else if o.application_reason_code != "" { return false; }
+        return true;
+    }
+    fn receipt_valid(context: CommandContext, command: CommandRequest, result: CommandResult, submitting: Bool) -> Bool {
+        let r = result.receipt;
+        if !result.ok || !result.source.ok || result.source.identity != context.source.identity || !self.bounded(result.source.head, 256, true, false) || result.source.revision < 0 { return false; }
+        if r.application_id != context.source.identity || r.principal_mode != context.principal_mode || r.principal_name != context.principal_name || !self.bounded(r.principal_name, 256, true, false) || (r.principal_mode != "local" && r.principal_mode != "oidc") { return false; }
+        if !self.known_operation(r.operation, r.operation_version) || r.position_id != "org" || r.request_id != command.request_id || !self.bounded(r.command_id, 256, true, false) || !self.bounded(r.fingerprint, 256, true, false) { return false; }
+        if !self.bounded(r.target_id, 256, true, false) || !self.bounded(r.subject_digest, 256, true, false) { return false; }
+        if submitting && (r.operation != command.operation || r.operation_version != command.operation_version || r.target_kind != command.target_kind || r.target_id != command.target_id || r.subject_digest != command.subject_digest) { return false; }
+        if !self.bounded(r.reason, 2048, false, true) || !self.bounded(r.activation_reason, 2048, false, true) { return false; }
+        if r.state != "recorded" && r.state != "admitted" && r.state != "running" && r.state != "succeeded" && r.state != "refused" && r.state != "failed" && r.state != "outcome_unknown" { return false; }
+        let practice = r.operation == "dna.practice.propose"; let organization = r.operation == "dna.organization.propose"; let task = r.operation == "dna.task.reassign";
+        let person = r.operation == "dna.person.retire";
+        if !person && !self.inactive_person(r) { return false; }
+        if !task && !self.inactive_task(r) { return false; }
+        if !organization && !self.inactive_organization(r) { return false; }
+        if person {
+            if !self.person_valid(r) || (submitting && r.person.to != command.new_assignee) { return false; }
+        } else if task {
+            if !self.task_valid(r) || (submitting && (r.task.from != command.expected_assignee || r.task.to != command.new_assignee)) { return false; }
+        } else if organization {
+            if !self.organization_valid(r) { return false; }
+            if submitting && (r.organization.source_head != command.source_head || r.organization.source_digest != dna::digest_of(command.source_text)) { return false; }
+        } else if practice {
+            if r.target_kind != "dna.practice" || r.target_id != r.subject_digest || len(r.verdict_value) > 0 || len(r.verdict_state) > 0 { return false; }
+            if r.proposal_state != "pending" && r.proposal_state != "created" && r.proposal_state != "refused" && r.proposal_state != "unknown" { return false; }
+            if !self.bounded(r.candidate_digest, 256, false, false) || !self.bounded(r.review_id, 256, false, false) { return false; }
+            if r.proposal_state == "created" && (len(r.candidate_digest) == 0 || len(r.review_id) == 0) { return false; }
+            if (r.state == "succeeded" && r.proposal_state != "created") || (r.state == "refused" && r.proposal_state != "refused") { return false; }
+        } else {
+            if r.target_kind != "dna.review" || len(r.proposal_state) > 0 || len(r.candidate_digest) > 0 || len(r.review_id) > 0 || !self.verdict_value(r.verdict_value) { return false; }
+            if r.verdict_state != "pending" && r.verdict_state != "accepted" && r.verdict_state != "refused" && r.verdict_state != "unknown" { return false; }
+            if submitting && r.verdict_value != command.verdict { return false; }
+            if (r.state == "succeeded" && r.verdict_state != "accepted") || (r.state == "refused" && r.verdict_state != "refused") { return false; }
+        }
+        if r.review_state == "unavailable" {
+            if len(r.review_outcome) > 0 || len(r.review_subject_digest) > 0 { return false; }
+        } else if r.review_state == "pending" || r.review_state == "settled" {
+            if practice && r.proposal_state != "created" { return false; }
+            if r.review_subject_digest != if organization { r.organization.candidate_commit } else if practice { r.candidate_digest } else { r.subject_digest } { return false; }
+            if r.review_state == "pending" && len(r.review_outcome) > 0 { return false; }
+            if r.review_state == "settled" && r.review_outcome != "approve" && r.review_outcome != "reject" && r.review_outcome != "revise" && r.review_outcome != "abstain" { return false; }
+        } else { return false; }
+        if r.activation_state != "unknown" && r.activation_state != "pending" && r.activation_state != "adopted" && r.activation_state != "refused" { return false; }
+        if r.activation_state == "adopted" && (r.review_state != "settled" || r.review_outcome != "approve") { return false; }
+        return true;
+    }
+    fn receipt_json(r: CommandReceipt) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("command_id", r.command_id); b.string_field("request_id", r.request_id); b.string_field("application_id", r.application_id);
+        b.string_field("operation", r.operation); b.string_field("operation_version", r.operation_version);
+        b.begin_object_field("principal"); b.string_field("mode", r.principal_mode); b.string_field("name", r.principal_name); b.end_object();
+        b.begin_object_field("context"); b.string_field("application_id", r.application_id); b.string_field("position_id", r.position_id); b.end_object();
+        b.begin_object_field("target"); b.string_field("application_id", r.application_id); b.string_field("kind", r.target_kind); b.string_field("id", r.target_id); b.end_object();
+        b.string_field("subject_digest", r.subject_digest); b.string_field("fingerprint", r.fingerprint); b.string_field("state", r.state); b.string_field("reason", r.reason);
+        if r.operation == "dna.person.retire" {
+            let p = r.person; b.begin_object_field("person"); b.string_field("state", p.state); b.field("from", dna::record_json_quote(p.from)); b.field("to", dna::record_json_quote(p.to));
+            b.string_field("event_id", p.event_id); b.string_field("transferred", if p.transferred < 0 { "" } else { to_string(p.transferred) }); b.end_object();
+        } else if r.operation == "dna.task.reassign" {
+            let t = r.task; b.begin_object_field("task"); b.string_field("state", t.state); b.string_field("from", t.from); b.string_field("to", t.to); b.string_field("event_id", t.event_id); b.end_object();
+        } else if r.operation == "dna.practice.propose" {
+            b.begin_object_field("proposal"); b.string_field("state", r.proposal_state); b.string_field("candidate_digest", r.candidate_digest); b.string_field("review_id", r.review_id); b.end_object();
+        } else if r.operation == "dna.organization.propose" {
+            let o = r.organization; b.begin_object_field("organization");
+            b.string_field("proposal_state", o.proposal_state); b.string_field("source_head", o.source_head); b.string_field("source_digest", o.source_digest);
+            b.string_field("mutation_id", o.mutation_id); b.string_field("candidate_commit", o.candidate_commit);
+            b.string_field("application_state", o.application_state); b.string_field("application_reason_code", o.application_reason_code); b.string_field("restart_handoff_state", o.restart_handoff_state); b.end_object();
+        } else {
+            b.begin_object_field("verdict"); b.string_field("value", r.verdict_value); b.string_field("state", r.verdict_state); b.end_object();
+        }
+        b.begin_object_field("review"); b.string_field("state", r.review_state); b.string_field("outcome", r.review_outcome); b.string_field("subject_digest", r.review_subject_digest); b.end_object();
+        b.begin_object_field("activation"); b.string_field("state", r.activation_state); b.string_field("reason", r.activation_reason); b.end_object();
+        b.end_object(); return b.result();
+    }
+    fn error(code: String) -> std::http::Response {
+        let http = Http { };
+        if code == "invalid_command" { return http.error(400, code, "invalid command fields, values, or required headers", false); }
+        if code == "invalid_query" { return http.error(400, code, "lookup requires exactly one request_id", false); }
+        if code == "unauthenticated" { return http.error(401, code, "sign in at /auth/login", false); }
+        if code == "forbidden" { return http.error(403, code, "this command operation is not authorized", false); }
+        if code == "invalid_origin" { return http.error(403, code, "the command origin is not permitted", false); }
+        if code == "command_context_changed" { return http.error(409, code, "the authenticated principal changed; review the command under the current identity", false); }
+        if code == "stale_subject" { return http.error(409, code, "the selected subject is no longer eligible; load its current state", false); }
+        if code == "request_conflict" { return http.error(409, code, "this request identity belongs to different command content", false); }
+        if code == "command_not_found" { return http.error(404, code, "no visible command was found for this request identity", false); }
+        if code == "command_too_large" { return http.error(413, code, "the command body exceeds the supported byte limit", false); }
+        if code == "unsupported_media_type" { return http.error(415, code, "commands require Content-Type application/json", false); }
+        if code == "commands_unsupported" { return http.error(503, code, "this application does not configure command submission", false); }
+        return http.error(503, "commands_unavailable", "the command result is unavailable; retain the request identity for lookup", true);
+    }
+    fn response(context: CommandContext, command: CommandRequest, result: CommandResult, submitting: Bool) -> std::http::Response {
+        if !result.ok { return self.error(result.code); }
+        if !self.receipt_valid(context, command, result, submitting) { return self.error("commands_unavailable"); }
+        let http = Http { };
+        let mut response = http.success(result.source, self.receipt_json(result.receipt));
+        let state = result.receipt.state;
+        if submitting && state != "succeeded" && state != "refused" && state != "failed" { response.status = 202; }
+        return response;
+    }
+}

@@ -1,0 +1,74 @@
+// A real Body/Review creates the receipt and ratification. The graph must
+// preserve their exact text, including native JSON's escaped control bytes.
+import "../../core" as dna;
+import ".." as know;
+
+fn exact_text() -> String {
+    let b = std::bytes::BytesBuilder { };
+    let prefix = "Knowledge — équipe 🧭 <literal> \\\"quoted\\\" \\n\r\n";
+    b.append_str(prefix);
+    let mut i = 1;
+    while i < 32 { b.append_u8(i); i = i + 1; }
+    b.append_u8(127);
+    i = len(prefix) + 32;
+    while i < 8192 { b.append_u8(1); i = i + 1; }
+    return std::str::from_bytes(b.snapshot());
+}
+
+main locus App {
+    bus { publish dna::ReviewVerdict; }
+    fn matches(store: know::Mem, digest: String, text: String, accepted: Bool) {
+        let item = store.idea(digest);
+        std::test::assert(item.present, "actual native candidate appears in the graph");
+        std::test::assert_eq_str(item.idea.id, digest, "graph retains exact content-addressed identity");
+        std::test::assert_eq_str(item.idea.text, text, "graph preserves all 8192 bytes, Unicode, CRLF, literal escapes and non-NUL controls");
+        std::test::assert_eq_str(item.idea.name, "concept/équipe 🧭", "native node name remains exact");
+        std::test::assert(item.idea.accepted == accepted, "graph distinguishes proposal from native ratification");
+    }
+    fn check() {
+        let repo = "/tmp/dna-node-document-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "temporary native Record");
+        let j = dna::GitJournal { repo: repo };
+        let receipts = dna::GitReceipts { repo: repo };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" } };
+        let text = exact_text(); std::test::assert_eq_int(len(text), 8192, "advertised maximum text byte bound");
+        let codec = dna::KnowledgeNodeRequestCodec { };
+        let mut request = dna::KnowledgeNodeRequest {
+            request_id: "node/exact-document", operation: "dna.knowledge.node.propose", kind: "concept",
+            name: "concept/équipe 🧭", text: text, author: "org", target: "org", by: "riley", because: "Preserve exact native knowledge."
+        };
+        request.candidate_digest = dna::digest_of(codec.document(request));
+        std::test::assert(codec.valid(request), "maximum-sized exact request is valid");
+        body.on_knowledge_node_requested(request);
+        let digest = request.candidate_digest;
+        std::test::assert_eq_str(body.governance_event("knowledge.node.proposed", request.request_id).body, codec.proposed(request), "real Body acknowledges exact candidate");
+        let store = know::Mem { };
+        let proposed = know::apply_record(store, j, receipts);
+        std::test::assert_eq_str(proposed.error, "", "actual native proposal projects");
+        self.matches(store, digest, text, false);
+        dna::ReviewVerdict <- dna::Verdict {
+            command_id: "review/exact-document", review_id: dna::knowledge_review_id(digest), subject_digest: digest,
+            verdict: "approve", reviewer: "board-member", authority: "board", comment: "Approve exact native bytes."
+        };
+        let mut ticks = 0;
+        while !body.knowledge_ratified(digest) && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
+        std::test::assert(body.knowledge_ratified(digest), "real Review ratified the exact native candidate");
+        let ratified = know::apply_record(store, j, receipts);
+        std::test::assert_eq_str(ratified.error, "", "native ratification projects");
+        self.matches(store, digest, text, true);
+        let document = receipts.read(digest[7..len(digest)]);
+        std::test::assert_eq_str(dna::digest_of(document), digest, "graph projection never rewrites receipt identity");
+        std::test::assert_eq_str(dna::native_json_string(document, "text"), text, "retained receipt and graph agree byte-for-byte");
+        let fresh_record = dna::GitJournal { repo: repo };
+        let rebuilt = know::Mem { };
+        let replay = know::apply_record(rebuilt, fresh_record, receipts);
+        std::test::assert_eq_str(replay.error, "", "fresh graph rebuild from real Record succeeds");
+        std::test::assert_eq_int(replay.watermark, fresh_record.revision(), "fresh graph reaches complete ratification evidence");
+        self.matches(rebuilt, digest, text, true);
+        let removed = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    run() { self.check(); }
+}
+fn main() { App { }; }

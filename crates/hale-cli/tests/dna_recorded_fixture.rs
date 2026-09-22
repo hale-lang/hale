@@ -356,6 +356,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     assert!(m2.3.contains("\"change_class\": \"organization\"") && m2.3.contains("\"seed\": \"dna/org\""), "{}", m2.3);
     let org_main = git(&["show", "HEAD:dna/org/main.hl"], &app);
     assert!(org_main.matches("dna::Leader {").count() >= 2, "a new position in the organization's main:\n{org_main}");
+    assert!(org_main.contains("self.core.request_tick(") && !org_main.contains("self.core.tick("), "growing the organization preserves its queued cadence:\n{org_main}");
     let org_pid_after = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default();
     assert!(!org_pid_before.is_empty() && org_pid_before != org_pid_after, "the organization was restarted with its new position");
     assert!(!rows.iter().any(|(_, k, e, _)| k == "mutation.failed" && e == "m1"), "a retained Mutation whose worktree is gone is not 'in flight' to the restarted organization:\n{}", dump(&app));

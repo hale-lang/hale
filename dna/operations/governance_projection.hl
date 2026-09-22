@@ -1,0 +1,286 @@
+// Read-only, command-specific projection of native facts. Raw comments,
+// questions and refusal prose never cross this receipt surface: receipt
+// protection, redaction or a move to Ledger cannot expose them indirectly.
+import "../core" as dna;
+
+type GovernanceProjectionFact {
+    found: Bool = false;
+    invalid: Bool = false;
+    body: String = "";
+    sequence: Int = -1;
+}
+type GovernanceProjectionCandidate {
+    ok: Bool = false;
+    kind: String = "";
+    author: String = "";
+    target: String = "";
+    name: String = "";
+    supersedes: String = "";
+}
+type GovernanceProjectionReview {
+    ok: Bool = false;
+    state: String = "unavailable";
+    outcome: String = "";
+    reviewer: String = "";
+    sequence: Int = -1;
+}
+
+// Journal is passed through methods, never forwarded into another interface
+// parameter in a locus constructor. The caller supplies one captured Journal.
+locus GovernanceProjection {
+    params { }
+    fn object(body: String) -> Bool {
+        if len(body) > 196608 || !std::str::starts_with(body, "{") { return false; }
+        let syntax = OrganizationJson { };
+        return syntax.valid(body);
+    }
+    fn texts(body: String, names: String, optional: Bool) -> Bool {
+        let fields = DefinitionCodec { }; let count = dna::word_count(names); let mut i = 0;
+        while i < count {
+            let raw = std::json::find_field_raw(body, dna::nth_word(names, i));
+            if !(optional && raw == "") && !fields.text(raw) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    @unbounded
+    fn fact(j: dna::Journal, kind: String, entity: String, review_request: Bool) -> GovernanceProjectionFact {
+        let mut found = GovernanceProjectionFact { }; let count = j.revision(); let mut i = 0;
+        while i < count {
+            let e = j.read(i);
+            if e.kind == kind && (e.entity == entity || (review_request && e.entity == "review:" + entity)) {
+                if found.found && found.body != e.body { return GovernanceProjectionFact { invalid: true }; }
+                if !found.found { found = GovernanceProjectionFact { found: true, body: e.body, sequence: i }; }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn identity(a: GovernanceAdmission) -> GovernanceReceipt {
+        let c = a.command; let context = a.context;
+        let practice = c.operation == "dna.practice.propose";
+        return GovernanceReceipt {
+            command_id: a.command_id, request_id: c.request_id, application_id: context.application_id,
+            operation: c.operation, operation_version: c.operation_version, principal_mode: context.principal_mode,
+            principal_name: context.principal_name, position_id: c.position_id, target_kind: c.target_kind,
+            target_id: c.target_id, subject_digest: c.subject_digest, fingerprint: a.fingerprint,
+            state: "recorded", proposal_state: if practice { "pending" } else { "" },
+            verdict_value: if practice { "" } else { c.verdict }, verdict_state: if practice { "" } else { "pending" }
+        };
+    }
+    fn unknown(a: GovernanceAdmission) -> GovernanceReceipt {
+        let mut r = self.identity(a); r.state = "outcome_unknown";
+        if a.command.operation == "dna.practice.propose" { r.proposal_state = "unknown"; } else { r.verdict_state = "unknown"; }
+        return r;
+    }
+    fn candidate(j: dna::Journal, digest: String, review_id: String) -> GovernanceProjectionCandidate {
+        let row = self.fact(j, "knowledge.proposed", digest, false); let codec = GovernanceCommandCodec { };
+        if !row.found || row.invalid || !self.object(row.body) || !self.texts(row.body, "kind author target", false) || !self.texts(row.body, "name digest review_id supersedes", true) { return GovernanceProjectionCandidate { }; }
+        let kind = codec.string(row.body, "kind"); let author = codec.string(row.body, "author"); let target = codec.string(row.body, "target");
+        if (kind != "idea" && kind != "concept" && kind != "practice" && kind != "task_concept" && kind != "retirement") || !codec.bounded(author, 256, true, false) || !codec.bounded(target, 256, true, false) || !codec.bounded(codec.string(row.body, "name"), 256, false, false) || dna::classify_binding(author, target) == "lateral" { return GovernanceProjectionCandidate { }; }
+        let named_digest = codec.string(row.body, "digest"); let named_review = codec.string(row.body, "review_id");
+        if (named_digest != "" && named_digest != digest) || (named_review != "" && named_review != review_id) { return GovernanceProjectionCandidate { }; }
+        let old = codec.string(row.body, "supersedes");
+        if !codec.bounded(old, 256, kind == "retirement", false) { return GovernanceProjectionCandidate { }; }
+        return GovernanceProjectionCandidate { ok: true, kind: kind, author: author, target: target, name: codec.string(row.body, "name"), supersedes: old };
+    }
+    fn review(j: dna::Journal, review_id: String, digest: String) -> GovernanceProjectionReview {
+        let row = self.fact(j, "review.requested", review_id, true); let codec = GovernanceCommandCodec { };
+        if !row.found || row.invalid || !self.object(row.body) || !self.texts(row.body, "subject_digest knowledge_digest author target required_authority", false) || !self.texts(row.body, "mutation_id approvers kind", true) { return GovernanceProjectionReview { }; }
+        let candidate = self.candidate(j, digest, review_id);
+        if !candidate.ok || codec.string(row.body, "subject_digest") != digest || codec.string(row.body, "knowledge_digest") != digest || codec.string(row.body, "author") != candidate.author || codec.string(row.body, "target") != candidate.target || codec.string(row.body, "mutation_id") != "" || codec.string(row.body, "approvers") != "" { return GovernanceProjectionReview { }; }
+        let kind = codec.string(row.body, "kind");
+        if (kind != "" && kind != candidate.kind) || !codec.bounded(codec.string(row.body, "required_authority"), 256, true, false) { return GovernanceProjectionReview { }; }
+        let settled = self.fact(j, "review.settled", review_id, false);
+        if settled.invalid { return GovernanceProjectionReview { ok: true }; }
+        if !settled.found { return GovernanceProjectionReview { ok: true, state: "pending" }; }
+        let outcome = review_outcome(settled.body);
+        if outcome == "" || settled.sequence <= row.sequence { return GovernanceProjectionReview { ok: true }; }
+        let reviewer = settled.body[(len(outcome) + 4)..len(settled.body)];
+        if !codec.bounded(reviewer, 256, true, false) { return GovernanceProjectionReview { ok: true }; }
+        return GovernanceProjectionReview { ok: true, state: "settled", outcome: outcome, reviewer: reviewer, sequence: settled.sequence };
+    }
+    fn binding_fact(j: dna::Journal, digest: String, review_id: String) -> KnowledgeFact {
+        let native = dna::KnowledgeBindingCodec { }; let codec = KnowledgeBindingCommandCodec { }; let fields = GovernanceCommandCodec { };
+        if j.revision() <= 0 || !dna::digest_well_formed(digest) || native.review_id(digest) != review_id { return KnowledgeFact { }; }
+        let application_id = j.read(0).digest;
+        let mut found = KnowledgeFact { }; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "knowledge.binding.requested" && fields.string(e.body, "candidate_digest") == digest {
+                if found.valid { return KnowledgeFact { }; }
+                let fact = codec.decode_fact(e);
+                if !fact.valid || fact.context.application_id != application_id || fact.binding.candidate_digest != digest { return KnowledgeFact { }; }
+                found = fact;
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn binding_review(j: dna::Journal, request: dna::KnowledgeBindingRequest) -> GovernanceProjectionReview {
+        let native = dna::KnowledgeBindingCodec { }; let codec = GovernanceCommandCodec { };
+        if !native.valid(request) || dna::digest_of(native.document(request)) != request.candidate_digest { return GovernanceProjectionReview { }; }
+        let id = native.review_id(request.candidate_digest); let admitted = self.binding_fact(j, request.candidate_digest, id);
+        if !admitted.valid || native.started(admitted.binding) != native.started(request) { return GovernanceProjectionReview { }; }
+        let row = self.fact(j, "review.requested", id, true);
+        let started = self.fact(j, "knowledge.binding.started", request.request_id, false);
+        let original = self.fact(j, "knowledge.binding.requested", request.request_id, false);
+        if !original.found || original.invalid || !started.found || started.invalid || started.body != native.started(request) || started.sequence <= original.sequence || !row.found || row.invalid || row.body != native.review_request(request) || row.sequence <= started.sequence { return GovernanceProjectionReview { }; }
+        let settled = self.fact(j, "review.settled", id, false);
+        if settled.invalid { return GovernanceProjectionReview { ok: true }; }
+        if !settled.found { return GovernanceProjectionReview { ok: true, state: "pending" }; }
+        let outcome = review_outcome(settled.body);
+        if outcome == "" || settled.sequence <= row.sequence { return GovernanceProjectionReview { ok: true }; }
+        let reviewer = settled.body[(len(outcome) + 4)..len(settled.body)];
+        if !codec.bounded(reviewer, 256, true, false) || reviewer == request.by { return GovernanceProjectionReview { ok: true }; }
+        return GovernanceProjectionReview { ok: true, state: "settled", outcome: outcome, reviewer: reviewer, sequence: settled.sequence };
+    }
+    fn edge_fact(j: dna::Journal, digest: String, review_id: String) -> KnowledgeFact {
+        let native = dna::KnowledgeEdgeCodec { }; let codec = KnowledgeEdgeCommandCodec { }; let fields = GovernanceCommandCodec { };
+        if j.revision() <= 0 || !dna::digest_well_formed(digest) || native.review_id(digest) != review_id { return KnowledgeFact { }; }
+        let application_id = j.read(0).digest;
+        let mut found = KnowledgeFact { }; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "knowledge.edge.requested" && fields.string(e.body, "candidate_digest") == digest {
+                if found.valid { return KnowledgeFact { }; }
+                let fact = codec.decode_fact(e);
+                if !fact.valid || fact.context.application_id != application_id || fact.edge.candidate_digest != digest { return KnowledgeFact { }; }
+                found = fact;
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn edge_review(j: dna::Journal, request: dna::KnowledgeEdgeRequest) -> GovernanceProjectionReview {
+        let native = dna::KnowledgeEdgeCodec { }; let codec = GovernanceCommandCodec { };
+        if !native.valid(request) || dna::digest_of(native.document(request)) != request.candidate_digest { return GovernanceProjectionReview { }; }
+        let id = native.review_id(request.candidate_digest); let admitted = self.edge_fact(j, request.candidate_digest, id);
+        if !admitted.valid || native.started(admitted.edge) != native.started(request) { return GovernanceProjectionReview { }; }
+        let row = self.fact(j, "review.requested", id, true);
+        let started = self.fact(j, "knowledge.edge.started", request.request_id, false);
+        let original = self.fact(j, "knowledge.edge.requested", request.request_id, false);
+        if !original.found || original.invalid || !started.found || started.invalid || started.body != native.started(request) || started.sequence <= original.sequence || !row.found || row.invalid || row.body != native.review_request(request) || row.sequence <= started.sequence { return GovernanceProjectionReview { }; }
+        let settled = self.fact(j, "review.settled", id, false);
+        if settled.invalid { return GovernanceProjectionReview { ok: true }; }
+        if !settled.found { return GovernanceProjectionReview { ok: true, state: "pending" }; }
+        let outcome = review_outcome(settled.body);
+        if outcome == "" || settled.sequence <= row.sequence { return GovernanceProjectionReview { ok: true }; }
+        let reviewer = settled.body[(len(outcome) + 4)..len(settled.body)];
+        if !codec.bounded(reviewer, 256, true, false) || reviewer == request.by { return GovernanceProjectionReview { ok: true }; }
+        return GovernanceProjectionReview { ok: true, state: "settled", outcome: outcome, reviewer: reviewer, sequence: settled.sequence };
+    }
+    fn with_review(r: GovernanceReceipt, evidence: GovernanceProjectionReview, digest: String) -> GovernanceReceipt {
+        let mut out = r;
+        if evidence.ok && evidence.state != "unavailable" {
+            out.review_state = evidence.state; out.review_outcome = evidence.outcome; out.review_subject_digest = digest;
+        }
+        return out;
+    }
+    fn activation(j: dna::Journal, receipt: GovernanceReceipt, digest: String, review_id: String, old: String, review: GovernanceProjectionReview) -> GovernanceReceipt {
+        let mut r = receipt;
+        if !review.ok || review.state != "settled" || review.outcome != "approve" { return r; }
+        let codec = GovernanceCommandCodec { };
+        let candidate = self.candidate(j, digest, review_id);
+        if !candidate.ok || candidate.supersedes != old { r.activation_state = "unknown"; return r; }
+        r.activation_state = "pending";
+        let ratified = self.fact(j, "knowledge.ratified", digest, false);
+        let refused = self.fact(j, "knowledge.refused", digest, false);
+        if ratified.invalid || refused.invalid || (ratified.found && refused.found) { r.activation_state = "unknown"; return r; }
+        if refused.found {
+            if !self.object(refused.body) || !self.texts(refused.body, "digest review_id decided_by supersedes retired_by why", false) || refused.sequence <= review.sequence { r.activation_state = "unknown"; return r; }
+            if codec.string(refused.body, "digest") != digest || codec.string(refused.body, "review_id") != review_id || codec.string(refused.body, "decided_by") != review.reviewer || codec.string(refused.body, "supersedes") != old { r.activation_state = "unknown"; return r; }
+            r.activation_state = "refused";
+            r.activation_reason = "The native adoption step refused this approved candidate.";
+            return r;
+        }
+        if !ratified.found { return r; }
+        if !self.object(ratified.body) || !self.texts(ratified.body, "digest review_id decided_by outcome kind target", false) || !self.texts(ratified.body, "supersedes", true) || ratified.sequence <= review.sequence { r.activation_state = "unknown"; return r; }
+        if codec.string(ratified.body, "digest") != digest || codec.string(ratified.body, "review_id") != review_id || codec.string(ratified.body, "decided_by") != review.reviewer || codec.string(ratified.body, "outcome") != "approve" || codec.string(ratified.body, "kind") != candidate.kind || codec.string(ratified.body, "target") != candidate.target || codec.string(ratified.body, "supersedes") != old { r.activation_state = "unknown"; return r; }
+        if old != "" {
+            let retired = self.fact(j, "knowledge.retired", old, false);
+            if retired.invalid { r.activation_state = "unknown"; return r; }
+            if !retired.found { return r; }
+            if !self.object(retired.body) || !self.texts(retired.body, "digest by review_id decided_by", false) || retired.sequence <= ratified.sequence { r.activation_state = "unknown"; return r; }
+            if codec.string(retired.body, "digest") != old || codec.string(retired.body, "by") != digest || codec.string(retired.body, "review_id") != review_id || codec.string(retired.body, "decided_by") != review.reviewer { r.activation_state = "unknown"; return r; }
+        }
+        r.activation_state = "adopted";
+        return r;
+    }
+    fn practice(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+        let codec = GovernanceCommandCodec { }; let mut r = self.identity(a);
+        let proposed = self.fact(j, "practice.proposed", a.command_id, false);
+        let refused = self.fact(j, "practice.refused", a.command_id, false);
+        if proposed.invalid || refused.invalid || (proposed.found && refused.found) { return self.unknown(a); }
+        if refused.found {
+            if refused.sequence <= a.sequence { return self.unknown(a); }
+            r.state = "refused"; r.proposal_state = "refused"; r.reason = "The native practice proposal was refused."; return r;
+        }
+        if !proposed.found { return r; }
+        if proposed.sequence <= a.sequence || !self.object(proposed.body) || !self.texts(proposed.body, "name digest review_id by because supersedes", false) { return self.unknown(a); }
+        if !self.object(a.native_body) || !self.texts(a.native_body, "name", false) { return self.unknown(a); }
+        if codec.string(proposed.body, "name") != codec.string(a.native_body, "name") || codec.string(proposed.body, "by") != a.context.principal_name || codec.string(proposed.body, "because") != a.command.rationale || codec.string(proposed.body, "supersedes") != a.command.subject_digest { return self.unknown(a); }
+        let digest = codec.string(proposed.body, "digest"); let review_id = codec.string(proposed.body, "review_id");
+        if !codec.bounded(digest, 256, true, false) || !codec.bounded(review_id, 256, true, false) { return self.unknown(a); }
+        let candidate = self.candidate(j, digest, review_id); let review = self.review(j, review_id, digest);
+        if !candidate.ok || !review.ok || candidate.kind != "practice" || candidate.author != "org" || candidate.target != "org" || !codec.bounded(candidate.name, 256, true, false) || candidate.name != codec.string(proposed.body, "name") || candidate.supersedes != a.command.subject_digest { return self.unknown(a); }
+        r.state = "succeeded"; r.proposal_state = "created"; r.candidate_digest = digest; r.review_id = review_id;
+        r = self.with_review(r, review, digest);
+        return self.activation(j, r, digest, review_id, candidate.supersedes, review);
+    }
+    fn decision(body: String, a: GovernanceAdmission) -> Bool {
+        let codec = GovernanceCommandCodec { }; let fields = DefinitionCodec { };
+        if !self.object(body) || !self.texts(body, "command_id review_id subject_digest verdict reviewer authority refusal outcome comment", false) { return false; }
+        let mut it = std::json::object_first(body);
+        while !it.done {
+            if !fields.field_allowed(std::json::obj_key_string(it, body), "command_id review_id subject_digest verdict reviewer authority accepted refusal settled outcome comment") { return false; }
+            it = std::json::object_next(it, body);
+        }
+        let accepted = std::json::find_field_raw(body, "accepted"); let settled = std::json::find_field_raw(body, "settled");
+        if (accepted != "true" && accepted != "false") || (settled != "true" && settled != "false") { return false; }
+        if !self.object(a.native_body) || !self.texts(a.native_body, "authority", false) { return false; }
+        let authority = codec.string(a.native_body, "authority");
+        if !codec.bounded(authority, 256, true, false) || codec.string(body, "command_id") != a.command_id || codec.string(body, "review_id") != a.command.target_id || codec.string(body, "subject_digest") != a.command.subject_digest || codec.string(body, "verdict") != a.command.verdict || codec.string(body, "reviewer") != a.context.principal_name || codec.string(body, "authority") != authority || codec.string(body, "comment") != a.command.comment { return false; }
+        let refusal = codec.string(body, "refusal"); let outcome = codec.string(body, "outcome");
+        if accepted == "false" { return settled == "false" && outcome == "" && refusal != ""; }
+        return refusal == "" && (if settled == "true" { outcome == a.command.verdict } else { outcome == "" });
+    }
+    fn verdict(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+        let codec = GovernanceCommandCodec { }; let c = a.command; let mut r = self.identity(a);
+        let binding = self.binding_fact(j, c.subject_digest, c.target_id);
+        let edge = self.edge_fact(j, c.subject_digest, c.target_id);
+        let review = if binding.valid { self.binding_review(j, binding.binding) } else if edge.valid { self.edge_review(j, edge.edge) } else { self.review(j, c.target_id, c.subject_digest) };
+        r = self.with_review(r, review, c.subject_digest);
+        let decided = self.fact(j, "review.command_decided", a.command_id, false);
+        if decided.invalid { return self.unknown(a); }
+        if !decided.found { return r; }
+        if decided.sequence <= a.sequence || !self.decision(decided.body, a) || !review.ok { return self.unknown(a); }
+        if !std::json::find_bool_field(decided.body, "accepted") {
+            r.state = "refused"; r.verdict_state = "refused"; r.reason = "The native Review refused this command's verdict."; return r;
+        }
+        r.state = "succeeded"; r.verdict_state = "accepted";
+        // Binding/relationship effect evidence belongs to its original Knowledge receipt.
+        // A Review verdict does not adopt or retire a Knowledge node.
+        if binding.valid || edge.valid { return r; }
+        // A different caller's approval is not this command's adoption. A
+        // rejected/revised/refused verdict never borrows an adopted state.
+        if c.verdict != "approve" || !std::json::find_bool_field(decided.body, "settled") { return r; }
+        r.activation_state = "pending";
+        if review.state != "settled" { return r; }
+        if review.outcome != "approve" || review.reviewer != a.context.principal_name { r.activation_state = "unknown"; return r; }
+        let candidate = self.candidate(j, c.subject_digest, c.target_id);
+        if !candidate.ok { r.activation_state = "unknown"; return r; }
+        return self.activation(j, r, c.subject_digest, c.target_id, candidate.supersedes, review);
+    }
+    fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+        let codec = GovernanceCommandCodec { };
+        if !a.ok || a.unknown || !codec.valid(a.context, a.command) || a.command_id != codec.identity(a.context, a.command.request_id) || a.fingerprint != codec.fingerprint(a.context, a.command) { return self.unknown(a); }
+        if a.command.operation == "dna.practice.propose" { return self.practice(j, a); }
+        return self.verdict(j, a);
+    }
+}
+
+fn governance_project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+    let view = GovernanceProjection { };
+    return view.project(j, a);
+}

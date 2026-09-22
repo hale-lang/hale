@@ -1,0 +1,75 @@
+// Read/draft/native-validation adapter. It has no command identity, source
+// writer, admission, publication or activation path.
+import "../operations" as ops;
+
+type DefinitionDraftRequest {
+    ok: Bool = false;
+    principal_mode: String = "";
+    principal_name: String = "";
+    base_id: String = "";
+    basis: String = "";
+    candidate: String = "";
+}
+
+locus DefinitionDraftWire {
+    params { }
+    fn capability() -> String {
+        return "{\"profile\":\"dna.definition.draft.v1\",\"supported\":true,\"validation\":true,\"publication\":false,\"max_request_bytes\":\"32768\",\"max_base_bytes\":\"65536\",\"max_candidate_bytes\":\"98304\",\"max_text_field_bytes\":\"8192\",\"max_catalog_text_bytes\":\"16384\"}";
+    }
+    fn guard(req: std::http::Request, origin: String) -> String {
+        let wire = CommandWire { };
+        if !wire.origin_valid(origin) { return "definition_drafts_unsupported"; }
+        if len(req.body) > 32768 { return "definition_draft_too_large"; }
+        let supplied = wire.header(req.headers, "Origin");
+        if !supplied.valid || supplied.count != 1 || supplied.value != origin { return "invalid_origin"; }
+        let content = wire.header(req.headers, "Content-Type");
+        if !content.valid || content.count != 1 || std::str::lower(content.value) != "application/json" { return "unsupported_media_type"; }
+        let marker = wire.header(req.headers, "X-Hale-Command");
+        let length = wire.header(req.headers, "Content-Length");
+        let transfer = wire.header(req.headers, "Transfer-Encoding");
+        let host = wire.header(req.headers, "Host");
+        let cookie = wire.header(req.headers, "Cookie");
+        let authorization = wire.header(req.headers, "Authorization");
+        if !marker.valid || marker.count != 1 || marker.value != "1" || !length.valid || length.count != 1 || length.value != to_string(len(req.body)) || len(req.body) == 0 || !transfer.valid || transfer.count != 0 || !host.valid || host.count > 1 || !cookie.valid || cookie.count > 1 || !authorization.valid || authorization.count > 1 { return "invalid_definition_draft"; }
+        return "";
+    }
+    fn parse(body: String, application_id: String) -> DefinitionDraftRequest {
+        let syntax = ops::OrganizationJson { };
+        let wire = CommandWire { };
+        if len(body) > 32768 || !syntax.valid(body) || !wire.fields(body, "profile application_id principal base candidate", 5) { return DefinitionDraftRequest { }; }
+        if wire.text(body, "profile") != "dna.definition.draft.v1" || wire.text(body, "application_id") != application_id { return DefinitionDraftRequest { }; }
+        let principal = wire.raw(body, "principal");
+        let base = wire.raw(body, "base");
+        if !wire.fields(principal, "mode name", 2) || !wire.fields(base, "id basis", 2) { return DefinitionDraftRequest { }; }
+        let mode = wire.text(principal, "mode");
+        let name = wire.text(principal, "name");
+        let id = wire.text(base, "id");
+        if (mode != "local" && mode != "oidc") || !wire.bounded(name, 256, true, false) || !wire.bounded(id, 1024, true, false) { return DefinitionDraftRequest { }; }
+        return DefinitionDraftRequest { ok: true, principal_mode: mode, principal_name: name, base_id: id, basis: wire.raw(base, "basis"), candidate: wire.raw(body, "candidate") };
+    }
+    fn error(code: String) -> std::http::Response {
+        let http = Http { };
+        if code == "definition_drafts_unsupported" { return http.error(503, code, "this application does not configure definition draft validation", false); }
+        if code == "definition_draft_too_large" { return http.error(413, code, "definition draft exceeds the request byte limit", false); }
+        if code == "invalid_origin" { return http.error(403, code, "the request origin is not permitted", false); }
+        if code == "unsupported_media_type" { return http.error(415, code, "definition drafts require application/json", false); }
+        if code == "definition_draft_context_changed" { return http.error(409, code, "the authenticated principal changed; reload before validating", false); }
+        return http.error(400, "invalid_definition_draft", "invalid definition draft fields, values, or required headers", false);
+    }
+    fn data(request: DefinitionDraftRequest, mode: String, name: String, result: ops::DefinitionDraftResult) -> String {
+        let b = std::json::Builder { };
+        let codec = ops::DefinitionDraftCodec { };
+        b.begin_object(); b.string_field("profile", "dna.definition.draft.v1");
+        b.begin_object_field("principal"); b.string_field("mode", mode); b.string_field("name", name); b.end_object();
+        b.string_field("base_id", request.base_id); b.field("basis", result.basis_json); b.string_field("candidate_digest", result.candidate_digest);
+        b.begin_object_field("validation"); b.bool_field("valid", result.valid); b.string_field("code", result.validation_code); b.string_field("message", result.validation_message); b.string_field("catalog_digest", result.catalog_digest); b.end_object();
+        b.begin_object_field("impact"); b.field("direct_dependents", result.dependents_json); b.bool_field("existing_revisions_preserved", true); b.end_object();
+        if result.valid {
+            b.begin_object_field("artifact"); b.string_field("profile", "hale.workflow-registration.v1"); b.string_field("name", "workflows.generated.hl"); b.string_field("digest", result.artifact_digest);
+            // Source export may be large; this codec quotes in linear space.
+            b.field("text", codec.quote_json(result.artifact_text)); b.string_field("scope", "captured_catalog"); b.end_object();
+        } else { b.field("artifact", "null"); }
+        b.string_field("publication", "unavailable"); b.end_object();
+        return b.result();
+    }
+}

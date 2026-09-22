@@ -350,6 +350,14 @@ jobs:
           # scope that goes stale every time a directory is added.
           ./target/release/hale fmt --check .
 
+      - name: Warm the DNA toolchain cache
+        # The first host verb of this binary builds the host and the membrane
+        # client into the cache: paid once here, not inside a test's own
+        # deadline beside the partition's other organisms on a loaded runner.
+        env:
+          HALE_DNA_DISCOVER: "off"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
+
       - name: cargo nextest run (cli part ${{ matrix.part }}/3)
         # Everything the other families do not own: hale-cli's 111
         # binaries less the DNA fixture suite, plus hale-lsp,
@@ -487,6 +495,13 @@ jobs:
         # The fixtures run through the `hale` binary this builds.
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      - name: Warm the DNA toolchain cache
+        # The first host verb of this binary builds the host and the membrane
+        # client into the cache: paid once here, not inside a test's own
+        # deadline beside seven other organisms on a loaded runner.
+        env:
+          HALE_DNA_DISCOVER: "off"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
       - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
         # The suite alone on its runner: sixteen slice tests, hashed
         # across two jobs, running four-wide (the `dna-fixtures`
@@ -496,6 +511,96 @@ jobs:
           cargo nextest run --release -p hale-cli --features dynamic-llvm \
             --test dna_native_suite \
             --partition hash:${{ matrix.part }}/2
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  # The Iris cockpit and the DNA service API (GH #690): the read
+  # contract's fixtures and validator, the API's own native tests, the
+  # shared query layer's Git-record fixtures, and the cockpit's browser
+  # cases against the real API. Its own job, on the same build the dna
+  # partitions make, so its ~3 min never sits on the critical path of a
+  # partition that is already the longest.
+  cockpit:
+    name: cockpit (DNA API + Iris browser)
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      HALE_DNA_DISCOVER: "off"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: DNA read API contract and integration
+        # The fixtures own their Git environment: no GIT_CONFIG_* here, and
+        # the system config disabled, which definition_drafts_api_test asserts.
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
+          export HALE_BIN="$PWD/target/release/hale"
+          ./target/release/hale test dna/api/contract/v1/tests
+          ./target/release/hale check dna/api
+          ./target/release/hale build dna/api
+          HALE_API_BIN="$PWD/dna/api/api" \
+            ./target/release/hale test dna/api/tests
+          # Domain fixtures own temporary Git roots and do not need a database.
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
+
+      - name: Set up Node for cockpit browser tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: iris/cockpit/package-lock.json
+
+      - name: Warm the DNA toolchain cache for the browser fixtures
+        # The browser fixtures create fresh projects with `hale dna new`
+        # under a per-process CPU budget; the first host build of this
+        # binary must not be the one that pays for it.
+        run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      - name: Iris cockpit browser integration
+        working-directory: iris/cockpit
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium --only-shell
+          HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
+            HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" npm test
+
+      - name: Preserve cockpit browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-cockpit-browser-failures
+          path: iris/cockpit/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: sccache stats
         if: always()

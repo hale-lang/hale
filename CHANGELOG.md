@@ -8,6 +8,57 @@ behavior.
 
 ## Unreleased
 
+### Iris: inspect the declared organization (GH #690)
+
+- The Organization workspace browses exact static instances from a checked
+  compiler artifact, with declared position groups, containment, typed contracts
+  and per-node source locations. Source revision, dependency fingerprint and
+  Record basis remain separate from runtime evidence and authenticated identity.
+- The native read adapter checks an owned snapshot of committed `dna/org`
+  source and its available dependencies. It preserves the existing ownership
+  map separately; compiler instance paths do not invent a position-to-owner or
+  person-to-authority mapping. Source changes invalidate paged reads.
+- Organization reads retain the API's authentication boundary and leave project
+  source and Record refs unchanged. Native and browser regression cases cover
+  exact identities, source changes, unavailable dependencies and mobile/history
+  navigation. Semantic position bindings and governed editing remain work in
+  the full [cockpit scope](https://github.com/hale-lang/hale/issues/690).
+
+### Iris: live read-only cockpit for DNA practices and reviews (GH #690)
+
+- An independently produced browser shell reads the typed DNA API, with paged
+  Practice and Review catalogs, exact-document links, source revisions and
+  explicit content availability. Review approval and practice activation remain
+  separate. Knowledge and Definitions are visible core workspaces awaiting their
+  adapters; Runtime links to the independent existing observer.
+- The Hale API accepts an optional static asset directory and serves the shell,
+  authentication and data on one origin. API-only mode remains available; static
+  assets contain no Record data and all data reads retain their authentication.
+  Native boundary tests and real-browser tests cover serving, navigation,
+  stale snapshots, suppressed content and connection failures. See
+  [`iris/cockpit/README.md`](iris/cockpit/README.md).
+
+### DNA: cadence refresh runs on the organism's owner queue
+
+- Generated organizations use `Dna.request_tick` so journal refresh finishes
+  before queued work reads or appends. A task arriving during a direct tick
+  could otherwise append an effect claim successfully, then reject its own
+  claim as already in flight because the journal's cached view was incomplete.
+  `hale dna upgrade` explains the one-line change for existing organizations;
+  their project-owned source stays intact.
+
+### DNA: first typed read API for the Iris cockpit (GH #690)
+
+- A source-built `dna/api` service exposes versioned application discovery,
+  capabilities and practice/review reads from a checked local Record snapshot.
+  It shares typed governance queries with the CLI, preserves exact identities
+  and attribution, and distinguishes Review decisions from practice activation.
+- The service uses trusted loopback access or the existing OIDC member sessions.
+  Reads return structured errors, bounded pages and source revisions; unavailable
+  receipt text is explicitly withheld. OpenAPI/JSON Schema fixtures and live
+  Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
+  packaging and the browser cockpit remain subsequent work; see
+  [`dna/api/README.md`](dna/api/README.md).
 ### Docs: the book catches up with the week
 
 - `docs/src/everyday/records.md` says a `let` of a record, and an assignment, is a copy (GH #713, #992); `docs/src/services/lifecycle.md` says an omitted `run()` is an empty one (GH #735), that a handle stored into a contract-typed field or handed to a field of its own interface is a borrow (GH #967, #730), and which positions `hale check` refuses because the borrow would not outlive its holder (GH #730); `docs/src/reference.md`'s command table gains `hale replay`, `hale iris`, `hale dna` and `hale inputs`; `spec/projects.md`'s surface table gains `hale check --strict-fallible` (GH #738). The install chapter, the spec and the DNA book were already current for cross-compilation, `Time`, the stdlib additions and the workflow.

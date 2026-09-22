@@ -1,0 +1,83 @@
+// Explicit fixed deployment policy shared by native command heads. Authentication
+// supplies the exact mode/name pair; neither a request nor USER grants authority.
+import "../core" as dna;
+
+type AuthorityPolicy {
+    valid: Bool = false;
+    application_id: String = "";
+    document: String = "";
+    basis: String = "";
+    sign: Bool = false;
+}
+
+locus AuthorityPolicyCodec {
+    params { }
+    fn text(document: String, key: String) -> String {
+        let raw = std::json::find_field_raw(document, key);
+        if len(raw) < 2 || !std::str::starts_with(raw, "\"") || !std::str::ends_with(raw, "\"") { return ""; }
+        let syntax = OrganizationJson { };
+        return syntax.decode(raw);
+    }
+    fn fields(document: String, names: String, expected: Int) -> Bool {
+        if !std::str::starts_with(std::str::trim(document), "{") { return false; }
+        let fields = DefinitionCodec { };
+        let mut count = 0; let mut it = std::json::object_first(document);
+        while !it.done {
+            if !fields.field_allowed(std::json::obj_key_string(it, document), names) { return false; }
+            count = count + 1; it = std::json::object_next(it, document);
+        }
+        return count == expected;
+    }
+    fn boolean(document: String, key: String) -> Bool {
+        let value = std::json::find_field_raw(document, key);
+        return value == "true" || value == "false";
+    }
+    fn authority(value: String) -> Bool {
+        return value == "board" || value == "maintainer" || value == "leader" || value == "supervisor" || value == "reviewer";
+    }
+    fn decode(document: String, application_id: String, trust: String) -> AuthorityPolicy {
+        let syntax = OrganizationJson { };
+        let codec = GovernanceCommandCodec { };
+        if len(document) == 0 || len(document) > 65536 || !syntax.valid(document) || !self.fields(document, "format application_id grants", 3) { return AuthorityPolicy { }; }
+        if self.text(document, "format") != "dna.practice-review-authority/1" || self.text(document, "application_id") != application_id || !codec.bounded(application_id, 256, true, false) || (trust != "local" && trust != "signed") { return AuthorityPolicy { }; }
+        let grants = std::json::find_field_raw(document, "grants");
+        if !std::str::starts_with(grants, "[") { return AuthorityPolicy { }; }
+        let mut seen = "\n";
+        let mut count = 0;
+        let mut it = std::json::array_first(grants);
+        while !it.done {
+            let row = it.element;
+            if count >= 128 || !self.fields(row, "mode name authority practice_propose review_verdict recover", 6) || !self.boolean(row, "practice_propose") || !self.boolean(row, "review_verdict") || !self.boolean(row, "recover") { return AuthorityPolicy { }; }
+            let context = GovernanceContext { application_id: application_id, principal_mode: self.text(row, "mode"), principal_name: self.text(row, "name") };
+            if !codec.context_valid(context) || !self.authority(self.text(row, "authority")) { return AuthorityPolicy { }; }
+            let key = codec.identity(context, "authority-policy-member");
+            if std::str::contains(seen, "\n" + key + "\n") { return AuthorityPolicy { }; }
+            seen = seen + key + "\n";
+            count = count + 1;
+            it = std::json::array_next(it);
+        }
+        // Identifies the exact trusted document and signing requirement captured
+        // for this provider lifetime. It is not a fence on mutable Git config.
+        return AuthorityPolicy { valid: true, application_id: application_id, document: document, basis: "dna.practice-review-authority/1:" + dna::digest_of(document) + ":trust=" + trust, sign: trust == "signed" };
+    }
+}
+
+@sealed locus FixedAuthority {
+    params { policy: AuthorityPolicy = AuthorityPolicy { }; }
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant {
+        let codec = GovernanceCommandCodec { };
+        if !self.policy.valid || len(self.policy.basis) == 0 || context.application_id != self.policy.application_id || !codec.context_valid(context) { return GovernanceGrant { }; }
+        if (len(operation) == 0 && !recovery) || (len(operation) > 0 && !codec.known(operation, "1")) { return GovernanceGrant { }; }
+        let wire = AuthorityPolicyCodec { };
+        let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "grants"));
+        while !it.done {
+            let row = it.element;
+            if wire.text(row, "mode") == context.principal_mode && wire.text(row, "name") == context.principal_name {
+                let field = if recovery { "recover" } else if operation == "dna.practice.propose" { "practice_propose" } else { "review_verdict" };
+                return GovernanceGrant { allowed: std::json::find_field_raw(row, field) == "true", authority: wire.text(row, "authority"), basis: self.policy.basis };
+            }
+            it = std::json::array_next(it);
+        }
+        return GovernanceGrant { };
+    }
+}

@@ -31,20 +31,31 @@ fn hale(sub: &str, dir: &str) -> (bool, String) {
 /// Seeds that must `hale check` clean. (`examples/wasm-flower` targets
 /// wasm32 and is covered by the wasm example tests, not here.)
 const CHECKED: &[&str] = &[
+    "cockpit/tests/organization",
+    "cockpit/tests/record",
     "consumer/fuse-hl",
-    "inspect",
-    "observe",
-    "examples/obs-smoke",
-    "examples/obs-smoke/lib/observe",
-    "examples/inspect-demo",
     "examples/claims-demo/app",
     "examples/claims-demo/rogue",
+    "examples/inspect-demo",
+    "examples/intake-control",
+    "examples/intake-control/sqlite",
+    "examples/obs-smoke",
+    "examples/obs-smoke/lib/observe",
+    "inspect",
+    "observe",
+    "process_identity",
+    "service",
 ];
 
 /// Directories of standalone single-file repro programs (each with its
 /// own `main`), checked one FILE at a time — as a seed they would be
 /// duplicate declarations.
-const CHECKED_PER_FILE: &[&str] = &["consumer/fuse-hl/upstream-repro", "inspect/upstream-repro"];
+const CHECKED_PER_FILE: &[&str] = &[
+    "consumer/fuse-hl/upstream-repro",
+    "examples/intake-control/tests",
+    "inspect/upstream-repro",
+    "service/tests",
+];
 
 /// The shipping consumer and the inspector are held to the discipline gate.
 const VERIFIED: &[&str] = &["consumer/fuse-hl", "inspect"];

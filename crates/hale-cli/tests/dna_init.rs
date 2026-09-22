@@ -105,7 +105,7 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     // GH #596 O: the optimize cadence is milliseconds, so the loop ticks
     // with a millisecond clock — `now()` is seconds and made a 60s
     // cadence an hour's.
-    assert!(org.contains("self.core.tick(std::time::monotonic_ns() / 1000000)"), "the loop ticks the substrate with a millisecond clock: {org}");
+    assert!(org.contains("self.core.request_tick(std::time::monotonic_ns() / 1000000)"), "the loop queues the substrate's cadence with a millisecond clock: {org}");
 
     // …and it still passes its previous checks, plus the matrix, and builds.
     let (ok, out) = hale(&["check", "."], &app);
@@ -178,7 +178,8 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     let (ok, out) = hale(&["dna", "init", "."], &app);
     assert!(ok, "{out}");
     let assembly = app.join("dna/org/main.hl");
-    std::fs::write(&assembly, "// mine\n").unwrap();
+    let owned = std::fs::read_to_string(&assembly).unwrap().replace("self.core.request_tick(", "self.core.tick(");
+    std::fs::write(&assembly, &owned).unwrap();
     let vendored = app.join("vendor/dna/topics.hl");
     std::fs::write(&vendored, "// tampered\n").unwrap();
     std::fs::remove_file(app.join("vendor/dna/review.hl")).unwrap();
@@ -188,12 +189,13 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     std::fs::write(&prov, "hale 0.0.1\nembedded dna: 0000000000000000000000000000000000000000000000000000000000000000\n").unwrap();
     let (ok, out) = hale(&["dna", "upgrade", "."], &app);
     assert!(ok, "{out}");
+    assert!(out.contains("use self.core.request_tick with the same millisecond clock"), "upgrade explains how to queue an older scaffold's cadence: {out}");
     assert!(out.contains("2 file(s) rewritten"), "{out}");
     assert!(out.contains(&format!("embedded dna {}", &hale_dna::EMBEDDED_DIGEST[..16])), "upgrade reports the source set it materialized: {out}");
     assert!(std::fs::read_to_string(&prov).unwrap().contains(hale_dna::EMBEDDED_DIGEST), "and refreshes what the tree came from: {}", std::fs::read_to_string(&prov).unwrap());
     assert!(std::fs::read_to_string(&vendored).unwrap().contains("topic ReviewVerdict"), "vendor restored");
     assert!(app.join("vendor/dna/review.hl").exists());
-    assert_eq!(std::fs::read_to_string(&assembly).unwrap(), "// mine\n", "dna/ is the project's");
+    assert_eq!(std::fs::read_to_string(&assembly).unwrap(), owned, "dna/ is the project's");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 

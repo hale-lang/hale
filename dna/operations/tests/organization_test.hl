@@ -1,0 +1,143 @@
+// Real native compiler artifact; neither a hand-authored org registry nor
+// execution of source lifecycle code. Malformed cases retain valid digest so
+// they exercise semantic admission as well as transport integrity.
+import "../../core" as dna;
+import ".." as ops;
+
+const SOURCE: String = "type Notice { text: String = \"\"; }\ntopic Notices { payload: Notice; subject: \"organization.équipe\"; }\nlocus Reviewer { params { seen: Int = 0; } bus { subscribe Notices as on_notice; } fn on_notice(n: Notice) { self.seen = self.seen + 1; } }\nlocus Support { params { reviewer: Reviewer = Reviewer { }; } }\nlocus Reserve { params { slots: Int = 1; } }\nlocus Metrics { params { total: Int = 0; } }\ngroup positions = { Reviewer };\nmain locus Org { params { support: Support = Support { }; assurance: Support = Support { }; reviewer: Reviewer = Reviewer { }; metrics: Metrics = Metrics { }; } bus { publish Notices; } }\n";
+
+locus OrganizationFixture {
+    params { root: String = ""; compiler: String = "hale"; }
+    fn write(path: String, text: String) {
+        std::io::fs::write_file(path, text) or self.write_failed(err);
+    }
+    fn write_failed(e: IoError) { std::test::assert(false, "fixture write failed"); }
+    fn compile(source: String) -> String {
+        self.write(self.root + "/main.hl", source);
+        let r = dna::run_tool(self.compiler + "\ncheck\n" + self.root + "\n--dump-topology=" + self.root + "/topology.json");
+        std::test::assert_eq_int(r.code, 0, "native source checks: " + r.stderr);
+        return std::io::fs::read_file(self.root + "/topology.json") or "";
+    }
+    fn reseal(artifact: String) -> String {
+        let marker = ",\n  \"artifact_digest\": \"";
+        let at = std::str::index_of(artifact, marker);
+        std::test::assert(at > 0, "native artifact has its integrity footer");
+        let prefix = artifact[0..at];
+        let mut hash = -3750763034362895579;
+        let mut i = 0;
+        while i < len(prefix) {
+            hash = (hash ^ std::str::byte_at_unchecked(prefix, i)) * 1099511628211;
+            i = i + 1;
+        }
+        let formatting = ops::Organization { };
+        return prefix + marker + formatting.hex16(hash) + "\"\n}\n";
+    }
+    fn refused(artifact: String, label: String) {
+        let q = ops::Organization { artifact: artifact, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(!q.load(), label);
+        std::test::assert_eq_int(q.count(), 0, "failure exposes no partially loaded organization");
+        std::test::assert(len(q.error()) > 0, "failure has a reason");
+    }
+    fn exercise() {
+        let syntax = ops::OrganizationJson { };
+        std::test::assert(syntax.valid("[true,false,null,-1,0,1.25e-2,\"équipe \\ud83d\\ude00\"]"), "strict parser accepts scalar forms and Unicode pairs");
+        std::test::assert(!syntax.valid("{\"same\":1,\"same\":2}") && !syntax.valid("{\"\\u006bey\":1}"), "duplicate and escaped keys are refused");
+        std::test::assert(!syntax.valid("[01]") && !syntax.valid("[1.]") && !syntax.valid("[1e]") && !syntax.valid("[true,]"), "malformed numbers and trailing commas are refused");
+        std::test::assert(!syntax.valid("\"\\ud800\"") && !syntax.valid("\"\\udc00\"") && !syntax.valid("\"\\u0000\""), "unpaired surrogates and decoded NUL are refused");
+        let large = "{\"padding\":\"" + std::str::repeat("x", 1048576) + "\"}";
+        let scan_start = std::time::monotonic_ns();
+        std::test::assert(syntax.valid(large), "one MiB native topology-sized string validates");
+        std::test::assert(std::time::monotonic_ns() - scan_start < 3000000000, "one MiB scan stays below generous three-second quadratic-regression bound");
+        let artifact = self.compile(SOURCE);
+        let owners = "# declared owning parties\norg = acme\norg/support = partner\nacme: alice, carol\npartner: béa\nhost = acme\n";
+        let q = ops::Organization { artifact: artifact, owners: owners, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(q.load(), "real native compiler artifact admitted: " + q.error());
+        std::test::assert_eq_int(q.count(), 7, "one row per exact static instance");
+        std::test::assert_eq_str(q.position_of("Org.support.reviewer").parent_id, "Org.support", "compiler parent edge retained");
+        std::test::assert_eq_str(q.position_of("Org.support.reviewer").role, "position", "explicit positions group");
+        std::test::assert_eq_str(q.position_of("Org.support").role, "structure", "ancestor is not promoted to position");
+        std::test::assert(q.position_of("Org.support").in_position_outline, "explicit position ancestor belongs in outline");
+        std::test::assert(q.position_of("Org").in_position_outline, "root ancestor belongs in outline");
+        std::test::assert(!q.position_of("Org.metrics").in_position_outline, "unrelated support stays outside default outline");
+        std::test::assert_eq_str(q.position_of("Org.assurance.reviewer").declaration, "Reviewer", "same declaration has distinct instances");
+        std::test::assert_eq_str(q.position_of("org/support").id, "", "domain path is not guessed from instance path");
+        std::test::assert_eq_str(q.position_of("Reserve").id, "", "unused declaration is not a vacant position");
+        std::test::assert_eq_str(q.at(-1).id, "", "negative index is absent");
+        std::test::assert_eq_str(q.at(7).id, "", "out of range is absent");
+        let basis = q.basis_json();
+        std::test::assert_eq_int(std::json::find_int_field(basis, "declaration_count"), 5, "native declaration count");
+        std::test::assert_eq_int(std::json::find_int_field(basis, "uninstantiated_declaration_count"), 1, "coverage states unused declarations");
+        std::test::assert_eq_str(std::json::find_string_field(basis, "coverage"), "static_instances", "no live completeness claim");
+        std::test::assert_eq_str(std::json::find_string_field(basis, "artifact_digest"), std::json::find_string_field(artifact, "artifact_digest"), "exact native integrity identity");
+        let row = q.row_json(q.position_of("Org.support.reviewer"));
+        std::test::assert(std::str::contains(row, "Reviewer::on_notice") && std::str::contains(row, "Notices"), "native contract detail survives");
+        std::test::assert_eq_str(std::json::find_string_field(row, "source_file"), "main.hl", "compiler seed-relative provenance");
+        let wide_artifact = self.reseal(std::str::replace(artifact, "\"capacity\": null", "\"capacity\": 18446744073709551615"));
+        let wide = ops::Organization { artifact: wide_artifact, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(wide.load(), "canonical unsigned descriptor need not fit a signed machine integer");
+        let subscriptions = std::json::array_first(std::json::find_field_raw(wide.row_json(wide.position_of("Org.support.reviewer")), "subscribes"));
+        std::test::assert_eq_str(std::json::find_field_raw(subscriptions.element, "capacity"), "\"18446744073709551615\"", "capacity serializes as an exact decimal string");
+        std::test::assert(!wide.nullable_count("01") && !wide.nullable_count("-1") && !wide.nullable_count("1.0"), "descriptor counts require canonical unsigned decimal tokens");
+        let declaration_body = (q.declarations.get(q.position_of("Org.support.reviewer").contract_index) or ops::OrganizationDeclaration { }).body;
+        let original_instances = std::json::find_field_raw(declaration_body, "instances");
+        let chain = std::json::Builder { };
+        chain.begin_array();
+        let mut link = 0;
+        while link < 128 {
+            chain.begin_object();
+            chain.string_field("path", "chain" + to_string(link));
+            chain.string_field("owner", if link == 0 { "Org" } else { "chain" + to_string(link - 1) });
+            chain.field("domain", "null");
+            chain.end_object();
+            link = link + 1;
+        }
+        chain.end_array();
+        let deep_artifact = self.reseal(std::str::replace(artifact, original_instances, chain.result()));
+        let deep = ops::Organization { artifact: deep_artifact, source_head: "source-a", record_head: "record-a" };
+        std::test::assert(deep.load() && deep.count() == 132, "deep containment resolves once and follows cached parent indices");
+        std::test::assert_eq_str(deep.position_of("chain127").parent_id, "chain126", "deep static parent identity preserved");
+        let map = q.ownership_json();
+        std::test::assert_eq_str(std::json::find_string_field(map, "mode"), "shared", "native source map supplies owning-party mode");
+        std::test::assert_eq_str(std::json::find_string_field(map, "instance_binding"), "unavailable", "ownership paths have no invented instance join");
+        std::test::assert(std::str::contains(map, "org/support") && std::str::contains(map, "béa") && !std::str::contains(map, "Org.support"), "raw declared ownership vocabulary preserved separately");
+        let next = ops::Organization { artifact: artifact, source_head: "source-b", record_head: "record-a" };
+        std::test::assert(next.load() && next.snapshot() != q.snapshot(), "source identity fences pages independently of Record");
+        let record_next = ops::Organization { artifact: artifact, source_head: "source-a", record_head: "record-b" };
+        std::test::assert(record_next.load() && record_next.snapshot() != q.snapshot(), "Record identity also fences pages");
+        std::test::assert(q.load() && q.count() == 7, "load is idempotent, not duplicate accumulation");
+        self.refused(std::str::replace(artifact, "Reviewer::on_notice", "Reviewer::changed"), "changed artifact bytes fail integrity");
+        self.refused(self.reseal(std::str::replace(artifact, "\"path\": \"Org.assurance.reviewer\"", "\"path\": \"Org.support.reviewer\"")), "duplicate instance identity refused");
+        self.refused(self.reseal(std::str::replace(artifact, "\"owner\": \"Org.support\"", "\"owner\": \"missing\"")), "dangling containment refused");
+        self.refused(self.reseal(std::str::replace(artifact, "\"owner\": \"Org.support\"", "\"owner\": \"Org.support.reviewer\"")), "cyclic containment refused");
+        self.refused(self.reseal(std::str::replace(artifact, "\"type\": \"Int\"", "\"type\": 17")), "malformed contract field refused");
+        self.refused(self.reseal(std::str::replace(artifact, "\"type\": \"Int\"", "\"type\": \"Int\", \"value\": \"private\"")), "unexpected value cannot leak via contract arrays");
+        self.refused(std::str::replace(artifact, "\"schema\": \"1.19\"", "\"schema\": \"9.99\""), "unknown schema refused");
+        self.refused(std::str::replace(artifact, "\"semantics\": 2", "\"semantics\": 3"), "unknown semantics refused");
+        self.refused(artifact + "{}", "trailing JSON refused");
+        let archive_artifact = self.reseal(std::str::replace(artifact, "\"file\": \"main.hl\"", "\"file\": \"/tmp/owned-source/dna/org/main.hl\""));
+        let archive = ops::Organization { artifact: archive_artifact, source_head: "source-a", record_head: "record-a", source_root: "/tmp/owned-source" };
+        std::test::assert(archive.load(), "archive provenance is interpreted after digest validation");
+        std::test::assert_eq_str(archive.position_of("Org").source_file, "dna/org/main.hl", "only exact snapshot prefix is stripped");
+        let foreign = ops::Organization { artifact: archive_artifact, source_head: "source-a", record_head: "record-a", source_root: "/tmp/owned" };
+        std::test::assert(foreign.load(), "foreign absolute provenance does not invalidate topology facts");
+        std::test::assert_eq_str(foreign.position_of("Org").source_file, "", "partial or unrelated prefix cannot expose absolute path");
+        let no_group_art = self.compile(std::str::replace(SOURCE, "group positions = { Reviewer };", ""));
+        let no_group = ops::Organization { artifact: no_group_art, source_head: "source-c", record_head: "record-a" };
+        std::test::assert(no_group.load(), "native source without position group still inspectable");
+        std::test::assert(!std::json::find_bool_field(no_group.basis_json(), "position_group_declared"), "missing position semantics explicit");
+        std::test::assert_eq_str(no_group.position_of("Org.reviewer").role, "structure", "name does not imply position");
+        std::test::assert(no_group.position_of("Org.metrics").in_position_outline, "fallback outline is declared structure");
+        std::test::assert_eq_str(std::json::find_string_field(no_group.ownership_json(), "mode"), "single_owner", "empty source map keeps native single-owner meaning");
+    }
+    dissolve() {
+        if std::str::starts_with(self.root, "/tmp/hale-organization-test.") { let cleaned = dna::run_tool("rm\n-rf\n--\n" + self.root); }
+    }
+}
+
+fn main() {
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-organization-test.XXXXXXXX");
+    std::test::assert_eq_int(made.code, 0, "owned native artifact fixture directory");
+    let configured = std::env::var("HALE_BIN");
+    let fixture = OrganizationFixture { root: dna::trim_nl(made.stdout), compiler: if len(configured) > 0 { configured } else { "hale" } };
+    fixture.exercise();
+}

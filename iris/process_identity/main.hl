@@ -1,0 +1,48 @@
+// Linux local-observer evidence, not application authority. Missing facilities
+// yield no association. No shell or compiler/runtime protocol changes required.
+type ProcessIdentity { key: String = ""; started: String = ""; }
+locus Identity {
+    params { }
+    fn start_ticks(pid: Int) -> String {
+        if pid < 1 { return ""; }
+        let raw = std::io::fs::read_file("/proc/" + pid + "/stat") or "";
+        if len(raw) > 8192 { return ""; }
+        let mut close = -1; let mut i = 0;
+        while i < len(raw) { if raw[i..(i + 1)] == ")" { close = i; } i = i + 1; }
+        if close < 0 || close + 2 >= len(raw) { return ""; }
+        // comm may contain spaces and parentheses. Fields after its last ')'
+        // start at field 3; starttime is field 22 (index 19 here).
+        i = close + 2; let mut field = 0;
+        while i < len(raw) {
+            while i < len(raw) && raw[i..(i + 1)] == " " { i = i + 1; }
+            let begin = i;
+            while i < len(raw) && raw[i..(i + 1)] != " " && raw[i..(i + 1)] != "\n" { i = i + 1; }
+            if begin == i { return ""; }
+            if field == 19 { let value = raw[begin..i]; return if (std::str::parse_int(value) or - 1) >= 0 { value } else { "" }; }
+            field = field + 1;
+        }
+        return "";
+    }
+    fn capture(pid: Int) -> ProcessIdentity {
+        let started = self.start_ticks(pid); if started == "" { return ProcessIdentity { }; }
+        let boot = std::str::trim(std::io::fs::read_file("/proc/sys/kernel/random/boot_id") or "");
+        if len(boot) != 36 { return ProcessIdentity { }; }
+        // The mapped segment's device/inode distinguishes a replacement object;
+        // the PID namespace, boot and start tick distinguish recycled PIDs.
+        let probe = std::process::run("/usr/bin/stat\n-L\n-c\n%d:%i\n/proc/" + pid + "/ns/pid\n/dev/shm/hale-obs-" + pid) or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+        if probe.code != 0 || len(probe.stdout) < 4 || len(probe.stdout) > 160 || self.start_ticks(pid) != started { return ProcessIdentity { }; }
+        let digest = std::crypto::sha256(std::bytes::from_string("hale.iris.process.v1\n" + boot + "\n" + pid + "\n" + started + "\n" + probe.stdout));
+        let digits = "0123456789abcdef"; let b = std::bytes::BytesBuilder { }; let mut i = 0;
+        while i < len(digest) { let byte = std::bytes::at(digest, i) or 0; b.append_u8(std::str::byte_at_unchecked(digits, byte / 16)); b.append_u8(std::str::byte_at_unchecked(digits, byte % 16)); i = i + 1; }
+        return ProcessIdentity { key: std::str::from_bytes(b.snapshot()), started: started };
+    }
+    fn registered_pid(path: String) -> Int {
+        let size = std::io::fs::file_size(path) or - 1;
+        if size < 1 || size > 1024 { return 0; }
+        let raw = std::io::fs::read_file(path) or "";
+        let shm = std::json::find_string_field(raw, "shm");
+        if !std::str::starts_with(shm, "/hale-obs-") { return 0; }
+        let pid = std::str::parse_int(shm[10..len(shm)]) or 0;
+        return if shm == "/hale-obs-" + pid { pid } else { 0 };
+    }
+}

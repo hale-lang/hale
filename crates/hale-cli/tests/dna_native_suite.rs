@@ -429,7 +429,19 @@ fn run_fixture_slice(slice: usize) {
     let mut timings: Vec<FixtureTiming> = Vec::with_capacity(mine.len());
     let mut failure = None;
     for f in &mine {
-        match run_one_fixture(f, &tag, dsn.as_deref()) {
+        // Progress on stderr as it happens: a slice that nextest kills
+        // at its deadline shows what it had captured, so the fixture
+        // that ate the minutes is named rather than the slice alone.
+        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        eprintln!("slice {slice}: {name} starting");
+        let started = std::time::Instant::now();
+        let outcome = run_one_fixture(f, &tag, dsn.as_deref());
+        eprintln!(
+            "slice {slice}: {name} {} after {:.1}s",
+            if outcome.is_ok() { "passed" } else { "failed" },
+            started.elapsed().as_secs_f64()
+        );
+        match outcome {
             // A fixture failure stops the slice, as it always has: the
             // fixtures after it would run against whatever the failing
             // one left behind.
@@ -681,6 +693,7 @@ fn dna_fixture_set_is_complete() {
             "body_scan_test.hl",
             "books_slice_test.hl",
             "budget_test.hl",
+            "command_relay_trust_test.hl",
             "concern_identity_test.hl",
             "concern_restart_test.hl",
             "deployment_test.hl",
@@ -695,20 +708,31 @@ fn dna_fixture_set_is_complete() {
             "harness_test.hl",
             "journal_contention_test.hl",
             "journal_test.hl",
+            "knowledge_binding_recovery_test.hl",
             "knowledge_context_test.hl",
+            "knowledge_document_test.hl",
+            "knowledge_edge_review_test.hl",
             "knowledge_events_test.hl",
+            "knowledge_node_recovery_test.hl",
+            "knowledge_node_relay_test.hl",
             "knowledge_store_test.hl",
             "knowledge_test.hl",
             "lease_epoch_test.hl",
             "ledger_test.hl",
             "membrane_loss_test.hl",
             "mutation_review_test.hl",
+            "native_json_test.hl",
             "openai_chat_test.hl",
             "optimize_test.hl",
             "org_test.hl",
+            "organization_ownership_source_test.hl",
+            "organization_source_request_test.hl",
+            "organization_source_review_test.hl",
             "owners_test.hl",
             "ownership_test.hl",
             "plan_routing_test.hl",
+            "practice_command_recovery_test.hl",
+            "practice_lifecycle_test.hl",
             "practice_test.hl",
             "principal_oidc_test.hl",
             "principal_test.hl",
@@ -721,6 +745,7 @@ fn dna_fixture_set_is_complete() {
             "relay_repeated_request_test.hl",
             "retired_admission_test.hl",
             "review_authority_test.hl",
+            "review_command_test.hl",
             "routing_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",

@@ -1,0 +1,276 @@
+// db.hl — the Db service locus: a real SQLite driver over the
+// @ffi("c") glue declared in ffi.hl (shims in glue.c).
+//
+// Pattern 3 (service locus): `birth` opens the SQLite connection;
+// `dissolve` closes it. The whole SQL surface lives as member fns
+// declaring `fallible(DbError)` — exactly the CONTRACTS.md
+// § pond/sqlite shape, legal since v0.8.1 narrowed the two-channel
+// rule (user-declared `fn` member fns CAN be fallible; lifecycle
+// methods cannot).
+//
+// Handle sentinel semantics (params.conn_handle):
+//   -1 → not yet birthed (or constructed raw without birth)
+//    0 → birth ran but sqlite3_open failed (detail readable via
+//        lotus_sqlite_open_error(); every member fn fails with
+//        kind = "open_failed")
+//   >0 → live sqlite3* handle
+//
+// birth() is a lifecycle method, so an open failure CANNOT ride
+// the value channel there. Instead birth stamps the 0 sentinel
+// and the first SQL call reports the failure as a regular
+// `DbError { kind: "open_failed", ... }` — the caller's `or`
+// disposition handles it like any other SQL error. No panic, no
+// structural violation for a recoverable condition.
+//
+// Ownership note: lotus_sqlite_errmsg / lotus_sqlite_column_text
+// return pointers owned by sqlite, valid only until the next
+// sqlite call on the same object. Every read below clones
+// immediately via std::str::clone — never hold one across a
+// step/finalize/close.
+
+// ---- private helpers (free fns; not part of the contract) ----
+
+// __sq_kind — map a SQLITE_* result code to the DbError kind
+// vocabulary. Cross-cutting engine states (busy / constraint /
+// io) win over the per-operation fallback kind.
+fn __sq_kind(rc: Int, fallback: String) -> String {
+    if rc == 5 { return "busy"; } // SQLITE_BUSY
+    if rc == 6 { return "busy"; } // SQLITE_LOCKED
+    if rc == 10 { return "io"; } // SQLITE_IOERR
+    if rc == 19 { return "constraint"; } // SQLITE_CONSTRAINT
+    return fallback;
+}
+
+// __sq_collect_row — join the current row's columns with tabs
+// into a Row.data payload. Must be called only while the
+// statement sits on SQLITE_ROW. Each column_text pointer is
+// sqlite-owned, so it is cloned before the next column read.
+// NULL columns read as "" (glue.c maps NULL to the empty string).
+// @unbounded: concatenates one row's columns, bounded by the statement's column count.
+@unbounded
+fn __sq_collect_row(stmt: Int) -> String {
+    let ncols = lotus_sqlite_column_count(stmt);
+    let mut row = "";
+    let mut c = 0;
+    while c < ncols {
+        if c > 0 { row = row + "\t"; }
+        row = row + std::str::clone(lotus_sqlite_column_text(stmt, c));
+        c = c + 1;
+    }
+    return row;
+}
+
+// ---- the Db service locus (CONTRACTS.md § pond/sqlite) ----
+
+locus Db {
+    params {
+        // SQLite path. ":memory:" (the default) is an ephemeral
+        // in-memory database; anything else is a filesystem path
+        // (created on first write if absent).
+        path: String = ":memory:";
+        create: Bool = true;
+
+        // See the sentinel table in the header comment.
+        conn_handle: Int = -1;
+    }
+
+    // birth() — open the SQLite connection. Lifecycle methods
+    // cannot be fallible; failure stamps the 0 sentinel and is
+    // reported by the first SQL call (kind = "open_failed").
+    birth() {
+        self.conn_handle = if self.create { lotus_sqlite_open(self.path) } else { lotus_sqlite_open_existing(self.path) };
+    }
+
+    // dissolve() — close the connection. rc is dropped inside
+    // glue.c (dissolve cannot fail); a SQLITE_BUSY close —
+    // statements left unfinalized — leaks the handle rather than
+    // crashing.
+    dissolve() {
+        if self.conn_handle > 0 {
+            lotus_sqlite_close(self.conn_handle);
+            self.conn_handle = -1;
+        }
+    }
+
+    // __ensure_open — private guard shared by every SQL member
+    // fn. Routes the birth-time open failure (or a never-birthed
+    // Db) onto the value channel.
+    fn __ensure_open() -> () fallible(DbError) {
+        if self.conn_handle == 0 {
+            fail DbError {
+                kind: "open_failed",
+                sqlite_code: lotus_sqlite_open_errcode(),
+                detail: "open failed for '" + self.path + "': "
+                    + std::str::clone(lotus_sqlite_open_error()),
+            };
+        }
+        if self.conn_handle < 0 {
+            fail DbError {
+                kind: "open_failed",
+                sqlite_code: 0,
+                detail: "connection not open (Db was never birthed)",
+            };
+        }
+    }
+
+    // exec — run a non-query statement (INSERT / UPDATE / DELETE
+    // / DDL; sqlite3_exec, so multi-statement scripts separated
+    // by ';' work too). Returns rows_affected (changes()) +
+    // last_insert_rowid (0 when not an INSERT into a rowid table).
+    fn exec(sql: String) -> ExecResult fallible(DbError) {
+        self.__ensure_open() or raise;
+        let rc = lotus_sqlite_exec(self.conn_handle, sql);
+        if rc != 0 {
+            fail DbError {
+                kind: __sq_kind(rc, "exec_failed"),
+                sqlite_code: rc,
+                detail: std::str::clone(lotus_sqlite_errmsg(self.conn_handle)),
+            };
+        }
+        return ExecResult {
+            rows_affected: lotus_sqlite_changes(self.conn_handle),
+            last_insert_rowid: lotus_sqlite_last_rowid(self.conn_handle),
+        };
+    }
+
+    // query_one — run a SELECT, return the first row's columns as
+    // tab-separated Row.data. Zero rows fails with kind="no_row"
+    // (so callers don't get a silent empty string back); extra
+    // rows beyond the first are discarded by the finalize.
+    fn query_one(sql: String) -> Row fallible(DbError) {
+        let stmt = self.prepare(sql) or raise;
+        let rc = lotus_sqlite_step(stmt);
+        if rc == 101 { // SQLITE_DONE — zero rows
+            lotus_sqlite_finalize(stmt);
+            fail DbError {
+                kind: "no_row",
+                sqlite_code: rc,
+                detail: "query produced zero rows",
+            };
+        }
+        if rc != 100 { // not SQLITE_ROW — engine error
+            let msg = std::str::clone(lotus_sqlite_errmsg(self.conn_handle));
+            lotus_sqlite_finalize(stmt);
+            fail DbError {
+                kind: __sq_kind(rc, "step_failed"),
+                sqlite_code: rc,
+                detail: msg,
+            };
+        }
+        let data = __sq_collect_row(stmt);
+        self.finalize(stmt) or raise;
+        return Row { data: data };
+    }
+
+    // query_all — run a SELECT, return every row as newline-
+    // separated rows of tab-separated columns. An empty result
+    // set is a SUCCESSFUL return with csv == "" (no rows is not
+    // an error — distinct from query_one's "no_row" fail).
+    fn query_all(sql: String) -> Rows fallible(DbError) {
+        let stmt = self.prepare(sql) or raise;
+        let mut out = "";
+        let mut n = 0;
+        let mut rc = lotus_sqlite_step(stmt);
+        while rc == 100 { // SQLITE_ROW
+            if n > 0 { out = out + "\n"; }
+            out = out + __sq_collect_row(stmt);
+            n = n + 1;
+            rc = lotus_sqlite_step(stmt);
+        }
+        if rc != 101 { // not SQLITE_DONE — engine error
+            let msg = std::str::clone(lotus_sqlite_errmsg(self.conn_handle));
+            lotus_sqlite_finalize(stmt);
+            fail DbError {
+                kind: __sq_kind(rc, "step_failed"),
+                sqlite_code: rc,
+                detail: msg,
+            };
+        }
+        self.finalize(stmt) or raise;
+        return Rows { csv: out };
+    }
+
+    // prepare — compile a SQL statement, return the stmt handle
+    // (the address of the underlying sqlite3_stmt*). Callers pass
+    // it to bind_* / step / finalize. Every prepared handle must
+    // reach finalize exactly once (step's "no_row" does NOT
+    // auto-finalize).
+    fn prepare(sql: String) -> Int fallible(DbError) {
+        self.__ensure_open() or raise;
+        let stmt = lotus_sqlite_prepare(self.conn_handle, sql);
+        if stmt == 0 {
+            fail DbError {
+                kind: __sq_kind(lotus_sqlite_errcode(self.conn_handle),
+                    "prepare_failed"),
+                sqlite_code: lotus_sqlite_errcode(self.conn_handle),
+                detail: std::str::clone(lotus_sqlite_errmsg(self.conn_handle)),
+            };
+        }
+        return stmt;
+    }
+
+    // bind_text / bind_int — bind a parameter on a prepared
+    // statement. idx is 1-indexed (sqlite convention; columns are
+    // 0-indexed — also sqlite convention).
+    fn bind_text(stmt: Int, idx: Int, val: String) -> () fallible(DbError) {
+        let rc = lotus_sqlite_bind_text(stmt, idx, val);
+        if rc != 0 {
+            fail DbError {
+                kind: __sq_kind(rc, "bind_failed"),
+                sqlite_code: rc,
+                detail: std::str::clone(lotus_sqlite_errmsg(self.conn_handle)),
+            };
+        }
+    }
+
+    fn bind_int(stmt: Int, idx: Int, val: Int) -> () fallible(DbError) {
+        let rc = lotus_sqlite_bind_int(stmt, idx, val);
+        if rc != 0 {
+            fail DbError {
+                kind: __sq_kind(rc, "bind_failed"),
+                sqlite_code: rc,
+                detail: std::str::clone(lotus_sqlite_errmsg(self.conn_handle)),
+            };
+        }
+    }
+
+    // step — advance a prepared statement one row. SQLITE_ROW
+    // returns the row's columns as tab-separated Row.data;
+    // SQLITE_DONE fails with kind="no_row" so a caller's loop
+    // terminates on a check rather than a sentinel. Engine errors
+    // (busy / constraint / io / ...) fail with the matching kind
+    // + raw sqlite_code.
+    fn step(stmt: Int) -> Row fallible(DbError) {
+        let rc = lotus_sqlite_step(stmt);
+        if rc == 101 { // SQLITE_DONE
+            fail DbError {
+                kind: "no_row",
+                sqlite_code: rc,
+                detail: "SQLITE_DONE: statement produced no further rows",
+            };
+        }
+        if rc != 100 { // not SQLITE_ROW
+            fail DbError {
+                kind: __sq_kind(rc, "step_failed"),
+                sqlite_code: rc,
+                detail: std::str::clone(lotus_sqlite_errmsg(self.conn_handle)),
+            };
+        }
+        return Row { data: __sq_collect_row(stmt) };
+    }
+
+    // finalize — release a prepared statement. Reports the error
+    // of the most recent failed step (sqlite semantics), so a
+    // bind-step-finalize chain that discards step errors still
+    // surfaces them here.
+    fn finalize(stmt: Int) -> () fallible(DbError) {
+        let rc = lotus_sqlite_finalize(stmt);
+        if rc != 0 {
+            fail DbError {
+                kind: __sq_kind(rc, "finalize_failed"),
+                sqlite_code: rc,
+                detail: std::str::clone(lotus_sqlite_errmsg(self.conn_handle)),
+            };
+        }
+    }
+}

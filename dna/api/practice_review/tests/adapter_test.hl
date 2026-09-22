@@ -1,0 +1,160 @@
+// Thin-policy/adapter conformance only. Native admission and progression are
+// covered by the operations and live-host gates, not this scripted service.
+import ".." as head;
+import "../.." as api;
+import "../../../core" as dna;
+import "../../../operations" as ops;
+
+const APP: String = "application/native/example";
+const MEMBER: String = "{\"mode\":\"local\",\"name\":\"alice/équipe\",\"authority\":\"board\",\"practice_propose\":true,\"review_verdict\":false,\"recover\":true}";
+
+fn policy(grants: String) -> String {
+    return "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + APP + "\",\"grants\":[" + grants + "]}";
+}
+fn who(mode: String) -> ops::GovernanceContext {
+    return ops::GovernanceContext { application_id: APP, principal_mode: mode, principal_name: "alice/équipe" };
+}
+fn rejected(document: String, label: String) {
+    let codec = ops::AuthorityPolicyCodec { };
+    std::test::assert(!codec.decode(document, APP, "local").valid, label);
+}
+fn test_explicit_authority() {
+    let codec = ops::AuthorityPolicyCodec { }; let j = dna::MemJournal { };
+    let absent = ops::FixedAuthority { };
+    std::test::assert(!absent.authorize(who("local"), "dna.practice.propose", false, j).allowed, "no configuration denies writes");
+    let captured = codec.decode(policy(MEMBER), APP, "signed");
+    std::test::assert(captured.valid && captured.sign, "signed policy retains signing requirement");
+    std::test::assert_eq_str(captured.basis, "dna.practice-review-authority/1:" + dna::digest_of(policy(MEMBER)) + ":trust=signed", "authority identifies captured document and trust");
+    let grants = ops::FixedAuthority { policy: captured };
+    let allowed = grants.authorize(who("local"), "dna.practice.propose", false, j);
+    std::test::assert(allowed.allowed, "exact configured principal can propose");
+    std::test::assert_eq_str(allowed.authority, "board", "role comes only from trusted policy");
+    std::test::assert_eq_str(allowed.basis, captured.basis, "grant preserves fixed basis");
+    std::test::assert(!grants.authorize(who("local"), "dna.review.verdict", false, j).allowed, "operation grants remain independent");
+    std::test::assert(grants.authorize(who("local"), "dna.review.verdict", true, j).allowed, "receipt recovery can survive write denial");
+    std::test::assert(grants.authorize(who("local"), "", true, j).allowed, "absent-key lookup has explicit receipt permission");
+    std::test::assert(!grants.authorize(who("local"), "", false, j).allowed, "empty operation is not a write grant");
+    std::test::assert(!grants.authorize(who("local"), "unknown", true, j).allowed, "unknown operations denied during recovery");
+    std::test::assert(!grants.authorize(who("oidc"), "dna.practice.propose", false, j).allowed, "equal names in another mode are distinct");
+    let mut other = who("local"); other.application_id = "application/other";
+    std::test::assert(!grants.authorize(other, "dna.practice.propose", false, j).allowed, "policy is application-bound");
+    other = who("local"); other.principal_name = "alice";
+    std::test::assert(!grants.authorize(other, "dna.practice.propose", false, j).allowed, "name matching is exact");
+    let empty = codec.decode(policy(""), APP, "local");
+    std::test::assert(empty.valid && !empty.sign, "empty map is an explicit deny-all local policy");
+    let deny = ops::FixedAuthority { policy: empty };
+    std::test::assert(!deny.authorize(who("local"), "", true, j).allowed, "empty map denies receipt access");
+    let both = codec.decode(policy(MEMBER + "," + std::str::replace(MEMBER, "\"local\"", "\"oidc\"")), APP, "local");
+    std::test::assert(both.valid, "same name may be explicitly granted under both modes");
+    std::test::assert(!codec.decode(policy(MEMBER), APP, "unknown").valid, "unsupported trust fails closed");
+    std::test::assert(!codec.decode(policy(MEMBER), "application/other", "local").valid, "startup application mismatch fails closed");
+    std::test::assert(codec.decode(policy(MEMBER) + "\n", APP, "signed").basis != captured.basis, "basis identifies exact captured bytes");
+}
+fn test_strict_policy() {
+    rejected("{}", "missing fields");
+    rejected(policy(MEMBER) + "{}", "trailing document");
+    rejected(policy(MEMBER + "," + MEMBER), "ambiguous duplicate actor");
+    rejected(policy(std::str::replace(MEMBER, "\"name\":\"alice/équipe\"", "\"name\":\"alice/équipe\",\"name\":\"bob\"")), "duplicate key");
+    rejected(policy(std::str::replace(MEMBER, "\"recover\":true", "\"recover\":\"true\"")), "boolean must be typed");
+    rejected(policy(std::str::replace(MEMBER, "\"recover\":true", "\"recover\":true,\"admin\":true")), "unknown grant fields");
+    rejected(policy(std::str::replace(MEMBER, "\"recover\":true", "\"rec\\u006fver\":true")), "escaped keys");
+    rejected(policy(std::str::replace(MEMBER, "\"board\"", "\"superuser\"")), "unknown native authority");
+    rejected(policy(std::str::replace(MEMBER, "\"local\"", "\"payload\"")), "unknown identity source");
+    rejected(policy(std::str::replace(MEMBER, "alice/équipe", "alice\\u0000")), "NUL escape");
+    rejected(policy(std::str::replace(MEMBER, "alice/équipe", "alice\\ud800")), "unpaired surrogate");
+    rejected(std::str::replace(policy(MEMBER), "\"grants\":[" + MEMBER + "]", "\"grants\":{}"), "grants is an array");
+    let many = std::bytes::BytesBuilder { }; let mut i = 0;
+    while i < 129 { if i > 0 { many.append_str(","); } many.append_str(std::str::replace(MEMBER, "alice/équipe", "member-" + to_string(i))); i = i + 1; }
+    rejected(policy(std::str::from_bytes(many.snapshot())), "grant-count bound");
+}
+
+locus NativeStub {
+    params {
+        calls: Int = 0;
+        observed_context: ops::GovernanceContext = ops::GovernanceContext { };
+        observed_command: ops::GovernanceCommand = ops::GovernanceCommand { };
+        observed_lookup: String = "";
+        value: ops::GovernanceResult = ops::GovernanceResult { };
+    }
+    fn supported(operation: String, version: String) -> Bool { return operation == "dna.practice.propose" && version == "1"; }
+    fn capability(context: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability {
+        self.observed_context = context;
+        return ops::GovernanceCapability { available: true, authorized: false, reason: "native reason" };
+    }
+    fn submit(context: ops::GovernanceContext, command: ops::GovernanceCommand) -> ops::GovernanceResult {
+        self.calls = self.calls + 1; self.observed_context = context; self.observed_command = command; return self.value;
+    }
+    fn lookup(context: ops::GovernanceContext, request_id: String) -> ops::GovernanceResult {
+        self.calls = self.calls + 1; self.observed_context = context; self.observed_lookup = request_id; return self.value;
+    }
+}
+fn test_typed_adapter() {
+    let context = api::CommandContext { root: "/project", source: api::Source { ok: true, identity: APP, head: "before", revision: 8, name: "Application" }, principal_mode: "oidc", principal_name: "alice/équipe" };
+    let receipt = ops::GovernanceReceipt {
+        command_id: "command/id", request_id: "request/id", application_id: APP,
+        operation: "dna.review.verdict", operation_version: "1", principal_mode: "oidc", principal_name: "alice/équipe",
+        position_id: "org", target_kind: "dna.review", target_id: "review/id", subject_digest: "digest/before",
+        fingerprint: "sha256:fingerprint", state: "outcome_unknown", reason: "Native evidence unavailable",
+        proposal_state: "", verdict_value: "reject", verdict_state: "unknown", candidate_digest: "", review_id: "",
+        review_state: "settled", review_outcome: "approve", review_subject_digest: "digest/before",
+        activation_state: "active", activation_reason: "Independent native adoption"
+    };
+    let native = NativeStub { value: ops::GovernanceResult { ok: true, application_id: APP, head: "captured-after", revision: 11, receipt: receipt } };
+    let adapter = head::PracticeReviewCommands { root: "/project", application_id: APP, service: native };
+    let command = api::CommandRequest {
+        valid: true, request_id: "request/id", operation: "dna.review.verdict", operation_version: "1", application_id: APP,
+        position_id: "org", target_kind: "dna.review", target_id: "review/id", subject_digest: "digest/before",
+        expected_principal_mode: "oidc", expected_principal_name: "alice/équipe", expected_review_state: "pending", verdict: "reject", comment: "  Check 🧭\r\nExactly.  "
+    };
+    let response = adapter.submit(context, command);
+    std::test::assert(response.ok, "native result preserved");
+    std::test::assert_eq_str(response.source.head, "captured-after", "source uses service evidence instead of HTTP pre-read");
+    std::test::assert_eq_int(response.source.revision, 11, "revision uses same captured source");
+    std::test::assert_eq_str(native.observed_context.principal_mode, "oidc", "trusted mode forwarded");
+    std::test::assert_eq_str(native.observed_context.principal_name, "alice/équipe", "trusted name forwarded");
+    std::test::assert_eq_str(native.observed_command.comment, command.comment, "Unicode, CRLF and whitespace forwarded exactly");
+    std::test::assert_eq_str(native.observed_command.subject_digest, command.subject_digest, "exact subject forwarded");
+    std::test::assert_eq_str(native.observed_command.expected_review_state, "pending", "review precondition forwarded");
+    let r = response.receipt;
+    std::test::assert_eq_str(r.command_id, receipt.command_id, "command identity");
+    std::test::assert_eq_str(r.request_id, receipt.request_id, "request identity");
+    std::test::assert_eq_str(r.application_id, receipt.application_id, "application identity");
+    std::test::assert_eq_str(r.operation, receipt.operation, "operation");
+    std::test::assert_eq_str(r.operation_version, receipt.operation_version, "operation version");
+    std::test::assert_eq_str(r.principal_mode, receipt.principal_mode, "receipt principal mode");
+    std::test::assert_eq_str(r.principal_name, receipt.principal_name, "receipt principal name");
+    std::test::assert_eq_str(r.position_id, receipt.position_id, "position");
+    std::test::assert_eq_str(r.target_kind, receipt.target_kind, "target kind");
+    std::test::assert_eq_str(r.target_id, receipt.target_id, "target identity");
+    std::test::assert_eq_str(r.subject_digest, receipt.subject_digest, "subject");
+    std::test::assert_eq_str(r.fingerprint, receipt.fingerprint, "fingerprint");
+    std::test::assert_eq_str(r.state, receipt.state, "unknown stays unknown");
+    std::test::assert_eq_str(r.reason, receipt.reason, "reason");
+    std::test::assert_eq_str(r.proposal_state, receipt.proposal_state, "inactive proposal branch");
+    std::test::assert_eq_str(r.verdict_value, receipt.verdict_value, "verdict value");
+    std::test::assert_eq_str(r.verdict_state, receipt.verdict_state, "verdict evidence");
+    std::test::assert_eq_str(r.candidate_digest, receipt.candidate_digest, "candidate");
+    std::test::assert_eq_str(r.review_id, receipt.review_id, "proposal review");
+    std::test::assert_eq_str(r.review_state, receipt.review_state, "review state independent of verdict");
+    std::test::assert_eq_str(r.review_outcome, receipt.review_outcome, "review outcome independent of verdict");
+    std::test::assert_eq_str(r.review_subject_digest, receipt.review_subject_digest, "review subject");
+    std::test::assert_eq_str(r.activation_state, receipt.activation_state, "activation remains independent");
+    std::test::assert_eq_str(r.activation_reason, receipt.activation_reason, "activation evidence");
+    let capability = adapter.capability(context, "dna.practice.propose", "1");
+    std::test::assert(capability.available && !capability.authorized, "capability and authorization are distinct");
+    std::test::assert_eq_str(capability.reason, "native reason", "native capability reason");
+    let lookup = adapter.lookup(context, "lookup/exact");
+    std::test::assert_eq_str(native.observed_lookup, "lookup/exact", "lookup key forwarded unchanged");
+    let bad = api::CommandRequest { valid: true, expected_principal_mode: "local", expected_principal_name: "alice/équipe" };
+    std::test::assert_eq_str(adapter.submit(context, bad).code, "command_context_changed", "expected identity is a precondition");
+    let invalid = api::CommandRequest { valid: false, expected_principal_mode: "oidc", expected_principal_name: "alice/équipe" };
+    std::test::assert_eq_str(adapter.submit(context, invalid).code, "invalid_command", "invalid transport command cannot reach service");
+    let mut other = context; other.root = "/other";
+    std::test::assert_eq_str(adapter.lookup(other, "lookup/exact").code, "command_context_changed", "root binding checked");
+    other = context; other.source.identity = "application/other";
+    std::test::assert(!adapter.capability(other, "dna.practice.propose", "1").available, "application binding checked");
+    std::test::assert_eq_int(native.calls, 2, "invalid contexts never dispatch");
+    let rejected = adapter.result(context, ops::GovernanceResult { ok: true, application_id: "application/other", head: "head", revision: 1 });
+    std::test::assert(!rejected.ok, "foreign service evidence rejected");
+}
+fn main() { test_explicit_authority(); test_strict_policy(); test_typed_adapter(); }

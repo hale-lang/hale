@@ -1,0 +1,137 @@
+// Native route tests share an actual mutable application catalog. Socket and
+// authentication transport are separately exercised by read_api_test.hl.
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+import "./fixture" as fixture;
+
+locus CatalogHost {
+    params {
+        catalog: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        calls: Int = 0;
+        available: Bool = true;
+        source_revision: String = "loaded-revision-A";
+        document_override: String = "";
+    }
+    fn supported() -> Bool { return true; }
+    fn snapshot() -> ops::DefinitionSnapshot {
+        self.calls = self.calls + 1;
+        if !self.available { return ops::DefinitionSnapshot { supported: true, error: "catalog host unavailable" }; }
+        let document = if len(self.document_override) > 0 { self.document_override } else { self.catalog.encode() };
+        return ops::DefinitionSnapshot {
+            supported: true, available: true, document: document, digest: dna::digest_of(document),
+            provenance: ops::DefinitionProvenance { source_revision: self.source_revision, source_path: "app/workflows.hl", dependency_digest: "loaded-dependencies" }
+        };
+    }
+}
+
+locus CatalogCases {
+    params { f: fixture::Fixture; host: CatalogHost = CatalogHost { }; json: fixture::Json = fixture::Json { }; }
+    fn response(service: api::Api, path: String, expected: Int, schema: String) -> String {
+        let response = service.handle(std::http::Request { method: "GET", path: self.f.prefix + path });
+        std::test::assert_eq_int(response.status, expected, response.body);
+        let checked = self.f.validator.validate(schema, response.body);
+        std::test::assert(checked.ok, checked.error + "\n" + response.body);
+        return response.body;
+    }
+    fn error(service: api::Api, query: String, status: Int, code: String) -> String {
+        let body = self.response(service, "/dna/definitions" + query, status, "ErrorResponse");
+        self.json.eq(self.json.raw(body, "error"), "code", code);
+        return body;
+    }
+    fn run_cases() {
+        let a = self.host.catalog.define("root", 1, 2, "Monthly close — équipe");
+        let b = self.host.catalog.define("collect", 9007199254740993, 1, "Collect exact revision");
+        let c = self.host.catalog.child("root", 1, 0, "gather", "collect", 9007199254740993);
+        let d = self.host.catalog.leaf("root", 1, 1, "publish", dna::WorkRequest { objective: "Publish after collection" }, 1);
+        let e = self.host.catalog.leaf("collect", 9007199254740993, 0, "human", dna::WorkRequest {
+            objective: "Ask a human\nfor evidence <literal>", context_digest: "context-A", knowledge_bindings: "exact-bindings",
+            output_contract: "Evidence", data_class: "internal", requires: "judgment", target: "org/finance", cost_ceiling: 9223372036854775807
+        }, 2);
+        let admitted = self.host.catalog.expand("prior-work", "root", 1, dna::AdmissionLimits { });
+        std::test::assert(admitted.ok, "prior native admission exists");
+        let bound_count = self.host.catalog.bound_count();
+        let refs = self.f.refs();
+        let service = api::Api { root: self.f.root, definitions: self.host };
+        let capabilities = self.response(service, "/capabilities", 200, "CapabilitiesResponse");
+        self.json.is_bool(self.json.raw(self.json.data(capabilities), "reads"), "definitions", true);
+        std::test::assert_eq_int(self.host.calls, 0, "capability discovery never encodes the catalog");
+        let first = self.response(service, "/dna/definitions?limit=1", 200, "DefinitionsResponse");
+        std::test::assert_eq_int(self.host.calls, 1, "exactly one catalog capture per response");
+        self.f.source(first);
+        self.json.is_int(self.json.page(first), "total", 2);
+        self.json.eq(self.json.first(first), "id", "root@1");
+        let snapshot = self.json.string(self.json.page(first), "snapshot");
+        let basis = self.json.raw(self.json.data(first), "basis");
+        self.json.eq(basis, "source_revision", "loaded-revision-A");
+        self.json.eq(basis, "provenance_kind", "trusted_host_claims");
+        let tail = self.response(service, "/dna/definitions?limit=1&offset=1&snapshot=" + dna::url_encode(snapshot), 200, "DefinitionsResponse");
+        self.json.eq(self.json.first(tail), "revision", "9007199254740993");
+        self.json.eq(self.json.first(tail), "id", "collect@9007199254740993");
+        std::test::assert(std::str::contains(tail, "9223372036854775807"), "cost preserved beyond JavaScript precision");
+        std::test::assert(std::str::contains(tail, "root@1"), "exact dependent reference");
+        let detail = self.response(service, "/dna/definitions?id=collect%409007199254740993&snapshot=" + dna::url_encode(snapshot), 200, "DefinitionsResponse");
+        std::test::assert_eq_int(self.json.count(detail), 1, "one exact revision detail");
+        self.error(service, "?id=collect%401", 404, "definition_not_found");
+        self.error(service, "?offset=1", 400, "invalid_query");
+        std::test::assert_eq_int(self.host.catalog.bound_count(), bound_count, "reads do not replace prior admissions or materialize executions");
+        std::test::assert_eq_str(self.f.refs(), refs, "reads do not change any project ref");
+
+        self.host.source_revision = "loaded-revision-B";
+        self.error(service, "?snapshot=" + dna::url_encode(snapshot), 409, "snapshot_changed");
+        let renewed = self.response(service, "/dna/definitions", 200, "DefinitionsResponse");
+        let basis_b = self.json.raw(self.json.data(renewed), "basis");
+        self.json.eq(basis_b, "source_revision", "loaded-revision-B");
+        let snapshot_b = self.json.string(self.json.page(renewed), "snapshot");
+        let f = self.host.catalog.define("root", 2, 1, "A new revision");
+        let g = self.host.catalog.leaf("root", 2, 0, "new", dna::WorkRequest { objective: "New procedure" }, 1);
+        self.error(service, "?snapshot=" + dna::url_encode(snapshot_b), 409, "snapshot_changed");
+        let newer = self.response(service, "/dna/definitions", 200, "DefinitionsResponse");
+        self.json.is_int(self.json.page(newer), "total", 3);
+        self.response(service, "/dna/definitions?id=root%401", 200, "DefinitionsResponse");
+        let snapshot_c = self.json.string(self.json.page(newer), "snapshot");
+        self.f.append("fixture.changed", "record", "another writer");
+        self.error(service, "?snapshot=" + dna::url_encode(snapshot_c), 409, "snapshot_changed");
+
+        self.host.available = false;
+        let unavailable = self.error(service, "", 503, "definitions_unavailable");
+        self.json.is_bool(self.json.raw(unavailable, "error"), "retryable", true);
+        self.host.available = true; self.host.document_override = "{}";
+        let invalid = self.error(service, "", 503, "definition_document_invalid");
+        self.json.is_bool(self.json.raw(invalid, "error"), "retryable", false);
+        self.host.document_override = "";
+        self.response(service, "/dna/definitions", 200, "DefinitionsResponse");
+
+        let absent = api::Api { root: self.f.root };
+        let absent_capabilities = self.response(absent, "/capabilities", 200, "CapabilitiesResponse");
+        self.json.is_bool(self.json.raw(self.json.data(absent_capabilities), "reads"), "definitions", false);
+        self.error(absent, "", 503, "definitions_unsupported");
+        let before_auth = self.host.calls;
+        let locked = api::Api { root: self.f.root, mode: "oidc", definitions: self.host };
+        self.error(locked, "", 401, "unauthenticated");
+        std::test::assert_eq_int(self.host.calls, before_auth, "unauthenticated requests never inspect the catalog");
+    }
+}
+
+fn main() {
+    // Git plumbing in the ambient environment must not redirect fixture writes.
+    if std::env::var("HALE_DEFINITION_API_TEST_CLEAN") != "1" {
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_DNA_OIDC_SECRET\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DEFINITION_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        print(clean.stdout);
+        if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_KNOWLEDGE_DSN\nHALE_DNA_KNOWLEDGE_URL\nHALE_DNA_EVIDENCE_KEY\nHALE_DNA_OIDC_SECRET";
+    let mut i = 0;
+    while i < dna::count_lines(forbidden) {
+        std::test::assert(!std::env::var_exists(dna::line_at(forbidden, i)), "fixture environment must be isolated");
+        i = i + 1;
+    }
+    std::test::assert_eq_str(std::env::var("GIT_CONFIG_NOSYSTEM"), "1", "system Git config disabled");
+    std::test::assert_eq_str(std::env::var("GIT_CONFIG_GLOBAL"), "/dev/null", "global Git config disabled");
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-definitions-api.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, made.stderr);
+    let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
+    let cases = CatalogCases { f: f };
+    cases.run_cases();
+}

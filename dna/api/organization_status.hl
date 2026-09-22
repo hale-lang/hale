@@ -1,0 +1,213 @@
+// Authorized historical source status. Current process association is a
+// separate optional owning-host read, never inferred from a retained receipt.
+import "../core" as dna;
+import "../operations" as ops;
+
+interface OrganizationRuntimeProvider {
+    fn current(application_id: String, request_id: String, attempt_id: String) -> dna::OrganizationRuntimeAssociation;
+}
+locus NoOrganizationRuntime {
+    params { }
+    fn current(application_id: String, request_id: String, attempt_id: String) -> dna::OrganizationRuntimeAssociation { return dna::OrganizationRuntimeAssociation { }; }
+}
+type OrganizationStatusFact {
+    found: Bool = false;
+    valid: Bool = true;
+    hidden: Bool = false;
+    event: dna::Event = dna::Event { };
+}
+type OrganizationLaunchStatus {
+    hidden: Bool = false;
+    launch_state: String = "unavailable";
+    request_event: String = "";
+    launch_event: String = "";
+    attempt: dna::OrganizationLaunchAttempt = dna::OrganizationLaunchAttempt { };
+    launched: dna::OrganizationLaunchReceipt = dna::OrganizationLaunchReceipt { };
+    observation_state: String = "unavailable";
+    observation_event: String = "";
+    observation_start: String = "";
+    observation_end: String = "";
+    exit_state: String = "unavailable";
+    exit_event: String = "";
+    exit_code: String = "";
+    rollback_state: String = "unavailable";
+    rollback_request: String = "";
+    rollback_event: String = "";
+    rollback_base: String = "";
+    rollback_launch_state: String = "unavailable";
+    rollback_launch_request: String = "";
+    rollback_launch_event: String = "";
+    rollback_binary: String = "";
+    rollback_topology: String = "";
+}
+locus OrganizationStatusWire {
+    params { }
+    fn trust(record: dna::GitRecord) -> String {
+        let read = record.git("config\n--get\ndna.trust");
+        if read.code != 0 && read.code != 1 { return "unavailable"; }
+        let mode = dna::trim_nl(read.stdout); return if mode == "" { "local" } else { mode };
+    }
+    fn signed(record: dna::GitRecord, mode: String, event: dna::Event) -> Bool {
+        return mode == "local" || (mode == "signed" && record.signer(event.digest).verified);
+    }
+    fn fact(record: dna::GitRecord, journal: ops::GovernanceJournal, kind: String, id: String, mode: String) -> OrganizationStatusFact {
+        let mut found = OrganizationStatusFact { }; let q = ops::Queries { j: journal }; let mut i = 0;
+        while i < journal.revision() {
+            let e = journal.read(i);
+            if e.kind == kind && e.entity == id {
+                if dna::native_json_string(dna::line_at(journal.snapshot.text, i), "author") != "host" || !self.signed(record, mode, e)
+                    || (found.found && found.event.body != e.body) { return OrganizationStatusFact { found: true, valid: false }; }
+                if q.receipt_status(e.digest) != "available" || q.receipt_status(e.entity) != "available" { return OrganizationStatusFact { found: true, hidden: true }; }
+                if !found.found { found = OrganizationStatusFact { found: true, event: e }; }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    // Stage summaries still disclose their supporting facts. A protected
+    // Review decision, quorum vote or application result hides this resource.
+    fn stages(record: dna::GitRecord, journal: ops::GovernanceJournal, c: ops::OrganizationCandidateEvidence, mode: String) -> OrganizationStatusFact {
+        let q = ops::Queries { j: journal }; let text = ops::GovernanceCommandCodec { };
+        let key = dna::effect_key(c.request.source_owner, "apply", c.candidate_commit); let mut i = 0;
+        while i < journal.revision() {
+            let e = journal.read(i);
+            let review = (e.kind == "review.requested" && (e.entity == c.mutation_id || e.entity == "review:" + c.mutation_id))
+                || ((e.kind == "review.verdict" || e.kind == "review.settled") && e.entity == c.mutation_id)
+                || (e.kind == "review.command_decided" && text.string(e.body, "review_id") == c.mutation_id);
+            let effect = (e.kind == "effect.requested" || e.kind == "effect.result") && e.entity == key;
+            let mutation = e.entity == c.mutation_id && (e.kind == "mutation.applied" || e.kind == "mutation.refused" || e.kind == "mutation.rejected" || e.kind == "mutation.revise" || e.kind == "expression.restart_requested");
+            if review || effect || mutation {
+                if q.receipt_status(e.digest) != "available" || q.receipt_status(e.entity) != "available" { return OrganizationStatusFact { hidden: true }; }
+                if !self.signed(record, mode, e) { return OrganizationStatusFact { valid: false }; }
+            }
+            i = i + 1;
+        }
+        return OrganizationStatusFact { };
+    }
+    fn matches(a: dna::OrganizationLaunchAttempt, c: ops::OrganizationCandidateEvidence, applied: dna::Event, handoff: dna::Event) -> Bool {
+        let codec = dna::OrganizationLaunchCodec { }; let r = c.request;
+        return codec.valid(a) && a.application_id == r.application_id && a.request_id == r.request_id
+            && a.command_fingerprint == r.command_fingerprint && a.source_owner == r.source_owner && a.mutation_id == c.mutation_id
+            && a.candidate_commit == c.candidate_commit && a.source_digest == r.source_digest
+            && a.applied_event_id == applied.digest && a.restart_event_id == handoff.digest;
+    }
+    fn project(record: dna::GitRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence, application: ops::OrganizationApplyEvidence, mode: String) -> OrganizationLaunchStatus {
+        let mut out = OrganizationLaunchStatus { }; let codec = dna::OrganizationLaunchCodec { };
+        if application.state != "applied" || application.handoff_state != "requested" || application.applied_sequence < 0 || application.handoff_sequence < 0 { return out; }
+        let applied = journal.read(application.applied_sequence); let handoff = journal.read(application.handoff_sequence);
+        if !self.signed(record, mode, applied) || !self.signed(record, mode, handoff) { return OrganizationLaunchStatus { launch_state: "unknown" }; }
+        let id = codec.attempt_id(handoff.digest);
+        let claim = self.fact(record, journal, "organization.source.launch_requested", id, mode);
+        let launched = self.fact(record, journal, "organization.source.launched", id, mode);
+        let observed = self.fact(record, journal, "organization.source.launch_observed", id, mode);
+        let exited = self.fact(record, journal, "organization.source.launch_exited", id, mode);
+        let rollback = self.fact(record, journal, "organization.source.rollback_requested", id, mode);
+        let rolled_back = self.fact(record, journal, "mutation.rolled_back", candidate.mutation_id, mode);
+        let base_claim = self.fact(record, journal, "organization.source.rollback_launch_requested", id, mode);
+        let base_launch = self.fact(record, journal, "organization.source.rollback_launched", id, mode);
+        if claim.hidden || launched.hidden || observed.hidden || exited.hidden || rollback.hidden || rolled_back.hidden || base_claim.hidden || base_launch.hidden { return OrganizationLaunchStatus { hidden: true }; }
+        let a = codec.decode_attempt(claim.event);
+        if !claim.valid || (claim.found && (claim.event.seq <= handoff.seq || !self.matches(a, candidate, applied, handoff)))
+            || (!claim.found && (launched.found || observed.found || exited.found || rollback.found || rolled_back.found || base_claim.found || base_launch.found)) { return OrganizationLaunchStatus { launch_state: "unknown", observation_state: "unknown", exit_state: "unknown", rollback_state: "unknown", rollback_launch_state: "unknown" }; }
+        if !claim.found { return out; }
+        let q = ops::Queries { j: journal };
+        if q.receipt_status(a.binary_digest) != "available" || q.receipt_status(a.topology_digest) != "available" { return OrganizationLaunchStatus { hidden: true }; }
+        out.attempt = a; out.request_event = claim.event.digest; out.launch_state = "requested";
+        let l = codec.decode_launch(launched.event, a);
+        if !launched.valid || (launched.found && (!l.valid || launched.event.seq <= claim.event.seq)) { out.launch_state = "unknown"; }
+        else if launched.found { out.launch_state = "launched"; out.launched = l; out.launch_event = launched.event.digest; }
+        let observation = codec.decode_observation(observed.event, l);
+        if !observed.valid || (observed.found && (out.launch_state != "launched" || !observation.valid || observed.event.seq <= launched.event.seq)) { out.observation_state = "unknown"; }
+        else if observed.found { out.observation_state = observation.outcome; out.observation_event = observed.event.digest; out.observation_start = to_string(observation.window_started); out.observation_end = to_string(observation.window_ended); }
+        let exit = codec.decode_exit(exited.event, a);
+        if !exited.valid || (exited.found && (!exit.valid || exited.event.seq <= claim.event.seq || (l.valid && exit.pid != l.pid))) { out.exit_state = "unknown"; }
+        else if exited.found { out.exit_state = "exited"; out.exit_event = exited.event.digest; out.exit_code = to_string(exit.code); }
+        let reset = codec.decode_rollback(rollback.event, a);
+        if !rollback.valid || (rollback.found && (out.exit_state != "exited" || !reset.valid || rollback.event.seq <= exited.event.seq || reset.failure_event_id != exited.event.digest || reset.base_commit != candidate.request.source_head))
+            || (!rollback.found && (rolled_back.found || base_claim.found || base_launch.found)) { out.rollback_state = "unknown"; out.rollback_launch_state = "unknown"; return out; }
+        if !rollback.found { return out; }
+        out.rollback_state = "requested"; out.rollback_request = rollback.event.digest;
+        if !rolled_back.valid || (rolled_back.found && (rolled_back.event.seq <= rollback.event.seq || rolled_back.event.body != candidate.request.source_head + " by host after the organization crashed"))
+            || (!rolled_back.found && (base_claim.found || base_launch.found)) { out.rollback_state = "unknown"; out.rollback_launch_state = "unknown"; return out; }
+        if !rolled_back.found { return out; }
+        out.rollback_state = "applied"; out.rollback_event = rolled_back.event.digest; out.rollback_base = candidate.request.source_head;
+        let base = codec.decode_rollback_launch(base_claim.event, a);
+        if !base_claim.valid || (base_claim.found && (!base.valid || base_claim.event.seq <= rolled_back.event.seq || base.rollback_event_id != rolled_back.event.digest))
+            || (!base_claim.found && base_launch.found) { out.rollback_launch_state = "unknown"; return out; }
+        if !base_claim.found { return out; }
+        if q.receipt_status(base.binary_digest) != "available" || q.receipt_status(base.topology_digest) != "available" { out.hidden = true; return out; }
+        out.rollback_launch_state = "requested"; out.rollback_launch_request = base_claim.event.digest; out.rollback_binary = base.binary_digest; out.rollback_topology = base.topology_digest;
+        let finished = codec.decode_rollback_launched(base_launch.event, a);
+        if !base_launch.valid || (base_launch.found && (!finished.valid || base_launch.event.seq <= base_claim.event.seq || finished.launch_event_id != base_claim.event.digest)) { out.rollback_launch_state = "unknown"; return out; }
+        if base_launch.found { out.rollback_launch_state = "launched"; out.rollback_launch_event = base_launch.event.digest; }
+        return out;
+    }
+    fn current(value: dna::OrganizationRuntimeAssociation, candidate: ops::OrganizationCandidateEvidence, status: OrganizationLaunchStatus) -> dna::OrganizationRuntimeAssociation {
+        let a = status.attempt; let l = status.launched; let codec = dna::OrganizationLaunchCodec { };
+        if !value.available || value.profile != "dna.organization-runtime/1" || status.launch_state != "launched" || status.exit_state != "unavailable" || status.rollback_state != "unavailable" || status.observation_state == "crashed"
+            || value.application_id != candidate.request.application_id || value.request_id != candidate.request.request_id || value.attempt_id != a.attempt_id
+            || value.launch_event_id != l.launch_event_id || value.candidate_commit != candidate.candidate_commit || value.binary_digest != a.binary_digest
+            || value.topology_digest != a.topology_digest || value.topology_shape != a.topology_shape || value.pid != l.pid
+            || !codec.hex(value.process_key, 64) || value.process_key != l.process_key { return dna::OrganizationRuntimeAssociation { }; }
+        return value;
+    }
+    fn document(candidate: ops::OrganizationCandidateEvidence, review: ops::OrganizationReviewEvidence, application: ops::OrganizationApplyEvidence, status: OrganizationLaunchStatus, running: dna::OrganizationRuntimeAssociation, journal: ops::GovernanceJournal) -> String {
+        let b = std::json::Builder { }; let r = candidate.request;
+        b.begin_object(); b.string_field("profile", "dna.organization.source-status.v1"); b.string_field("review_id", candidate.mutation_id); b.string_field("mutation_id", candidate.mutation_id);
+        b.begin_object_field("source"); b.string_field("base_commit", r.source_head); b.string_field("module_digest", r.module_digest); b.string_field("candidate_commit", candidate.candidate_commit); b.string_field("source_digest", r.source_digest); b.end_object();
+        b.begin_object_field("review"); b.string_field("state", review.review.state); b.string_field("outcome", review.review.outcome); b.string_field("required_owners", review.required_owners); b.string_field("approved_owners", review.approved_owners); b.end_object();
+        b.begin_object_field("application"); b.string_field("state", application.state); b.string_field("reason_code", application.reason_code); b.string_field("event_id", if application.applied_sequence >= 0 { journal.read(application.applied_sequence).digest } else { "" }); b.end_object();
+        b.begin_object_field("restart_handoff"); b.string_field("state", application.handoff_state); b.string_field("event_id", if application.handoff_sequence >= 0 { journal.read(application.handoff_sequence).digest } else { "" }); b.end_object();
+        b.begin_object_field("launch"); b.string_field("state", status.launch_state); b.string_field("attempt_id", if status.launch_state == "requested" || status.launch_state == "launched" { status.attempt.attempt_id } else { "" });
+        b.string_field("request_event_id", if status.launch_state == "unknown" { "" } else { status.request_event }); b.string_field("event_id", status.launch_event);
+        b.string_field("binary_digest", if status.launch_state == "unknown" { "" } else { status.attempt.binary_digest }); b.string_field("topology_digest", if status.launch_state == "unknown" { "" } else { status.attempt.topology_digest }); b.string_field("topology_shape", if status.launch_state == "unknown" { "" } else { status.attempt.topology_shape }); b.end_object();
+        b.begin_object_field("observation"); b.string_field("state", status.observation_state); b.string_field("event_id", status.observation_event); b.string_field("window_started", status.observation_start); b.string_field("window_ended", status.observation_end); b.end_object();
+        b.begin_object_field("exit"); b.string_field("state", status.exit_state); b.string_field("event_id", status.exit_event); b.string_field("code", status.exit_code); b.end_object();
+        b.begin_object_field("rollback"); b.string_field("state", status.rollback_state); b.string_field("request_event_id", if status.rollback_state == "unknown" { "" } else { status.rollback_request }); b.string_field("event_id", status.rollback_event); b.string_field("base_commit", status.rollback_base);
+        b.string_field("launch_state", status.rollback_launch_state); b.string_field("launch_request_event_id", if status.rollback_launch_state == "unknown" { "" } else { status.rollback_launch_request }); b.string_field("launch_event_id", status.rollback_launch_event);
+        b.string_field("binary_digest", if status.rollback_launch_state == "unknown" { "" } else { status.rollback_binary }); b.string_field("topology_digest", if status.rollback_launch_state == "unknown" { "" } else { status.rollback_topology }); b.end_object();
+        b.begin_object_field("current_running"); b.bool_field("available", running.available); b.string_field("profile", running.profile); b.string_field("attempt_id", running.attempt_id); b.string_field("launch_event_id", running.launch_event_id); b.string_field("candidate_commit", running.candidate_commit); b.string_field("binary_digest", running.binary_digest); b.string_field("topology_digest", running.topology_digest); b.string_field("topology_shape", running.topology_shape); b.string_field("process_key", running.process_key); b.end_object(); b.end_object(); return b.result();
+    }
+    fn read(context: CommandContext, query: Query, raw: String, candidates: OrganizationCandidateWire, runtime: OrganizationRuntimeProvider) -> std::http::Response {
+        let http = Http { }; let text = ops::GovernanceCommandCodec { };
+        if !text.bounded(query.id, 256, true, false) || len(raw) > 2048 { return http.error(400, "invalid_query", "source status requires an exact Review id", false); }
+        let mut rest = raw;
+        while rest != "" {
+            let cut = std::str::index_of(rest, "&"); let pair = if cut < 0 { rest } else { rest[0..cut] }; let eq = std::str::index_of(pair, "=");
+            if eq < 1 { return http.error(400, "invalid_query", "source status accepts only id and snapshot", false); }
+            let key = http.decode(pair[0..eq]); if !key.ok || (key.text != "id" && key.text != "snapshot") { return http.error(400, "invalid_query", "source status accepts only id and snapshot", false); }
+            rest = if cut < 0 { "" } else { rest[(cut + 1)..len(rest)] };
+        }
+        let record = dna::GitRecord { repo: context.root }; let service = ops::GovernanceCommands { record: record }; let source = service.capture();
+        if !source.ok { return http.error(if source.code == "snapshot_changed" { 409 } else { 503 }, if source.code == "snapshot_changed" { "snapshot_changed" } else { "source_status_unavailable" }, "the source status history is unavailable", true); }
+        if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing source status", true); }
+        let journal = ops::GovernanceJournal { snapshot: source };
+        if !journal.valid || !service.source_supported(journal) { return http.error(503, "source_status_unavailable", "source status requires complete Record evidence", false); }
+        if !candidates.allowed(context, journal) { return http.error(403, "forbidden", "source evidence read/recovery permission is required", false); }
+        let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, query.id, source.text); let captured = candidates.source_objects(record, journal, candidate);
+        if !captured.ok { return http.error(if captured.code == "candidate_unavailable" { 503 } else { 404 }, if captured.code == "candidate_unavailable" { "source_status_unavailable" } else { "source_status_not_found" }, "no visible canonical source status was found", captured.code == "candidate_unavailable"); }
+        let mode = self.trust(record); if (mode != "local" && mode != "signed") || !self.signed(record, mode, journal.read(candidate.request_sequence)) { return http.error(503, "source_status_unavailable", "source status trust evidence is unavailable", false); }
+        let stages = self.stages(record, journal, candidate, mode);
+        if stages.hidden { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
+        if !stages.valid { return http.error(503, "source_status_unavailable", "source status trust evidence is unavailable", false); }
+        let review = view.review_evidence(journal, candidate, source.text); let effects = ops::OrganizationApplication { }; let mut application = effects.read(journal, candidate, review);
+        let visibility = ops::Queries { j: journal };
+        if visibility.receipt_status(candidate.mutation_id) != "available" { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
+        if application.applied_sequence >= 0 {
+            let applied = journal.read(application.applied_sequence);
+            if visibility.receipt_status(applied.digest) != "available" { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
+            if !self.signed(record, mode, applied) { application = ops::OrganizationApplyEvidence { }; }
+        }
+        if application.handoff_sequence >= 0 {
+            let handoff = journal.read(application.handoff_sequence);
+            if visibility.receipt_status(handoff.digest) != "available" { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
+            if !self.signed(record, mode, handoff) { application = ops::OrganizationApplyEvidence { }; }
+        }
+        let status = self.project(record, journal, candidate, application, mode);
+        if status.hidden { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
+        let current = if status.launch_state == "launched" { self.current(runtime.current(source.application_id, candidate.request.request_id, status.attempt.attempt_id), candidate, status) } else { dna::OrganizationRuntimeAssociation { } };
+        let document = self.document(candidate, review, application, status, current, journal); let response = http.success(context.source, document);
+        if !candidates.source_unchanged(record, source, captured) || self.trust(record) != mode { return http.error(409, "snapshot_changed", "the Record or retained source changed while reading status", true); }
+        return response;
+    }
+}

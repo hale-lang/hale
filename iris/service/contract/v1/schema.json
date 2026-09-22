@@ -1,0 +1,858 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Iris generic Hale application API v1",
+  "description": "Application-owned enum-control provider. Shape conformance does not establish provider durability or actual effects. No DNA Source, position, or observer identity is implied. Cross-field identity, fingerprint and revision invariants are enforced by the native adapter.",
+  "$defs": {
+    "Principal": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "trusted_local"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        }
+      },
+      "required": [
+        "mode",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "Application": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "kind": {
+          "const": "hale"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+        },
+        "incarnation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "incarnation_id"
+      ],
+      "additionalProperties": false
+    },
+    "Target": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "kind": {
+          "const": "application.control"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        }
+      },
+      "required": [
+        "application_id",
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "ReceiptPreconditions": {
+      "type": "object",
+      "properties": {
+        "incarnation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,18})$",
+          "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+        }
+      },
+      "required": [
+        "incarnation_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "Arguments": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+        },
+        "target": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "application.control"
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "supported": {
+          "type": "boolean"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "authorized": {
+          "type": "boolean"
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "enum-value.v1"
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+                  }
+                },
+                "required": [
+                  "value",
+                  "label"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 32,
+              "minItems": 1
+            }
+          },
+          "required": [
+            "profile",
+            "label",
+            "choices"
+          ],
+          "additionalProperties": false
+        },
+        "preconditions": {
+          "const": [
+            "incarnation_id",
+            "revision",
+            "principal"
+          ]
+        },
+        "success_meaning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+        },
+        "recovery": {
+          "type": "object",
+          "properties": {
+            "lookup": {
+              "const": "request_id"
+            },
+            "retention": {
+              "const": "application_store_lifetime"
+            }
+          },
+          "required": [
+            "lookup",
+            "retention"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "label",
+        "target",
+        "supported",
+        "available",
+        "authorized",
+        "input",
+        "preconditions",
+        "success_meaning",
+        "recovery"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "supported": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "available": {
+                "const": false
+              },
+              "authorized": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "operation_version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "application_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "application_id"
+          ],
+          "additionalProperties": false
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "incarnation_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,18})$",
+              "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+            },
+            "principal": {
+              "$ref": "#/$defs/Principal"
+            }
+          },
+          "required": [
+            "incarnation_id",
+            "revision",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "$ref": "#/$defs/Arguments"
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "Receipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "application_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "principal": {
+          "$ref": "#/$defs/Principal"
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "operation_version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "preconditions": {
+          "$ref": "#/$defs/ReceiptPreconditions"
+        },
+        "arguments": {
+          "$ref": "#/$defs/Arguments"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "refused"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "changed": {
+              "type": "boolean"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,18})$",
+              "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          },
+          "required": [
+            "changed",
+            "revision",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "principal",
+        "operation",
+        "operation_version",
+        "target",
+        "preconditions",
+        "arguments",
+        "fingerprint",
+        "state",
+        "reason",
+        "result"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "succeeded"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": ""
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reason": {
+                "minLength": 1
+              },
+              "result": {
+                "properties": {
+                  "changed": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ApplicationsResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "profile": {
+          "const": "hale.application.v1"
+        },
+        "principal": {
+          "$ref": "#/$defs/Principal"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Application"
+              },
+              "maxItems": 1,
+              "minItems": 1
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "profile",
+        "principal",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "StateResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "profile": {
+          "const": "hale.application.v1"
+        },
+        "principal": {
+          "$ref": "#/$defs/Principal"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "application": {
+              "$ref": "#/$defs/Application"
+            },
+            "online": {
+              "type": "boolean"
+            },
+            "control": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "application.control"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+                },
+                "revision": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]{0,18})$",
+                  "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+                },
+                "value": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                },
+                "effective_revision": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]{0,18})$",
+                      "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+                    },
+                    {
+                      "const": ""
+                    }
+                  ]
+                },
+                "effective_value": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                    },
+                    {
+                      "const": ""
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "label",
+                "revision",
+                "value",
+                "effective_revision",
+                "effective_value"
+              ],
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "effective_revision": {
+                        "const": ""
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "effective_value": {
+                        "const": ""
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "effective_value": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+                },
+                "count": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]{0,18})$",
+                  "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+                },
+                "observation_tick": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]{0,18})$",
+                  "description": "Canonical nonnegative Int64 decimal, additionally checked against 9223372036854775807 by the adapter."
+                }
+              },
+              "required": [
+                "label",
+                "count",
+                "observation_tick"
+              ],
+              "additionalProperties": false
+            },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "profile": {
+                  "const": "hale.iris.process.v1"
+                },
+                "process_key": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "pid": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$",
+                  "description": "Canonical positive Int64 decimal, additionally bounded by the adapter."
+                }
+              },
+              "required": [
+                "profile",
+                "process_key",
+                "pid"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "application",
+            "online",
+            "control",
+            "activity"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "runtime"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "online": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "api_version",
+        "profile",
+        "principal",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilitiesResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "profile": {
+          "const": "hale.application.v1"
+        },
+        "principal": {
+          "$ref": "#/$defs/Principal"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "application_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "operations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Operation"
+              },
+              "maxItems": 16
+            }
+          },
+          "required": [
+            "application_id",
+            "operations"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "profile",
+        "principal",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "CommandResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "profile": {
+          "const": "hale.application.v1"
+        },
+        "principal": {
+          "$ref": "#/$defs/Principal"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "receipt": {
+              "$ref": "#/$defs/Receipt"
+            }
+          },
+          "required": [
+            "receipt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "profile",
+        "principal",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "profile": {
+          "const": "hale.application.v1"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "profile",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "RefusalResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "profile": {
+          "const": "hale.application.v1"
+        },
+        "principal": {
+          "$ref": "#/$defs/Principal"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "receipt": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/Receipt"
+                },
+                {
+                  "properties": {
+                    "state": {
+                      "const": "refused"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "receipt"
+          ],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "At most 512 UTF-8 bytes; no control characters or NUL. Byte bounds are also checked imperatively."
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "profile",
+        "principal",
+        "data",
+        "error"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

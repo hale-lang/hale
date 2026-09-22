@@ -1,0 +1,132 @@
+// The production host's ownership/trust boundary and exact answer matcher.
+// The answer-matcher case writes explicitly synthetic acknowledgments; native
+// domain outcomes are exercised separately in knowledge_node_recovery_test.
+import "../core" as dna;
+import "../host" as host;
+
+fn controls(size: Int) -> String {
+    let b = std::bytes::BytesBuilder { }; let mut i = 0;
+    while i < size { b.append_u8(1); i = i + 1; }
+    return std::str::from_bytes(b.snapshot());
+}
+fn maximum() {
+    let root = "/tmp/dna-node-relay-max-" + to_string(std::process::pid());
+    let previous = dna::run_tool("rm\n-rf\n" + root);
+    std::io::fs::mkdir(root) or discard;
+    let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
+    std::test::assert_eq_int(init.code, 0, "maximum transport Record");
+    let j = dna::GitJournal { repo: root };
+    let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}");
+    std::test::assert(genesis.ok, "maximum transport genesis");
+    let quotes = std::str::repeat("\"", 256);
+    let native = dna::KnowledgeNodeRequestCodec { };
+    // This fixture tests only process transport, not domain admission or
+    // candidate adoption. It retains a fixed digest as an opaque field rather
+    // than rebuilding a large Knowledge document in the transport test.
+    let r = dna::KnowledgeNodeRequest {
+        request_id: "knowledge-command-" + std::str::repeat("a", 64), operation: "dna.knowledge.node.revise",
+        kind: "task_concept", name: quotes, text: controls(8192), author: quotes, target: quotes,
+        supersedes: dna::digest_of("old"), by: quotes, because: controls(2048), candidate_digest: dna::digest_of("transport-only candidate identity")
+    };
+    let compact = native.started(r);
+    let expanded = std::bytes::BytesBuilder { };
+    expanded.append_str(compact[0..(len(compact) - 1)]);
+    expanded.append_str(",\"command_payload\":"); expanded.append_str(dna::record_json_quote(compact)); expanded.append_str("}");
+    let body = std::str::from_bytes(expanded.snapshot());
+    std::test::assert(len(body) > 65536, "outer fact genuinely exceeds the installed process argv bound");
+    let input = j.append_exact(j.revision(), "knowledge.node.requested", r.request_id, body);
+    std::test::assert(input.ok, "large transport-only request fixture is retained in Record");
+    std::test::assert(len(compact) < 64500 && native.matches(compact, r), "all worst-escaped text, rationale and identifier fields fit native transport exactly");
+    let abs = dna::run_tool("readlink\n-f\n" + std::env::arg_or(0, ""));
+    let binary = dna::trim_nl(abs.stdout);
+    // The child is an argv transport probe, not a substitute Body. It writes
+    // exactly what the production relay passed across the process boundary.
+    // Imported native topics would otherwise cause the probe's own runtime to
+    // load real bus routes before main. This wrapper isolates only that probe.
+    let wrapper = root + "/transport-probe";
+    let wrote = host::write_text(wrapper, "#!/bin/sh\nunset LOTUS_BUS_CONFIG\nexec \"$NATIVE_NODE_PROBE\" \"$@\"\n") or false;
+    let executable = dna::run_tool("chmod\n+x\n" + wrapper);
+    std::test::assert(wrote && executable.code == 0, "argument-only transport probe is executable");
+    let child = dna::run_tool("env\nHALE_DNA_MEMBRANE=" + wrapper + "\nNATIVE_NODE_PROBE=" + binary + "\n" + binary + "\nrelay-max\n" + root);
+    if child.code != 0 { eprintln("maximum relay probe: ", child.stdout, child.stderr); }
+    std::test::assert_eq_int(child.code, 0, "production relay sends the maximum typed request without argv rejection");
+    std::test::assert_eq_str(std::io::fs::read_file(root + "/node-transport.json") or "", compact, "actual process argv preserves all eleven fields and candidate digest exactly");
+    eprintln("maximum native payload bytes=", len(compact));
+    let removed = dna::run_tool("rm\n-rf\n" + root);
+}
+fn relay_max(root: String) {
+    let result = host::relay_record_membrane(root, ".", "", "test", "\n");
+    if result.count != 1 {
+        let p = host::open_projection(root, ".", ""); let codec = dna::KnowledgeNodeRequestCodec { }; let r = codec.decode(p.row(1).body);
+        eprintln("max probe error=", result.error, " rows=", p.rows(), " kind=", p.row(1).kind, " valid=", codec.valid(r), " id=", r.request_id, " text=", len(r.text), " rationale=", len(r.because));
+    }
+    std::test::assert_eq_int(result.count, 1, "maximum native command is actually handed to the transport probe");
+    std::test::assert_eq_str(result.error, "", "production relay has no argv error");
+}
+fn transport_probe() {
+    let body = std::env::arg_or(2, ""); let codec = dna::KnowledgeNodeRequestCodec { };
+    let r = codec.decode(body);
+    std::test::assert(codec.valid(r) && body == codec.started(r), "membrane receives only the canonical native request");
+    std::test::assert_eq_int(len(r.text), 8192, "membrane receives all text bytes");
+    std::test::assert_eq_int(len(r.because), 2048, "membrane receives all rationale bytes");
+    let wrote = host::write_text("node-transport.json", body) or false;
+    std::test::assert(wrote, "probe records exact transported bytes");
+}
+
+fn request(id: String, text: String) -> dna::KnowledgeNodeRequest {
+    let codec = dna::KnowledgeNodeRequestCodec { };
+    let mut r = dna::KnowledgeNodeRequest {
+        request_id: id, operation: "dna.knowledge.node.propose", kind: "concept",
+        name: "concept/exact", text: text, author: "org", target: "org", by: "riley", because: "An exact proposal."
+    };
+    r.candidate_digest = dna::digest_of(codec.document(r));
+    return r;
+}
+fn check() {
+    let root = "/tmp/dna-node-relay-" + to_string(std::process::pid());
+    let made = dna::run_tool("mkdir\n-p\n" + root + "/dna/org");
+    let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
+    std::test::assert_eq_int(made.code + init.code, 0, "temporary native Record");
+    let j = dna::GitJournal { repo: root };
+    let codec = dna::KnowledgeNodeRequestCodec { };
+    let r = request("command/exact", "The original candidate.");
+    let input = j.append_exact(j.revision(), "knowledge.node.requested", r.request_id, codec.started(r));
+    std::test::assert(input.ok, "actual native request input");
+    let trust = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nsigned");
+    let owner = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.owner\nsouth");
+    let wrote = host::write_text(root + "/dna/org/owners", "org = north\norg/team = south\n") or false;
+    std::test::assert(trust.code == 0 && owner.code == 0 && wrote, "explicit other-owner signed profile");
+    let state = host::relay_record_membrane(root, ".", "", "test", "\n");
+    std::test::assert_eq_int(state.count, 0, "another owner's request is not relayed");
+    std::test::assert_eq_str(state.relayed, "\n", "another owner's unsigned request is not marked refused by this keyring");
+    let refreshed = j.refresh();
+    std::test::assert_eq_int(j.revision(), 1, "routing writes no other-owner outcome");
+    let local = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nlocal");
+    let wrong = request("command/exact", "A different candidate under the same key.");
+    let wrong_answer = j.append_exact(j.revision(), "knowledge.node.proposed", r.request_id, codec.proposed(wrong));
+    std::test::assert(wrong_answer.ok, "synthetic nonmatching answer fixture");
+    let not_answered = host::open_projection(root, ".", "");
+    std::test::assert(!host::request_answered(not_answered, 0, " knowledge.node.proposed knowledge.node.refused "), "same entity cannot borrow another candidate's acknowledgment");
+    let answer = j.append_exact(j.revision(), "knowledge.node.proposed", r.request_id, codec.proposed(r));
+    std::test::assert(answer.ok, "synthetic exact answer fixture");
+    let answered = host::open_projection(root, ".", "");
+    std::test::assert(host::request_answered(answered, 0, " knowledge.node.proposed knowledge.node.refused "), "exact full request acknowledgment stops relay");
+    let r2 = request("command/refused", "The refused candidate.");
+    let index = j.revision();
+    let input2 = j.append_exact(j.revision(), "knowledge.node.requested", r2.request_id, codec.started(r2));
+    let plain = j.append_exact(j.revision(), "knowledge.node.refused", r2.request_id, "not a correlated acknowledgment");
+    let no_refusal = host::open_projection(root, ".", "");
+    std::test::assert(input2.ok && plain.ok && !host::request_answered(no_refusal, index, " knowledge.node.proposed knowledge.node.refused "), "prose refusal cannot answer a native command");
+    let refused = j.append_exact(j.revision(), "knowledge.node.refused", r2.request_id, codec.refused(r2, "lateral knowledge binding is not permitted"));
+    let refusal = host::open_projection(root, ".", "");
+    std::test::assert(refused.ok && host::request_answered(refusal, index, " knowledge.node.proposed knowledge.node.refused "), "exact correlated refusal stops relay");
+    let removed = dna::run_tool("rm\n-rf\n" + root);
+}
+main locus App {
+    run() {
+        if std::env::arg_or(1, "") == "knowledge-node" { transport_probe(); }
+        else if std::env::arg_or(1, "") == "relay-max" { relay_max(std::env::arg_or(2, "")); }
+        else { check(); maximum(); }
+    }
+}
+fn main() { App { }; }

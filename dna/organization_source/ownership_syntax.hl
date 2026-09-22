@@ -1,0 +1,56 @@
+// Bounded publication grammar for the fixed owners file. Domain semantics remain in Ownership.
+import "../core" as dna;
+
+locus OwnershipSourceSyntax {
+    params { }
+    fn token(text: String) -> Bool {
+        if len(text) == 0 || len(text) > 256 { return false; }
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c <= 32 || c == 127 || c == 35 || c == 44 || c == 58 || c == 61 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    // A bounded, unambiguous editing profile. The domain parser remains the
+    // authority for inheritance, membership, hosting and review impact.
+    fn source_error(text: String) -> String {
+        if len(text) > 16384 { return "the ownership map exceeds 16 KiB"; }
+        let syntax = dna::KnowledgeNodeRequestCodec { };
+        if !syntax.utf8(text, len(text)) { return "the ownership map is not valid UTF-8"; }
+        let mut rest = text + "\n";
+        let mut positions = ""; let mut memberships = ""; let mut hosted = false; let mut count = 0;
+        while len(rest) > 0 {
+            let cut = std::str::index_of(rest, "\n");
+            let line = dna::strip_blanks(rest[0..cut]); rest = rest[(cut + 1)..len(rest)];
+            if len(line) > 0 && line[0..1] != "#" {
+                count = count + 1;
+                if count > 256 { return "the ownership map exceeds 256 entries"; }
+                let eq = std::str::index_of(line, "="); let colon = std::str::index_of(line, ":");
+                if eq >= 0 && (colon < 0 || eq < colon) {
+                    let scope = dna::strip_blanks(line[0..eq]); let owner = dna::strip_blanks(line[(eq + 1)..len(line)]);
+                    if !self.token(scope) || (len(owner) > 0 && !self.token(owner)) { return "assignments require a scope and one owner name (or an empty owner)"; }
+                    if scope == "host" { if hosted { return "host is declared more than once"; } hosted = true; }
+                    else {
+                        let normalized = dna::position_name(scope);
+                        if dna::word_in(normalized, positions) { return "a normalized position is declared more than once"; }
+                        positions = dna::word_add(positions, normalized);
+                    }
+                } else if colon >= 0 {
+                    let owner = dna::strip_blanks(line[0..colon]);
+                    if !self.token(owner) { return "memberships require one owner name"; }
+                    if dna::word_in(owner, memberships) { return "an owner's membership is declared more than once"; }
+                    memberships = dna::word_add(memberships, owner);
+                    let members = dna::words_of(dna::strip_blanks(line[(colon + 1)..len(line)]));
+                    let mut i = 0;
+                    while len(dna::nth_word(members, i)) > 0 {
+                        if !self.token(dna::nth_word(members, i)) { return "members must be names separated by commas or spaces"; }
+                        i = i + 1;
+                    }
+                } else { return "each non-comment line must declare scope = owner, owner: members, or host = owner"; }
+            }
+        }
+        return "";
+    }
+}

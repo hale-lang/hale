@@ -1,0 +1,79 @@
+// Immutable application-bound Task administration group. The configured owner
+// is an authority label, not a join to source positions or Task ID prefixes.
+import "../core" as dna;
+interface TaskAuthority {
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant;
+    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal) -> Bool;
+    fn recipients(context: GovernanceContext, journal: dna::Journal) -> String;
+}
+locus NoTaskAuthority {
+    params { }
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant { return GovernanceGrant { }; }
+    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal) -> Bool { return false; }
+    fn recipients(context: GovernanceContext, journal: dna::Journal) -> String { return "[]"; }
+}
+type TaskAuthorityPolicy { valid: Bool = false; application_id: String = ""; owner: String = ""; document: String = ""; basis: String = ""; sign: Bool = false; retirement_enabled: Bool = false; }
+locus TaskAuthorityPolicyCodec {
+    params { }
+    fn decode(document: String, application_id: String, trust: String) -> TaskAuthorityPolicy {
+        let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { }; let fields = AuthorityPolicyCodec { };
+        if len(document) == 0 || len(document) > 32768 || !syntax.valid(document) || !fields.fields(document, "format application_id owner members grants", 5)
+            || common.string(document, "format") != "dna.task-authority/1" || common.string(document, "application_id") != application_id
+            || !common.bounded(application_id, 256, true, false) || !common.bounded(common.string(document, "owner"), 256, true, false)
+            || trust != "local" { return TaskAuthorityPolicy { }; }
+        let members = std::json::find_field_raw(document, "members"); let grants = std::json::find_field_raw(document, "grants");
+        if !std::str::starts_with(members, "[") || !std::str::starts_with(grants, "[") { return TaskAuthorityPolicy { }; }
+        let mut seen = "\n"; let mut count = 0; let mut it = std::json::array_first(members);
+        while !it.done {
+            let name = syntax.decode(it.element);
+            if count >= 64 || !std::str::starts_with(it.element, "\"") || !common.bounded(name, 256, true, false) || std::str::contains(seen, "\n" + name + "\n") { return TaskAuthorityPolicy { }; }
+            seen = seen + name + "\n"; count = count + 1; it = std::json::array_next(it);
+        }
+        if count == 0 { return TaskAuthorityPolicy { }; }
+        seen = "\n"; count = 0; let mut retirement_enabled = false; it = std::json::array_first(grants);
+        while !it.done {
+            let row = it.element; let context = GovernanceContext { application_id: application_id, principal_mode: common.string(row, "mode"), principal_name: common.string(row, "name") };
+            let retirement = std::json::find_field_raw(row, "retire");
+            if count >= 64 || !(fields.fields(row, "mode name reassign recover", 4) || fields.fields(row, "mode name reassign recover retire", 5)) || !fields.boolean(row, "reassign") || !fields.boolean(row, "recover") || (retirement != "" && !fields.boolean(row, "retire")) || !common.context_valid(context) || context.principal_mode != "local" { return TaskAuthorityPolicy { }; }
+            if retirement != "" { retirement_enabled = true; }
+            let key = common.identity(context, "task-policy-member"); if std::str::contains(seen, "\n" + key + "\n") { return TaskAuthorityPolicy { }; }
+            seen = seen + key + "\n"; count = count + 1; it = std::json::array_next(it);
+        }
+        return TaskAuthorityPolicy { valid: true, application_id: application_id, owner: common.string(document, "owner"), document: document,
+            basis: "dna.task-authority/1:" + dna::digest_of(document) + ":trust=" + trust, sign: trust == "signed", retirement_enabled: retirement_enabled };
+    }
+}
+@sealed locus FixedTaskAuthority {
+    params { policy: TaskAuthorityPolicy = TaskAuthorityPolicy { }; }
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant {
+        let common = GovernanceCommandCodec { };
+        if !self.policy.valid || context.principal_mode != "local" || !common.context_valid(context) || context.application_id != self.policy.application_id
+            || (operation != "dna.task.reassign" && operation != "dna.person.retire" && !(operation == "" && recovery)) { return GovernanceGrant { }; }
+        // Retirement ends fresh human write admission; recorded commands remain recoverable.
+        if !recovery { let mut i = 0; while i < journal.revision() { let e = journal.read(i); if e.kind == "person.retired" && e.entity == context.principal_name { return GovernanceGrant { }; } i = i + 1; } }
+        let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "grants"));
+        while !it.done { let row = it.element;
+            if common.string(row, "mode") == context.principal_mode && common.string(row, "name") == context.principal_name {
+                return GovernanceGrant { allowed: std::json::find_field_raw(row, if recovery { "recover" } else { if operation == "dna.person.retire" { "retire" } else { "reassign" } }) == "true", authority: self.policy.owner, basis: self.policy.basis };
+            } it = std::json::array_next(it);
+        }
+        return GovernanceGrant { };
+    }
+    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal) -> Bool {
+        let common = GovernanceCommandCodec { }; let syntax = OrganizationJson { };
+        if !self.policy.valid || context.application_id != self.policy.application_id || !common.bounded(name, 256, true, false) { return false; }
+        let mut found = false; let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "members"));
+        while !it.done { if syntax.decode(it.element) == name { found = true; } it = std::json::array_next(it); }
+        let visible = Queries { j: journal };
+        if !found || visible.receipt_status(name) != "available" { return false; }
+        let mut i = 0; while i < journal.revision() { let e = journal.read(i); if e.kind == "person.retired" && e.entity == name { return false; } i = i + 1; }
+        return true;
+    }
+    fn recipients(context: GovernanceContext, journal: dna::Journal) -> String {
+        if !self.authorize(context, "dna.task.reassign", false, journal).allowed && !self.authorize(context, "dna.person.retire", false, journal).allowed { return "[]"; }
+        let common = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let b = std::bytes::BytesBuilder { }; b.append_str("["); let mut first = true;
+        let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "members"));
+        while !it.done { let name = syntax.decode(it.element); if self.eligible(context, name, journal) { if !first { b.append_str(","); } b.append_str(common.quote(name)); first = false; } it = std::json::array_next(it); }
+        b.append_str("]"); return std::str::from_bytes(b.snapshot());
+    }
+}

@@ -1,0 +1,158 @@
+import "../../process_identity" as identity;
+
+// Application authority is the owner stored in this application database.
+// Every request uses its own named connection; no global cached mutable state.
+locus IntakeProvider {
+    params { path: String = ""; bound_id: String = ""; }
+    birth() {
+        let db = sqlite::Db { path: self.path, create: false };
+        let store = Store { db: db }; let s = store.state();
+        if s.ok { self.bound_id = s.application_id; }
+    }
+    fn application_id() -> String { return self.bound_id; }
+    fn inspect(actor: service::Actor) -> service::StateResult {
+        let db = sqlite::Db { path: self.path, create: false };
+        let store = Store { db: db }; let s = store.state();
+        if !s.ok || self.bound_id == "" || s.application_id != self.bound_id { return service::StateResult { }; }
+        let rules = Rules { };
+        let association = RuntimeAssociation { path: self.path };
+        let key = association.read(s, rules.online(s));
+        return service::StateResult { ok: true, code: "", state: service::ApplicationState {
+            application_id: s.application_id, name: "Intake control", incarnation_id: s.incarnation, online: rules.online(s),
+            control_id: "intake", control_label: "Synthetic work intake", revision: to_string(s.revision), value: s.value,
+            effective_revision: if s.effective_revision < 0 { "" } else { to_string(s.effective_revision) }, effective_value: s.effective_value,
+            activity_label: "Synthetic work accepted", activity_count: to_string(s.activity), observation_tick: to_string(s.tick), runtime_pid: key.pid, runtime_process_key: key.key } };
+    }
+    fn operation_count() -> Int { return 1; }
+    fn operation_at(actor: service::Actor, index: Int) -> service::Operation {
+        if index != 0 { return service::Operation { }; }
+        let db = sqlite::Db { path: self.path, create: false };
+        let store = Store { db: db }; let s = store.state(); let rules = Rules { };
+        let valid = s.ok && self.bound_id != "" && s.application_id == self.bound_id;
+        return service::Operation { id: "example.intake.set_mode", version: "1", label: "Set intake mode", target_id: "intake", supported: true,
+            available: valid && rules.online(s) && s.receipt_count < RECEIPT_LIMIT, authorized: valid && rules.authorized(actor, s), input_label: "Intake mode",
+            choices: "[{\"value\":\"running\",\"label\":\"Running\"},{\"value\":\"paused\",\"label\":\"Paused\"}]",
+            success_meaning: "The desired intake mode is committed. Effective mode and work count are reported separately by the app." };
+    }
+    fn lookup(actor: service::Actor, request_id: String) -> service::CommandResult {
+        let rules = Rules { };
+        if !rules.safe(request_id) { return service::CommandResult { status: 400, code: "command_invalid" }; }
+        let db = sqlite::Db { path: self.path, create: false }; let store = Store { db: db };
+        // One captured transaction binds current authority, identity and receipt.
+        if !store.exec("BEGIN") { return service::CommandResult { }; }
+        let s = store.state();
+        if !s.ok || self.bound_id == "" || s.application_id != self.bound_id { return service::CommandResult { }; }
+        if !rules.authorized(actor, s) { return service::CommandResult { status: 403, code: "command_forbidden" }; }
+        let found = store.receipt(actor, request_id, self.bound_id);
+        if !found.ok || !store.commit() { return service::CommandResult { }; }
+        if !found.found { return service::CommandResult { status: 404, code: "command_not_found" }; }
+        return service::CommandResult { ok: true, status: 200, code: "", receipt: found.receipt };
+    }
+    fn submit(actor: service::Actor, c: service::Command) -> service::CommandResult {
+        let rules = Rules { };
+        if !rules.valid(actor, c) { return service::CommandResult { status: 400, code: "command_invalid" }; }
+        let db = sqlite::Db { path: self.path, create: false }; let store = Store { db: db };
+        if !store.begin() { return service::CommandResult { }; }
+        let s = store.state();
+        if !s.ok || self.bound_id == "" || s.application_id != self.bound_id || c.application_id != self.bound_id { return service::CommandResult { }; }
+        if !rules.authorized(actor, s) { return service::CommandResult { status: 403, code: "command_forbidden" }; }
+        let fingerprint = rules.fingerprint(actor, c);
+        let found = store.receipt(actor, c.request_id, self.bound_id);
+        if !found.ok { return service::CommandResult { }; }
+        // Equivalence precedes the current incarnation, revision and availability.
+        if found.found {
+            if found.receipt.fingerprint != fingerprint { return service::CommandResult { status: 409, code: "request_conflict" }; }
+            if !store.commit() { return service::CommandResult { }; }
+            return service::CommandResult { ok: true, status: if found.receipt.state == "refused" { 409 } else { 200 }, code: if found.receipt.state == "refused" { "command_refused" } else { "" }, receipt: found.receipt };
+        }
+        let count = store.count();
+        if count < 0 { return service::CommandResult { }; }
+        if count >= RECEIPT_LIMIT { return service::CommandResult { status: 503, code: "receipt_capacity" }; }
+        let mut reason = "";
+        if c.incarnation_id != s.incarnation { reason = "stale_incarnation"; }
+        else if c.revision != to_string(s.revision) { reason = "stale_revision"; }
+        else if !rules.online(s) { reason = "application_offline"; }
+        else if c.value != s.value && s.revision == MAX_EXACT { reason = "revision_exhausted"; }
+        let changed = reason == "" && c.value != s.value;
+        let revision = s.revision + (if changed { 1 } else { 0 });
+        let value = if reason == "" { c.value } else { s.value };
+        let receipt = service::Receipt { command_id: rules.digest("intake-receipt/1" + fingerprint), request_id: c.request_id, application_id: self.bound_id,
+            principal_mode: actor.mode, principal_name: actor.name, operation: c.operation, operation_version: c.operation_version, target_kind: c.target_kind, target_id: c.target_id,
+            incarnation_id: c.incarnation_id, expected_revision: c.revision, value: c.value, fingerprint: fingerprint,
+            state: if reason == "" { "succeeded" } else { "refused" }, reason: reason, changed: changed, resulting_revision: to_string(revision), resulting_value: value };
+        if changed {
+            let q = Statement { db: db.conn_handle, sql: "UPDATE intake_store SET revision=?1,value=?2 WHERE singleton=1 AND application_id=?3 AND incarnation=?4 AND revision=?5" };
+            q.number(1, revision); q.text(2, value); q.text(3, self.bound_id); q.text(4, s.incarnation); q.number(5, s.revision);
+            if !q.execute() || sqlite::lotus_sqlite_changes(db.conn_handle) != 1 { return service::CommandResult { }; }
+        }
+        if !store.save(receipt) || !store.commit() { return service::CommandResult { }; }
+        return service::CommandResult { ok: true, status: if reason == "" { 200 } else { 409 }, code: if reason == "" { "" } else { "command_refused" }, receipt: receipt };
+    }
+}
+
+type Started { ok: Bool = false; application_id: String = ""; incarnation: String = ""; }
+
+locus IntakeApp {
+    params { path: String = ""; owner: String = ""; }
+    fn start() -> Started {
+        let rules = Rules { }; if !rules.safe(self.owner) || self.path == "" || self.path == ":memory:" { return Started { }; }
+        let fresh = rules.fresh(); if fresh == "" { return Started { }; }
+        let missing = !std::io::fs::file_exists(self.path);
+        let db = sqlite::Db { path: self.path, create: missing }; let store = Store { db: db };
+        if missing {
+            let identity = rules.fresh(); if identity == "" || !store.initialize(self.owner, identity, fresh) { return Started { }; }
+        }
+        if !store.begin() { return Started { }; }
+        let s = store.state(); if !s.ok || s.owner != self.owner { return Started { }; }
+        let q = Statement { db: db.conn_handle, sql: "UPDATE intake_store SET incarnation=?1,effective_revision=-1,effective_value='',heartbeat=?2 WHERE singleton=1 AND application_id=?3" };
+        q.text(1, fresh); q.number(2, std::time::monotonic_ns()); q.text(3, s.application_id);
+        if !q.execute() || sqlite::lotus_sqlite_changes(db.conn_handle) != 1 || !store.commit() { return Started { }; }
+        let association = RuntimeAssociation { path: self.path };
+        association.write(s.application_id, fresh);
+        return Started { ok: true, application_id: s.application_id, incarnation: fresh };
+    }
+    fn tick(application: String, incarnation: String) -> Bool {
+        let child = IntakeTick { path: self.path, application: application, incarnation: incarnation };
+        return child.perform();
+    }
+}
+
+// A bounded child owns one tick's SQLite connection, statements and scratch.
+// Incrementing activity is this proof app's accepted synthetic work operation.
+locus IntakeTick {
+    params { path: String = ""; application: String = ""; incarnation: String = ""; }
+    fn perform() -> Bool {
+        let db = sqlite::Db { path: self.path, create: false }; let store = Store { db: db };
+        if !store.begin() { return false; }
+        let s = store.state();
+        if !s.ok || s.application_id != self.application || s.incarnation != self.incarnation || s.tick == MAX_EXACT || (s.value == "running" && s.activity == MAX_EXACT) { return false; }
+        let now = std::time::monotonic_ns(); if now < s.heartbeat { return false; }
+        let activity = s.activity + (if s.value == "running" { 1 } else { 0 });
+        let q = Statement { db: db.conn_handle, sql: "UPDATE intake_store SET activity=?1,tick=?2,heartbeat=?3,effective_revision=revision,effective_value=value WHERE singleton=1 AND application_id=?4 AND incarnation=?5" };
+        q.number(1, activity); q.number(2, s.tick + 1); q.number(3, now); q.text(4, self.application); q.text(5, self.incarnation);
+        return q.execute() && sqlite::lotus_sqlite_changes(db.conn_handle) == 1 && store.commit();
+    }
+}
+
+// App-owned evidence binds the control incarnation to its observed process.
+// Unobserved applications continue to work with no runtime association.
+type RuntimeKey { pid: String = ""; key: String = ""; }
+locus RuntimeAssociation {
+    params { path: String = ""; }
+    fn write(application: String, incarnation: String) {
+        let reader = identity::Identity { }; let pid = std::process::pid(); let captured = reader.capture(pid);
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("application", application); b.string_field("incarnation", incarnation); b.string_field("pid", to_string(pid)); b.string_field("key", captured.key); b.end_object();
+        std::io::fs::write_file(self.path + ".runtime.json", b.result()) or discard;
+    }
+    fn read(s: StoredState, online: Bool) -> RuntimeKey {
+        if !online { return RuntimeKey { }; }
+        let path = self.path + ".runtime.json"; let size = std::io::fs::file_size(path) or - 1;
+        if size < 1 || size > 1024 { return RuntimeKey { }; }
+        let raw = std::io::fs::read_file(path) or "";
+        if std::json::find_string_field(raw, "application") != s.application_id || std::json::find_string_field(raw, "incarnation") != s.incarnation { return RuntimeKey { }; }
+        let pid = std::json::find_string_field(raw, "pid"); let key = std::json::find_string_field(raw, "key");
+        if key == "" { return RuntimeKey { }; }
+        let reader = identity::Identity { }; let captured = reader.capture(std::str::parse_int(pid) or 0);
+        return if captured.key == key { RuntimeKey { pid: pid, key: key } } else { RuntimeKey { } };
+    }
+}

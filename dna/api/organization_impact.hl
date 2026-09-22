@@ -1,0 +1,77 @@
+// A current responsibility read for one retained source candidate. It does not
+// acquire an admission barrier, transfer work, or authorize source application.
+import "../core" as dna;
+import "../operations" as ops;
+
+locus OrganizationImpactWire {
+    params { }
+    fn candidate_visible(journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> Bool {
+        let q = ops::Queries { j: journal }; let mut i = 0;
+        while i < journal.revision() {
+            let e = journal.read(i);
+            if e.entity == candidate.request.request_id || e.entity == candidate.mutation_id || e.entity == "review:" + candidate.mutation_id || e.entity == candidate.candidate_commit {
+                if q.receipt_status(e.digest) != "available" || q.receipt_status(e.entity) != "available" { return false; }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn document(candidate: ops::OrganizationCandidateEvidence, source: ops::GovernanceSnapshot, assessment: ops::OrganizationImpactAssessment) -> String {
+        let readable = assessment.available && assessment.details_visible;
+        let r = candidate.request; let b = std::json::Builder { };
+        b.begin_object(); b.string_field("profile", "dna.organization.source-impact.v1");
+        b.string_field("review_id", candidate.mutation_id); b.string_field("mutation_id", candidate.mutation_id);
+        b.begin_object_field("source"); b.string_field("base_commit", r.source_head); b.string_field("module_digest", r.module_digest);
+        b.string_field("candidate_commit", candidate.candidate_commit); b.string_field("source_digest", r.source_digest); b.end_object();
+        b.begin_object_field("basis"); b.string_field("record_head", source.head); b.string_field("record_revision", to_string(source.revision));
+        b.string_field("memory", "record"); b.string_field("scope", "application");
+        b.string_field("position_binding", "unavailable"); b.string_field("admission_fence", "unavailable"); b.end_object();
+        b.string_field("state", if readable { assessment.state } else { "unavailable" });
+        b.string_field("reason_code", if !assessment.details_visible { "impact_source_unavailable" } else { assessment.code });
+        if readable {
+            b.begin_object_field("counts");
+            b.string_field("workflow_tasks", to_string(assessment.workflow_tasks)); b.string_field("open_workflow_tasks", to_string(assessment.open_workflow_tasks));
+            b.string_field("open_works", to_string(assessment.open_works)); b.string_field("outstanding_attempts", to_string(assessment.outstanding_attempts));
+            b.string_field("legacy_tasks", to_string(assessment.legacy_tasks)); b.string_field("open_legacy_tasks", to_string(assessment.open_legacy_tasks));
+            b.string_field("handed_tasks", to_string(assessment.handed_tasks)); b.string_field("unresolved_intents", to_string(assessment.unresolved_intents));
+            b.string_field("schedules", to_string(assessment.schedules)); b.string_field("pending_effects", to_string(assessment.pending_effects));
+            b.string_field("unknown_effects", to_string(assessment.unknown_effects)); b.end_object();
+        } else { b.field("counts", "null"); }
+        b.end_object(); return b.result();
+    }
+    fn read(context: CommandContext, query: Query, raw: String, candidates: OrganizationCandidateWire) -> std::http::Response {
+        let http = Http { }; let text = ops::GovernanceCommandCodec { };
+        if !text.bounded(query.id, 256, true, false) || len(raw) > 2048 { return http.error(400, "invalid_query", "source impact requires an exact Review id", false); }
+        let mut rest = raw;
+        while rest != "" {
+            let cut = std::str::index_of(rest, "&"); let pair = if cut < 0 { rest } else { rest[0..cut] }; let eq = std::str::index_of(pair, "=");
+            if eq < 1 { return http.error(400, "invalid_query", "source impact accepts only id and snapshot", false); }
+            let key = http.decode(pair[0..eq]);
+            if !key.ok || (key.text != "id" && key.text != "snapshot") { return http.error(400, "invalid_query", "source impact accepts only id and snapshot", false); }
+            rest = if cut < 0 { "" } else { rest[(cut + 1)..len(rest)] };
+        }
+        let record = dna::GitRecord { repo: context.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
+        if !source.ok { return http.error(if source.code == "snapshot_changed" { 409 } else { 503 }, if source.code == "snapshot_changed" { "snapshot_changed" } else { "source_impact_unavailable" }, "the responsibility history could not be captured", true); }
+        if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing source impact", true); }
+        let journal = ops::GovernanceJournal { snapshot: source };
+        if !journal.valid { return http.error(503, "source_impact_unavailable", "the responsibility history is unavailable", false); }
+        if !candidates.allowed(context, journal) { return http.error(403, "forbidden", "source evidence read/recovery permission is required", false); }
+        let status = OrganizationStatusWire { }; let mode = status.trust(record);
+        // This initial operational reader shares the existing local Record
+        // profile. Hosted/signed operational authority needs its owning reader.
+        if context.principal_mode != "local" || mode != "local" { return http.error(503, "source_impact_unavailable", "the owning operational responsibility reader is unavailable", false); }
+        let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, query.id, source.text);
+        let retained = candidates.source_objects(record, journal, candidate);
+        if !retained.ok { return http.error(if retained.code == "candidate_unavailable" { 503 } else { 404 }, if retained.code == "candidate_unavailable" { "source_impact_unavailable" } else { "source_impact_not_found" }, "no visible canonical source impact was found", retained.code == "candidate_unavailable"); }
+        let stages = status.stages(record, journal, candidate, mode); let visibility = ops::Queries { j: journal };
+        if stages.hidden || !self.candidate_visible(journal, candidate) {
+            return http.error(404, "source_impact_not_found", "no visible canonical source impact was found", false);
+        }
+        if !stages.valid { return http.error(503, "source_impact_unavailable", "the responsibility evidence is unavailable", false); }
+        let reader = ops::OrganizationImpact { j: journal, visibility: visibility }; let assessment = reader.assess();
+        if assessment.code == "impact_source_changed" || assessment.record_head != source.head || assessment.revision != source.revision { return http.error(409, "snapshot_changed", "the responsibility assessment changed its captured Record", true); }
+        let response = http.success(context.source, self.document(candidate, source, assessment));
+        if !candidates.source_unchanged(record, source, retained) || status.trust(record) != mode { return http.error(409, "snapshot_changed", "the Record or retained source changed while reading impact", true); }
+        return response;
+    }
+}

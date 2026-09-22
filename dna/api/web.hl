@@ -1,0 +1,173 @@
+// The optional browser shell is nine static files, loaded before listening.
+// Observer metadata is trusted startup configuration, never a request URL or
+// credential. Exact origins reject trailing slashes; no network proxy exists.
+type ObserverOrigin { valid: Bool = false; value: String = ""; }
+
+locus WebAssets {
+    params {
+        enabled: Bool = false;
+        index: String = "";
+        app: String = "";
+        runtime: String = "";
+        application: String = "";
+        definition_draft: String = "";
+        organization_draft: String = "";
+        knowledge_draft: String = "";
+        task_administration: String = "";
+        styles: String = "";
+        observer_origin: String = "";
+        error: String = "";
+    }
+    fn decimal(text: String, maximum: Int) -> Int {
+        if len(text) == 0 || len(text) > 5 { return -1; }
+        let mut n = 0; let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 48 || c > 57 { return -1; }
+            n = n * 10 + c - 48;
+            if n > maximum { return -1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn ipv4(host: String) -> Bool {
+        let mut i = 0; let mut begin = 0; let mut count = 0;
+        while i <= len(host) {
+            if i == len(host) || std::str::byte_at_unchecked(host, i) == 46 {
+                let part = host[begin..i];
+                if self.decimal(part, 255) < 0 || (len(part) > 1 && std::str::starts_with(part, "0")) { return false; }
+                count = count + 1; begin = i + 1;
+            }
+            i = i + 1;
+        }
+        return count == 4;
+    }
+    fn ipv6(host: String) -> Bool {
+        let size = len(host);
+        if size < 2 { return false; }
+        let mut i = 0; let mut groups = 0; let mut compressed = false;
+        if std::str::starts_with(host, "::") { compressed = true; i = 2; }
+        else if std::str::starts_with(host, ":") { return false; }
+        while i < size {
+            let begin = i;
+            while i < size && std::str::byte_at_unchecked(host, i) != 58 { i = i + 1; }
+            let part = host[begin..i];
+            if std::str::contains(part, ".") {
+                if i != size || !self.ipv4(part) { return false; }
+                groups = groups + 2;
+            } else {
+                if len(part) < 1 || len(part) > 4 { return false; }
+                let mut p = 0;
+                while p < len(part) {
+                    let c = std::str::byte_at_unchecked(part, p);
+                    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) { return false; }
+                    p = p + 1;
+                }
+                groups = groups + 1;
+            }
+            if groups > 8 { return false; }
+            if i < size {
+                if i + 1 < size && std::str::byte_at_unchecked(host, i + 1) == 58 {
+                    if compressed { return false; }
+                    compressed = true; i = i + 2;
+                } else {
+                    i = i + 1;
+                    if i == size { return false; }
+                }
+            }
+        }
+        return if compressed { groups < 8 } else { groups == 8 };
+    }
+    fn hostname(host: String) -> Bool {
+        if len(host) < 1 || len(host) > 253 { return false; }
+        let mut i = 0; let mut begin = 0; let mut numeric = true;
+        while i <= len(host) {
+            if i == len(host) || std::str::byte_at_unchecked(host, i) == 46 {
+                let part = host[begin..i];
+                if len(part) < 1 || len(part) > 63 || std::str::starts_with(part, "-") || std::str::ends_with(part, "-") { return false; }
+                // Avoid browser reinterpretation of noncanonical numeric hosts.
+                let mut hex_numeric = std::str::starts_with(part, "0x");
+                let mut h = 2;
+                while hex_numeric && h < len(part) {
+                    let c = std::str::byte_at_unchecked(part, h);
+                    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) { hex_numeric = false; }
+                    h = h + 1;
+                }
+                if i == len(host) && (numeric || hex_numeric) { return self.ipv4(host); }
+                begin = i + 1; numeric = true;
+            } else {
+                let c = std::str::byte_at_unchecked(host, i);
+                if !((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45) { return false; }
+                if c < 48 || c > 57 { numeric = false; }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn parse_origin(raw: String) -> ObserverOrigin {
+        if len(raw) == 0 { return ObserverOrigin { valid: true }; }
+        if len(raw) > 2048 { return ObserverOrigin { }; }
+        let value = std::str::lower(raw);
+        let scheme = if std::str::starts_with(value, "http://") { 7 } else if std::str::starts_with(value, "https://") { 8 } else { 0 };
+        if scheme == 0 || len(value) <= scheme { return ObserverOrigin { }; }
+        let authority = value[scheme..len(value)];
+        let mut host = ""; let mut port_text = ""; let mut explicit_port = false;
+        if std::str::starts_with(authority, "[") {
+            let end = std::str::index_of(authority, "]");
+            if end < 0 || !self.ipv6(authority[1..end]) { return ObserverOrigin { }; }
+            host = authority[0..(end + 1)];
+            let tail = authority[(end + 1)..len(authority)];
+            if len(tail) > 0 {
+                if !std::str::starts_with(tail, ":") { return ObserverOrigin { }; }
+                explicit_port = true; port_text = tail[1..len(tail)];
+            }
+        } else {
+            let colon = std::str::index_of(authority, ":");
+            host = if colon < 0 { authority } else { authority[0..colon] };
+            if !self.hostname(host) { return ObserverOrigin { }; }
+            if colon >= 0 { explicit_port = true; port_text = authority[(colon + 1)..len(authority)]; }
+        }
+        let port = if explicit_port { self.decimal(port_text, 65535) } else { 0 };
+        if explicit_port && port < 1 { return ObserverOrigin { }; }
+        let suffix = if explicit_port && !(scheme == 7 && port == 80) && !(scheme == 8 && port == 443) { ":" + to_string(port) } else { "" };
+        return ObserverOrigin { valid: true, value: value[0..scheme] + host + suffix };
+    }
+    fn load(root: String) -> Bool {
+        self.enabled = false; self.observer_origin = "";
+        self.error = "iris-webroot must contain readable, nonempty index.html, runtime.js, application.js, definition-draft.js, organization-draft.js, knowledge-draft.js, task-administration.js, app.js and styles.css";
+        let origin = self.parse_origin(std::env::var("HALE_IRIS_OBSERVER_ORIGIN"));
+        if !origin.valid {
+            self.error = "HALE_IRIS_OBSERVER_ORIGIN must be an exact http(s) origin without credentials, path, trailing slash, query or fragment";
+            return false;
+        }
+        if len(root) == 0 || std::str::contains(root, "\n") || std::str::contains(root, "\r") { return false; }
+        // No fallback to the project root or the process's working directory.
+        self.index = std::io::fs::read_file(root + "/index.html") or "";
+        self.runtime = std::io::fs::read_file(root + "/runtime.js") or "";
+        self.application = std::io::fs::read_file(root + "/application.js") or "";
+        self.definition_draft = std::io::fs::read_file(root + "/definition-draft.js") or "";
+        self.organization_draft = std::io::fs::read_file(root + "/organization-draft.js") or "";
+        self.knowledge_draft = std::io::fs::read_file(root + "/knowledge-draft.js") or "";
+        self.task_administration = std::io::fs::read_file(root + "/task-administration.js") or "";
+        self.app = std::io::fs::read_file(root + "/app.js") or "";
+        self.styles = std::io::fs::read_file(root + "/styles.css") or "";
+        self.enabled = len(self.index) > 0 && len(self.runtime) > 0 && len(self.application) > 0 && len(self.definition_draft) > 0 && len(self.organization_draft) > 0 && len(self.knowledge_draft) > 0 && len(self.task_administration) > 0 && len(self.app) > 0 && len(self.styles) > 0;
+        if self.enabled { self.observer_origin = origin.value; self.error = ""; }
+        return self.enabled;
+    }
+    fn serves(path: String) -> Bool {
+        return self.enabled && (path == "/" || path == "/runtime.js" || path == "/application.js" || path == "/definition-draft.js" || path == "/organization-draft.js" || path == "/knowledge-draft.js" || path == "/task-administration.js" || path == "/app.js" || path == "/styles.css" || path == "/iris/observer.json");
+    }
+    fn response(path: String) -> std::http::Response {
+        let config = path == "/iris/observer.json";
+        let content_type = if config { "application/json; charset=utf-8" } else if path == "/" { "text/html; charset=utf-8" } else if path == "/app.js" || path == "/runtime.js" || path == "/application.js" || path == "/definition-draft.js" || path == "/organization-draft.js" || path == "/knowledge-draft.js" || path == "/task-administration.js" { "text/javascript; charset=utf-8" } else { "text/css; charset=utf-8" };
+        let body = if config { "{\"profile\":\"hale.iris.observer.v0\",\"origin\":\"" + self.observer_origin + "\"}" } else if path == "/" { self.index } else if path == "/runtime.js" { self.runtime } else if path == "/application.js" { self.application } else if path == "/definition-draft.js" { self.definition_draft } else if path == "/organization-draft.js" { self.organization_draft } else if path == "/knowledge-draft.js" { self.knowledge_draft } else if path == "/task-administration.js" { self.task_administration } else if path == "/app.js" { self.app } else { self.styles };
+        let observer_source = if len(self.observer_origin) > 0 { " " + self.observer_origin } else { "" };
+        return std::http::Response {
+            status: 200,
+            content_type: content_type,
+            headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'" + observer_source + "; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            body: body
+        };
+    }
+}

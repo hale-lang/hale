@@ -1,0 +1,76 @@
+// Generic exact Knowledge Review admission/read/projection compatibility.
+// Facts after admission are projection fixtures, not a native-body proof.
+import ".." as ops;
+import "../../core" as dna;
+
+const OLD: String = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+locus NodeReviewAuthority {
+    params { role: String = "board"; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> ops::GovernanceGrant {
+        return ops::GovernanceGrant { allowed: context.principal_name == "alice", authority: self.role, basis: "fixed-node-review-test" };
+    }
+}
+fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+    std::test::assert(j.append(j.revision(), kind, entity, body).ok, "append projection fixture " + kind);
+}
+fn candidate(repo: String, kind: String, author: String, target: String, text: String) -> String {
+    let record = dna::GitRecord { repo: repo }; std::test::assert_eq_int(record.git("init\n--quiet").code, 0, "initialize isolated Record");
+    let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+    let doc = dna::knowledge_document(dna::Idea { kind: kind, text: text, author: author, provenance: "proposed", supersedes: if kind == "retirement" { OLD } else { "" } }, target);
+    let digest = "sha256:" + receipts.store(doc); let review = dna::knowledge_review_id(digest);
+    let b = std::json::Builder { }; b.begin_object(); b.string_field("digest", digest); b.string_field("review_id", review); b.string_field("kind", kind); b.string_field("author", author); b.string_field("target", target);
+    if kind == "retirement" { b.string_field("supersedes", OLD); } b.end_object(); append(j, "knowledge.proposed", digest, b.result());
+    let q = std::json::Builder { }; q.begin_object(); q.field("question", dna::record_json_quote("Exact candidate? " + text)); q.string_field("subject_digest", digest); q.string_field("knowledge_digest", digest); q.string_field("required_authority", "board"); q.string_field("author", author); q.string_field("target", target); q.string_field("kind", kind); q.end_object(); append(j, "review.requested", "review:" + review, q.result());
+    return digest;
+}
+fn command(app: String, digest: String, key: String) -> ops::GovernanceCommand {
+    return ops::GovernanceCommand { request_id: key, operation: "dna.review.verdict", application_id: app, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve", comment: "Exact é 🧭\r\ncomment" };
+}
+fn generic(repo: String, kind: String) {
+    let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1);
+    let text = if kind == "retirement" { "" } else { std::str::from_bytes(bytes.snapshot()) };
+    let digest = candidate(repo, kind, "org/support", "org/support/intake", text);
+    let record = dna::GitRecord { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let j = dna::GitJournal { repo: repo }; let queries = ops::Queries { j: j, receipts: receipts };
+    std::test::assert_eq_int(queries.practice_count(), 0, "unnamed candidates do not enter the named catalog");
+    let exact = queries.practice_of(digest); std::test::assert(exact.text_available && exact.kind == kind && exact.name == "", "exact lookup returns an unnamed canonical candidate");
+    std::test::assert_eq_str(exact.text, text, "canonical candidate text remains byte exact");
+    let review = queries.review_of(dna::knowledge_review_id(digest)); std::test::assert(review.text_available && review.question == "Exact candidate? " + text, "Review reads canonical generic candidate including exact controls and Unicode");
+    let authority = NodeReviewAuthority { }; let service = ops::GovernanceCommands { record: record, authority: authority };
+    let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" }; let c = command(context.application_id, digest, "generic-review");
+    let first = service.submit(context, c); std::test::assert(first.ok && first.receipt.verdict_state == "pending", "generic exact Review reaches native admission: " + first.code);
+    std::test::assert_eq_str(service.submit(context, ops::GovernanceCommand { request_id: "not-practice", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: "Changed", rationale: "Reason" }).code, "stale_subject", "generic candidate cannot broaden Practice proposal eligibility");
+    let wrong = ops::GovernanceCommand { request_id: "wrong-subject", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: c.target_id, subject_digest: OLD, expected_review_state: "pending", verdict: "approve" };
+    std::test::assert_eq_str(service.submit(context, wrong).code, "stale_subject", "generic verdict still pins exact candidate");
+    let refreshed = j.refresh();
+    let verdict = dna::Verdict { command_id: first.receipt.command_id, review_id: c.target_id, subject_digest: digest, verdict: "approve", reviewer: "alice", authority: "board", comment: c.comment };
+    append(j, "review.command_decided", first.receipt.command_id, dna::review_command_body(verdict, true, "", true, "approve")); append(j, "review.settled", c.target_id, "approve by alice");
+    let b = std::json::Builder { }; b.begin_object(); b.string_field("digest", digest); b.string_field("review_id", c.target_id); b.string_field("decided_by", "alice"); b.string_field("outcome", "approve"); b.string_field("kind", kind); b.string_field("target", "org/support/intake");
+    if kind == "retirement" { b.string_field("supersedes", OLD); } b.end_object(); append(j, "knowledge.ratified", digest, b.result());
+    let found = service.lookup(context, c.request_id); std::test::assert(found.ok && found.receipt.state == "succeeded", "exact native decision proves accepted verdict");
+    std::test::assert_eq_str(found.receipt.activation_state, if kind == "retirement" { "pending" } else { "adopted" }, "retirement waits for exact predecessor retirement");
+    if kind == "retirement" {
+        let retired = std::json::Builder { }; retired.begin_object(); retired.string_field("digest", OLD); retired.string_field("by", digest); retired.string_field("review_id", c.target_id); retired.string_field("decided_by", "alice"); retired.end_object(); append(j, "knowledge.retired", OLD, retired.result());
+        std::test::assert_eq_str(service.lookup(context, c.request_id).receipt.activation_state, "adopted", "exact retirement completes activation");
+    }
+}
+fn denial(repo: String, kind: String, author: String, target: String, role: String, expected: String) {
+    let digest = candidate(repo, kind, author, target, "Candidate"); let record = dna::GitRecord { repo: repo }; let authority = NodeReviewAuthority { role: role }; let service = ops::GovernanceCommands { record: record, authority: authority };
+    let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+    std::test::assert_eq_str(service.submit(context, command(context.application_id, digest, "denied")).code, expected, "generic Review retains kind, scope, authority and independence rules");
+}
+fn changed_review(repo: String) {
+    let digest = candidate(repo, "idea", "org", "org", "Exact candidate");
+    let record = dna::GitRecord { repo: repo }; let j = dna::GitJournal { repo: repo }; let authority = NodeReviewAuthority { }; let service = ops::GovernanceCommands { record: record, authority: authority };
+    let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" }; let review = dna::knowledge_review_id(digest);
+    let b = std::json::Builder { }; b.begin_object(); b.string_field("subject_digest", digest); b.string_field("knowledge_digest", digest); b.string_field("author", "org"); b.string_field("target", "org"); b.string_field("required_authority", "board"); b.string_field("kind", "retirement"); b.end_object();
+    append(j, "review.requested", "review:" + review, b.result());
+    std::test::assert_eq_str(service.submit(context, command(context.application_id, digest, "mismatched-review")).code, "stale_subject", "conflicting Review request metadata cannot reinterpret the canonical candidate");
+}
+fn main() {
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-governance-knowledge-review") };
+    let names = "idea concept practice task_concept retirement unknown self weak lateral changed"; let mut i = 0;
+    while i < 10 { std::io::fs::mkdir(base + "/" + dna::nth_word(names, i)) or raise; i = i + 1; }
+    generic(base + "/idea", "idea"); generic(base + "/concept", "concept"); generic(base + "/practice", "practice"); generic(base + "/task_concept", "task_concept"); generic(base + "/retirement", "retirement");
+    denial(base + "/unknown", "arbitrary", "org", "org", "board", "stale_subject"); denial(base + "/self", "idea", "alice", "alice", "board", "forbidden"); denial(base + "/weak", "idea", "org", "org", "reviewer", "forbidden"); denial(base + "/lateral", "idea", "org/a", "org/b", "board", "stale_subject");
+    changed_review(base + "/changed");
+}

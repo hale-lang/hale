@@ -1,0 +1,139 @@
+// Native Review command decisions over a real Git Record. The fault Journal
+// forwards the Review's own decision bytes; it never authors an outcome. This
+// is a domain regression, not the HTTP/body restart acceptance gate.
+import "../core" as dna;
+
+locus CommandFaultJournal {
+    params {
+        inner: dna::Journal = dna::MemJournal { };
+        fault: String = "";
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "review.command_decided" && self.fault == "before" {
+            self.fault = "";
+            return dna::AppendResult { error: "io" };
+        }
+        let result = self.inner.append_exact(expected, kind, entity, body);
+        if kind == "review.command_decided" && self.fault == "after" && result.ok {
+            self.fault = "";
+            return dna::AppendResult { error: "io" };
+        }
+        return result;
+    }
+}
+
+fn verdict(command: String, review: String, value: String, reviewer: String) -> dna::Verdict {
+    return dna::Verdict {
+        command_id: command, review_id: review, subject_digest: "sha256:exact-candidate",
+        verdict: value, reviewer: reviewer, authority: "board", comment: "Exact note — équipe\n<literal>"
+    };
+}
+
+@unbounded
+fn decisions(j: dna::Journal, command: String) -> Int {
+    let mut count = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.command_decided" && e.entity == command { count = count + 1; }
+        i = i + 1;
+    }
+    return count;
+}
+
+main locus App {
+    params {
+        observed: dna::Journal = dna::MemJournal { };
+        notifications: Int = 0;
+    }
+    bus { subscribe dna::ReviewSettled as on_settled; }
+    fn observe(j: dna::Journal) { self.observed = j; }
+    fn on_settled(r: dna::ReviewSettlement) {
+        if len(r.command_id) == 0 { return; }
+        let moved = self.observed.refresh();
+        let body = dna::review_command_decision(self.observed, r.command_id);
+        std::test::assert(len(body) > 0, "the native decision precedes its notification");
+        std::test::assert_eq_str(std::json::find_string_field(body, "review_id"), r.review_id, "the notification names the decision's Review");
+        self.notifications = self.notifications + 1;
+    }
+    run() {
+        let repo = "/tmp/dna-review-command-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "temporary Git repository: " + init.stderr);
+        let record = dna::GitJournal { repo: repo };
+        self.observe(record);
+
+        let review = dna::Review { journal: record, review_id: "review/one", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
+        let abstain = verdict("command/abstain", "review/one", "abstain", "riley");
+        review.on_verdict(abstain);
+        std::time::sleep(100ms);
+        let abstained = dna::review_command_decision(record, abstain.command_id);
+        std::test::assert(std::json::find_bool_field(abstained, "accepted") && !std::json::find_bool_field(abstained, "settled") && !review.settled, "accepted abstention has its own durable decision, without settlement");
+        std::test::assert_eq_int(self.notifications, 1, "an accepted abstention notifies with command correlation");
+
+        let approve = verdict("command/équipe/approve", "review/one", "approve", "riley");
+        let approved = review.command_decide(approve);
+        std::test::assert(std::json::find_bool_field(approved, "accepted") && std::json::find_bool_field(approved, "settled") && review.settled, "approval is durable before the Review advances");
+        std::test::assert_eq_str(std::json::find_string_field(approved, "comment"), approve.comment, "exact literal comment retained");
+        std::test::assert_eq_str(review.command_decide(approve), approved, "same command recovers its original acceptance");
+        std::test::assert_eq_int(decisions(record, approve.command_id), 1, "one decision for an identical replay");
+        let changed = verdict(approve.command_id, "review/one", "reject", "riley");
+        std::test::assert_eq_str(review.command_decide(changed), "", "an altered command cannot reuse a decision");
+        std::test::assert_eq_int(decisions(record, approve.command_id), 1, "conflicting replay leaves the original decision intact");
+
+        let second = verdict("command/another", "review/one", "approve", "dana");
+        let refused = review.command_decide(second);
+        std::test::assert(!std::json::find_bool_field(refused, "accepted") && !std::json::find_bool_field(refused, "settled"), "another command is refused at a settled Review");
+        std::test::assert(std::str::contains(std::json::find_string_field(refused, "refusal"), "already settled"), "the refusal gives its own reason");
+        std::test::assert_eq_str(std::json::find_string_field(refused, "outcome"), "", "the refused command does not borrow the Review's approval");
+
+        // A fresh native Review over a fresh reader of the same Git Record
+        // recovers acceptance even when no generic review.settled was written.
+        let fresh_record = dna::GitJournal { repo: repo };
+        let fresh = dna::Review { journal: fresh_record, review_id: "review/one", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
+        std::test::assert(fresh.settled, "durable decision restores settled state");
+        std::test::assert_eq_str(fresh.command_decide(approve), approved, "restart recovers the same exact decision");
+        std::test::assert_eq_str(fresh.command_decide(second), refused, "restart preserves the other command's refusal");
+
+        let failed_record = dna::GitJournal { repo: repo };
+        let before = CommandFaultJournal { inner: failed_record, fault: "before" };
+        let retryable = dna::Review { journal: before, review_id: "review/retry", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
+        let retry = verdict("command/retry", "review/retry", "approve", "riley");
+        std::test::assert_eq_str(retryable.command_decide(retry), "", "a failed append leaves the outcome unresolved");
+        std::test::assert(!retryable.settled && retryable.verdict_count() == 0, "no live decision advances before persistence");
+        std::test::assert_eq_int(decisions(before, retry.command_id), 0, "failed append wrote no decision");
+        std::test::assert(std::json::find_bool_field(retryable.command_decide(retry), "accepted"), "redelivery after failed persistence still admits the original verdict");
+        std::test::assert_eq_int(decisions(before, retry.command_id), 1, "one decision after retry");
+
+        let ambiguous_record = dna::GitJournal { repo: repo };
+        let after = CommandFaultJournal { inner: ambiguous_record, fault: "after" };
+        let uncertain = dna::Review { journal: after, review_id: "review/ambiguous", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
+        let ambiguous = verdict("command/ambiguous", "review/ambiguous", "approve", "riley");
+        std::test::assert(std::json::find_bool_field(uncertain.command_decide(ambiguous), "accepted") && uncertain.settled, "an append that landed despite an error is recovered by its exact identity");
+        std::test::assert_eq_int(decisions(after, ambiguous.command_id), 1, "ambiguous persistence is not appended twice");
+
+        let owners_record = dna::GitJournal { repo: repo };
+        let owners = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", approvers: "A=alice B=bob" };
+        let first_owner = owners.command_decide(verdict("command/owner-a", "review/owners", "approve", "alice"));
+        std::test::assert(std::json::find_bool_field(first_owner, "accepted") && !std::json::find_bool_field(first_owner, "settled"), "partial owner approval is accepted without settlement");
+        let owners_again = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", approvers: "A=alice B=bob" };
+        let last_owner = owners_again.command_decide(verdict("command/owner-b", "review/owners", "approve", "bob"));
+        std::test::assert(std::json::find_bool_field(last_owner, "accepted") && std::json::find_bool_field(last_owner, "settled"), "restart restores prior owner approval before deciding the last one");
+
+        let legacy = dna::Review { review_id: "legacy", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
+        std::test::assert(legacy.consider(verdict("", "legacy", "approve", "riley")) && legacy.settled, "legacy admission remains unchanged");
+        std::test::assert(legacy.readmit(verdict("", "legacy", "approve", "dana")), "legacy mutation reapproval remains available");
+        let remove = dna::run_tool("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }

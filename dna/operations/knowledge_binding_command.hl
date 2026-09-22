@@ -1,0 +1,70 @@
+// Binding commands change the applicability of one existing item. The exact
+// reviewed candidate is distinct from a Knowledge node or its retirement.
+import "../core" as dna;
+
+locus KnowledgeBindingCommandCodec {
+    params { }
+    fn known(operation: String) -> Bool {
+        return operation == "dna.knowledge.binding.bind" || operation == "dna.knowledge.binding.unbind";
+    }
+    fn valid(context: GovernanceContext, c: KnowledgeCommand) -> Bool {
+        let wire = GovernanceCommandCodec { }; let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
+        if !self.known(c.operation) || !wire.context_valid(context) || context.application_id != c.application_id || c.position_id != "org" || c.operation_version != "1" { return false; }
+        if !wire.bounded(c.request_id, 128, true, false) || !wire.bounded(c.record_head, 256, true, false) || !wire.bounded(c.rationale, 2048, true, true) { return false; }
+        if c.from_id != "" || c.to_id != "" || c.rel != "" || c.edge_id != "" || c.node_kind != "" || c.name != "" || c.text != "" || c.supersedes != "" { return false; }
+        if !common.digest(c.idea_id) || c.target_id != c.idea_id || !wire.bounded(c.author, 256, true, false) || !wire.bounded(c.target, 256, true, false) || dna::classify_binding(c.author, c.target) == "lateral" { return false; }
+        return if c.operation == "dna.knowledge.binding.bind" { c.binding_id == "" }
+        else { common.digest(c.binding_id) && c.binding_id == native.identity(c.idea_id, c.target, c.author) };
+    }
+    fn fields(b: std::bytes::BytesBuilder, c: KnowledgeCommand) {
+        let common = KnowledgeCommandCodec { };
+        common.field(b, "idea_id", c.idea_id);
+        if c.operation == "dna.knowledge.binding.unbind" { common.field(b, "binding_id", c.binding_id); }
+        common.field(b, "author", c.author); common.field(b, "target", c.target); common.field(b, "rationale", c.rationale);
+    }
+    fn decode(context: GovernanceContext, document: String) -> KnowledgeCommand {
+        let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let wire = GovernanceCommandCodec { };
+        if len(document) > 24576 || !syntax.valid(document) { return KnowledgeCommand { }; }
+        let operation = wire.string(document, "operation");
+        let extra = if operation == "dna.knowledge.binding.unbind" { " binding_id" } else { "" };
+        if !schema.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_id record_head idea_id author target rationale" + extra, "") { return KnowledgeCommand { }; }
+        if wire.string(document, "format") != "dna.knowledge-command/1" || wire.string(document, "principal_mode") != context.principal_mode || wire.string(document, "principal_name") != context.principal_name { return KnowledgeCommand { }; }
+        let c = KnowledgeCommand {
+            request_id: wire.string(document, "request_id"), operation: operation, operation_version: wire.string(document, "operation_version"),
+            application_id: wire.string(document, "application_id"), position_id: wire.string(document, "position_id"), target_id: wire.string(document, "target_id"), record_head: wire.string(document, "record_head"),
+            idea_id: wire.string(document, "idea_id"), binding_id: wire.string(document, "binding_id"), author: wire.string(document, "author"), target: wire.string(document, "target"), rationale: wire.string(document, "rationale")
+        };
+        if !self.valid(context, c) { return KnowledgeCommand { }; }
+        return c;
+    }
+    fn matches(context: GovernanceContext, c: KnowledgeCommand, r: dna::KnowledgeBindingRequest) -> Bool {
+        let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
+        return self.valid(context, c) && native.valid(r) && dna::digest_of(native.document(r)) == r.candidate_digest
+            && r.application_id == context.application_id && r.request_id == common.identity(context, c.request_id)
+            && r.command_fingerprint == common.fingerprint(context, c) && r.operation == c.operation
+            && r.idea_id == c.idea_id && r.binding_id == native.identity(c.idea_id, c.target, c.author)
+            && r.author == c.author && r.target == c.target && r.by == context.principal_name && r.because == c.rationale;
+    }
+    fn fact(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant, r: dna::KnowledgeBindingRequest) -> String {
+        let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
+        if !self.matches(context, c, r) || !common.grant_valid(grant) || grant.mode != "review" || r.authority != grant.authority || r.authority_basis != grant.basis { return ""; }
+        let fields = native.started(r);
+        if len(fields) < 2 { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":\"dna.knowledge-binding.request/1\","); b.append_str(fields[1..(len(fields) - 1)]);
+        common.field(b, "command_payload", common.canonical(context, c)); common.field(b, "record_head", c.record_head);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_fact(e: dna::Event) -> KnowledgeFact {
+        let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let wire = GovernanceCommandCodec { }; let common = KnowledgeCommandCodec { };
+        if e.kind != "knowledge.binding.requested" || len(e.body) > 131072 || !syntax.valid(e.body)
+            || !schema.fields(e.body, "format application_id request_id command_fingerprint authority authority_basis operation idea_id binding_id author target by because binding_basis candidate_digest command_payload record_head", "") { return KnowledgeFact { }; }
+        let payload = wire.string(e.body, "command_payload");
+        if len(payload) > 24576 || !syntax.valid(payload) { return KnowledgeFact { }; }
+        let context = GovernanceContext { application_id: wire.string(payload, "application_id"), principal_mode: wire.string(payload, "principal_mode"), principal_name: wire.string(payload, "principal_name") };
+        let c = self.decode(context, payload); let native = dna::KnowledgeBindingCodec { }; let r = native.decode(e.body);
+        let grant = KnowledgeGrant { allowed: true, mode: "review", authority: wire.string(e.body, "authority"), basis: wire.string(e.body, "authority_basis") };
+        if !self.matches(context, c, r) || e.prev != c.record_head || e.entity != common.identity(context, c.request_id) || payload != common.canonical(context, c) || e.body != self.fact(context, c, grant, r) { return KnowledgeFact { }; }
+        return KnowledgeFact { valid: true, context: context, command: c, command_id: e.entity, fingerprint: common.fingerprint(context, c), authority: grant.authority, authority_basis: grant.basis, binding: r };
+    }
+}

@@ -1,0 +1,67 @@
+// Explicitly invoked by the registered native ledger_test.hl entrypoint.
+// Read health must describe the current read and prove a complete Ledger.
+import "../../core" as dna;
+import "../../knowledge" as know;
+import "../../pond/db" as db;
+
+fn claim_recovery(l: know::Ledger, label: String) {
+    std::test::assert(l.open(), label + ": opens");
+    let first = l.append(0, "task.born", "claim", "{}");
+    let conflict = l.append(1, "task.born", "claim", "{}");
+    std::test::assert(first.ok && !conflict.ok && l.last_error() == "claimed", label + ": genuine command conflict recorded");
+    let moved = l.refresh();
+    std::test::assert_eq_str(l.last_error(), "", label + ": successful read clears old command error");
+    std::test::assert(l.revision() == 1 && l.verify_chain(), label + ": read keeps complete original row");
+}
+
+fn postgres(dsn: know::Dsn) {
+    let record = "ledgerreadhealth" + to_string(std::process::pid());
+    let pg = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+    claim_recovery(pg, "postgres");
+    let second = pg.append(1, "task.done", "claim", "{}");
+    let restricted = pg.append(2, "receipt.classified", dna::digest_of("protected"), "{\"class\":\"confidential\"}");
+    std::test::assert(second.ok && restricted.ok, "fixture history is contiguous before fault");
+    let fresh = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+    std::test::assert(fresh.open(), "second reader opens before injected gap");
+    let remove = pg.conn.exec("DELETE FROM ledger_rows WHERE seq = 1");
+    std::test::assert(remove.ok, "inject missing sequence in this run's private schema");
+    let changed = fresh.refresh();
+    std::test::assert(len(fresh.last_error()) > 0, "existing reader detects loss of a row");
+    let replace = pg.conn.exec("INSERT INTO ledger_rows (seq,kind,entity,body,author,prev,digest) SELECT 3,kind,entity,body,author,prev,digest FROM ledger_rows WHERE seq=2");
+    std::test::assert(replace.ok, "fixture restores count without restoring sequence");
+    let same_count = fresh.refresh();
+    std::test::assert(len(fresh.last_error()) > 0, "matching count cannot conceal missing restriction history");
+    let remove_extra = pg.conn.exec("DELETE FROM ledger_rows WHERE seq=3");
+    std::test::assert(remove_extra.ok, "remove temporary count-preserving fault");
+    let incomplete = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+    let opened = incomplete.open();
+    std::test::assert(len(incomplete.last_error()) > 0, "new reader cannot silently skip a restriction after a gap");
+    let retried = incomplete.refresh();
+    std::test::assert(len(incomplete.last_error()) > 0, "repeated read cannot mistake a valid prefix for complete history");
+    // Restoring the exact missing row lets a later read recover rather than
+    // retaining an old fault forever. Only the disposable fixture is repaired.
+    let e = pg.read(1);
+    let args = db::Args { };
+    args.add(to_string(e.seq)); args.add(e.kind); args.add(e.entity); args.add(e.body); args.add(e.prev); args.add(e.digest);
+    let restore = pg.conn.exec_params("INSERT INTO ledger_rows (seq,kind,entity,body,author,prev,digest) VALUES ($1::bigint,$2,$3,$4,'ledger',$5,$6)", args);
+    std::test::assert(restore.ok, "restore fixture row");
+    let recovered = incomplete.refresh();
+    std::test::assert(incomplete.last_error() == "" && incomplete.revision() == 3 && incomplete.verify_chain(), "healthy full read recovers after transient failure");
+    let rewrite = pg.conn.exec("UPDATE ledger_rows SET digest='changed-tail' WHERE seq=2");
+    std::test::assert(rewrite.ok, "fixture changes tail without changing count");
+    let stale_tail = incomplete.refresh();
+    std::test::assert(len(incomplete.last_error()) > 0, "same count with changed head is not a stable read");
+    let drop = pg.conn.exec("DROP SCHEMA " + pg.schema() + " CASCADE");
+    std::test::assert(drop.ok, "remove only this fixture's schema");
+}
+
+fn run_cases() {
+    let mem = know::MemLedger { };
+    claim_recovery(mem, "memory");
+    let closed = know::PqLedger { };
+    let moved = closed.refresh();
+    std::test::assert(len(closed.last_error()) > 0, "unopened Ledger does not present a successful empty read");
+    let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+    if dsn.ok { postgres(dsn); }
+    else { eprintln("ledger_read_health_test: Postgres not configured; only memory and unopened-read checks exercised"); }
+}

@@ -1,0 +1,42 @@
+// Application-owned control example; no DNA provider, Record, Ledger or bus admin.
+fn drive(mode: String, path: String, third: String, fourth: String, fifth: String) {
+    let rules = Rules { };
+    if mode == "run" {
+        let app = IntakeApp { path: path, owner: third };
+        let started = app.start();
+        if !started.ok { eprintln("intake-control: existing store invalid, owner mismatch, or storage unavailable"); std::process::exit(2); }
+        println("application_id=", started.application_id, " incarnation_id=", started.incarnation);
+        let ticks = if fourth == "" { 0 } else { std::str::parse_int(fourth) or - 1 };
+        if ticks < 0 { std::process::exit(2); }
+        let mut done = 0;
+        while ticks == 0 || done < ticks {
+            if !app.tick(started.application_id, started.incarnation) { eprintln("intake-control: tick fenced or unavailable"); std::process::exit(2); }
+            done = done + 1; std::time::sleep(250ms);
+        }
+        return;
+    }
+    let provider = IntakeProvider { path: path };
+    if provider.application_id() == "" { eprintln("intake-control: existing store unavailable"); std::process::exit(2); }
+    if mode == "serve" {
+        let port = std::str::parse_int(third) or - 1;
+        if port < 1 || port > 65535 || !rules.safe(fifth) { std::process::exit(2); }
+        let actor = service::Actor { name: fifth };
+        service::serve(port, actor, provider, fourth); return;
+    }
+    if mode == "info" {
+        let actor = service::Actor { name: third };
+        let result = provider.inspect(actor);
+        if !result.ok { std::process::exit(2); }
+        let s = result.state;
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("application_id", s.application_id); b.string_field("incarnation_id", s.incarnation_id);
+        b.string_field("revision", s.revision); b.string_field("value", s.value); b.string_field("effective_revision", s.effective_revision); b.string_field("effective_value", s.effective_value);
+        b.string_field("activity_count", s.activity_count); b.string_field("observation_tick", s.observation_tick); b.bool_field("online", s.online); b.end_object(); println(b.result()); return;
+    }
+    eprintln("intake-control: run DB OWNER [ticks] | serve DB PORT WEBROOT PRINCIPAL | info DB PRINCIPAL"); std::process::exit(2);
+}
+locus IntakeMain {
+    params { mode: String = ""; path: String = ""; third: String = ""; fourth: String = ""; fifth: String = ""; }
+    run() { drive(self.mode, self.path, self.third, self.fourth, self.fifth); }
+}
+fn main() { IntakeMain { mode: std::env::arg_or(1, ""), path: std::env::arg_or(2, ""), third: std::env::arg_or(3, ""), fourth: std::env::arg_or(4, ""), fifth: std::env::arg_or(5, "") }; }

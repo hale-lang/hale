@@ -1,0 +1,108 @@
+// The actual loader checks native source; no hand-authored topology fixture and
+// no organization lifecycle execution. The wrapper owns cleanup even on assert.
+import "../../organization_source" as orgsource;
+import "../../core" as dna;
+
+const ORG: String = "import \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { }; } }\n";
+const SUPPORT: String = "locus Worker { params { count: Int = 0; } }\n";
+
+locus SnapshotCases {
+    params { root: String = ""; repo: String = ""; compiler: String = ""; }
+    fn write(path: String, body: String) { std::io::fs::write_file(path, body) or self.io_failed(err); }
+    fn io_failed(e: IoError) { std::test::assert(false, "snapshot fixture write failed"); }
+    fn git(args: String) -> String {
+        let result = dna::run_tool("git\n-C\n" + self.repo + "\n" + args);
+        std::test::assert_eq_int(result.code, 0, "snapshot fixture git command: " + result.stderr);
+        return dna::trim_nl(result.stdout);
+    }
+    fn commit() {
+        self.git("add\n-A");
+        self.git("-c\nuser.name=Iris fixture\n-c\nuser.email=iris@example.invalid\ncommit\n--quiet\n-m\nOrganization source fixture");
+    }
+    fn exercise() {
+        let dirs = dna::run_tool("mkdir\n-p\n" + self.repo + "/dna/org\n" + self.repo + "/vendor/support\n" + self.root + "/inspection");
+        std::test::assert_eq_int(dirs.code, 0, "fixture directories");
+        self.git("init\n--quiet");
+        self.write(self.repo + "/hale.toml", "[package]\nname = \"iris-snapshot\"\nversion = \"0.0.0\"\n");
+        self.write(self.repo + "/.gitignore", "vendor/\n");
+        self.write(self.repo + "/dna/org/main.hl", ORG);
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
+        self.commit();
+        let source = orgsource::OrganizationSource { root: self.repo, compiler: self.compiler };
+        let before_refs = self.git("show-ref");
+        let before_status = self.git("status\n--porcelain");
+        let first = source.read();
+        std::test::assert(first.ok, "ignored local dependency source reads: " + first.code + ": " + first.error);
+        std::test::assert_eq_str(first.dependency_source, "local_vendor_snapshot", "actual ignored dependency bytes identified");
+        std::test::assert(source.unchanged(first), "fresh dependency snapshot remains current");
+        std::test::assert_eq_str(self.git("show-ref"), before_refs, "loader moves no refs");
+        std::test::assert_eq_str(self.git("status\n--porcelain"), before_status, "loader changes no project files");
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT + "// changed dependency bytes\n");
+        std::test::assert(!source.unchanged(first), "dependency edits invalidate an unchanged source HEAD");
+        let changed = source.read();
+        std::test::assert(changed.ok && changed.source_head == first.source_head && changed.dependency_digest != first.dependency_digest, "new dependency identity at the same source commit");
+        self.git("add\n-f\nvendor/support/main.hl");
+        self.commit();
+        let committed = source.read();
+        std::test::assert(committed.ok, "committed dependency source reads: " + committed.error);
+        std::test::assert_eq_str(committed.dependency_source, "committed_source", "committed vendor is the source authority");
+        self.write(self.repo + "/vendor/support/main.hl", "not valid Hale");
+        let dirty = source.read();
+        std::test::assert(dirty.ok && dirty.dependency_digest == committed.dependency_digest && source.unchanged(committed), "dirty local vendor never overlays committed vendor");
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT + "// changed dependency bytes\n");
+        self.write(self.repo + "/.gitattributes", "dna/org/main.hl export-ignore\n");
+        self.commit();
+        let ignored = source.read();
+        std::test::assert(!ignored.ok && ignored.code == "organization_snapshot_unsupported", "export-ignore cannot silently omit committed source");
+        self.write(self.repo + "/.gitattributes", "dna/org/main.hl export-subst\n");
+        self.write(self.repo + "/dna/org/main.hl", ORG + "// $Format:%H$\n");
+        self.commit();
+        let substituted = source.read();
+        std::test::assert(!substituted.ok && substituted.code == "organization_snapshot_unsupported", "export-subst cannot silently change committed bytes");
+        self.write(self.repo + "/.gitattributes", "");
+        self.write(self.repo + "/dna/org/main.hl", ORG);
+        self.commit();
+        let link = dna::run_tool("ln\n-s\n" + self.repo + "/vendor/support/main.hl\n" + self.repo + "/dna/org/link.hl");
+        std::test::assert_eq_int(link.code, 0, "source link fixture");
+        self.commit();
+        let linked = source.read();
+        std::test::assert(!linked.ok && linked.code == "organization_snapshot_unsupported", "committed source links are refused before archive/check");
+        self.git("rm\ndna/org/link.hl"); self.commit();
+        self.write(self.root + "/outside.hl", "locus Outside { }\n");
+        self.write(self.repo + "/dna/org/main.hl", "import \"" + self.root + "/outside\" as outside; main locus Org { params { worker: outside::Outside = outside::Outside { }; } }\n");
+        self.commit();
+        let escaped = source.read();
+        std::test::assert(!escaped.ok && escaped.code == "organization_snapshot_unsupported", "native transitive inputs escaping the snapshot are refused");
+        self.write(self.repo + "/dna/org/main.hl", ORG); self.commit();
+        // No committed vendor: local links must also fail, not be dereferenced.
+        self.git("rm\n--cached\nvendor/support/main.hl"); self.commit();
+        let removed = dna::run_tool("rm\n" + self.repo + "/vendor/support/main.hl");
+        let dependency_link = dna::run_tool("ln\n-s\n" + self.root + "/outside.hl\n" + self.repo + "/vendor/support/main.hl");
+        std::test::assert_eq_int(dependency_link.code, 0, "dependency link fixture");
+        let unsafe_dependency = source.read();
+        std::test::assert(!unsafe_dependency.ok && unsafe_dependency.code == "organization_dependencies_unavailable", "local dependency links fail closed");
+        std::test::assert(!source.unchanged(changed), "failed dependency inspection never counts as unchanged");
+        let inspect = orgsource::OrganizationInspection { scratch: self.root + "/inspection", seconds: 1 };
+        let started = std::time::now();
+        let timeout = inspect.execute("sleep\n10", "/", 4096);
+        std::test::assert_eq_int(timeout.code, 124, "native subprocess deadline is enforced");
+        std::test::assert(std::time::now() - started < 5, "timeout reaps the owned child promptly");
+    }
+}
+
+fn main() {
+    if std::env::args_count() > 1 {
+        let root = std::env::arg(1);
+        let f = SnapshotCases { root: root, repo: root + "/project", compiler: dna::resolve_toolchain("") };
+        f.exercise();
+        return;
+    }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-organization-source-test.XXXXXXXX");
+    let root = dna::trim_nl(made.stdout);
+    std::test::assert(made.code == 0 && std::str::starts_with(root, "/tmp/hale-organization-source-test."), "owned snapshot fixture root");
+    let clean = "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0; exec \"$@\"";
+    let result = dna::run_tool("sh\n-c\n" + clean + "\nsh\n" + std::env::arg(0) + "\n" + root);
+    let removed = dna::run_tool("rm\n-rf\n--\n" + root);
+    if result.code != 0 { eprintln(result.stderr); }
+    std::test::assert_eq_int(result.code, 0, "native Organization source snapshot cases");
+}

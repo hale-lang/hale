@@ -1,0 +1,136 @@
+// Real Git and the configured compiler. No lifecycle, gateway or publication
+// outcome is synthesized; this test proves only the source-input boundary.
+import ".." as orgsource;
+import "../../core" as dna;
+
+const BASE: String = "import \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { }; } }\n";
+const SUPPORT: String = "locus Worker { params { count: Int = 0; } }\n";
+const CANDIDATE: String = "// exact é 🧭\r\nimport \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { count: 2 }; } }\n";
+
+locus PublicationGuardCases {
+    params { root: String = ""; repo: String = ""; compiler: String = ""; }
+    fn write(path: String, text: String) { std::io::fs::write_file(path, text) or self.io_failed(err); }
+    fn io_failed(error: IoError) { std::test::assert(false, "fixture filesystem write"); }
+    fn tool(args: String) -> String {
+        let result = dna::run_tool(args);
+        std::test::assert_eq_int(result.code, 0, "fixture command: " + result.stderr);
+        return dna::trim_nl(result.stdout);
+    }
+    fn git(args: String) -> String { return self.tool("git\n-C\n" + self.repo + "\n" + args); }
+    fn command(base: orgsource::OrganizationArtifact, record: dna::GitRecord, text: String, key: String) -> dna::OrganizationSourceRequest {
+        return dna::OrganizationSourceRequest {
+            application_id: record.identity(), request_id: key, command_fingerprint: dna::digest_of("guard-" + key),
+            principal_mode: "local", by: "alice", authority: "board", authority_basis: "source grant",
+            source_owner: "acme", source_head: base.source_head, module_digest: base.module_digest,
+            dependency_source: base.dependency_source, dependency_digest: base.dependency_digest,
+            record_head: record.head("journal"), source_text: text, source_digest: dna::digest_of(text), rationale: "Exact prepared source."
+        };
+    }
+    fn exercise() {
+        self.tool("mkdir\n-p\n" + self.repo + "/dna/org\n" + self.repo + "/vendor/support");
+        self.git("init\n--quiet");
+        self.write(self.repo + "/hale.toml", "[package]\nname = \"guard-fixture\"\nversion = \"0.0.0\"\n");
+        self.write(self.repo + "/.gitignore", "vendor/\n.hale/\nignored.hl\n");
+        self.write(self.repo + "/dna/org/main.hl", BASE);
+        self.write(self.repo + "/dna/org/owners", "org = acme\nacme: alice, bob\n");
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
+        std::io::fs::write_bytes(self.repo + "/vendor/binary.dat", b"a\x00b\xff") or self.io_failed(err);
+        self.git("add\n-A");
+        self.git("-c\nuser.name=Guard fixture\n-c\nuser.email=guard@example.invalid\ncommit\n--quiet\n-m\nCaptured source");
+        let record = dna::GitRecord { repo: self.repo };
+        let genesis = record.append("journal", "", dna::Row { kind: "fixture.started", entity: "guard", body: "{}", author: "fixture" }, false, "");
+        std::test::assert(genesis.id != "", "real Record identity");
+        let source = orgsource::OrganizationSource { root: self.repo, compiler: self.compiler, allow_drafts: true };
+        let base = source.read(); std::test::assert(base.ok, "native source basis: " + base.code);
+        let guard = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "acme" };
+        std::test::assert(guard.available(), "real source guard advertises apply-recovery support");
+        let request = self.command(base, record, CANDIDATE, "guard-1");
+        let prepared = guard.prepare(request);
+        std::test::assert(prepared.ok, "prepared exact source: " + prepared.code);
+        let r = prepared.request;
+        std::test::assert(r.dependency_receipt != "" && r.source_text == CANDIDATE, "retained receipt and exact Unicode/CRLF source");
+        let owner = std::bytes::BytesBuilder { }; let mut n = 0;
+        while n < 183 { owner.append_u8(97); n = n + 1; }
+        let long_owner = dna::OrganizationSourceRequest { source_owner: std::str::from_bytes(owner.snapshot()), request_id: "long-owner-path" };
+        let path_codec = dna::OrganizationSourceRequestCodec { };
+        std::test::assert_eq_int(len(path_codec.mutation_id(long_owner)), 255, "full native mutation identity remains authoritative at owner boundary");
+        let metadata = guard.topology_path(long_owner);
+        std::test::assert_eq_str(metadata, self.repo + "/.hale/dna/source-inputs/" + path_codec.candidate_key(long_owner) + ".base.topology", "sidecar uses fixed-size candidate key");
+        std::test::assert(len(metadata[(dna::last_slash(metadata) + 1)..len(metadata)]) < 255, "metadata filename fits filesystem bound independently of owner length");
+        self.write(metadata, "retained topology path proof");
+        std::test::assert_eq_str(std::io::fs::read_file(metadata) or "", "retained topology path proof", "actual bounded metadata path is writable");
+
+        std::test::assert(guard.manifest(r, record).ok, "manifest addressed by native retained receipt");
+        std::test::assert_eq_str(record.head("journal"), request.record_head, "preparation creates no admission fact");
+        std::test::assert_eq_str(self.git("rev-parse\nHEAD"), request.source_head, "preparation does not change source HEAD");
+        let denied = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "north" };
+        std::test::assert(!denied.current(r).ok, "trusted source owner cannot be substituted by request");
+        let codec = dna::OrganizationSourceRequestCodec { };
+        let worktrees = dna::IsolatedWorktrees { repo: self.repo, root: self.repo + "/.hale/dna/worktrees" };
+        let worktree = worktrees.open(codec.mutation_id(r), r.source_head);
+        std::test::assert(worktree.present, "actual native mutation worktree");
+        // Live dependencies may change after admission. Materialization restores
+        // the retained bytes; destination/current and candidate refuse drift.
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT + "// changed live vendor\n");
+        let materialized = guard.materialize(r, worktree.path);
+        std::test::assert(materialized.ok, "retained worktree materialization: " + materialized.code);
+        std::test::assert_eq_str(std::io::fs::read_file(worktree.path + "/vendor/support/main.hl") or "", SUPPORT, "materialization does not use changed live vendor");
+        std::test::assert_eq_str(std::text::base64::encode(std::io::fs::read_bytes(worktree.path + "/vendor/binary.dat") or b""), "YQBi/w==", "binary/NUL dependency bytes survive durable capture");
+        std::test::assert_eq_str(std::io::fs::read_file(worktree.path + "/dna/org/main.hl") or "", CANDIDATE, "exact candidate module bytes");
+        std::test::assert(len(materialized.base_topology) > 0 && len(std::io::fs::read_file(materialized.base_topology) or "") > 0, "retained nonempty base topology");
+        let repository = dna::LocalGit { repo: self.repo, hale_bin: self.compiler };
+        let commit = repository.commit_all(worktree.path, "Exact candidate"); std::test::assert(commit != "", "native candidate commit");
+        std::test::assert_eq_str(guard.candidate(r, worktree.path, commit).code, "stale_subject", "candidate refuses changed live destination dependencies");
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
+        let checked = guard.candidate(r, worktree.path, commit);
+        std::test::assert(checked.ok && checked.base_topology != "", "exact one-parent candidate accepted: " + checked.code);
+        std::test::assert_eq_str(repository.head(worktree.path), commit, "candidate inspection never creates or rewrites commit");
+        self.write(worktree.path + "/hale.toml", "changed tracked neighbor\n");
+        std::test::assert_eq_str(guard.candidate(r, worktree.path, commit).code, "organization_candidate_invalid", "changed tracked neighbor refused");
+        self.tool("git\n-C\n" + worktree.path + "\nrestore\nhale.toml");
+        self.write(worktree.path + "/dna/org/ignored.hl", "locus Surprise { }\n");
+        let hidden = guard.candidate(r, worktree.path, commit);
+        std::test::assert(!hidden.ok && hidden.code == "organization_snapshot_unsupported", "ignored source input outside committed/captured inputs refused");
+        self.tool("rm\n--\n" + worktree.path + "/dna/org/ignored.hl");
+        std::test::assert_eq_str(guard.materialize(r, self.repo).code, "organization_worktree_invalid", "destination never accepted as mutation worktree");
+        let missing = guard.with_receipt(r, dna::digest_of("missing dependency receipt"));
+        std::test::assert_eq_str(guard.current(missing).code, "organization_dependencies_unavailable", "missing retained storage remains retryable, not stale/refused");
+        let moved = record.append("journal", record.head("journal"), dna::Row { kind: "fixture.moved", entity: "guard", body: "{}", author: "fixture" }, false, "");
+        std::test::assert(moved.id != "", "move real Record");
+        std::test::assert_eq_str(guard.prepare(request).code, "stale_subject", "prepare checks original exact Record head");
+        std::test::assert(guard.current(r).ok, "later materialization/current does not require pre-admission Record head");
+        std::test::assert_eq_str(guard.applied(r, worktree.path, commit).code, "stale_subject", "an unapplied candidate is not applied proof");
+        std::test::assert(repository.apply(commit), "actual native source apply");
+        let recovered = guard.applied(r, worktree.path, commit);
+        std::test::assert(recovered.ok && recovered.base_topology != "", "separate applied proof recovers exact destination and candidate: " + recovered.code);
+        std::test::assert_eq_str(self.git("rev-parse\nHEAD"), commit, "applied proof retains exact destination commit");
+        std::test::assert_eq_str(std::io::fs::read_file(self.repo + "/dna/org/main.hl") or "", CANDIDATE, "actual destination has exact submitted source");
+        std::test::assert_eq_str(guard.current(r).code, "stale_subject", "current original-base rule is not weakened by applied proof");
+        std::test::assert_eq_str(guard.candidate(r, worktree.path, commit).code, "stale_subject", "candidate original-base rule is not weakened by applied proof");
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT + "// changed after apply\n");
+        std::test::assert_eq_str(guard.applied(r, worktree.path, commit).code, "stale_subject", "applied proof rejects changed destination dependency bytes");
+        self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
+        self.write(worktree.path + "/dna/org/main.hl", BASE);
+        std::test::assert_eq_str(guard.applied(r, worktree.path, commit).code, "organization_candidate_invalid", "applied recovery still requires unchanged owned candidate worktree");
+        self.tool("git\n-C\n" + worktree.path + "\nrestore\ndna/org/main.hl");
+        std::test::assert(worktrees.remove(codec.mutation_id(r)), "owned worktree cleanup");
+        let bad_compiler = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: "/bin/false", source_owner: "acme" };
+        std::test::assert_eq_str(bad_compiler.current(r).code, "organization_check_failed", "inspection failure stays unavailable and cannot become terminal stale");
+    }
+}
+
+fn main() {
+    if std::env::args_count() > 1 {
+        let root = std::env::arg(1);
+        let cases = PublicationGuardCases { root: root, repo: root + "/project", compiler: dna::resolve_toolchain("") };
+        cases.exercise(); return;
+    }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-organization-publication-test.XXXXXXXX");
+    let root = dna::trim_nl(made.stdout);
+    std::test::assert(made.code == 0 && std::str::starts_with(root, "/tmp/hale-organization-publication-test."), "owned guard fixture");
+    let clean = "unset LOTUS_OBS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0; exec \"$@\"";
+    let result = dna::run_tool("sh\n-c\n" + clean + "\nsh\n" + std::env::arg(0) + "\n" + root);
+    let removed = dna::run_tool("rm\n-rf\n--\n" + root);
+    if result.code != 0 { eprintln(result.stdout); eprintln(result.stderr); }
+    std::test::assert_eq_int(result.code, 0, "native exact publication input guard cases");
+}
