@@ -1198,6 +1198,32 @@ Three remedies, all existing shapes:
   order). A locus with no external resource has nothing to transfer
   and needs none of this.
 
+**Contract-typed fields hold a borrow when assigned a handle (GH
+#967).** An `interface`- or `perspective(P)`-typed field cannot be
+assigned a locus literal (the literal's type is not the field's), and
+the only values that reach `self.<field> = v` are interface VALUES —
+a parameter, another field: a handle somebody else owns. That store
+is a **borrow**, the same decision F.39 makes for a name in a field
+initialiser (`Owner::Borrowed`), applied to assignment:
+
+1. The instance the field owned until then — its default, or a
+   literal it was built with — is reclaimed, break-before-make as
+   above.
+2. The field is marked borrowed: the holder's cascade never reclaims
+   what it now points at. The handle's own owner does, at its own
+   time.
+3. The handle is stored.
+
+A field that already held a borrow releases nothing when assigned
+again. What the rule does not decide is lifetime: the borrowed
+instance has to outlive the holder, exactly as one passed by name at
+construction has to — that is the contract of every handle, and the
+checker's question in GH #730. Before this rule the store was a plain
+value store: the field kept describing the default it was built with,
+so the holder's teardown reclaimed the handed-in instance (its owner
+then read freed memory, or reclaimed it a second time) and the default
+leaked.
+
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not
 a value to hand around.** Ordinary `let`-bound loci — including
