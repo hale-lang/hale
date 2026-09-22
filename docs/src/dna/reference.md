@@ -217,8 +217,8 @@ sequence either way — see [The record](./record.md).
 
 ## `status.json`
 
-The projection `hale dna status --json` prints, `hale dna ui` serves
-and iris renders: `organism`, `journal { ref, revision, chain }`,
+The projection `hale dna status --json` prints and `hale dna ui`
+serves: `organism`, `journal { ref, revision, chain }`,
 `expression { attached, current, build_digest, toolchain, restarts,
 last_restart_request, last_observed }`, `intents`, `tasks[]`,
 `reviews[]` (a mutation's Review carries `mutation_id`,

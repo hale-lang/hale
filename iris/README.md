@@ -13,6 +13,12 @@ contract lives in [`PROTOCOL.md`](./PROTOCOL.md); the
 post-observer editor vision in
 [`VISION-FORWARD.md`](./VISION-FORWARD.md).
 
+Iris inspects any Hale binary, and a DNA organism is one: `hale dna
+run` attaches iris to the organization's process like any other.
+Iris knows nothing of DNA itself: it reads no record, carries no
+membrane and renders no organism status. DNA's people surface is the
+face, under `dna/face`, served by the head.
+
 The human cockpit proposal is tracked in
 [#690](https://github.com/hale-lang/hale/issues/690). Its proposed browser/API
 boundary is in [`COCKPIT-CONTRACT.md`](./COCKPIT-CONTRACT.md), and its visual

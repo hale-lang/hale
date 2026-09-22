@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// ONE cache for every test that launches the observer, in this
-/// binary and its siblings (dna_run, dna_status, dna_membrane): the
+/// binary and its siblings (dna_run, dna_status): the
 /// observer builds once per machine and `hale iris` serializes the
 /// build with a lock, so five tests on a loaded CI shard do not each
 /// compile it. Never deleted: it is toolchain-hashed, and the next

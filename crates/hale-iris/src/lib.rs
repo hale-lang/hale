@@ -27,9 +27,8 @@ pub struct EmbeddedFile {
 /// tree's `emitter/protocol.h` only forwards to it, and a forward
 /// cannot resolve from a cache directory), the web renderer, and the
 /// artifact inspector. Paths keep the REPO's layout (`iris/…` beside
-/// `dna/…`, see [`ALL_FILES`]) so every relative `#include`,
-/// `hale.toml` `csrc` entry and `import "../../../dna/core"` resolves
-/// unchanged.
+/// `dna/…`, see [`all_files`]) so every relative `#include`,
+/// `hale.toml` `csrc` entry and `import` resolves unchanged.
 pub const FILES: &[EmbeddedFile] = &[
     EmbeddedFile { path: "iris/consumer/fuse-hl/main.hl", content: include_str!("../../../iris/consumer/fuse-hl/main.hl") },
     EmbeddedFile { path: "iris/consumer/fuse-hl/attach/attach.hl", content: include_str!("../../../iris/consumer/fuse-hl/attach/attach.hl") },
@@ -44,10 +43,11 @@ pub const FILES: &[EmbeddedFile] = &[
     EmbeddedFile { path: "iris/process_identity/main.hl", content: include_str!("../../../iris/process_identity/main.hl") },
 ];
 
-/// Everything `hale iris` materializes: the iris tree plus the DNA
-/// core the observer imports for its typed control topics (GH #527
-/// B6) — one declaration of `dna.review.verdict`, bound by the
-/// organism and published by the observer.
+/// Everything the toolchain cache holds: the iris tree, and beside it
+/// the DNA sources `hale dna` builds from the same cache under the
+/// same build lock — the host, the membrane client, the knowledge
+/// service and the surface, with the core and operations they
+/// import. Iris itself imports none of the DNA tree.
 pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
     FILES
         .iter()
@@ -176,7 +176,10 @@ mod tests {
             assert!(!content.is_empty(), "{} is empty", path);
             assert!(seen.insert(path), "{} listed twice", path);
         }
-        assert!(all_files().any(|(p, _)| p == "dna/core/topics.hl"), "the control topics ride along");
+        for seed in [hale_dna::HOST_SEED, hale_dna::MEMBRANE_SEED, hale_dna::KNOWLEDGE_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED] {
+            let dir = format!("{seed}/");
+            assert!(all_files().any(|(p, _)| p.starts_with(&dir)), "hale dna builds {seed} from this cache");
+        }
     }
 
     #[test]

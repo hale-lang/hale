@@ -10,7 +10,7 @@
 //!   hale dna init [app-dir]     attach the DNA to an existing app
 //!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
-//!   hale dna run [project]      build, run under LOTUS_OBS with iris attached, hold the membrane
+//!   hale dna run [project]      build, run under LOTUS_OBS and hold the membrane; iris inspects the process
 //!   hale dna status [--json]    the status projection, from the Journal
 //!   hale dna task create <outcome…>  ask for an outcome: a Task, over the membrane or into the record
 //!   hale dna history [<entity>] walk the Journal by causal links
@@ -464,7 +464,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the knowledge service in the foreground: the record's ratified knowledge applied into");
     eprintln!("                                    HALE_DNA_KNOWLEDGE_DSN (postgres://…, or `memory`), context packages over HTTP");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
-    eprintln!("                                    build and run the organization (dna/org) with iris attached; hold the membrane");
+    eprintln!("                                    build and run the organization (dna/org) and hold its membrane; iris inspects its process");
     eprintln!("       hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]");
     eprintln!("                                    the organization AND the application under one host: rebuild and restart");
     eprintln!("                                    the application on an apply, watch the window, report back");

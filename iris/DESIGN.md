@@ -395,8 +395,9 @@ under `verification/` and run in its race-completeness job; every
 (`crates/hale-cli/tests/iris_seeds_check.rs`), so a compiler change
 that breaks the observer fails the build instead of a handoff
 document. The handoff record is `handoffs/`. The observer still
-never reinterprets the language, observation stays read-only, and
-intervention enters through declared interfaces (hale#527 B6).
+never reinterprets the language and observation stays read-only:
+iris publishes nothing into the programs it inspects (the DNA control
+channel of hale#527 B6 left it in hale#998).
 
 ## 14. Milestones
 

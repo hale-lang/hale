@@ -1,9 +1,10 @@
 //! GH #528 — `hale dna run` (Track C, PR 25): the stateless host.
 //! It cuts a fresh artifact, builds, execs the organism under
 //! LOTUS_OBS=1 from the project root, waits for the membrane, attaches
-//! iris (law + review-vs-baseline + membrane), and holds no state of
-//! its own: an intent offered through the membrane lands in the
-//! organism's Journal, not in the host.
+//! plain iris (law + review-vs-baseline) to inspect the organism like
+//! any Hale binary, and holds no state of its own: an intent offered
+//! through the membrane lands in the organism's Journal, not in the
+//! host. Iris carries nothing of DNA: no membrane, no status (#998).
 
 #[path = "support/reap.rs"]
 mod reap;
@@ -28,7 +29,7 @@ fn http(port: u16, req: &str) -> String {
 }
 
 #[test]
-fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
+fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let d = std::env::temp_dir().join(format!("hale_dna_run_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -46,7 +47,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn hale dna run");
-    // iris comes up with the membrane, the current artifact and the review view
+    // iris comes up with the current artifact and the review view
     // The observer discovers EVERY LOTUS_OBS=1 process on the machine
     // (a CI shard runs other observed tests beside this one), so wait
     // for and assert on the organism's own process by name.
@@ -60,11 +61,11 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let mut snap = String::new();
     while Instant::now() < deadline {
         let s = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
-        // the diff AND the organism's status both report loaded, the law
-        // verified, and the organism's own locus tree replayed (a process
-        // attaches before its births are replayed, so wait for a type)
+        // the diff reports loaded, the law verified, and the organism's
+        // own locus tree replayed (a process attaches before its births
+        // are replayed, so wait for a type)
         let tree_up = organism_loci(&s).map(|t| !t.is_empty()).unwrap_or(false);
-        if s.contains("\"membrane\"") && s.matches("\"state\":\"loaded\"").count() >= 2 && s.contains("\"digest\":\"verified\"") && tree_up {
+        if s.contains("\"state\":\"loaded\"") && s.contains("\"digest\":\"verified\"") && tree_up {
             snap = s;
             break;
         }
@@ -83,7 +84,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     };
     if snap.is_empty() {
         finish(&mut host);
-        panic!("iris did not come up with membrane + law + review");
+        panic!("iris did not come up with law + review over the organism's process");
     }
     assert!(app.join(".hale/dna/current.topology").is_file(), "a fresh artifact of what runs");
     // The baseline is the application as `init` found it, and init changes
@@ -91,26 +92,20 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     // is identical.
     let compact = snap.replace(' ', "");
     assert!(compact.contains("\"classification\":\"identical\""), "init leaves the application's model unchanged: {snap}");
-    // B7: the organism's status projection rides in the snapshot
-    // (state loaded, the baseline review pending) — and the observed
-    // tower names imported loci by their AUTHOR-facing names, so the
-    // DNA is visible and joins with the artifact (PR 28).
-    let compact = snap.replace(' ', "");
-    assert!(compact.contains("\"dna\":{"), "{snap}");
-    assert!(compact.contains("\"reviews\":[{") && compact.contains("\"state\":\"pending\""), "the status projection carries the pending purpose review: {snap}");
+    // Iris is the inspector and nothing more: the snapshot carries no
+    // membrane and no organism status.
+    assert!(!compact.contains("\"membrane\":") && !compact.contains("\"dna\":{"), "iris carries nothing of DNA: {snap}");
+    // The observed tower names imported loci by their AUTHOR-facing
+    // names, so the DNA's loci join with the artifact (PR 28).
     let types = organism_loci(&snap).expect("the organism's process in the snapshot");
     assert!(types.iter().any(|t| t == "dna::Dna" || t == "dna::Metabolism"), "imported loci observed under their author-facing names: {types:?}");
     assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
-    // an intent through the membrane lands in the organism's Journal
+    // an intent through the membrane (`hale dna task create`, the
+    // membrane client) lands in the organism's Journal
     let record = |app: &Path| -> String { Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() };
     let before = record(&app).lines().count();
-    let body = r#"{"intent_id":"i1","outcome":"write the changelog","from":"test"}"#;
-    let r = http(port, &format!("POST /ctl/intent HTTP/1.0\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
-    assert!(r.contains("200"), "{r}");
-    // …and so does `hale dna task create` while iris is attached to the same
-    // sockets (F.13, fixed: a listen binding serves many peers)
     let ask = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "task", "create", "also", "tag", "the", "release"])
+        .args(["dna", "task", "create", "write", "the", "changelog"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .output()
@@ -145,7 +140,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     };
     finish(&mut host);
     assert!(grew, "the organism journaled intent.offered + task.born");
-    assert!(ask.status.success() && ask_out.contains("task t2 born"), "ask through iris: {ask_out}");
+    assert!(ask.status.success() && ask_out.contains("task t1 born"), "task create over the membrane: {ask_out}");
     assert!(status_ok, "status.json re-projected from the Journal");
     let _ = std::fs::remove_dir_all(&d);
 }

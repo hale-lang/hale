@@ -17,22 +17,6 @@
 // claim with its STATIC verdict and its WITNESSED state against
 // the observed fleet (INSPECTOR.md, "witnessed law").
 //
-// With HALE_IRIS_MEMBRANE set (by `hale iris --membrane <dir>`,
-// which also routes the publishes with LOTUS_BUS_CONFIG), two
-// POST endpoints publish on the DNA control topics (GH #527 B6):
-//   /ctl/review  {review_id, subject_digest, verdict, reviewer,
-//                 authority, comment}      -> dna.review.verdict
-//   /ctl/intent  {intent_id, outcome, from, to} -> dna.intent.offered
-// The organism's owning locus checks authority and decides;
-// fuse-hl only carries the typed fact. /snapshot reports the
-// membrane and how many of each it published.
-//
-// With HALE_IRIS_DNA_STATUS set (by `hale iris --organism <file>`,
-// which `hale dna run` uses), the organism's status projection —
-// a JSON file the host re-projects from the Journal — rides into
-// /snapshot verbatim under "dna" (GH #528 B7): the third source
-// beside shm (expression) and the artifact (genome).
-//
 // The optional fourth arg is a `hale model diff` document (GH
 // #527 B5). fuse-hl watches it at the same cadence and carries
 // it into /snapshot as a "diff" section, verbatim: the renderer's
@@ -55,11 +39,6 @@
 
 import "attach" as fz;
 import "../../process_identity" as identity;
-// GH #527 B6: the DNA core's typed control topics. A verdict or an
-// intent published from the browser is the SAME declaration the
-// organism binds on its membrane sockets (dna/organism/main.hl);
-// `hale iris --membrane <dir>` routes these publishes there.
-import "../../../dna/core" as dna;
 
 // ekinds / manifest kinds / counter cells (PROTOCOL.md)
 const EK_BUS_PUBLISH: Int = 1;
@@ -168,65 +147,9 @@ locus FuseHandler {
         snaps: SnapMap;
         fds: FdMap;
         webroot: String = "render/web";
-        membrane: String = "";
-    }
-
-    bus {
-        publish dna::ReviewVerdict;
-        publish dna::IntentOffered;
-    }
-
-    // Count what crossed the membrane, for /snapshot (shared with
-    // the fusion loop through the serialized snapshot map).
-    fn bump(key: String) {
-        let e = self.snaps.get(key) or SnapEntry { key: key, val: "0" };
-        let n = std::str::parse_int(e.val) or 0;
-        self.snaps.set(SnapEntry { key: key, val: "" + (n + 1) });
     }
 
     fn handle(req: std::http::Request) -> std::http::Response {
-        if req.path == "/ctl/review" || req.path == "/ctl/intent" {
-            if self.membrane == "" {
-                return std::http::Response { status: 409, content_type: "application/json",
-                    body: "{\"error\":\"no membrane: start with hale iris --membrane <dir>\"}" };
-            }
-            if req.method != "POST" {
-                return std::http::Response { status: 405, body: "POST a JSON body" };
-            }
-            let b = req.body;
-            if req.path == "/ctl/review" {
-                let v = dna::Verdict {
-                    review_id: std::json::find_string_field(b, "review_id"),
-                    subject_digest: std::json::find_string_field(b, "subject_digest"),
-                    verdict: std::json::find_string_field(b, "verdict"),
-                    reviewer: std::json::find_string_field(b, "reviewer"),
-                    authority: std::json::find_string_field(b, "authority"),
-                    comment: std::json::find_string_field(b, "comment")
-                };
-                if v.review_id == "" || v.verdict == "" {
-                    return std::http::Response { status: 400, content_type: "application/json",
-                        body: "{\"error\":\"review_id and verdict are required\"}" };
-                }
-                dna::ReviewVerdict <- v;
-                self.bump("ctl.verdicts");
-                return std::http::Response { status: 200, content_type: "application/json",
-                    body: "{\"published\":\"dna.review.verdict\",\"review_id\":\"" + jstr(v.review_id) + "\"}" };
-            }
-            let o = dna::IntentOffer {
-                intent_id: std::json::find_string_field(b, "intent_id"),
-                outcome: std::json::find_string_field(b, "outcome"),
-                from: std::json::find_string_field(b, "from"),
-                to: std::json::find_string_field(b, "to")
-            };
-            if o.outcome == "" {
-                return std::http::Response { status: 400, content_type: "application/json",
-                    body: "{\"error\":\"outcome is required\"}" };
-            }
-            dna::IntentOffered <- o;
-            self.bump("ctl.intents");
-            return std::http::Response { status: 200, content_type: "application/json",
-                body: "{\"published\":\"dna.intent.offered\",\"intent_id\":\"" + jstr(o.intent_id) + "\"}" };
-        }
         if req.path == "/snapshot" {
             let e = self.snaps.get("snap") or SnapEntry { key: "snap", val: "{}" };
             return std::http::Response {
@@ -360,8 +283,6 @@ locus Cycle {
         lawmeta: StrVec;
         art_path: String = "";
         diff_path: String = "";
-        membrane: String = "";
-        organism_path: String = "";
         reg_dir: String = "/tmp/hale-obs";
         do_disc: Bool = false;
         do_snap: Bool = false;
@@ -653,7 +574,6 @@ locus Cycle {
     // 0 last-digest  1 model  2 verdict  3 digest-state
     // 4 adequacy(raw json)  5 capabilities(raw)  6 groups(raw)
     // 7 diff document(raw, one line)  8 diff state  9 diff last-hash
-    // 10 organism status(raw, one line)  11 organism state  12 organism last-hash
 
     fn law_subject_of(topics_raw: String, tname: String) -> String {
         let mut it = std::json::array_first_span(topics_raw);
@@ -975,48 +895,6 @@ locus Cycle {
         self.tail_push("diff: loaded (" + std::json::find_string_field(doc, "classification") + ")");
     }
 
-    fn membrane_json() -> String {
-        if self.membrane == "" { return ""; }
-        let v = self.snaps.get("ctl.verdicts") or SnapEntry { key: "ctl.verdicts", val: "0" };
-        let i = self.snaps.get("ctl.intents") or SnapEntry { key: "ctl.intents", val: "0" };
-        return ",\"membrane\":{\"dir\":\"" + jstr(self.membrane) + "\",\"verdicts\":" + v.val
-            + ",\"intents\":" + i.val + "}";
-    }
-
-    // ---- organism status ingestion (GH #528 B7) ----
-    // The third source beside shm (expression) and the artifact
-    // (genome): the organism's status projection, a JSON file
-    // `hale dna run` re-projects from the Journal. Carried verbatim;
-    // the renderer's perspective [5] reads it, and the lineage tower
-    // it describes is the one the canvas already shows from births.
-    @unbounded
-    fn ingest_organism() {
-        if self.organism_path == "" { return; }
-        let doc = std::io::fs::read_file(self.organism_path) or "";
-        if len(doc) == 0 {
-            if (self.lawmeta.get(11) or "") != "unreadable" {
-                self.lawmeta.set(11, "unreadable") or discard;
-                self.lawmeta.set(10, "") or discard;
-            }
-            return;
-        }
-        let h = hex16(fnv1a64(doc));
-        if h == (self.lawmeta.get(12) or "") { return; }
-        self.lawmeta.set(12, h) or discard;
-        self.lawmeta.set(10, oneline(doc)) or discard;
-        self.lawmeta.set(11, "loaded") or discard;
-    }
-
-    fn organism_json() -> String {
-        if self.organism_path == "" { return ""; }
-        let mut s = ",\"dna\":{\"path\":\"" + jstr(self.organism_path) + "\"";
-        s = s + ",\"state\":\"" + jstr(self.lawmeta.get(11) or "") + "\"";
-        let doc = self.lawmeta.get(10) or "";
-        if len(doc) > 0 { s = s + ",\"status\":" + doc; }
-        else { s = s + ",\"status\":null"; }
-        return s + "}";
-    }
-
     @unbounded
     fn diff_json() -> String {
         if self.diff_path == "" { return ""; }
@@ -1123,7 +1001,7 @@ locus Cycle {
             }
             evi = evi + 1;
         }
-        s = s + "]" + self.law_json() + self.diff_json() + self.membrane_json() + self.organism_json() + "}";
+        s = s + "]" + self.law_json() + self.diff_json() + "}";
         return s;
     }
 
@@ -1468,7 +1346,7 @@ locus Cycle {
     }
 
     birth() {
-        if self.do_disc { self.discover(); self.ingest_law(); self.ingest_diff(); self.ingest_organism(); }
+        if self.do_disc { self.discover(); self.ingest_law(); self.ingest_diff(); }
         self.drain_rings();
         if self.do_snap {
             let snap = self.snapshot();
@@ -1502,8 +1380,6 @@ main locus App {
         reg_dir: String = "/tmp/hale-obs";
         art_path: String = "";
         diff_path: String = "";
-        membrane: String = "";
-        organism_path: String = "";
         snap_ns: Int = 100000000; // SSE cadence: 10 Hz
     }
 
@@ -1526,7 +1402,7 @@ main locus App {
             m = m + 1;
         }
         let mut lw = 0;
-        while lw < 13 {
+        while lw < 10 {
             self.lawmeta.push("");
             lw = lw + 1;
         }
@@ -1551,7 +1427,6 @@ main locus App {
                 claims: self.claims, gmembers: self.gmembers,
                 wits: self.wits, lawmeta: self.lawmeta,
                 art_path: self.art_path, diff_path: self.diff_path,
-                membrane: self.membrane, organism_path: self.organism_path,
                 reg_dir: self.reg_dir,
                 do_disc: do_disc, do_snap: do_snap, now: now
             };
@@ -1565,14 +1440,6 @@ fn main() {
     let webroot = std::env::arg_or(2, "../../render/web");
     let art_path = std::env::arg_or(3, "");
     let diff_path = std::env::arg_or(4, "");
-    let mut membrane = "";
-    if std::env::var_exists("HALE_IRIS_MEMBRANE") {
-        membrane = std::env::var("HALE_IRIS_MEMBRANE");
-    }
-    let mut organism_path = "";
-    if std::env::var_exists("HALE_IRIS_DNA_STATUS") {
-        organism_path = std::env::var("HALE_IRIS_DNA_STATUS");
-    }
     let mut reg_dir = "/tmp/hale-obs";
     if std::env::var_exists("XDG_RUNTIME_DIR") {
         reg_dir = std::env::var("XDG_RUNTIME_DIR") + "/hale";
@@ -1592,11 +1459,9 @@ fn main() {
         reg_dir: reg_dir,
         art_path: art_path,
         diff_path: diff_path,
-        membrane: membrane,
-        organism_path: organism_path,
         srv: std::http::Server {
             port: port,
-            handler: FuseHandler { snaps: snaps, fds: fds, webroot: webroot, membrane: membrane },
+            handler: FuseHandler { snaps: snaps, fds: fds, webroot: webroot },
             ready_signal: "fuse-hl: listening"
         }
     };

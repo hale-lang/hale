@@ -5,12 +5,13 @@
 //   dna.review.verdict   a human's verdict on a pending Review
 //   dna.intent.offered   intent entering the organism
 //
-// Iris (`hale iris --membrane /tmp`) and `hale dna task create` (Track C)
-// publish on those sockets; nothing crosses through the observation
-// segment. The owning locus decides: a verdict goes through the
-// Review's own admission (digest pin, authority, independence), an
-// intent through the membrane gate and the engine. The edge is a
-// declared route in the fleet model, so `hale fleet check` sees it.
+// The membrane client (`dna/membrane`, which `hale dna task create`
+// and `hale dna review` exec) publishes on those sockets; nothing
+// crosses through the observation segment. The owning locus decides:
+// a verdict goes through the Review's own admission (digest pin,
+// authority, independence), an intent through the membrane gate and
+// the engine. The edge is a declared route in the fleet model, so
+// `hale fleet check` sees it.
 //
 //   hale build dna/organism && ./dna/organism/organism
 //

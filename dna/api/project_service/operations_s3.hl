@@ -89,7 +89,7 @@ fn s3_body_argv(ctx: HeadContext, mode: String) -> String { return ctx.hale + "\
 // What the host launches for its own observer (`dna/host/host.hl`).
 fn s3_observer_argv(ctx: HeadContext) -> String {
     let d = s3_dna_dir(ctx.active_root);
-    return ctx.hale + "\niris\n" + to_string(ctx.observer_port) + "\n" + d + "/current.topology\n--membrane\n" + d + "\n--organism\n" + d + "/status.json";
+    return ctx.hale + "\niris\n" + to_string(ctx.observer_port) + "\n" + d + "/current.topology";
 }
 
 fn s3_observer_origin(ctx: HeadContext) -> String { return "http://127.0.0.1:" + to_string(ctx.observer_port); }

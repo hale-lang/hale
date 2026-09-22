@@ -17,18 +17,6 @@
 //             (INSPECTOR.md): group hulls, each claim's static
 //             verdict beside its witnessed state, contradicted
 //             routes in alarm. Ledger is DOM; hulls are canvas.
-//   ORGANISM  [5] the experience source (GH #528 B7): the organism's
-//             status projection (re-projected from its Journal by
-//             `hale dna run`) — tasks and their state, pending
-//             Reviews and why, staged mutations, model calls, the
-//             expression identity — and, on the canvas, the DNA
-//             lineage tower (Task / Workflow / Step / Work / Attempt)
-//             tinted violet, keyed on the core's type names.
-//   MEMBRANE  [m] the typed control channel (GH #527 B6): when
-//             fuse-hl was started with `hale iris --membrane`, a
-//             verdict or an intent typed here is published on the
-//             DNA control topics to the organism's sockets. The
-//             organism decides; the panel only reports what it sent.
 //   REVIEW    [4] the semantic review view (GH #527 B5): a `hale
 //             model diff` document carried in /snapshot, rendered
 //             as `+ locus EmailIntake`, `! fn … gains publish`,
@@ -45,9 +33,6 @@ const eventsEl = document.getElementById("events");
 const tipEl = document.getElementById("tip");
 const lawEl = document.getElementById("law");
 const diffEl = document.getElementById("diff");
-const membraneEl = document.getElementById("membrane");
-const organismEl = document.getElementById("organism");
-const VIOLET = "190,140,255";
 
 const FRAME_MS = 1000 / 30;
 const SLATE = "148,163,184";
@@ -168,7 +153,7 @@ function connect() {
   const es = new EventSource("/events");
   es.onopen = () => { connEl.textContent = "live"; connEl.className = "live"; };
   es.onerror = () => { connEl.textContent = "reconnecting…"; connEl.className = "dead"; };
-  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); renderLawPanel(); renderDiffPanel(); renderMembranePanel(); renderOrganismPanel(); } catch (e) {} };
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); renderLawPanel(); renderDiffPanel(); } catch (e) {} };
 }
 connect();
 
@@ -346,123 +331,6 @@ function renderDiffPanel() {
   if (Object.values(s).every(v => v === 0)) h += `<div class="sec">no semantic differences</div>`;
   h += `<div class="sec" style="margin-top:8px">[4] hides the review · stale flowers are ringed on the canvas</div>`;
   diffEl.innerHTML = h;
-}
-
-// ---- the organism (experience source, perspective [5]) -------
-// Keyed on the DNA core's TYPE names (`…::Task`, `…::Attempt`),
-// never on an application's locus names: the tower is the core's.
-
-let showOrganism = false;
-const LINEAGE = ["Task", "Workflow", "Step", "Work", "Attempt", "Review", "Metabolism", "WorkSystem", "Dna"];
-function lineageKind(type) {
-  const leaf = type.includes("::") ? type.slice(type.lastIndexOf("::") + 2) : type;
-  return LINEAGE.includes(leaf) ? leaf : null;
-}
-
-function renderOrganismPanel() {
-  const dna = snap && snap.dna;
-  if (!dna || !showOrganism) { organismEl.style.display = "none"; if (!showDiff) topicsEl.style.display = ""; return; }
-  organismEl.style.display = "block";
-  topicsEl.style.display = "none";
-  const st = dna.status;
-  if (!st) {
-    organismEl.innerHTML = `<div class="hdr">organism</div><div class="pend">⚠ status ${esc(dna.state)} (${esc(dna.path)})</div>`;
-    return;
-  }
-  const e = st.expression || {};
-  let h = `<div class="hdr">organism · ${esc(st.organism)}</div>`;
-  h += `<div class="row">journal ${esc(st.journal && st.journal.revision)} event(s) · chain <span class="${st.journal && st.journal.chain === "verified" ? "ok" : "bad"}">${esc(st.journal && st.journal.chain)}</span>` +
-       ` · attached ${esc(e.attached && e.attached.main)} @ ${esc((e.attached && e.attached.shape_hash || "").slice(0, 8))}` +
-       ` · current ${esc((e.current && e.current.shape_hash || "?").slice(0, 8))} · build ${esc((e.build_digest || "?").slice(0, 8))}</div>`;
-  const tasks = st.tasks || [];
-  h += `<div class="sec">tasks · ${tasks.length} (${esc(st.intents && st.intents.offered)} intent(s) offered, ${(st.intents && st.intents.refused || []).length} refused)</div>`;
-  for (const t of tasks) {
-    const cls = t.state === "active" ? "pend" : (t.state === "done" ? "ok" : "bad");
-    h += `<div class="row"><span class="${cls}">${esc(t.id)} [${esc(t.state)}]</span> ${esc(t.outcome)}${t.detail ? ` <span class="dim">${esc(t.detail)}</span>` : ""}</div>`;
-  }
-  const reviews = st.reviews || [];
-  const pending = reviews.filter(r => r.state === "pending").length;
-  h += `<div class="sec">reviews · ${pending} pending of ${reviews.length}</div>`;
-  for (const r of reviews) {
-    const why = r.state === "pending" ? `needs ${esc(r.required_authority)} — ${esc(r.question)}` : `settled ${esc(r.settled)}`;
-    const refusals = (r.refusals || []).length;
-    h += `<div class="row"><span class="${r.state === "pending" ? "pend" : "ok"}">${esc(r.id)} [${esc(r.state)}]</span> ${why}${refusals ? ` <span class="dim">(${refusals} verdict(s) refused)</span>` : ""}</div>`;
-    // a mutation's Review: the evidence steps and the candidate the verdict must name
-    if (r.mutation_id) h += `<div class="row dim">   ${esc(r.change_class)} · ${esc(r.evidence)} · disposition ${esc(r.disposition)} · candidate ${esc(String(r.candidate_commit || "").slice(0, 12))} — verdict digest = ${esc(r.subject_digest)}</div>`;
-  }
-  const muts = st.mutations || [];
-  h += `<div class="sec">mutations · ${muts.length} (none applies before a human's verdict on the exact candidate)</div>`;
-  for (const m of muts) {
-    const cls = m.disposition === "reviewed" || m.disposition === "applied" ? "ok" : (m.disposition === "failed" || m.disposition === "rejected" || m.disposition === "deny" ? "bad" : "pend");
-    h += `<div class="row">${esc(m.id || m.candidate)} <span class="${cls}">${esc(m.disposition)}</span> ${esc(m.objective || m.class || "")}${m.candidate ? ` <span class="dim">candidate ${esc(String(m.candidate).slice(0, 12))}</span>` : ""}</div>`;
-  }
-  const mc = st.model_calls || {};
-  h += `<div class="sec">model calls · ${esc(mc.total || 0)}</div>`;
-  for (const c of mc.recent || []) {
-    h += `<div class="row"><span class="${c.ok ? "ok" : "bad"}">${esc(c.attempt)}</span> ${esc(c.adapter)}/${esc(c.backend)} ${esc(c.reported_model || c.requested_model)} ${c.ok ? `${esc(c.input_tokens)}+${esc(c.output_tokens)} tok · ${esc(c.elapsed)}` : esc(c.refused)}</div>`;
-  }
-  const deferred = st.law_deferred || [];
-  if (deferred.length) h += `<div class="sec pend">law · ${deferred.length} clause(s) deferred at init</div>`;
-  h += `<div class="sec">[5] hides · the lineage tower (Task → Workflow → Step → Work → Attempt) is tinted on the canvas</div>`;
-  organismEl.innerHTML = h;
-}
-
-// ---- the membrane (typed control channel) --------------------
-// Built once; only the counters line re-renders per snapshot, so
-// typing is never clobbered by the 10 Hz stream.
-
-let showMembrane = false;
-
-function membraneForm() {
-  return `<div class="hdr">membrane · <span id="m-dir"></span></div>` +
-    `<div class="st" id="m-counts"></div>` +
-    `<div class="st" style="margin-top:6px">intent → dna.intent.offered</div>` +
-    `<input id="m-outcome" placeholder="outcome (what should happen)">` +
-    `<input id="m-from" placeholder="from" value="iris">` +
-    `<button id="m-send-intent">offer intent</button>` +
-    `<div class="st" style="margin-top:8px">verdict → dna.review.verdict</div>` +
-    `<input id="m-review" placeholder="review_id">` +
-    `<input id="m-digest" placeholder="subject_digest (the candidate you looked at)">` +
-    `<select id="m-verdict"><option>approve</option><option>revise</option><option>reject</option><option>abstain</option></select>` +
-    `<input id="m-reviewer" placeholder="reviewer">` +
-    `<input id="m-authority" placeholder="authority" value="maintainer">` +
-    `<input id="m-comment" placeholder="comment">` +
-    `<button id="m-send-verdict">send verdict</button>` +
-    `<div class="log" id="m-log"></div>` +
-    `<div class="st" style="margin-top:6px">[m] hides · the organism decides; this only publishes</div>`;
-}
-
-async function membranePost(path, body) {
-  const log = document.getElementById("m-log");
-  try {
-    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const t = await r.text();
-    log.className = r.ok ? "log" : "log err";
-    log.textContent = `${r.status} ${t}`;
-  } catch (e) {
-    log.className = "log err";
-    log.textContent = String(e);
-  }
-}
-
-function renderMembranePanel() {
-  const m = snap && snap.membrane;
-  if (!m || !showMembrane) { membraneEl.style.display = "none"; return; }
-  membraneEl.style.display = "block";
-  if (!membraneEl.dataset.built) {
-    membraneEl.innerHTML = membraneForm();
-    membraneEl.dataset.built = "1";
-    const v = (id) => document.getElementById(id).value;
-    document.getElementById("m-send-intent").addEventListener("click", () =>
-      membranePost("/ctl/intent", { intent_id: "i" + Date.now().toString(36), outcome: v("m-outcome"), from: v("m-from"), to: "" }));
-    document.getElementById("m-send-verdict").addEventListener("click", () =>
-      membranePost("/ctl/review", { review_id: v("m-review"), subject_digest: v("m-digest"), verdict: v("m-verdict"),
-                                    reviewer: v("m-reviewer"), authority: v("m-authority"), comment: v("m-comment") }));
-    // keys typed into the form must not toggle views
-    membraneEl.addEventListener("keydown", (e) => e.stopPropagation());
-  }
-  document.getElementById("m-dir").textContent = m.dir;
-  document.getElementById("m-counts").textContent = `published: ${m.verdicts} verdict(s) · ${m.intents} intent(s)`;
 }
 
 // ---- pair ribbons ------------------------------------------
@@ -827,10 +695,8 @@ function drawFlower(p, t, focus) {
     }
     ctx.beginPath();
     ctx.ellipse(pw * 0.55, 0, pw * (0.9 + 0.1 * bloom), ph * (0.9 + 0.25 * bloom), 0, 0, Math.PI * 2);
-    const lineage = showOrganism && !dead && lineageKind(l.type);
     if (l.internal) ctx.fillStyle = `rgba(${SLATE}, 0.07)`;
     else if (dead) ctx.fillStyle = `rgba(${SLATE}, 0.08)`;
-    else if (lineage) ctx.fillStyle = `rgba(${VIOLET}, ${0.22 + 0.10 * bloom})`;
     else {
       const warm = Math.min(0.55, tx * 0.7);
       ctx.fillStyle = warm > 0.05
@@ -1288,7 +1154,5 @@ addEventListener("keydown", (e) => {
   if (e.key === "c") colorMode = colorMode === "topic" ? "latency" : "topic";
   if (e.key === "l" || e.key === "3") { showLaw = !showLaw; renderLawPanel(); }
   if (e.key === "4" || e.key === "d") { showDiff = !showDiff; renderDiffPanel(); }
-  if (e.key === "m") { showMembrane = !showMembrane; renderMembranePanel(); }
-  if (e.key === "5" || e.key === "o") { showOrganism = !showOrganism; renderOrganismPanel(); }
   if (e.key === "Escape") { pinned = null; pinnedTopic = null; selClaim = null; renderLawPanel(); }
 });
