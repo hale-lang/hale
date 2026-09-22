@@ -1,0 +1,32 @@
+// GH #735 — an omitted `run` is an empty `run`, the same program.
+//
+// Two owners of a flow child (each declares `release`), one whose
+// child writes `run() { }`, one whose child leaves it out. Both
+// children are reclaimed when their empty run completes, right after
+// birth, so both owners have released exactly once by the time their
+// own `run` prints. Before this, the child with no `run` lived until
+// its owner's exit and the counts read 0 and 1.
+locus Implicit { params { n: Int = 0; } }
+locus Explicit { params { n: Int = 0; } run() { } }
+locus OwnerImplicit {
+    params { released: Int = 0; seen_at_run: Int = -1; }
+    accept(c: Implicit) { }
+    release (c: Implicit) { self.released = self.released + 1; }
+    run() { Implicit { }; self.seen_at_run = self.released; }
+}
+locus OwnerExplicit {
+    params { released: Int = 0; seen_at_run: Int = -1; }
+    accept(c: Explicit) { }
+    release (c: Explicit) { self.released = self.released + 1; }
+    run() { Explicit { }; self.seen_at_run = self.released; }
+}
+main locus App {
+    params { a: OwnerImplicit = OwnerImplicit { }; b: OwnerExplicit = OwnerExplicit { }; }
+    run() {
+        std::test::assert_eq_int(self.b.seen_at_run, 1, "the child with a written empty run was released before its owner's run went on");
+        std::test::assert_eq_int(self.a.seen_at_run, 1, "and so was the child with no run at all: the same program");
+        std::test::assert_eq_int(self.a.released, self.b.released, "each owner released exactly once");
+        std::test::assert_eq_int(self.a.released, 1, "once");
+    }
+}
+fn main() { App { }; }

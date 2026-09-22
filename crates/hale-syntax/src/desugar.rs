@@ -1397,3 +1397,42 @@ fn collect_pub_sub(
     walk(items, &mut pubs, &mut subs);
     (pubs, subs)
 }
+
+/// GH #735 — an omitted `run` is an empty `run`, the same program.
+///
+/// A flow child (some parent declares `release(c: T)`) is reclaimed
+/// when its `run()` completes. A `T` that declared no `run` had no
+/// completion to reclaim on, so it lived until its owner's exit, and
+/// adding or removing `run() { }` silently moved the child's release
+/// and dissolve from one end of the owner's `run` to the other (the
+/// issue's paired reproduction). Every locus without a `run` gets an
+/// empty one here, so the two spellings lower identically: codegen
+/// elides an empty `run` that is not a flow's and never posts it, and
+/// runs the reclaim wrapper for a flow's exactly as it does for a
+/// written empty body. The span is the locus's own.
+pub fn desugar_omitted_run(program: &mut Program) {
+    fn walk(items: &mut Vec<TopDecl>) {
+        for item in items.iter_mut() {
+            match item {
+                TopDecl::Locus(l) => {
+                    let has_run = l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Lifecycle(d) if d.kind == LifecycleKind::Run)
+                    });
+                    if !has_run {
+                        l.members.push(LocusMember::Lifecycle(LifecycleDecl {
+                            kind: LifecycleKind::Run,
+                            params: Vec::new(),
+                            ret: None,
+                            unbounded: false,
+                            body: Block { stmts: Vec::new(), tail: None, span: l.span },
+                            span: l.span,
+                        }));
+                    }
+                }
+                TopDecl::Module(m) => walk(&mut m.items),
+                _ => {}
+            }
+        }
+    }
+    walk(&mut program.items);
+}

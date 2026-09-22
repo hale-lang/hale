@@ -1041,6 +1041,9 @@ pub fn build_executable_with_options(
     hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
     hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
+    // GH #735: an omitted `run` is an empty `run`, so a flow child is
+    // reclaimed when its (empty) run completes on both spellings.
+    hale_syntax::desugar::desugar_omitted_run(&mut program_owned);
     // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
     // `L2::set_price(w, x)`) into the equivalent `std::bytes::*` calls.
     hale_syntax::desugar::desugar_repr_accessors(&mut program_owned);
