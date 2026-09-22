@@ -3270,6 +3270,15 @@ param owns a factory's result exactly as an `interface`-typed one
 does, and a carrier or composite `let` RHS inside a loop is reclaimed
 per ITERATION like every other loop-bound locus.
 
+**The lifetime of a borrow is checked (GH #730, 2026-09-22).** The
+`Borrowed` row says the holder never reclaims; `spec/semantics.md`
+§ "A borrow outlives its holder" says who must, and `hale check`
+refuses the positions where nothing does — a frame's `let` or a
+handler's payload into a child of `self`, a field of `self` into a
+returned literal — with the witness call site when a parameter
+carries the handle in. Decided from position over the owner
+structure, no annotation, whole program, a witness in every refusal.
+
 **Assignment follows initialisation (GH #967, 2026-09-21).** The
 `Borrowed` row is a rule about a NAME reaching a field, not about the
 statement it reaches it in: `self.<contract field> = <handle>` in a

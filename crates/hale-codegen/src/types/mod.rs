@@ -1153,6 +1153,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// slot 1, and returns a pointer to the struct. The returned
     /// pointer is the LLVM-level representation of a value whose
     /// CodegenTy is `Interface(iface_name)`.
+    /// GH #730: a fresh `{data, vtable}` pair with the same two words
+    /// as `fat`, allocated where a coerced locus's pair would be. A
+    /// holder that stores a borrowed interface value keeps its own
+    /// pair, so an in-place overwrite of the source's pair (the
+    /// assignment form writes a field's fat struct in place) cannot
+    /// retarget the holder.
+    pub(crate) fn clone_iface_fat(
+        &mut self,
+        fat: PointerValue<'ctx>,
+        tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fat_struct_ty = self
+            .context
+            .struct_type(&[ptr_t.into(), ptr_t.into()], false);
+        let new_fat =
+            self.arena_alloc(i64_t.const_int(16, false), &format!("iface.{}.borrow.fat", tag))?;
+        for (i, what) in ["data", "vtable"].iter().enumerate() {
+            let src = self
+                .builder
+                .build_struct_gep(fat_struct_ty, fat, i as u32, &format!("iface.borrow.src.{}", what))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let word = self
+                .builder
+                .build_load(ptr_t, src, &format!("iface.borrow.{}", what))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let dst = self
+                .builder
+                .build_struct_gep(fat_struct_ty, new_fat, i as u32, &format!("iface.borrow.dst.{}", what))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(dst, word)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(new_fat)
+    }
+
     pub(crate) fn coerce_to_interface(
         &mut self,
         locus_val: PointerValue<'ctx>,

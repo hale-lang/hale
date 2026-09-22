@@ -6532,6 +6532,16 @@ fn run_check_impl_labelled(
             bundle.programs.values().copied().collect();
         diags.extend(hale_types::frontier::secret_taint_strict(&progs));
     }
+    // GH #730: a borrow must outlive its holder — a handle stored by name
+    // into a locus-carrying field is never the holder's to reclaim, so
+    // the frame, the dispatch or the binding that owns it must last
+    // longer than the holder. Errors, with the witness call site where a
+    // parameter carries the handle in. Beside it the GH #737 notice.
+    {
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags(&progs));
+    }
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits
     // NDJSON diagnostics on STDOUT (one object per line: file,
     // line, col, severity, kind, message) for editor/LSP

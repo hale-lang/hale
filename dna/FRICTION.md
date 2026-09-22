@@ -82,7 +82,11 @@ unboundedly is a contradiction, not an acknowledgement.
 
 **Tag:** `interface-value-into-interface-field`
 **Severity:** shapes the whole performer design.
-**Status:** open (language gap, or a missing identity coercion).
+**Status:** FIXED (GH #730, 2026-09-22): the identity coercion — an
+interface value into a field of the same interface — is admitted at a
+literal, as a borrow; the assembly hands its journal to the engine at
+construction and the `adopt` workaround is gone. The lifetime rule
+for borrows is #730's remaining work.
 
 `Work` holds `performer: Performer` (assembly-substitutable) and
 wanted to hand it to each `Attempt { performer: self.performer }`.
