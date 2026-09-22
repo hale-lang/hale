@@ -1041,9 +1041,6 @@ pub fn build_executable_with_options(
     hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
     hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
-    // GH #735: an omitted `run` is an empty `run`, so a flow child is
-    // reclaimed when its (empty) run completes on both spellings.
-    hale_syntax::desugar::desugar_omitted_run(&mut program_owned);
     // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
     // `L2::set_price(w, x)`) into the equivalent `std::bytes::*` calls.
     hale_syntax::desugar::desugar_repr_accessors(&mut program_owned);
@@ -1112,6 +1109,15 @@ pub fn build_executable_with_options(
     // with `check`, which answers the same question in one hop from
     // its own expanded table.
     crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
+    // GH #735: an omitted `run` is an empty `run`, so a flow child is
+    // reclaimed when its (empty) run completes on both spellings. On
+    // the MERGED program, so a bundled stdlib locus is treated as a
+    // user one: pass A2 declares lifecycle methods from whichever
+    // declaration of a name it keeps, and a user seed that spells a
+    // stdlib locus's name (the stdlib's own seeds, harvested into
+    // the corpus) would otherwise carry a `run` its bundled twin
+    // lacked, and the body lowering would find no declaration.
+    hale_syntax::desugar::desugar_omitted_run(&mut merged);
 
     // GH #921 A2: the ownership pre-pass, over the merged and
     // desugared program and before anything borrows it. It numbers
