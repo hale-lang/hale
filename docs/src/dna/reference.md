@@ -123,6 +123,16 @@ sequence either way — see [The record](./record.md).
 | `task.handed` | ledger | `t<n>` | handed to a person: `work`, `assignee`, `by`, `narrative`, `obligation`, `acceptance`, `evidence_required` |
 | `task.reassigned` | ledger | `t<n>` | the assignment moved: `to`, and who moved it |
 | `task.done` / `task.failed` | ledger | `t<n>` | a case's completion (card 17) or failure; an execution's root is settled by `workflow.settled` |
+| `workflow.admitted` / `workflow.refused` | ledger | `t<n>`, a child `t<n>.s<i>.<key>` | an execution admitted: definition, revision, the ask as request, the plan bound in the inputs, the bound recipe and limits; or the refusal — [The workflow](./workflow.md) |
+| `workflow.ask_refused` | ledger | `<ask>#<n>` | an ask refused before any Task was minted |
+| `workflow.settled` | ledger | the Task | `done`, `failed` or `cancelled`, with the parent Task and spawning step for a child |
+| `step.registered` / `step.activated` / `step.completed` / `step.failed` | ledger | `<task>/wf1/s<i>` | the whole required set (`<key>:<leaf\|child>:<id>` each), then the step's life |
+| `attempt.admitted` / `attempt.outcome` | ledger | `<work>/a<n>` | one attempt and the `WorkRequest` it was admitted with; its disposition, result and evidence |
+| `work.settled` | ledger | `<step>/<key>` | the unit of work settled, naming the attempt it settled on |
+| `case.admitted` | ledger | `<task>.s<i>.<key>` | a person's leaf as its own handed Task: the parent, the attempt, the terms of the acceptance practice at admission |
+| `mutation.requested` | record | `m<n>` | which unit of work and attempt asked for the Mutation, written before `mutation.proposed` |
+| `effect.redelivered` | ledger | `attempt:<id>` | a claimed attempt delivered again by the incarnation that restored it |
+| `lease.taken` | record | the lease key | the runtime's lease on the record: holder, token, expiry |
 | `mutation.proposed` | record | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
 | `mutation.worktree` | record | `m<n>` | `opened <path> at <base> …` / `removed` |
 | `mutation.located` | record | `m<n>` | the files and the grant they were found under |
@@ -132,7 +142,7 @@ sequence either way — see [The record](./record.md).
 | `mutation.applied` | record | `m<n>` | the candidate commit |
 | `mutation.apply_retried` | record | `m<n>` | the apply ran again on a review that was already settled |
 | `mutation.retained` / `.rolled_back` / `.rejected` / `.revise` / `.refused` / `.failed` | record | `m<n>` | why |
-| `effect.requested` / `effect.result` | ledger | an idempotency key | the gateway's record: `worktree.open:<id>`, `commit:<id>:<step>`, `apply:<candidate>`, `rollback:<id>:<base>` |
+| `effect.requested` / `effect.result` | ledger | an idempotency key | an attempt's one claim (`attempt:<id>`), and the gateway's record: `worktree.open:<id>`, `commit:<id>:<step>`, `apply:<candidate>`, `rollback:<id>:<base>` |
 | `evidence.base` / `.fmt` / `.check` / `.verify` / `.test` / `.fleet` / `.replay` / `.rollback` / `.diff` | record | the candidate commit | `{step, ok, code, output_digest, bytes}`; the receipt is `refs/dna/receipts/<output_digest>` |
 | `evidence.magnitude` | record | the candidate commit | the vector |
 | `review.requested` | record | `review:<id>` | question, authority, candidate, base, shape, disposition, evidence, magnitude, diff digests, fitness signals |

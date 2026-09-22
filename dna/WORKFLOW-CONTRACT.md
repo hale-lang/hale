@@ -428,7 +428,7 @@ the legacy path. Names, fixed here for cards 09 on, in
 
 | Resident type | Accepts | Accepted by | Meaning |
 |---|---|---|---|
-| `TaskRun` | `WorkflowRun` | the Task owner (`Metabolism`'s runtime half) | one admitted execution (root or child) |
+| `TaskRun` | `WorkflowRun` | the Task owner (the assembly's `Executions`; before card 18, `Metabolism`'s runtime half) | one admitted execution (root or child) |
 | `WorkflowRun` | `StepRun` | `TaskRun` | its ordered steps; activates each once |
 | `StepRun` | `WorkRun` | `WorkflowRun` | its registered members and barrier; requests child workflows over the bus |
 | `WorkRun` | — | `StepRun` | one leaf across its attempts; admits each attempt |
@@ -598,7 +598,7 @@ knows publishes it — the host after a reconnect, a fixture.
   conflict; re-sent whole it is a replay]**
 
 `scope` names the one committer that answers: `Dna` in an assembled
-organism (its journal), or a standalone `Metabolism` over its own memory
+organism (its journal), or a runtime assembled by a program of its own over its memory
 journal, chosen at construction. The memory-backed assembly gives
 process-local guarantees only; durable restart needs a persistent
 journal.

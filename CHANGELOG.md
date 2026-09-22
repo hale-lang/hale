@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+### Docs: the DNA book learns the workflow; four small rules written down
+
+- `docs/src/dna/workflow.md` (new chapter, in the under-the-hood section): what an ask becomes — the admission, definitions in code with the canonical close-month example and the limits, how an execution runs (registered member sets, attempts and their one claim, delayed replies, failure and the drain policy, cancellation), people's jobs as cases closed with `task done`, edits as Mutations bound to their attempt, what a restart keeps and how uncertain effects are reconciled, what the conformance baseline promises, and where the cockpit (GH #690) takes these surfaces. `index.md`, `working.md` (the ask), `limits.md`, `troubleshooting.md` (`[planning]`, `intent.unrecovered`, a case that waits) and `run.md` (the cockpit direction) point at it; `reference.md`'s vocabulary gains the workflow, step, attempt, work, case, `mutation.requested`, `effect.redelivered` and `lease.taken` rows.
+- GH #794: `std::process::spawn`'s documented `not_found` was not what happens — a missing argv[0] is exit 127 from `wait`, since the exec runs after `spawn` returns. The contract in `process.hl` now says so.
+- GH #737: a keyed subscription reads its key when it is registered, at construction and before `birth()`; `docs/src/services/bus.md` and `spec/semantics.md` say so and say to pass the key at the literal.
+- GH #736: flow versus resident is type-wide, imported seeds included; `docs/src/services/parents-children.md` and the spec say so.
+- GH #712: what a handler hands a resident lives for that dispatch; a resident copies it in `birth()`. Stated in the same two places. The diagnostics the three issues ask for remain open.
+- `dna/WORKFLOW-CONTRACT.md`: two references to `Metabolism` that outlived card 18 reworded.
+
 ### Ownership: a handle stored into a contract-typed field is a borrow (GH #967)
 
 - `crates/hale-codegen/src/codegen.rs`: `self.<field> = <handle>` on an `interface`- or `perspective(P)`-typed field now does what a name in a field initialiser does (F.39 `Owner::Borrowed`): the child the field owned until then is reclaimed at the store (break-before-make, as a locus literal's reassignment is), the field's F.29 owned bit and GH #871 reclaim slot are cleared, and the holder's cascade leaves the handle to its owner. Before, the store was a plain value store — the slot kept naming the default's `__reclaim_<Impl>`, so the holder's teardown reclaimed whatever it had been handed (an assembly reclaimed a journal shared with the next assembly, which read freed memory; a let-bound journal was reclaimed a second time by its binding and the program segfaulted at exit) and the default leaked. `hale check` said nothing and still says nothing: the store is sound now; the lifetime question (the handle must outlive the holder, as at construction) stays GH #730's.
