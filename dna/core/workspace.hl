@@ -114,6 +114,27 @@ fn run_tool(argv: String) -> RunResult {
     return RunResult { code: out.code, stdout: out.stdout, stderr: out.stderr };
 }
 
+// `argv` under a wall-clock limit of `secs`; exit 124 when the limit
+// ends it, as GNU `timeout` reports it. `timeout` is coreutils: Linux
+// has it and a stock Mac does not, so where it is missing perl's
+// `alarm` does the same job — the alarm survives the exec and SIGALRM
+// ends the tool (perl ships on every Mac). Without this, a Mac's every
+// timed git transfer failed on the missing tool (GH #970).
+fn run_tool_timeout(secs: Int, argv: String) -> RunResult {
+    return run_tool("sh\n-c\nif command -v timeout >/dev/null 2>&1; then exec timeout \"$@\"; fi; s=$1; shift; perl -e 'alarm shift; exec @ARGV or exit 127' \"$s\" \"$@\"; rc=$?; [ $rc -eq 142 ] && rc=124; exit $rc\nsh\n" + to_string(secs) + "\n" + argv);
+}
+
+// A file's SHA-256 as lowercase hex, "" when it cannot be read.
+// `sha256sum` is coreutils (Linux); `shasum -a 256` answers the same
+// question in the same format on every Mac, where a digest taken with
+// `sha256sum` alone came back silently empty (GH #970).
+fn sha256_file(path: String) -> String {
+    let r = run_tool("sh\n-c\n(sha256sum \"$1\" || shasum -a 256 \"$1\") 2>/dev/null\nsh\n" + path);
+    if r.code != 0 { return ""; }
+    let sp = std::str::index_of(r.stdout, " ");
+    return if sp < 0 { trim_nl(r.stdout) } else { r.stdout[0..sp] };
+}
+
 // The regular files under `dir`, relative and one per line, sorted;
 // vendor, `.git` (a worktree's is a FILE, so it is named as well as
 // its tree) and `.hale` are never part of a change (GH #583 M3/M4).
@@ -239,6 +260,13 @@ fn scratch_register(dir: String) {
     if len(reg) == 0 { return; }
     std::io::fs::mkdir(reg) or discard;
     std::io::fs::write_file(reg + "/" + scratch_name(dir), dir) or discard;
+    // The slice's ledger: every root it ever made, kept when the
+    // fixture passes and its registry entry goes. Where no process's
+    // environment can be read (macOS), the leftover guard attributes a
+    // process to this slice by a root in the ledger instead of by the
+    // stamp in its environment (GH #970).
+    std::io::fs::mkdir(reg + ".all") or discard;
+    std::io::fs::write_file(reg + ".all/" + scratch_name(dir), dir) or discard;
 }
 
 // The fixture is done with `dir` and passed: the root goes, and its

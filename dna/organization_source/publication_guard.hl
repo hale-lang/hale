@@ -304,6 +304,13 @@ locus OrganizationPublicationInputs {
             let map = self.ownership_file(r, worktree, commit, inspection, edited);
             if map != "" { return map; }
         }
+        // `hale inputs` names canonical paths, and on macOS `/tmp` is
+        // itself an alias of `/private/tmp`: compare against the
+        // worktree's physical spelling or every input reads as outside
+        // it (GH #970).
+        let physical = inspection.execute("pwd\n-P", worktree, 4096);
+        if physical.code != 0 { return "organization_check_failed"; }
+        let worktree = dna::trim_nl(physical.stdout);
         let error = inspection.input_error(worktree, self.compiler);
         if error != "" { return error; }
         let listed = inspection.execute(self.compiler + "\ninputs\ndna/org", worktree, 4096);

@@ -8,6 +8,57 @@ behavior.
 
 ## Unreleased
 
+### DNA runs on a Mac: the macOS gaps in the host and the runtime (GH #970)
+
+On an Apple Silicon Mac, every DNA fixture now passes except the three
+that test the body fence (below); the suite went from 8 of 24 tests
+passing to 21 of 25 in one parallel run, the fourth failure being
+`organization_source_request_test` overrunning its 30 s inspection
+budget under the load of all sixteen slices at once — it passes alone.
+What was wrong, and where:
+
+- **A refused connect spent its socket.** The runtime's three connect
+  loops retried `connect(2)` on the same socket; macOS leaves a refused
+  socket unusable (EISCONN / EINVAL), so a client that raced its
+  server's listen failed instead of waiting — the membrane client among
+  them. Each retry now uses a fresh socket.
+- **Timed git transfers needed `timeout`**, which a stock Mac lacks: the
+  record's fetch / push / ls-remote under `HALE_DNA_GIT_TIMEOUT` (which
+  the body fence always sets) all failed. `dna::run_tool_timeout` uses
+  `timeout` where present and perl's `alarm` otherwise, exit 124 either
+  way.
+- **Build digests needed `sha256sum`**, and came back silently empty
+  without it. `dna::sha256_file` falls back to `shasum -a 256`.
+- **The fence started the compiler.** It found its own binary through
+  `/proc/<pid>/exe` and fell back to `argv[0]`, which is `hale` when the
+  host was exec'd from `hale dna run` — so the fence printed hale's
+  usage and never ran. It now asks `lsof` for the process's first
+  mapped text, the executable, before `argv[0]`.
+- **`/tmp` is an alias on macOS.** `hale inputs` prints canonical paths
+  (`/private/tmp/...`); the publication guard compared them with the
+  worktree as spelled (`/tmp/...`), so every organization source request
+  was refused `organization_snapshot_unsupported`. The guard and the
+  host's build fingerprint resolve the path with `pwd -P` first.
+- **The local transport's probe asked the wrong machine.** It checked
+  for systemd on the developer's PATH rather than the body's (the
+  fixture's home), so provisioning a body from a Mac was refused for
+  the Mac having no systemd.
+- **The suite's leftover-process guard** fell back, without /proc, to
+  blaming every `/tmp/dna-` process — the slices running beside it and
+  every fixture's own reaper. It now scopes by a ledger of each slice's
+  scratch roots (`dna::scratch_register` records them; `lsof -d cwd`
+  gives working directories), and the guard's own regression test runs
+  on macOS too.
+
+Still open: the body fence finds processes orphaned by a dead
+organization by the mark in their environment, and macOS (with SIP)
+never shows another process's environment — `ps -E` and
+`sysctl(KERN_PROCARGS2)` alike return arguments only. On a Mac the
+fence stops the organization and what still hangs off it, and says so;
+`body_scan_test`, `body_lease_start_test` and `body_lease_blocked_test`
+fail there. GitHub's macOS runners do show environments, which is why
+the macOS workflow's fence step passes.
+
 ### `async_io` pools on macOS: the kqueue backend (GH #970)
 
 `where async_io` builds and runs on macOS. The runtime's async_io pool

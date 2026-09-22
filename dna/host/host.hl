@@ -320,7 +320,12 @@ fn build_cache_dir() -> String {
 fn input_digests(hale: String, root: String, seed_dir: String) -> String {
     let r = dna::run_tool(hale + "\ninputs\n" + seed_dir);
     if r.code != 0 { return ""; }
-    let prefix = root + "/";
+    // `hale inputs` names canonical paths (on macOS `/tmp` is an alias
+    // of `/private/tmp`), so the root is compared in the same spelling
+    // or every path stays absolute and the fingerprint names the
+    // machine (GH #970).
+    let phys = dna::run_tool("sh\n-c\ncd \"$1\" && pwd -P\nsh\n" + root);
+    let prefix = (if phys.code == 0 && len(dna::trim_nl(phys.stdout)) > 0 { dna::trim_nl(phys.stdout) } else { root }) + "/";
     let mut out = "";
     let mut rest = dna::trim_nl(r.stdout) + "\n";
     while len(rest) > 1 {
@@ -613,7 +618,12 @@ locus Host {
         // before stops at once, and kills nothing, when it reads another
         let m = write_text(self.dna_dir + "/body.fence", to_string(std::process::pid()) + "\n" + self.holder) or false;
         let exe = dna::run_tool("readlink\n-f\n/proc/" + to_string(std::process::pid()) + "/exe");
-        let bin = if exe.code == 0 && len(dna::trim_nl(exe.stdout)) > 0 { dna::trim_nl(exe.stdout) } else { std::env::arg(0) };
+        // The fence is this host's own binary (`body-fence` is a host
+        // verb). No /proc on macOS: its first mapped text is the
+        // executable, as `lsof` reports it; argv[0] only as the last
+        // resort, since a relative one resolves by cwd (GH #970).
+        let own = if exe.code == 0 && len(dna::trim_nl(exe.stdout)) > 0 { dna::trim_nl(exe.stdout) } else { dna::trim_nl(dna::run_tool("sh\n-c\nlsof -a -p \"$1\" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -1\nsh\n" + to_string(std::process::pid())).stdout) };
+        let bin = if len(own) > 0 { own } else { std::env::arg(0) };
         self.fence = start(self.dna_dir, "fence", self.root, "HALE_DNA_GIT_TIMEOUT=8",
             bin + "\nbody-fence\n.\n.\n-\n-\n--holder\n" + self.holder + "\n--token\n" + to_string(self.lease.token) + "\n--expires\n" + to_string(self.lease.expires) + "\n--host-pid\n" + to_string(std::process::pid()));
         if self.fence.pid <= 0 { self.say("the body fence did not start; a body that cannot fence its organism runs nothing"); std::process::exit(3); }
@@ -710,9 +720,9 @@ locus Host {
         return bin;
     }
     fn sha12(bin: String) -> String {
-        let r = dna::run_tool("sha256sum\n" + bin);
-        if r.code != 0 || len(r.stdout) < 12 { return ""; }
-        return r.stdout[0..12];
+        let h = dna::sha256_file(bin);
+        if len(h) < 12 { return ""; }
+        return h[0..12];
     }
     fn child_envs(restart_for: String, expression: String) -> String {
         // GH #583: the genome a harness must never reach, whatever its
