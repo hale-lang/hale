@@ -356,7 +356,7 @@ jobs:
         # deadline beside the partition's other organisms on a loaded runner.
         env:
           HALE_DNA_DISCOVER: "off"
-        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
 
       - name: cargo nextest run (cli part ${{ matrix.part }}/3)
         # Everything the other families do not own: hale-cli's 111
@@ -501,7 +501,7 @@ jobs:
         # deadline beside seven other organisms on a loaded runner.
         env:
           HALE_DNA_DISCOVER: "off"
-        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
       - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
         # The suite alone on its runner: sixteen slice tests, hashed
         # across two jobs, running four-wide (the `dna-fixtures`
@@ -583,7 +583,7 @@ jobs:
         # The browser fixtures create fresh projects with `hale dna new`
         # under a per-process CPU budget; the first host build of this
         # binary must not be the one that pays for it.
-        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
 
       - name: Iris cockpit browser integration
         working-directory: iris/cockpit
