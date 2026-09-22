@@ -1,0 +1,177 @@
+// dna/tests/conformance/runner.hl — one assembly over one git record, for
+// the real process-stop boundary of `workflow_conformance_test.hl` (DNA
+// workflow card 19).
+//
+// The runner is the public surface: a `dna::Dna` over a `GitJournal`,
+// the canonical close-month example (dna/WORKFLOW-CONTRACT.md §6)
+// authored into its catalog and asked for through `run_workflow`, with
+// a durable service adapter whose store is a file the process does not
+// own. Told where to die, it kills its own process (SIGKILL, no
+// teardown) the moment that row has landed in the record, or the
+// moment its adapter has recorded that effect — the cuts a crash
+// makes. Run again over the same record it is a restart: the assembly
+// resumes the admitted root from what the record holds, and the
+// adapter answers from its store before anything is delivered again.
+//
+//   runner <repo> <store file> none
+//   runner <repo> <store file> row:<kind>:<entity>
+//   runner <repo> <store file> effect:<attempt id>
+//
+// It prints `admitted <task id>` when it admits the root, `settled
+// <disposition>` when the root's settlement is in the record, and exits
+// 0 then; 4 if the root has not settled in time.
+
+import "../../core" as dna;
+
+fn die_now() {
+    let k = dna::run_tool("kill\n-KILL\n" + to_string(std::process::pid()));
+}
+
+fn attempt_of(req: dna::WorkRequest) -> String { return req.work_id + "/a" + to_string(req.attempt_no); }
+
+// A record that ends the process the moment the named row is in it.
+locus Dying {
+    params { inner: dna::GitJournal = dna::GitJournal { }; on_kind: String = ""; on_entity: String = ""; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        let r = self.inner.append(expected, kind, entity, body);
+        if r.ok && kind == self.on_kind && entity == self.on_entity { die_now(); }
+        return r;
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        let r = self.inner.append_exact(expected, kind, entity, body);
+        if r.ok && kind == self.on_kind && entity == self.on_entity { die_now(); }
+        return r;
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// The durable service adapter: every invocation is a line of its file,
+// the external system's own record of what was done under which
+// attempt, written before the effect is answered. Asked after a
+// restart whether an attempt acted, it answers from that file.
+locus FileStore {
+    params { path: String = ""; die_on: String = ""; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "ledger-service"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        let id = attempt_of(req);
+        let w = dna::run_tool("sh\n-c\nprintf '%s\\n' \"$1\" >> \"$2\"\nsh\n" + id + "\n" + self.path);
+        if id == self.die_on { die_now(); }
+        return dna::WorkResult { disposition: "done", result: "posted " + req.objective, performer: "ledger-service", attempt_id: id };
+    }
+    @unbounded
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        let id = attempt_of(req);
+        let mut rest = std::io::fs::read_file(self.path) or "";
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if line == id {
+                return dna::Reconciliation {
+                    kind: kind, identity: "ledger-service", established: true, performed: true,
+                    result: dna::WorkResult { disposition: "done", result: "posted (from the store)", performer: "ledger-service", attempt_id: id },
+                    why: "the invocation of " + id + " is in the adapter's store"
+                };
+            }
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        }
+        return dna::Reconciliation { kind: kind, identity: "ledger-service", established: true, performed: false, why: "no invocation of " + id + " is in the adapter's store" };
+    }
+}
+
+main locus App {
+    params {
+        one: dna::Dna = dna::Dna { runs_engine: false };
+    }
+    // the bound organism's bus configuration: a listen binding makes
+    // every publish queued (F.15)
+    bindings { dna::IntentOffered: unix("/tmp/hale-dna.conformance-runner.intent.sock", role: listen); }
+    @unbounded
+    fn root_settled() -> String {
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == "workflow.settled" && len(std::json::find_string_field(e.body, "parent_task")) == 0 {
+                return std::json::find_string_field(e.body, "disposition");
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn admitted_roots() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == "workflow.admitted" && len(std::json::find_string_field(e.body, "parent_task")) == 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    run() {
+        if std::env::args_count() < 4 {
+            println("usage: runner <repo> <store file> <none | row:<kind>:<entity> | effect:<attempt id>>");
+            std::process::exit(2);
+        }
+        let repo = std::env::arg(1);
+        let store = std::env::arg(2);
+        let die = std::env::arg(3);
+        let mut on_kind = "";
+        let mut on_entity = "";
+        let mut effect = "";
+        if std::str::starts_with(die, "row:") {
+            let spec = die[4..len(die)];
+            let colon = std::str::index_of(spec, ":");
+            on_kind = spec[0..colon];
+            on_entity = spec[(colon + 1)..len(spec)];
+        }
+        if std::str::starts_with(die, "effect:") { effect = die[7..len(die)]; }
+        // the assembly: born, it resumes every admitted root the record
+        // holds unsettled
+        self.one = dna::Dna {
+            journal: Dying { inner: dna::GitJournal { repo: repo, author: "runner" }, on_kind: on_kind, on_entity: on_entity },
+            work: dna::WorkSystem { service: FileStore { path: store, die_on: effect }, service_reconciler: FileStore { path: store } },
+            genome_seed: "."
+        };
+        let d1 = self.one.catalog.define("close-month", 1, 2, "close the month");
+        let d2 = self.one.catalog.define("collect-receipts", 1, 2, "");
+        let d3 = self.one.catalog.define("chase-supplier", 1, 1, "");
+        let l1 = self.one.catalog.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" }, 1);
+        let l2 = self.one.catalog.child("close-month", 1, 0, "b", "collect-receipts", 1);
+        let l3 = self.one.catalog.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries", requires: "analysis" }, 1);
+        let l4 = self.one.catalog.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts", requires: "analysis" }, 1);
+        let l5 = self.one.catalog.child("collect-receipts", 1, 1, "c", "chase-supplier", 1);
+        let l6 = self.one.catalog.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier", requires: "analysis" }, 2);
+        if len(d1 + d2 + d3 + l1 + l2 + l3 + l4 + l5 + l6) > 0 {
+            println("the example does not bind: " + d1 + d2 + d3 + l1 + l2 + l3 + l4 + l5 + l6);
+            std::process::exit(3);
+        }
+        if self.admitted_roots() == 0 {
+            let id = self.one.run_workflow(dna::WorkflowAsk { id: "ask1", definition: "close-month", revision: 1, from: "runner" });
+            println("admitted " + id);
+        } else {
+            println("resumed " + to_string(self.one.executions_asked));
+        }
+        let mut waited = 0;
+        while waited < 3000 {
+            let moved = self.one.journal.refresh();
+            let settled = self.root_settled();
+            if len(settled) > 0 {
+                println("settled " + settled);
+                std::process::exit(0);
+            }
+            std::time::sleep(20ms);
+            waited = waited + 1;
+        }
+        println("timeout: the root did not settle");
+        std::process::exit(4);
+    }
+}
+
+fn main() { App { }; }

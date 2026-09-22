@@ -1671,6 +1671,88 @@ owner connects a completion — the Work runs in the origin's
 execution. The tooling's own gate (`hale dna task done`, evidence,
 exceptions, reported decisions) is unchanged.
 
+## Workflow execution: the baseline
+
+What the sections above promise is held, as one oracle, by
+`dna/tests/workflow_conformance_test.hl` over the canonical three-level
+example (`dna/WORKFLOW-CONTRACT.md` §6), in every supported mode, with
+a unix listen binding declared so every publish is queued as in a
+bound organism. A review traces each promise to it; what it does not
+cover is not promised.
+
+**Delivery.** A leaf's attempt is admitted, claimed and delivered to
+its performer once per claim. A performer answers at once or later;
+a later reply names the attempt and the performer, and reaches the
+runtime whenever it comes — after the grandchild's step, before the
+root's own leaf, in any order. A reply for an attempt whose outcome is
+recorded is answered from the record and writes nothing, whether it
+repeats the recorded reply or arrives for an attempt the Work has
+retried past. A reply from another identity than the admitted
+performer's is nobody's and is refused. A reply for an attempt the
+record never admitted or never claimed is nobody's.
+
+**Failure.** A leaf that fails its allowance fails its step; the step
+fails its execution; a child's failure fails the step that invoked it,
+up to the root. Nothing later activates and nothing further is
+requested. A leaf still out under a failed step keeps its
+responsibility: its outcome is recorded when it comes, it reopens
+nothing, and the execution above it settles failed only after it
+settled (the drain policy, contract §6).
+
+**Cancellation.** A root's cancellation fences everything below it:
+what was admitted records its outcome; nothing further is admitted or
+claimed at any depth; the tree drains and reclaims from the leaves up;
+a late reply for a fenced attempt is still recorded, as the attempt's
+outcome, and reopens nothing. A root's own residents learn of a
+cancellation committed by another hand through a restart or through
+the fence on their next transition, not by being told.
+
+**Restart.** The record is the execution. An incarnation booted over
+it — in process, a new runtime over the same git record, a new routed
+record over the same two memories, or a new process — rebuilds only
+what is unfinished, under the original ids: no execution is admitted
+again, no step registers or activates twice, no completed member runs
+again. An attempt claimed by the incarnation that died is reconciled
+before anything is delivered: a durable adapter that recorded the
+effect answers from its store and the attempt is not performed again;
+a performer that truthfully has not acted is delivered the attempt
+again, once, under the same id, and the record says so
+(`effect.redelivered`). The completed record rebooted gains no row and
+asks no adapter. Every fact of an execution is routed to the ledger
+(one memory), so a reconstruction of the routed record keeps their
+order.
+
+**Fencing.** Under a lease, a holder whose token is not live commits
+nothing: its replies are refused and written nowhere; with the lease
+back, the same replies go through and the run completes as every other.
+
+**Reclamation.** A settled execution dissolves every resident of its
+tree, leaves first; repeated completed runs leave nothing alive. What
+grows is the record.
+
+**Logical exactly-once, apart from external-effect reconciliation.**
+One `effect.requested` per attempt, ever; one `attempt.outcome`; one
+`work.settled` on that attempt; one settlement per execution. Whether
+the external effect happened once is the adapter's to say: an adapter
+whose store holds the invocation is not asked again; one that cannot
+say leaves the claim resulted unknown and the attempt waits for a
+person (card 12c); one documented idempotent is replayed. The record
+distinguishes the cases: a redelivered attempt has its
+`effect.redelivered` row and, in the adapter's store, two invocations
+under one id.
+
+**The process boundary.** `dna/tests/conformance/runner.hl` is the
+public assembly (`Dna.run_workflow` over a `GitJournal`) with a durable
+service adapter whose store is a file; the fixture builds it with the
+`hale` under test, runs it as a separate process, kills it with
+SIGKILL the moment C1's attempt is admitted, the moment it is claimed,
+and the moment its adapter has recorded the effect but before the
+outcome landed, and runs it again over the same record each time: the
+assembly resumes the admitted root, the attempt keeps its one
+admission and one claim, the redelivery is recorded once, the store is
+the outcome, D runs once, the root settles last. Run once more over
+the completed record, it runs nothing.
+
 ## Storage interfaces
 
 `Journal` (ordered append with an expected revision, read by index,

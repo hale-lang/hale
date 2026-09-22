@@ -148,6 +148,7 @@ main locus App {
             i = i + 1;
         }
     }
+    // a wait that runs out is a failure, never a silence (card 19)
     @unbounded
     fn until_rows(kind: String, entity: String, n: Int) {
         let mut i = 0;
@@ -156,7 +157,10 @@ main locus App {
             std::time::sleep(20ms);
             i = i + 1;
         }
+        std::test::assert(false, "timed out waiting for " + to_string(n) + " " + kind + " " + entity);
     }
+    // an attempt's claim is its `effect.requested` row, under `attempt:<id>`
+    fn until_claimed(attempt_id: String, n: Int) { self.until_rows("effect.requested", "attempt:" + attempt_id, n); }
     // The assembly over the repository: its editor answers with the
     // documented program; a `pre` review gate keeps the candidate in
     // review; a delayed service performer for the authored definitions.
@@ -315,14 +319,14 @@ main locus App {
         std::test::assert(adm4.ok && adm4.value.definition == "duo" && adm4.value.request == "r1", "under its definition and the ask's identity");
         let s0 = r1 + "/wf1/s0/";
         let s1 = r1 + "/wf1/s1/";
-        self.until_rows("attempt.claimed", s0 + "b/a0", 1);
+        self.until_claimed(s0 + "b/a0", 1);
         self.settle();
         std::test::assert_eq_int(self.rows("attempt.admitted", s1 + "c/a0"), 0, "the second step has not started before the replies");
         self.report(s0 + "a/a0");
         self.settle();
         std::test::assert_eq_int(self.rows("attempt.admitted", s1 + "c/a0"), 0, "nor after one of two");
         self.report(s0 + "b/a0");
-        self.until_rows("attempt.claimed", s1 + "d/a0", 1);
+        self.until_claimed(s1 + "d/a0", 1);
         self.settle();
         std::test::assert_eq_int(self.rows("workflow.settled", r1), 0, "the second step waits in turn");
         self.report(s1 + "c/a0");
@@ -368,8 +372,8 @@ main locus App {
         self.define_nest();
         let r7 = self.dna.run_workflow(dna::WorkflowAsk { id: "r7", definition: "one", revision: 1, from: "test" });
         let r8 = self.dna.run_workflow(dna::WorkflowAsk { id: "r8", definition: "nest", revision: 1, from: "test" });
-        self.until_rows("attempt.claimed", r7 + "/wf1/s0/a/a0", 1);
-        self.until_rows("attempt.claimed", r8 + ".s0.k/wf1/s0/a/a0", 1);
+        self.until_claimed(r7 + "/wf1/s0/a/a0", 1);
+        self.until_claimed(r8 + ".s0.k/wf1/s0/a/a0", 1);
         self.settle();
         dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: r7, reason: "stop" };
         dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: r8, reason: "stop" };
@@ -435,7 +439,7 @@ main locus App {
         let r10 = self.dna.run_workflow(dna::WorkflowAsk { id: "r10", definition: "nest", revision: 1, from: "test" });
         std::test::assert(std::str::starts_with(r10, "t"), "admitted: " + r10);
         let k10 = r10 + ".s0.k";
-        self.until_rows("attempt.claimed", k10 + "/wf1/s0/a/a0", 1);
+        self.until_claimed(k10 + "/wf1/s0/a/a0", 1);
         self.settle();
         self.report(k10 + "/wf1/s0/a/a0");
         self.until_rows("work.settled", k10 + "/wf1/s0/a", 1);
