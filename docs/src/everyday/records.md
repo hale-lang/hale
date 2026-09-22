@@ -46,7 +46,8 @@ a locus handle inside it left as a handle — the way a returned record
 already was. Replace the field afterwards and `saved` still reads
 what it read; write through a `let mut copy` and the original is
 untouched. A literal or a call result is bound as it is, since it was
-already yours.
+already yours. Assignment is the same: `copy = saved` copies too, and
+a write through one local never shows up in another.
 
 ```hale,fragment
 let saved = self.row;
