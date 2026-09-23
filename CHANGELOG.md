@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+### `hale test` runs files in parallel (GH #1009)
+
+`hale test <dir>` compiles and runs up to one test file per available
+core at once instead of one after another. `-j N` / `--jobs N` (or
+`HALE_TEST_JOBS=N`) sets the count; `-j 1` is the old serial run. The
+report is unchanged: `ok` / `FAIL` lines in sorted order after every
+file is done, each test's output under its own line, the same summary
+and exit status. Spec: `testing.md`.
+
 ### Iris and the face are two products (GH #998)
 
 Iris is the inspector for any Hale binary; the DNA organism's people

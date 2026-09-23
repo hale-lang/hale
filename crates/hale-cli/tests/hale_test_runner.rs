@@ -11,6 +11,9 @@
 //!  - GH #717: a failed assertion runs the test's own locus teardown
 //!    before the process exits, so a fixture that started a child and
 //!    created scratch it owns leaves neither behind.
+//!  - GH #1009: files run in parallel, and `-j 4` prints byte for byte
+//!    what `-j 1` prints — sorted verdict lines, each file's output
+//!    under its own line and nowhere else, the same summary and exit.
 //!
 //! The `.hl` fixtures live under `tests/fixtures/hale-test-*`; the
 //! GH #717 pair is generated into a per-run temp directory because the
@@ -524,4 +527,200 @@ fn passing_fixture_with_a_child_and_scratch_still_passes_silently() {
         "scratch dir {} survived a passing run",
         scratch.display()
     );
+}
+
+// ---------------------------------------------------------------
+// GH #1009 — files compile and run in parallel; the report does not
+// change with the job count.
+// ---------------------------------------------------------------
+
+/// A one-assertion `_test.hl`. `tag` names the case in the assertion
+/// message; `pass` picks whether the assertion holds. When `noise` is
+/// set the program first writes `lines` numbered lines carrying `tag`
+/// to stdout and to stderr, then exits 0 — a FAIL by the silence rule
+/// whose detail block is exactly what it printed.
+///
+/// A `format!` template, so `hale-corpus`'s embedded-program harvester
+/// leaves it alone (a literal with a live placeholder is not a program).
+fn gh1009_program(tag: &str, pass: bool, noise: bool) -> String {
+    let body = if noise {
+        format!(
+            r#"    let mut i = 0;
+    while i < 20 {{
+        println(f"OUT-{tag} line {{i}}");
+        eprintln(f"ERR-{tag} line {{i}}");
+        i = i + 1;
+    }}"#
+        )
+    } else {
+        format!(
+            "    std::test::assert(1 == {rhs}, \"case {tag}\");",
+            rhs = if pass { 1 } else { 2 }
+        )
+    };
+    format!("// GH #1009 runner fixture `{tag}`.\nfn main() {{\n{body}\n}}\n")
+}
+
+/// A per-run directory holding `files` (name → program). Unique by pid
+/// and tag so parallel shards never share one.
+fn gh1009_root(tag: &str, files: &[(&str, String)]) -> PathBuf {
+    let p = std::env::temp_dir()
+        .join(format!("hale_test_1009_{}_{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).expect("create the GH #1009 fixture root");
+    for (name, src) in files {
+        std::fs::write(p.join(name), src).expect("write a GH #1009 fixture");
+    }
+    p
+}
+
+fn hale_test_jobs(dir: &Path, jobs: &str) -> std::process::Output {
+    Command::new(hale_bin())
+        .arg("test")
+        .arg(dir)
+        .arg("-j")
+        .arg(jobs)
+        // the flag must win over the environment
+        .env("HALE_TEST_JOBS", "3")
+        .output()
+        .expect("invoke hale test -j")
+}
+
+/// The `ok` / `FAIL` lines of a text report, in the order printed.
+fn verdict_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|l| l.starts_with("ok   ") || l.starts_with("FAIL "))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn parallel_report_is_identical_to_serial() {
+    // Written in an order that is NOT the sorted order, so the report
+    // being sorted is the runner's doing and not the filesystem's.
+    let root = gh1009_root(
+        "same",
+        &[
+            ("d_fail_test.hl", gh1009_program("d", false, false)),
+            ("a_pass_test.hl", gh1009_program("a", true, false)),
+            ("c_pass_test.hl", gh1009_program("c", true, false)),
+            ("b_fail_test.hl", gh1009_program("b", false, false)),
+        ],
+    );
+    let serial = hale_test_jobs(&root, "1");
+    let parallel = hale_test_jobs(&root, "4");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let s_out = String::from_utf8_lossy(&serial.stdout);
+    let p_out = String::from_utf8_lossy(&parallel.stdout);
+    assert_eq!(
+        s_out, p_out,
+        "-j 4 must print exactly what -j 1 prints\nstderr -j1={}\nstderr -j4={}",
+        String::from_utf8_lossy(&serial.stderr),
+        String::from_utf8_lossy(&parallel.stderr)
+    );
+    assert_eq!(serial.status.code(), Some(1), "serial: stdout={s_out}");
+    assert_eq!(parallel.status.code(), Some(1), "parallel: stdout={p_out}");
+    let lines = verdict_lines(&p_out);
+    let names: Vec<&str> = lines
+        .iter()
+        .map(|l| l.rsplit('/').next().unwrap_or(l))
+        .collect();
+    assert_eq!(
+        names,
+        ["a_pass_test.hl", "b_fail_test.hl", "c_pass_test.hl", "d_fail_test.hl"],
+        "one verdict per file, in sorted order; stdout={p_out}"
+    );
+    assert!(lines[0].starts_with("ok   ") && lines[2].starts_with("ok   "));
+    assert!(lines[1].starts_with("FAIL ") && lines[3].starts_with("FAIL "));
+    assert!(
+        p_out.contains("ASSERTION FAILED: case b") && p_out.contains("ASSERTION FAILED: case d"),
+        "each failure's detail is reported; stdout={p_out}"
+    );
+    assert!(
+        p_out.trim_end().ends_with("2 passed, 2 failed"),
+        "summary; stdout={p_out}"
+    );
+}
+
+#[test]
+fn parallel_output_stays_with_its_own_file() {
+    let root = gh1009_root(
+        "attr",
+        &[
+            ("a_noise_test.hl", gh1009_program("A", true, true)),
+            ("b_pass_test.hl", gh1009_program("b", true, false)),
+            ("c_noise_test.hl", gh1009_program("C", true, true)),
+            ("d_pass_test.hl", gh1009_program("d", true, false)),
+        ],
+    );
+    let serial = hale_test_jobs(&root, "1");
+    let out = hale_test_jobs(&root, "4");
+    let _ = std::fs::remove_dir_all(&root);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        String::from_utf8_lossy(&serial.stdout),
+        stdout,
+        "-j 4 must print exactly what -j 1 prints"
+    );
+    assert_eq!(out.status.code(), Some(1), "stdout={stdout}");
+
+    // Split the report into one block per file: a verdict line and
+    // the indented detail under it.
+    let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
+    for line in stdout.lines() {
+        if line.starts_with("ok   ") || line.starts_with("FAIL ") {
+            blocks.push((line.to_string(), Vec::new()));
+        } else if line.starts_with("     ") {
+            blocks
+                .last_mut()
+                .expect("detail line before any verdict")
+                .1
+                .push(line.to_string());
+        }
+    }
+    assert_eq!(blocks.len(), 4, "one block per file; stdout={stdout}");
+    for (verdict, detail) in &blocks {
+        let noisy = if verdict.ends_with("a_noise_test.hl") {
+            Some("A")
+        } else if verdict.ends_with("c_noise_test.hl") {
+            Some("C")
+        } else {
+            None
+        };
+        match noisy {
+            Some(tag) => {
+                assert!(verdict.starts_with("FAIL "), "{verdict}");
+                // its own twenty stdout lines, in order, and nothing else
+                let own: Vec<String> =
+                    (0..20).map(|i| format!("     OUT-{tag} line {i}")).collect();
+                assert_eq!(
+                    detail[1..].to_vec(),
+                    own,
+                    "the block under {verdict} is that file's stdout, whole \
+                     and in order; stdout={stdout}"
+                );
+            }
+            None => {
+                assert!(verdict.starts_with("ok   "), "{verdict}");
+                assert!(detail.is_empty(), "a pass has no detail: {detail:?}");
+            }
+        }
+    }
+    for tag in ["A", "C"] {
+        assert_eq!(
+            stdout.matches(&format!("OUT-{tag} line 0\n")).count(),
+            1,
+            "OUT-{tag} appears once, under its own file; stdout={stdout}"
+        );
+        // spec/testing.md: stderr is not inspected. It is captured
+        // with the test's run, so it reaches neither stream.
+        assert!(
+            !stdout.contains(&format!("ERR-{tag}")) && !stderr.contains(&format!("ERR-{tag}")),
+            "a test's stderr must not reach the runner's terminal; \
+             stdout={stdout}\nstderr={stderr}"
+        );
+    }
 }

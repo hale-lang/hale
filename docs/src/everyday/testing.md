@@ -104,6 +104,7 @@ hale test               # discover + run every *_test.hl under the cwd
 hale test tests/        # ...under a directory
 hale test -run concat   # only files whose name matches a substring
 hale test --json        # machine-readable results (one record per file)
+hale test -j 1          # one file at a time (default: one per core)
 ```
 
 Each `--json` record carries `file`, `status`, `elapsed_ms` and — on
@@ -116,6 +117,15 @@ you typed.
 `hale test` compiles each discovered file to a native binary and runs
 it, reporting which passed and which failed. It's the same binary that
 `hale build` produces — there's no separate test runtime.
+
+Files compile and run **in parallel**, one per available core unless
+you say otherwise with `-j N` (or `HALE_TEST_JOBS=N`). The report does
+not depend on it: the lines come out in sorted file order once every
+file is done, and whatever a test prints stays with that test. What
+parallelism does ask of a test is that it own what it touches — a
+test that listens on a fixed port or writes a fixed path under `/tmp`
+can collide with its neighbour. Take a free port and a per-run
+scratch directory instead.
 
 One property comes free with that binary: **a test whose loci all
 run on the main scheduler is deterministic.** No `placement`, no
