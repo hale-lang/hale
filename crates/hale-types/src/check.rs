@@ -6675,9 +6675,9 @@ fn check_wildcard_publish_payloads(
             //
             // A WARNING, not an error, because the hazard is
             // conditional: the pattern's owner may never publish a
-            // subject that reaches here (the stdlib's TCP logging is
-            // declared on every `Stream` but stays off until
-            // `log_subject` is set). Making it fatal would refuse
+            // subject that reaches here (a `std::log::Logger`
+            // declares all of `log.**` but publishes only under its
+            // own path). Making it fatal would refuse
             // programs in which the publish cannot happen. The
             // publish site enforces it for real — a computed send
             // whose payload disagrees with a matching subscriber is

@@ -1,6 +1,6 @@
 crates/hale-cli/tests/claims_artifact_unknowns.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, sinks)	Violated	None
-crates/hale-cli/tests/claims_artifact_unknowns.rs#3	iso	forbid reaches(a_side, sinks)	Uncertified	None
+crates/hale-cli/tests/claims_artifact_unknowns.rs#3	iso	forbid reaches(a_side, sinks)	Holds	None
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Holds	Some("Chat")
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Violated	None
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-const-missing/chat.hl	guests_sign_nothing	forbid reaches(guests, effects(secret_use))	Invalid	Some("House")
@@ -125,7 +125,7 @@ crates/hale-types/tests/constitutions.rs#8	two	count subscribers(topic Settled) 
 crates/hale-types/tests/demand_gate.rs#1	one_writer	count publishers(topic Placed) == 1	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#10	one_call	bound llm <= 1 on paths from planners	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks)	Violated	None
-crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Uncertified	None
+crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#6	iso	forbid reaches(a_side, b_side)	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#9	one_call	bound llm <= 1 on paths from planners	Holds	None
 crates/hale-types/tests/interface_slot_override.rs#1	gated	forbid reaches(organism, effects(apply_it))	Holds	None

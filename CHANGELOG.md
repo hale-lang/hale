@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+### tcp::Stream and http::Server no longer publish per-op log events
+
+- **Removed:** `std::io::tcp::Stream`'s and `std::http::Server`'s
+  `log_subject` param, their `publish "io.tcp.**"` /
+  `publish "io.http.**"` declarations, and the
+  `std::io::tcp::LogEvent` type. Nothing used them. Telemetry is
+  `std::log`; per-operation observability of a socket belongs in the
+  library that wraps it, which knows what an operation means.
+  Dropping them also takes a computed publish out of every program
+  that touches a socket, so a claim about such a program's subjects
+  no longer has an unresolved publish to fail closed on.
+
 ### Memory's schema belongs to its owner (GH #985, part 1)
 
 - **`hale dna memory migrate`** applies memory's schema for the record

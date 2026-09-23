@@ -1404,10 +1404,9 @@ handler as `id=a qty=b`, with `hale check` reporting `ok`.
 Statically, a subscription that sits under another locus's declared
 wildcard pattern while expecting a different payload is a
 **warning**: whether the hazard is live depends on whether that
-locus ever publishes a subject reaching it (the stdlib's TCP
-logging is declared on every `Stream` but stays off until
-`log_subject` is set), so it names the risk without refusing the
-program.
+locus ever publishes a subject reaching it (a `std::log::Logger`
+declares all of `log.**` but publishes only under its own path), so
+it names the risk without refusing the program.
 
 **The pattern also bounds analysis.** Because a computed publish
 cannot escape its declaration, an unresolved publish inside a locus

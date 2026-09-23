@@ -98,13 +98,13 @@ fn an_untyped_receiver_edge_changes_shape_hash() {
 // ---- #392: interface dispatch in the artifact ----------------------
 
 const DISPATCHED: &str = r#"
-interface Notifier { fn send(n: Int) -> Int; }
-locus Email { fn send(n: Int) -> Int { return n; } }
+interface Notifier { fn notify(n: Int) -> Int; }
+locus Email { fn notify(n: Int) -> Int { return n; } }
 type Route { handler: Notifier; }
 locus A {
     fn go(n: Int) -> Int {
         let r = Route { handler: Email { } };
-        return r.handler.send(n);
+        return r.handler.notify(n);
     }
 }
 group a_side = { A };
@@ -124,7 +124,7 @@ fn a_conforming_dispatch_appears_as_call_edges_not_unknowns() {
     let art = dump(DISPATCHED, "dispatched");
     assert!(
         art.contains(
-            r#"{"from": "A::go", "to": "Email::send", "via_interface": "Notifier"}"#
+            r#"{"from": "A::go", "to": "Email::notify", "via_interface": "Notifier"}"#
         ),
         "the fanned-out edge must land in the call relation, tagged \
          with its interface:\n{}",
@@ -146,7 +146,7 @@ fn an_uninhabited_interface_call_is_an_unknown_and_changes_the_hash()
 {
     // The interface must be uninhabited in a program that still
     // TYPECHECKS. The obvious construction — take `DISPATCHED` and
-    // rename `Email::send` — does not: `Route { handler: Email { } }`
+    // rename `Email::notify` — does not: `Route { handler: Email { } }`
     // then stores a non-conformer in a `Notifier` field, which is a
     // type error ("locus `Email` does not satisfy interface
     // `Notifier`"). An artifact is only emitted for a program whose
@@ -156,13 +156,15 @@ fn an_uninhabited_interface_call_is_an_unknown_and_changes_the_hash()
     // Take the interface as a PARAMETER instead. The body is
     // checkable, nothing conforms, and the call site is dead in this
     // build — which is exactly the case the unknown class exists to
-    // record.
+    // record. The method is not called `send`: conformance here is
+    // name + arity over every locus, and the stdlib's
+    // `std::io::tcp::Stream::send` would count as a conformer.
     const UNINHABITED: &str = r#"
-interface Notifier { fn send(n: Int) -> Int; }
+interface Notifier { fn notify(n: Int) -> Int; }
 locus Email { fn deliver(n: Int) -> Int { return n; } }
 locus A {
     fn go(x: Notifier, n: Int) -> Int {
-        return x.send(n);
+        return x.notify(n);
     }
 }
 group a_side = { A };
@@ -175,7 +177,7 @@ fn main() { App { }; }
 "#;
     let art = dump(UNINHABITED, "uninhabited");
     assert!(
-        art.contains("uninhabited_interface_call:Notifier.send")
+        art.contains("uninhabited_interface_call:Notifier.notify")
             && art.contains("\"A::go\""),
         "the unknown must name the interface and callee:\n{}",
         art

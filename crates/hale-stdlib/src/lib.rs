@@ -307,7 +307,6 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "term", "size"], "__std_term_size"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
-    (&["std", "io", "tcp", "LogEvent"], "__StdIoTcpLogEvent"),
     // hale-bun upstream item 4b: public raw-fd send for takeover
     // consumers (the write-side companion to `close_fd`).
     (&["std", "io", "tcp", "send_fd"], "__std_io_tcp_send_fd"),

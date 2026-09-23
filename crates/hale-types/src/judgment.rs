@@ -5447,10 +5447,10 @@ pub fn judge_depends_witnessed(
             // under a wildcard declaration and enforced against it
             // at the publish site, so a hole declared `io.tcp.**`
             // cannot name an application wire. Asking globally meant
-            // one stdlib I/O call — `std::io::tcp` logs to a
-            // runtime-chosen subject — left every `depends:`
-            // declaration uncertified, including on loci that touch
-            // no I/O at all (downstream handoff). Unbounded residue
+            // one stdlib call that publishes to a runtime-chosen
+            // subject left every `depends:` declaration uncertified,
+            // including on loci that never reach it (downstream
+            // handoff). Unbounded residue
             // (an unfollowable interior call, a truncated frontier,
             // a fn-grain PUBLISHES hole) still answers yes for every
             // subject.
