@@ -1,5 +1,5 @@
-// Explicit application policy, captured once at service startup. A read key,
-// an organizational viewing context, and a grant for Practice confer no writes.
+// Explicit application policy, captured once when the API starts (GH #985).
+// An organizational viewing context and a grant for Practice confer no writes.
 import "../core" as dna;
 
 type KnowledgePolicy { valid: Bool = false; application_id: String = ""; document: String = ""; basis: String = ""; sign: Bool = false; }

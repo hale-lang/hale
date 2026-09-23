@@ -1,12 +1,12 @@
-// dna/knowledge — the knowledge graph as a service (GH #583 K1).
+// dna/core/memory_store.hl — the knowledge graph in memory (GH #583 K1,
+// GH #985).
 //
 // The record holds the decided half: every ratified idea is a
-// `knowledge.ratified` row naming a receipt. This library holds the
-// live, queryable, shared half: a `KnowledgeStore` that a service
-// (service/) applies the record's rows into and answers from. `Pq` is
-// Postgres through pond's driver; `Mem` is the same contract in
-// memory, for tests and for a laptop with nothing. Nothing here lives
-// on the local filesystem.
+// `knowledge.ratified` row naming a receipt. Memory holds the live,
+// queryable half: a `KnowledgeStore` the spine applies the record's rows
+// into on its tick (dna/operations/memory_tail.hl) and heads read under
+// their own role. `Pq` is Postgres through pond's driver, one schema per
+// record. Nothing here lives on the local filesystem.
 
 import "./pond/db" as db;
 import "./pond/pq" as pq;

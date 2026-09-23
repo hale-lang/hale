@@ -1,15 +1,14 @@
-// dna/knowledge/protected.hl — protected evidence (GH #606).
+// dna/core/memory_protected.hl — protected evidence (GH #606).
 //
 // A customer or confidential body never enters the record: not a git
-// receipt, so `sync` cannot carry it to a clone. The knowledge service
-// is its only keeper, in the record's own schema (GH #613), and every
-// read of it is an act the record names. `PqProtected` keeps each body
-// encrypted at rest with pgcrypto's OpenPGP symmetric cipher (AES-256)
-// under a key read from the environment into this sealed locus; the
-// key reaches the database session as a query parameter and nowhere
-// else, so an operator must not log statements with their parameters.
-// `MemProtected` keeps bodies for the life of the process only — no
-// disk, so nothing is at rest — for a service run with `memory`.
+// receipt, so `sync` cannot carry it to a clone. Memory is its only
+// keeper, in the record's own schema (GH #613), and every read of it is
+// an act the record names. Each body is encrypted at rest with
+// pgcrypto's OpenPGP symmetric cipher (AES-256) under a key memory holds
+// (GH #985): `PqProtected` files, reads and erases through memory's own
+// functions (receipt_file, receipt_read, receipt_erase), so no client
+// ever holds the key. A dump of the database carries the key and the
+// ciphertext together; treat it as the evidence itself (GH #989).
 
 type Protected {
     present: Bool = false;

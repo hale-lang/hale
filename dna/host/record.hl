@@ -202,6 +202,7 @@ fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, b
     if expected < 0 { return "the ledger's revision was not read"; }
     let digest = ledger_request(root, expected, kind, entity, body, author);
     if len(digest) == 0 { return "the record refused the request"; }
+    eprintln("hale dna: `", kind, " ", entity, "` is requested of the ledger as ", short(digest), " at revision ", to_string(expected), "; the body admits it on its next tick, or refuses it if the ledger moved — `hale dna history ", entity, "` shows the outcome");
     return "";
 }
 

@@ -243,7 +243,8 @@ signature of its owner's key (see
 admitted request lands in the ledger in the person's name; a refused
 one is a `ledger.request_refused` row in the record with the reason.
 `hale dna history` and `hale dna status` show which, once the spine
-has run.
+has run. The spine writes under the spine lease it holds: one that lost
+it lands nothing, and the next holder decides the request.
 
 Because a request is a row of the record, a head needs no memory to
 make one: the record is the pager. A clone with no DSN named requests
@@ -251,8 +252,8 @@ a write at the tail as any other, and `sync` carries the request to the
 body. A write decided at a ledger revision — `task done`, a
 completion — needs that revision read, so without memory its verb
 refuses ("the ledger's revision was not read") and requests nothing;
-with memory it is requested with the revision, and the verb answers as
-it would before adoption, without the digest. Before
+with memory it is requested with the revision, and says so with the
+request's digest and that revision. Before
 adoption (routing 0) there is nothing to request — operational rows go
 into the record as they always did. The host's own operational writes
 go the same way, signed as its owner.

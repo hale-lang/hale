@@ -848,6 +848,10 @@ locus Host {
         if !self.memory_on { return; }
         let held = self.spine_held();
         if !held { self.write_spine(false); return; }
+        // what it admits is fenced by the lease it holds: a spine that lost
+        // it mid-tick lands nothing more
+        self.admission.ledger.lease = SPINE_LEASE;
+        self.admission.ledger.token = self.spine_token;
         let applied = self.graph_projection.apply();
         let admitted = self.admission.tick();
         let erased = self.vault.complete_redactions();

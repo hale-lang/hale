@@ -333,7 +333,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 ),
                 Ok(MemoryPlan::NoDatabase(why)) => {
                     eprintln!("hale dna dev: {why}");
-                    host_exec_env("dev", &dir, &rest, &[], &[OWNER_DSN_ENV])
+                    host_exec_env("dev", &dir, &rest, &[], &[OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD"])
                 }
                 Err(e) => {
                     eprintln!("hale dna dev: memory: {e}");

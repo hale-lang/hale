@@ -91,8 +91,9 @@ minted when the request was captured. A write at the tail reports
 itself requested, with the request row's digest, and says that `hale
 dna history <entity>` shows the outcome; a write decided at a revision
 (`task done`, a completion, a git receipt's redaction) is requested
-with that revision as `expected`, and its verb answers as it does on
-routing 0, naming no digest. An adoption and an abandonment
+with that revision as `expected`, and says so the same way, naming the
+digest and the revision (a head with no memory named cannot read that
+revision, and requests nothing). An adoption and an abandonment
 are the record's `ledger.adopting` and `ledger.abandoning` rows above.
 The spine admits a request on its tick, once: each is keyed on its
 row's digest (`ledger_requests`), so a request already decided is
@@ -114,7 +115,10 @@ the spine, in order:
    `stale_revision` when the Ledger moved past it, and refused as
    `claimed` when a claim kind's entity is already taken.
 
-An admitted row lands in the person's name. A refusal is a
+An admitted row lands in the person's name, in the same insert, so no
+reader sees it without its author. The spine appends under the spine
+lease it holds, at its token: a spine that lost the lease lands
+nothing, and the next holder decides the request. A refusal is a
 `ledger.request_refused <request digest> {kind, entity, as, why}` row
 in the record. A request memory could not take for any other reason
 stays undecided and is tried again on the next tick. The record is the

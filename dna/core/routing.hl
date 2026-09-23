@@ -8,10 +8,9 @@
 //
 // `RoutedJournal` is the `Journal` an assembly and the host stand on: two
 // journals underneath — the record's and the Ledger's — read as one
-// merged sequence, appended to by kind. `ServiceLedger` is the Ledger as
-// the organism and the host reach it: over HTTP, through the knowledge
-// service, which is the one DNA program that holds the database (the
-// core links no driver; a head never holds database credentials).
+// merged sequence, appended to by kind. `MemoryLedger` (memory_spine.hl)
+// is the Ledger as the organism and the host reach it, under the record's
+// spine role; a head reaches it read-only and writes by request (GH #985).
 
 const ROUTING_VERSION: Int = 1;
 

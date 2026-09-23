@@ -1,6 +1,8 @@
-// dna/knowledge/tail.hl — the record applied into the store (GH #583 K1).
+// dna/operations/memory_tail.hl — the record applied into memory (GH #583
+// K1). It lives in operations, not the core, and runs on the host's tick
+// under the spine lease (GH #985).
 //
-// The service is a CONSUMER of the record: it reads `knowledge.*` rows
+// The projection is a CONSUMER of the record: it reads `knowledge.*` rows
 // from the store's watermark on, resolves each ratified digest to its
 // receipt (the canonical document), and upserts by digest. Git is the
 // sole authority: nothing in the store becomes ratified except from a

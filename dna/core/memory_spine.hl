@@ -100,10 +100,18 @@ locus MemoryLedger {
         if len(fence) > 0 { self.failure = fence; return AppendResult { error: "refused", expected: expected, actual: self.store.revision() }; }
         return self.store.append_exact(expected, kind, entity, body);
     }
+    // An append in `author`'s name: the row lands under it in one insert, so
+    // no reader ever sees an admitted row without its author (GH #985).
+    fn append_as(expected: Int, kind: String, entity: String, body: String, author: String, exact: Bool) -> AppendResult {
+        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        self.store.writer = if len(author) > 0 { author } else { "ledger" };
+        let r = if exact { self.append_exact(expected, kind, entity, body) } else { self.append(expected, kind, entity, body) };
+        self.store.writer = "ledger";
+        return r;
+    }
     // ---- what the spine's admission and adoption do beside appending
     fn seen(request_id: String) -> Int { if !self.ensure_open() { return -3; } return self.store.seen(request_id); }
     fn mark(request_id: String, revision: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.mark(request_id, revision); }
-    fn name_author(i: Int, author: String) -> Bool { if !self.ensure_open() { return false; } return self.store.name_author(i, author); }
     fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool { if !self.ensure_open() { return false; } return self.store.adopt_row(kind, entity, body, author, record_seq, commit); }
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.cutover(checkpoint, copied, routing); }
     fn checkpoint() -> Cutover { if !self.ensure_open() { return Cutover { }; } return self.store.checkpoint(); }
@@ -687,7 +695,7 @@ locus RequestAdmission {
             let why = self.admission_refusal(kind, entity, author);
             if len(why) > 0 { return self.refuse(request, why); }
         }
-        let r = if expected >= 0 { self.ledger.append_exact(expected, kind, entity, text) } else { self.ledger.append(self.ledger.revision(), kind, entity, text) };
+        let r = if expected >= 0 { self.ledger.append_as(expected, kind, entity, text, author, true) } else { self.ledger.append_as(self.ledger.revision(), kind, entity, text, author, false) };
         if !r.ok {
             if r.error == "stale_revision" { return self.refuse(request, "stale_revision: the ledger moved past revision " + to_string(expected) + ", where the decision was read"); }
             // GH #666: a claim kind's entity is taken — the first claim holds
@@ -695,7 +703,6 @@ locus RequestAdmission {
             self.last_error = "the ledger refused request " + request.digest + ": " + self.ledger.last_error();
             return false;
         }
-        if len(author) > 0 { let named = self.ledger.name_author(r.revision - 1, author); }
         if !self.ledger.mark(request.digest, r.revision) { self.last_error = "request " + request.digest + " landed at " + to_string(r.revision) + ", but the ledger could not mark it: " + self.ledger.last_error(); return false; }
         self.admitted = self.admitted + 1;
         return true;

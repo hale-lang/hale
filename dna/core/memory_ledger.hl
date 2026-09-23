@@ -1,8 +1,7 @@
-// dna/knowledge/ledger.hl — the Ledger: the organism's operational memory
-// in the store (GH #646 stage 1, #650). `PqLedger` is the record-scoped
-// table in Postgres, `MemLedger` the same contract for the life of a
-// process. The knowledge service serves either over HTTP (`/ledger/*`),
-// and the core's `ServiceLedger` is what an organism and a head hold.
+// dna/core/memory_ledger.hl — the Ledger: the organism's operational
+// memory (GH #646 stage 1, #650). `PqLedger` is the record-scoped table in
+// Postgres; the core's `MemoryLedger` (memory_spine.hl) is what an
+// organism and a head hold, and the spine is its one writer (GH #985).
 //
 // Rows are appended under compare-and-swap on the tail — one insert
 // conditioned on the row count — so a reservation read at a revision
@@ -64,8 +63,6 @@ interface Ledger {
     // was refused); an id never seen is -2.
     fn seen(request_id: String) -> Int;
     fn mark(request_id: String, revision: Int) -> Bool;
-    // The row at `i` is in a person's name (the service admitted it as them).
-    fn name_author(i: Int, author: String) -> Bool;
 }
 
 // The row as it is served: the event plus its author.
@@ -93,6 +90,9 @@ fn claim_kind(kind: String) -> Bool {
 
 locus PqLedger {
     params {
+        // the author an append writes the row under: the ledger's own, or
+        // the person a request was admitted for, in the same insert (GH #985)
+        writer: String = "ledger";
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
         // GH #985: the environment variable naming this store's DSN, read
         // at open; "" when the connection was built from a DSN in hand
@@ -275,7 +275,7 @@ locus PqLedger {
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         let mut attempt = 0;
         while attempt < 200 {
-            let out = self.insert(self.rows.len(), kind, entity, body, "ledger", -1, "");
+            let out = self.insert(self.rows.len(), kind, entity, body, self.writer, -1, "");
             if len(out) == 0 { return AppendResult { ok: true, revision: self.rows.len() }; }
             if out != "stale" { return AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() }; }
             self.load();
@@ -288,7 +288,7 @@ locus PqLedger {
         let moved = self.refresh();
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        let out = self.insert(rev, kind, entity, body, "ledger", -1, "");
+        let out = self.insert(rev, kind, entity, body, self.writer, -1, "");
         if len(out) == 0 { return AppendResult { ok: true, revision: self.rows.len() }; }
         if out == "stale" { self.load(); return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() }; }
         return AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() };
@@ -328,15 +328,6 @@ locus PqLedger {
         let at = self.meta("checkpoint");
         if len(at) == 0 { return Cutover { }; }
         return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
-    }
-    fn name_author(i: Int, author: String) -> Bool {
-        let a = db::Args { };
-        a.add(to_string(i));
-        a.add(author);
-        let r = self.run_x("UPDATE ledger_rows SET author = $2 WHERE seq = $1::bigint", a);
-        if !r.ok { return self.fail("author", r.err); }
-        if i >= 0 && i < self.authors.len() { self.authors.set(i, author) or discard; }
-        return true;
     }
     fn seen(request_id: String) -> Int {
         let a = db::Args { };

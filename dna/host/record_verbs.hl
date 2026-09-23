@@ -313,8 +313,7 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String) -> Answer 
 // every operational row keyed by its commit, records the cutover, and
 // appends `ledger.adopted` naming the checkpoint. From that commit on,
 // operational kinds are requested of the spine, never written into the
-// record. Until every operational write path exists (stage 3, #652)
-// adoption is closed: it opens for fixtures with HALE_DNA_ADOPT_UNGATED.
+// record. It needs a running spine to carry it out.
 
 fn ledger_status(root: String) -> String {
     let routing = routing_here(root);

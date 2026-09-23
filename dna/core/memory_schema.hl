@@ -1,4 +1,4 @@
-// dna/knowledge/schema.hl — memory's schema, applied by its owner
+// dna/core/memory_schema.hl — memory's schema, applied by its owner
 // (GH #985).
 //
 // Every store used to create its own tables on every open and every

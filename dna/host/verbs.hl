@@ -1094,7 +1094,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
                 }
                 k = k + 1;
             }
-            let state = if len(redaction) > 0 { redaction + (if len(hold) > 0 { " · " + hold } else { "" }) } else if len(hold) > 0 { hold } else if e.kind == "receipt.withheld" { "withheld: " + std::json::find_string_field(e.body, "why") } else { "kept by the knowledge service" };
+            let state = if len(redaction) > 0 { redaction + (if len(hold) > 0 { " · " + hold } else { "" }) } else if len(hold) > 0 { hold } else if e.kind == "receipt.withheld" { "withheld: " + std::json::find_string_field(e.body, "why") } else { "kept in memory" };
             out = out + "  " + e.entity + " [" + std::json::find_string_field(e.body, "class") + "] " + state + (if len(disclosures) > 0 { " · " + disclosures } else { "" }) + " · read " + to_string(reads) + ", refused " + to_string(refusals) + "\n";
         }
         i = i + 1;

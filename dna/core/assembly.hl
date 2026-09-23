@@ -513,7 +513,7 @@ locus Dna {
         if !protected_class(class) { return "sha256:" + self.verification.receipts.store(text); }
         let kept = if self.vault.ready() { self.vault.keep(text, class, by) } else { "" };
         if kept != digest {
-            let why = if !self.vault.ready() { "no memory to keep protected evidence (HALE_DNA_MEMORY_DSN_SPINE, and HALE_DNA_RECEIPT_KEY)" } else if len(kept) == 0 { self.vault.last_error } else { "the service answered another digest" };
+            let why = if !self.vault.ready() { "no memory to keep protected evidence (HALE_DNA_MEMORY_DSN_SPINE; the receipt key is memory's, set at migration)" } else if len(kept) == 0 { self.vault.last_error } else { "memory kept it under another digest" };
             let b = std::json::Builder { };
             b.begin_object();
             b.string_field("class", class);
