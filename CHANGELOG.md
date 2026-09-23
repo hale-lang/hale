@@ -35,6 +35,12 @@ behavior.
   writes landed inside every one — the full DNA suite on a laptop hit it.
   Attempt *k* now waits (k−1)×100 ms first, about twelve seconds across
   all sixteen at most.
+- `journal_test`'s `wait_exit` waits through a transient -1: a run's code
+  is written by the shell that waited for it just after the run ends, and
+  a read in between saw a dead pid and no code — a loaded CI runner read
+  -1 for a run that exited 124. (That grace put inside `exit_code` itself
+  stalled every host tick polling a child gone for good, and broke
+  `b1_team_test` on a Mac; it stays in the test's bounded wait.)
 - `dna_design`'s `finish()` waits for the record to stand still before it
   kills the organism. A verdict's "settled" answer is the Review's own
   row; the organism's consequence (`knowledge.ratified` / `declined` /

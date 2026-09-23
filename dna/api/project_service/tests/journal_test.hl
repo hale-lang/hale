@@ -51,15 +51,21 @@ fn lines_in(state_dir: String, command_id: String, state: String) -> Int {
     return n;
 }
 
+// A run's exit code, waiting up to `max_ms` for it. -1 ("gone, no code")
+// is waited through too: the shell that records the code writes it just
+// after the run ends, so a read in between sees a dead pid and no code
+// yet — on a loaded runner this read -1 for a run that exited 124
+// (GH #970). A -1 that holds to the end of the wait is the answer.
 fn wait_exit(p: head::Proc, max_ms: Int) -> Int {
     let mut waited = 0;
+    let mut code = -2;
     while waited < max_ms {
-        let code = head::exit_code(p);
-        if code != -2 { return code; }
+        code = head::exit_code(p);
+        if code != -2 && code != -1 { return code; }
         std::time::sleep(20ms);
         waited = waited + 20;
     }
-    return -2;
+    return code;
 }
 
 // A journal over `state`: a free function, since a method may not
