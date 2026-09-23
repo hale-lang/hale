@@ -21,6 +21,17 @@ behavior.
   record's schema and check its version, refusing another version by
   name; the knowledge service connects as the spine role, which cannot
   change the schema or read another record's.
+### Interface methods declare `fallible(E)` (GH #732)
+
+- **`interface I { fn put(k: String) -> Int fallible(E); }`** parses,
+  and a call through the interface carries the error channel: every
+  `or` form applies, and an unaddressed call is rejected as a direct
+  one is.
+- **Conformance:** an infallible method satisfies a fallible interface
+  method (the compiler puts an adapter in the vtable slot); a fallible
+  method does not satisfy an infallible one; error types must match
+  exactly. Each mismatch is a check error naming both signatures, and
+  an imported interface enforces its error types the same way.
 
 ### `hale dna status` verifies the chain at the head it loaded (GH #1017)
 

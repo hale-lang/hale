@@ -976,6 +976,7 @@ fn register_interface(
                 Some(te) => resolve_type_expr(te, known),
                 None => Ty::Unit,
             },
+            fallible: m.fallible.as_ref().map(|te| resolve_type_expr(te, known)),
             span: m.span,
         })
         .collect();

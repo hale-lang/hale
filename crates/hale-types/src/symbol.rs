@@ -187,6 +187,9 @@ pub struct InterfaceMethodInfo {
     pub name: String,
     pub params: Vec<(String, Ty)>,
     pub ret: Ty,
+    /// GH #732: the declared `fallible(E)` error type, as on
+    /// `MethodInfo.fallible`.
+    pub fallible: Option<Ty>,
     pub span: Span,
 }
 

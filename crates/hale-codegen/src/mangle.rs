@@ -808,6 +808,9 @@ impl<'a> QualifiedRenameApplier<'a> {
                     if let Some(r) = &mut m.ret {
                         self.rewrite_type_expr(r);
                     }
+                    if let Some(fal) = &mut m.fallible {
+                        self.rewrite_type_expr(fal);
+                    }
                 }
             }
             TopDecl::Topic(t) => self.rewrite_type_expr(&mut t.payload),
@@ -1819,6 +1822,9 @@ impl<'a> Mangler<'a> {
             }
             if let Some(r) = &mut m.ret {
                 self.walk_type_expr(r);
+            }
+            if let Some(fal) = &mut m.fallible {
+                self.walk_type_expr(fal);
             }
         }
     }
