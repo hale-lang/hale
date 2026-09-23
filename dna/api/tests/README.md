@@ -72,10 +72,8 @@ Coverage includes:
   traversal and source-path refusal, unsupported methods, incomplete or empty
   webroot rejection, startup-loaded assets and unchanged API-only behavior.
   The shell is public without Record data; OIDC still gates API reads, and the
-  successful sign-in callback lands on the served shell. Public observer metadata
-  exposes only the profile and configured origin; strict origin validation,
-  startup-captured configuration and the exact CSP connection source are covered.
-  API-only startup ignores the unused observer setting.
+  successful sign-in callback lands on the served shell, whose CSP connects to
+  its own origin only.
 
 The identity-provider fixture follows the existing principal OIDC test's direct
 token-endpoint trust model. It does not test a production provider, TLS or token
@@ -94,7 +92,7 @@ integration coverage. The fixture re-executes with inherited Git plumbing and
 private store/auth settings removed before making temporary Record writes.
 
 During recovery validation, serialize native builds/runs with
-`flock /tmp/iris-native-validation.lock`. Build with hard address space 2 GiB,
+`flock /tmp/face-native-validation.lock`. Build with hard address space 2 GiB,
 CPU 30 seconds and wall 40 seconds; run the focused binary with hard address
 space 512 MiB, CPU 10 seconds and wall 15 seconds, with core dumps disabled.
 The same run limits apply to the native contract checker and validator tests.
@@ -116,7 +114,7 @@ separate from observed Review settlement and adoption. Both operations use one
 lookup namespace; script-only cross-operation key conflict is conformance evidence.
 
 `commands/main.hl` is an opt-in HTTP fixture for browser conformance. It requires
-`HALE_COCKPIT_SCRIPTED_COMMANDS=1` and takes `ROOT PORT WEBROOT`. Its provider holds
+`HALE_FACE_SCRIPTED_COMMANDS=1` and takes `ROOT PORT WEBROOT`. Its provider holds
 request metadata in memory and returns scripted proposal/review/adoption states
 selected by `ROOT/command-mode`. It does not write domain facts or provide durable
 recovery. The browser tests verify real API transport and reload recovery against

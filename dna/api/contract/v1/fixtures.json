@@ -24183,7 +24183,7 @@
       "data": {
         "state": "detached",
         "active": null,
-        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "state_dir": "/home/riley/.local/state/hale/dna/head",
         "sources_dir": "/home/riley/.config/hale-dna/sources",
         "projects_dir": "/home/riley/dna",
         "children": {
@@ -24195,13 +24195,6 @@
             "membrane_up": false,
             "mode": "",
             "exit_code": -1
-          },
-          "observer": {
-            "state": "stopped",
-            "pid": -1,
-            "since": 0,
-            "command_id": "",
-            "origin": "http://127.0.0.1:8787"
           }
         },
         "credentials": {
@@ -24348,18 +24341,6 @@
             "version": "1",
             "available": false,
             "reason_code": "detached"
-          },
-          {
-            "name": "dna.observer.start",
-            "version": "1",
-            "available": false,
-            "reason_code": "detached"
-          },
-          {
-            "name": "dna.observer.stop",
-            "version": "1",
-            "available": false,
-            "reason_code": "detached"
           }
         ]
       }
@@ -24391,7 +24372,7 @@
             "pid": 4242
           }
         },
-        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "state_dir": "/home/riley/.local/state/hale/dna/head",
         "sources_dir": "/home/riley/.config/hale-dna/sources",
         "projects_dir": "/home/riley/dna",
         "children": {
@@ -24403,13 +24384,6 @@
             "membrane_up": true,
             "mode": "run",
             "exit_code": -2
-          },
-          "observer": {
-            "state": "stopped",
-            "pid": -1,
-            "since": 0,
-            "command_id": "",
-            "origin": "http://127.0.0.1:8787"
           }
         },
         "credentials": {
@@ -24557,18 +24531,6 @@
           },
           {
             "name": "dna.handoff.sync",
-            "version": "1",
-            "available": true,
-            "reason_code": ""
-          },
-          {
-            "name": "dna.observer.start",
-            "version": "1",
-            "available": true,
-            "reason_code": ""
-          },
-          {
-            "name": "dna.observer.stop",
             "version": "1",
             "available": true,
             "reason_code": ""
@@ -25210,7 +25172,7 @@
       "data": {
         "state": "detached",
         "active": null,
-        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "state_dir": "/home/riley/.local/state/hale/dna/head",
         "sources_dir": "/home/riley/.config/hale-dna/sources",
         "projects_dir": "/home/riley/dna",
         "children": {
@@ -25222,13 +25184,6 @@
             "membrane_up": false,
             "mode": "",
             "exit_code": -1
-          },
-          "observer": {
-            "state": "stopped",
-            "pid": -1,
-            "since": 0,
-            "command_id": "",
-            "origin": "http://127.0.0.1:8787"
           }
         },
         "credentials": {
@@ -25372,18 +25327,6 @@
           },
           {
             "name": "dna.handoff.sync",
-            "version": "1",
-            "available": false,
-            "reason_code": "detached"
-          },
-          {
-            "name": "dna.observer.start",
-            "version": "1",
-            "available": false,
-            "reason_code": "detached"
-          },
-          {
-            "name": "dna.observer.stop",
             "version": "1",
             "available": false,
             "reason_code": "detached"

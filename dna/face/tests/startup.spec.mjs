@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { isolatedEnvironment, boundedNative } from './environment.mjs';
 
-const execute = promisify(execFile), cockpit = fileURLToPath(new URL('../', import.meta.url));
-const launcher = path.join(cockpit, 'start.sh');
+const execute = promisify(execFile), face = fileURLToPath(new URL('../', import.meta.url));
+const launcher = path.join(face, 'start.sh');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function port() {
   const server = net.createServer(); await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -22,7 +22,7 @@ async function stop(child) {
 }
 const test = base.extend({
   project: async ({}, use) => {
-    const scratch = await mkdtemp('/tmp/hale-iris-startup.'), root = path.join(scratch, 'fresh project $literal');
+    const scratch = await mkdtemp('/tmp/hale-face-startup.'), root = path.join(scratch, 'fresh project $literal');
     const env = isolatedEnvironment(); env.HALE_BIN = process.env.HALE_BIN;
     if (!env.HALE_BIN || !process.env.HALE_API_BIN) throw new Error('Run through the native browser test launcher or provide HALE_BIN and HALE_API_BIN.');
     const generated = boundedNative(env.HALE_BIN, ['dna', 'new', root], { build: true });
@@ -62,7 +62,7 @@ const test = base.extend({
         // The head keeps a registry and receipts under the state directory:
         // every launch here gets its own, never the operator's.
         childEnv.XDG_STATE_HOME = path.join(scratch, 'state'); childEnv.XDG_CONFIG_HOME = path.join(scratch, 'config');
-        childEnv.HALE_IRIS_HEAD_STATE = path.join(scratch, 'head-state-' + String(chosenPort)); stateDirs.push(childEnv.HALE_IRIS_HEAD_STATE);
+        childEnv.HALE_DNA_HEAD_STATE = path.join(scratch, 'head-state-' + String(chosenPort)); stateDirs.push(childEnv.HALE_DNA_HEAD_STATE);
         // The launcher builds the head unless handed one: a case that supplies
         // the API also supplies a built head when the environment names one,
         // and otherwise takes the build budget for the head it will build.
@@ -108,7 +108,7 @@ test('One-command startup builds native Iris for a fresh DNA project without cha
   await expect(page.getByRole('button', { name: 'Edit ownership', exact: true })).toBeEnabled();
   const capabilities = await page.request.get(`${service.origin}/api/hale/v1/applications/${service.application}/capabilities`);
   // The head attaches the project under a synthesized local policy, so the
-  // cockpit it serves can write practices and verdicts; definitions stay off.
+  // face it serves can write practices and verdicts; definitions stay off.
   const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(false); expect(caps.data.writes.practice_propose).toBe(true);
   expect(await project.state()).toEqual(before); expect(errors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath('fresh-project-iris.png') });
@@ -116,7 +116,7 @@ test('One-command startup builds native Iris for a fresh DNA project without cha
   await stop(service.child); expect(await readdir(service.tmpdir)).toEqual([]);
 });
 
-test('An existing native API starts separately and one cockpit stopping leaves the other running', async ({ page, project }) => {
+test('An existing native API starts separately and one face stopping leaves the other running', async ({ page, project }) => {
   const before = await project.state(), first = await project.start(), second = await project.start();
   await page.goto(first.origin + '/#/practices');
   await expect(page.getByRole('heading', { name: 'Practices', exact: true })).toBeVisible();

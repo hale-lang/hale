@@ -1,7 +1,7 @@
 // Focused app/provider proofs over real SQLite; no DNA state or mocked provider.
 import ".." as intake;
 import "../sqlite" as sqlite;
-import "../../../service" as service;
+import "../../../../dna/face/service" as service;
 
 locus Proof {
     params { root: String = ""; }

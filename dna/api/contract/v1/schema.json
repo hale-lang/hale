@@ -10972,7 +10972,7 @@
         "arguments"
       ],
       "additionalProperties": false,
-      "description": "The ask `hale dna ask` makes, raised from the cockpit: an outcome (natively at most 8192 UTF-8 bytes, control bytes preserved) for a position, conditioned on the Record head it was prepared against. The asker is the authenticated principal; the expected principal confers no authority. No caller-supplied intent id, from, via or Task id."
+      "description": "The ask `hale dna ask` makes, raised from the face: an outcome (natively at most 8192 UTF-8 bytes, control bytes preserved) for a position, conditioned on the Record head it was prepared against. The asker is the authenticated principal; the expected principal confers no authority. No caller-supplied intent id, from, via or Task id."
     },
     "TaskCreateCommandCapabilities": {
       "type": "object",
@@ -11943,9 +11943,7 @@
         "dna.connection.close",
         "dna.handoff.publish",
         "dna.handoff.accept",
-        "dna.handoff.sync",
-        "dna.observer.start",
-        "dna.observer.stop"
+        "dna.handoff.sync"
       ],
       "description": "The closed set of head operations; every one is version 1 and is the CLI verb, run detached by the head."
     },
@@ -12091,51 +12089,15 @@
       "additionalProperties": false,
       "description": "The local body as the head sees it: its own child, or `external` when `<root>/.hale/dna/org.pid` is alive and not a head child."
     },
-    "HeadObserver": {
-      "type": "object",
-      "properties": {
-        "state": {
-          "enum": [
-            "stopped",
-            "running",
-            "exited"
-          ]
-        },
-        "pid": {
-          "type": "integer"
-        },
-        "since": {
-          "type": "integer"
-        },
-        "command_id": {
-          "type": "string"
-        },
-        "origin": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "state",
-        "pid",
-        "since",
-        "command_id",
-        "origin"
-      ],
-      "additionalProperties": false
-    },
     "HeadChildren": {
       "type": "object",
       "properties": {
         "body": {
           "$ref": "#/$defs/HeadBody"
-        },
-        "observer": {
-          "$ref": "#/$defs/HeadObserver"
         }
       },
       "required": [
-        "body",
-        "observer"
+        "body"
       ],
       "additionalProperties": false
     },
@@ -12241,8 +12203,8 @@
           "items": {
             "$ref": "#/$defs/HeadOperation"
           },
-          "minItems": 25,
-          "maxItems": 25
+          "minItems": 23,
+          "maxItems": 23
         }
       },
       "required": [
@@ -12824,7 +12786,6 @@
           "enum": [
             "run",
             "body",
-            "observer",
             "inline"
           ]
         },
@@ -12853,7 +12814,7 @@
         "log"
       ],
       "additionalProperties": false,
-      "description": "How the command executed: a detached run, a long-lived body or observer child, or inline in the POST. `external` says whether a deadline yields outcome_unknown (true) or failed."
+      "description": "How the command executed: a detached run, the long-lived body child, or inline in the POST. `external` says whether a deadline yields outcome_unknown (true) or failed."
     },
     "HeadCommandReceipt": {
       "type": "object",

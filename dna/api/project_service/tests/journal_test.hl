@@ -215,7 +215,7 @@ locus JournalCases {
         std::test::assert_eq_int(fresh.settle(std::time::now(), probe), 0, "nothing to settle after a restart");
     }
 
-    // A body/observer receipt settles from what the dispatcher saw.
+    // A body receipt settles from what the dispatcher saw.
     fn child_receipts() {
         let j = open_journal(self.state);
         let probe = ProbeOutcomes { };
@@ -227,11 +227,11 @@ locus JournalCases {
         std::test::assert(!j.settle_child(s.receipt.command_id, true, false, -2, "", now, probe), "alive and not ready stays running");
         std::test::assert(j.settle_child(s.receipt.command_id, true, true, -2, "", now, probe), "ready settles");
         std::test::assert_eq_str(j.find(s.receipt.command_id).state, "succeeded", "a ready child succeeded");
-        let e = j.submit("local", "tester", request("head-observer", "dna.observer.start", "app-one", "{}"), "", "");
-        j.admit(e.receipt.command_id); j.running(e.receipt.command_id, "observer", 4243, "", now + 30, false);
-        std::test::assert(j.settle_child(e.receipt.command_id, false, false, 2, "refused: no membrane", now, probe), "an exited child settles");
+        let e = j.submit("local", "tester", request("head-body-exited", "dna.body.local.start", "app-one", "{\"mode\":\"dev\"}"), "mode owner", "");
+        j.admit(e.receipt.command_id); j.running(e.receipt.command_id, "body", 4243, "", now + 600, false);
+        std::test::assert(j.settle_child(e.receipt.command_id, false, false, 2, "exited before the membrane was up", now, probe), "an exited child settles");
         let r = j.find(e.receipt.command_id);
-        std::test::assert(r.state == "failed" && r.exit_code == 2 && r.reason_code == "child_exited" && r.reason == "refused: no membrane", "an exited child failed with its log");
+        std::test::assert(r.state == "failed" && r.exit_code == 2 && r.reason_code == "child_exited" && r.reason == "exited before the membrane was up", "an exited child failed with its log");
         std::test::assert(!j.settle_child(e.receipt.command_id, false, false, 2, "", now, probe), "a terminal receipt does not settle twice");
     }
 

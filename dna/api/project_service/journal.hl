@@ -100,14 +100,14 @@ fn whole_lines(path: String, what: String) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         if nl < 0 {
-            eprintln("hale iris head: ", what, ": dropped a torn last line (", len(rest), " bytes without a newline)");
+            eprintln("hale dna head: ", what, ": dropped a torn last line (", len(rest), " bytes without a newline)");
             break;
         }
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         if std::json::valid_object(line) { out = out + line + "\n"; } else { skipped = skipped + 1; }
     }
-    if skipped > 0 { eprintln("hale iris head: ", what, ": skipped ", skipped, " line(s) that are not JSON objects"); }
+    if skipped > 0 { eprintln("hale dna head: ", what, ": skipped ", skipped, " line(s) that are not JSON objects"); }
     return out;
 }
 
@@ -340,7 +340,7 @@ locus HeadJournal {
         self.append_line(command_id, "refused", ",\"reason_code\":" + codec.quote(reason_code) + ",\"reason\":" + codec.quote(reason));
     }
 
-    // `child` is run | body | observer | inline.
+    // `child` is run | body | inline.
     fn running(command_id: String, child: String, pid: Int, argv_digest: String, deadline: Int, external: Bool) {
         let codec = ops::GovernanceCommandCodec { };
         self.append_line(command_id, "running", ",\"child\":" + codec.quote(child) + ",\"pid\":" + to_string(pid) + ",\"argv_digest\":" + codec.quote(argv_digest)
@@ -432,7 +432,7 @@ locus HeadJournal {
         return n;
     }
 
-    // A `running` body/observer receipt, from what the dispatcher saw of
+    // A `running` body receipt, from what the dispatcher saw of
     // the child: ready → succeeded; exited → failed with its log tail;
     // past its deadline → the tree is killed, then failed (internal) or
     // outcome_unknown (external). True when it was finalized.

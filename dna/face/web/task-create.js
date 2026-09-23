@@ -1,4 +1,4 @@
-/* Raising work: the "New task" form, the cockpit's `hale dna ask`.
+/* Raising work: the "New task" form, the face's `hale dna ask`.
  * This module performs no requests, writes or persistence. */
 "use strict";
 (() => {

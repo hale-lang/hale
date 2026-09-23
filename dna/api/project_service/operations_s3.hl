@@ -1,13 +1,13 @@
-// dna/api/project_service/operations_s3.hl — the sixteen operations lane
-// of the cockpit head (GH #965, its contract's operation table):
+// dna/api/project_service/operations_s3.hl — the fourteen operations lane
+// of the head (GH #965, its contract's operation table):
 // the supervised local body (start, stop), the body on a server
 // (provision, start, stop, logs), secrets by source name, the models
-// probe, connections and handoffs, and the observer.
+// probe, and connections and handoffs.
 //
 // Every verb is the CLI verb. A `run` plan is a `sh -e` script the head
-// writes 0600 and wraps in `timeout`; a `body` or `observer` plan is a
-// long-lived child's argv; the two inline operations (the local body's
-// stop, the observer's stop) act here, through `children.hl`. The head
+// writes 0600 and wraps in `timeout`; a `body` plan is a long-lived
+// child's argv; the inline operation (the local body's stop) acts
+// here, through `children.hl`. The head
 // appends nothing to any Record: the verbs write their own rows under
 // `--as` / `--by <principal>`.
 //
@@ -22,7 +22,7 @@
 import "../../core" as dna;
 import "../../operations" as ops;
 
-const S3_OPERATIONS: String = " dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync dna.observer.start dna.observer.stop ";
+const S3_OPERATIONS: String = " dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync ";
 // The last line a run prints for its outcome (see the file comment).
 const S3_TRAILER: String = "hale-head-outcome: ";
 // The membrane's two sockets (`dna/host/record.hl`): both present, and
@@ -37,7 +37,7 @@ const S3_ID_CHARS: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY
 
 // ---- the table ----------------------------------------------------------
 
-// The sixteen S3 operation names.
+// The fourteen S3 operation names.
 fn s3_known(operation: String) -> Bool { return std::str::contains(S3_OPERATIONS, " " + operation + " "); }
 
 // The closed argument allowlist, space-separated, in fingerprint order.
@@ -85,14 +85,6 @@ fn s3_external(ctx: HeadContext) -> Bool { return s3_pid_alive(s3_org_pid(ctx.ac
 // `hale dna run|dev <root> --no-iris`: what the host itself is (the
 // CLI execs it in place, so the child's pid is the host's).
 fn s3_body_argv(ctx: HeadContext, mode: String) -> String { return ctx.hale + "\ndna\n" + mode + "\n" + ctx.active_root + "\n--no-iris"; }
-
-// What the host launches for its own observer (`dna/host/host.hl`).
-fn s3_observer_argv(ctx: HeadContext) -> String {
-    let d = s3_dna_dir(ctx.active_root);
-    return ctx.hale + "\niris\n" + to_string(ctx.observer_port) + "\n" + d + "/current.topology";
-}
-
-fn s3_observer_origin(ctx: HeadContext) -> String { return "http://127.0.0.1:" + to_string(ctx.observer_port); }
 
 // The mode the head's body child was started in, from the argv digest
 // its `.cmd` records: run | dev | "" (no child, or not a body argv).
@@ -334,7 +326,6 @@ fn s3_reason(code: String) -> String {
     if code == "body_running" { return "a local body already runs for this project (its organization holds .hale/dna/org.pid)"; }
     if code == "body_not_running" { return "no local body runs for this project"; }
     if code == "no_seed" { return "the project has no dna/org/main.hl to run"; }
-    if code == "membrane_down" { return "the organism's membrane is not up (no body runs, or it has not bound its sockets and cut .hale/dna/current.topology)"; }
     if code == "source_missing" { return "no secret source exists: write a file under the sources directory (mode 0600, one line) or export a catalog credential in the head's environment"; }
     return code;
 }
@@ -351,9 +342,6 @@ fn s3_available(ctx: HeadContext, operation: String) -> String {
     }
     if operation == "dna.body.local.stop" {
         return if s3_body_alive(ctx) || s3_pid_alive(s3_org_pid(root)) { "" } else { "body_not_running" };
-    }
-    if operation == "dna.observer.start" {
-        return if s3_membrane_up(root) && std::io::fs::file_exists(s3_dna_dir(root) + "/current.topology") { "" } else { "membrane_down" };
     }
     if operation == "dna.secret.set" || operation == "dna.secret.rotate" {
         return if s3_file_sources(ctx.sources_dir) > 0 || len(s3_env_present(root)) > 0 { "" } else { "source_missing" };
@@ -381,9 +369,7 @@ fn s3_plan(ctx: HeadContext, operation: String, arguments: String) -> Plan {
     if operation == "dna.connection.close" { return s3_plan_disconnect(ctx, arguments); }
     if operation == "dna.handoff.publish" { return s3_plan_handoff_publish(ctx, arguments); }
     if operation == "dna.handoff.accept" { return s3_plan_handoff_accept(ctx, arguments); }
-    if operation == "dna.handoff.sync" { return s3_run("\"$HALE_BIN\" dna handoff sync\n" + s3_trailer("{}"), ctx.active_root, 120, true); }
-    if operation == "dna.observer.start" { return s3_plan_observer_start(ctx); }
-    return s3_stop_observer(ctx);
+    return s3_run("\"$HALE_BIN\" dna handoff sync\n" + s3_trailer("{}"), ctx.active_root, 120, true);
 }
 
 // `dna.body.local.start`: `git config dna.owner` when given, then the
@@ -641,22 +627,6 @@ fn s3_plan_handoff_accept(ctx: HeadContext, arguments: String) -> Plan {
     return s3_run(script, ctx.active_root, 120, true);
 }
 
-// `dna.observer.start`: `hale iris` over the membrane as the host itself
-// launches it; an observer already running is the effect, not a refusal.
-fn s3_plan_observer_start(ctx: HeadContext) -> Plan {
-    let observer = s3_child(ctx, "observer");
-    if alive(observer) { return s3_inline("{\"pid\":" + to_string(observer.pid) + ",\"origin\":" + s3_quote(s3_observer_origin(ctx)) + "}"); }
-    return Plan { ok: true, kind: "observer", argv: s3_observer_argv(ctx), cwd: ctx.active_root, deadline_secs: 30 };
-}
-
-// `dna.observer.stop`, inline: TERM, five seconds, KILL; nothing running
-// is already stopped.
-fn s3_stop_observer(ctx: HeadContext) -> Plan {
-    let observer = s3_child(ctx, "observer");
-    if alive(observer) { stop_proc(observer); }
-    return s3_inline("{}");
-}
-
 // ---- settled runs and children ------------------------------------------
 
 // The JSON of the run's last trailer line ("{}" when it printed none —
@@ -701,9 +671,6 @@ fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: Str
         b.int_field("pid", body.pid);
         b.string_field("mode", s3_body_mode(ctx));
         b.int_field("membrane_up_at", if exit_code == 0 && s3_membrane_up(ctx.active_root) { std::time::now() } else { 0 });
-    } else if operation == "dna.observer.start" {
-        b.int_field("pid", s3_child(ctx, "observer").pid);
-        b.string_field("origin", s3_observer_origin(ctx));
     } else if operation == "dna.body.provision" {
         let dry = std::json::find_bool_field(facts, "dry_run");
         b.string_field("target", json_text(facts, "target"));
@@ -727,31 +694,17 @@ fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: Str
     return b.result();
 }
 
-// Whether `GET /` on the loopback port answers within two seconds: the
-// §2.9 exchange, one request, the read bounded by the socket's timeout.
-fn s3_http_answers(port: Int) -> Bool {
-    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
-    if fd < 0 { return false; }
-    std::io::tcp::__set_recv_timeout_ns(fd, 2000000000);
-    let s = std::io::tcp::Stream { conn_fd: fd };
-    s.send("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n") or discard;
-    let got = s.recv(8192) or "";
-    return std::str::starts_with(got, "HTTP/1.");
-}
-
-// body: the membrane sockets exist; observer: GET / answers.
+// body: the membrane sockets exist.
 fn s3_child_ready(ctx: HeadContext, name: String) -> Bool {
     if name == "body" { return s3_membrane_up(ctx.active_root); }
-    if name == "observer" { return s3_http_answers(ctx.observer_port); }
     return false;
 }
 
 // The GET /head "children" object (adds membrane_up, mode, external).
-fn s3_children_json(ctx: HeadContext, body: ChildView, observer: ChildView) -> String {
+fn s3_children_json(ctx: HeadContext, body: ChildView) -> String {
     let attached = len(ctx.active_id) > 0;
     let external = attached && s3_external(ctx) && !body.alive;
     let body_state = if external { "external" } else if body.alive { "running" } else if body.pid > 0 && body.exit_code != -2 { "exited" } else { "stopped" };
-    let observer_state = if observer.alive { "running" } else if observer.pid > 0 && observer.exit_code != -2 { "exited" } else { "stopped" };
     let b = std::json::Builder { };
     b.begin_object();
     b.begin_object_field("body");
@@ -762,13 +715,6 @@ fn s3_children_json(ctx: HeadContext, body: ChildView, observer: ChildView) -> S
     b.bool_field("membrane_up", attached && s3_membrane_up(ctx.active_root));
     b.string_field("mode", if body.pid > 0 && !external { s3_body_mode(ctx) } else { "" });
     b.int_field("exit_code", body.exit_code);
-    b.end_object();
-    b.begin_object_field("observer");
-    b.string_field("state", observer_state);
-    b.int_field("pid", observer.pid);
-    b.int_field("since", observer.since);
-    b.string_field("command_id", observer.command_id);
-    b.string_field("origin", s3_observer_origin(ctx));
     b.end_object();
     b.end_object();
     return b.result();

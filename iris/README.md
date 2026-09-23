@@ -19,36 +19,34 @@ Iris knows nothing of DNA itself: it reads no record, carries no
 membrane and renders no organism status. DNA's people surface is the
 face, under `dna/face`, served by the head.
 
-The human cockpit proposal is tracked in
+The face's proposal is tracked in
 [#690](https://github.com/hale-lang/hale/issues/690). Its proposed browser/API
 boundary is in [`dna/face/CONTRACT.md`](../dna/face/CONTRACT.md), and its visual
 direction is in [`dna/face/DESIGN.md`](../dna/face/DESIGN.md). The issue defines the
 full product scope.
 
-The [browser cockpit](../dna/face/README.md) reads declared Organization structure,
+The [face](../dna/face/README.md) reads declared Organization structure,
 real Practices and Reviews through
 the [DNA read API](../dna/api/README.md). It serves from the same origin as the
-Hale API, shows source revisions and content availability, and connects to a
-configured native Runtime observer for in-cockpit process/locus inspection.
-Runtime also works from an independent static host without DNA. Knowledge and Definitions views require compatible
+Hale API and shows source revisions and content availability; it has no
+runtime view, since inspecting a running binary is iris's job. Knowledge and Definitions views require compatible
 providers advertising their read capabilities. Practice proposals and
 exact-candidate Review decisions each require their own advertised capability
 from an explicitly composed command provider; the standalone API remains read-only.
-Static declarations do not establish semantic position authority. Runtime
-observation itself continues to work independently of DNA.
+Static declarations do not establish semantic position authority.
 
 From a checkout, `./dna/face/start.sh PROJECT` builds and starts the native
 DNA API with the browser. An application's composed API can be supplied through
-`--api BINARY`; existing body/state/observer processes remain independent.
+`--api BINARY`; existing body and state processes remain independent.
 
-Ordinary Hale applications can compose the [generic application service](service/README.md)
-and expose an application-owned control in the same cockpit. The
+Ordinary Hale applications can compose the face's [generic application service](../dna/face/service/README.md)
+and expose an application-owned control in the face. The
 [intake-control example](examples/intake-control/README.md) demonstrates a real
 mode change, observed work behavior and durable receipt recovery across process
 restarts. Its database and authority belong to that application; the generic
 head does not require DNA or implement a shared command store.
 
-The previous spike (modeling-cockpit framing, May 2026) lives
+The previous spike (the May 2026 modeling-surface framing) lives
 on `main` — it remains the artifact archive (raylib bindings,
 lotus_viz, heron, pane system, MCP server). Pieces get pulled
 in here if and as needed; nothing is inherited by default.

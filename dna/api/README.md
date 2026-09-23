@@ -4,15 +4,15 @@ The service API reads practices, reviews and handed Tasks from an existing local
 and inspects the project's committed organization source. An application-composed
 head can also expose its real workflow catalog. Configured Knowledge reads use
 the private native state service and its authoritative graph store. The API runs
-separately from the organization body and Iris. Record and source reads do not
+separately from the organization body and iris. Record and source reads do not
 require Postgres; configured Knowledge reads require the state service.
 Typed projections in `dna/operations` are shared with the native CLI. The API
 does not invoke CLI operational commands or parse terminal rendering. Organization
 inspection uses the native compiler's machine-readable topology export.
 
 This is an experimental source-built service. An optional
-[Iris cockpit](../face/README.md) browses these reads from the same
-origin. The checkout provides a [cockpit launcher](../face/README.md#run-locally);
+[face](../face/README.md) browses these reads from the same
+origin. The checkout provides a [face launcher](../face/README.md#run-locally);
 there is no installed `hale dna api` subcommand or Compose service profile yet.
 Product scope and remaining service work are tracked in
 [#690](https://github.com/hale-lang/hale/issues/690).
@@ -22,12 +22,12 @@ Product scope and remaining service work are tracked in
 For the browser and the services together, `./dna/face/start.sh [PROJECT]`
 builds this checkout's [project service](#head-project-service) (the head) and
 its per-project native API (`dna/api/practice_review`) in temporary storage and
-serves the eleven browser assets from the head. The project is optional: without it
+serves the ten browser assets from the head. The project is optional: without it
 the head starts detached and the browser's Projects workspace creates,
 initializes or attaches one. Use `--api BINARY` for an existing
 application-composed API and `--head BINARY` for a built head. The launcher
 inherits private service configuration; the head is trusted-local and refuses
-a project configured for OIDC. See the cockpit README for fresh-project source
+a project configured for OIDC. See the face's README for fresh-project source
 capture and service configuration.
 
 From the Hale source checkout, using a current Hale compiler:
@@ -44,28 +44,20 @@ binds only `127.0.0.1`. Stop it with Ctrl-C. Discover the native application id:
 curl http://127.0.0.1:8792/api/hale/v1/applications
 ```
 
-To serve the cockpit as well, pass its static directory as the third argument:
+To serve the face as well, pass its static directory as the third argument:
 
 ```sh
 ./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/dna/face/web"
 ```
 
-Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/runtime.js`, `/application.js`,
-`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
-URLs never become filesystem paths. All eleven assets must exist and be nonempty
+Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/application.js`,
+`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`.
+URLs never become filesystem paths. All ten assets must exist and be nonempty
 at startup. They are loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
-cross-origin API contract.
-
-Optional `HALE_IRIS_OBSERVER_ORIGIN` supplies one trusted HTTP(S) origin for
-the browser's independent native observation. Empty/unset permits only same-origin
-connections. A valid configured origin is returned in the public
-`/iris/observer.json` profile `hale.iris.observer.v0` and added exactly to CSP
-`connect-src`; the API does not fetch or proxy it. Nonempty invalid configuration
-refuses shell startup. Paths (including a trailing slash), userinfo, queries,
-fragments, wildcard/encoded hosts and whitespace are rejected. Scheme/host and
-default ports normalize. See [Runtime setup](../face/README.md#native-runtime-connection).
+cross-origin API contract, and the CSP's `connect-src` is the API's own origin
+only.
 
 Use the returned id in the following routes:
 
@@ -291,7 +283,7 @@ durable correlation. Unsupported providers advertise no verdict capability.
 
 `tests/commands_api_test.hl` exercises the adapter with scripted providers.
 `tests/commands/main.hl` is an explicitly opted-in HTTP conformance fixture,
-requiring `HALE_COCKPIT_SCRIPTED_COMMANDS=1`. It appends no native command facts
+requiring `HALE_FACE_SCRIPTED_COMMANDS=1`. It appends no native command facts
 and provides no restart durability. It must not be used as an application writer
 or as proof that the administration loop is complete.
 
@@ -418,10 +410,10 @@ made part of this provider by these routes.
 
 ## Head: project service
 
-`dna/api/project_service` is the cockpit head (GH #965): the one process the
+`dna/api/project_service` is the head (GH #965): the one process the
 browser talks to. It serves the shell, owns the operator-machine state — a
 project registry, a receipt journal, run and child files under
-`${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/iris/head}` —
+`${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}` —
 and reverse-proxies every `/api/hale/v1/applications…` request to the attached
 project's API child (`practice_review <root> <api-port>`) on the loopback, so
 the browser has one origin and the child's exact-`Origin` guard holds untouched.
@@ -442,7 +434,7 @@ Four routes, described in `contract/v1` beside the Record routes, all under the
 head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","active"},"data"}`:
 
 - `GET /api/hale/v1/head` — detached or attached, the active project and its
-  API child, the body and observer children, credentials **by name** (what the
+  API child, the body child, credentials **by name** (what the
   catalog needs, which file sources exist, which names are set), the running
   receipt (`busy`), and every operation with its availability.
 - `GET /api/hale/v1/head/projects[?id=…]` — the registry; with `id`, the
@@ -460,7 +452,7 @@ head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","activ
   deadline `timed_out` — `outcome_unknown` when the verb is external (a push,
   a sync, a probe), never a fabricated failure. Row-writing operations carry
   `outcome.record = {head_before, head_after, rows}`.
-- `GET /api/hale/v1/head/logs?run=<command_id>|child=api|body|observer[&offset=N]` —
+- `GET /api/hale/v1/head/logs?run=<command_id>|child=api|body[&offset=N]` —
   64 KiB pages of a run's or a child's log.
 
 Operations (all version 1): `dna.project.create` / `init` (600 s runs of
@@ -468,8 +460,8 @@ Operations (all version 1): `dna.project.create` / `init` (600 s runs of
 (inline; attach validates the worktree, the Record, the `dna/` seed, and
 refuses `principal_unsupported` / `trust_unsupported` for OIDC or signed
 projects), `dna.project.sync` / `publish` (a commit and push of the genome,
-then a sync), `dna.forge.configure` / `sync`, and the sixteen body, secret,
-model, connection, handoff and observer operations of the head's contract.
+then a sync), `dna.forge.configure` / `sync`, and the fourteen body, secret,
+model, connection and handoff operations of the head's contract.
 A secret is never a value on this wire: `dna.secret.set` names a **source** —
 a 0600 one-line file under `${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/`
 or an environment variable the run's shell reads — and the file is unlinked
@@ -483,7 +475,7 @@ re-attaches the last activated project. `tests/journal_test.hl`,
 `HALE_HEAD_BIN` and `HALE_API_BIN`; each makes its own scratch root.
 ## Raising work
 
-`dna.task.create@1` is the cockpit's `hale dna ask`: it records the same
+`dna.task.create@1` is the face's `hale dna ask`: it records the same
 `intent.requested` row the CLI writes, so the host beside the organism relays it
 and the organism admits it exactly as it admits a CLI ask. The row's entity is
 the intent id (`i` plus the lower-case hex of the current monotonic
@@ -536,14 +528,14 @@ against. Its `task_create` object names the minted `intent_id`, the row's
 `intent_state` is `requested` until the organism answers, then `offered`,
 `refused`, or `born` with `task_id` filled from the `task.born` row whose body
 starts with `<intent_id>: `. A born-but-unhanded Task is absent from
-`/dna/tasks`, so `GET /commands?request_id=...` is how the cockpit follows the
+`/dna/tasks`, so `GET /commands?request_id=...` is how the face follows the
 ask; nothing else is re-read. After `ledger.adopted` new asks are refused
 (`commands_unsupported`) like every other operation here; recorded asks stay
 recoverable.
 
 Two asks minted in the same millisecond on one host would share an id and the
 organism admits one Task per id; this head steps an id its Record already holds
-to the next millisecond, which the CLI does not. A CLI ask beside a cockpit ask
+to the next millisecond, which the CLI does not. A CLI ask beside a face ask
 carries no command fields and is invisible to command lookup.
 
 ## Identity and content
@@ -561,10 +553,9 @@ read results persist. The existing UI's legacy command routes are never routed
 through this server. A mapped member has the existing Record-reading scope;
 position-scoped permissions and remote CLI tokens are future work.
 
-The optional cockpit shell and assets are public static content with no Record
-data. They can show the sign-in state and independent Runtime connection before
-authentication. Record reads still require a valid session in OIDC mode. After
-successful sign-in the existing callback redirects to `/`, where the cockpit
+The face's optional shell and assets are public static content with no Record
+data. They can show the sign-in state before authentication. Record reads still require a valid session in OIDC mode. After
+successful sign-in the existing callback redirects to `/`, where the face
 loads the authenticated API data.
 
 Practice documents must match their content digest, proposal metadata and a
@@ -631,7 +622,7 @@ Origin/framing guard and 32 KiB request bound as organization source drafts.
 It performs no project or Record writes. Live obligations, instance bindings,
 publication and activation remain unavailable in this preparation profile.
 
-Set `HALE_IRIS_ORG_DRAFTS=1` on the native API host to offer the optional
+Set `HALE_DNA_ORG_DRAFTS=1` on the native API host to offer the optional
 `dna.organization.draft.v1` capability. The browser can then read and edit the
 exact committed `dna/org/main.hl`, inspect a source diff, validate the complete
 captured organization with Hale, and export that exact candidate with its

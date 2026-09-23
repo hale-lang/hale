@@ -1,6 +1,6 @@
 # iris — design (observer reframe)
 
-Ground-up redesign, 2026-07-22. Supersedes the modeling-cockpit
+Ground-up redesign, 2026-07-22. Supersedes the modeling-surface
 framing (`VISION.md` on `main`). The spike on `main` remains the
 artifact archive; this branch is a clean slate. Pull spike code
 in if and as needed — nothing is inherited by default.

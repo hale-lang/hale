@@ -138,8 +138,8 @@ locus ScriptedCommands {
 }
 
 fn main() {
-    if std::env::var("HALE_COCKPIT_SCRIPTED_COMMANDS") != "1" {
-        eprintln("scripted command fixture requires HALE_COCKPIT_SCRIPTED_COMMANDS=1; adapter conformance only");
+    if std::env::var("HALE_FACE_SCRIPTED_COMMANDS") != "1" {
+        eprintln("scripted command fixture requires HALE_FACE_SCRIPTED_COMMANDS=1; adapter conformance only");
         std::process::exit(2);
     }
     let root = std::env::arg(1);

@@ -13,7 +13,7 @@ const test = base.extend({
     expect(errors, 'application raised no unhandled JavaScript errors').toEqual([]);
   },
 });
-test.skip(!binary, 'Supply HALE_COCKPIT_APPLICATION_BIN for the real plain-Hale administration lane.');
+test.skip(!binary, 'Supply HALE_FACE_APPLICATION_BIN for the real plain-Hale administration lane.');
 
 test('Native application: configuration, actual work, no-op and competing revisions', async ({ application: app }) => {
   const initial = await app.state();
@@ -92,7 +92,7 @@ async function prepare(page, value = 'Paused') {
 }
 const savedRequests = page => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('iris.application-recovery.v1:')).map(key => JSON.parse(localStorage.getItem(key))));
 
-test('Application cockpit: actual control and effect, literal evidence, independent Runtime', async ({ page, application: app }, testInfo) => {
+test('Application workspace: actual control and effect, literal evidence', async ({ page, application: app }, testInfo) => {
   const paths = [];
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) paths.push(new URL(request.url()).pathname); });
   await page.goto(app.origin);
@@ -112,14 +112,11 @@ test('Application cockpit: actual control and effect, literal evidence, independ
   expect(saved[0]).not.toHaveProperty('arguments'); expect(saved[0]).not.toHaveProperty('value');
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: testInfo.outputPath('application-result.png'), fullPage: true });
-  await page.getByRole('button', { name: 'Open runtime observer', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Runtime', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Back to application', exact: true }).click();
   await expect(recovery(page)).toContainText('Command succeeded');
   expect(paths.every(path => !path.includes('/dna/'))).toBe(true);
 });
 
-test('Application cockpit: lost reply recovers after both processes restart without a second POST', async ({ page, application: app }) => {
+test('Application workspace: lost reply recovers after both processes restart without a second POST', async ({ page, application: app }) => {
   let posts = 0, reservedBeforeSend;
   await page.route('**/commands', async route => {
     posts += 1;
@@ -141,7 +138,7 @@ test('Application cockpit: lost reply recovers after both processes restart with
   expect((await app.state()).control.revision).toBe('1'); expect(posts).toBe(1);
 });
 
-test('Application cockpit: refused exact request remains visible and cannot overwrite a competing change', async ({ page, application: app }) => {
+test('Application workspace: refused exact request remains visible and cannot overwrite a competing change', async ({ page, application: app }) => {
   await page.goto(app.origin); await prepare(page);
   await page.route('**/commands', async route => {
     const competitor = await app.submit(app.command(await app.state()));
@@ -156,7 +153,7 @@ test('Application cockpit: refused exact request remains visible and cannot over
   await expect(recovery(page)).toContainText('Command refused');
 });
 
-test('Application cockpit: receipt recovery remains available while state reads fail', async ({ page, application: app }) => {
+test('Application workspace: receipt recovery remains available while state reads fail', async ({ page, application: app }) => {
   await page.goto(app.origin); await prepare(page);
   await page.getByRole('button', { name: 'Submit change', exact: true }).click();
   await expect(recovery(page)).toContainText('Command succeeded');
@@ -168,7 +165,7 @@ test('Application cockpit: receipt recovery remains available while state reads 
   await expect(page.getByRole('button', { name: 'Prepare change', exact: true })).toHaveCount(0);
 });
 
-test('Application cockpit: unverifiable receipt is withheld and principal change clears private context', async ({ page, application: app }) => {
+test('Application workspace: unverifiable receipt is withheld and principal change clears private context', async ({ page, application: app }) => {
   await page.goto(app.origin); await prepare(page);
   await page.getByRole('button', { name: 'Submit change', exact: true }).click();
   await expect(recovery(page)).toContainText('Command succeeded');
@@ -192,7 +189,7 @@ test('Application cockpit: unverifiable receipt is withheld and principal change
   await expect(recovery(page)).toBeHidden();
 });
 
-test('Application cockpit: storage failure prevents transmission; mobile keyboard review stays usable', async ({ page, application: app }, testInfo) => {
+test('Application workspace: storage failure prevents transmission; mobile keyboard review stays usable', async ({ page, application: app }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(app.origin);
   await page.getByRole('button', { name: 'Prepare change', exact: true }).focus();

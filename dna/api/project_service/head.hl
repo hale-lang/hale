@@ -1,4 +1,4 @@
-// dna/api/project_service/head.hl — the cockpit head's handler
+// dna/api/project_service/head.hl — the head's handler
 // (GH #965, §2.4 of the head's contract). One process the browser
 // talks to: it serves the static shell through the API's own
 // `WebAssets`, owns the four head routes (`/api/hale/v1/head`,
@@ -38,7 +38,6 @@ type HeadConfig {
     sources_dir: String = "";
     principal_mode: String = "local";
     principal_name: String = "local";
-    observer_port: Int = 8787;
 }
 
 // How an attach ended: refused (a reason_code), failed (`ok` false
@@ -74,12 +73,12 @@ fn context_of(cfg: HeadConfig) -> HeadContext {
         active_root: if active.ok { active.root } else { "" },
         active_name: if active.ok { active.name } else { "" },
         state_dir: cfg.state_dir, sources_dir: cfg.sources_dir, children_dir: children_dir(cfg),
-        hale: cfg.hale, observer_port: cfg.observer_port
+        hale: cfg.hale
     };
 }
 
 // The environment lines every child gets (§2.6). `kind` is run | api |
-// body | observer: the Knowledge DSN reaches the body only, and
+// body: the Knowledge DSN reaches the body only, and
 // observation is never attached to a child the head starts. `env -u`
 // options come first, where `env` reads them.
 fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
@@ -125,9 +124,9 @@ fn stop_child(cfg: HeadConfig, name: String) {
     std::io::fs::unlink(pid_file(cfg, name)) or discard;
 }
 
-// Whether the project's own body or observer child is alive.
-fn body_or_observer_alive(cfg: HeadConfig) -> Bool {
-    return child_view(cfg, "body").alive || child_view(cfg, "observer").alive;
+// Whether the project's own body child is alive.
+fn body_alive(cfg: HeadConfig) -> Bool {
+    return child_view(cfg, "body").alive;
 }
 
 // At startup: a live pid whose command line is the one recorded in
@@ -135,7 +134,7 @@ fn body_or_observer_alive(cfg: HeadConfig) -> Bool {
 @unbounded
 fn readopt_children(cfg: HeadConfig) -> String {
     let mut kept = "";
-    let mut rest = "api body observer";
+    let mut rest = "api body";
     while len(rest) > 0 {
         let sp = std::str::index_of(rest, " ");
         let name = if sp < 0 { rest } else { rest[0..sp] };
@@ -204,7 +203,7 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     let reg = Registry { state_dir: cfg.state_dir };
     let current = reg.active();
     let same = current.ok && current.application_id == identity;
-    if current.ok && !same && body_or_observer_alive(cfg) { return AttachResult { refused: "body_running", reason: "stop the active project's body and observer before attaching another" }; }
+    if current.ok && !same && body_alive(cfg) { return AttachResult { refused: "body_running", reason: "stop the active project's body before attaching another" }; }
     let authority_written = write_policies(root, identity, cfg.principal_name);
     let api = child_view(cfg, "api");
     let mut attached = AttachResult { ok: true };
@@ -226,13 +225,13 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     return AttachResult { ok: true, application_id: identity, root: root, name: basename(root), authority_written: authority_written, outcome: b.result() };
 }
 
-// Detach (§2.7): refused while the body or the observer runs; else the
+// Detach (§2.7): refused while the body runs; else the
 // API child stops and the project is `deactivated`.
 fn detach_project(cfg: HeadConfig, command_id: String) -> DetachResult {
     let reg = Registry { state_dir: cfg.state_dir };
     let current = reg.active();
     if !current.ok { return DetachResult { refused: "detached", reason: "no project is attached" }; }
-    if body_or_observer_alive(cfg) { return DetachResult { refused: "body_running", reason: "stop the body and the observer before detaching" }; }
+    if body_alive(cfg) { return DetachResult { refused: "body_running", reason: "stop the body before detaching" }; }
     stop_child(cfg, "api");
     let d = reg.deactivate(current.application_id, command_id);
     return DetachResult { ok: true };
@@ -255,7 +254,7 @@ fn start_run(cfg: HeadConfig, ctx: HeadContext, command_id: String, plan: Plan) 
     return start(dir, "run", cwd, common_env(cfg, ctx.active_root, "run") + plan.envs, argv);
 }
 
-// A body or observer child (§2.7) from the plan's argv.
+// A body child (§2.7) from the plan's argv.
 fn start_long_child(cfg: HeadConfig, ctx: HeadContext, plan: Plan) -> Proc {
     let dir = children_dir(cfg);
     std::io::fs::mkdir(dir) or discard;
@@ -283,8 +282,8 @@ locus HeadOutcomes {
 }
 
 // Every `running` receipt that can be settled from its files is (§2.3):
-// runs from `run.{pid,exit,log}` and their deadlines, body and observer
-// children from their liveness and the operations file's readiness predicate.
+// runs from `run.{pid,exit,log}` and their deadlines, the body child
+// from its liveness and the operations file's readiness predicate.
 @unbounded
 fn settle_all(cfg: HeadConfig) {
     let j = HeadJournal { state_dir: cfg.state_dir };
@@ -292,21 +291,15 @@ fn settle_all(cfg: HeadConfig) {
     let now = std::time::now();
     let settled = j.settle(now, outcomes);
     let ctx = context_of(cfg);
-    let mut kinds = "body observer";
-    while len(kinds) > 0 {
-        let sp = std::str::index_of(kinds, " ");
-        let kind = if sp < 0 { kinds } else { kinds[0..sp] };
-        kinds = if sp < 0 { "" } else { kinds[(sp + 1)..len(kinds)] };
-        let mut rest = j.running_ids(kind);
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let id = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            let view = child_view(cfg, kind);
-            let ready = view.alive && s3_child_ready(ctx, kind);
-            let tail = log_tail(children_dir(cfg) + "/" + kind + ".log");
-            let done = j.settle_child(id, view.alive, ready, view.exit_code, tail, now, outcomes);
-        }
+    let mut rest = j.running_ids("body");
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let id = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let view = child_view(cfg, "body");
+        let ready = view.alive && s3_child_ready(ctx, "body");
+        let tail = log_tail(children_dir(cfg) + "/body.log");
+        let done = j.settle_child(id, view.alive, ready, view.exit_code, tail, now, outcomes);
     }
 }
 
@@ -348,9 +341,9 @@ fn child_state(view: ChildView) -> String {
     return "stopped";
 }
 
-// The `children` object when the operations file answers `{}`: the two children
-// from their files, with the operations file's fields at their defaults.
-fn children_fallback(cfg: HeadConfig, root: String, body: ChildView, observer: ChildView) -> String {
+// The `children` object when the operations file answers `{}`: the body child
+// from its files, with the operations file's fields at their defaults.
+fn children_fallback(cfg: HeadConfig, root: String, body: ChildView) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.begin_object_field("body");
@@ -362,23 +355,15 @@ fn children_fallback(cfg: HeadConfig, root: String, body: ChildView, observer: C
     b.string_field("mode", "");
     b.int_field("exit_code", body.exit_code);
     b.end_object();
-    b.begin_object_field("observer");
-    b.string_field("state", child_state(observer));
-    b.int_field("pid", observer.pid);
-    b.int_field("since", observer.since);
-    b.string_field("command_id", observer.command_id);
-    b.string_field("origin", "http://127.0.0.1:" + to_string(cfg.observer_port));
-    b.end_object();
     b.end_object();
     return b.result();
 }
 
 fn children_json(cfg: HeadConfig, ctx: HeadContext) -> String {
     let body = child_view(cfg, "body");
-    let observer = child_view(cfg, "observer");
-    let s3 = s3_children_json(ctx, body, observer);
+    let s3 = s3_children_json(ctx, body);
     if std::json::valid_object(s3) && len(std::json::find_field_raw(s3, "body")) > 0 { return s3; }
-    return children_fallback(cfg, ctx.active_root, body, observer);
+    return children_fallback(cfg, ctx.active_root, body);
 }
 
 // `recent` (≤ `n` receipts) or `receipts` (full) for one project.
@@ -425,7 +410,7 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
     } else {
         b.null_field("record");
     }
-    let children = if r.active { children_json(cfg, ctx) } else { children_fallback(cfg, r.root, ChildView { name: "body" }, ChildView { name: "observer" }) };
+    let children = if r.active { children_json(cfg, ctx) } else { children_fallback(cfg, r.root, ChildView { name: "body" }) };
     b.field("body", std::json::find_field_raw(children, "body"));
     b.begin_object_field("forge");
     b.string_field("github", record.setting("github"));
@@ -599,7 +584,7 @@ locus Head {
         let mut offset = 0;
         let mut seen = "|";
         let mut rest = raw_query;
-        if len(raw_query) == 0 || len(raw_query) > 1024 { return self.error(400, "invalid_query", "the logs read takes run=<command_id> or child=api|body|observer, and an optional offset", false); }
+        if len(raw_query) == 0 || len(raw_query) > 1024 { return self.error(400, "invalid_query", "the logs read takes run=<command_id> or child=api|body, and an optional offset", false); }
         while len(rest) > 0 {
             let amp = std::str::index_of(rest, "&");
             let pair = if amp < 0 { rest } else { rest[0..amp] };
@@ -626,7 +611,7 @@ locus Head {
             path = j.run_dir(run_id) + "/run.log";
             name = run_id;
         } else {
-            if child != "api" && child != "body" && child != "observer" { return self.error(400, "invalid_query", "child must be api, body or observer", false); }
+            if child != "api" && child != "body" { return self.error(400, "invalid_query", "child must be api or body", false); }
             path = children_dir(self.cfg) + "/" + child + ".log";
             name = child;
         }
@@ -729,10 +714,10 @@ locus Head {
             let p = start_run(self.cfg, ctx, id, plan);
             if p.pid <= 0 { j.finish(id, "failed", -1, "", "the run could not be started", "{}"); }
             else { j.running(id, "run", p.pid, cmd_digest("timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + p.dir + "/script.sh"), deadline, plan.external); }
-        } else if plan.kind == "body" || plan.kind == "observer" {
+        } else if plan.kind == "body" {
             let p = start_long_child(self.cfg, ctx, plan);
-            if p.pid <= 0 { j.finish(id, "failed", -1, "", "the " + plan.kind + " child could not be started", "{}"); }
-            else { j.running(id, plan.kind, p.pid, cmd_digest(plan.argv), deadline, plan.external); }
+            if p.pid <= 0 { j.finish(id, "failed", -1, "", "the body child could not be started", "{}"); }
+            else { j.running(id, "body", p.pid, cmd_digest(plan.argv), deadline, plan.external); }
         } else {
             j.finish(id, "failed", -1, "", "the plan names no execution kind", "{}");
         }

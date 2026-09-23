@@ -2914,15 +2914,15 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
-The cockpit's head (`dna/api/project_service`, `dna/face/start.sh
-[project]`) is the surface's counterpart for the operator's machine:
-one loopback process that serves the browser shell, keeps a registry
+The head (`dna/api/project_service`, `dna/face/start.sh [project]`),
+which serves the face, is the surface's counterpart for the operator's
+machine: one loopback process that serves the browser shell, keeps a registry
 of projects and a journal of receipts under a state directory, and
 proxies the Record's read and command routes to a per-project API
 child it starts and replaces. Its own operations — create, init,
 attach, detach, forget, sync, publish, forge, the local body, the
 remote body, secrets by source name, the model probe, connections,
-handoffs, the observer — are the CLI's verbs run detached with a
+handoffs — are the CLI's verbs run detached with a
 pid, an exit code and a log as files, and each answers a receipt
 (`recorded → admitted|refused → running → succeeded|failed|outcome_unknown`)
 under a `command-<digest>` identity that replays on an identical

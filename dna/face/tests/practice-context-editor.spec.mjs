@@ -3,7 +3,7 @@
 // command persistence, Review, adoption or graph effects.
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { httpFixture } from './runtime-harness.mjs';
+import { httpFixture } from './http-fixture.mjs';
 
 const ID = 'sha256:' + 'ab'.repeat(32), BINDING = 'sha256:' + 'cd'.repeat(32);
 const ORIGINAL = '  Original practice — équipe\r\nKeep literal <img src=x onerror="window.injected=true">\r\nSecond line\n';

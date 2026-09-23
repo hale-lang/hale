@@ -4,23 +4,22 @@
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { httpFixture } from './runtime-harness.mjs';
+import { httpFixture } from './http-fixture.mjs';
 
 const APP = 'a'.repeat(40), PRINCIPAL = { mode: 'local', name: 'riley' }, RECORD = 'b'.repeat(40), NEXT = 'c'.repeat(40);
 const STORAGE = 'iris.projects-recovery.v1:';
 const KEY = STORAGE + encodeURIComponent(JSON.stringify([PRINCIPAL.mode, PRINCIPAL.name]));
-const OPERATIONS = ['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.detach', 'dna.project.forget', 'dna.project.sync', 'dna.project.publish', 'dna.forge.configure', 'dna.forge.sync', 'dna.body.local.start', 'dna.body.local.stop', 'dna.body.provision', 'dna.body.start', 'dna.body.stop', 'dna.body.logs', 'dna.secret.set', 'dna.secret.rotate', 'dna.models.probe', 'dna.connection.propose', 'dna.connection.close', 'dna.handoff.publish', 'dna.handoff.accept', 'dna.handoff.sync', 'dna.observer.start', 'dna.observer.stop'];
+const OPERATIONS = ['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.detach', 'dna.project.forget', 'dna.project.sync', 'dna.project.publish', 'dna.forge.configure', 'dna.forge.sync', 'dna.body.local.start', 'dna.body.local.stop', 'dna.body.provision', 'dna.body.start', 'dna.body.stop', 'dna.body.logs', 'dna.secret.set', 'dna.secret.rotate', 'dna.models.probe', 'dna.connection.propose', 'dna.connection.close', 'dna.handoff.publish', 'dna.handoff.accept', 'dna.handoff.sync'];
 const HEAD_SCOPED = new Set(['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.forget']);
 const commandId = requestId => 'command-' + createHash('sha256').update(requestId).digest('hex');
 const child = state => ({ state, pid: state === 'running' ? 4242 : -1, since: state === 'running' ? 1758470400 : 0, command_id: '', membrane_up: state === 'running', mode: state === 'running' ? 'run' : '', exit_code: state === 'exited' ? 3 : -2 });
-const observer = state => ({ state, pid: state === 'running' ? 4343 : -1, since: 0, command_id: '', origin: 'http://127.0.0.1:8787' });
 const workspace = page => page.getByRole('region', { name: 'Projects workspace', exact: true });
 const request = page => page.getByRole('region', { name: 'Project request', exact: true });
 const form = (page, title) => page.getByRole('form', { name: title, exact: true });
 const saved = page => page.evaluate(prefix => Object.entries(localStorage).filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value: JSON.parse(value) })), STORAGE);
 
 function script(options = {}) {
-  const s = { active: false, apiState: 'ready', body: 'stopped', observer: 'stopped', busy: '', github: '', board: [], secrets: [], connections: [], recent: [], mode: 'succeeded', lookupsUntilSettled: 0, extraKey: false, unavailable: [], receipts: new Map(), posts: [], gets: [], requests: [], registered: options.active === true, ...options };
+  const s = { active: false, apiState: 'ready', body: 'stopped', busy: '', github: '', board: [], secrets: [], connections: [], recent: [], mode: 'succeeded', lookupsUntilSettled: 0, extraKey: false, unavailable: [], receipts: new Map(), posts: [], gets: [], requests: [], registered: options.active === true, ...options };
   s.operations = OPERATIONS.map(name => ({ name, version: '1', available: !s.unavailable.includes(name) && (s.active || HEAD_SCOPED.has(name)), reason_code: s.unavailable.includes(name) ? 'body_running' : s.active || HEAD_SCOPED.has(name) ? '' : 'detached' }));
   return s;
 }
@@ -28,8 +27,8 @@ const envelope = (s, data) => ({ api_version: 'hale.v1', head: { profile: 'dna.h
 const headData = s => ({
   state: s.active ? 'attached' : 'detached',
   active: s.active ? { application_id: APP, root: '/home/operator/dna/demo', name: 'demo', api: { port: 8793, state: s.apiState, pid: 555 } } : null,
-  state_dir: '/home/operator/.local/state/hale/iris/head', sources_dir: '/home/operator/.config/hale-dna/sources', projects_dir: '/home/operator/dna',
-  children: { body: child(s.body), observer: observer(s.observer) },
+  state_dir: '/home/operator/.local/state/hale/dna/head', sources_dir: '/home/operator/.config/hale-dna/sources', projects_dir: '/home/operator/dna',
+  children: { body: child(s.body) },
   credentials: { needed: ['MODEL_API_KEY', 'SEARCH_API_KEY'], file_sources: ['MODEL_API_KEY'], env_present: ['SEARCH_API_KEY'] },
   busy: s.busy, operations: s.operations.map(operation => ({ ...operation, available: !s.unavailable.includes(operation.name) && (s.active || HEAD_SCOPED.has(operation.name)), reason_code: s.unavailable.includes(operation.name) ? 'body_running' : s.active || HEAD_SCOPED.has(operation.name) ? '' : 'detached' }))
 });
@@ -47,7 +46,6 @@ function outcomeFor(s, body) {
     case 'dna.body.provision': return body.arguments.dry_run ? { target: body.arguments.target, dry_run: true, preview: '#!/bin/sh\n# provisioning preview for ' + body.arguments.target + '\n' } : { target: body.arguments.target, dry_run: false, text: 'provisioned', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'body.provisioned', entity: body.arguments.target, author: 'riley' }] } };
     case 'dna.connection.propose': return { name: body.arguments.name, text: 'proposed', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'connection.proposed', entity: body.arguments.name, author: 'riley' }] } };
     case 'dna.body.local.start': return { pid: 4242, mode: body.arguments.mode, membrane_up_at: 1758470401 };
-    case 'dna.observer.start': return { pid: 4343, origin: 'http://127.0.0.1:8787' };
     case 'dna.models.probe': return { table: 'model  latency\nalpha  12ms\n' };
     default: return {};
   }
@@ -62,8 +60,6 @@ function applyEffect(s, body) {
     case 'dna.connection.propose': s.connections = [...s.connections, { name: body.arguments.name, url: body.arguments.record_url, position: body.arguments.position, purpose: body.arguments.purpose, classes: body.arguments.classes, state: 'proposed' }]; s.recordHead = NEXT; break;
     case 'dna.body.local.start': s.body = 'running'; break;
     case 'dna.body.local.stop': s.body = 'stopped'; break;
-    case 'dna.observer.start': s.observer = 'running'; break;
-    case 'dna.observer.stop': s.observer = 'stopped'; break;
     default: break;
   }
 }
@@ -204,7 +200,7 @@ test('Projects: an attached head renders every operation form; secrets name a so
   await expect(registry).toContainText('demo'); await expect(registry).toContainText('active'); await expect(registry).toContainText('forge octo/demo');
   await expect(registry).toContainText('Secrets set');
   await expect(registry).toContainText('MODEL_API_KEY');
-  for (const title of ['Sync record', 'Publish genome', 'Configure forge', 'Sync forge', 'Start local body', 'Stop local body', 'Provision body', 'Start remote body', 'Stop remote body', 'Remote body logs', 'Set secret', 'Rotate secret', 'Probe models', 'Propose connection', 'Close connection', 'Publish handoff', 'Accept handoff', 'Sync handoffs', 'Start observer', 'Stop observer']) await expect(form(page, title), title).toBeVisible();
+  for (const title of ['Sync record', 'Publish genome', 'Configure forge', 'Sync forge', 'Start local body', 'Stop local body', 'Provision body', 'Start remote body', 'Stop remote body', 'Remote body logs', 'Set secret', 'Rotate secret', 'Probe models', 'Propose connection', 'Close connection', 'Publish handoff', 'Accept handoff', 'Sync handoffs']) await expect(form(page, title), title).toBeVisible();
   await expect(form(page, 'Provision body').getByRole('button', { name: 'Preview provisioning', exact: true })).toBeEnabled();
   for (const title of ['Set secret', 'Rotate secret']) {
     const secret = form(page, title);

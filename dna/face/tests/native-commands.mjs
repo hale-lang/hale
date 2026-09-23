@@ -30,7 +30,7 @@ fs.mkdirSync(path.join(fixture, '.hale/dna'), { recursive: true });
 const policyPath = path.join(evidence, 'authority.json');
 const inherited = isolatedEnvironment();
 // Keep only ordinary process and isolated Git settings. No inherited bus,
-// observer, model, signing, OIDC, or native service configuration is forwarded.
+// observation, model, signing, OIDC, or native service configuration is forwarded.
 const childEnv = Object.fromEntries([
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM',
   'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER',

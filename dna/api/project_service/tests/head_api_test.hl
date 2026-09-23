@@ -36,7 +36,7 @@ locus HeadCases {
         let state = self.f.head_state();
         self.f.json.eq(state, "state", "detached");
         std::test::assert_eq_str(self.f.json.raw(state, "active"), "null", "no active project");
-        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(state, "operations")), 25, "every operation is listed");
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(state, "operations")), 23, "every operation is listed");
         std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), "\"name\": \"dna.project.sync\", \"version\": \"1\", \"available\": false, \"reason_code\": \"detached\""), "a project operation is unavailable while detached: " + state);
         std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), "\"name\": \"dna.project.attach\", \"version\": \"1\", \"available\": true"), "attach is available while detached");
         self.f.json.eq(state, "state_dir", self.f.state);
@@ -328,7 +328,7 @@ locus HeadCases {
 
 fn main() {
     if std::env::var("HALE_HEAD_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_IRIS_HEAD_STATE\n-u\nHALE_IRIS_OBSERVER_ORIGIN\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_HEAD_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_HEAD_STATE\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_HEAD_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
         print(clean.stdout);
         if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });

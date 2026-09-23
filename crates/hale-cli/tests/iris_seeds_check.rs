@@ -42,7 +42,6 @@ const CHECKED: &[&str] = &[
     "inspect",
     "observe",
     "process_identity",
-    "service",
 ];
 
 /// Directories of standalone single-file repro programs (each with its
@@ -52,7 +51,6 @@ const CHECKED_PER_FILE: &[&str] = &[
     "consumer/fuse-hl/upstream-repro",
     "examples/intake-control/tests",
     "inspect/upstream-repro",
-    "service/tests",
 ];
 
 /// The shipping consumer and the inspector are held to the discipline gate.

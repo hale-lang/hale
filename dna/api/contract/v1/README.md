@@ -667,7 +667,7 @@ is that Record head. `task_create` names the minted `intent_id` and the row's
 `intent_state` is `requested` until it answers, then `offered`, `refused`, or
 `born` with the `task_id`. An uncertain append is `outcome_unknown` with
 `intent_state: unknown` and no intent. A born-but-unhanded Task is not yet a
-handed-Task read; the receipt is how the cockpit follows it.
+handed-Task read; the receipt is how the face follows it.
 
 # Person retirement contract
 
@@ -688,18 +688,18 @@ requires updated Body/CLI writers; it does not claim a cross-store transaction.
 
 ## Head
 
-The four `/api/hale/v1/head…` paths belong to the cockpit head (GH #965), the
+The four `/api/hale/v1/head…` paths belong to the head (GH #965), the
 trusted-local project service in front of a per-project Record API. They use
 the `HeadEnvelope` shape — `api_version`, `head:{profile:"dna.head.v1",
 principal, active}` and `data` — not a Record `source`, because a head read has
 no Record identity of its own; a head envelope carrying `source` is rejected.
 `HeadResponse` is the head's state (detached or attached, the active project
-and its API child, the body and observer children, credentials **by name only**,
+and its API child, the body child, credentials **by name only**,
 the running receipt and every operation's availability); `HeadProjectsResponse`
 the registry with per-project detail fields on the exact `?id=` read;
 `HeadLogResponse` one bounded page of a run's or a child's log.
 
-`HeadCommandRequest` is one closed envelope for all twenty-five operations:
+`HeadCommandRequest` is one closed envelope for all twenty-three operations:
 `operation` is the fixed enumeration, `operation_version` the string `"1"`,
 `context.head` the constant `local`, `target` is `dna.head`/`local` for the
 four head-scoped operations and `dna.project`/`<application_id>` otherwise,
@@ -707,8 +707,8 @@ and `arguments` is the closed superset of every operation's arguments — each
 operation admits only its own keys natively, and no operation admits `value`:
 a secret names a `SecretSource` (`file` or `env`, by name). `HeadCommandReceipt`
 folds the receipt journal: `recorded`, `admitted`, `refused`, `running`,
-`succeeded`, `failed` or `outcome_unknown`, with `run` (`run`, `body`,
-`observer` or `inline`; `null` before execution and on a refusal) and an
+`succeeded`, `failed` or `outcome_unknown`, with `run` (`run`, `body` or
+`inline`; `null` before execution and on a refusal) and an
 operation-specific `outcome` that carries `record:{head_before,head_after,rows}`
 on row-writing operations. Submission answers 200 on a terminal receipt and 202
 otherwise; recovery is `GET …?request_id=` under the head's own principal.

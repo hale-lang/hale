@@ -2,7 +2,7 @@
 // This checks browser routing/validation/recovery, not native authority or effects.
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { httpFixture } from './runtime-harness.mjs';
+import { httpFixture } from './http-fixture.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), OTHER = '2'.repeat(40);
 const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
@@ -16,7 +16,7 @@ const error = (code, message) => ({ api_version: 'hale.v1', error: { code, messa
 const test = base.extend({
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', value => errors.push(value.message)); await use(page); expect(errors).toEqual([]); },
   host: async ({}, use) => {
-    const names = ['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js'];
+    const names = ['index.html', 'app.js', 'styles.css', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js'];
     const assets = new Map(await Promise.all(names.map(async name => [name, await readFile(new URL('../web/' + name, import.meta.url))])));
     const host = await httpFixture((request, response) => { const name = request.url === '/' ? 'index.html' : request.url.slice(1);
       if (!assets.has(name)) { response.writeHead(404).end(); return; }

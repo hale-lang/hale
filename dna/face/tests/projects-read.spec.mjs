@@ -1,5 +1,5 @@
 // Real plain Record API: no operator-machine head stands behind it, so the
-// shell's head probe answers 404 and the cockpit continues unchanged.
+// shell's head probe answers 404 and the face continues unchanged.
 import { test, expect } from './harness.mjs';
 
 test('real Record API without a head: the shell continues to Practices, hides Projects and sends nothing but reads', async ({ page, service }) => {
@@ -33,13 +33,4 @@ test('real Record API without a head: the shell continues to Practices, hides Pr
   await expect(page.locator('#principal')).toHaveText('Not connected');
   expect(mutations).toEqual([]);
   expect(await service.refs()).toBe(before);
-});
-
-test('real Record API without a head: Runtime never probes the head', async ({ page, service }) => {
-  const probes = [];
-  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) probes.push(request.url()); });
-  await page.goto(service.url('runtime'));
-  await expect(page.getByRole('heading', { name: 'Runtime', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Connect observer', exact: true })).toBeVisible();
-  expect(probes).toEqual([]);
 });

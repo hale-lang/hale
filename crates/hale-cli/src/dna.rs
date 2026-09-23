@@ -313,7 +313,7 @@ pub fn run(args: &[String]) -> ExitCode {
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
         // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`
-        // (asking is one kind of task; the cockpit exposes the same operation
+        // (asking is one kind of task; the face exposes the same operation
         // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
         // GH #604 rule 5: `hale dna retire <who> [--to <successor>]`

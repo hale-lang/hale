@@ -84,7 +84,7 @@ fn serve(root: String, port: Int) {
 fn main() {
     let root = std::env::arg_or(1, "");
     let action = std::env::arg_or(2, "");
-    std::test::assert(std::str::starts_with(root, "/tmp/hale-iris-browser."), "owned browser fixture root");
+    std::test::assert(std::str::starts_with(root, "/tmp/hale-face-browser."), "owned browser fixture root");
     if action == "seed" { seed(root, std::str::parse_int(std::env::arg_or(3, "3")) or 3); }
     else if action == "advance" || action == "protect" || action == "protect-predecessor" || action == "redact" { mutate(root, action); }
     else { serve(root, std::str::parse_int(action) or 0); }

@@ -1,4 +1,4 @@
-# Iris design direction
+# The face: design direction
 
 This direction follows the [visual and aesthetic guidance on issue #690](https://github.com/hale-lang/hale/issues/690#issuecomment-5718576427).
 It defines the intended instrument and its visual requirements. Product scope,
@@ -7,7 +7,7 @@ implementation sequencing and acceptance evidence belong to
 
 ## The high-fidelity laboratory
 
-Iris should feel like a precise instrument for studying and shaping a living
+The face should feel like a precise instrument for studying and shaping a living
 system. A quiet carbon field, fine vector boundaries and deliberate spatial
 relationships support sustained attention. The operator should recognize the
 selected object, its enclosing context and the evidence supporting each visible
@@ -64,8 +64,7 @@ navigation.
 **Ledger** is the intended active-work plane: admitted runs, attempts, barriers
 and observed delivery associated with exact structural identities. The flower
 and flow instruments require measured channels, pressure and causal evidence.
-An unavailable plane needs a clear explanation. Joining an independent runtime
-observer to a Record requires an established application and instance identity.
+An unavailable plane needs a clear explanation.
 
 **Record** is the intended durable evidence plane, with inspectable decisions and
 historical context. Practices, Reviews and Knowledge must retain exact identities

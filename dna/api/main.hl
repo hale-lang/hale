@@ -560,7 +560,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
-        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_IRIS_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
@@ -569,5 +569,5 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     }
     let user = std::env::var("USER");
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local; ", command_label, ")");
-    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_IRIS_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
+    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the Iris cockpit: the project service (the head) serving the browser
+# Launch the face: the project service (the head) serving the browser
 # shell, owning the project registry and proxying each attached project's
 # native API. The shell owns only argument/build/process wiring, never domain
 # operations.
@@ -9,14 +9,14 @@ usage() {
   cat <<'USAGE'
 Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
 
-Starts Iris at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
+Starts the face at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
 given, it is attached at startup; without it the head starts detached and the
 browser's Projects workspace creates, initializes or attaches one.
 Without --head/HALE_HEAD_BIN and --api/HALE_API_BIN, builds the checkout's
 project service and its per-project native API (dna/api/practice_review) in
 temporary storage using HALE_BIN (default: hale). Ctrl-C stops only the head:
-the API child, a local body, the observer and every run it started are
-detached on purpose and are re-adopted by the next head.
+the API child, a local body and every run it started are detached on
+purpose and are re-adopted by the next head.
 
   --api BINARY       Use an existing/application-composed native API for the
                      attached project. It must accept PROJECT PORT, as
@@ -30,16 +30,14 @@ detached on purpose and are re-adopted by the next head.
 Existing service configuration is inherited:
   HALE_DNA_KNOWLEDGE_URL       Private state-service origin.
   HALE_DNA_KNOWLEDGE_READ_KEY  Private graph-read credential shared with it.
-  HALE_IRIS_OBSERVER_PORT      The observer's port (default: 8787); the head
-                               exports HALE_IRIS_OBSERVER_ORIGIN from it.
-  HALE_IRIS_HEAD_STATE         The head's state directory
-                               (default: ${XDG_STATE_HOME:-~/.local/state}/hale/iris/head).
+  HALE_DNA_HEAD_STATE          The head's state directory
+                               (default: ${XDG_STATE_HOME:-~/.local/state}/hale/dna/head).
 The head is trusted-local; a project configured for OIDC is refused at attach.
-This starts no body, database, broker, observer, migration or adoption command;
+This starts no body, database, broker, migration or adoption command;
 those are the head's operations, each a CLI verb run detached on request.
 USAGE
 }
-fail() { printf 'Iris: %s\n' "$*" >&2; exit 2; }
+fail() { printf 'face: %s\n' "$*" >&2; exit 2; }
 valid_path() { [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]]; }
 
 project=
@@ -59,7 +57,7 @@ while (($#)); do
         --head) head=$2 ;;
       esac
       shift 2 ;;
-    --source-drafts) export HALE_IRIS_ORG_DRAFTS=1; shift ;;
+    --source-drafts) export HALE_DNA_ORG_DRAFTS=1; shift ;;
     --) shift; (($# == 1)) && [[ -z "$project" ]] || fail 'expected one project path after --'; project=$1; shift ;;
     -*) fail "unknown option: $1" ;;
     *) [[ -z "$project" ]] || fail 'expected exactly one project'; project=$1; shift ;;
@@ -68,8 +66,8 @@ done
 [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || fail 'port must be 1..65535'
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((api_port <= 65535)) || fail 'api-port must be 1..65535'
 ((port != api_port)) || fail 'the head and the API child need different ports'
-cockpit=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-checkout=$(cd -- "$cockpit/../.." && pwd -P)
+face=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+checkout=$(cd -- "$face/../.." && pwd -P)
 valid_path "$checkout" || fail 'checkout paths cannot contain newlines'
 command -v git >/dev/null || fail 'git is required to read the DNA Record'
 # A caller's repository overrides must never redirect a named project.
@@ -82,14 +80,12 @@ if [[ -n "$project" ]]; then
   [[ "$(cd -- "$top" && pwd -P)" == "$project" ]] || fail 'pass the DNA project root, not a subdirectory'
   git -C "$project" rev-parse --verify 'refs/dna/journal^{commit}' >/dev/null 2>&1 || fail 'project has no DNA Record; create it from the Projects workspace, or with hale dna first'
 fi
-for asset in index.html app.js runtime.js application.js definition-draft.js organization-draft.js knowledge-draft.js task-administration.js projects.js task-create.js styles.css; do
-  [[ -r "$cockpit/web/$asset" && -s "$cockpit/web/$asset" ]] || fail "missing browser asset: $asset"
+for asset in index.html app.js application.js definition-draft.js organization-draft.js knowledge-draft.js task-administration.js projects.js task-create.js styles.css; do
+  [[ -r "$face/web/$asset" && -s "$face/web/$asset" ]] || fail "missing browser asset: $asset"
 done
 if [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" || -n "${HALE_DNA_KNOWLEDGE_READ_KEY:-}" ]]; then
   [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" && -n "${HALE_DNA_KNOWLEDGE_READ_KEY:-}" ]] || fail 'Knowledge reads require both HALE_DNA_KNOWLEDGE_URL and HALE_DNA_KNOWLEDGE_READ_KEY'
 fi
-observer_port=${HALE_IRIS_OBSERVER_PORT:-8787}
-[[ "$observer_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((observer_port <= 65535)) || fail 'HALE_IRIS_OBSERVER_PORT must be 1..65535'
 
 build_dir=
 child=
@@ -122,7 +118,7 @@ build_seed() {
   local seed=$1 name=$2
   local import_path=${checkout//\\/\\\\}; import_path=${import_path//\"/\\\"}
   printf 'import "%s/%s" as host;\nfn main() { host::main(); }\n' "$import_path" "$seed" > "$build_dir/$name.hl"
-  printf 'Iris: building %s from this checkout…\n' "$seed" >&2
+  printf 'face: building %s from this checkout…\n' "$seed" >&2
   # Observation belongs to the application. Do not attach the compiler or the head.
   env -u LOTUS_OBS "$hale" build "$build_dir/$name.hl"
   printf '%s\n' "$build_dir/$name"
@@ -134,16 +130,15 @@ absolute_executable() {
 }
 # One build directory for both seeds, made here rather than inside the
 # command substitution that calls build_seed, so cleanup removes it.
-if [[ -z "$api" || -z "$head" ]]; then build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-iris-head.XXXXXXXX"); fi
+if [[ -z "$api" || -z "$head" ]]; then build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX"); fi
 if [[ -z "$api" ]]; then api=$(build_seed dna/api/practice_review practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then head=$(build_seed dna/api/project_service project_service); else head=$(absolute_executable "$head" head); fi
 
-export HALE_IRIS_OBSERVER_ORIGIN="http://127.0.0.1:${observer_port}"
-printf 'Iris: starting http://127.0.0.1:%s/\n' "$port"
-if [[ -n "$project" ]]; then printf 'Iris: project %s\n' "$project"; else printf 'Iris: no project attached; open the Projects workspace\n'; fi
-if [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" ]]; then printf 'Iris: configured Knowledge service (credential stays on the server)\n'; fi
-printf 'Iris: stop with Ctrl-C; the API child, a local body, the observer and running commands keep running and are re-adopted by the next head\n'
-env -u LOTUS_OBS "$head" "$port" "$cockpit/web" "$api" "$api_port" ${project:+"$project"} <&0 &
+printf 'face: starting http://127.0.0.1:%s/\n' "$port"
+if [[ -n "$project" ]]; then printf 'face: project %s\n' "$project"; else printf 'face: no project attached; open the Projects workspace\n'; fi
+if [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" ]]; then printf 'face: configured Knowledge service (credential stays on the server)\n'; fi
+printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
+env -u LOTUS_OBS "$head" "$port" "$face/web" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!
 if wait "$child"; then result=0; else result=$?; fi
 child=

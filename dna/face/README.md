@@ -1,8 +1,11 @@
-# Iris cockpit
+# The face
 
-A browser cockpit for ordinary Hale application controls and runtime observation,
-plus DNA organization, workflow definitions, Knowledge, practices and reviews.
-The frontend is eleven static files, served beside the native Hale API or by an
+The face is the DNA organism's people surface, served by the head
+(`dna/api/project_service`): a browser surface for ordinary Hale
+application controls, plus DNA organization, workflow definitions,
+Knowledge, practices and reviews. It has no
+runtime observer: inspecting a running Hale binary is `hale iris`'s job.
+The frontend is ten static files, served beside the native Hale API or by an
 independent static host. It has no
 build step, runtime package dependencies, database connection or domain engine.
 
@@ -11,7 +14,7 @@ and its visual acceptance requirements.
 
 ## Run locally
 
-From this checkout, start Iris against an existing DNA project with one command:
+From this checkout, start the face against an existing DNA project with one command:
 
 ```sh
 ./dna/face/start.sh /absolute/path/to/dna-project --source-drafts
@@ -36,7 +39,7 @@ project, adopts its Ledger, starts infrastructure or fetches dependencies.
 For a fresh project, create it with `hale dna new /absolute/path/to/project` and
 commit the generated source before inspecting Organization. Organization reads
 use committed source and existing vendored dependencies; they exclude local
-uncommitted edits. Launching Iris itself does not require a running body or a
+uncommitted edits. Launching the face itself does not require a running body or a
 database for Record/source reads. The generated Compose file supplies Postgres;
 it does not currently launch this browser/API or the full DNA service stack.
 
@@ -48,7 +51,7 @@ provider composition:
 ```
 
 `HALE_API_BIN` is the equivalent environment setting. That binary must accept
-`PROJECT PORT WEBROOT` and implement the public cockpit API. The standalone API
+`PROJECT PORT WEBROOT` and implement the face's public API. The standalone API
 keeps Definitions and durable commands unavailable until a real application
 provider supplies them; the launcher never substitutes a sample catalog.
 
@@ -57,8 +60,7 @@ Existing private Knowledge wiring is inherited through
 credential on the state service and API; it stays out of the browser and launch
 output. Set both values together. Neither service URL nor key establishes that
 the service is reachable or up to date; its read responses remain authoritative.
-`HALE_IRIS_OBSERVER_ORIGIN` connects an existing native observer as described
-below. The launcher runs the compiler/API without `LOTUS_OBS`; observation belongs
+The launcher runs the compiler/API without `LOTUS_OBS`; observation belongs
 to the application.
 
 The native API can also be invoked directly:
@@ -69,9 +71,8 @@ The native API can also be invoked directly:
 
 Open <http://127.0.0.1:8792/>. The API binds to loopback. Omitting the final
 webroot argument preserves the API-only service. The webroot is this static asset
-directory, not the DNA project or its Record. Only the eleven named assets and
-the observer connection metadata described below are served; the service is
-not a general file server.
+directory, not the DNA project or its Record. Only the ten named assets are
+served; the service is not a general file server.
 
 The project chooses trusted local access or its existing OIDC configuration;
 see [API identity and content](../../dna/api/README.md#identity-and-content).
@@ -83,13 +84,13 @@ The existing API can be supplied from a Hale build or an upstream artifact.
 Definitions and Knowledge need a service that advertises and implements their
 read contracts. Unsupported connections retain explicit unavailable states.
 This checkout launcher is separate from `hale iris`. Its project service is
-the operator-machine head; there is still no `hale dna api` or `hale dna cockpit`
+the operator-machine head; there is still no `hale dna api` or `hale dna face`
 CLI subcommand, complete Compose profile or hosted deployment.
 
 ### Ordinary Hale application controls
 
-The [generic application service](../../iris/service/README.md) serves the same shell
-with Application and Runtime workspaces. The [intake-control example](../../iris/examples/intake-control/README.md)
+The [generic application service](service/README.md) serves the same shell
+with the Application workspace. The [intake-control example](../../iris/examples/intake-control/README.md)
 provides a real application-owned mode control, durable receipts and a work loop
 whose intake follows the committed mode. Build it using that example's SQLite
 development prerequisites, then run two processes:
@@ -123,8 +124,7 @@ for submission; loopback HTTP qualifies in supported browsers.
 The first profile supplies one control in an explicitly registered application
 and uses a startup-configured trusted-local principal. This is an application
 administration proof, not a DNA practice or workflow executor, hosted identity
-system, arbitrary source editor or universal command store. Runtime observation
-keeps its own explicit connection and never establishes command authority.
+system, arbitrary source editor or universal command store.
 
 ## Current surface
 
@@ -134,7 +134,7 @@ keeps its own explicit connection and never establishes command authority.
   stop the local body, preview or run body provisioning, drive a remote body,
   set or rotate secrets by source name, probe models with an explicit spend
   confirmation, propose and close connections, publish, accept and sync
-  handoffs, and start or stop the observer. Every action is the CLI verb run by
+  handoffs. Every action is the CLI verb run by
   the head; the browser shows its durable receipt and reads the head again
   before it claims an effect.
 - **Work:** recorded workflow executions and a separate **Handed Tasks** view.
@@ -142,7 +142,7 @@ keeps its own explicit connection and never establishes command authority.
   assignment history; an explicitly authorized local profile can reassign a
   supported open Task to an eligible person. A native command head also lets
   the signed-in principal raise work with the **New task** form, the
-  cockpit's `hale dna ask`; the organism's answer is a separate, later fact.
+  face's `hale dna ask`; the organism's answer is a separate, later fact.
 - **Practices:** paged proposals and revisions, available document text,
   lifecycle, provenance, rationale, governing Review and superseded digest.
 - **Reviews:** exact subject, required authority and recorded decision, linked
@@ -167,14 +167,6 @@ keeps its own explicit connection and never establishes command authority.
   branch changes only the source view, not the signed-in principal, working
   position or authority. Static declarations do not establish running occupants,
   effective grants or changes to the application.
-- **Runtime:** connect explicitly to a configured native Iris observer and
-  inspect observed processes, locus containment, topic shapes, process-to-process
-  routes and counters in the cockpit. It requires no DNA connection or session.
-  Observer identity remains separate from application/Record identity; this
-  workspace neither invokes controls nor proxies the observer.
-  Enter a process or locus to inspect its immediate observed contents, and use
-  the containment breadcrumbs to move outward. Inspect opens the detail panel
-  without changing that viewing scope; the accessible list uses the same scope.
 - **Definitions:** when supplied by a compatible API, the application's native
   catalog with exact revisions, ordered Steps, leaf specifications, child workflows,
   reverse dependents and loaded-source provenance. Definitions are distinct from admitted
@@ -231,7 +223,7 @@ Record read or the Projects view. A plain Record API answers 404: the shell
 continues unchanged, the Projects entry stays hidden and nothing else is sent.
 A head that answers `detached` lands the page on Projects, because there is no
 Record to read; a head that answers `attached` keeps the requested view and
-shows the Projects entry. Runtime never probes. Record reads refused with
+shows the Projects entry. Record reads refused with
 `head_detached`, `head_api_unavailable` or `upstream_timeout` render their own
 state cards with an **Open Projects** action.
 
@@ -268,65 +260,6 @@ or a variable exported in the head's environment. The head pipes that source
 into `hale dna secret`; the form has no value field, and a request carrying one
 is refused by the head.
 
-## Native Runtime connection
-
-Start your existing native observer independently. Configure its exact trusted
-origin when starting the API's static shell:
-
-```sh
-HALE_IRIS_OBSERVER_ORIGIN=http://127.0.0.1:8787 \
-  /absolute/path/to/hale-api /absolute/path/to/dna-project 8792 "$PWD/dna/face/web"
-```
-
-Open `/#/runtime` and select **Connect observer**. Configuration allows that one
-origin in Content Security Policy; it does not connect automatically. Use only
-an `http://` or `https://` origin, with an optional port and no trailing slash,
-path, credentials, query or fragment. Invalid nonempty configuration prevents
-shell startup. The browser requests only `/snapshot`, omitting credentials and
-referrers and rejecting redirects. A URL typed for any other origin prepares an
-external link; it cannot expand the configured connection policy.
-
-Containment navigation follows returned parent IDs. Missing parents remain
-explicitly unobserved; an empty focused view means no immediate children were
-observed, not that the application can never create them. Topic routes describe
-the fleet's processes and retain their separate scope. New samples preserve a
-still-observed focus; departures move outward with an explanation. A reported
-process restart clears its local focus and selection. Disconnect, unavailable
-observations and page suspension clear all local navigation. These controls do
-not set a DNA acting position or establish an application incarnation.
-
-An independent static host can serve `index.html`, `app.js`, `runtime.js`, `application.js`,
-`definition-draft.js` and `styles.css`, plus `/iris/observer.json` containing exactly:
-
-```json
-{"profile":"hale.iris.observer.v0","origin":"http://127.0.0.1:8787"}
-```
-
-Use the same security headers as [WebAssets](../../dna/api/web.hl), setting
-`connect-src 'self'` plus that exact configured origin. Serve the metadata with
-`Cache-Control: no-store`. An empty origin disables in-cockpit observation while
-retaining safe external links. The native observer must permit cross-origin
-reads, as the existing Hale observer does. HTTPS browser policies still apply.
-This standalone Runtime route makes no DNA API request and needs no Record,
-database, body or organization process.
-
-Polling uses one request at a time, a three-second deadline, a two-MiB response
-limit and bounded collections. Failure, disconnection, navigation and hiding
-the document clear observation/selection and stop polling. Reconnect is explicit.
-An empty successful observation differs from an unavailable observer. Repeated
-or regressing timestamps cannot establish fresh activity. Unsafe legacy numeric
-measurements are shown as unavailable; unsafe identity numbers reject the
-snapshot. Exact numeric validation requires JSON parse source context support;
-browsers without it retain the external-link path.
-
-Containment follows reported parent IDs. Missing parents/endpoints remain
-unobserved. Topics retain both name and shape; name-only route references are
-marked ambiguous when multiple shapes share a name. Matched routes are
-observations, not proof of application effects. The observer's bounded buffers
-and overruns limit coverage. PID and process-local locus IDs do not establish
-restart-stable incarnation identity, and model hashes do not identify an
-application. These values never become command targets or automatic DNA joins.
-
 ## Practice administration
 
 Practices provides entry points to create a practice, edit its text and canonical
@@ -353,7 +286,7 @@ inspectable without offering a new change against an inactive version.
 
 The standalone API does not provide this replacement profile, so its proposal action is disabled.
 A composed application must advertise the exact `dna.practice.propose.v1`
-profile, its availability and the current person's authorization before Iris
+profile, its availability and the current person's authorization before the face
 enables submission. Selecting an organization position does not grant that
 authorization. This adapter currently supports replacing a readable, ratified,
 current practice whose author and target are `org`; it does not edit the stored
@@ -371,7 +304,7 @@ preserving the complete text, Unicode and captured line endings. Returning to
 editing retains the unsent draft. Large changed regions use a bounded, grouped
 comparison without truncating either document.
 
-Before sending, Iris reserves a recovery identity under an exclusive browser
+Before sending, the face reserves a recovery identity under an exclusive browser
 lock and verifies its local-storage write. The saved fields identify the
 application, principal, request, operation/version, position, target and exact
 subject; proposed text, rationale and returned receipt content remain in memory.
@@ -380,7 +313,7 @@ must be available to submit. Drafts clear when the view reloads or changes.
 Concurrent tabs cannot overwrite that scoped unresolved request reservation.
 
 An interrupted request is recovered by its original ID through authenticated
-GET, including after a reload. Iris does not automatically resend a POST or
+GET, including after a reload. The face does not automatically resend a POST or
 mint another ID. An unavailable or not-yet-found receipt retains the reservation.
 The result presents proposal creation, exact-candidate Review and adoption as
 separate facts. Manual status checks fetch current evidence; approval alone never
@@ -414,7 +347,7 @@ at decision time, or authorize source application. Those require the owning
 service's position binding and apply-time admission barrier.
 
 The independent `dna.review.verdict.v1` capability enables decisions on pending
-practice-candidate Reviews. Iris fetches the canonical practice at the Review's
+practice-candidate Reviews. The face fetches the canonical practice at the Review's
 exact source snapshot and checks its digest, Review link, pending state and
 organization-wide author/target before enabling confirmation. A question or an
 authority label alone cannot authorize a decision or substitute for candidate
@@ -445,7 +378,7 @@ legacy version1 practice metadata remains readable without
 rewriting or deleting it. The original storage key and lock are retained so old
 and new tabs cannot reserve independent slots. Unknown metadata stays blocked.
 Dismiss a validated completed request explicitly before starting the next one;
-Iris then refreshes domain reads before checking eligibility for another action.
+The face then refreshes domain reads before checking eligibility for another action.
 404 and unavailable lookup cannot release an unresolved reservation. Recovery
 remains available during unrelated collection failures and write revocation.
 
@@ -483,7 +416,7 @@ or running-state claim follows from successful catalog validation.
 
 ## Development and verification
 
-Edit `web/index.html`, `web/styles.css`, `web/runtime.js`, `web/application.js`,
+Edit `web/index.html`, `web/styles.css`, `web/application.js`,
 `web/definition-draft.js`, `web/organization-draft.js`, `web/knowledge-draft.js`, `web/task-administration.js`, `web/projects.js`, `web/task-create.js` and `web/app.js`, restart the API to load
 the changed assets, then reload the browser.
 There are no external scripts, fonts or asset services. JavaScript renders
@@ -495,8 +428,6 @@ submission.
 Browser interaction tests live in `tests/`. DNA cases use a temporary Git Record
 populated by native Hale writers and the real API; focused response overrides
 exercise error and reconnect paths. Node/Playwright are test tooling only.
-Runtime cases use an independent static host; the optional native gate attaches
-the real observer to a plain Hale application with isolated shared memory.
 Native HTTP, authentication, engine and persistence verification belongs to
 the corresponding upstream implementation.
 
@@ -648,7 +579,7 @@ Knowledge applies the scope through its native target-relevance query, including
 applicable ancestor bindings. Practices and Definitions keep their native pages
 unfiltered and mark exact targets on that page; Definition matches cover direct
 leaf targets only. Reviews retain their recorded scope and required authority.
-Ordinary Application and Runtime views remain independent of this DNA context.
+The ordinary Application view remains independent of this DNA context.
 
 Changing context clears unsaved drafts and restarts pagination. An independently
 entered Knowledge relevance filter clears a different shared context. Removed or

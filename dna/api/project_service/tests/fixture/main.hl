@@ -1,6 +1,6 @@
 // dna/api/project_service/tests/fixture — the head under test (GH #965).
 // A private HOME, config and state directory under a scratch root, a
-// eleven-file stub webroot, a fixture Record (the real writers; only the
+// ten-file stub webroot, a fixture Record (the real writers; only the
 // event sequence is synthetic) with a `dna/` seed so the CLI accepts it
 // as a project, and the built head spawned over the plain `dna/api`
 // binary as its API child. Readiness is `GET /api/hale/v1/head`; stop
@@ -14,7 +14,7 @@ import "../../../contract/v1/validator" as wire_contract;
 
 const HEAD: String = "/api/hale/v1/head";
 const APPLICATIONS: String = "/api/hale/v1/applications";
-const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris head fixture</main><script src=\"/runtime.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris head fixture</main><script src=\"/app.js\" defer></script></body></html>";
 const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
 const SHELL_CSS: String = "main { color: navy; }";
 
@@ -86,7 +86,6 @@ locus HeadFixture {
         project: String = "";
         port: Int = 0;
         api_port: Int = 0;
-        observer_port: Int = 0;
         identity: String = "";
         head: std::process::Child = std::process::Child { };
         journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-head-fixture" };
@@ -106,7 +105,6 @@ locus HeadFixture {
         self.make_record();
         if self.port == 0 { self.port = dna::free_port(1); }
         if self.api_port == 0 { self.api_port = dna::free_port(2); }
-        if self.observer_port == 0 { self.observer_port = dna::free_port(3); }
     }
     dissolve() {
         self.stop();
@@ -116,7 +114,7 @@ locus HeadFixture {
         std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
         std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
         std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
-        let mut rest = "runtime application definition-draft organization-draft knowledge-draft task-administration projects task-create";
+        let mut rest = "application definition-draft organization-draft knowledge-draft task-administration projects task-create";
         while len(rest) > 0 {
             let sp = std::str::index_of(rest, " ");
             let name = if sp < 0 { rest } else { rest[0..sp] };
@@ -160,8 +158,8 @@ locus HeadFixture {
         std::test::assert(len(api_bin) > 0 && std::io::fs::file_exists(api_bin), "build dna/api and set absolute HALE_API_BIN");
         let hale = std::env::var("HALE_BIN");
         std::test::assert(std::str::starts_with(hale, "/"), "HALE_BIN must be absolute");
-        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_IRIS_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && export HALE_IRIS_OBSERVER_ORIGIN=\"http://127.0.0.1:$6\" && unset LOTUS_OBS HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_KNOWLEDGE_READ_KEY HALE_DNA_KNOWLEDGE_COMMAND_KEY HALE_IRIS_ORG_DRAFTS && if [ -n \"$7\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$7\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
-        let argv = "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + to_string(self.observer_port) + "\n" + project_arg;
+        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_DNA_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && unset LOTUS_OBS HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_KNOWLEDGE_READ_KEY HALE_DNA_KNOWLEDGE_COMMAND_KEY HALE_DNA_ORG_DRAFTS && if [ -n \"$6\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$6\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
+        let argv = "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + project_arg;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.
@@ -219,7 +217,7 @@ locus HeadFixture {
         let k = dna::run_tool("kill\n-KILL\n" + to_string(pid));
     }
     // The head alone: its children keep running, as they would for an
-    // operator who restarts the cockpit.
+    // operator who restarts the head.
     fn stop_head() {
         if self.head.pid > 0 { self.term(self.head.pid); std::process::kill(self.head) or discard; }
         self.head.pid = -1;
@@ -229,7 +227,6 @@ locus HeadFixture {
     }
     fn stop() {
         self.stop_head();
-        self.term(self.child_pid("observer"));
         self.term(self.child_pid("body"));
         self.term(self.child_pid("api"));
     }

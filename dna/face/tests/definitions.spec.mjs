@@ -1,6 +1,6 @@
 import { test, expect, errorBody } from './harness.mjs';
 
-test.skip(!process.env.HALE_COCKPIT_CATALOG_BIN, 'Definitions browser integration requires an explicitly supplied application catalog fixture (HALE_COCKPIT_CATALOG_BIN).');
+test.skip(!process.env.HALE_FACE_CATALOG_BIN, 'Definitions browser integration requires an explicitly supplied application catalog fixture (HALE_FACE_CATALOG_BIN).');
 test.use({ definitions: true });
 const detail = page => page.getByRole('region', { name: 'Definition revision', exact: true });
 const catalogResponse = page => page.waitForResponse(response => {

@@ -1,4 +1,4 @@
-// Actual native task creation: the cockpit's ask lands as the CLI's
+// Actual native task creation: the face's ask lands as the CLI's
 // intent.requested row in a real Record through the real composed API. No
 // relay or organism runs here, so the ask stays `requested`; offer, refusal
 // and birth are the organism's later facts and a follow-up case.

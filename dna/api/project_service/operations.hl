@@ -21,7 +21,7 @@ import "../../operations" as ops;
 const OWN_OPERATIONS: String = " dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync ";
 const HEAD_SCOPED: String = " dna.project.create dna.project.init dna.project.attach dna.project.forget ";
 // Every operation of the head's contract, both files', in the order `GET /head` lists them.
-const ALL_OPERATIONS: String = "dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync dna.observer.start dna.observer.stop";
+const ALL_OPERATIONS: String = "dna.project.create dna.project.init dna.project.attach dna.project.detach dna.project.forget dna.project.sync dna.project.publish dna.forge.configure dna.forge.sync dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync";
 // The operations whose verbs append Record rows: their outcome carries
 // the `record` evidence object.
 const ROW_WRITING: String = " dna.project.sync dna.project.publish dna.forge.sync dna.body.local.start dna.body.local.stop dna.body.provision dna.secret.set dna.secret.rotate dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync ";
