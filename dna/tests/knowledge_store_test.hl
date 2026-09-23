@@ -176,33 +176,41 @@ locus App {
 
         // Postgres, when a DSN is given (CI's service container; dev's compose)
         if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") {
-            let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+            // the owner's DSN applies the schema; the store opens as the
+            // record's spine role (GH #985)
+            let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
+            let dsn = know::parse_dsn(owner);
             std::test::assert(dsn.ok, "the DSN parses: " + dsn.why);
-            // a locus is structure: built here from the DSN's fields, not handed back by a factory
             // the store is scoped by the record's identity (GH #613):
             // a schema per record, named here for this run
             let record = "fixture" + to_string(std::process::pid());
-            self.pg = know::Pq { conn: know::pq_conn(dsn), record_id: record };
-            // a clean slate for this run: a store in `public` from before
-            // stores were scoped is refused at open, so it goes first
-            let pre = self.pg.conn.open();
+            // a clean slate for this run, as the owner: a store in `public`
+            // from before stores were scoped is refused by the migration,
+            // so it goes first
+            let admin = know::pq_conn(dsn);
+            let pre = admin.open();
             std::test::assert(pre.ok, "postgres connects: " + pre.err.detail);
-            let wipe = self.pg.conn.exec("DROP TABLE IF EXISTS public.knowledge_bindings, public.knowledge_edges, public.knowledge_ideas, public.knowledge_meta, public.knowledge_structure, public.knowledge_signals; DROP SCHEMA IF EXISTS dna_" + record + " CASCADE");
+            let wipe = admin.exec("DROP TABLE IF EXISTS public.knowledge_bindings, public.knowledge_edges, public.knowledge_ideas, public.knowledge_meta, public.knowledge_structure, public.knowledge_signals; DROP SCHEMA IF EXISTS dna_" + record + " CASCADE");
             std::test::assert(wipe.ok, "wiped: " + wipe.err.detail);
-            self.pg.conn.close();
+            let spine = know::migrated(owner, record);
+            std::test::assert(spine.ok, "the schema is applied: " + spine.why);
+            // a locus is structure: built here from the DSN's fields, not handed back by a factory
+            self.pg = know::Pq { conn: know::pq_conn(spine), record_id: record };
             std::test::assert(self.pg.open(), "postgres opens: " + self.pg.last_error());
             std::test::assert_eq_str(self.pg.schema(), "dna_" + record, "the schema is the record's");
             self.j = dna::MemJournal { };
             self.exercise(self.pg, "pq");
             // the store outlives the process: a second connection sees the same graph
-            let other = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+            let other = know::Pq { conn: know::pq_conn(spine), record_id: record };
             std::test::assert(other.open(), "a second connection opens: " + other.last_error());
             std::test::assert_eq_int(other.watermark(), self.j.revision(), "pq: the watermark is durable");
             std::test::assert_eq_int(other.count("ratified"), 4, "pq: the ratified ideas are there for anyone");
             std::test::assert_eq_str(other.context_ids("org/sup/worker/mailer", 8), self.mem.context_ids("org/sup/worker/mailer", 8), "pq and mem answer the same package");
             // another record on the same database sees none of it: its
             // own schema, its own watermark (GH #613)
-            let stranger = know::Pq { conn: know::pq_conn(dsn), record_id: record + "b" };
+            let spine_b = know::migrated(owner, record + "b");
+            std::test::assert(spine_b.ok, "the other record's schema is applied: " + spine_b.why);
+            let stranger = know::Pq { conn: know::pq_conn(spine_b), record_id: record + "b" };
             std::test::assert(stranger.open(), "a second record opens on the same database: " + stranger.last_error());
             std::test::assert_eq_int(stranger.watermark(), 0, "pq: the other record's watermark is its own");
             std::test::assert_eq_int(stranger.count("ratified"), 0, "pq: the other record has no ideas of the first");
@@ -210,11 +218,15 @@ locus App {
             // a schema that names another record is refused, not read
             let tamper = self.pg.conn.exec("UPDATE knowledge_meta SET value = 'someone-else' WHERE key = 'record'");
             std::test::assert(tamper.ok, "tampered: " + tamper.err.detail);
-            let wrong = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+            let wrong = know::Pq { conn: know::pq_conn(spine), record_id: record };
             std::test::assert(!wrong.open(), "a schema belonging to another record is refused");
             std::test::assert(std::str::contains(wrong.last_error(), "belongs to record someone-else, not " + record), "and says whose it is: " + wrong.last_error());
-            let drop_a = self.pg.conn.exec("DROP SCHEMA " + self.pg.schema() + " CASCADE; DROP SCHEMA " + stranger.schema() + " CASCADE");
-            std::test::assert(drop_a.ok, "this run's schemas dropped: " + drop_a.err.detail);
+            self.pg.conn.close();
+            other.conn.close();
+            stranger.conn.close();
+            let drop_a = admin.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE; DROP SCHEMA " + know::schema_for(record + "b") + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record) + "; DROP ROLE IF EXISTS " + know::spine_role(record + "b"));
+            std::test::assert(drop_a.ok, "this run's schemas and roles dropped: " + drop_a.err.detail);
+            admin.close();
         } else {
             eprintln("knowledge_store_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");
         }

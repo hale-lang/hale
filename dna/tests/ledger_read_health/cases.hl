@@ -14,14 +14,18 @@ fn claim_recovery(l: know::Ledger, label: String) {
     std::test::assert(l.revision() == 1 && l.verify_chain(), label + ": read keeps complete original row");
 }
 
-fn postgres(dsn: know::Dsn) {
+// The owner's DSN applies the schema; the ledgers open as the record's
+// spine role (GH #985).
+fn postgres(owner: String) {
     let record = "ledgerreadhealth" + to_string(std::process::pid());
-    let pg = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+    let spine = know::migrated(owner, record);
+    std::test::assert(spine.ok, "the schema is applied: " + spine.why);
+    let pg = know::PqLedger { conn: know::pq_conn(spine), record_id: record };
     claim_recovery(pg, "postgres");
     let second = pg.append(1, "task.done", "claim", "{}");
     let restricted = pg.append(2, "receipt.classified", dna::digest_of("protected"), "{\"class\":\"confidential\"}");
     std::test::assert(second.ok && restricted.ok, "fixture history is contiguous before fault");
-    let fresh = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+    let fresh = know::PqLedger { conn: know::pq_conn(spine), record_id: record };
     std::test::assert(fresh.open(), "second reader opens before injected gap");
     let remove = pg.conn.exec("DELETE FROM ledger_rows WHERE seq = 1");
     std::test::assert(remove.ok, "inject missing sequence in this run's private schema");
@@ -33,7 +37,7 @@ fn postgres(dsn: know::Dsn) {
     std::test::assert(len(fresh.last_error()) > 0, "matching count cannot conceal missing restriction history");
     let remove_extra = pg.conn.exec("DELETE FROM ledger_rows WHERE seq=3");
     std::test::assert(remove_extra.ok, "remove temporary count-preserving fault");
-    let incomplete = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+    let incomplete = know::PqLedger { conn: know::pq_conn(spine), record_id: record };
     let opened = incomplete.open();
     std::test::assert(len(incomplete.last_error()) > 0, "new reader cannot silently skip a restriction after a gap");
     let retried = incomplete.refresh();
@@ -51,8 +55,14 @@ fn postgres(dsn: know::Dsn) {
     std::test::assert(rewrite.ok, "fixture changes tail without changing count");
     let stale_tail = incomplete.refresh();
     std::test::assert(len(incomplete.last_error()) > 0, "same count with changed head is not a stable read");
-    let drop = pg.conn.exec("DROP SCHEMA " + pg.schema() + " CASCADE");
-    std::test::assert(drop.ok, "remove only this fixture's schema");
+    pg.conn.close();
+    fresh.conn.close();
+    incomplete.conn.close();
+    let admin = know::pq_conn(know::parse_dsn(owner));
+    let st = admin.open();
+    let drop = admin.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record));
+    std::test::assert(st.ok && drop.ok, "remove only this fixture's schema and role");
+    admin.close();
 }
 
 fn run_cases() {
@@ -62,6 +72,6 @@ fn run_cases() {
     let moved = closed.refresh();
     std::test::assert(len(closed.last_error()) > 0, "unopened Ledger does not present a successful empty read");
     let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
-    if dsn.ok { postgres(dsn); }
+    if dsn.ok { postgres(std::env::var("HALE_DNA_KNOWLEDGE_DSN")); }
     else { eprintln("ledger_read_health_test: Postgres not configured; only memory and unopened-read checks exercised"); }
 }

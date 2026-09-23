@@ -122,8 +122,32 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// What `memory-migrate` found (GH #985): the spine's DSN once the
+/// schema is applied, the in-memory store, or no database to apply it to.
+enum MemoryPlan {
+    Spine(String),
+    InMemory,
+    NoDatabase(String),
+}
+
+/// Apply memory's schema with the owner's DSN: HALE_DNA_KNOWLEDGE_DSN,
+/// or the database dna/compose.yaml brings up. The host verb does it; a
+/// short-lived process, so the owner's DSN never reaches a host that
+/// runs the organism.
+fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
+    let out = host_run("memory-migrate", dir, &[])?;
+    let line = out.trim();
+    if let Some(dsn) = line.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE=") {
+        return Ok(MemoryPlan::Spine(dsn.to_string()));
+    }
+    if line == "memory" {
+        return Ok(MemoryPlan::InMemory);
+    }
+    Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
+}
+
 fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
-    host_exec_env(verb, dir, args, &[])
+    host_exec_env(verb, dir, args, &[], &[])
 }
 
 /// `host_exec` with settings for the host's own environment.
@@ -141,11 +165,15 @@ fn host_exec_env(
     dir: &Path,
     args: &[String],
     env: &[(&str, &OsStr)],
+    unset: &[&str],
 ) -> ExitCode {
     let run = || -> Result<i32, String> {
         let (mut cmd, _) = host_command(verb, dir)?;
         for (k, v) in env {
             cmd.env(k, v);
+        }
+        for k in unset {
+            cmd.env_remove(k);
         }
         // exec in place: the pid that ran `hale dna <verb>` IS the host,
         // so a signal to it — a supervisor's, a test's — reaches the host
@@ -222,6 +250,7 @@ pub fn node(args: &[String]) -> ExitCode {
         &repo,
         &rest,
         &[("LOTUS_BUS_CONFIG", conf.as_os_str())],
+        &[],
     )
 }
 
@@ -262,6 +291,28 @@ pub fn run(args: &[String]) -> ExitCode {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             report(upgrade(&dir))
         }
+        // GH #985: memory's schema, applied with the owner's DSN
+        Some("memory") if args.get(1).map(String::as_str) == Some("migrate") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match memory_migrate(&dir) {
+                Ok(MemoryPlan::Spine(dsn)) => {
+                    println!("HALE_DNA_MEMORY_DSN_SPINE={dsn}");
+                    ExitCode::SUCCESS
+                }
+                Ok(MemoryPlan::InMemory) => {
+                    println!("memory: HALE_DNA_KNOWLEDGE_DSN=memory has no schema to apply");
+                    ExitCode::SUCCESS
+                }
+                Ok(MemoryPlan::NoDatabase(why)) => {
+                    eprintln!("hale dna memory migrate: {why}");
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna memory migrate: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("run") => {
             let (dir, rest) = project_arg(&args[1..], true);
             if let Err(e) = vendor_if_absent(&dir) {
@@ -276,7 +327,27 @@ pub fn run(args: &[String]) -> ExitCode {
                 eprintln!("hale dna dev: {e}");
                 return ExitCode::from(2);
             }
-            host_exec("dev", &dir, &rest)
+            // GH #985: memory's schema is applied here, with the owner's
+            // DSN, and the host that runs the organism is handed only the
+            // spine's: the owner's is taken out of its environment
+            match memory_migrate(&dir) {
+                Ok(MemoryPlan::Spine(dsn)) => host_exec_env(
+                    "dev",
+                    &dir,
+                    &rest,
+                    &[("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(&dsn))],
+                    &["HALE_DNA_KNOWLEDGE_DSN"],
+                ),
+                Ok(MemoryPlan::InMemory) => host_exec("dev", &dir, &rest),
+                Ok(MemoryPlan::NoDatabase(why)) => {
+                    eprintln!("hale dna dev: {why}");
+                    host_exec_env("dev", &dir, &rest, &[], &["HALE_DNA_KNOWLEDGE_DSN"])
+                }
+                Err(e) => {
+                    eprintln!("hale dna dev: memory: {e}");
+                    ExitCode::from(2)
+                }
+            }
         }
         // the plan path a fleet name resolves to in this checkout's manifest
         // (a node asks, at the revision it checked out)
@@ -455,6 +526,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
+    eprintln!("       hale dna memory migrate [dir]");
+    eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_KNOWLEDGE_DSN, or dna/compose.yaml)");
+    eprintln!("                                    and print the record's spine DSN (HALE_DNA_MEMORY_DSN_SPINE)");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
@@ -462,7 +536,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
     eprintln!("       hale dna knowledge [project] [--port N]");
     eprintln!("                                    the knowledge service in the foreground: the record's ratified knowledge applied into");
-    eprintln!("                                    HALE_DNA_KNOWLEDGE_DSN (postgres://…, or `memory`), context packages over HTTP");
+    eprintln!("                                    memory as the record's spine role (HALE_DNA_MEMORY_DSN_SPINE, or HALE_DNA_KNOWLEDGE_DSN=memory),");
+    eprintln!("                                    context packages over HTTP");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
     eprintln!("                                    build and run the organization (dna/org) and hold its membrane; iris inspects its process");
     eprintln!("       hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]");
@@ -921,6 +996,14 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("design  {waiting} practice(s) changed but wait: an earlier replacement is still before the Board (decide it, then `upgrade` again)"));
         }
     }
+    // GH #985: with the owner's DSN given, memory's schema moves to this
+    // toolchain's version here; without one, `dev` applies it at start
+    let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap_or_default();
+    if owner.starts_with("postgres") && record_exists(&root)? {
+        if let MemoryPlan::Spine(_) = memory_migrate(&root)? {
+            out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
+        }
+    }
     Ok(out)
 }
 
@@ -993,14 +1076,24 @@ fn knowledge_cmd(args: &[String]) -> ExitCode {
     }
     let run = || -> Result<i32, String> {
         let (root, _) = project(&dir)?;
-        if std::env::var("HALE_DNA_KNOWLEDGE_DSN").map(|v| v.trim().is_empty()).unwrap_or(true) {
-            return Err("HALE_DNA_KNOWLEDGE_DSN is not set: a postgres:// URL (`hale dna dev` derives one from dna/compose.yaml), or `memory` for a store that lives only as long as this process".to_string());
+        // GH #985: the service runs as the record's spine role; the
+        // owner's DSN applies the schema (`hale dna memory migrate`) and
+        // is not handed to it
+        let set = |k: &str| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+        let memory = std::env::var("HALE_DNA_KNOWLEDGE_DSN").map(|v| v == "memory").unwrap_or(false);
+        if !set("HALE_DNA_MEMORY_DSN_SPINE") && !memory {
+            return Err("HALE_DNA_MEMORY_DSN_SPINE is not set: the record's spine role, which `hale dna memory migrate` prints once it has applied the schema with the owner's HALE_DNA_KNOWLEDGE_DSN; or HALE_DNA_KNOWLEDGE_DSN=memory for a store that lives only as long as this process".to_string());
         }
         let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
         let bin = crate::iris::ensure_built_in(&cache, hale_dna::KNOWLEDGE_SEED, hale_dna::KNOWLEDGE_BIN, "the knowledge service")?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
         use std::os::unix::process::CommandExt;
-        let e = Command::new(&bin).arg(&root).arg(&port).current_dir(&root).env("HALE_BIN", &me).exec();
+        let mut cmd = Command::new(&bin);
+        cmd.arg(&root).arg(&port).current_dir(&root).env("HALE_BIN", &me);
+        if !memory {
+            cmd.env_remove("HALE_DNA_KNOWLEDGE_DSN");
+        }
+        let e = cmd.exec();
         Err(format!("hale dna knowledge: {e}"))
     };
     match run() {

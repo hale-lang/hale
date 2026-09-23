@@ -754,41 +754,38 @@ locus Host {
         return e;
     }
     // ---- the knowledge graph's environment (GH #583 K1) ----------------
-    // `dev` relies on docker compose: dna/compose.yaml names the graph's
-    // Postgres; the host brings it up, waits for it, derives the DSN and
-    // runs the knowledge service against it. HALE_DNA_KNOWLEDGE_DSN set
-    // by the operator wins (a Postgres of their own, or `memory`). With
-    // neither compose nor a DSN the host says exactly which it needs and
-    // runs without a knowledge service.
-    // GH #647: the database is the infrastructure's to bring up; the
-    // host only says what it was told
-    fn compose_dsn() -> String {
-        if !std::io::fs::file_exists(self.root + "/dna/compose.yaml") { return ""; }
-        let infra = ReferenceInfrastructure { root: self.root };
-        let db = infra.knowledge_database(self.root);
-        if !db.present { self.say(db.why); return ""; }
-        return db.dsn;
-    }
+    // `dev` applies memory's schema before the host starts (GH #985): the
+    // driver runs `memory-migrate` with the owner's DSN, from
+    // HALE_DNA_KNOWLEDGE_DSN or dna/compose.yaml brought up, and hands the
+    // host only the record's spine DSN. The host checks the schema version
+    // on it and runs the knowledge service as the spine. Without it the
+    // host says so and runs without a knowledge service.
     fn start_knowledge() {
         let bin = std::env::var("HALE_DNA_KNOWLEDGE_BIN");
         if len(bin) == 0 { return; }
-        let mut dsn = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
-        if len(dsn) == 0 { dsn = self.compose_dsn(); }
-        if len(dsn) == 0 {
-            if !std::io::fs::file_exists(self.root + "/dna/compose.yaml") { self.say("no dna/compose.yaml and no HALE_DNA_KNOWLEDGE_DSN: the knowledge service is not running (`hale dna upgrade` writes the compose file)"); }
+        let memory = std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") == "memory";
+        let spine = if std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE") { std::env::var("HALE_DNA_MEMORY_DSN_SPINE") } else { "" };
+        if len(spine) == 0 && !memory {
+            self.say("no HALE_DNA_MEMORY_DSN_SPINE: the knowledge service is not running (`hale dna dev` applies memory's schema from HALE_DNA_KNOWLEDGE_DSN or dna/compose.yaml and hands the host the spine's DSN)");
             return;
+        }
+        let dsn = if len(spine) > 0 { spine } else { "memory" };
+        if len(spine) > 0 {
+            let fence = memory_fence_for(spine, self.root);
+            if len(fence) > 0 { self.say("the knowledge service is not started: " + fence); return; }
         }
         self.knowledge_dsn = dsn;
         std::io::fs::unlink(self.dna_dir + "/knowledge.log") or discard;
         let port = if std::env::var_exists("HALE_DNA_KNOWLEDGE_PORT") { std::env::var("HALE_DNA_KNOWLEDGE_PORT") } else { "8791" };
-        self.knowledge = start(self.dna_dir, "knowledge", self.root, self.child_envs("", "") + "\nHALE_DNA_KNOWLEDGE_DSN=" + dsn, bin + "\n" + self.root + "\n" + port);
+        let env = if len(spine) > 0 { "\nHALE_DNA_MEMORY_DSN_SPINE=" + spine } else { "\nHALE_DNA_KNOWLEDGE_DSN=memory" };
+        self.knowledge = start(self.dna_dir, "knowledge", self.root, self.child_envs("", "") + env, bin + "\n" + self.root + "\n" + port);
         if self.knowledge.pid <= 0 { self.say("cannot start the knowledge service"); return; }
         self.knowledge_url = "http://127.0.0.1:" + port;
         let kw = write_text(self.dna_dir + "/knowledge.pid", to_string(self.knowledge.pid)) or false;
         let kd = write_text(self.dna_dir + "/knowledge.dsn", dsn) or false;
         // GH #606: where the CLI reaches the keeper of protected evidence
         let ku = write_text(self.dna_dir + "/knowledge.url", self.knowledge_url) or false;
-        self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres" }));
+        self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres, as the record's spine role" }));
     }
     fn remove_sockets() {
         std::io::fs::unlink(self.dna_dir + "/" + VERDICT_SOCK) or discard;

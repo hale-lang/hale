@@ -210,6 +210,9 @@ fn main() {
         ans = ledger_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--as"));
     } else if verb == "queue" {
         ans = queue_verb(root, word(a, 0));
+    } else if verb == "memory-migrate" {
+        // GH #985: memory's schema, applied with the owner's DSN
+        ans = memory_migrate_verb(root);
     } else if verb == "record-head" {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {

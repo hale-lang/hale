@@ -2468,10 +2468,31 @@ authority.
   /context?target=<locus path>&budget=<n>` (the bounded package: the
   ids included, their ideas with text, author and `ratified_seq`, and
   the store's revision, and a digest over the target and the ids — what is handed over, never the revision, which varies between runs and would make a tape unable to answer the same request twice), `GET /idea/<digest>`,
-  `POST /apply`. `HALE_DNA_KNOWLEDGE_DSN` names the store: a
-  `postgres://user:password@host:port/database?sslmode=…` URL, or
-  `memory` for a store that lives only as long as the process; unset
-  is a refusal that says so.
+  `POST /apply`. `HALE_DNA_MEMORY_DSN_SPINE` names the store: a
+  `postgres://…` URL for the record's spine role, or
+  `HALE_DNA_KNOWLEDGE_DSN=memory` for a store that lives only as long
+  as the process; neither is a refusal that says so, and the owner's
+  DSN alone is refused, never connected with.
+- **Memory's schema is its owner's (GH #985).** `HALE_DNA_KNOWLEDGE_DSN`
+  is the schema owner's DSN, used only to apply the schema — by `hale
+  dna memory migrate`, by `hale dna upgrade` when it is set, and by
+  `hale dna dev` before it starts the host — never by a process that
+  runs the organism. The migration (`dna/knowledge/schema.hl`) creates
+  the record's schema and every store's tables, refuses a store left
+  in `public` from before stores were scoped, writes the record's
+  claim on the schema, initializes the projection protocol, creates
+  the record's own role `dna_<identity>_spine` (placeholder-local
+  credentials until the vault, GH #989) with read and write on its
+  schema's tables and no DDL, and writes `memory_meta.schema_version`,
+  in one transaction. Roles are per record: one role granted on every
+  record's schema would read every other record's evidence on the same
+  server. A store's `open` selects the schema and checks the version
+  and the record's claim, and nothing more; a schema at another
+  version is refused naming both versions and `hale dna memory
+  migrate`, and a migration refuses a schema a newer toolchain wrote.
+  `dev` hands the host `HALE_DNA_MEMORY_DSN_SPINE` and takes
+  `HALE_DNA_KNOWLEDGE_DSN` out of its environment; the host checks the
+  version before it starts the knowledge service on it.
 - **The design, as proposals (GH #596 C).** `init` seeds the
   toolchain's practices about how a DNA organization works — the
   design principles, the evolution pattern, structure follows intent,
@@ -2601,8 +2622,9 @@ authority.
   volume `hale-dna-<project>-knowledge`, a host port in 54xx from the
   project's name); it is part of the genome. `hale dna dev` runs
   `docker compose -f dna/compose.yaml up -d --wait knowledge-db`,
-  derives the DSN from the published port, starts the knowledge
-  service beside the organization (`knowledge.pid`, `knowledge.dsn`,
+  derives the owner's DSN from the published port, applies memory's
+  schema with it, starts the knowledge service beside the organization
+  as the record's spine role (`knowledge.pid`, `knowledge.dsn`,
   `knowledge.log` under `.hale/dna`; `HALE_DNA_KNOWLEDGE_PORT`), and
   stops it with the rest. An operator's `HALE_DNA_KNOWLEDGE_DSN`
   wins. With compose not on PATH, or no compose file, the host says

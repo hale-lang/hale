@@ -150,15 +150,29 @@ fn seeded_app(tag: &str) -> (PathBuf, PathBuf, String) {
 
 /// Run the service in the foreground against a DSN, answer one request,
 /// and stop it.
+/// GH #985: memory's schema, applied for the app's record with the
+/// owner's DSN; the spine's DSN it prints, or everything it said.
+fn migrate_memory(app: &Path, owner: &str) -> Result<String, String> {
+    let (ok, out) = hale(&["dna", "memory", "migrate"], app, &[("HALE_DNA_KNOWLEDGE_DSN", owner)]);
+    if !ok {
+        return Err(out);
+    }
+    out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE=")).map(str::to_string).ok_or(out)
+}
+
+/// The service over `dsn`: `memory`, or a Postgres DSN it connects with
+/// as the record's spine role (GH #985).
 fn serve<T>(app: &Path, dsn: &str, port: u16, body_of: impl FnOnce(u16) -> T) -> (T, String) {
     let log = std::env::temp_dir().join(format!("hale_ksvc_{}_{}.log", std::process::id(), port));
+    let var = if dsn == "memory" { "HALE_DNA_KNOWLEDGE_DSN" } else { "HALE_DNA_MEMORY_DSN_SPINE" };
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "knowledge", ".", "--port", &port.to_string()])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", dsn)
+        .env_remove("HALE_DNA_KNOWLEDGE_DSN")
+        .env(var, dsn)
         // the protected store is ready only with a key (#637 exercises it)
         .env("HALE_DNA_RECEIPT_KEY", "a receipt key for the knowledge tests")
         .stdout(Stdio::null())
@@ -256,7 +270,8 @@ fn the_service_serves_a_real_postgres() {
     assert!(ok, "{out}");
     let empty_app = empty_d.join("unsynced");
     Command::new("git").args(["update-ref", "-d", "refs/dna/journal"]).current_dir(&empty_app).output().unwrap();
-    let (empty_ctx, empty_log) = serve(&empty_app, &dsn, free_port(), |p| http(p, "GET /context?target=org%2Funsynced&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let empty_spine = migrate_memory(&empty_app, &dsn).expect("the schema is applied for the empty record");
+    let (empty_ctx, empty_log) = serve(&empty_app, &empty_spine, free_port(), |p| http(p, "GET /context?target=org%2Funsynced&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
     let _ = std::fs::remove_dir_all(&empty_d);
     assert!(empty_ctx.starts_with("HTTP/1.0 200") || empty_ctx.starts_with("HTTP/1.1 200"), "an empty record is an empty package, not a failure: {empty_ctx}\n{empty_log}");
     assert!(body(&empty_ctx).contains("\"included_n\": 0"), "{empty_ctx}");
@@ -265,7 +280,8 @@ fn the_service_serves_a_real_postgres() {
         let json = format!("{{\"class\": \"confidential\", \"text\": \"{text}\", \"by\": \"mara\"}}");
         http(p, &format!("POST /receipt HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{json}", json.len()))
     };
-    let ((summary, ctx, idea, after_kill, ctx2, broken, broken_summary, healed), log) = serve(&app, &dsn, free_port(), |p| {
+    let spine = migrate_memory(&app, &dsn).expect("the schema is applied");
+    let ((summary, ctx, idea, after_kill, ctx2, broken, broken_summary, healed), log) = serve(&app, &spine, free_port(), |p| {
         // the service applies the record on every request
         let s = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
         let c = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
@@ -303,7 +319,8 @@ fn the_service_serves_a_real_postgres() {
     // record of its own, so the rows these bodies add move no watermark the
     // assertions above compare.
     let (dp, appp) = bare_app("pgprot");
-    let ((kept_before, kept_after), plog) = serve(&appp, &dsn, free_port(), |p| {
+    let spine_p = migrate_memory(&appp, &dsn).expect("the schema is applied for the protected record");
+    let ((kept_before, kept_after), plog) = serve(&appp, &spine_p, free_port(), |p| {
         let before = protect(p, "payroll line before the connection dies");
         let _ = Command::new("psql")
             .args([&kill, "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()"])
@@ -321,24 +338,32 @@ fn the_service_serves_a_real_postgres() {
         let o = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", sql]).output().expect("psql");
         assert!(o.status.success(), "{sql}: {}", String::from_utf8_lossy(&o.stderr));
     };
-    let ((summary2, idea2), log2) = serve(&app2, &dsn, free_port(), |p| {
+    let spine_2 = migrate_memory(&app2, &dsn).expect("the schema is applied for the second record");
+    let ((summary2, idea2), log2) = serve(&app2, &spine_2, free_port(), |p| {
         (body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")), http(p, &format!("GET /idea/{digest} HTTP/1.0\r\nHost: x\r\n\r\n")))
     });
-    let (again, _) = serve(&app, &dsn, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
+    let (again, _) = serve(&app, &spine, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
     // a schema that names another record is refused, not read
     let scope2 = scope_of(&summary2);
     psql(&format!("UPDATE dna_{scope2}.knowledge_meta SET value = 'someone-else' WHERE key = 'record'"));
-    let (wrong, _) = serve(&app2, &dsn, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
+    let (wrong, _) = serve(&app2, &spine_2, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
     let _ = std::fs::remove_dir_all(&d2);
     // a store from before records were namespaced, in `public`, is
-    // refused with the way forward, never read as this record's
+    // refused with the way forward, never migrated as this record's
     psql("CREATE TABLE public.knowledge_meta (key text PRIMARY KEY, value text NOT NULL)");
-    let (legacy, _) = serve(&app, &dsn, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
+    let legacy = migrate_memory(&app, &dsn).err().unwrap_or_default();
     psql("DROP TABLE public.knowledge_meta");
+    // the records' roles outlive their database (GH #985)
+    let role = |dsn: &str| dsn.trim_start_matches("postgres://").split(':').next().unwrap_or_default().to_string();
+    let roles: Vec<String> = [&empty_spine, &spine, &spine_p, &spine_2].iter().map(|d| role(d)).collect();
     if made {
         let _ = Command::new("psql").args([&std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap(), "-c", &format!("DROP DATABASE IF EXISTS {own}")]).output();
     } else {
         psql(&format!("DROP SCHEMA IF EXISTS dna_{} CASCADE; DROP SCHEMA IF EXISTS dna_{scope2} CASCADE", scope_of(&summary)));
+    }
+    for r in &roles {
+        // a role another run still holds grants for stays; best effort
+        let _ = Command::new("psql").args([&std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap(), "-c", &format!("DROP ROLE IF EXISTS {r}")]).output();
     }
     let _ = std::fs::remove_dir_all(&d);
     assert!(summary.contains("\"store\": \"postgres\"") && summary.contains("\"open\": true"), "the store is open: {summary}\n{log}");
@@ -348,7 +373,7 @@ fn the_service_serves_a_real_postgres() {
     assert!(idea2.starts_with("HTTP/1.0 404") || idea2.starts_with("HTTP/1.1 404"), "the first record's idea is not in the second's graph: {idea2}");
     assert!(again.contains(&format!("\"scope\": \"{scope}\"")) && again.contains("\"ratified\": 1") && again.contains(&format!("\"watermark\": {}", summary.split("\"watermark\": ").nth(1).unwrap().split(',').next().unwrap())), "and the first record is where it was: {again}");
     assert!(wrong.contains("\"open\": false") && wrong.contains(&format!("belongs to record someone-else, not {scope2}; it is not read")), "a schema naming another record is refused: {wrong}");
-    assert!(legacy.contains("\"open\": false") && legacy.contains("from before stores were scoped by record; it is not migrated. Drop its tables"), "a legacy store in public is refused with the way forward: {legacy}");
+    assert!(legacy.contains("from before stores were scoped by record; it is not migrated. Drop its tables"), "a legacy store in public is refused with the way forward: {legacy}");
     assert!(summary.contains("\"error\": \"\""), "and nothing failed: {summary}");
     // the record reached the database: the schema, the watermark, the projections
     let n = |k: &str| -> i64 {
@@ -403,9 +428,10 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     let compose = std::fs::read_to_string(app.join("dna/compose.yaml")).expect("dna/compose.yaml");
     assert!(compose.contains("image: pgvector/pgvector:pg16") && compose.contains("name: hale-dna-knowing-knowledge") && compose.contains("127.0.0.1:54"), "{compose}");
     assert!(out.contains("knowledge dna/compose.yaml: `hale dna dev` brings its Postgres up"), "{out}");
-    // the service in the foreground refuses without a DSN
-    let (ok, out) = hale(&["dna", "knowledge", "."], &app, &[("HALE_DNA_KNOWLEDGE_DSN", "")]);
-    assert!(!ok && out.contains("HALE_DNA_KNOWLEDGE_DSN is not set"), "{out}");
+    // the service in the foreground refuses without the spine's DSN, and
+    // the owner's is not one (GH #985)
+    let (ok, out) = hale(&["dna", "knowledge", "."], &app, &[("HALE_DNA_KNOWLEDGE_DSN", "postgres://dna:dna@127.0.0.1:1/dna")]);
+    assert!(!ok && out.contains("HALE_DNA_MEMORY_DSN_SPINE is not set"), "{out}");
 
     // the record: a proposal, made by a position, then the Board's verdict
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();

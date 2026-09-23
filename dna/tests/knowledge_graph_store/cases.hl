@@ -286,29 +286,36 @@ locus GraphCases {
         std::test::assert(legacy.projection_basis().ok && !legacy.begin_projection(legacy.projection_basis(), 10, "legacy-10"), "memory legacy watermark cannot manufacture a stamp");
         self.memory_limits();
     }
-    fn postgres_pending(dsn: know::Dsn, record: String) {
-        let store = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+    // GH #985: the stores open as the record's spine role; the faults
+    // this injects that change a table's shape are the owner's to make,
+    // through `admin`, and a projection-protocol step that used to run at
+    // open is the migration's.
+    fn postgres_pending(owner: String, admin: know::Pq, record: String) {
+        let spine = know::migrated(owner, record);
+        std::test::assert(spine.ok, "the schema is applied: " + spine.why);
+        let store = know::Pq { conn: know::pq_conn(spine), record_id: record };
+        let sch = know::schema_for(record);
         self.pending_recovery(store, store, "postgres");
         let clean = store.projection_basis();
         let generation = store.graph_generation();
-        std::test::assert(store.conn.exec("ALTER TABLE knowledge_meta ADD CONSTRAINT pending_fixture_reject CHECK (key <> 'graph_projection_pending_head' OR value <> 'rejected-begin')").ok, "inject begin SQL failure");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta ADD CONSTRAINT pending_fixture_reject CHECK (key <> 'graph_projection_pending_head' OR value <> 'rejected-begin')"), "inject begin SQL failure");
         std::test::assert(!store.begin_projection(clean, 4, "rejected-begin"), "failed begin is refused");
         std::test::assert(store.projection_basis().pending_watermark == 0 && store.projection_basis().head == clean.head && store.graph_generation() == generation, "failed begin rolls back all metadata and generation");
         std::test::assert_eq_str(store.conn.tx_status(), "idle", "failed begin leaves transaction idle");
-        std::test::assert(store.conn.exec("ALTER TABLE knowledge_meta DROP CONSTRAINT pending_fixture_reject").ok, "repair begin SQL fixture");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT pending_fixture_reject"), "repair begin SQL fixture");
         std::test::assert(store.begin_projection(clean, 4, "pending-4"), "begin recovers after SQL repair");
         let pending = store.projection_basis();
         std::test::assert(store.upsert(dna::Idea { id: "failed-binding", text: "durable partial event" }, 4), "event row is written first");
-        std::test::assert(store.conn.exec("ALTER TABLE knowledge_bindings ADD CONSTRAINT binding_fixture_reject CHECK (class <> 'refused-fixture')").ok, "inject event binding failure");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings ADD CONSTRAINT binding_fixture_reject CHECK (class <> 'refused-fixture')"), "inject event binding failure");
         std::test::assert(!store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "refused-fixture" }), "event fails after durable row");
         std::test::assert(store.reopen(), "reopen after interrupted event");
         let recovered = store.projection_basis();
         std::test::assert(recovered.watermark == 3 && recovered.live_watermark == 3 && recovered.head == "pending-3" && recovered.pending_watermark == 4 && recovered.pending_head == "pending-4", "pending survives restart with unchanged old live watermark");
-        let observer = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+        let observer = know::Pq { conn: know::pq_conn(spine), record_id: record };
         std::test::assert(observer.open() && observer.projection_basis().pending_head == "pending-4", "another opener never resets an active pending target");
         observer.conn.close();
         std::test::assert(store.conn.exec("DELETE FROM knowledge_meta WHERE key = 'graph_projection_pending_head'").ok, "simulate missing half of pending metadata");
-        std::test::assert(store.reopen() && !store.projection_basis().ok, "reopen cannot silently recreate missing pending half");
+        std::test::assert(know::migrated(owner, record).ok && store.reopen() && !store.projection_basis().ok, "neither migration nor reopen silently recreates missing pending half");
         std::test::assert_eq_str(store.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'graph_projection_pending_watermark'").data, "4", "corrupt pending pair keeps known target watermark");
         std::test::assert(store.conn.exec("INSERT INTO knowledge_meta (key, value) VALUES ('graph_projection_pending_head', 'pending-4'); UPDATE knowledge_meta SET value = 'corrupt' WHERE key = 'graph_projection_protocol'").ok, "repair pending fixture and corrupt protocol marker");
         std::test::assert(store.reopen() && !store.projection_basis().ok, "unknown protocol marker fails closed across reopen");
@@ -321,47 +328,56 @@ locus GraphCases {
         self.expect_ok(page, "inspect failed event projection natively");
         std::test::assert(sink.nodes.len() == 1 && page.watermark == 3 && page.projection_watermark == 3 && page.projection_pending_watermark == 4, "same-snapshot pending prevents a partial row appearing clean");
         std::test::assert(!store.checkpoint_projection(recovered, 3, "pending-3"), "old committed prefix cannot clear partial suffix");
-        std::test::assert(store.conn.exec("ALTER TABLE knowledge_bindings DROP CONSTRAINT binding_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT watermark_fixture_reject CHECK (key <> 'watermark' OR value <> '4')").ok, "inject watermark failure");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings DROP CONSTRAINT binding_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT watermark_fixture_reject CHECK (key <> 'watermark' OR value <> '4')"), "inject watermark failure");
         std::test::assert(store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "goal" }), "event binding replay succeeds");
         std::test::assert(!store.set_watermark(4), "watermark SQL failure leaves suffix pending");
         std::test::assert(store.projection_basis().pending_head == "pending-4" && store.projection_basis().live_watermark == 3, "failed watermark preserves durable pending target");
-        std::test::assert(store.conn.exec("ALTER TABLE knowledge_meta DROP CONSTRAINT watermark_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT checkpoint_fixture_reject CHECK (key <> 'graph_projection_head' OR value <> 'pending-4')").ok, "repair watermark and inject checkpoint failure");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT watermark_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT checkpoint_fixture_reject CHECK (key <> 'graph_projection_head' OR value <> 'pending-4')"), "repair watermark and inject checkpoint failure");
         std::test::assert(store.set_watermark(4), "target watermark completes");
         let rollback_generation = store.graph_generation();
         std::test::assert(!store.checkpoint_projection(pending, 4, "pending-4"), "checkpoint SQL failure refused");
         let failed = store.projection_basis();
         std::test::assert(failed.watermark == 3 && failed.head == "pending-3" && failed.pending_watermark == 4 && failed.pending_head == "pending-4" && store.graph_generation() == rollback_generation, "checkpoint error cannot partially clear pending or update stamp/generation");
         std::test::assert_eq_str(store.conn.tx_status(), "idle", "checkpoint rollback leaves transaction idle");
-        std::test::assert(store.conn.exec("ALTER TABLE knowledge_meta DROP CONSTRAINT checkpoint_fixture_reject").ok, "repair checkpoint SQL fixture");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT checkpoint_fixture_reject"), "repair checkpoint SQL fixture");
         std::test::assert(store.checkpoint_projection(pending, 4, "pending-4"), "checkpoint retry completes exact target");
         std::test::assert(store.reopen(), "reopen completed target");
         let completed = store.projection_basis();
         std::test::assert(completed.watermark == 4 && completed.head == "pending-4" && completed.pending_watermark == 0 && completed.pending_head == "", "complete target and cleared pending survive reopen");
         std::test::assert(store.conn.exec("DELETE FROM knowledge_meta WHERE key IN ('graph_projection_protocol', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").ok, "simulate old stamped store without pending protocol");
-        std::test::assert(store.reopen() && !store.projection_basis().ok, "pre-fence stamp with existing rows requires rebuild");
+        std::test::assert(know::migrated(owner, record).ok && store.reopen() && !store.projection_basis().ok, "pre-fence stamp with existing rows requires rebuild");
         std::test::assert_eq_str(store.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'").data, "rebuild_required", "migration records explicit unavailable lineage");
         std::test::assert_eq_str(store.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'graph_projection_watermark'").data, "0", "migration invalidates unsafe prior stamp");
         std::test::assert_eq_int(store.watermark(), 4, "migration preserves live progress and graph rows");
         let invalid_generation = store.graph_generation();
-        std::test::assert(store.reopen() && !store.projection_basis().ok && store.graph_generation() == invalid_generation, "protocol initialization never reruns after first claim");
-        std::test::assert(store.conn.exec("DROP SCHEMA " + store.schema() + " CASCADE").ok, "remove pending fault test scope");
+        std::test::assert(know::migrated(owner, record).ok && store.reopen() && !store.projection_basis().ok && store.graph_generation() == invalid_generation, "protocol initialization never reruns after first claim");
         store.conn.close();
-        let zero = know::Pq { conn: know::pq_conn(dsn), record_id: record + "zero" };
+        std::test::assert(drop_scope(admin, record), "remove pending fault test scope");
+        let zero_spine = know::migrated(owner, record + "zero");
+        std::test::assert(zero_spine.ok, "the zero-watermark schema is applied: " + zero_spine.why);
+        let zero = know::Pq { conn: know::pq_conn(zero_spine), record_id: record + "zero" };
         std::test::assert(zero.open() && zero.upsert(dna::Idea { id: "partial-first-event" }, 0), "seed old partial first event with watermark zero");
         std::test::assert(zero.conn.exec("DELETE FROM knowledge_meta WHERE key IN ('graph_projection_protocol', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").ok, "simulate pre-fence zero-watermark projection");
-        std::test::assert(zero.reopen() && zero.watermark() == 0 && !zero.projection_basis().ok, "existing rows at zero watermark never count as a fresh projection");
-        std::test::assert(zero.conn.exec("DROP SCHEMA " + zero.schema() + " CASCADE").ok, "remove zero-watermark migration fixture");
+        std::test::assert(know::migrated(owner, record + "zero").ok && zero.reopen() && zero.watermark() == 0 && !zero.projection_basis().ok, "existing rows at zero watermark never count as a fresh projection");
         zero.conn.close();
+        std::test::assert(drop_scope(admin, record + "zero"), "remove zero-watermark migration fixture");
     }
     fn postgres() {
-        let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+        let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
+        let dsn = know::parse_dsn(owner);
         std::test::assert(dsn.ok, "postgres DSN");
+        // the owner's own connection, for shape changes and cleanup
+        let admin = know::Pq { conn: know::pq_conn(dsn) };
+        std::test::assert(admin.conn.open().ok, "the owner connects");
         let record = "knowledgegraph" + to_string(std::process::pid());
-        self.postgres_pending(dsn, record + "pending");
-        let store = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+        self.postgres_pending(owner, admin, record + "pending");
+        let spine = know::migrated(owner, record);
+        std::test::assert(spine.ok, "the schema is applied: " + spine.why);
+        let sch = know::schema_for(record);
+        let store = know::Pq { conn: know::pq_conn(spine), record_id: record };
         self.exercise(store, store, "postgres");
         self.lineage(store, store, "postgres");
-        let other = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+        let other = know::Pq { conn: know::pq_conn(spine), record_id: record };
         std::test::assert(other.open(), "second connection");
         let persisted = other.projection_basis();
         std::test::assert(persisted.ok && persisted.watermark == 17 && persisted.head == "head-17", "projection pair survives second connection and idempotent migration");
@@ -389,14 +405,13 @@ locus GraphCases {
         std::test::assert(checkpoint_page.projection_watermark == checkpoint_before.watermark && checkpoint_page.projection_head == checkpoint_before.head && checkpoint_page.generation == checkpoint_generation, "page keeps the old stamp and generation from one snapshot");
         std::test::assert(checkpoint_page.projection_pending_watermark == 18 && checkpoint_page.projection_pending_head == "head-18", "page captures pending pair before external completion");
         std::test::assert(store.projection_basis().head == "head-18" && store.graph_generation() == checkpoint_generation + 1, "post-read basis detects concurrent checkpoint");
-        let failed = other.conn.exec("ALTER TABLE knowledge_edges RENAME TO knowledge_edges_offline");
-        std::test::assert(failed.ok, "induce graph SQL failure");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_edges RENAME TO knowledge_edges_offline"), "induce graph SQL failure");
         let sink = CaptureGraph { };
         let policy = GraphPolicy { };
         let failure = store.read_graph(know::GraphQuery { kind: "edges", id: "a" }, policy, sink);
         std::test::assert(!failure.ok && failure.error == "read_failed" && len(store.last_error()) > 0, "SQL failure cannot become successful empty graph");
         std::test::assert_eq_str(store.conn.tx_status(), "idle", "failed graph transaction rolled back");
-        std::test::assert(other.conn.exec("ALTER TABLE knowledge_edges_offline RENAME TO knowledge_edges").ok, "repair graph table");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_edges_offline RENAME TO knowledge_edges"), "repair graph table");
         let recovered = CaptureGraph { };
         self.expect_ok(store.read_graph(know::GraphQuery { kind: "edges", id: "a" }, policy, recovered), "graph read recovers after repair");
         std::test::assert_eq_str(store.last_error(), "", "successful read clears prior error");
@@ -410,7 +425,9 @@ locus GraphCases {
         std::test::assert(other.conn.exec("TRUNCATE knowledge_edges").ok, "external truncate");
         std::test::assert_eq_int(store.graph_generation(), prior + 1, "truncate mutation tracked");
         let limited_record = record + "limits";
-        let limited = know::Pq { conn: know::pq_conn(dsn), record_id: limited_record };
+        let limited_spine = know::migrated(owner, limited_record);
+        std::test::assert(limited_spine.ok, "the bounded-scan schema is applied: " + limited_spine.why);
+        let limited = know::Pq { conn: know::pq_conn(limited_spine), record_id: limited_record };
         std::test::assert(limited.open(), "open bounded-scan test scope");
         std::test::assert(limited.conn.exec("INSERT INTO knowledge_ideas (id,kind,text,author,provenance) SELECT 'bulk-' || lpad(n::text, 5, '0'), '', '', '', '' FROM generate_series(1,10001) n").ok, "seed raw scan limit");
         let hidden = GraphPolicy { all_hidden: true };
@@ -433,14 +450,16 @@ locus GraphCases {
         std::test::assert(limited.conn.exec("UPDATE knowledge_ideas SET text = repeat(chr(1),1500000)").ok, "seed escaped input budget");
         let escaped_cap = limited.read_graph(know::GraphQuery { }, hidden, limited_sink);
         std::test::assert(!escaped_cap.ok && escaped_cap.error == "read_limit", "postgres rejects oversized escaped JSON before transport");
-        std::test::assert(limited.conn.exec("DROP SCHEMA " + limited.schema() + " CASCADE").ok, "remove bounded-scan test scope");
         limited.conn.close();
+        std::test::assert(drop_scope(admin, limited_record), "remove bounded-scan test scope");
         let legacy_record = record + "legacy";
-        let legacy = know::Pq { conn: know::pq_conn(dsn), record_id: legacy_record };
+        let legacy_spine = know::migrated(owner, legacy_record);
+        std::test::assert(legacy_spine.ok, "the projection migration schema is applied: " + legacy_spine.why);
+        let legacy = know::Pq { conn: know::pq_conn(legacy_spine), record_id: legacy_record };
         std::test::assert(legacy.open(), "open projection migration fixture");
         std::test::assert(legacy.set_watermark(9), "legacy store has applied watermark only");
         std::test::assert(legacy.conn.exec("DELETE FROM knowledge_meta WHERE key IN ('graph_projection_protocol', 'graph_projection_head', 'graph_projection_watermark', 'graph_projection_pending_head', 'graph_projection_pending_watermark')").ok, "simulate pre-lineage metadata");
-        std::test::assert(legacy.reopen(), "migrate legacy projection metadata");
+        std::test::assert(know::migrated(owner, legacy_record).ok && legacy.reopen(), "migrate legacy projection metadata");
         let unproven = legacy.projection_basis();
         std::test::assert(!unproven.ok && legacy.watermark() == 9, "migration never backfills an unknown applied head");
         let unproven_sink = CaptureGraph { };
@@ -448,21 +467,34 @@ locus GraphCases {
         std::test::assert(!unproven_page.ok && unproven_page.error == "read_failed", "native graph read fails closed for pre-protocol lineage");
         std::test::assert(!legacy.begin_projection(unproven, 10, "head-10"), "unknown legacy progress cannot begin a fabricated suffix");
         std::test::assert(!legacy.checkpoint_projection(unproven, 9, "head-9"), "unknown legacy progress cannot be stamped without rebuild");
-        std::test::assert(legacy.conn.exec("DROP SCHEMA " + legacy.schema() + " CASCADE").ok, "remove projection migration test scope");
         legacy.conn.close();
+        std::test::assert(drop_scope(admin, legacy_record), "remove projection migration test scope");
         let malformed_record = record + "malformed";
-        let malformed = know::Pq { conn: know::pq_conn(dsn), record_id: malformed_record };
+        let malformed_spine = know::migrated(owner, malformed_record);
+        std::test::assert(malformed_spine.ok, "the malformed-key schema is applied: " + malformed_spine.why);
+        let malformed = know::Pq { conn: know::pq_conn(malformed_spine), record_id: malformed_record };
         std::test::assert(malformed.open(), "open malformed-key test scope");
         std::test::assert(malformed.upsert(dna::Idea { }, 0), "seed empty stored identity");
         std::test::assert_eq_str(malformed.read_graph(know::GraphQuery { }, policy, sink).error, "read_failed", "postgres refuses malformed stored identity");
-        std::test::assert(malformed.conn.exec("DROP SCHEMA " + malformed.schema() + " CASCADE").ok, "remove malformed-key test scope");
         malformed.conn.close();
+        std::test::assert(drop_scope(admin, malformed_record), "remove malformed-key test scope");
         store.conn.close();
         std::test::assert_eq_int(store.graph_generation(), -1, "closed generation read unavailable");
         std::test::assert(!store.read_graph(know::GraphQuery { }, policy, sink).ok, "closed graph read fails");
-        std::test::assert(other.conn.exec("DROP SCHEMA " + other.schema() + " CASCADE").ok, "remove only test-owned schema");
         other.conn.close();
+        std::test::assert(drop_scope(admin, record), "remove only test-owned schema");
+        admin.conn.close();
     }
+}
+
+// A shape-changing fault, made as the schema's owner (GH #985).
+fn ddl(admin: know::Pq, sch: String, sql: String) -> Bool {
+    return admin.conn.exec("SET search_path TO " + sch + ", public; " + sql).ok;
+}
+
+// This run's schema and its spine role, as the owner.
+fn drop_scope(admin: know::Pq, record: String) -> Bool {
+    return admin.conn.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record)).ok;
 }
 fn run_cases() {
     let cases = GraphCases { };
