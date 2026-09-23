@@ -267,7 +267,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      HALE_DNA_KNOWLEDGE_DSN: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
       # The DNA tests push to bare remotes under /tmp and clone from them
       # moments later. git's automatic gc after a receive detaches and
       # can prune a loose object while the clone is still copying it
@@ -584,7 +584,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      HALE_DNA_KNOWLEDGE_DSN: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
       GIT_CONFIG_COUNT: "2"
       GIT_CONFIG_KEY_0: gc.auto
       GIT_CONFIG_VALUE_0: "0"

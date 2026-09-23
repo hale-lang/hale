@@ -25,7 +25,7 @@ fn repo_root() -> PathBuf {
 /// time (the `dna-fixtures` test group in `.config/nextest.toml`):
 /// ports are already picked free per fixture, and the knowledge
 /// database a slice hands its fixtures is now the slice's own
-/// (`SliceKnowledgeDb`), so nothing but the runner is shared. Four
+/// (`SliceMemoryDb`), so nothing but the runner is shared. Four
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
@@ -252,7 +252,7 @@ fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
 }
 
 /// The slice's scratch roots, swept when the slice ends however it
-/// ends (GH #909). A `Drop`, like [`SliceKnowledgeDb`], so a fixture's
+/// ends (GH #909). A `Drop`, like [`SliceMemoryDb`], so a fixture's
 /// failed assertion — which unwinds out of the slice — leaves the box
 /// as the slice found it too. Developer boxes are not ephemeral: the
 /// fixtures had left 953 directories totalling 2.2 GB on one.
@@ -290,20 +290,20 @@ fn dsn_with_database(dsn: &str, name: &str) -> Option<String> {
     Some(format!("{}/{}{}", &dsn[..path], name, &dsn[tail..]))
 }
 
-/// A knowledge database of this slice's own, so that the slices of one
+/// A memory database of this slice's own, so that the slices of one
 /// partition can run beside each other. CI's `test` job sets one
-/// `HALE_DNA_KNOWLEDGE_DSN` for the whole job and four of the fixtures
+/// `HALE_DNA_MEMORY_DSN_OWNER` for the whole job and every memory fixture
 /// write to it; sharing it is the reason the slices used to be
 /// serialized. The slice creates a database named after itself, hands
 /// its fixtures a DSN pointing at that one, and drops it on the way out
 /// (including when a fixture fails: the drop runs while the assertion
 /// unwinds).
 ///
-/// Only for a `postgres` DSN. `memory`, an unset DSN, or a box with no
-/// `psql` leaves the fixtures with what the environment gave them —
+/// Only for a `postgres` DSN. An unset DSN, or a box with no `psql`,
+/// leaves the fixtures with what the environment gave them —
 /// nothing about the suite requires the isolation, it only lets the
 /// slices overlap.
-struct SliceKnowledgeDb {
+struct SliceMemoryDb {
     /// The DSN the database was created from, and will be dropped from.
     admin: String,
     name: String,
@@ -312,9 +312,9 @@ struct SliceKnowledgeDb {
     dsn: String,
 }
 
-impl SliceKnowledgeDb {
-    fn create(slice: usize) -> Option<SliceKnowledgeDb> {
-        let admin = std::env::var("HALE_DNA_KNOWLEDGE_DSN").ok()?;
+impl SliceMemoryDb {
+    fn create(slice: usize) -> Option<SliceMemoryDb> {
+        let admin = std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok()?;
         if !admin.starts_with("postgres") {
             return None;
         }
@@ -332,19 +332,19 @@ impl SliceKnowledgeDb {
         // unreachable database is not worth creating.
         let dsn = dsn_with_database(&admin, &name)?;
         match Command::new("psql").arg(&admin).args(["-v", "ON_ERROR_STOP=1", "-c", &format!("CREATE DATABASE {name}")]).output() {
-            Ok(out) if out.status.success() => Some(SliceKnowledgeDb { admin, name, dsn }),
+            Ok(out) if out.status.success() => Some(SliceMemoryDb { admin, name, dsn }),
             Ok(out) => {
                 eprintln!(
-                    "dna slice {slice}: could not create its own knowledge database ({name}); \
-                     falling back to the shared HALE_DNA_KNOWLEDGE_DSN:\n{}",
+                    "dna slice {slice}: could not create its own memory database ({name}); \
+                     falling back to the shared HALE_DNA_MEMORY_DSN_OWNER:\n{}",
                     String::from_utf8_lossy(&out.stderr).trim()
                 );
                 None
             }
             Err(e) => {
                 eprintln!(
-                    "dna slice {slice}: no usable `psql` ({e}), so it cannot take a knowledge database of its own; \
-                     falling back to the shared HALE_DNA_KNOWLEDGE_DSN. The slices of one partition then write to \
+                    "dna slice {slice}: no usable `psql` ({e}), so it cannot take a memory database of its own; \
+                     falling back to the shared HALE_DNA_MEMORY_DSN_OWNER. The slices of one partition then write to \
                      one database while they run beside each other."
                 );
                 None
@@ -353,7 +353,7 @@ impl SliceKnowledgeDb {
     }
 }
 
-impl Drop for SliceKnowledgeDb {
+impl Drop for SliceMemoryDb {
     fn drop(&mut self) {
         // Best effort: a database left behind costs a CI runner that is
         // thrown away in minutes nothing, and failing the slice over
@@ -361,7 +361,7 @@ impl Drop for SliceKnowledgeDb {
         let sql = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
         let out = Command::new("psql").arg(&self.admin).args(["-v", "ON_ERROR_STOP=1", "-c", &sql]).output();
         if !matches!(&out, Ok(o) if o.status.success()) {
-            eprintln!("dna slice: could not drop its knowledge database {} (harmless; it is a scratch database)", self.name);
+            eprintln!("dna slice: could not drop its memory database {} (harmless; it is a scratch database)", self.name);
         }
     }
 }
@@ -472,7 +472,7 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     cmd.env(SLICE_TAG, tag);
     cmd.current_dir(std::env::temp_dir());
     if let Some(dsn) = dsn {
-        cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
+        cmd.env("HALE_DNA_MEMORY_DSN_OWNER", dsn);
     }
     // GH #795: a fixture's bounded waits are written for a quiet
     // machine, and here they are not on one — the slices run beside the
@@ -539,12 +539,12 @@ fn run_fixture_slice(slice: usize) {
     // Held to the end of the slice, and dropped on the way out of a
     // failure too (GH #909).
     let _scratch = SliceScratch { tag: tag.clone() };
-    let db = SliceKnowledgeDb::create(slice);
+    let db = SliceMemoryDb::create(slice);
     // Without one of its own — no postgres DSN, no `psql` — the
     // fixtures get exactly what this process was given.
     let dsn = match &db {
         Some(db) => Some(db.dsn.clone()),
-        None => std::env::var("HALE_DNA_KNOWLEDGE_DSN").ok(),
+        None => std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok(),
     };
 
     let mut timings: Vec<FixtureTiming> = Vec::with_capacity(mine.len());
@@ -606,7 +606,7 @@ fixture_slices! {
     dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
 }
 
-/// The slice's own knowledge database is reached by editing exactly the
+/// The slice's own memory database is reached by editing exactly the
 /// database of the job's DSN: the user, password, host, port and query
 /// string are what let a fixture connect at all, and CI's DSN carries
 /// `?sslmode=disable`.
