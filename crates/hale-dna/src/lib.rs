@@ -206,17 +206,17 @@ pub const ORGANIZATION_FILES: &[EmbeddedFile] = at![
     "dna/organization_source/publication_guard.hl",
 ];
 
-/// pond's Postgres driver (`dna/pond/{db,pq}`), which the core imports to
-/// open memory as a role (GH #985).
+/// pond's Postgres driver (`dna/core/pond/{db,pq}`), which the core imports
+/// to open memory as a role (GH #985); vendored under `vendor/dna/pond`.
 pub const POND_FILES: &[EmbeddedFile] = at![
-    "dna/pond/db/args.hl",
-    "dna/pond/db/db.hl",
-    "dna/pond/db/types.hl",
-    "dna/pond/pq/pool.hl",
-    "dna/pond/pq/pq.hl",
-    "dna/pond/pq/scram.hl",
-    "dna/pond/pq/stream.hl",
-    "dna/pond/pq/wire.hl",
+    "dna/core/pond/db/args.hl",
+    "dna/core/pond/db/db.hl",
+    "dna/core/pond/db/types.hl",
+    "dna/core/pond/pq/pool.hl",
+    "dna/core/pond/pq/pq.hl",
+    "dna/core/pond/pq/scram.hl",
+    "dna/core/pond/pq/stream.hl",
+    "dna/core/pond/pq/wire.hl",
 ];
 
 /// Every embedded file as a `(path, content)` pair: the core, the
@@ -284,9 +284,9 @@ mod tests {
         let mut org_embedded: Vec<String> = ORGANIZATION_FILES.iter().map(|f| f.path.to_string()).collect();
         org_embedded.sort();
         assert_eq!(org_embedded, org_on_disk, "a dna/organization_runtime or dna/organization_source file was added or removed without updating hale-dna");
-        // pond's driver: every .hl under dna/pond/{db,pq}
+        // pond's driver: every .hl under dna/core/pond/{db,pq}
         let mut know_on_disk: Vec<String> = Vec::new();
-        for d in ["dna/pond/db", "dna/pond/pq"] {
+        for d in ["dna/core/pond/db", "dna/core/pond/pq"] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d);
             for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
                 let n = e.file_name().to_string_lossy().to_string();
@@ -298,7 +298,7 @@ mod tests {
         know_on_disk.sort();
         let mut know_embedded: Vec<String> = POND_FILES.iter().map(|f| f.path.to_string()).collect();
         know_embedded.sort();
-        assert_eq!(know_embedded, know_on_disk, "a dna/pond file was added or removed without updating hale-dna");
+        assert_eq!(know_embedded, know_on_disk, "a dna/core/pond file was added or removed without updating hale-dna");
     }
 
     /// GH #726: the build's snapshot is coherent. `build.rs` digested

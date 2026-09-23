@@ -649,6 +649,21 @@ fn materialize_vendor(root: &Path) -> Result<(usize, usize), String> {
         fs::write(&p, f.content).map_err(|e| format!("write {}: {e}", p.display()))?;
         written += 1;
     }
+    // GH #985: the core opens memory through pond's driver, which it
+    // imports as `./pond/{db,pq}`: vendored beside it, under vendor/dna
+    for f in hale_dna::POND_FILES {
+        let rel = f.path.strip_prefix("dna/core/").unwrap_or(f.path);
+        let p = dir.join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        if fs::read_to_string(&p).map(|s| s == f.content).unwrap_or(false) {
+            same += 1;
+            continue;
+        }
+        fs::write(&p, f.content).map_err(|e| format!("write {}: {e}", p.display()))?;
+        written += 1;
+    }
     // The vendored core says which source set it came from (GH #726):
     // a version alone does not identify it, so the digest of the
     // embedded set is written beside it and refreshed on `upgrade`.

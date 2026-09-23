@@ -2,7 +2,7 @@
 // Read health must describe the current read and prove a complete Ledger.
 import "../../core" as dna;
 import "../../knowledge" as know;
-import "../../pond/db" as db;
+import "../../core/pond/db" as db;
 
 fn claim_recovery(l: know::Ledger, label: String) {
     std::test::assert(l.open(), label + ": opens");

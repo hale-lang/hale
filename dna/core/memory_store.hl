@@ -8,8 +8,8 @@
 // memory, for tests and for a laptop with nothing. Nothing here lives
 // on the local filesystem.
 
-import "../pond/db" as db;
-import "../pond/pq" as pq;
+import "./pond/db" as db;
+import "./pond/pq" as pq;
 
 // ---- the store ----------------------------------------------------------
 
