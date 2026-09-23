@@ -105,12 +105,12 @@ main locus App {
         let d = j0.append(j0.revision(), "task.done", "t1", "");
         std::test::assert(d.ok && self.record.revision() == 6, "an operational row goes to the record again");
 
-        // ---- a ledger with no service: reads nothing, refuses appends as io
-        let none = dna::ServiceLedger { };
-        std::test::assert(!none.ready() && none.revision() == 0, "no url: nothing to read");
+        // ---- a ledger with no memory named: reads nothing, refuses appends as io
+        let none = dna::MemoryLedger { dsn_env: "HALE_DNA_ROUTING_TEST_NO_SUCH_DSN" };
+        std::test::assert(!none.ready() && none.revision() == 0, "no memory: nothing to read");
         let n = none.append(0, "task.born", "t9", "");
-        std::test::assert(!n.ok && n.error == "io", "no url: an append is io, never silently kept");
-        std::test::assert(std::str::contains(none.last_error, "no ledger service"), "and says why: " + none.last_error);
+        std::test::assert(!n.ok && n.error == "io", "no memory: an append is io, never silently kept");
+        std::test::assert(std::str::contains(none.last_error(), "is not set: no ledger"), "and says why: " + none.last_error());
     }
 }
 

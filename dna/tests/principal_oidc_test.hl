@@ -7,7 +7,6 @@
 // sign-in is used once; a sign-out ends the session.
 
 import "../core" as dna;
-import "../knowledge" as know;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -48,7 +47,7 @@ fn form_field(body: String, name: String) -> String {
         let amp = std::str::index_of(rest, "&");
         let part = rest[0..amp];
         rest = rest[(amp + 1)..len(rest)];
-        if std::str::starts_with(part, name + "=") { return know::url_decode(part[(len(name) + 1)..len(part)]); }
+        if std::str::starts_with(part, name + "=") { return dna::url_decode(part[(len(name) + 1)..len(part)]); }
     }
     return "";
 }
@@ -81,7 +80,7 @@ locus FakeIssuer {
             return std::http::Response { status: 200, content_type: "application/json", body: "{\"issuer\": \"" + self.base + "\", \"authorization_endpoint\": \"" + self.base + "/authorize\", \"token_endpoint\": \"" + self.base + "/token\"}" };
         }
         if std::http::is_route(ctx, "GET", "/authorize") {
-            let back = know::url_decode(std::http::query_param(ctx.params, "redirect_uri"));
+            let back = dna::url_decode(std::http::query_param(ctx.params, "redirect_uri"));
             let hint = std::http::query_param(ctx.params, "login_hint");
             let code = "code-" + to_string(self.codes.len() + 1);
             self.codes.push(IssuedCode { code: code, nonce: std::http::query_param(ctx.params, "nonce"), sub: if len(hint) > 0 { hint } else { "alice-sub" } });
