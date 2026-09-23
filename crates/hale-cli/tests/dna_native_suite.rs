@@ -880,6 +880,7 @@ fn dna_fixture_set_is_complete() {
             "routing_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",
+            "status_chain_race_test.hl",
             "supersession_test.hl",
             "support_test.hl",
             "sync_head_read_test.hl",

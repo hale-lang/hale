@@ -17,7 +17,8 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
   `entity`, `body`, `author`. The subject is `<kind> <entity>`.
 - **The commit DAG is the chain.** An event's digest is its commit;
   its predecessor is the parent. `hale dna status` reports the chain
-  `verified` when the ref's commit count is the row count.
+  `verified` when the commit count at the head it loaded is the row
+  count, and names that head.
 - **Append is compare-and-swap.** A writer builds the next commit on
   the head it read and updates the ref with that head as the expected
   old value. A writer that lost the race reloads and re-appends at

@@ -206,7 +206,7 @@ still in flight — `review`, `stage` or `escalate`.
 
 ```text
 $ hale dna history m1
-record refs/dna/journal — 37 event(s), chain verified
+record refs/dna/journal — 37 event(s), chain verified at 9b31d07c6e24
 history of m1: 37 event(s)
     7  mutation.proposed      m1             task t1 docs: document the chat server in main.hl (main.hl) at 232dc8f1…
    10  mutation.worktree      m1             opened .hale/dna/worktrees/m1 at 232dc8f1…

@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### `hale dna status` verifies the chain at the head it loaded (GH #1017)
+
+- A writer appending between the status's load and its count made a
+  healthy record read `chain BROKEN`. The chain is now counted at the
+  head the rows were loaded from, which `--json` reports as
+  `journal.chain_head` and the text line as `chain verified at <head>`
+  (`history` too).
+
 ### A failed head read is never an absent record (GH #961, part 1)
 
 - **`Record.head(chain)` answers a `Head`** (`ok`, `absent`, `id`,

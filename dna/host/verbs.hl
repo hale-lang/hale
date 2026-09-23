@@ -248,7 +248,7 @@ fn history_verb(root: String, entity: String) -> Answer {
             }
         }
     }
-    let mut out = "record " + RECORD_REF + " — " + to_string(n) + " event(s), chain " + (if p.chain_ok() { "verified" } else { "BROKEN" }) + "\n";
+    let mut out = "record " + RECORD_REF + " — " + to_string(n) + " event(s), " + p.chain_line() + "\n";
     let mut lines = "";
     let mut selected = 0;
     let mut i = 0;
