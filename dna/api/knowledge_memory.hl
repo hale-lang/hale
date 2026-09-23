@@ -375,7 +375,18 @@ fn knowledge_policy(root: String) -> ops::KnowledgePolicy {
 
 // Graph reads from memory under the head's role.
 locus LocalKnowledge {
-    params { root: String = "."; dsn_env: String = dna::HEAD_DSN_ENV; }
+    params {
+        root: String = ".";
+        dsn_env: String = dna::HEAD_DSN_ENV;
+        // the API's one handle on memory (GH #985): the graph store and the
+        // ledger, opened on the first read and held for the process's life
+        store: dna::Pq = dna::Pq { };
+        memory: dna::Memory = dna::Memory { };
+    }
+    birth() {
+        self.store.dsn_env = self.dsn_env;
+        self.memory.point(self.root, self.dsn_env);
+    }
     fn supported() -> Bool { return dna::dsn_set(self.dsn_env); }
     fn read(request: KnowledgeRequest) -> KnowledgeUpstream {
         let wire = KnowledgeWire { };
@@ -386,12 +397,11 @@ locus LocalKnowledge {
         if !q.ok { let e = http.error(400, "invalid_query"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
         let j = dna::GitJournal { repo: self.root, author: "api" };
         let moved = j.refresh();
-        let store = dna::Pq { dsn_env: self.dsn_env };
-        store.scope(j.genesis());
-        if !store.reopen() { let e = http.error(503, "knowledge_unavailable"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
-        let ledger = dna::MemoryLedger { repo: self.root, dsn_env: self.dsn_env };
-        let r = graph_read(q, store, store, j, ledger);
-        store.close();
+        // the store follows the record's identity, and a session that no
+        // longer answers is dialled again; otherwise the one it holds serves
+        self.store.scope(j.genesis());
+        if !self.store.healthy() && !self.store.reopen() { let e = http.error(503, "knowledge_unavailable"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
+        let r = graph_read(q, self.store, self.store, j, self.memory.ledger);
         return KnowledgeUpstream { transport_ok: true, status: r.status, body: r.body };
     }
 }

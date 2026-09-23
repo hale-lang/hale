@@ -40,16 +40,16 @@ locus HostAuthority {
         let present = dna::trim_nl(rest2[(c + 1)..len(rest2)]) == "1";
         return BodyLeaseView { present: present, holder: holder, token: token, expires: expires, sha: sha };
     }
-    fn store_lease() -> BodyLeaseView {
-        // GH #985: the lease table in memory, under whichever role this
-        // process holds (the body's spine, or a head)
-        let sl = dna::MemoryLeases { repo: self.root, dsn_env: dna::own_dsn_env() }; let l = sl.current(self.lease_key());
+    fn store_lease(sl: dna::MemoryLeases) -> BodyLeaseView {
+        // GH #985: the lease table in memory, through the process's own
+        // handle, under whichever role it holds (the body's spine, or a head)
+        let l = sl.current(self.lease_key());
         if !sl.reachable { return BodyLeaseView { ok: false }; }
         if len(l.holder) == 0 && l.token == 0 { return BodyLeaseView { }; }
         return BodyLeaseView { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };
     }
-    fn body_lease() -> BodyLeaseView {
-        if self.routing() > 0 { return self.store_lease(); }
+    fn body_lease(leases: dna::MemoryLeases) -> BodyLeaseView {
+        if self.routing() > 0 { return self.store_lease(leases); }
         let r = dna::GitRecord { repo: self.root }; let remote = r.remote(); let mut key = BODY_LEASE;
         if len(remote) > 0 {
             let f = r.receive(remote, BODY_LEASE);

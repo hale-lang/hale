@@ -193,6 +193,7 @@ fn row_with(text: String, needle: String) -> String {
 main locus App {
     params {
         srv: std::http::Server = std::http::Server { port: 47813, handler: FakeIssuer { base: "http://127.0.0.1:47813" } };
+        watch: dna::Pq = dna::Pq { };
     }
     placement { srv: cooperative(pool = io); }
     // A member signs in at the issuer as `subject` and gets a session cookie.
@@ -283,6 +284,34 @@ main locus App {
         std::test::assert_eq_int(b2.status, 200, "taken");
         let ledger2 = ledger_holding(app, head_dsn, "file the returns", 120);
         std::test::assert(std::str::contains(row_with(ledger2, "file the returns"), "\"author\": \"bob\""), "in bob's name: " + ledger2);
+
+        // ---- connections stay bounded: each process holds one handle on
+        // memory for its life, so ticking longer opens nothing more (GH #985)
+        let record_id = dna::GitJournal { repo: app }.genesis();
+        self.watch = dna::Pq { conn: dna::pq_conn(dna::parse_dsn(owner)) };
+        let wst = self.watch.conn.open();
+        std::test::assert(wst.ok, "the owner connects to watch: " + wst.err.detail);
+        let roles = "'" + dna::spine_role(record_id) + "', '" + dna::head_role(record_id) + "'";
+        let mut first = -1;
+        let mut last = -1;
+        let mut most = 0;
+        let mut spine_seen = 0;
+        let mut k = 0;
+        while k < 10 {
+            let n = std::str::parse_int(dna::trim_nl(self.watch.conn.query_one("SELECT count(*) FROM pg_stat_activity WHERE usename IN (" + roles + ")").data)) or - 1;
+            let sp = std::str::parse_int(dna::trim_nl(self.watch.conn.query_one("SELECT count(*) FROM pg_stat_activity WHERE usename = '" + dna::spine_role(record_id) + "'").data)) or - 1;
+            if first < 0 { first = n; }
+            last = n;
+            if n > most { most = n; }
+            if sp > spine_seen { spine_seen = sp; }
+            std::time::sleep(1s);
+            k = k + 1;
+        }
+        self.watch.conn.close();
+        std::test::assert(spine_seen > 0, "the spine holds its memory open while it runs");
+        // a handle opens on its first use, so the first ticks bring the set
+        // up to its size; a handle per call reached ninety within seconds
+        std::test::assert(most <= 16, "the spine's and the head's connections stay a fixed handful over ten seconds of ticks: " + to_string(first) + " at first, " + to_string(most) + " at most, " + to_string(last) + " at the end");
 
         // ---- the spine away: the head still takes a request into the record;
         // back, the spine checks it against the record as it is then

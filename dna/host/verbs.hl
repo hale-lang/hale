@@ -20,8 +20,10 @@ fn answer(text: String) -> Answer {
 }
 
 // A loaded projection, or the reason there is none.
-fn open_projection(root: String, seed: String, toolchain: String) -> Projection {
-    return Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: dna::MemoryLedger { repo: root, dsn_env: dna::own_dsn_env() } } };
+// The ledger half is the process's own memory handle (GH #985): a
+// projection never opens memory of its own.
+fn open_projection(root: String, seed: String, toolchain: String, memory: dna::Memory) -> Projection {
+    return Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: memory.ledger } };
 }
 
 fn no_record(root: String) -> String {
@@ -40,16 +42,16 @@ fn record_refusal(root: String) -> String {
 
 // ---- status ---------------------------------------------------------
 
-fn status_verb(root: String, seed: String, toolchain: String, json: Bool) -> Answer {
+fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, toolchain);
+    let p = open_projection(root, seed, toolchain, memory);
     if json { return answer(p.json() + "\n"); }
     // GH #617: the combination this organism is, detected from its
     // pieces, and who runs it — never a stored label
     let now = std::time::now();
     let gap = credential_gap(p);
-    return answer(p.text() + "profile:    " + profile_name(root) + "\n" + "body:       " + body_line(root, now) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root) + "\n");
+    return answer(p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       " + body_line(root, now, memory) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root, memory) + "\n");
 }
 
 // ---- the organism's combination (GH #617) ---------------------------
@@ -86,9 +88,9 @@ fn holder_host(holder: String) -> String {
     return holder[(at + 1)..colon];
 }
 
-fn profile_name(root: String) -> String {
+fn profile_name(root: String, memory: dna::Memory) -> String {
     let remote = record_remote(root);
-    let l = body_lease_read(root);
+    let l = body_lease_read(root, memory);
     let live = l.ok && body_live(l, std::time::now());
     let here = live && holder_host(l.holder) == this_host();
     let mut name = if len(remote) == 0 { "local" } else if live && !here { "remote body" } else if live { "local body, shared record" } else { "shared record, no body" };
@@ -97,15 +99,15 @@ fn profile_name(root: String) -> String {
     return name + " (detected)";
 }
 
-fn profile_verb(root: String) -> Answer {
+fn profile_verb(root: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let now = std::time::now();
     let remote = record_remote(root);
     let url = if len(remote) > 0 { rec(root).remote_url(remote) } else { "" };
-    let mut out = "profile:     " + profile_name(root) + "\n";
+    let mut out = "profile:     " + profile_name(root, memory) + "\n";
     out = out + "record:      " + (if len(remote) == 0 { "this clone only (no remote; `git remote add origin …` shares it)" } else { "shared over " + remote + " (" + url + ")" }) + "\n";
-    out = out + "body:        " + body_line(root, now) + "\n";
+    out = out + "body:        " + body_line(root, now, memory) + "\n";
     out = out + "head:        this clone (" + root + "); hosted head: none\n";
     let fleet = fleet_name(root);
     out = out + "fleet:       " + (if len(fleet) == 0 { "none (`[dna] fleet = \"<name>\"` in hale.toml names one)" } else { fleet }) + "\n";
@@ -123,30 +125,30 @@ fn profile_verb(root: String) -> Answer {
 // Release the lease `holder` holds at `token`, against the version the
 // authority has now, re-read after each lost race (a renewal in between):
 // five tries, then false.
-fn body_lease_take(root: String, holder: String, token: Int) -> Bool {
+fn body_lease_take(root: String, holder: String, token: Int, memory: dna::Memory) -> Bool {
     let mut tries = 0;
     while tries < 5 {
         tries = tries + 1;
-        let cur = body_lease_read(root);
+        let cur = body_lease_read(root, memory);
         if !cur.ok { return false; }
         if !cur.present || cur.holder != holder || cur.token != token { return !cur.present; }
-        if body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha) { return true; }
+        if body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha, memory) { return true; }
     }
     return false;
 }
 
-fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer {
+fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let now = std::time::now();
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    if len(sub) == 0 { return answer("body: " + body_line(root, now) + "\n"); }
-    let cur = body_lease_read(root);
+    if len(sub) == 0 { return answer("body: " + body_line(root, now, memory) + "\n"); }
+    let cur = body_lease_read(root, memory);
     if !cur.ok { return fail("body: the record's remote cannot be reached"); }
     if sub == "claim" {
         // nothing to take: no body ever ran this record, or the last one
         // released its lease; `hale dna run` takes it
-        if !cur.present { return answer("body: " + body_line(root, now) + "\n"); }
+        if !cur.present { return answer("body: " + body_line(root, now, memory) + "\n"); }
         // a lease that has expired is a body that is gone. Without
         // --force the claim says so, as the status line does, and leaves
         // it to `hale dna run`; with --force it takes the lease the same
@@ -155,23 +157,23 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer
         // asked for the lease to be taken should not be told to ask again
         // because the clock crossed the TTL between their reading and
         // their claim (a CI runner did exactly that).
-        if !body_live(cur, now) && !force { return answer("body: " + body_line(root, now) + "\n"); }
+        if !body_live(cur, now) && !force { return answer("body: " + body_line(root, now, memory) + "\n"); }
         if body_live(cur, now) && !force { return fail("body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL)) + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)"); }
         // the body renews its lease every few seconds: a claim that read
         // the lease just before a renewal reads it again and claims the
         // renewed one, a few times, before giving up
-        if !body_lease_take(root, cur.holder, cur.token) { return fail("body: the lease moved while claiming; try again"); }
+        if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while claiming; try again"); }
         let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + "}", who);
-        let s = sync_record(root);
+        let s = sync_record(root, memory);
         return answer("body: the lease of " + cur.holder + " was taken by " + who + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n");
     }
     if sub == "release" {
-        if !cur.present { return answer("body: " + body_line(root, now) + "\n"); }
+        if !cur.present { return answer("body: " + body_line(root, now, memory) + "\n"); }
         let mine = body_holder(root);
         if cur.holder != mine && !force { return fail("body: the lease is held by " + cur.holder + ", not this clone (" + mine + "); `hale dna body release --force` releases another's"); }
-        if !body_lease_take(root, cur.holder, cur.token) { return fail("body: the lease moved while releasing; try again"); }
+        if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while releasing; try again"); }
         let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + "}", who);
-        let s = sync_record(root);
+        let s = sync_record(root, memory);
         return answer("body: released the lease of " + cur.holder + " (body.released)\n");
     }
     return fail("body: `hale dna body`, `body claim [--force]`, `body release [--force]`, `body provision <user@host> [--dsn …] [--dir …] [--dry-run]`, `body start|stop|logs [--body <user@host>]`");
@@ -212,10 +214,10 @@ fn has(ids: String, id: String) -> Bool {
 }
 
 @unbounded
-fn history_verb(root: String, entity: String) -> Answer {
+fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, ".", "");
+    let p = open_projection(root, ".", "", memory);
     let n = p.rows();
     let mut ids = "\n";
     if len(entity) > 0 {
@@ -501,7 +503,7 @@ fn board_verb(p: Projection) -> Answer {
 // ---- report ---------------------------------------------------------
 
 @unbounded
-fn report_verb(p: Projection) -> Answer {
+fn report_verb(p: Projection, memory: dna::Memory) -> Answer {
     let last = p.last_of("report.filed");
     let since = if last.seq >= 0 { last.seq + 1 } else { 0 };
     let mut proposed = 0;
@@ -534,7 +536,7 @@ fn report_verb(p: Projection) -> Answer {
     let body = "since #" + to_string(since) + ": proposed " + to_string(proposed) + " · reviewed " + to_string(reviewed) + " · applied " + to_string(applied) + " · retained " + to_string(retained) + " · rolled back " + to_string(rolled) + " · rejected " + to_string(rejected) + " · escalated " + to_string(escalated) + " · pressure " + to_string(pressure) + " · proposals " + to_string(proposals) + " · model calls " + to_string(calls) + " (" + to_string(cost) + " µ$) · settled: " + (if len(settled) == 0 { "none" } else { settled });
     let id = "r" + to_string(p.rows());
     if !append_as(p.root, "report.filed", id, body, "") { return fail("report: the record refused the append"); }
-    let s = sync_record(p.root);
+    let s = sync_record(p.root, memory);
     return answer("report " + id + " filed: " + body + "\n");
 }
 
@@ -712,7 +714,7 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
 }
 
 // `hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run] [--as <who>]`
-fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: String, dry: Bool, who_flag: String) -> Answer {
+fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: String, dry: Bool, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if len(target) == 0 { return fail("body provision: `hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path on the body>] [--dry-run]`"); }
@@ -743,7 +745,7 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
     let c1 = rec(root).set_setting("body", target);
     let c2 = rec(root).set_setting("body.dir", dir);
     let row = append_as(root, "body.provisioned", target, "{\"dir\": " + quote(dir) + ", \"toolchain\": " + quote(pin) + ", \"knowledge\": " + quote(if len(dsn) > 0 { "dsn" } else { "compose" }) + ", \"by\": " + quote(who) + "}", who);
-    let s = sync_record(root);
+    let s = sync_record(root, memory);
     return answer("body provision: " + target + "\n" + indent_lines(dna::trim_nl(r.stdout), "    ") + "\n    dna.body = " + target + " (start/stop/logs go there); the body takes the lease when its unit starts\n");
 }
 
@@ -780,7 +782,7 @@ fn env_var_name_ok(name: String) -> Bool {
     return true;
 }
 
-fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_flag: String) -> Answer {
+fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
@@ -789,7 +791,7 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     let project = body_key(root);
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let target = body_target(root, body_flag);
-    let p = open_projection(root, ".", "");
+    let p = open_projection(root, ".", "", memory);
     let mut known = false;
     let mut i = 0;
     while i < p.rows() {
@@ -808,7 +810,7 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
     if !infra.put_credential(project + "/" + name, value) { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + infra.last + "; nothing was recorded"); }
     let row = append_as(root, "secret.rotated", name, "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": " + quote(who) + "}", who);
-    let s = sync_record(root);
+    let s = sync_record(root, memory);
     return answer("secret " + sub + ": " + name + " is in " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A running body reads it at its next start: `hale dna body stop && hale dna body start`\n");
 }
 
@@ -851,14 +853,14 @@ fn credential_gap(p: Projection) -> String {
 // the org chart declared, as the record has them; pause and resume are
 // rows in your name that the organism reads at its next tick.
 @unbounded
-fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Answer {
+fn schedule_verb(root: String, sub: String, id: String, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "pause" || sub == "resume" {
         if len(id) == 0 { return fail("schedule " + sub + ": which one? `hale dna schedule` lists them"); }
-        let s = sync_record(root);
-        let p = open_projection(root, ".", "");
+        let s = sync_record(root, memory);
+        let p = open_projection(root, ".", "", memory);
         let mut known = false;
         let mut paused = false;
         let mut i = 0;
@@ -874,11 +876,11 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
         if sub == "resume" && !paused { return answer("schedule " + id + " is not paused\n"); }
         let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + "}", who);
         if !ok { return fail("the record refused the append"); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; it never fires until resumed)" } else { "resumed (schedule.resumed)" }) + "\n");
     }
     if len(sub) > 0 && sub != "list" { return fail("schedule: `hale dna schedule`, `schedule pause <id>`, or `schedule resume <id>`"); }
-    let p = open_projection(root, ".", "");
+    let p = open_projection(root, ".", "", memory);
     let mut out = "";
     let mut ids = "\n";
     let mut i = 0;
@@ -930,14 +932,14 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
 // --purpose <p>` reads it from memory in your name (GH #985).
 
 @unbounded
-fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String) -> Answer {
+fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "disclose" {
         if len(digest) == 0 || len(to) == 0 || len(purpose) == 0 { return fail("receipt disclose: `hale dna receipt disclose <digest> --to <recipient> --purpose <purpose> [--as <who>]`"); }
-        let s = sync_record(root);
-        let p = open_projection(root, ".", "");
+        let s = sync_record(root, memory);
+        let p = open_projection(root, ".", "", memory);
         let mut known = false;
         let mut i = 0;
         while i < p.rows() {
@@ -953,13 +955,13 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         b.string_field("by", who);
         b.end_object();
         if !append_as(root, "receipt.disclosed", digest, b.result(), who) { return fail("the record refused the append"); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("receipt " + digest + " disclosed to " + to + " for " + purpose + " (receipt.disclosed, by " + who + ")\n");
     }
     if sub == "hold" || sub == "release-hold" {
         if len(digest) == 0 || len(why) == 0 { return fail("receipt " + sub + ": `hale dna receipt " + sub + " <digest> --why <why> [--as <who>]`"); }
-        let s = sync_record(root);
-        let p = open_projection(root, ".", "");
+        let s = sync_record(root, memory);
+        let p = open_projection(root, ".", "", memory);
         let mut held = false;
         let mut i = 0;
         while i < p.rows() {
@@ -977,20 +979,20 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         b.end_object();
         let kind = if sub == "hold" { "receipt.held" } else { "receipt.hold_released" };
         if !append_as(root, kind, digest, b.result(), who) { return fail("the record refused the append"); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("receipt " + digest + " " + (if sub == "hold" { "held" } else { "released from its hold" }) + " (" + kind + ", by " + who + ")\n");
     }
     if sub == "redact" {
         if len(digest) == 0 || len(why) == 0 || len(policy) == 0 { return fail("receipt redact: `hale dna receipt redact <digest> --why <why> --policy <policy> [--as <who>]`"); }
-        let s = sync_record(root);
+        let s = sync_record(root, memory);
         // the point the hold is read at — the record's head, and the
         // ledger's revision once the organism has adopted it: the
         // redaction lands only there (#636)
         let read_head = record_head(root);
         if !read_head.ok { return fail("receipt redact: the record's head could not be read: " + read_head.why); }
         let read_at = read_head.id;
-        let ledger_at = ledger_revision(root);
-        let p = open_projection(root, ".", "");
+        let ledger_at = ledger_revision(root, memory);
+        let p = open_projection(root, ".", "", memory);
         let mut held = "";
         let mut redacted = false;
         let mut classified = false;
@@ -1028,7 +1030,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             let a = r.append(JOURNAL, read_at, dna::Row { kind: "receipt.redacted", entity: digest, body: b.result(), author: who }, signing(root), "");
             if !a.ok && a.error == "stale" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
             if !a.ok { return fail("receipt redact: the record refused the redaction of " + digest + " (" + a.error + ")"); }
-            let s2 = sync_record(root);
+            let s2 = sync_record(root, memory);
             return answer("receipt " + digest + " redacted (" + class + "; receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n");
         }
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
@@ -1051,7 +1053,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + "); nothing was erased"); }
         }
         if had { let d = rec(root).forget(hexd); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its ref removed here and from the remote" }) + "; receipt.redacted, by " + who + " under " + policy + "). The blob stays in each object store until git collects it.\n");
     }
     if sub == "show" {
@@ -1060,11 +1062,11 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         let vault = dna::MemoryVault { repo: root, dsn_env: dna::own_dsn_env() };
         let got = vault.read(digest, who, purpose);
         if !got.present { return fail("receipt show: " + got.refused); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("receipt " + digest + " (" + got.class + ", " + to_string(len(got.text)) + " bytes, disclosed to " + who + " for " + purpose + ")\n" + got.text + "\nend of receipt\n");
     }
     if len(sub) > 0 && sub != "list" { return fail("receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, `receipt show <digest> --purpose <p>`, `receipt hold|release-hold <digest> --why <w>`, or `receipt redact <digest> --why <w> --policy <p>`"); }
-    let p = open_projection(root, ".", "");
+    let p = open_projection(root, ".", "", memory);
     let mut out = "";
     let mut n = 0;
     let mut i = 0;

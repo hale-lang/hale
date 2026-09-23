@@ -5,7 +5,7 @@ import "../core" as dna;
 import "../host" as host;
 
 fn relay_child(root: String) {
-    let p = host::open_projection(root, ".", "");
+    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
     let expired = host::relay_mark("\n", host::fact_key(p, 0), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
     let state = host::relay_record_membrane(root, ".", "", "test", expired);
     println("relayed=", state.count);

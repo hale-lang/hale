@@ -129,10 +129,10 @@ fn checkpoint_here(root: String) -> String {
 }
 
 // The `memory:` line of status: which memories the organism has.
-fn routing_line(root: String) -> String {
+fn routing_line(root: String, memory: dna::Memory) -> String {
     let r = routing_here(root);
     if r == 0 { return "the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger"; }
-    let sl = store_leases(root);
+    let sl = memory.leases;
     let probe = sl.current(store_lease_key(root));
     let reach = if sl.reachable { "" } else { "; THE LEDGER IS UNREACHABLE (" + sl.last_error + "): what is read here is the last projection, and nothing is admitted until it answers" };
     return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations and leases live in memory" + reach + ")";
@@ -181,8 +181,8 @@ fn ledger_request(root: String, expected: Int, kind: String, entity: String, bod
 
 // The ledger's revision as memory holds it now, or -1 when this head holds
 // no memory: the point a decision over ledger rows is read at.
-fn ledger_revision(root: String) -> Int {
-    let l = dna::MemoryLedger { repo: root, dsn_env: dna::own_dsn_env() };
+fn ledger_revision(root: String, memory: dna::Memory) -> Int {
+    let l = memory.ledger;
     if !l.ready() { return -1; }
     return l.revision();
 }
@@ -271,10 +271,10 @@ fn sync_failed(why: String) -> SyncResult {
 // shared. Redactions and dropped candidates are applied both here and
 // at the remote; the record's identity is published.
 @unbounded
-fn sync_record(repo: String) -> SyncResult {
+fn sync_record(repo: String, memory: dna::Memory) -> SyncResult {
     let s = sync_record_rows(repo);
     if s.ok {
-        let r = apply_redactions(repo);
+        let r = apply_redactions(repo, memory);
         let d = apply_drops(repo);
         // a remote that had no record had no identity either, whatever this
         // clone published to the remote it had before
@@ -325,15 +325,14 @@ fn publish_identity(repo: String) -> Bool {
 // adopted, and a body filed before adoption is still a blob here — so
 // the rows are read from both memories as one)
 @unbounded
-fn apply_redactions(repo: String) -> Int {
+fn apply_redactions(repo: String, memory: dna::Memory) -> Int {
     let r = rec(repo);
     let remote = record_remote(repo);
     let mut n = 0;
     // the record and the ledger read as one (nothing of the ledger is read
     // on routing 0); each locus built in place, never handed back by a factory
     let record = dna::GitJournal { repo: repo, author: "host" };
-    let ledger = dna::MemoryLedger { repo: repo, dsn_env: dna::own_dsn_env() };
-    let j = dna::RoutedJournal { record: record, ledger: ledger };
+    let j = dna::RoutedJournal { record: record, ledger: memory.ledger };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
@@ -362,9 +361,8 @@ fn apply_drops(repo: String) -> Int {
     let r = rec(repo);
     let remote = record_remote(repo);
     let mut n = 0;
-    let record = dna::GitJournal { repo: repo, author: "host" };
-    let ledger = dna::MemoryLedger { repo: repo, dsn_env: dna::own_dsn_env() };
-    let j = dna::RoutedJournal { record: record, ledger: ledger };
+    // `candidate.dropped` is a row of the record on every routing
+    let j = dna::GitJournal { repo: repo, author: "host" };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
@@ -624,31 +622,27 @@ fn lease_text(l: BodyLease) -> String {
 // swapped by its token through the service; `sha` carries the token.
 fn body_in_store(repo: String) -> Bool { return routing_here(repo) > 0; }
 
-fn store_leases(repo: String) -> dna::MemoryLeases {
-    return dna::MemoryLeases { repo: repo, dsn_env: dna::own_dsn_env() };
-}
-
 // GH #665: the store's key for this body's lease — one per owner over a
 // shared record (`owner/<owner>`), `body` when the organization is the
 // one owner. Its token is the epoch every write the body makes carries.
 fn store_lease_key(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.lease_key(); }
 
-fn body_lease_from_store(repo: String) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.store_lease(); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
+fn body_lease_from_store(repo: String, memory: dna::Memory) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.store_lease(memory.leases); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
 
 // The lease as the record's authority has it: the store's row on
 // routing 1; the remote's cell when there is a remote (received now),
 // the clone's otherwise. `ok` false when the authority could not be
 // reached.
-fn body_lease_read(repo: String) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.body_lease(); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
+fn body_lease_read(repo: String, memory: dna::Memory) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.body_lease(memory.leases); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
 
 // Write a lease where `expected` is the version the cell has now
 // ("" = no lease): compare-and-swap at the remote (the cell shared with
 // the version the remote must still hold) or in the clone. The clone's
 // own cell mirrors what was written. False when someone else moved it
 // first.
-fn body_lease_write(repo: String, l: BodyLease, expected: String) -> Bool {
+fn body_lease_write(repo: String, l: BodyLease, expected: String, memory: dna::Memory) -> Bool {
     if body_in_store(repo) {
-        let sl = store_leases(repo);
+        let sl = memory.leases;
         let expected_token = if len(expected) == 0 { 0 } else { std::str::parse_int(expected) or 0 };
         let key = store_lease_key(repo);
         return sl.put(key, dna::Lease { key: key, holder: l.holder, token: l.token, expires: l.expires, present: l.present }, expected_token);
@@ -670,21 +664,21 @@ fn body_live(l: BodyLease, now: Int) -> Bool { return l.present && l.expires > n
 // lease of another holder is refused (present false, holder theirs),
 // unless `force`. A refused acquire because of a partition is `ok`
 // false.
-fn body_acquire(repo: String, holder: String, now: Int, force: Bool) -> BodyLease {
-    let cur = body_lease_read(repo);
+fn body_acquire(repo: String, holder: String, now: Int, force: Bool, memory: dna::Memory) -> BodyLease {
+    let cur = body_lease_read(repo, memory);
     if !cur.ok { return cur; }
     if body_live(cur, now) && cur.holder != holder && !force {
         // theirs, not ours: `present` is false for the caller, `holder` says whose
         return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
     }
     let l = BodyLease { present: true, holder: holder, token: cur.token + 1, expires: now + BODY_TTL };
-    if !body_lease_write(repo, l, cur.sha) {
-        let again = body_lease_read(repo);
+    if !body_lease_write(repo, l, cur.sha, memory) {
+        let again = body_lease_read(repo, memory);
         if !again.ok { return again; }
         if again.holder == holder && body_live(again, now) { return again; }
         return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
     }
-    let mine = body_lease_read(repo);
+    let mine = body_lease_read(repo, memory);
     return if mine.ok && mine.holder == holder && mine.token == l.token { mine } else { BodyLease { present: true, holder: holder, token: l.token, expires: l.expires, sha: rec(repo).cell(BODY_LEASE).version } };
 }
 
@@ -692,15 +686,15 @@ fn body_acquire(repo: String, holder: String, now: Int, force: Bool) -> BodyLeas
 // someone else now has it (present false for us), or `ok` false when
 // the remote could not be reached — the caller keeps the lease it had
 // until that one expires.
-fn body_renew(repo: String, mine: BodyLease, now: Int) -> BodyLease {
-    let cur = body_lease_read(repo);
+fn body_renew(repo: String, mine: BodyLease, now: Int, memory: dna::Memory) -> BodyLease {
+    let cur = body_lease_read(repo, memory);
     if !cur.ok { return cur; }
     if !(cur.present && cur.holder == mine.holder && cur.token == mine.token) {
         return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
     }
     let l = BodyLease { present: true, holder: mine.holder, token: mine.token, expires: now + BODY_TTL };
-    if !body_lease_write(repo, l, cur.sha) {
-        let again = body_lease_read(repo);
+    if !body_lease_write(repo, l, cur.sha, memory) {
+        let again = body_lease_read(repo, memory);
         if !again.ok { return again; }
         // the write failed and the lease is still ours as it was: not lost,
         // only unrenewed — kept until it expires, like a partition
@@ -712,10 +706,10 @@ fn body_renew(repo: String, mine: BodyLease, now: Int) -> BodyLease {
 
 // Give the lease up (present false, token kept so a late renewal of it
 // is refused). True when it was ours to give up.
-fn body_release(repo: String, mine: BodyLease) -> Bool {
-    let cur = body_lease_read(repo);
+fn body_release(repo: String, mine: BodyLease, memory: dna::Memory) -> Bool {
+    let cur = body_lease_read(repo, memory);
     if !cur.ok || !cur.present || cur.holder != mine.holder || cur.token != mine.token { return false; }
-    return body_lease_write(repo, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha);
+    return body_lease_write(repo, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha, memory);
 }
 
 fn ago(secs: Int) -> String {
@@ -728,8 +722,8 @@ fn ago(secs: Int) -> String {
 
 // The body line of `status` and `profile`: who runs this record's
 // organism, from the lease alone.
-fn body_line(repo: String, now: Int) -> String {
-    let l = body_lease_read(repo);
+fn body_line(repo: String, now: Int, memory: dna::Memory) -> String {
+    let l = body_lease_read(repo, memory);
     if !l.ok { return "unknown (the remote cannot be reached)"; }
     if len(l.holder) == 0 { return "none (no body has run this record; `hale dna run` takes the lease)"; }
     let ticked = ago(now - (l.expires - BODY_TTL));

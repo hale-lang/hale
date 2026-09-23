@@ -410,12 +410,12 @@ fn edge_admits_here(root: String, r: dna::KnowledgeEdgeRequest) -> Bool {
 }
 
 @unbounded
-fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String) -> RelayState {
+fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String, memory: dna::Memory) -> RelayState {
     let mut state = RelayState { relayed: relayed };
     // no record, or one that could not be read: nothing to do this pass
     let now = record_head(root);
     if !now.ok || now.absent { return state; }
-    let p = open_projection(root, seed, toolchain);
+    let p = open_projection(root, seed, toolchain, memory);
     let trust = trust_mode(root);
     let mut i = 0;
     while i < p.rows() {
@@ -510,6 +510,7 @@ fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: St
 }
 
 locus Host {
+    birth() { self.memory.point(self.root, dna::own_dsn_env()); }
     params {
         verb: String = "run";
         root: String = ".";
@@ -535,6 +536,9 @@ locus Host {
         graph_projection: ops::MemoryProjection = ops::MemoryProjection { };
         admission: dna::RequestAdmission = dna::RequestAdmission { };
         vault: dna::MemoryVault = dna::MemoryVault { };
+        // this process's one handle on the ledger and the leases (GH #985):
+        // opened on first use, held for the host's life, closed with it
+        memory: dna::Memory = dna::Memory { };
         memory_on: Bool = false;
         memory_said: String = "";
         handled: String = "\n";
@@ -571,7 +575,7 @@ locus Host {
             rest = rest[(sp + 1)..len(rest)];
             if len(name) > 0 && (std::env::var_exists(name) || std::str::contains(file, "\n" + name + "=")) { have = true; }
         }
-        let p = open_projection(self.root, self.seed, self.toolchain);
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let was_missing = len(credential_gap(p)) > 0;
         if !have && !was_missing {
             self.say("no credential for the model: none of " + names + " is set here or in ~/.config/hale-dna/" + body_key(self.root) + ".env (`hale dna secret set <NAME>`); the board says so until one is");
@@ -697,7 +701,7 @@ locus Host {
     // organism must never run under a lease that is not ours).
     fn body_assert(what: String) -> Bool {
         let now = std::time::now();
-        let r = body_lease_read(self.root);
+        let r = body_lease_read(self.root, self.memory);
         if r.ok && (!r.present || r.holder != self.holder || r.token != self.lease.token) {
             self.say("before starting " + what + ": the body lease is no longer mine (" + (if len(r.holder) > 0 && r.holder != self.holder { "held by " + r.holder } else { "released" }) + "); nothing is started");
             return false;
@@ -823,7 +827,7 @@ locus Host {
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let p = open_projection(self.root, self.seed, self.toolchain);
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let tmp = self.status_path + ".tmp";
         let w = write_text(tmp, p.json()) or false;
         if w { std::io::fs::rename(tmp, self.status_path) or discard; }
@@ -841,7 +845,7 @@ locus Host {
     // appended from any clone is relayed onto the organism's sockets,
     // once.
     fn relay_record_membrane() -> Int {
-        let state = relay_record_membrane(self.root, self.seed, self.toolchain, self.verb, self.relayed);
+        let state = relay_record_membrane(self.root, self.seed, self.toolchain, self.verb, self.relayed, self.memory);
         self.relayed = state.relayed;
         if len(state.error) > 0 { self.say("membrane relay failed: " + state.error); }
         return state.count;
@@ -873,7 +877,7 @@ locus Host {
     fn observation_landed(mutation_id: String, outcome: String, secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let p = open_projection(self.root, self.seed, self.toolchain);
+            let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
             let mut i = 0;
             while i < p.rows() {
                 let e = p.row(i);
@@ -929,7 +933,7 @@ locus Host {
     // owned process. This method is never called for an existing claim.
     fn start_organization_launch(prepared: OrganizationLaunchPreparation) -> Bool {
         let a = prepared.attempt; let codec = dna::OrganizationLaunchCodec { }; let source = org_runtime::OrganizationLaunchSource { root: self.root };
-        if !prepared.valid || !prepared.fresh || !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a) { return false; }
+        if !prepared.valid || !prepared.fresh || !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a, self.memory.leases) { return false; }
         let requested = source.fact("organization.source.launch_requested", a.attempt_id);
         let basis = source.basis(a.mutation_id);
         let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
@@ -948,14 +952,14 @@ locus Host {
     }
     fn note_organization_exit(a: dna::OrganizationLaunchAttempt) -> Bool {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let codec = dna::OrganizationLaunchCodec { };
-        if !source.scope(a) || a.host_pid != std::process::pid() { return false; }
+        if !source.scope(a, self.memory.leases) || a.host_pid != std::process::pid() { return false; }
         let read = source.process(a); let proc = Proc { pid: read.pid, dir: read.dir, name: read.name }; let code = exit_code(proc);
         if proc.pid < 1 || code < 0 { return false; }
         return organization_launch_write(self.root, "organization.source.launch_exited", a.attempt_id, codec.exit_body(a, proc.pid, code)).ok;
     }
     fn recover_organization_launch(id: String) -> dna::OrganizationLaunchReceipt {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let basis = source.basis(id); let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
-        if !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a) || !self.body_assert("the same prepared organization attempt") { return dna::OrganizationLaunchReceipt { }; }
+        if !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a, self.memory.leases) || !self.body_assert("the same prepared organization attempt") { return dna::OrganizationLaunchReceipt { }; }
         let read = source.process(a); let proc = Proc { pid: read.pid, dir: read.dir, name: read.name }; let exited = exit_code(proc);
         if proc.pid > 0 && exited >= 0 {
             let saved = organization_launch_write(self.root, "organization.source.launch_exited", a.attempt_id, codec.exit_body(a, proc.pid, exited));
@@ -964,7 +968,7 @@ locus Host {
         if proc.pid <= 0 { return dna::OrganizationLaunchReceipt { }; }
         self.org = proc;
         if !self.wait_membrane(20) { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
-        let live = source.live(a); if !live.valid { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
+        let live = source.live(a, self.memory.leases); if !live.valid { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
         let existing = source.launched(a);
         if existing.valid {
             return if existing.pid == live.pid && existing.process_key == live.process_key && existing.process_started == live.process_started { existing } else { dna::OrganizationLaunchReceipt { } };
@@ -979,7 +983,7 @@ locus Host {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
         let rollback = OrganizationRollbackCodec { }; let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
         let exited = source.exited(a); let failure = source.fact("organization.source.launch_exited", a.attempt_id);
-        if !basis.ok || !codec.valid(a) || !exited.valid || code != exited.code || !source.scope(a) || a.host_pid != std::process::pid()
+        if !basis.ok || !codec.valid(a) || !exited.valid || code != exited.code || !source.scope(a, self.memory.leases) || a.host_pid != std::process::pid()
             || !self.body_assert("the prepared organization rollback") { return false; }
         if rollback.answered(source, basis, a) { return true; }
         let id = a.mutation_id;
@@ -1019,7 +1023,7 @@ locus Host {
         }
         let claim = rollback.launch_claim(source, basis, a); if !claim.valid { return false; }
         if fresh {
-            if !source.scope(a) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
+            if !source.scope(a, self.memory.leases) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
                 || source.file_digest(dir + "/rollback.topology") != claim.topology_digest { return false; }
             stop_proc(self.org); self.remove_sockets(); if !self.body_assert("the original organization") { return false; }
             self.org = start(dir, "rollback", self.root, self.child_envs(id, "rollback " + claim.binary_digest), dir + "/rollback.program"); self.org_log = 0;
@@ -1031,7 +1035,7 @@ locus Host {
         let process = identity::Identity { }; let before = process.capture(self.org.pid);
         if len(before.key) == 0 || source.file_digest("/proc/" + self.org.pid + "/exe") != claim.binary_digest
             || source.file_digest(dir + "/rollback.program") != claim.binary_digest || source.file_digest(dir + "/rollback.topology") != claim.topology_digest
-            || !guard.current(basis.request).ok || !source.scope(a) { return false; }
+            || !guard.current(basis.request).ok || !source.scope(a, self.memory.leases) { return false; }
         let after = process.capture(self.org.pid); if before.key != after.key || before.started != after.started { return false; }
         let pid = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
         let artifact = dna::run_tool("cp\n" + dir + "/rollback.topology\n" + self.dna_dir + "/org.topology"); if !pid || artifact.code != 0 { return false; }
@@ -1051,11 +1055,11 @@ locus Host {
         }
         let previous = source.observed(launched);
         if previous.valid {
-            if previous.outcome == "healthy" { self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy"); return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain), basis.handoff); }
+            if previous.outcome == "healthy" { self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy"); return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain, self.memory), basis.handoff); }
             let exited = source.exited(prepared.attempt);
             return if exited.valid { self.rollback_organization_launch(basis, exited.code) } else { false };
         }
-        let first = source.live(launched.attempt);
+        let first = source.live(launched.attempt, self.memory.leases);
         if !first.valid || first.process_key != launched.process_key { return false; }
         let began = std::time::now(); let end = began + launched.attempt.observation_seconds; let mut code = -2;
         while std::time::now() < end && code == -2 {
@@ -1069,13 +1073,13 @@ locus Host {
                 codec.observation_body(launched, "crashed", began, std::time::now()));
             return if saved.ok { self.rollback_organization_launch(basis, code) } else { false };
         }
-        let after = source.live(launched.attempt);
+        let after = source.live(launched.attempt, self.memory.leases);
         if !after.valid || after.pid != launched.pid || after.process_key != launched.process_key || after.process_started != launched.process_started { return false; }
         let saved = organization_launch_write(self.root, "organization.source.launch_observed", launched.attempt.attempt_id,
             codec.observation_body(launched, "healthy", began, std::time::now()));
         if !saved.ok { return false; }
         self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy");
-        return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain), basis.handoff);
+        return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain, self.memory), basis.handoff);
     }
     fn restart_org(id: String, rollback: Bool) -> Bool {
         let org_seed = self.root + "/" + ORG_SEED;
@@ -1101,9 +1105,9 @@ locus Host {
         let mut all_up_at = -1;
         let mut shape = "";
         while true {
-            let s = sync_record(self.root);
+            let s = sync_record(self.root, self.memory);
             self.write_status();
-            let p = open_projection(self.root, self.seed, self.toolchain);
+            let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
             let mut missing = "";
             let mut rest = touched + " ";
             while len(rest) > 0 {
@@ -1138,7 +1142,7 @@ locus Host {
         let rev = second_word(body);
         let seed_named = seed_named_in(body);
         self.say(id + " requests a restart (" + body + "); deploying to the fleet `" + self.fleet + "`");
-        let d = fleet_deploy(self.root, self.fleet, self.plan, rev, seed_named, id, if rollback { "rollback" } else { "apply" });
+        let d = fleet_deploy(self.root, self.fleet, self.plan, rev, seed_named, id, if rollback { "rollback" } else { "apply" }, self.memory);
         if !d.ok {
             self.say(id + ": the fleet does not deploy: " + d.error);
             if !rollback { self.observed(id, "build_failed", "", "fleet: " + d.error); }
@@ -1200,7 +1204,7 @@ locus Host {
         while std::time::now() < end && crashed == -2 {
             crashed = exit_code(self.app);
             self.app_log = drain_log(self.app, self.app_log);
-            let s = sync_record(self.root);
+            let s = sync_record(self.root, self.memory);
             self.write_status();
             std::time::sleep(250ms);
         }
@@ -1225,7 +1229,7 @@ locus Host {
         while std::time::now() < end && crashed == -2 {
             crashed = exit_code(self.org);
             self.org_log = drain_log(self.org, self.org_log);
-            let s = sync_record(self.root);
+            let s = sync_record(self.root, self.memory);
             self.write_status();
             std::time::sleep(250ms);
         }
@@ -1238,7 +1242,7 @@ locus Host {
         // nobody is left to decide: the host accounts for it, resets the
         // genome to the base and restarts the old organization
         self.say(id + ": the organization exited (" + to_string(crashed) + ") inside the window; rolling back");
-        let base = base_of(open_projection(self.root, self.seed, self.toolchain), id);
+        let base = base_of(open_projection(self.root, self.seed, self.toolchain, self.memory), id);
         let c = append_as(self.root, "expression.crashed", id, "organization exited " + to_string(crashed) + " in the observation window", "");
         if genome_reset(self.root, base) {
             let r = append_as(self.root, "mutation.rolled_back", id, base + " by host after the organization crashed", "");
@@ -1261,23 +1265,23 @@ locus Host {
                 self.app_gone_reported = true;
             }
         }
-        let s = sync_record(self.root);
+        let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
         self.memory_tick();
         if forge_kind(self.root) != "none" {
-            let g = github_sync(self.root, self.seed);
+            let g = github_sync(self.root, self.seed, self.memory);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }
         // the sync above may have blocked past the lease's life: prove it
         // again before relaying anything onto the membrane
         if !self.body_alive() { self.stop_body(3); }
         let n = self.relay_record_membrane();
-        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root); }
+        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root, self.memory); }
         self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let p = open_projection(self.root, self.seed, self.toolchain);
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let req = pending_restart(p, self.handled);
         if req.seq < 0 { return; }
         if prepared_source_restart(p, req) {
@@ -1304,7 +1308,7 @@ locus Host {
         //    time; nothing is built or run under a lease that is not ours
         self.holder = body_holder(self.root);
         let now0 = std::time::now();
-        let l = body_acquire(self.root, self.holder, now0, false);
+        let l = body_acquire(self.root, self.holder, now0, false, self.memory);
         if !l.ok { self.say("the record's remote cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove"); std::process::exit(3); }
         if !l.present || l.holder != self.holder {
             self.say("a body for this record is live on " + l.holder + " (ticked " + ago(now0 - (l.expires - BODY_TTL)) + ", lease expires in " + to_string(l.expires - now0) + "s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone");
@@ -1322,7 +1326,7 @@ locus Host {
         self.start_memory();
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
-        let incoming = open_projection(self.root, self.seed, self.toolchain);
+        let incoming = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let prepared_restart = pending_restart(incoming, self.handled);
         let prepared_startup = prepared_restart.seq >= 0 && prepared_source_restart(incoming, prepared_restart);
         if prepared_startup {
@@ -1379,7 +1383,7 @@ locus Host {
                 // A proven failed prepared child may still need its exact
                 // rollback acknowledgment. Keep this host/lease alive to
                 // reconcile that one handoff; never replace an unknown claim.
-                let waiting = open_projection(self.root, self.seed, self.toolchain);
+                let waiting = open_projection(self.root, self.seed, self.toolchain, self.memory);
                 let handoff_fact = pending_restart(waiting, self.handled);
                 if handoff_fact.seq >= 0 && prepared_source_restart(waiting, handoff_fact) {
                     if !self.body_alive() { self.stop_body(3); }
@@ -1398,9 +1402,9 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.write_status();
         self.stop_fence();
-        if body_release(self.root, self.lease) {
+        if body_release(self.root, self.lease, self.memory) {
             let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"}", "host");
-            let s3 = sync_record(self.root);
+            let s3 = sync_record(self.root, self.memory);
         }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
         if self.exit_code != 0 { self.quit(self.exit_code); }
@@ -1425,7 +1429,7 @@ fn count_words(s: String) -> Int {
 // the same clone). Every status line it writes starts with its host's pid.
 // Bounded by the life of the body it fences.
 @unbounded
-fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
+fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int, memory: dna::Memory) {
     let dir = ".hale/dna";
     let mut lease = BodyLease { present: true, holder: holder, token: token, expires: expires };
     let mark = dna::body_mark(holder, token, host_pid);
@@ -1436,7 +1440,7 @@ fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
         let d = write_text(dir + "/body.deadline", to_string(lease.expires - FENCE_MARGIN)) or false;
         if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, mark, "orphaned: the host is gone"); return; }
         if now - renewed >= BODY_TTL / 3 {
-            let r = body_renew(".", lease, now);
+            let r = body_renew(".", lease, now, memory);
             if r.ok {
                 if !r.present || r.holder != holder { fence_stop(dir, host_pid, mark, "lost " + r.holder); return; }
                 lease = r;

@@ -57,7 +57,7 @@ fn maximum() {
 fn relay_max(root: String) {
     let result = host::relay_record_membrane(root, ".", "", "test", "\n");
     if result.count != 1 {
-        let p = host::open_projection(root, ".", ""); let codec = dna::KnowledgeNodeRequestCodec { }; let r = codec.decode(p.row(1).body);
+        let p = host::open_projection(root, ".", "", dna::Memory { repo: root }); let codec = dna::KnowledgeNodeRequestCodec { }; let r = codec.decode(p.row(1).body);
         eprintln("max probe error=", result.error, " rows=", p.rows(), " kind=", p.row(1).kind, " valid=", codec.valid(r), " id=", r.request_id, " text=", len(r.text), " rationale=", len(r.because));
     }
     std::test::assert_eq_int(result.count, 1, "maximum native command is actually handed to the transport probe");
@@ -105,20 +105,20 @@ fn check() {
     let wrong = request("command/exact", "A different candidate under the same key.");
     let wrong_answer = j.append_exact(j.revision(), "knowledge.node.proposed", r.request_id, codec.proposed(wrong));
     std::test::assert(wrong_answer.ok, "synthetic nonmatching answer fixture");
-    let not_answered = host::open_projection(root, ".", "");
+    let not_answered = host::open_projection(root, ".", "", dna::Memory { repo: root });
     std::test::assert(!host::request_answered(not_answered, 0, " knowledge.node.proposed knowledge.node.refused "), "same entity cannot borrow another candidate's acknowledgment");
     let answer = j.append_exact(j.revision(), "knowledge.node.proposed", r.request_id, codec.proposed(r));
     std::test::assert(answer.ok, "synthetic exact answer fixture");
-    let answered = host::open_projection(root, ".", "");
+    let answered = host::open_projection(root, ".", "", dna::Memory { repo: root });
     std::test::assert(host::request_answered(answered, 0, " knowledge.node.proposed knowledge.node.refused "), "exact full request acknowledgment stops relay");
     let r2 = request("command/refused", "The refused candidate.");
     let index = j.revision();
     let input2 = j.append_exact(j.revision(), "knowledge.node.requested", r2.request_id, codec.started(r2));
     let plain = j.append_exact(j.revision(), "knowledge.node.refused", r2.request_id, "not a correlated acknowledgment");
-    let no_refusal = host::open_projection(root, ".", "");
+    let no_refusal = host::open_projection(root, ".", "", dna::Memory { repo: root });
     std::test::assert(input2.ok && plain.ok && !host::request_answered(no_refusal, index, " knowledge.node.proposed knowledge.node.refused "), "prose refusal cannot answer a native command");
     let refused = j.append_exact(j.revision(), "knowledge.node.refused", r2.request_id, codec.refused(r2, "lateral knowledge binding is not permitted"));
-    let refusal = host::open_projection(root, ".", "");
+    let refusal = host::open_projection(root, ".", "", dna::Memory { repo: root });
     std::test::assert(refused.ok && host::request_answered(refusal, index, " knowledge.node.proposed knowledge.node.refused "), "exact correlated refusal stops relay");
     let removed = dna::run_tool("rm\n-rf\n" + root);
 }

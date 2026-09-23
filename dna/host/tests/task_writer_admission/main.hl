@@ -69,7 +69,7 @@ locus TaskWriterAdmissionProof {
             if !zero { self.append(j, "task.born", "second task with spaces", "Keep the second responsibility"); self.append(j, "task.handed", "second task with spaces", "{\"assignee\":\"alice\",\"by\":\"leader\"}"); }
             let before = j.head(); let revision = j.revision();
             let batch = RetirementFaultBatch { inner: record, fault: if mode == "retire-build-fails" { "build-fails" } else if mode == "retire-lost-ack" { "lost-ack" } else if mode == "retire-arrival-at-cas" { "arrival" } else { "" } };
-            let result = host::retire_admit(root, ".", "alice", if zero { "" } else { "bob" }, "operator", batch);
+            let result = host::retire_admit(root, ".", "alice", if zero { "" } else { "bob" }, "operator", batch, dna::Memory { repo: root });
             let refreshed = j.refresh();
             if mode == "retire-build-fails" {
                 std::test::assert(!result.ok && j.head() == before && batch.moves == 0, "failed off-ref build publishes none of the transfers");
@@ -84,7 +84,7 @@ locus TaskWriterAdmissionProof {
                 let fact = codec.decode_fact(captured.read(captured.revision() - 1), captured);
                 std::test::assert(fact.valid && fact.transferred == (if zero { 0 } else { 2 }), "exact command manifest validates for opaque Task IDs");
                 if !zero {
-                    let view = host::open_projection(root, ".", ""); let task = view.task_of(id);
+                    let view = host::open_projection(root, ".", "", dna::Memory { repo: root }); let task = view.task_of(id);
                     std::test::assert(task.assignee == "bob" && task.state == "handed" && task.obligation == "approval" && task.acceptance == "opaque acceptance" && task.evidence_required, "reassignment preserves obligation and acceptance");
                     std::test::assert(view.task_of("second task with spaces").assignee == "bob", "space-bearing Task identity remains exact");
                 }

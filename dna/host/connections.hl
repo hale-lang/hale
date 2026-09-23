@@ -273,8 +273,8 @@ fn connection_to(p: Projection, peer: String) -> Connection {
 // ---- hale dna connect | disconnect ------------------------------------
 
 @unbounded
-fn connect_verb(root: String, seed: String, url_in: String, name: String, position: String, purpose: String, classes: String, by_flag: String) -> Answer {
-    if len(url_in) == 0 { return connections_list(root, seed); }
+fn connect_verb(root: String, seed: String, url_in: String, name: String, position: String, purpose: String, classes: String, by_flag: String, memory: dna::Memory) -> Answer {
+    if len(url_in) == 0 { return connections_list(root, seed, memory); }
     if len(name) == 0 || len(position) == 0 || len(purpose) == 0 || len(classes) == 0 {
         return fail("connect: `hale dna connect <record-url> --name <name> --as <position> --purpose <purpose> --classes <internal,customer,…> [--by <who>]`");
     }
@@ -282,10 +282,10 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     if len(bad_name) > 0 { return fail("connect: " + bad_name); }
     let bad_classes = dna::classes_refusal(classes);
     if len(bad_classes) > 0 { return fail("connect: " + bad_classes); }
-    let s = sync_record(root);
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let prior = connection_of(p, name);
     if prior.present && len(prior.closed) == 0 { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
     let url = absolute_url(root, url_in);
@@ -321,16 +321,16 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     q.string_field("target", position);
     q.end_object();
     if !append_as(root, "review.requested", "review:" + review_id, q.result(), by) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
+    let s2 = sync_record(root, memory);
     return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + " (git exchange), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
 }
 
 @unbounded
-fn connections_list(root: String, seed: String) -> Answer {
-    let s = sync_record(root);
+fn connections_list(root: String, seed: String, memory: dna::Memory) -> Answer {
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let mut out = "";
     let mut n = 0;
     let mut rest = connection_names(p);
@@ -347,12 +347,12 @@ fn connections_list(root: String, seed: String) -> Answer {
     return answer("connections: " + (if n == 0 { "none" } else { to_string(n) }) + "\n" + out);
 }
 
-fn disconnect_verb(root: String, seed: String, name: String, why: String, by_flag: String) -> Answer {
+fn disconnect_verb(root: String, seed: String, name: String, why: String, by_flag: String, memory: dna::Memory) -> Answer {
     if len(name) == 0 || len(why) == 0 { return fail("disconnect: `hale dna disconnect <name> --why <why> [--by <who>]`"); }
-    let s = sync_record(root);
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let c = connection_of(p, name);
     if !c.present { return fail("disconnect: no connection `" + name + "`"); }
     if len(c.closed) > 0 { return fail("disconnect: `" + name + "` is already closed: " + c.closed); }
@@ -363,21 +363,21 @@ fn disconnect_verb(root: String, seed: String, name: String, why: String, by_fla
     b.string_field("why", why);
     b.end_object();
     if !append_as(root, "connection.closed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
+    let s2 = sync_record(root, memory);
     return answer("connection " + name + " closed by " + by + ": " + why + "; its history stays in both records, and nothing further crosses it\n");
 }
 
 // ---- hale dna handoff -------------------------------------------------
 
 @unbounded
-fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, subject_in: String, note: String, who_flag: String) -> Answer {
+fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, subject_in: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
     if (kind != "task" && kind != "receipt") || len(subject_in) == 0 {
         return fail("handoff: `hale dna handoff <connection> task <id> | receipt <digest> [--note …] [--as <who>]`, `handoff accept <id>`, `handoff sync`, or `hale dna handoff` to list");
     }
-    let s = sync_record(root);
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let c = connection_of(p, name);
     if !c.present { return fail("handoff: no connection `" + name + "`; `hale dna connect <record-url> --name " + name + " …` proposes one"); }
     settle_connection(root, c);
@@ -437,7 +437,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         rb.string_field("why", why);
         rb.end_object();
         let refused = append_as(root, "handoff.refused", "handoff:" + hid, rb.result(), who);
-        let s3 = sync_record(root);
+        let s3 = sync_record(root, memory);
         return fail("handoff: " + why + "; refused at the edge (handoff.refused), nothing was written across");
     }
     if p.has_row("handoff.published", "handoff:" + hid) {
@@ -451,7 +451,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
             rb.string_field("by", who);
             rb.end_object();
             if !append_as(root, "task.transfer_requested", subject, rb.result(), who) { return fail("the record refused the append"); }
-            let sr = sync_record(root);
+            let sr = sync_record(root, memory);
             return answer("handoff " + hid + ": task " + subject + " was already written into record " + short(c.peer) + "; its transfer is recorded here now\n");
         }
         return fail("handoff: " + kind + " " + subject + " was already handed into record " + short(c.peer) + " as " + hid);
@@ -504,7 +504,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         tb.end_object();
         let t = append_as(root, "task.transfer_requested", subject, tb.result(), who);
     }
-    let s2 = sync_record(root);
+    let s2 = sync_record(root, memory);
     return answer("handoff " + hid + ": " + kind + " " + subject + " [" + class + "] written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", for `" + c.purpose + "`" + (if kind == "task" { "; the Task settles here when that record accepts it (`hale dna handoff sync`)" } else { "" }) + "\n");
 }
 
@@ -546,11 +546,11 @@ fn received_line(root: String, entity: String) -> String {
 }
 
 @unbounded
-fn handoff_list_verb(root: String, seed: String) -> Answer {
-    let s = sync_record(root);
+fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer {
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let mut sent = "";
     let mut i = 0;
     while i < p.rows() {
@@ -589,12 +589,12 @@ fn handoff_list_verb(root: String, seed: String) -> Answer {
 }
 
 @unbounded
-fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, who_flag: String) -> Answer {
+fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(hid) == 0 { return fail("handoff accept: `hale dna handoff accept <id> [--note …] [--as <who>]`"); }
-    let s = sync_record(root);
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let ent = "handoff:" + hid;
     let line = received_line(root, ent);
     if len(line) == 0 { return fail("handoff accept: no handoff `" + hid + "` received in this record's mailboxes"); }
@@ -626,7 +626,7 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
         b.string_field("fact", std::json::find_string_field(body, "fact"));
         b.end_object();
         if !append_as(root, "handoff.accepted", ent, b.result(), who) { return fail("the record refused the append"); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
     }
     // the acceptance goes back into the origin's mailbox for this record
     let ab = std::json::Builder { };
@@ -644,11 +644,11 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
 // Every connection in force: the acceptances its other record sent to this
 // record's own mailbox, each admitted once. A closed connection is not read.
 @unbounded
-fn handoff_sync_verb(root: String, seed: String) -> Answer {
-    let s = sync_record(root);
+fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer {
+    let s = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let mine = record_identity(root);
     let mut out = "";
     let mut n = 0;
@@ -720,6 +720,6 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
             n = n + 1;
         }
     }
-    let s2 = sync_record(root);
+    let s2 = sync_record(root, memory);
     return answer("handoff sync: " + to_string(n) + " acceptance(s) admitted\n" + out);
 }

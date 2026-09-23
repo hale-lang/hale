@@ -118,6 +118,33 @@ locus MemoryLedger {
     fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
 }
 
+// ---- one process's memory ---------------------------------------------------
+
+// Memory as one process holds it (GH #985): the ledger and the leases,
+// each opened once on first use and closed when the process's handle
+// dissolves. A host builds one for its lifetime and a CLI verb one for its
+// run; everything that reads the ledger or a lease takes this handle and
+// never builds its own, so a long-lived process holds a fixed handful of
+// connections however long it runs.
+locus Memory {
+    params {
+        repo: String = ".";
+        dsn_env: String = SPINE_DSN_ENV;
+        ledger: MemoryLedger = MemoryLedger { };
+        leases: MemoryLeases = MemoryLeases { };
+    }
+    birth() { self.point(self.repo, self.dsn_env); }
+    // For a holder that knows its record only after it is built (the host).
+    fn point(repo: String, dsn_env: String) {
+        self.repo = repo;
+        self.dsn_env = dsn_env;
+        self.ledger.repo = repo;
+        self.ledger.dsn_env = dsn_env;
+        self.leases.repo = repo;
+        self.leases.dsn_env = dsn_env;
+    }
+}
+
 // ---- leases ----------------------------------------------------------------
 
 // Leases in memory, swapped by token: `Coordination` for the gateway,
@@ -214,6 +241,10 @@ fn count_ids(ids: String) -> Int {
 // `model.called` rows carry its digest and bindings. The graph is the
 // spine's projection of the record (the host applies it on its tick);
 // without a DSN the package is empty and says so, and nothing waits on it.
+// How long a package waits for the spine's projection to reach the
+// record's head before it refuses.
+const PACKAGE_WAIT_SECS: Int = 20;
+
 locus MemoryKnowledge {
     params {
         repo: String = ".";
@@ -254,6 +285,16 @@ locus MemoryKnowledge {
         self.last_error = "";
         if !self.ensure_open() { return ContextPackage { target: target, error: self.last_error }; }
         let q = if len(query) > 2000 { query[0..2000] } else { query };
+        // the package answers for the record as it stands now: the spine
+        // projects on its tick, so a row ratified a moment ago may not be
+        // in memory yet — wait for it, bounded, and refuse a stale package
+        // rather than hand one over (the knowledge service projected on
+        // every read; GH #985 moved projection to the spine)
+        let want = GitJournal { repo: self.repo }.revision();
+        let deadline = std::time::now() + PACKAGE_WAIT_SECS;
+        while self.store.watermark() < want && std::time::now() < deadline { std::time::sleep(200ms); }
+        let at = self.store.watermark();
+        if at < want { self.last_error = "memory's projection is at row " + to_string(at) + " of the record's " + to_string(want) + "; the spine applies it on its tick"; return ContextPackage { target: target, error: self.last_error }; }
         self.store.forget_error();
         let ids = if len(q) > 0 { self.store.ranked_ids(target, self.budget, embed_text(q)) } else { self.store.context_ids(target, self.budget) };
         if len(self.store.last_error()) > 0 {

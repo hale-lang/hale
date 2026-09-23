@@ -27,12 +27,12 @@ fn review_for_mutation(p: Projection, mutation_id: String) -> ReviewRow {
 }
 
 @unbounded
-fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: String, who_flag: String) -> Answer {
+fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: String, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let r = rec(root);
     if len(sub) == 0 {
-        let p = open_projection(root, seed, "");
+        let p = open_projection(root, seed, "", memory);
         let mut out = "";
         let mut n = 0;
         let mut rest = r.pointers("candidates");
@@ -60,14 +60,14 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
         b.end_object();
         if !append_as(root, "candidate.dropped", id_in, b.result(), who) { return fail("the record refused the append"); }
         let dropped = apply_drops(root);
-        let s = sync_record(root);
+        let s = sync_record(root, memory);
         return answer("candidate " + id_in + " dropped by " + who + ": " + why + " (candidate.dropped; no longer kept here or at the remote; every clone drops it at its next sync)\n");
     }
     // show one: the diff from the review's base
     let mid = sub;
     let commit = r.pointer("candidates/" + mid);
     if len(commit) == 0 { return fail("candidates: no candidate is kept for " + mid + " (`hale dna candidates` lists them)"); }
-    let p = open_projection(root, seed, "");
+    let p = open_projection(root, seed, "", memory);
     let rv = review_for_mutation(p, mid);
     let base = if len(rv.base_commit) > 0 { rv.base_commit } else { commit + "~1" };
     let mut out = "candidate " + mid + " at " + short(commit) + (if len(rv.id) > 0 { " (review " + rv.id + " " + rv.state + ")" } else { "" }) + "\n";
@@ -332,7 +332,7 @@ fn ledger_status(root: String) -> String {
 }
 
 @unbounded
-fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: String) -> Answer {
+fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if len(sub) == 0 || sub == "status" { return answer(ledger_status(root)); }
@@ -355,7 +355,7 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "adopt" {
         if routing_here(root) > 0 { return fail("ledger adopt: this record is already on routing " + to_string(routing_here(root)) + " (adopted at " + short(checkpoint_here(root)) + ")"); }
-        let s = sync_record(root);
+        let s = sync_record(root, memory);
         if !s.ok { return fail("ledger adopt: " + s.summary + "; nothing was requested"); }
         let b = std::json::Builder { };
         b.begin_object();
@@ -364,7 +364,7 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         b.end_object();
         let digest = record_append(root, "ledger.adopting", "ledger", b.result(), who);
         if len(digest) == 0 { return fail("ledger adopt: the record refused `ledger.adopting`; nothing was requested"); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("ledger adoption requested as " + short(digest) + ": the body copies the record's operational rows into the ledger on its next tick and records `ledger.adopted` (routing " + to_string(dna::ROUTING_VERSION) + "); `hale dna ledger status` shows it\n");
     }
     if sub == "abandon" {
@@ -376,7 +376,7 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         b.end_object();
         let digest = record_append(root, "ledger.abandoning", "ledger", b.result(), who);
         if len(digest) == 0 { return fail("ledger abandon: the record refused `ledger.abandoning`; nothing was requested"); }
-        let s2 = sync_record(root);
+        let s2 = sync_record(root, memory);
         return answer("ledger abandonment requested as " + short(digest) + " by " + who + ": " + why + "; the body empties the ledger on its next tick and records `ledger.abandoned`, and the record is the only memory again (its operational rows were never removed)\n");
     }
     return fail("ledger: `hale dna ledger [status]`, `hale dna ledger rows`, `hale dna ledger adopt [--as <who>]`, `hale dna ledger abandon --why <why> [--as <who>]`");

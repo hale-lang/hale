@@ -51,6 +51,8 @@ type ProtectedRow {
         opened: Bool = false;
         error: String = "";
     }
+    // a store holds one connection, and gives it back when it goes (GH #985)
+    dissolve() { self.conn.close(); }
     fn kind() -> String { return "postgres (pgcrypto, AES-256)"; }
     // The record this store is scoped to, and the environment variable its
     // DSN is read from at open (GH #985): set through the store, which is
