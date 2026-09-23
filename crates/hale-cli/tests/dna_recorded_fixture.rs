@@ -96,7 +96,7 @@ struct Fixture {
     procs: Vec<std::process::Child>,
     tape: PathBuf,
     mode: String,
-    kport: u16, // the knowledge service (K4), in memory over the record
+    spine: String, // memory under the record's spine role (K4; GH #985)
 }
 
 impl Fixture {
@@ -108,9 +108,7 @@ impl Fixture {
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             .env("HALE_DNA_TAPE", &self.mode)
             .env("HALE_DNA_TAPE_DIR", &self.tape)
-            .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-            .env("HALE_DNA_KNOWLEDGE_PORT", self.kport.to_string())
-            .env("HALE_DNA_KNOWLEDGE_URL", format!("http://127.0.0.1:{}", self.kport));
+            .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine);
         c
     }
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
@@ -144,7 +142,7 @@ impl Fixture {
             let _ = p.wait();
         }
         trace::sleep("after kill, before reaping the pid files", Duration::from_millis(300));
-        for f in ["org.pid", "app.pid", "knowledge.pid"] {
+        for f in ["org.pid", "app.pid"] {
             if let Ok(pid) = std::fs::read_to_string(self.app.join(".hale/dna").join(f)) {
                 let _ = Command::new("kill").args(["-9", pid.trim()]).status();
             }
@@ -187,8 +185,7 @@ fn bring_up() -> Fixture {
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let kport = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, kport };
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new() };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
@@ -205,9 +202,13 @@ fn bring_up() -> Fixture {
     for e in &f.edges {
         git(&["clone", "-q", &f.bare.to_string_lossy(), &e.to_string_lossy()], &d);
     }
-    // the knowledge service over the record (K4), then the organization
-    // with its URL, then the nodes
-    f.spawn(&["dna", "knowledge", ".", "--port", &kport.to_string()], &app);
+    // memory for the record (K4): the owner migrates, the organization
+    // runs under the spine's role, then the nodes
+    let (ok, out) = f.hale(&["dna", "memory", "migrate"], &app);
+    if !ok {
+        f.fail(&format!("memory migrate: {out}"));
+    }
+    f.spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE=")).unwrap_or("").to_string();
     f.spawn(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app);
     let edges = f.edges.clone();
     for (i, e) in edges.iter().enumerate() {
@@ -233,6 +234,10 @@ fn bring_up() -> Fixture {
 #[test]
 fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let _t = trace::test("dna_recorded_fixture");
+    if std::env::var("HALE_DNA_MEMORY_DSN_OWNER").map(|d| d.is_empty()).unwrap_or(true) {
+        eprintln!("dna_recorded_fixture: no HALE_DNA_MEMORY_DSN_OWNER; the organization's knowledge is memory's, so nothing was exercised");
+        return;
+    }
     let mut f = bring_up();
     let app = f.app.clone();
 
