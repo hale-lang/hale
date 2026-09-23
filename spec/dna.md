@@ -1823,7 +1823,11 @@ refuses on a failed read with the reason (`record_unavailable`, or an
 A CLI verb says the record could not be read rather than that there
 is none, `record-head` answers `none` only for a record known absent
 (the driver seeds on it), and a receipt is not written again on a
-read that did not happen. Both used to be the empty string.
+read that did not happen. Both used to be the empty string. `hale dna
+sync` refuses, with the chain untouched, when either head cannot be
+read, or when a round of its reconcile reads either head behind where
+the previous round left it; it pulls into an empty clone only while
+the ref is still absent.
 
 Every external dependency of the DNA is declared the same way, one
 interface in the core with one implementation over the real thing and

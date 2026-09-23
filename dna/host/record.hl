@@ -519,6 +519,19 @@ fn provenance_refusal(r: dna::GitRecord, ids: String) -> String {
     return "";
 }
 
+// Whether a head read in this round stands where the last round's did or
+// after it. The chain only grows, and a reconcile's own swap is recorded
+// as where it left the chain, so anything else is a read that went wrong.
+fn grew_from(r: dna::GitRecord, before: String, now: String) -> Bool {
+    if len(before) == 0 || now == before { return true; }
+    return len(now) > 0 && r.precedes(before, now);
+}
+
+// A reconcile acts only on heads it read. A head that could not be read
+// is never "no record yet" on either side: taken for that, a clone's
+// journal was moved to the remote's head and every local-only row left
+// the chain, or a local chain was pushed as if the remote held nothing
+// (GH #961).
 @unbounded
 fn sync_record_rows(repo: String) -> SyncResult {
     let r = rec(repo);
@@ -529,18 +542,32 @@ fn sync_record_rows(repo: String) -> SyncResult {
     if !f.ok && !f.absent { return sync_failed("fetch " + remote + ": " + f.why); }
     let mut summary = "";
     let mut round = 0;
+    // where each chain stood the last round, so a round that reads either
+    // one behind it refuses instead of acting on it
+    let mut seen_local = "";
+    let mut seen_remote = "";
     while round < 3 {
         round = round + 1;
-        let local = r.head(JOURNAL).id;
-        let remote_head = r.head(REMOTE_JOURNAL).id;
-        if len(local) == 0 {
-            if len(remote_head) > 0 {
-                if !r.move_chain(JOURNAL, remote_head, "*") { return sync_failed("update-ref failed"); }
+        let lh = r.head(JOURNAL);
+        if !lh.ok { return sync_failed("this clone's record head could not be read (" + lh.why + "); the record was not changed"); }
+        let rh = r.head(REMOTE_JOURNAL);
+        if !rh.ok { return sync_failed("the remote's record head could not be read (" + rh.why + "); the record was not changed"); }
+        let local = lh.id;
+        let remote_head = rh.id;
+        if !grew_from(r, seen_local, local) || !grew_from(r, seen_remote, remote_head) {
+            return sync_failed("the record moved backwards while reconciling; the record was not changed");
+        }
+        seen_local = local;
+        seen_remote = remote_head;
+        if lh.absent {
+            if !rh.absent {
+                // "" expects the ref absent: one that appeared meanwhile refuses
+                if !r.move_chain(JOURNAL, remote_head, "") { return sync_failed("the record appeared here while it was being pulled; nothing was changed — sync again"); }
                 summary = "pulled the record";
             }
             return SyncResult { ok: true, summary: summary };
         }
-        if len(remote_head) == 0 {
+        if rh.absent {
             // The remote has no record yet: a governed repository whose
             // first events were appended here, or a clone that pushed
             // `main` alone. This said "up to date" and pushed nothing,
@@ -601,11 +628,15 @@ fn sync_record_rows(repo: String) -> SyncResult {
                 summary = "the record moved while reconciling";
                 continue;
             }
+            // the chain now stands where this reconcile swapped it
+            seen_local = chain;
             summary = "re-appended " + to_string(n) + " local event(s) onto the remote's " + to_string(count_lines(r.between(local, remote_head)));
         }
         if r.share(remote, SYNC_SHARES, "").ok {
-            let h = r.head(JOURNAL).id;
-            let t = r.move_chain(REMOTE_JOURNAL, h, "*");
+            // the remote now holds this clone's head; a head that could not
+            // be read leaves the tracking ref for the next sync's fetch
+            let h = r.head(JOURNAL);
+            if h.ok && !h.absent { let t = r.move_chain(REMOTE_JOURNAL, h.id, "*"); }
             return SyncResult { ok: true, summary: summary };
         }
         // the remote moved again: receive and go round

@@ -78,7 +78,8 @@ Fetches the remote's record into `refs/dna/remote/journal`,
 reconciles, and pushes. Local ahead: push. Remote ahead:
 fast-forward. Diverged: the local-only events are re-appended on top
 of the remote's head, bodies and authors unchanged, then pushed; a
-push the remote refuses is fetched and reconciled again. The
+push the remote refuses is fetched and reconciled again. A sync that
+cannot read either head refuses and changes nothing. The
 reconciled chain is built beside the ref and swapped in with one
 compare-and-swap, so the record never loses a row it held a moment
 before: a reader's view only grows, a writer that reloads finds its

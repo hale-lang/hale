@@ -26,6 +26,10 @@ behavior.
   absent, since `hale dna init` seeds on it; `design-upgrade` proposes
   nothing on an unreadable record; a receipt is not rewritten, and a
   handoff envelope not written twice, on a read that did not happen.
+- **`hale dna sync` refuses on a head it could not read** (part 2),
+  on either side, instead of pulling over this clone's local-only rows
+  or pushing as if the remote held nothing; a reconcile round that
+  reads a head behind the last round's refuses too.
 
 ### macOS in CI, and the last Mac-only test failures (GH #970)
 
