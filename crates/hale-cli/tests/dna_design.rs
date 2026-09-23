@@ -102,27 +102,31 @@ fn start_org(app: &Path) -> std::process::Child {
     host
 }
 
-fn finish(app: &Path, host: &mut std::process::Child) {
-    // A verdict's "settled" answer is the Review's own row; what the
-    // organism does ABOUT it — `knowledge.ratified` / `declined` /
-    // `retired` — it appends just after, in `on_review_settled`. Killing
-    // the organism on the last answer raced those rows: a slower machine
-    // (a Mac, reliably) lost the last one, and the assertions below read a
-    // record one consequence short (GH #970). Wait for the record to stand
-    // still — no new row for two seconds, thirty at most — first.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut seen = journal(app).len();
-    let mut still_since = std::time::Instant::now();
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let now = journal(app).len();
-        if now != seen {
-            seen = now;
-            still_since = std::time::Instant::now();
-        } else if still_since.elapsed() >= std::time::Duration::from_secs(2) {
-            break;
-        }
-    }
+type Rows = [(String, String, String)];
+
+/// How many rows of `kind` the record holds.
+fn count_of(rows: &Rows, kind: &str) -> usize {
+    rows.iter().filter(|r| r.0 == kind).count()
+}
+
+/// Whether the record holds a row of `kind` about `entity`.
+fn has_row(rows: &Rows, kind: &str, entity: &str) -> bool {
+    rows.iter().any(|r| r.0 == kind && r.1 == entity)
+}
+
+/// Stop the organism once the record holds what the round's verdicts
+/// lead to. A verdict's "settled" answer is the Review's own row; what
+/// the organism does ABOUT it — `knowledge.ratified` / `declined` /
+/// `retired` — it appends after, in `on_review_settled`, each row one
+/// more refresh and append of the record. Killing the organism on the
+/// last answer raced those rows (GH #970), and so did waiting for the
+/// record to stand still for two seconds: the gap between a
+/// ratification and the retirement it implies is the organism's to
+/// take, and a loaded machine takes longer. So each round names the
+/// rows it expects and this waits for them — two minutes at most; the
+/// assertions after it say what is missing.
+fn finish(app: &Path, host: &mut std::process::Child, what: &str, until: impl Fn(&Rows) -> bool) {
+    trace::wait_until(format!("the record holds {what}"), Duration::from_secs(120), Duration::from_millis(250), || until(&journal(app)));
     if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
         let _ = Command::new("kill").args(["-9", pid.trim()]).status();
     }
@@ -239,7 +243,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let (ok, rest) = hale(&["dna", "review", "design", "reject", "--as", "riley", "--authority", "board"], &app);
     assert!(ok, "{rest}");
     assert_eq!(rest.matches("settled: reject by riley").count(), 6, "the six still pending, each its own verdict:\n{rest}");
-    finish(&app, &mut host);
+    finish(&app, &mut host, "two ratifications and six declines", |rows| count_of(rows, "knowledge.ratified") >= 2 && count_of(rows, "knowledge.declined") >= 6);
     let rows = journal(&app);
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 2, "two ratified");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.declined").count(), 6, "six declined");
@@ -287,7 +291,10 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(ok && a.contains("settled: approve by riley"), "{a}");
     let (ok, b) = hale(&["dna", "review", &new_evolution, "reject", "--as", "riley", "--authority", "board"], &app);
     assert!(ok && b.contains("settled: reject by riley"), "{b}");
-    finish(&app, &mut host);
+    let (new_principles_digest, new_evolution_digest) = (digest_of(&new_principles), digest_of(&new_evolution));
+    finish(&app, &mut host, "the new principles ratified, the old retired, the new evolution declined", |rows| {
+        has_row(rows, "knowledge.ratified", &new_principles_digest) && has_row(rows, "knowledge.retired", &old_principles) && has_row(rows, "knowledge.declined", &new_evolution_digest)
+    });
     let rows = journal(&app);
     let retired: Vec<&(String, String, String)> = rows.iter().filter(|r| r.0 == "knowledge.retired").collect();
     assert_eq!(retired.len(), 1, "one retirement, by the ratified replacement: {retired:?}");
@@ -334,7 +341,9 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let mut host = start_org(&app);
     let (ok, a) = hale(&["dna", "review", &later_evolution, "approve", "--as", "riley", "--authority", "board"], &app);
     assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    finish(&app, &mut host);
+    finish(&app, &mut host, "the later evolution ratified and the old one retired", |rows| {
+        has_row(rows, "knowledge.ratified", &later_evolution_digest) && has_row(rows, "knowledge.retired", &old_evolution)
+    });
     let rows = journal(&app);
     let retired: Vec<String> = rows.iter().filter(|r| r.0 == "knowledge.retired").map(|r| r.1.clone()).collect();
     assert!(retired.contains(&old_evolution), "the active old evolution was retired: {retired:?}");
@@ -365,7 +374,9 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let mut host = start_org(&app);
     let (ok, a) = hale(&["dna", "review", &later_principles, "approve", "--as", "riley", "--authority", "board"], &app);
     assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    finish(&app, &mut host);
+    finish(&app, &mut host, "the later principles ratified and the ratified principles retired", |rows| {
+        has_row(rows, "knowledge.ratified", &later_principles_digest) && has_row(rows, "knowledge.retired", &new_p)
+    });
     let (ok, up5) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
     assert!(ok, "{up5}");
     assert!(up5.contains("design  1 practice(s) proposed (1 superseding an earlier version)") && up5.contains("6 practice(s) changed but wait"), "{up5}");

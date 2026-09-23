@@ -98,7 +98,7 @@ async function fixture(page, options = {}) {
     if (url.pathname === base + '/dna/reviews') return fulfill(503, failure('commands_unavailable', 'Review read intentionally unavailable in this UI contract fixture.'));
     if (url.pathname !== base + '/commands') return fulfill(404, failure('not_found', 'Outside this UI contract fixture.'));
     if (req.method() === 'POST') {
-      const body = req.postDataJSON(); script.posts.push({ body, headers: req.headers() }); script.savedBeforeSend = await metadata(page);
+      const body = req.postDataJSON(); script.savedBeforeSend = await metadata(page); script.posts.push({ body, headers: req.headers() }); // counted once the page read is done, so a test's next navigation cannot destroy it
       if (script.postMode === 'lost') return route.abort('failed');
       const value = receipt(body); return fulfill(value.data.state === 'succeeded' ? 200 : 202, value);
     }
