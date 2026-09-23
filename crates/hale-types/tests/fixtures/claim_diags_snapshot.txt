@@ -27,11 +27,9 @@ Claim [360..363] claim `iso` violated: `a_side` reaches `b_side` — witness: `A
 Claim [133..147] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [7..8] claim `iso`: the forbidden destination `B` is declared here
 --- crates/hale-cli/tests/claims_artifact_unknowns.rs#1 ---
-Claim [366..369] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.send)-> `Email::send`
-Claim [233..250] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
-Claim [54..59] claim `iso`: the forbidden destination `Email` is declared here
---- crates/hale-cli/tests/claims_artifact_unknowns.rs#3 ---
-Claim [294..297] claim `iso` cannot be certified: `std::io::tcp::Stream::send` (reachable from `a_side`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
+Claim [372..375] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.notify)-> `Email::notify`
+Claim [237..256] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
+Claim [56..61] claim `iso`: the forbidden destination `Email` is declared here
 --- crates/hale-cli/tests/fleet_cross_tier.rs#4 ---
 Claim [161..173] claim `no_llm` names effect class `llm`, which is never declared. Add `effect llm;` at the top level.
 --- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0 ---
@@ -204,16 +202,12 @@ Claim [159..173] claim `gate`: this call crosses the boundary. A call cannot be 
 Claim [601..603] claim `sw` violated: counted 2 publisher(s) (`P1`, `P2`) of `Tasks`, claim requires == 1
 --- crates/hale-types/tests/depends_set.rs#0 ---
 Claim [376..383] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
---- crates/hale-types/tests/depends_set.rs#3 ---
-Claim [468..475] declared dependency set cannot be certified: `Ledger` is reached from a closure this model does not fully know — a publish whose subject the compiler could not name may address a wire this locus subscribes to. The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/frontier_items.rs#0 ---
 Claim [394..400] declared causal set violated: `Api::handle` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/interface_dispatch.rs#4 ---
 Claim [478..481] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.send)-> `Email::send`
 Claim [289..306] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
 Claim [70..75] claim `iso`: the forbidden destination `Email` is declared here
---- crates/hale-types/tests/interface_dispatch.rs#5 ---
-Claim [551..554] claim `iso` cannot be certified: `std::io::tcp::Stream::send` (reachable from `a_side`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
 --- crates/hale-types/tests/interface_dispatch.rs#10 ---
 Claim [688..696] claim `one_call` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::plan` -> `Deep::ask` -> `model_call`
 --- crates/hale-types/tests/interface_dispatch.rs#11 ---

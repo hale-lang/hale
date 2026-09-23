@@ -85,29 +85,27 @@ unsubscribe happens automatically at dissolve.
 ### Choosing the subject at runtime
 
 Usually the subject is fixed. When it isn't — a logger that sends
-to `log.<component>`, a socket that reports on whatever subject
-you configured — you declare a **wildcard** publish and send to a
-computed string:
+to `log.<component>` for whichever component it was built for — you
+declare a **wildcard** publish and send to a computed string:
 
 ```hale
-locus Wire {
-    params { log_subject: String = ""; }
-    bus { publish "io.tcp.**" of type LogEvent; }
+locus Trace {
+    params { component: String = "root"; }
+    bus { publish "log.**" of type LogEvent; }
 
-    fn read() {
-        if len(self.log_subject) > 0 {
-            self.log_subject <- LogEvent { phase: "recv" };
-        }
+    fn note(phase: String) {
+        let subject = "log." + self.component;
+        subject <- LogEvent { phase: phase };
     }
 }
 ```
 
-The `publish "io.tcp.**"` declaration isn't paperwork. It's the
+The `publish "log.**"` declaration isn't paperwork. It's the
 promise that bounds what this locus can do, and it is enforced:
 
 - The computed subject **must lie under one of the patterns you
-  declared.** `Wire` can send to `io.tcp.venue` or to `io.tcp`
-  itself, but not to `app.order` — that raises
+  declared.** `Trace` can send to `log.db` or to `log` itself, but
+  not to `app.order` — that raises
   `BusPublishUnauthorized`.
 - It **must not reach a subscriber expecting a different payload**,
   which raises `BusPayloadMismatch`.
@@ -118,10 +116,10 @@ is bound to its declaration when you compile, so it costs nothing.
 Keep the pattern as narrow as the locus really needs. A wide
 pattern doesn't just permit more sends — it tells the compiler
 less. Because a computed publish can't escape its declaration, the
-compiler knows a locus declaring `io.tcp.**` can never become a
+compiler knows a locus declaring `log.**` can never become a
 publisher of `app.order`, so questions like "how many publishers
-does this topic have?" stay answerable even in a program doing
-socket I/O. Declare `"**"` and you've given that up everywhere.
+does this topic have?" stay answerable even in a program that
+logs. Declare `"**"` and you've given that up everywhere.
 
 If you subscribe to a subject that sits under *another* locus's
 wildcard pattern while expecting a different payload, you'll get a

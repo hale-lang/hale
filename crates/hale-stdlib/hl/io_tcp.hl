@@ -13,37 +13,6 @@
 // `on_connection: fn(std::io::tcp::Stream)` param type
 // resolves at A1 time.
 
-// 2026-05-27 — bus-routed observability event for TCP I/O.
-// Stream + Listener emit one of these per send / recv /
-// accept / close operation when their `log_subject` param
-// is set to a non-empty subject. Empty subject (default) =
-// no publish, zero overhead beyond a single len-check
-// branch.
-//
-// Wiring shape: the user instantiates a Stream / Listener
-// with `log_subject: "io.tcp.venue"` (or any subject under
-// `io.tcp.**`); a separate subscriber locus they own picks
-// the events up via `subscribe "io.tcp.**"` (or a more
-// specific subject) and routes them — stderr, structured
-// log, metrics, ring buffer, whatever they want. No
-// `Logger` interface or per-Stream sink locus needed; the
-// bus IS the indirection.
-//
-//   phase — one of: connect, send, recv, accept, close, error
-//   detail — extra context (peer address, error string, …)
-//   bytes  — bytes transferred for send/recv events; -1 else
-//   fd     — the underlying socket fd, for correlating
-//            multi-connection traffic onto a single subject
-/// One bus-routed I/O observability event (phase / detail /
-/// bytes / fd) — published on `io.tcp.**` / `io.http.**` when a
-/// Stream's or Server's `log_subject` is set.
-type __StdIoTcpLogEvent {
-    phase: String = "";
-    detail: String = "";
-    bytes: Int = -1;
-    fd: Int = -1;
-}
-
 // #209 — the shared I/O error payload, declared in-source so
 // stdlib method bodies (and user code) can `fail IoError { ... }`.
 // MUST stay field-for-field identical to the two other places
@@ -73,7 +42,7 @@ type IoError {
 /// `recv_bytes` (all fallible(IoError); EOF and recv-timeout
 /// return empty). Owns its fd by default and closes on dissolve;
 /// borrow with `owns_fd: false`, or take the fd away with
-/// `release_fd()`. `log_subject` publishes per-op bus events.
+/// `release_fd()`.
 locus __StdIoTcpStream {
     params {
         conn_fd: Int = -1;
@@ -90,16 +59,6 @@ locus __StdIoTcpStream {
         // elsewhere — the fix for the per-op borrowed-fd double
         // close.
         owns_fd: Bool = true;
-        // 2026-05-27 — when non-empty, every TCP op publishes
-        // a `LogEvent` to this bus subject. Subject must lie
-        // under the `io.tcp.**` wildcard (the publish decl
-        // below). Default "" disables: the runtime branch is
-        // a single `len(log_subject) > 0` check per op, so
-        // the hot path costs essentially nothing when off.
-        log_subject: String = "";
-    }
-    bus {
-        publish "io.tcp.**" of type __StdIoTcpLogEvent;
     }
     // #209 (2026-07-15): the send/recv family is `fallible(IoError)`.
     // Previously these returned -1/0 sentinels (send) or empty
@@ -119,11 +78,6 @@ locus __StdIoTcpStream {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
             };
         }
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "send", bytes: len(msg), fd: self.conn_fd,
-            };
-        }
     }
     // m89: binary-safe send. Use this for image bodies, raw
     // protocol frames, or anything where embedded NUL bytes
@@ -136,11 +90,6 @@ locus __StdIoTcpStream {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
             };
         }
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "send", bytes: len(b), fd: self.conn_fd,
-            };
-        }
     }
     fn recv(max_bytes: Int) -> String fallible(IoError) {
         let s = std::io::tcp::__recv(self.conn_fd, max_bytes);
@@ -148,11 +97,6 @@ locus __StdIoTcpStream {
         if e != 0 {
             fail IoError {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
-            };
-        }
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "recv", bytes: len(s), fd: self.conn_fd,
             };
         }
         return s;
@@ -171,11 +115,6 @@ locus __StdIoTcpStream {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
             };
         }
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "recv", bytes: len(b), fd: self.conn_fd,
-            };
-        }
         return b;
     }
     /// Take ownership of the connection fd away from this Stream:
@@ -191,14 +130,9 @@ locus __StdIoTcpStream {
 
     dissolve() {
         // Borrowed Streams (owns_fd == false) never close the fd
-        // and emit no `close` event — the fd lives on past this
+        // — the fd lives on past this
         // wrapper, owned by whoever opened it.
         if self.owns_fd {
-            if len(self.log_subject) > 0 {
-                self.log_subject <- __StdIoTcpLogEvent {
-                    phase: "close", fd: self.conn_fd,
-                };
-            }
             std::io::tcp::__close_fd(self.conn_fd);
         }
     }
