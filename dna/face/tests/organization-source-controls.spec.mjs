@@ -105,8 +105,11 @@ async function fixture(page, options = {}) {
     }
     if (url.pathname !== API + '/' + native.application + '/commands') return fulfill(404, failure('not_found', 'Outside the UI contract fixture.'));
     if (request.method() === 'POST') {
-      const body = request.postDataJSON(); script.posts.push({ body, headers: request.headers() });
-      script.savedBeforeSend = await metadata(page);
+      // the page's saved identity read first, then the POST counted: a test
+      // waiting on `posts` then reads a complete `savedBeforeSend`, and its
+      // next navigation cannot destroy this read
+      const body = request.postDataJSON(); script.savedBeforeSend = await metadata(page);
+      script.posts.push({ body, headers: request.headers() });
       if (script.postMode === 'lost') return route.abort('failed');
       return fulfill(202, receipt(body));
     }

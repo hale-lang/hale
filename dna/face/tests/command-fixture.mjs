@@ -111,8 +111,11 @@ export async function scriptedCommands(page, service, options = {}) {
     if (request.method() === 'POST') {
       const body = request.postDataJSON();
       const principal = structuredClone(script.principal);
-      script.posts.push({ body, headers: request.headers() });
+      // what the page saved before it sent, read from the page; only then
+      // is the POST counted, so a test that waits on `posts` and then
+      // navigates never destroys this read mid-flight
       script.savedBeforeSend = await recoveryMetadata(page);
+      script.posts.push({ body, headers: request.headers() });
       if (script.waitForPost) await script.waitForPost;
       if (script.postMode === 'lost') return route.abort('failed');
       if (script.postMode === 'stale') return fulfill(409, errorBody('stale_subject', 'The subject changed.'));
