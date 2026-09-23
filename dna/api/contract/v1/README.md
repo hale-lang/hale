@@ -667,7 +667,7 @@ is that Record head. `task_create` names the minted `intent_id` and the row's
 `intent_state` is `requested` until it answers, then `offered`, `refused`, or
 `born` with the `task_id`. An uncertain append is `outcome_unknown` with
 `intent_state: unknown` and no intent. A born-but-unhanded Task is not yet a
-handed-Task read; the receipt is how the cockpit follows it.
+handed-Task read; the receipt is how the face follows it.
 
 # Person retirement contract
 
@@ -688,7 +688,7 @@ requires updated Body/CLI writers; it does not claim a cross-store transaction.
 
 ## Head
 
-The four `/api/hale/v1/head…` paths belong to the cockpit head (GH #965), the
+The four `/api/hale/v1/head…` paths belong to the head (GH #965), the
 trusted-local project service in front of a per-project Record API. They use
 the `HeadEnvelope` shape — `api_version`, `head:{profile:"dna.head.v1",
 principal, active}` and `data` — not a Record `source`, because a head read has

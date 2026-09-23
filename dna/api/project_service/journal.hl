@@ -100,14 +100,14 @@ fn whole_lines(path: String, what: String) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         if nl < 0 {
-            eprintln("hale iris head: ", what, ": dropped a torn last line (", len(rest), " bytes without a newline)");
+            eprintln("hale dna head: ", what, ": dropped a torn last line (", len(rest), " bytes without a newline)");
             break;
         }
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         if std::json::valid_object(line) { out = out + line + "\n"; } else { skipped = skipped + 1; }
     }
-    if skipped > 0 { eprintln("hale iris head: ", what, ": skipped ", skipped, " line(s) that are not JSON objects"); }
+    if skipped > 0 { eprintln("hale dna head: ", what, ": skipped ", skipped, " line(s) that are not JSON objects"); }
     return out;
 }
 

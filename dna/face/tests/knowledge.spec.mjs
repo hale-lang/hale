@@ -1,6 +1,6 @@
 import { test, expect, errorBody } from './harness.mjs';
 
-test.skip(!process.env.HALE_COCKPIT_KNOWLEDGE_BIN, 'Knowledge browser integration requires an explicitly supplied native provider fixture (HALE_COCKPIT_KNOWLEDGE_BIN).');
+test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge browser integration requires an explicitly supplied native provider fixture (HALE_FACE_KNOWLEDGE_BIN).');
 test.use({ knowledge: true });
 const detail = page => page.getByRole('region', { name: 'Knowledge item', exact: true });
 const register = page => page.getByRole('region', { name: 'Knowledge register', exact: true });

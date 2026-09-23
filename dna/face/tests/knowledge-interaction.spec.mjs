@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect, errorBody } from './harness.mjs';
 
-test.skip(!process.env.HALE_COCKPIT_KNOWLEDGE_BIN, 'Knowledge interaction requires the explicitly supplied native Knowledge fixture.');
+test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge interaction requires the explicitly supplied native Knowledge fixture.');
 test.use({ knowledge: true });
 
 const map = page => page.getByRole('region', { name: 'Knowledge relationship map', exact: true });

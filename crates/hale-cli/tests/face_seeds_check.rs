@@ -1,8 +1,10 @@
-//! GH #998: the face's browser fixtures carry two Hale seeds, an
-//! Organization source declaration and a Record fixture. They live under
-//! `dna/face/` with the rest of the face, so they are checked here rather
-//! than in `iris_seeds_check.rs`: a compiler change that breaks either
-//! fails this build instead of the browser suite.
+//! GH #998: the face's Hale seeds live under `dna/face/` with the rest of
+//! the face, so they are checked here rather than in
+//! `iris_seeds_check.rs`: the generic application service
+//! (`hale.application.v1`) that serves the face's shell and its boundary
+//! test, plus the browser fixtures' Organization source declaration and
+//! Record fixture. A compiler change that breaks any of them fails this
+//! build instead of the browser suite.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -19,7 +21,12 @@ fn face() -> PathBuf {
 }
 
 /// Seeds that must `hale check` clean.
-const CHECKED: &[&str] = &["tests/organization", "tests/record"];
+const CHECKED: &[&str] = &["service", "tests/organization", "tests/record"];
+
+/// Directories of standalone single-file test programs (each with its own
+/// `main`), checked one FILE at a time — as a seed they would be
+/// duplicate declarations.
+const CHECKED_PER_FILE: &[&str] = &["service/tests"];
 
 #[test]
 fn every_face_seed_checks_clean() {
@@ -37,6 +44,31 @@ fn every_face_seed_checks_clean() {
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             ));
+        }
+    }
+    for d in CHECKED_PER_FILE {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(face().join(d))
+            .expect("test dir")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "hl").unwrap_or(false))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "dna/face/{d} has no test programs");
+        for f in files {
+            let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+                .arg("check")
+                .arg(&f)
+                .output()
+                .expect("invoke hale check");
+            if !out.status.success() {
+                failed.push(format!(
+                    "--- {}\n{}{}",
+                    f.display(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
         }
     }
     assert!(
@@ -80,6 +112,7 @@ fn the_seed_list_is_complete() {
     walk(&root, &root, &mut found);
     found.sort();
     let mut expected: Vec<String> = CHECKED.iter().map(|s| s.to_string()).collect();
+    expected.extend(CHECKED_PER_FILE.iter().map(|s| s.to_string()));
     expected.sort();
     assert_eq!(found, expected, "face seed list drifted");
 }

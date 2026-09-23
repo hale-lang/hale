@@ -1,6 +1,6 @@
 // Scripted boundary conformance only; this fixture does not prove persistence.
 import ".." as service;
-import "../../../dna/api/web" as assets;
+import "../../../api/web" as assets;
 
 const APP: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const INSTANCE: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

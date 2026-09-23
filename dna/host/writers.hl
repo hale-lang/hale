@@ -636,7 +636,7 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
 }
 
 // `hale dna task create`: asking for an outcome is one kind of task (the
-// cockpit exposes the same operation as `dna.task.create`). The row kinds
+// face exposes the same operation as `dna.task.create`). The row kinds
 // it writes and reads (`intent.requested`, `intent.refused`,
 // `workflow.admitted`) and the membrane kind `intent` keep their names.
 fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {

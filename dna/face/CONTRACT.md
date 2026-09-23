@@ -1,4 +1,4 @@
-# Iris cockpit API contract — draft 0.1
+# The face: API contract — draft 0.1
 
 Design draft for [#690](https://github.com/hale-lang/hale/issues/690).
 This document proposes the browser/service boundary; it does **not** describe
@@ -10,10 +10,10 @@ describes their presentation. Broader routes and commands below are design
 requirements, not a declaration that a service exposes them.
 
 The branch also implements the deliberately smaller `hale.application.v1`
-[generic service profile](../../iris/service/README.md). It registers an application-owned
+[generic service profile](service/README.md). It registers an application-owned
 control provider, serves captured state and capabilities, accepts one guarded
 enum change and recovers an exact request receipt. The [plain Hale intake example](../../iris/examples/intake-control/README.md)
-owns its SQLite configuration, authority and durable outcomes; Iris has no
+owns its SQLite configuration, authority and durable outcomes; the face has no
 universal command database. This implementation does not imply the broader
 runtime joins, contextual authority or DNA operations below are available.
 
@@ -23,7 +23,7 @@ semantic `/dna/positions` or viewing/acting permission contract proposed below.
 
 ## 1. Ownership
 
-Iris is an independently built browser application. The public API belongs to
+The face is an independently built browser application. The public API belongs to
 Hale/DNA services and is shared with remote CLI clients. Its DNA adapter may be
 served by an evolved head. Inspecting a running Hale binary is `hale iris`'s
 job, not this application's. Separate deployment does not require a new database or message broker.
@@ -146,14 +146,14 @@ Integers that may exceed JavaScript's exact range travel as decimal strings.
 Each advertised operation has an id and version, input schema, supported
 target kinds, required subject preconditions, and a documented meaning of
 success. Schemas and enums are versioned contract artifacts, not inferred
-from a CLI help string. Domain arguments remain operation-specific; Iris
+from a CLI help string. Domain arguments remain operation-specific; the face
 does not prescribe an organization's procedures.
 
 The durable command profile below is required for DNA administration. A generic
 Hale capability provider supplies its own authoritative state and recovery;
 it need not use Record or Ledger. A provider offering only transient controls
 advertises a separate, explicitly limited profile and cannot claim durable
-`recorded` receipts or restart recovery. Iris shows that declared limit rather
+`recorded` receipts or restart recovery. The face shows that declared limit rather
 than treating a successful publish as completion.
 
 Illustrative envelope (the operation name is proposed, not shipped):
@@ -247,7 +247,7 @@ Policies determine when review is necessary; the UI adds no universal gate.
 
 ## 5. Recursive workflow adapter
 
-The pending `wf1` work gives Iris a useful semantic contract now. Map it to
+The pending `wf1` work gives the face a useful semantic contract now. Map it to
 structured browser data through an adapter, keeping these distinctions:
 
 | Domain concept | Browser contract |
@@ -260,7 +260,7 @@ structured browser data through an adapter, keeping these distinctions:
 | Attempt | Attempt identity/number, request, performer, outcome and evidence; history from facts |
 | Fact | Native fact identity/version and causal transition reference, with scoped source position |
 
-`engine: wf1`, event codec version, definition revision and Iris API version
+`engine: wf1`, event codec version, definition revision and the face's API version
 are independent. An explicit admission marker identifies an admitted `wf1`
 execution; a `workflow.refused` fact also carries its engine and is presented
 as a refused admission, not an execution that ran. Do not identify an engine

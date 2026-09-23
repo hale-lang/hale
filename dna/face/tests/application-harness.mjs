@@ -7,7 +7,7 @@ import path from 'node:path';
 import { isolatedEnvironment, boundedNative } from './environment.mjs';
 
 export const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-export const binary = process.env.HALE_COCKPIT_APPLICATION_BIN;
+export const binary = process.env.HALE_FACE_APPLICATION_BIN;
 const web = fileURLToPath(new URL('../web/', import.meta.url));
 async function freePort() {
   const server = createServer();
@@ -25,12 +25,12 @@ async function stop(child) {
   clearTimeout(timer);
 }
 export async function applicationFixture() {
-  if (!binary || !path.isAbsolute(binary)) throw new Error('HALE_COCKPIT_APPLICATION_BIN must name the built native intake-control example.');
+  if (!binary || !path.isAbsolute(binary)) throw new Error('HALE_FACE_APPLICATION_BIN must name the built native intake-control example.');
   const origin = `http://127.0.0.1:${await freePort()}`;
-  const root = await mkdtemp('/tmp/hale-iris-application.');
+  const root = await mkdtemp('/tmp/hale-face-application.');
   const db = path.join(root, 'application.sqlite');
   const env = isolatedEnvironment();
-  for (const key of Object.keys(env)) if (/^(HALE_DNA_|HALE_IRIS_|LOTUS_)/.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(HALE_DNA_|LOTUS_)/.test(key)) delete env[key];
   // Observation stays off: no LOTUS_ variable reaches the application.
   const children = new Set();
   let log = '', app, api, identity;

@@ -1,4 +1,4 @@
-/* Iris browser cockpit. Presentation only: the service owns state and authority.
+/* The face: the DNA organism's browser surface. Presentation only: the service owns state and authority.
  * Every Record value is rendered as text. Only scoped command recovery metadata
  * enters browser storage; draft content, rationale and receipts never do.
  */

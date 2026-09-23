@@ -1,4 +1,4 @@
-# Cockpit browser integration
+# The face: browser integration
 
 These Playwright tests run Chromium against the real Hale API and temporary Git
 Records. A native Hale writer imports the HTTP suite's fixtures, producing real
@@ -89,8 +89,8 @@ recovery images. Native publication, Review, apply and observed-host acceptance
 remain separate required gates.
 
 Definitions, Knowledge and scripted command adapter integrations are opt-in.
-Default runs visibly skip their cases when `HALE_COCKPIT_CATALOG_BIN`,
-`HALE_COCKPIT_KNOWLEDGE_BIN` or `HALE_COCKPIT_COMMAND_BIN` is not supplied.
+Default runs visibly skip their cases when `HALE_FACE_CATALOG_BIN`,
+`HALE_FACE_KNOWLEDGE_BIN` or `HALE_FACE_COMMAND_BIN` is not supplied.
 The launcher never compiles these compositions automatically. Each optional value must be an absolute path to a
 readable, executable file implementing its existing fixture interface. The runner
 validates supplied paths, passes them to Playwright unchanged and leaves those
@@ -105,9 +105,9 @@ With the compiler and API variables above set, run either optional lane from
 the repository root:
 
 ```sh
-HALE_COCKPIT_CATALOG_BIN="/absolute/path/to/catalog-provider" \
+HALE_FACE_CATALOG_BIN="/absolute/path/to/catalog-provider" \
   npm --prefix dna/face test -- definitions.spec.mjs
-HALE_COCKPIT_KNOWLEDGE_BIN="/absolute/path/to/knowledge-provider" \
+HALE_FACE_KNOWLEDGE_BIN="/absolute/path/to/knowledge-provider" \
   npm --prefix dna/face test -- knowledge.spec.mjs
 ```
 
@@ -128,7 +128,7 @@ validation changes neither the loaded catalog nor project refs. Deliberately
 altered responses establish browser refusal behavior only.
 
 ```sh
-HALE_COCKPIT_CATALOG_BIN="/absolute/path/to/catalog-provider" \
+HALE_FACE_CATALOG_BIN="/absolute/path/to/catalog-provider" \
   npm --prefix dna/face test -- definitions.spec.mjs definition-drafts.spec.mjs
 ```
 
@@ -161,12 +161,12 @@ an explicitly scripted `CommandProvider`. Build `dna/api/tests/commands` explici
 and supply its executable to enable this lane:
 
 ```sh
-HALE_COCKPIT_COMMAND_BIN="/absolute/path/to/scripted-command-api" \
+HALE_FACE_COMMAND_BIN="/absolute/path/to/scripted-command-api" \
   npm --prefix dna/face test -- commands-native.spec.mjs
 ```
 
 The harness starts it as `COMMAND_BIN ROOT PORT WEBROOT` with
-`HALE_COCKPIT_SCRIPTED_COMMANDS=1`. It uses native Record reads and the real
+`HALE_FACE_SCRIPTED_COMMANDS=1`. It uses native Record reads and the real
 authentication, Origin, codec and receipt validation paths for both operations,
 including cross-operation request-key conflict. The provider stores
 request metadata in memory and reads `ROOT/command-mode` for scripted results;
@@ -179,7 +179,7 @@ administration server for real data.
 ## Optional fixture executable contracts
 
 These are test fixture interfaces, not arbitrary production-server entrypoints.
-The harness owns a fresh `ROOT` under `/tmp/hale-iris-browser.*`, selects dynamic
+The harness owns a fresh `ROOT` under `/tmp/hale-face-browser.*`, selects dynamic
 loopback ports and starts each service with `ROOT` as its working directory.
 The catalog and Knowledge fixtures must produce real native data and API responses
 matching the browser specifications; a successful response stub does not satisfy
@@ -241,7 +241,7 @@ not proof that this browser increment includes them.
 
 The browser cases also include a stalled read that expires after the 15-second
 deadline and recovers through the real service. Native short commands share the
-Linux `/tmp/iris-native-validation.lock`; long-running fixture services retain
+Linux `/tmp/face-native-validation.lock`; long-running fixture services retain
 their per-process limits without holding that lock.
 `PLAYWRIGHT_BROWSERS_PATH` can select an existing Chromium cache. Report acceptance
 evidence on [#690](https://github.com/hale-lang/hale/issues/690), identifying the
@@ -258,7 +258,7 @@ and generic application API, in separate processes over a fresh application-owne
 SQLite database. No DNA Record, provider or model discovery is started.
 
 ```sh
-HALE_COCKPIT_APPLICATION_BIN=/absolute/path/to/intake-control npm run test:application
+HALE_FACE_APPLICATION_BIN=/absolute/path/to/intake-control npm run test:application
 ```
 
 The optional lane is skipped when that explicit binary is absent. Build the
@@ -276,7 +276,7 @@ Transport faults are injected around the native response; the application's
 state and receipt decisions remain real. This lane does not establish DNA
 practice admission, Review settlement, adoption or workflow execution.
 
-The optional `HALE_COCKPIT_WORKFLOWS_BIN` fixture implements `seed`, `members`,
+The optional `HALE_FACE_WORKFLOWS_BIN` fixture implements `seed`, `members`,
 `finish`, `cancel`, `redact`, `adopt` and `invalid` against its owned temporary
 Record. Source: `dna/api/tests/workflows/main.hl`. It writes sample facts with
 native codecs; it is not a live executor or proof of upstream durability/recovery.
@@ -600,7 +600,7 @@ local Record/body/host acceptance, not routing-1 Ledger or multi-clone evidence.
 
 ### Browser operating flow against the native provider
 
-`native-command-browser.spec.mjs` drives the existing cockpit against that real
+`native-command-browser.spec.mjs` drives the existing face against that real
 service stack. It uses `native-command-harness.mjs`, independently of the
 scripted command fixtures. Supply the same four absolute binary paths above and
 run from `dna/face`:
@@ -765,7 +765,7 @@ node node_modules/@playwright/test/cli.js test \
 
 `native-task-create-browser.spec.mjs` reuses `native-task-harness.mjs` and the
 same two binaries and environment as the native Task lane. It raises a task from
-the real cockpit through the real composed API into a fresh Git Record and
+the real face through the real composed API into a fresh Git Record and
 proves one POST, a real receipt, and exactly one `intent.requested` row whose
 entity is the receipt's intent id, whose author is the principal, and whose body
 begins with the bytes `hale dna ask` writes for the same outcome/from/to before

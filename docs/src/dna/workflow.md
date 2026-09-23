@@ -180,10 +180,8 @@ not check lifetimes for you.
 `hale dna status` counts executions asked and settled beside the
 Tasks; `hale dna history t1` walks one execution's rows by their
 causal links, children and attempts included; `hale dna board` shows
-the cases waiting on people. The cockpit ([GH #690][cockpit]) is
-where these become workspaces — definitions, executions, the people's
-queue — over the same rows; the verbs in this chapter are the
+the cases waiting on people. The face (`dna/face`, served by the
+head) is where these become workspaces — definitions, executions,
+the people's queue — over the same rows; the verbs in this chapter are the
 commands it issues, and creating a task is what `hale dna ask` is
 the terminal spelling of.
-
-[cockpit]: https://github.com/hale-lang/hale/issues/690

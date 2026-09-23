@@ -1,7 +1,8 @@
 # Plain Hale intake control
 
 This application owns its SQLite database and declares one control operation,
-`example.intake.set_mode@1`, through `iris/service::ApplicationProvider`.
+`example.intake.set_mode@1`, through the face's application service,
+`dna/face/service::ApplicationProvider`.
 It uses no DNA Record, Ledger, positions, or administration messages.
 
 `running` accepts one synthetic work item per committed 250 ms tick. `paused`

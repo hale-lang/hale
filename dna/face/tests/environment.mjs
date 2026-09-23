@@ -7,7 +7,7 @@ export function isolatedEnvironment() {
     'HALE_DNA_KNOWLEDGE_URL', 'HALE_DNA_KNOWLEDGE_READ_KEY', 'HALE_DNA_KNOWLEDGE_COMMAND_KEY',
     'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_DNA_EVIDENCE_KEY', 'HALE_DNA_OIDC_SECRET',
     'HALE_DNA_OWNER', 'HALE_DNA_LEASE', 'HALE_DNA_LEASE_TOKEN', 'HALE_DNA_TAPE', 'HALE_DNA_ONESHOT',
-    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LOTUS_OBS', 'HALE_IRIS_ORG_DRAFTS',
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LOTUS_OBS', 'HALE_DNA_ORG_DRAFTS',
   ]) delete env[key];
   return Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
@@ -31,6 +31,6 @@ export function boundedNative(command, args, { build = false, lock = true } = {}
   // Serialize bounded native commands, but never retain this lock for an
   // HTTP service's lifetime: its browser client may need a fixture mutation.
   return lock ? { command: '/usr/bin/flock', args: [
-    '--exclusive', '--no-fork', '--wait', '120', '/tmp/iris-native-validation.lock', bounded.command, ...bounded.args,
+    '--exclusive', '--no-fork', '--wait', '120', '/tmp/face-native-validation.lock', bounded.command, ...bounded.args,
   ] } : bounded;
 }

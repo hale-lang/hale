@@ -50,7 +50,7 @@ const timer = setTimeout(async () => {
 }, 120_000);
 
 try {
-  service = await startNodeService({ evidenceParent: evidence, rootPrefix: '/tmp/hale-iris-browser.node-http.' });
+  service = await startNodeService({ evidenceParent: evidence, rootPrefix: '/tmp/hale-face-browser.node-http.' });
   const prefix = '\u0001'.repeat(7000) + '\r\nCafé 東京 🧭';
   const text = prefix + 'x'.repeat(8192 - bytes(prefix));
   assert.equal(bytes(text), 8192);

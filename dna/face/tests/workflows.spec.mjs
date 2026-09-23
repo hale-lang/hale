@@ -1,7 +1,7 @@
 import { test, expect, errorBody } from './harness.mjs';
 import { writeFile } from 'node:fs/promises';
 
-test.skip(!process.env.HALE_COCKPIT_WORKFLOWS_BIN, 'Requires the native recorded workflow fixture.');
+test.skip(!process.env.HALE_FACE_WORKFLOWS_BIN, 'Requires the native recorded workflow fixture.');
 test.use({ workflows: true, organization: true });
 const detail = page => page.getByRole('region', { name: 'Execution', exact: true });
 const steps = page => page.getByRole('list', { name: 'Ordered execution Steps', exact: true });

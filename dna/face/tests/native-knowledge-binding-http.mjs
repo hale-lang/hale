@@ -62,7 +62,7 @@ async function decide(receipt) {
 }
 const timer = setTimeout(async () => { console.error('Binding HTTP acceptance exceeded 120 seconds.'); try { await service?.stop(); } finally { process.exit(124); } }, 120_000);
 try {
-  service = await startBindingService({ evidenceParent: evidence, rootPrefix: '/tmp/hale-iris-browser.binding-http.' });
+  service = await startBindingService({ evidenceParent: evidence, rootPrefix: '/tmp/hale-face-browser.binding-http.' });
   const policy = JSON.parse(await readFile(service.policy, 'utf8'));
   if (!policy.grants.some(grant => grant.name === 'bob')) policy.grants.push({ mode: 'local', name: 'bob', authority: 'board', practice_propose: false, review_verdict: true, recover: true });
   await writeFile(service.policy, JSON.stringify(policy));

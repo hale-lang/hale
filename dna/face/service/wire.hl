@@ -1,5 +1,5 @@
 // Transport validation and encoding only. Providers own decisions and storage.
-import "../../dna/operations/organization_json" as syntax;
+import "../../operations/organization_json" as syntax;
 
 const APPLICATION_PROFILE: String = "hale.application.v1";
 const APPLICATION_PREFIX: String = "/api/hale/v1/applications";

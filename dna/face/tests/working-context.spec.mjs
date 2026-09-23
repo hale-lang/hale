@@ -110,7 +110,7 @@ test('The context picker works on a narrow viewport and remains separate from ge
 
 test.describe('Knowledge and Definition contexts', () => {
   test.use({ knowledge: true, definitions: true });
-  test.skip(!process.env.HALE_COCKPIT_KNOWLEDGE_BIN || !process.env.HALE_COCKPIT_CATALOG_BIN, 'Requires the native Knowledge service and definition catalog fixtures.');
+  test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN || !process.env.HALE_FACE_CATALOG_BIN, 'Requires the native Knowledge service and definition catalog fixtures.');
 
   test('Native Knowledge relevance follows the context across workspaces and browser history', async ({ page, service }) => {
     await service.changeOwnership(owners);

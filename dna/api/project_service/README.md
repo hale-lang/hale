@@ -1,7 +1,7 @@
-# The cockpit head: project service
+# The head: project service
 
-`dna/api/project_service` is the one process the Iris cockpit talks to
-(GH #965). It serves the browser shell, owns the operator-machine state
+`dna/api/project_service` is the head: the one process the face talks to
+(GH #965). It serves the face, owns the operator-machine state
 under a state directory — a project registry, a receipt journal, one
 directory per run, the pid files of its children — and reverse-proxies
 every `/api/hale/v1/applications…` request to the attached project's
@@ -41,7 +41,7 @@ routes, envelopes and operations are described in
 ## State
 
 ```text
-STATE = ${HALE_IRIS_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/iris/head}
+STATE = ${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}
 STATE/head.pid  head.url                     the head holding this state, and where it listens
 STATE/projects.jsonl  receipts.jsonl         the registry and the receipt journal, append-only
 STATE/runs/<command_id>/{script.sh,run.pid,run.exit,run.log,run.cmd}

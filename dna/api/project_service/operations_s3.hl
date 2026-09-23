@@ -1,5 +1,5 @@
 // dna/api/project_service/operations_s3.hl — the fourteen operations lane
-// of the cockpit head (GH #965, its contract's operation table):
+// of the head (GH #965, its contract's operation table):
 // the supervised local body (start, stop), the body on a server
 // (provision, start, stop, logs), secrets by source name, the models
 // probe, and connections and handoffs.

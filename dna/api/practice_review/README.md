@@ -98,7 +98,7 @@ claim hot policy reload or atomic authority revocation.
 
 ## Raising work needs no policy
 
-This head also supports `dna.task.create@1`, the cockpit's `hale dna ask`. It
+This head also supports `dna.task.create@1`, the face's `hale dna ask`. It
 takes no grant from either policy file: the authenticated principal is the
 authority, as for the CLI, and the organism judges whether the position is this
 organization's to admit. Recovery of an ask by its request key follows the

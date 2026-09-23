@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect, errorBody } from './harness.mjs';
 
-test.skip(!process.env.HALE_COCKPIT_KNOWLEDGE_BIN, 'Knowledge editing reads require the real native Knowledge provider fixture.');
+test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge editing reads require the real native Knowledge provider fixture.');
 test.use({ knowledge: true });
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const review = page => editor(page).getByRole('region', { name: 'Knowledge change review', exact: true });

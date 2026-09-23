@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+### Iris and the face are two products (GH #998)
+
+Iris is the inspector for any Hale binary; the DNA organism's people
+surface is the face, under `dna/face`, served by the head. The head no
+longer launches an observer; iris no longer knows the membrane or an
+organism's status; the head's state directory and environment variables
+are named for DNA (#998, #999, #1001, #1004).
+
+- The generic application service (`hale.application.v1`) moves from
+  `iris/service` to `dna/face/service`, beside the shell it serves.
+- `HALE_IRIS_HEAD_STATE` is `HALE_DNA_HEAD_STATE`, defaulting to
+  `${XDG_STATE_HOME:-~/.local/state}/hale/dna/head`;
+  `HALE_IRIS_ORG_DRAFTS` is `HALE_DNA_ORG_DRAFTS`; the browser suite's
+  `HALE_COCKPIT_*` fixture variables are `HALE_FACE_*`. No old name is
+  read.
+
 ### The body fence stops sessions: orphaned tools are reached on every platform (GH #970)
 
 The fence stops everything an organization started, including a tool

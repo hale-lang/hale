@@ -2,19 +2,19 @@
 
 This native Hale library serves the `hale.application.v1` profile under
 `/api/hale/v1/applications`. An application explicitly supplies one
-`ApplicationProvider`; Iris adapts its typed state and enum-control operation.
+`ApplicationProvider`; the face adapts its typed state and enum-control operation.
 No DNA Record, organization, position, database credential in the browser, CLI
 subprocess dispatch, or observer-to-application identity inference is involved.
 
 The head owns transport checks and response validation. The application owns
 authorization, current incarnation, revision checks, state, immutable receipts
-and recovery. The [intake-control example](../examples/intake-control/README.md)
+and recovery. The [intake-control example](../../../iris/examples/intake-control/README.md)
 is a separate application-owned proof adapter; other providers must establish
 their own completion and persistence guarantees.
 
 ## Composition
 
-Import `iris/service` from the application entry point and call:
+Import `dna/face/service` from the application entry point and call:
 
 ```hale,fragment
 let provider = MyApplicationProvider { };
@@ -38,7 +38,7 @@ This does not provide hosted sessions, OIDC or remote multi-user authentication.
 
 With a webroot, the head loads the ten fixed browser assets once, injects the
 constant `data-iris-profile="application"` on the HTML element and serves the
-same cockpit shell. Asset reads precede provider access. The shell has no
+face's shell. Asset reads precede provider access. The shell has no
 runtime view; inspect the running application with `hale iris`. Restart the
 head after changing assets or configuration.
 
@@ -152,6 +152,6 @@ principal fencing, unknown operations, exact numbers, sanitized failures,
 receipt validation and public assets with a scripted provider. It is HTTP
 adapter conformance, not evidence of real configuration effects or durability.
 The intake application owns separate integration and restart proofs. Browser
-confirmation/recovery behavior is tested in the cockpit suite. Use the shared
+confirmation/recovery behavior is tested in the face's browser suite. Use the shared
 native-validation lock and bounded native build/runtime limits for local gates;
 there is no compiler or DNA engine suite dependency here.
