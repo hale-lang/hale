@@ -14,7 +14,7 @@ import "../../../contract/v1/validator" as wire_contract;
 
 const HEAD: String = "/api/hale/v1/head";
 const APPLICATIONS: String = "/api/hale/v1/applications";
-const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris head fixture</main><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static face head fixture</main><script src=\"/app.js\" defer></script></body></html>";
 const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
 const SHELL_CSS: String = "main { color: navy; }";
 

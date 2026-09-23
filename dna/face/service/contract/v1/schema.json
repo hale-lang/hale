@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Iris generic Hale application API v1",
+  "title": "Face generic Hale application API v1",
   "description": "Application-owned enum-control provider. Shape conformance does not establish provider durability or actual effects. No DNA Source, position, or observer identity is implied. Cross-field identity, fingerprint and revision invariants are enforced by the native adapter.",
   "$defs": {
     "Principal": {
@@ -624,7 +624,7 @@
               "type": "object",
               "properties": {
                 "profile": {
-                  "const": "hale.iris.process.v1"
+                  "const": "hale.face.process.v1"
                 },
                 "process_key": {
                   "type": "string",

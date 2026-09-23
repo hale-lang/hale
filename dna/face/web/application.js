@@ -3,7 +3,7 @@
 (() => {
   const API = "/api/hale/v1/applications";
   const PROFILE = "hale.application.v1";
-  const STORAGE = "iris.application-recovery.v1:";
+  const STORAGE = "face.application-recovery.v1:";
   const TIMEOUT = 5000, RESPONSE_LIMIT = 65536, POLL_INTERVAL = 2000;
   const encoder = new TextEncoder();
   const node = (tag, className = "", text) => {
@@ -75,7 +75,7 @@
   }
   function appState(data, expectedID) {
     assert(closed(data, ["application", "online", "control", "activity", ...(Object.hasOwn(data || {}, "runtime") ? ["runtime"] : [])]));
-    if (data.runtime !== undefined) assert(closed(data.runtime, ["profile", "process_key", "pid"]) && data.runtime.profile === "hale.iris.process.v1" && digestID(data.runtime.process_key) && revision(data.runtime.pid) && data.runtime.pid !== "0" && data.online === true);
+    if (data.runtime !== undefined) assert(closed(data.runtime, ["profile", "process_key", "pid"]) && data.runtime.profile === "hale.face.process.v1" && digestID(data.runtime.process_key) && revision(data.runtime.pid) && data.runtime.pid !== "0" && data.online === true);
     application(data.application);
     if (data.application.id !== expectedID) throw new Failure("identity_changed");
     assert(typeof data.online === "boolean");
@@ -177,7 +177,7 @@
       const timeout = setTimeout(() => controller.abort(), TIMEOUT);
       let reader;
       try {
-        const response = await fetch(path, { method, signal: controller.signal, credentials: "same-origin", referrerPolicy: "no-referrer", redirect: "error", cache: "no-store", headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json", "X-Iris-Command": "1" } : {}) }, ...(method === "POST" ? { body: JSON.stringify(payload) } : {}) });
+        const response = await fetch(path, { method, signal: controller.signal, credentials: "same-origin", referrerPolicy: "no-referrer", redirect: "error", cache: "no-store", headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json", "X-Face-Command": "1" } : {}) }, ...(method === "POST" ? { body: JSON.stringify(payload) } : {}) });
         if ([401, 403].includes(response.status)) throw new Failure("access_denied", response.status);
         const length = response.headers.get("content-length");
         if (length && /^\d+$/.test(length) && Number(length) > RESPONSE_LIMIT) throw new Failure("response_limit");
@@ -541,5 +541,5 @@
     if (!document.hidden) void load(); else pause();
     return { destroy() { disposed = true; abortAll(); clearPrivate(); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("pagehide", pause); window.removeEventListener("pageshow", pageShow); container.replaceChildren(); } };
   }
-  window.IrisApplication = Object.freeze({ mount });
+  window.FaceApplication = Object.freeze({ mount });
 })();

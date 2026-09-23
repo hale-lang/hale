@@ -6,13 +6,13 @@ import "../../contract/v1/validator" as wire_contract;
 const APPLICATIONS: String = "/api/hale/v1/applications";
 const SHELL_KNOWLEDGE_DRAFT_JS: String = "window.fixtureKnowledgeDraft = true;";
 const SHELL_TASK_ADMINISTRATION_JS: String = "window.fixtureTaskAdministration = true;";
-const SHELL_PROJECTS_JS: String = "window.IrisProjects = Object.freeze({ fixture: true });";
+const SHELL_PROJECTS_JS: String = "window.FaceProjects = Object.freeze({ fixture: true });";
 const SHELL_TASK_CREATE_JS: String = "window.fixtureTaskCreate = true;";
 const SHELL_ORGANIZATION_DRAFT_JS: String = "window.fixtureOrganizationDraft = true;";
-const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/application.js\" defer></script><script src=\"/definition-draft.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static face fixture</main><script src=\"/application.js\" defer></script><script src=\"/definition-draft.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
 const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
-const SHELL_APPLICATION_JS: String = "window.IrisApplication = Object.freeze({ fixture: true });";
-const SHELL_DEFINITION_DRAFT_JS: String = "window.IrisDefinitionDraft = Object.freeze({ fixture: true });";
+const SHELL_APPLICATION_JS: String = "window.FaceApplication = Object.freeze({ fixture: true });";
+const SHELL_DEFINITION_DRAFT_JS: String = "window.FaceDefinitionDraft = Object.freeze({ fixture: true });";
 const SHELL_CSS: String = "main { color: navy; }";
 
 type HttpResponse { status: Int = 0; headers: String = ""; body: String = ""; }

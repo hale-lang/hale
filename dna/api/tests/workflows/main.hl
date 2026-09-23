@@ -1,4 +1,4 @@
-// Native recorded-fact fixture for the Iris execution reader. This is not an
+// Native recorded-fact fixture for the face's execution reader. This is not an
 // executor: the scenario appends declared facts using native codecs, and the
 // browser reads their real Git Record through the native projection.
 import "../../../core" as dna;
@@ -26,7 +26,7 @@ locus Story {
         self.append("attempt.admitted", dna::attempt_id_of(work, no), dna::encode_attempt(dna::AdmittedAttempt { attempt_id: dna::attempt_id_of(work, no), work_id: work, step_id: step, task_id: task, attempt_no: no, performer_kind: performer, request: request }));
     }
     fn outcome(work: String, no: Int, disposition: String, text: String) {
-        self.append("attempt.outcome", dna::attempt_id_of(work, no), dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: dna::attempt_id_of(work, no), work_id: work, disposition: disposition, performer: "sample-reviewer", result: text, evidence_ref: "sha256:iris-evidence", narrative: "Recorded sample evidence — équipe" }));
+        self.append("attempt.outcome", dna::attempt_id_of(work, no), dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: dna::attempt_id_of(work, no), work_id: work, disposition: disposition, performer: "sample-reviewer", result: text, evidence_ref: "sha256:face-evidence", narrative: "Recorded sample evidence — équipe" }));
     }
     fn settled(work: String, step: String, no: Int) {
         self.append("work.settled", work, dna::encode_work_outcome(dna::WorkOutcome { work_id: work, step_id: step, attempt_id: dna::attempt_id_of(work, no), disposition: "done" }));
@@ -94,7 +94,7 @@ fn main() {
         if action == "members" { story.finish_members(); }
         else if action == "finish" { story.finish(); }
         else if action == "cancel" { story.append("workflow.settled", ROOT, dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: ROOT, disposition: "cancelled", reason: "Operator cancelled the sample execution" })); }
-        else if action == "redact" { story.append("receipt.redacted", "sha256:iris-evidence", "{\"why\":\"visibility changed\"}"); }
+        else if action == "redact" { story.append("receipt.redacted", "sha256:face-evidence", "{\"why\":\"visibility changed\"}"); }
         else if action == "adopt" { story.append("ledger.adopted", "routing", "{\"version\":1}"); }
         else if action == "invalid" { story.append("step.completed", ROOT + "/wf7/s1", dna::encode_step_outcome(dna::StepOutcome { step_id: ROOT + "/wf7/s1", task_id: ROOT, disposition: "completed", members: "publish" })); }
         else { std::test::assert(false, "unknown execution fixture action"); }

@@ -1,5 +1,5 @@
 // Build: hale build dna/api
-// Run: dna/api/api <project-root> <port> [iris-webroot]
+// Run: dna/api/api <project-root> <port> [face-webroot]
 // A single-Record surface, always loopback. Explicitly configured or composed
 // command providers own native authority and durable recovery. No legacy
 // UI mutation route is proxied.
@@ -489,7 +489,7 @@ fn main() {
     let http = Http { };
     let port = http.integer(raw_port, 65535);
     if port < 1 || std::env::args_count() > 4 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
-        eprintln("hale dna api: expected <project-root> <port 1..65535> [iris-webroot]");
+        eprintln("hale dna api: expected <project-root> <port 1..65535> [face-webroot]");
         std::process::exit(2);
     }
     let web = WebAssets { };

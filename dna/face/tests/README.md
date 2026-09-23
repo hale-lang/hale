@@ -253,7 +253,7 @@ CI runs the suite on partition 1 after the compiler and API have been built.
 
 ## Ordinary Hale application administration
 
-`application.spec.mjs` uses the real native [intake-control application](../../../iris/examples/intake-control/README.md)
+`application.spec.mjs` uses the real native [intake-control application](../examples/intake-control/README.md)
 and generic application API, in separate processes over a fresh application-owned
 SQLite database. No DNA Record, provider or model discovery is started.
 
@@ -715,7 +715,7 @@ cross-owner transfer, hosted or Ledger administration, or a source-ownership joi
 
 ### Projects workspace
 
-`projects.spec.mjs` is the binary-free UI contract for `IrisProjects`. Its
+`projects.spec.mjs` is the binary-free UI contract for `FaceProjects`. Its
 fixture server scripts the four head paths (`/api/hale/v1/head`, `/head/projects`,
 `/head/commands`, `/head/logs`): it covers the closed envelope validation (an
 extra key at any level, a Record envelope, a mismatched active project and an
@@ -746,7 +746,7 @@ built project service is a separate native lane that skips without
 ### Raising work
 
 `task-create.spec.mjs` is the standalone contract for `web/task-create.js`, the
-"New task" form (`window.IrisTaskCreate`): exact validation of an outcome for a
+"New task" form (`window.FaceTaskCreate`): exact validation of an outcome for a
 locus, the whole organization first and declared working-context loci after it,
 byte bounds, literal markup, denied sessions, DOM-tampered choices and the
 pending/corrected preparation flow. The module sends no request and stores
@@ -777,7 +777,7 @@ follow-up case. Without both binary paths the lane skips visibly.
 ### Declared members and recorded assignments
 
 `organization-ownership-people.spec.mjs` passed four standalone browser contracts
-for `IrisOwnershipPeople`: exact copied `{owner,name}` selections, duplicate
+for `FaceOwnershipPeople`: exact copied `{owner,name}` selections, duplicate
 people in separate declared owner groups, literal Unicode/markup handling,
 invalid or unavailable source membership, disabled inspection when Task reads
 are unavailable, and native keyboard/narrow-screen behavior. Desktop/mobile

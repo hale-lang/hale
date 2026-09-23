@@ -127,7 +127,7 @@ locus ApplicationWire {
     fn guard(req: std::http::Request, host: String, origin: String) -> String {
         let h = self.header(req.headers, "host"); let o = self.header(req.headers, "origin");
         let length = self.header(req.headers, "content-length"); let transfer = self.header(req.headers, "transfer-encoding");
-        let content = self.header(req.headers, "content-type"); let intent = self.header(req.headers, "x-iris-command");
+        let content = self.header(req.headers, "content-type"); let intent = self.header(req.headers, "x-face-command");
         if !h.valid || !o.valid || !length.valid || !transfer.valid || !content.valid || !intent.valid || h.count != 1 || o.count > 1 || length.count > 1 || transfer.count > 0 || content.count > 1 || intent.count > 1 { return "invalid_headers"; }
         if h.value != host { return "invalid_host"; }
         if (o.count == 1 && o.value != origin) || (req.method == "POST" && o.count != 1) { return "origin_forbidden"; }
@@ -224,7 +224,7 @@ locus ApplicationWire {
     }
     fn state(s: ApplicationState) -> String {
         let b = std::json::Builder { }; b.begin_object(); b.field("application", self.application(s)); b.bool_field("online", s.online);
-        if s.runtime_process_key != "" { b.begin_object_field("runtime"); b.string_field("profile", "hale.iris.process.v1"); b.string_field("process_key", s.runtime_process_key); b.string_field("pid", s.runtime_pid); b.end_object(); }
+        if s.runtime_process_key != "" { b.begin_object_field("runtime"); b.string_field("profile", "hale.face.process.v1"); b.string_field("process_key", s.runtime_process_key); b.string_field("pid", s.runtime_pid); b.end_object(); }
         b.begin_object_field("control"); b.string_field("kind", "application.control"); b.string_field("id", s.control_id); b.string_field("label", s.control_label); b.string_field("revision", s.revision); b.string_field("value", s.value); b.string_field("effective_revision", s.effective_revision); b.string_field("effective_value", s.effective_value); b.end_object();
         b.begin_object_field("activity"); b.string_field("label", s.activity_label); b.string_field("count", s.activity_count); b.string_field("observation_tick", s.observation_tick); b.end_object(); b.end_object(); return b.result();
     }

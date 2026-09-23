@@ -7,7 +7,7 @@
 (() => {
   const HEAD = "/api/hale/v1/head";
   const PROFILE = "dna.head.v1";
-  const STORAGE = "iris.projects-recovery.v1:";
+  const STORAGE = "face.projects-recovery.v1:";
   const FETCH_TIMEOUT_MS = 35000;
   const POLL_MS = 2000;
   const MAX_REQUEST_BYTES = 32768;
@@ -681,5 +681,5 @@
     return controllerObject;
   }
   function destroy() { current?.destroy(); current = null; }
-  window.IrisProjects = Object.freeze({ validate, mount, destroy, FORMS: Object.freeze(FORMS.map(form => Object.freeze({ operation: form.operation, title: form.title, fields: form.fields.map(field => field.key) }))) });
+  window.FaceProjects = Object.freeze({ validate, mount, destroy, FORMS: Object.freeze(FORMS.map(form => Object.freeze({ operation: form.operation, title: form.title, fields: form.fields.map(field => field.key) }))) });
 })();

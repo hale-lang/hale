@@ -1,7 +1,7 @@
 // Browser-boundary scripts over real native reads. No durable domain writes.
 import { errorBody } from './harness.mjs';
 
-export const STORAGE_PREFIX = 'iris.practice-recovery.v1:';
+export const STORAGE_PREFIX = 'face.practice-recovery.v1:';
 export async function recoveryMetadata(page) {
   return page.evaluate(prefix => Object.entries(localStorage)
     .filter(([key]) => key.startsWith(prefix))

@@ -75,6 +75,17 @@ are named for DNA (#998, #999, #1001, #1004).
   `HALE_IRIS_ORG_DRAFTS` is `HALE_DNA_ORG_DRAFTS`; the browser suite's
   `HALE_COCKPIT_*` fixture variables are `HALE_FACE_*`. No old name is
   read.
+- The intake-control example moves from `iris/examples/intake-control`
+  to `dna/face/examples/intake-control`, beside the service it proves
+  (#1008).
+- The face's wire and storage names say face: `face.*` localStorage
+  keys, `X-Face-Command`, `data-face-profile`,
+  `face-application:listening`, `window.Face*`, the
+  `face.knowledge.change-draft.v1` and `hale.face.process.v1` profiles,
+  the head's `.hale/dna/face/` policies and `face_register_workflows`
+  (#1008). No old name is read, so a browser holding the old keys loses
+  its unsent drafts, and a policy written under `.hale/dna/iris/` is
+  not read (the head synthesizes one under the new directory).
 
 ### The body fence stops sessions: orphaned tools are reached on every platform (GH #970)
 

@@ -68,7 +68,7 @@ export async function applicationFixture() {
     request: async (suffix, options = {}) => {
       const { method = 'GET', body, headers = {} } = options;
       const response = await fetch(origin + fixture.prefix + suffix, {
-        method, headers: { ...(method === 'POST' ? { Origin: origin, 'Content-Type': 'application/json', 'X-Iris-Command': '1' } : {}), ...headers },
+        method, headers: { ...(method === 'POST' ? { Origin: origin, 'Content-Type': 'application/json', 'X-Face-Command': '1' } : {}), ...headers },
         ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
         redirect: 'error', signal: AbortSignal.timeout(5000),
       });
@@ -102,7 +102,7 @@ export async function applicationFixture() {
       principal = actor;
       api = start(['serve', db, new URL(origin).port, web, actor]);
       await waitFor(api, async () => {
-        if (!api.output.includes('iris-application:listening')) return false;
+        if (!api.output.includes('face-application:listening')) return false;
         try { return (await fixture.request('/state')).status === 200; } catch { return false; }
       });
     },

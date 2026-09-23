@@ -25,7 +25,7 @@ async function prepare(page, service, to = 'blair') {
   await expect(confirmation(page)).toContainText('alex → ' + to);
 }
 const reassignments = service => service.journal().rows.filter(row => row.kind === 'task.reassigned' && row.entity === service.task);
-const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('iris.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
+const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
 
 test('native reassignment preserves the same open Task and joins exact assignment history', async ({ page, service }, info) => {
   const posts = []; page.on('request', request => { if (request.method() === 'POST') posts.push(request.postDataJSON()); });

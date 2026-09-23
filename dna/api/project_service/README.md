@@ -46,7 +46,7 @@ STATE/head.pid  head.url                     the head holding this state, and wh
 STATE/projects.jsonl  receipts.jsonl         the registry and the receipt journal, append-only
 STATE/runs/<command_id>/{script.sh,run.pid,run.exit,run.log,run.cmd}
 STATE/children/<api|body>.{pid,exit,log,cmd}
-<root>/.hale/dna/iris/{authority.json,task-policy.json}   synthesized only when absent
+<root>/.hale/dna/face/{authority.json,task-policy.json}   synthesized only when absent
 ${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/<NAME>  operator-written secret sources (0600, one line)
 ```
 

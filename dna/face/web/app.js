@@ -77,7 +77,7 @@
       booleans: ["text_available"], rowName: (item) => item.id, badge: reviewBadge, rowMeta: reviewMeta, inspector: reviewDetail
     }
   };
-  const APPLICATION_HOST = document.documentElement.dataset.irisProfile === "application";
+  const APPLICATION_HOST = document.documentElement.dataset.faceProfile === "application";
   const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "projects"]);
   const independentView = (view) => view === "application" || view === "projects";
   // The operator-machine head answers this path; a plain Record API does not.
@@ -137,7 +137,7 @@
   const ORGANIZATION_MODULE = "dna/org/main.hl";
   const ORGANIZATION_BASE = ["source_head", "module_digest", "dependency_source", "dependency_digest", "record_head"];
   const VERDICTS = { approve: "Approve", reject: "Reject", revise: "Request revision" };
-  const COMMAND_STORAGE = "iris.practice-recovery.v1:";
+  const COMMAND_STORAGE = "face.practice-recovery.v1:";
   const COMMAND_TERMINAL = new Set(["succeeded", "refused", "failed"]);
   let intervention = { scope: "", phase: "idle", draft: null, metadata: null, receipt: null, error: "", blocked: false };
   let commandGeneration = 0;
@@ -147,7 +147,7 @@
   const KNOWLEDGE_NODES = ["dna.knowledge.node.propose", "dna.knowledge.node.revise", "dna.knowledge.node.retire"];
   const KNOWLEDGE_BINDINGS = ["dna.knowledge.binding.bind", "dna.knowledge.binding.unbind"];
   const KNOWLEDGE_REMOVAL_PAGES = 32;
-  const KNOWLEDGE_STORAGE = "iris.knowledge-recovery.v1:";
+  const KNOWLEDGE_STORAGE = "face.knowledge-recovery.v1:";
   let knowledgeCommand = { scope: "", metadata: null, result: null, capability: null, phase: "idle", error: "", projection: "unread", blocked: false };
   let knowledgeCommandGeneration = 0;
   let knowledgeCommandController = null;
@@ -511,7 +511,7 @@
     panel.setAttribute("aria-label", "Review intervention");
     const heading = append(node("div", "intervention-heading"), append(node("div"), node("h3", "", r.organization_source ? "Review the Organization change" : "Decide on the exact candidate"), node("p", "", reviewInterventionReason(r))));
     const body = node("div", "intervention-body");
-    if (r.organization_source && state.reviewCandidate?.organization) body.append(window.IrisOrganizationReview.render(state.reviewCandidate));
+    if (r.organization_source && state.reviewCandidate?.organization) body.append(window.FaceOrganizationReview.render(state.reviewCandidate));
     if (!r.organization_source && (eligibleReview(r) || (state.reviewCandidate?.binding || state.reviewCandidate?.relationship) && state.reviewCandidate.review_id === r.id && state.reviewCandidate.candidate_digest === r.subject_digest)) {
       const binding = state.reviewCandidate.binding, relationship = state.reviewCandidate.relationship;
       const candidate = node("section", "intervention-document");
@@ -1804,8 +1804,8 @@
       if (view === "definitions") validDefinition(item);
       if (view === "workflows") validWorkflow(item);
       if (view === "tasks") {
-        assert(window.IrisTaskAdministration, "Task administration is not loaded.");
-        try { window.IrisTaskAdministration.validate(item); } catch { assert(false, "The service returned an invalid Task responsibility."); }
+        assert(window.FaceTaskAdministration, "Task administration is not loaded.");
+        try { window.FaceTaskAdministration.validate(item); } catch { assert(false, "The service returned an invalid Task responsibility."); }
       }
       if (view === "knowledge") assert(receiptID(item.id) && decimal(item.revision, true) && decimal(item.ratified_seq, true) && item.source_provenance === null);
       if (view === "reviews" && item.knowledge_binding_digest !== undefined) assert(typeof item.knowledge_binding_digest === "string" && (!item.knowledge_binding_digest || receiptID(item.knowledge_binding_digest) && item.knowledge_binding_digest === item.subject_digest && item.knowledge_digest === ""));
@@ -2163,7 +2163,7 @@
           validSource(response.source, app.id);
           assert(response.source.record_head === collectionResponse.source.record_head && response.source.record_revision === collectionResponse.source.record_revision, "The canonical candidate and Review do not share one exact source snapshot.");
           let candidate;
-          if (sourceChange) { candidate = await window.IrisOrganizationReview.validate(response.data, detail, app.id); ensureCurrent(token, signal); }
+          if (sourceChange) { candidate = await window.FaceOrganizationReview.validate(response.data, detail, app.id); ensureCurrent(token, signal); }
           else if (binding) candidate = validBindingCandidate(response.data, detail, app.id);
           else if (edge) {
             candidate = validRelationshipCandidate(response.data, app.id);
@@ -2190,7 +2190,7 @@
         const response = await request(base + "/dna/organization/source-status?" + new URLSearchParams({ id: detail.id, snapshot: collectionResponse.source.record_head }), signal);
         ensureCurrent(token, signal); validSource(response.source, app.id);
         assert(response.source.record_head === collectionResponse.source.record_head && response.source.record_revision === collectionResponse.source.record_revision, "The Organization status and Review do not share one exact source snapshot.");
-        try { organizationStatus = window.IrisOrganizationStatus.validate(response.data, detail, reviewCandidate); }
+        try { organizationStatus = window.FaceOrganizationStatus.validate(response.data, detail, reviewCandidate); }
         catch { assert(false, "The Organization change status does not match this Review or its exact source evidence."); }
       } catch (error) {
         if (![403, 404, 503].includes(error.status) || error.code === "application_not_found") throw error;
@@ -2203,7 +2203,7 @@
         const response = await request(base + "/dna/organization/source-impact?" + new URLSearchParams({ id: detail.id, snapshot: collectionResponse.source.record_head }), signal);
         ensureCurrent(token, signal); validSource(response.source, app.id);
         assert(response.source.record_head === collectionResponse.source.record_head && response.source.record_revision === collectionResponse.source.record_revision, "The responsibility check and Review do not share one exact source snapshot.");
-        try { organizationImpact = window.IrisOrganizationImpact.validate(response.data, detail, collectionResponse.source); }
+        try { organizationImpact = window.FaceOrganizationImpact.validate(response.data, detail, collectionResponse.source); }
         catch { assert(false, "The responsibility check does not match this Review or its captured Record."); }
         if (organizationStatus) assert(["base_commit", "module_digest", "candidate_commit", "source_digest"].every(key => organizationImpact.source[key] === organizationStatus.source[key]), "The responsibility check and change status identify different source evidence.");
         if (reviewCandidate?.organization) assert(organizationImpact.source.base_commit === reviewCandidate.organization.base.source_head && organizationImpact.source.module_digest === reviewCandidate.organization.base.module_digest && organizationImpact.source.source_digest === reviewCandidate.organization.module.digest, "The responsibility check does not match the exact candidate source comparison.");
@@ -2252,8 +2252,8 @@
       const response = await fetch(HEAD_API, { signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
       // Anything but a closed head envelope means no head stands behind this
       // API: the shell continues unchanged rather than raising an error.
-      if (response.status === 200 && window.IrisProjects) {
-        const envelope = window.IrisProjects.validate(await response.json(), "head");
+      if (response.status === 200 && window.FaceProjects) {
+        const envelope = window.FaceProjects.validate(await response.json(), "head");
         head = { principal: envelope.head.principal, data: envelope.data };
       }
     } catch (error) {
@@ -2399,7 +2399,7 @@
     const practiceAdministration = state.route.view === "knowledge" && state.route.practice_action;
     const workspace = WORKSPACES[state.route.view];
     const title = application ? "Application" : projects ? "Projects" : practiceAdministration ? "Practice administration" : workspace.title;
-    document.title = title + " · Iris";
+    document.title = title + " · the face";
     document.body.dataset.view = state.route.view;
     document.body.classList.toggle("practice-operating", ["practices", "reviews"].includes(state.route.view) && Boolean(state.detail));
     ui["workspace-title"].textContent = title;
@@ -2459,7 +2459,7 @@
     if (application) {
       const mount = node("div");
       ui.content.replaceChildren(mount);
-      if (window.IrisApplication) applicationController = window.IrisApplication.mount(mount, {
+      if (window.FaceApplication) applicationController = window.FaceApplication.mount(mount, {
         onContext: (context) => {
           if (state.route.view !== "application") return;
           ui.principal.textContent = context?.principal ? "Local · " + context.principal.name : "Not connected";
@@ -2472,9 +2472,9 @@
       const mount = node("div");
       ui.content.replaceChildren(mount);
       if (state.phase === "loading") mount.append(stateCard("Reading the project service", "Checking whether an operator-machine head answers behind this API.", "◌"));
-      else if (window.IrisProjects) {
+      else if (window.FaceProjects) {
         const token = generation;
-        projectsController = window.IrisProjects.mount(mount, {
+        projectsController = window.FaceProjects.mount(mount, {
           head: state.head, principal: state.head?.principal || null,
           onHead(head) { if (token === generation) setHead(head); },
           onAttached(applicationId) { if (token === generation) navigate(workspaceRoute("practices", { app: applicationId, locus: "", target: "" })); },
@@ -2788,7 +2788,7 @@
       detail.append(navigationLink(item.assignee ? "View assignments for " + item.assignee : "View all assignments", routeHash(workspaceRoute("tasks", { assignee: item.assignee })), "list", "text-link"));
     }
     const capability = commandCapability(state.capabilities, TASK_OPERATION);
-    detail.append(window.IrisTaskAdministration.render(item, {
+    detail.append(window.FaceTaskAdministration.render(item, {
       inspectedAt: state.inspectedAt, historical: false,
       canReassign: capability.allowed && !intervention.metadata && !intervention.blocked && !intervention.draft && commandID(item.assignee),
       recipients: capability.allowed ? state.capabilities.task_commands.recipients : [],
@@ -2837,17 +2837,17 @@
   // Raising work: the ask is recorded at once; the organism's answer arrives
   // through GET lookup, re-derived from the Record on every check.
   function prepareTaskCreate(ask) {
-    if (state.phase !== "ready" || state.route.view !== "tasks" || !state.app || !commandCapability(state.capabilities, TASK_CREATE_OPERATION).allowed || intervention.metadata || intervention.blocked || intervention.draft || !commandID(state.source?.record_head) || !window.IrisTaskCreate) throw new Error("Reload the handed Tasks and check the current authority before preparing a new task.");
-    const exact = window.IrisTaskCreate.validate(ask);
+    if (state.phase !== "ready" || state.route.view !== "tasks" || !state.app || !commandCapability(state.capabilities, TASK_CREATE_OPERATION).allowed || intervention.metadata || intervention.blocked || intervention.draft || !commandID(state.source?.record_head) || !window.FaceTaskCreate) throw new Error("Reload the handed Tasks and check the current authority before preparing a new task.");
+    const exact = window.FaceTaskCreate.validate(ask);
     intervention.draft = { operation: TASK_CREATE_OPERATION, target: state.app.id, subject: state.source.record_head, record_head: state.source.record_head, outcome: exact.outcome, to: exact.to };
     intervention.phase = "reviewing"; intervention.error = "";
     render(); $("task-create-confirmation")?.focus();
   }
   function taskCreatePanel() {
     const capability = commandCapability(state.capabilities, TASK_CREATE_OPERATION);
-    if (!capability.supported || !window.IrisTaskCreate) return null;
+    if (!capability.supported || !window.FaceTaskCreate) return null;
     const frame = node("div", "task-create-frame");
-    frame.append(window.IrisTaskCreate.render({
+    frame.append(window.FaceTaskCreate.render({
       canCreate: capability.allowed && !intervention.metadata && !intervention.blocked && !intervention.draft,
       positions: state.workingContext?.available ? state.workingContext.positions : [], defaultTo: state.route.locus || "",
       reason: !capability.allowed ? "Raising work is unavailable for this connection or signed-in principal. Viewing a locus does not grant it." : intervention.metadata ? "Check the saved request before raising another task." : intervention.blocked ? intervention.error : intervention.draft ? "Confirm or discard the prepared task first." : "",
@@ -3393,9 +3393,9 @@
       const ownershipHost = ownershipDraftHost || node("div", "ownership-draft-host");
       ownershipDraftHost = ownershipHost;
       frame.append(host, coverage, organizationOwnership(collection.ownership), ownershipHost);
-      if (window.IrisOwnershipDraft && !ownershipDraftController) {
+      if (window.FaceOwnershipDraft && !ownershipDraftController) {
         const token = generation;
-        ownershipDraftController = window.IrisOwnershipDraft.mount(ownershipHost, {
+        ownershipDraftController = window.FaceOwnershipDraft.mount(ownershipHost, {
           applicationId: state.app.id, principal: state.capabilities.principal,
           basis, recordHead: state.source.record_head, capability: state.capabilities.ownership_drafts,
           onInvalidate(error) {
@@ -3411,9 +3411,9 @@
       if (intervention.metadata || intervention.blocked) {
         organizationDraftController?.destroy(); organizationDraftController = null;
         host.replaceChildren(node("p", "detail-note", "Recover or dismiss the saved request before preparing another Organization proposal."));
-      } else if (window.IrisOrganizationDraft && !organizationDraftController) {
+      } else if (window.FaceOrganizationDraft && !organizationDraftController) {
         const token = generation;
-        organizationDraftController = window.IrisOrganizationDraft.mount(host, {
+        organizationDraftController = window.FaceOrganizationDraft.mount(host, {
           applicationId: state.app.id, principal: state.capabilities.principal,
           basis, recordHead: state.source.record_head, capability: state.capabilities.organization_drafts, selectedId: state.detail?.id || "",
           publicationAccess() { return token === generation ? organizationProposalAccess() : { allowed: false, reason: "The inspected Organization changed. Reload before proposing source." }; },
@@ -3444,11 +3444,11 @@
     if (state.practiceContext && (state.practiceContext.retired || !state.practiceContext.ratified)) return node("p", "detail-note", "This practice is not currently in force. Its readable graph and history remain inspectable; follow its Review or current successor before preparing another change.");
     const host = knowledgeDraftHost || node("div", "knowledge-draft-host");
     knowledgeDraftHost = host;
-    if (window.IrisKnowledgeDraft && !knowledgeDraftController) {
+    if (window.FaceKnowledgeDraft && !knowledgeDraftController) {
       const token = generation, appId = state.app.id, principal = { ...state.capabilities.principal };
       const source = state.source, route = { ...state.route }, collection = state.collection, selected = state.detail;
       const base = API + "/" + encodeURIComponent(appId);
-      knowledgeDraftController = window.IrisKnowledgeDraft.mount(host, {
+      knowledgeDraftController = window.FaceKnowledgeDraft.mount(host, {
         applicationId: appId, principal, basis: collection.basis, snapshot: collection.page.snapshot,
         ...(route.practice_action ? { practice: { action: route.practice_action, author: state.practiceContext?.author || route.locus || "org", target: route.practice_action === "applicability" ? route.locus || state.practiceContext?.target || "org" : state.practiceContext?.target || route.locus || "org" } } : {}),
         target: route.target, item: selected, relationships: state.relationships, bindings: state.bindings,
@@ -3844,9 +3844,9 @@
     definitionDraftHost = host;
     detail.append(host);
     const basis = state.collection.basis;
-    if (window.IrisDefinitionDraft && !definitionDraftController) {
+    if (window.FaceDefinitionDraft && !definitionDraftController) {
       const token = generation;
-      definitionDraftController = window.IrisDefinitionDraft.mount(host, {
+      definitionDraftController = window.FaceDefinitionDraft.mount(host, {
         item, basis, applicationId: state.app.id, principal: state.capabilities.principal,
         capability: state.capabilities.definition_drafts,
         onInvalidate(error) {
@@ -3871,7 +3871,7 @@
           navigate({ ...state.route, id, snapshot: state.collection.page.snapshot });
         }
       });
-    } else if (!window.IrisDefinitionDraft) host.replaceChildren(stateCard("Definition workspace unavailable", "Reload Iris to load the definition editor.", "◇"));
+    } else if (!window.FaceDefinitionDraft) host.replaceChildren(stateCard("Definition workspace unavailable", "Reload the face to load the definition editor.", "◇"));
     const references = node("details", "definition-evidence");
     references.append(node("summary", "", "Direct catalog references · " + item.dependents.length));
     const dependents = node("ul", "definition-dependents");
@@ -3946,7 +3946,7 @@
     fact(facts, "Host owner", ownership.host_owner);
     panel.append(facts);
     const columns = node("div", "ownership-columns");
-    const members = window.IrisOwnershipPeople ? window.IrisOwnershipPeople.render(ownership, {
+    const members = window.FaceOwnershipPeople ? window.FaceOwnershipPeople.render(ownership, {
       available: state.capabilities?.reads?.tasks === true,
       onInspectPerson: ({ name }) => navigate(workspaceRoute("tasks", { assignee: name, locus: "" }))
     }) : declaredTable(["Owner", "Members"], ownership.memberships.map((m) => [m.owner, m.members.join(", ") || "None declared"]), "No explicit memberships declared.");
@@ -4029,12 +4029,12 @@
     );
     if (r.organization_source) {
       if (state.organizationStatus) {
-        detail.append(window.IrisOrganizationStatus.render(state.organizationStatus, { recordHead: state.source.record_head, inspectedAt: state.inspectedAt, onRefresh: refresh }));
+        detail.append(window.FaceOrganizationStatus.render(state.organizationStatus, { recordHead: state.source.record_head, inspectedAt: state.inspectedAt, onRefresh: refresh }));
       } else {
         const status = append(node("section", "organization-status"), node("h3", "", "Change status unavailable"), node("p", "detail-note", state.organizationStatusError || "Application and running-process evidence could not be read."), button("Refresh change status", refresh));
         status.setAttribute("role", "region"); status.setAttribute("aria-label", "Organization change status"); detail.append(status);
       }
-      detail.append(window.IrisOrganizationImpact.render(state.organizationImpact, { inspectedAt: state.inspectedAt, onRefresh: refresh, unavailableReason: state.organizationImpactError }));
+      detail.append(window.FaceOrganizationImpact.render(state.organizationImpact, { inspectedAt: state.inspectedAt, onRefresh: refresh, unavailableReason: state.organizationImpactError }));
     }
     detail.append(renderReviewIntervention(r));
     const decision = node("dl", "fact-grid");

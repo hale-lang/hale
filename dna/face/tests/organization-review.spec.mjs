@@ -35,9 +35,9 @@ async function render(page) {
   await page.goto(origin);
   await page.evaluate(async () => {
     const f = await (await fetch('/fixture.json')).json();
-    const candidate = await window.IrisOrganizationReview.validate(f.data, f.review, f.applicationId);
+    const candidate = await window.FaceOrganizationReview.validate(f.data, f.review, f.applicationId);
     window.__sourceCandidate = candidate;
-    document.getElementById('candidate').replaceChildren(window.IrisOrganizationReview.render(candidate));
+    document.getElementById('candidate').replaceChildren(window.FaceOrganizationReview.render(candidate));
   });
 }
 test('native Organization candidate: navigate semantic changes and exact retained source', async ({ page }, testInfo) => {
@@ -77,7 +77,7 @@ test('native Organization candidate: changed bytes, semantic digest and wrong Re
         data.document = JSON.stringify(c);
       } else if (alteration === 'review') review.subject_digest = '0'.repeat(40);
       else app = 'different-application';
-      try { await window.IrisOrganizationReview.validate(data, review, app); refused.push(false); } catch { refused.push(true); }
+      try { await window.FaceOrganizationReview.validate(data, review, app); refused.push(false); } catch { refused.push(true); }
     }
     return refused;
   });

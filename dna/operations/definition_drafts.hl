@@ -172,7 +172,7 @@ locus DefinitionDraftCodec {
     fn hale_integer(value: Int) -> String { let text = to_string(value); return if text == "-9223372036854775808" { "(-9223372036854775807 - 1)" } else { text }; }
     fn artifact(catalog: dna::WorkflowCatalog) -> String {
         let b = std::bytes::BytesBuilder { };
-        b.append_str("// Generated captured-catalog export; not the original source module.\n// Compose into a fresh catalog; the containing seed supplies its dna import.\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String {\n");
+        b.append_str("// Generated captured-catalog export; not the original source module.\n// Compose into a fresh catalog; the containing seed supplies its dna import.\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String {\n");
         let mut i = 0;
         while i < catalog.workflow_count() {
             let d = catalog.workflow_at(i); let var = "definition_" + to_string(i);

@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Iris generic Hale application head",
+    "title": "Face generic Hale application head",
     "version": "1",
     "description": "Trusted-local application-owned enum-control profile. No DNA Record or observer identity. Host must match the configured loopback origin; a supplied Origin is checked on reads too. Unsupported HTTP methods return405."
   },
@@ -289,7 +289,7 @@
             }
           },
           {
-            "name": "X-Iris-Command",
+            "name": "X-Face-Command",
             "in": "header",
             "required": true,
             "schema": {

@@ -24,7 +24,7 @@ async function mount(page, host, value = ownership(), available = true) {
   await page.goto(host.origin);
   await page.evaluate(({ value, available }) => {
     window.calls = []; window.input = value;
-    document.querySelector('main > section').replaceChildren(window.IrisOwnershipPeople.render(value, { available, onInspectPerson: selection => window.calls.push(selection) }));
+    document.querySelector('main > section').replaceChildren(window.FaceOwnershipPeople.render(value, { available, onInspectPerson: selection => window.calls.push(selection) }));
   }, { value, available });
 }
 
@@ -47,7 +47,7 @@ test('declared members preserve literal identities and reject unsafe or incomple
   await expect(region(page).locator('img, script')).toHaveCount(0);
   const rejected = await page.evaluate(input => {
     const mutations = [v => { v.memberships = null; }, v => { v.instance_binding = 'inferred'; }, v => { v.memberships[0].members = ['bad\nidentity']; }, v => { v.memberships[0].owner = ''; }, v => { v.memberships[0].members = ['\uD800']; }, v => { v.memberships[0].members = ['é'.repeat(129)]; }, v => { v.memberships[0].extra = true; }];
-    return mutations.map(mutate => { const v = structuredClone(input); mutate(v); const root = window.IrisOwnershipPeople.render(v, { available: true, onInspectPerson: () => window.calls.push('unexpected') }); return root.querySelectorAll('button').length === 0 && root.textContent.includes('unavailable'); });
+    return mutations.map(mutate => { const v = structuredClone(input); mutate(v); const root = window.FaceOwnershipPeople.render(v, { available: true, onInspectPerson: () => window.calls.push('unexpected') }); return root.querySelectorAll('button').length === 0 && root.textContent.includes('unavailable'); });
   }, ownership());
   expect(rejected.every(Boolean)).toBe(true); expect(await page.evaluate(() => window.injected)).toBeUndefined();
 });
@@ -58,8 +58,8 @@ test('unavailable Task reads and missing callback keep source membership visible
   await expect(region(page)).toContainText('Recorded assignments are unavailable on this connection');
   expect(await page.evaluate(() => { document.querySelector('.ownership-person').click(); return window.calls; })).toEqual([]);
   expect(await page.evaluate(input => {
-    const noCallback = window.IrisOwnershipPeople.render(input, { available: true });
-    const defaultClosed = window.IrisOwnershipPeople.render(input, { onInspectPerson: () => {} });
+    const noCallback = window.FaceOwnershipPeople.render(input, { available: true });
+    const defaultClosed = window.FaceOwnershipPeople.render(input, { onInspectPerson: () => {} });
     return [noCallback, defaultClosed].every(root => [...root.querySelectorAll('button')].every(button => button.disabled));
   }, ownership())).toBe(true);
   const empty = ownership(); empty.memberships = [{ owner: 'unfilled', members: [] }]; await mount(page, host, empty);

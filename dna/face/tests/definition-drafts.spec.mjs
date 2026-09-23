@@ -56,7 +56,7 @@ test('Definition draft validates a full native catalog and exports exact Hale wi
   const exported = await readFile(artifactPath, 'utf8');
   expect(exported).toBe(result.artifact.text);
   expect(hash(exported)).toBe(result.artifact.digest);
-  expect(exported).toContain('iris_register_workflows');
+  expect(exported).toContain('face_register_workflows');
   expect(exported).toContain('9007199254740993');
   expect(exported).toContain('9007199254740994');
   expect(exported).toContain('procedure-25');

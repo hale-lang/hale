@@ -6,7 +6,7 @@ import { httpFixture } from './http-fixture.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), PRINCIPAL = { mode: 'local', name: 'riley' };
 const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
-const STORAGE = 'iris.practice-recovery.v1:';
+const STORAGE = 'face.practice-recovery.v1:';
 const KEY = STORAGE + encodeURIComponent(JSON.stringify([APP, PRINCIPAL.mode, PRINCIPAL.name]));
 const task = () => ({ id: 'support:t-41', outcome: 'Confirm the supplier handover — équipe', state: 'handed', assignee: 'mara', obligation: 'supplier-handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '3', kind: 'task.handed', from: '', to: 'mara', by: 'leader' }] });
 const region = page => page.getByRole('region', { name: 'Handed Task administration', exact: true });

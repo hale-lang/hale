@@ -22,7 +22,7 @@ const region = page => page.getByRole('region', { name: 'New task', exact: true 
 const recovery = page => page.getByRole('region', { name: 'New task request', exact: true });
 const confirmation = page => page.getByRole('group', { name: 'Confirm new task', exact: true });
 const asks = service => service.journal().rows.filter(row => row.kind === 'intent.requested');
-const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('iris.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
+const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
 async function prepare(page, service) {
   await page.goto(service.origin + '/#/tasks?' + new URLSearchParams({ app: service.application }));
   await expect(region(page)).toBeVisible();

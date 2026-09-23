@@ -116,5 +116,5 @@
     root.append(footer, identity);
     return root;
   }
-  window.IrisTaskAdministration = { validate, render };
+  window.FaceTaskAdministration = { validate, render };
 })();

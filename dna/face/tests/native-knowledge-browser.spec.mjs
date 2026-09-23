@@ -29,7 +29,7 @@ const map = page => page.getByRole('region', { name: 'Knowledge relationship map
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const recovery = page => page.getByRole('region', { name: 'Knowledge relationship request', exact: true });
 const submit = page => editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true });
-const metadata = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('iris.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
+const metadata = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
 const responseFor = (page, service, method) => page.waitForResponse(response => response.request().method() === method && new URL(response.url()).pathname === service.apiPath + '/dna/knowledge/commands');
 const trackPosts = page => {
   const posts = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/dna/knowledge/commands')) posts.push(request.postDataJSON()); }); return posts;
@@ -111,7 +111,7 @@ test('native Knowledge: lost POST reply and service restart recover by GET only 
   // A pre-unlink browser saved v1 link metadata without an operation field.
   // It must recover the original link; migration never creates another POST.
   await page.evaluate(() => {
-    const [key, raw] = Object.entries(localStorage).find(([key]) => key.startsWith('iris.knowledge-recovery.v1:'));
+    const [key, raw] = Object.entries(localStorage).find(([key]) => key.startsWith('face.knowledge-recovery.v1:'));
     const value = JSON.parse(raw); value.version = 1; delete value.operation; localStorage.setItem(key, JSON.stringify(value));
   });
   await page.unroute('**/dna/knowledge/commands'); await service.restart();

@@ -35,8 +35,6 @@ const CHECKED: &[&str] = &[
     "examples/claims-demo/app",
     "examples/claims-demo/rogue",
     "examples/inspect-demo",
-    "examples/intake-control",
-    "examples/intake-control/sqlite",
     "examples/obs-smoke",
     "examples/obs-smoke/lib/observe",
     "inspect",
@@ -47,11 +45,7 @@ const CHECKED: &[&str] = &[
 /// Directories of standalone single-file repro programs (each with its
 /// own `main`), checked one FILE at a time — as a seed they would be
 /// duplicate declarations.
-const CHECKED_PER_FILE: &[&str] = &[
-    "consumer/fuse-hl/upstream-repro",
-    "examples/intake-control/tests",
-    "inspect/upstream-repro",
-];
+const CHECKED_PER_FILE: &[&str] = &["consumer/fuse-hl/upstream-repro", "inspect/upstream-repro"];
 
 /// The shipping consumer and the inspector are held to the discipline gate.
 const VERIFIED: &[&str] = &["consumer/fuse-hl", "inspect"];

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const evidence = process.env.HALE_ORGANIZATION_PUBLICATION_EVIDENCE;
 const web = fileURLToPath(new URL('../web/', import.meta.url));
-const API = '/api/hale/v1/applications', STORAGE = 'iris.practice-recovery.v1:';
+const API = '/api/hale/v1/applications', STORAGE = 'face.practice-recovery.v1:';
 const RATIONALE = 'Place billing in this exact Organization source — équipe.\nKeep <img src=x onerror="window.__publicationInjected=true"> literal.';
 test.skip(!evidence, 'Supply genuine same-app Organization and draft GET/changed-validation response exports.');
 let native, server, origin;

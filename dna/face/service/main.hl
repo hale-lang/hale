@@ -92,17 +92,17 @@ fn serve(port: Int, actor: Actor, provider: ApplicationProvider, webroot: String
     let wire = ApplicationWire { };
     let application_id = provider.application_id();
     if port < 1 || port > 65535 || !wire.actor_ok(actor) || !wire.hex_id(application_id) {
-        eprintln("iris application service: invalid port, configured local actor, or provider application identity"); std::process::exit(2);
+        eprintln("face application service: invalid port, configured local actor, or provider application identity"); std::process::exit(2);
     }
     let web = assets::WebAssets { };
     if len(webroot) > 0 {
-        if !web.load(webroot) { eprintln("iris application service: " + web.error); std::process::exit(2); }
-        if !std::str::contains(web.index, "<html ") || std::str::contains(web.index, "data-iris-profile=") {
-            eprintln("iris application service: expected the unprofiled Iris browser shell"); std::process::exit(2);
+        if !web.load(webroot) { eprintln("face application service: " + web.error); std::process::exit(2); }
+        if !std::str::contains(web.index, "<html ") || std::str::contains(web.index, "data-face-profile=") {
+            eprintln("face application service: expected the unprofiled face browser shell"); std::process::exit(2);
         }
-        web.index = std::str::replace(web.index, "<html ", "<html data-iris-profile=\"application\" ");
+        web.index = std::str::replace(web.index, "<html ", "<html data-face-profile=\"application\" ");
     }
     let host = "127.0.0.1" + if port == 80 { "" } else { ":" + to_string(port) };
     let api = ApplicationApi { actor: actor, provider: provider, application_id: application_id, host: host, origin: "http://" + host, web: web };
-    std::http::Server { host: "127.0.0.1", port: port, handler: api, ready_signal: "iris-application:listening" };
+    std::http::Server { host: "127.0.0.1", port: port, handler: api, ready_signal: "face-application:listening" };
 }

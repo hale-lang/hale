@@ -122,7 +122,7 @@ locus DraftCases {
         self.json.eq(artifact, "scope", "captured_catalog");
         let codec = ops::DefinitionDraftCodec { };
         let text = codec.text(artifact, "text");
-        std::test::assert(std::str::contains(text, "iris_register_workflows") && std::str::contains(text, "cost_ceiling:"), "exact generated artifact");
+        std::test::assert(std::str::contains(text, "face_register_workflows") && std::str::contains(text, "cost_ceiling:"), "exact generated artifact");
         self.json.eq(artifact, "digest", dna::digest_of(text));
         let checked = self.f.validator.validate("DefinitionDraftResponse", result.body);
         std::test::assert(checked.ok, checked.error);

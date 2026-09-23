@@ -18,7 +18,7 @@ const receipt = page => page.getByRole('region', { name: 'Knowledge binding requ
 const decision = page => page.getByRole('region', { name: 'Review intervention', exact: true });
 const verdictReceipt = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const rationale = 'Apply exact evidence — café 東京 🧭. Keep <img src=x onerror="window.__bindingInjected=true"> literal.';
-const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('iris.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
+const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
 const trackPosts = page => { const values = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/dna/knowledge/commands')) values.push(request.postDataJSON()); }); return values; };
 
 async function prepare(page, service, { idea = service.practice, target = 'org/support', bindingId = '', filter = '' } = {}) {

@@ -130,7 +130,7 @@ locus OperationCases {
         std::test::assert_eq_str(head::attach_project(self.cfg, hosted, "command-a6").refused, "trust_unsupported", "a signed-trust project");
         let reg = head::Registry { state_dir: self.cfg.state_dir };
         std::test::assert(!reg.active().ok && reg.ids() == "", "no refusal touched the registry");
-        std::test::assert(!std::io::fs::file_exists(hosted + "/.hale/dna/iris/authority.json"), "no refusal wrote a policy");
+        std::test::assert(!std::io::fs::file_exists(hosted + "/.hale/dna/face/authority.json"), "no refusal wrote a policy");
     }
 
     fn attach_and_detach() {
@@ -141,8 +141,8 @@ locus OperationCases {
         std::test::assert(head::api_ready(self.cfg.api_port, self.identity), "the API child answers with the project's Record");
         let policies = head::policies_of(self.project, self.identity);
         std::test::assert(policies.command && policies.task && !policies.organization && !policies.organization_present, "the two synthesized policies decode");
-        std::test::assert(std::str::contains(head::policy_env(self.project), "HALE_DNA_COMMAND_POLICY=" + self.project + "/.hale/dna/iris/authority.json\n") && !std::str::contains(head::policy_env(self.project), "ORGANIZATION"), "the policy environment names the files that exist");
-        std::test::assert_eq_str(head::mode_of(self.project + "/.hale/dna/iris/authority.json"), "600", "policies are private");
+        std::test::assert(std::str::contains(head::policy_env(self.project), "HALE_DNA_COMMAND_POLICY=" + self.project + "/.hale/dna/face/authority.json\n") && !std::str::contains(head::policy_env(self.project), "ORGANIZATION"), "the policy environment names the files that exist");
+        std::test::assert_eq_str(head::mode_of(self.project + "/.hale/dna/face/authority.json"), "600", "policies are private");
         let reg = head::Registry { state_dir: self.cfg.state_dir };
         std::test::assert(reg.active().application_id == self.identity && reg.find(self.identity).root == self.project, "the registry folds the attach");
         let ctx = self.ctx();

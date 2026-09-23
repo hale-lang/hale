@@ -7,7 +7,7 @@ import { httpFixture } from './http-fixture.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), PRINCIPAL = { mode: 'local', name: 'riley' };
 const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), INTENT = 'i1f4';
-const STORAGE = 'iris.practice-recovery.v1:';
+const STORAGE = 'face.practice-recovery.v1:';
 const KEY = STORAGE + encodeURIComponent(JSON.stringify([APP, PRINCIPAL.mode, PRINCIPAL.name]));
 const OUTCOME = 'Confirm the supplier handover — équipe\nKeep the signed schedule.';
 const region = page => page.getByRole('region', { name: 'New task', exact: true });

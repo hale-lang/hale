@@ -31,7 +31,7 @@ const postRequests = page => {
   return posts;
 };
 const metadata = page => page.evaluate(() => Object.entries(localStorage)
-  .filter(([key]) => key.startsWith('iris.practice-recovery.v1:')).map(([, value]) => JSON.parse(value)));
+  .filter(([key]) => key.startsWith('face.practice-recovery.v1:')).map(([, value]) => JSON.parse(value)));
 
 async function prepareProposal(page, service, text, rationale = 'Browser-operated native replacement — evidence stays exact.') {
   await service.quiesce();

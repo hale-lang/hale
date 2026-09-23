@@ -1078,10 +1078,10 @@
     frame.append(groups.childElementCount ? groups : el("p", "detail-note", "No owner memberships declared."));
     return frame;
   }
-  window.IrisOwnershipPeople = { render: ownershipPeople };
-  window.IrisOrganizationImpact = { validate: responsibilityImpact, render: responsibilityCheck };
-  window.IrisOrganizationStatus = { validate: sourceStatus, render: statusJourney };
-  window.IrisOrganizationReview = { validate: sourceCandidate, render: sourceReview };
-  window.IrisOrganizationDraft = { mount };
-  window.IrisOwnershipDraft = { mount: (host, options) => mount(host, { ...options, ownership: true }) };
+  window.FaceOwnershipPeople = { render: ownershipPeople };
+  window.FaceOrganizationImpact = { validate: responsibilityImpact, render: responsibilityCheck };
+  window.FaceOrganizationStatus = { validate: sourceStatus, render: statusJourney };
+  window.FaceOrganizationReview = { validate: sourceCandidate, render: sourceReview };
+  window.FaceOrganizationDraft = { mount };
+  window.FaceOwnershipDraft = { mount: (host, options) => mount(host, { ...options, ownership: true }) };
 })();
