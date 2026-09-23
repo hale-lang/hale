@@ -265,7 +265,7 @@ fn graph_read(r: GraphRequest, store: dna::KnowledgeStore, graph: dna::GraphStor
     return http.response(200, body);
 }
 
-// The request a command handler reads (the service's HTTP request, minus
+// The request a command handler reads (an HTTP request, minus
 // what only a transport has).
 type LocalCommandRequest { method: String = "POST"; path: String = ""; body: String = ""; }
 
@@ -321,7 +321,7 @@ locus KnowledgeLocalWire {
         else if code == "invalid_command" { 400 } else if code == "forbidden" { 403 }
         else if code == "command_not_found" { 404 }
         else if code == "stale_subject" || code == "request_conflict" || code == "command_context_changed" { 409 } else { 200 };
-        // This private RPC transports typed domain refusals as successful
+        // The local wire carries typed domain refusals as successful
         // exchanges. The public adapter assigns their browser HTTP status.
         // Native Client discards 5xx bodies even with retries disabled; using
         // 5xx here would erase Review-required and uncertain-outcome codes.
@@ -398,14 +398,19 @@ locus LocalKnowledge {
 
 // Knowledge commands admitted into the record in this process.
 locus LocalKnowledgeCommands {
-    params { root: String = "."; }
+    params {
+        root: String = ".";
+        // read once, when the API starts: an edit to the file does not
+        // change the basis a running API decides on
+        policy: ops::KnowledgePolicy = ops::KnowledgePolicy { };
+    }
+    birth() { if self.supported() { self.policy = knowledge_policy(self.root); } }
     fn supported() -> Bool { return len(std::env::var("HALE_DNA_KNOWLEDGE_COMMAND_POLICY")) > 0; }
     fn send(kind: String, body: String) -> KnowledgeUpstream {
         if !self.supported() || len(body) == 0 || len(body) > 98304 { return KnowledgeUpstream { }; }
-        let policy = knowledge_policy(self.root);
-        let authority = ops::FixedKnowledgeAuthority { policy: policy };
+        let authority = ops::FixedKnowledgeAuthority { policy: self.policy };
         let record = dna::GitRecord { repo: self.root };
-        let commands = ops::KnowledgeCommands { record: record, authority: authority, sign: policy.sign };
+        let commands = ops::KnowledgeCommands { record: record, authority: authority, sign: self.policy.sign };
         let wire = KnowledgeLocalWire { };
         let r = wire.handle(kind, body, commands);
         return KnowledgeUpstream { transport_ok: true, status: r.status, body: r.body };

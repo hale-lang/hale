@@ -768,14 +768,17 @@ locus Host {
         if len(fence) > 0 { self.say("memory: " + fence); self.quit(2); }
         self.graph_projection.root = self.root;
         self.graph_projection.j.repo = self.root;
+        self.graph_projection.j.record.repo = self.root;
         self.graph_projection.receipts.repo = self.root;
         self.admission.root = self.root;
         self.admission.j.repo = self.root;
+        self.admission.j.record.repo = self.root;
         self.admission.ledger.repo = self.root;
         self.admission.carry_cell = BODY_LEASE;
         self.admission.carry_key = store_lease_key(self.root);
         self.vault.repo = self.root;
         self.vault.j.repo = self.root;
+        self.vault.j.record.repo = self.root;
         self.memory_on = true;
         self.say("memory: the graph, the ledger and protected evidence under the record's spine role");
     }

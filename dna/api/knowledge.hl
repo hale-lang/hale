@@ -191,7 +191,7 @@ locus KnowledgeWire {
     }
     fn unavailable() -> std::http::Response {
         let http = Http { };
-        return http.error(503, "knowledge_unavailable", "the Knowledge read service is unavailable", true);
+        return http.error(503, "knowledge_unavailable", "memory cannot be read", true);
     }
     fn response(request: KnowledgeRequest, upstream: KnowledgeUpstream) -> std::http::Response {
         let http = Http { };

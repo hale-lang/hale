@@ -300,7 +300,7 @@ locus MemoryVault {
         opened: Bool = false;
         last_error: String = "";
     }
-    birth() { self.j.repo = self.repo; }
+    birth() { self.j.repo = self.repo; self.j.record.repo = self.repo; }
     fn ready() -> Bool { return dsn_set(self.dsn_env) && self.store.ready(); }
     fn ensure_open() -> Bool {
         let moved = self.j.refresh();
@@ -544,6 +544,7 @@ locus RequestAdmission {
     }
     birth() {
         self.j.repo = self.root;
+        self.j.record.repo = self.root;
         self.ledger.repo = self.root;
     }
     // GH #669: why a request in `author`'s name from a head of `owner` is

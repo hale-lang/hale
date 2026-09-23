@@ -373,6 +373,7 @@ locus MemoryProjection {
     }
     birth() {
         self.j.repo = self.root;
+        self.j.record.repo = self.root;
         self.receipts.repo = self.root;
         self.store.dsn_env = self.dsn_env;
     }
