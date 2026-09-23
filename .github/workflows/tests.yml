@@ -426,6 +426,10 @@ jobs:
           echo "host: ${ImageOS:-unknown}, $(echo "$cpu" | grep -oE '"-target-cpu" "[^"]*"'); host $host"
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "host=$host" >> "$GITHUB_OUTPUT"
+          # The toolchain cache's key (below), here so every job spells it
+          # once: the compiler, the host, and the warm script.
+          warm=$(sha256sum scripts/warm-dna-cache.sh | cut -c1-16)
+          echo "toolchain=$RUNNER_OS-$id-$host-$warm" >> "$GITHUB_OUTPUT"
 
       # The toolchain cache the warm step fills: `~/.cache/hale` (nothing
       # here sets XDG_CACHE_HOME), which holds `iris/<hash>/` (the embedded
@@ -452,7 +456,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/hale
-          key: dna-toolchain-${{ runner.os }}-${{ steps.compiler.outputs.id }}-${{ steps.compiler.outputs.host }}-${{ hashFiles('scripts/warm-dna-cache.sh') }}
+          key: dna-toolchain-${{ steps.compiler.outputs.toolchain }}
 
       - name: Warm the DNA toolchain cache
         # The first host verb of this binary builds the host and the membrane
@@ -464,10 +468,10 @@ jobs:
 
       # Saved straight after the warm, not at the end of the job, so the
       # entry holds what the warm built and nothing the tests left behind.
-      # Only the cli and dna jobs save: the face jobs skip the observer
-      # build, and an entry without it would hand every partition that
-      # restored it the observer build again. The five savers race for one
-      # key; the losers log that it exists and carry on.
+      # The cli and dna jobs save this entry; the face jobs, whose warm
+      # skips the observer, save theirs under another name (see face-api),
+      # so a partition never restores a cache without the observer. The
+      # savers of one key race; the losers log that it exists and carry on.
       - &toolchain-save
         name: Save the DNA toolchain cache
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
@@ -688,11 +692,23 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
-      # The compiler id and the toolchain cache, as in the cli job. Restored
-      # but never saved from here: this job's warm skips the observer, and
-      # the entry the cli and dna jobs save has it.
+      # The compiler id and the toolchain cache, as in the cli job. This
+      # job's warm skips the observer, so it prefers the partitions' entry
+      # (which has everything this job needs) and falls back to one of its
+      # own, `dna-toolchain-no-observer-…`, which it saves only when it
+      # restored neither. The two names differ right after
+      # `dna-toolchain-`, so neither is a prefix of the other and a
+      # partition can never restore the smaller one. Anchored here and
+      # reused by face-browser.
       - *compiler-identity
-      - *toolchain-restore
+      - &face-toolchain-restore
+        name: Restore the DNA toolchain cache
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/hale
+          key: dna-toolchain-${{ steps.compiler.outputs.toolchain }}
+          restore-keys: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
 
       - name: Warm the DNA toolchain cache
         # The head fixtures create fresh projects with hale dna new under
@@ -703,6 +719,16 @@ jobs:
           HALE_DNA_DISCOVER: "off"
           HALE_WARM_SKIP_IRIS: "1"
         run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      # Only when neither entry was there (`cache-matched-key` is empty on
+      # a miss); after the warm, as in the cli job.
+      - &face-toolchain-save
+        name: Save the DNA toolchain cache
+        if: steps.toolchain-cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/hale
+          key: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
 
       - name: DNA read API contract and integration
         # The fixtures own their Git environment: no GIT_CONFIG_* here, and
@@ -767,10 +793,9 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
-      # The compiler id and the toolchain cache, as in the cli job; restored
-      # only, as in face-api.
+      # The compiler id and the toolchain cache, as in face-api.
       - *compiler-identity
-      - *toolchain-restore
+      - *face-toolchain-restore
 
       - name: Warm the DNA toolchain cache
         # The face's browser fixtures create fresh projects with hale dna
@@ -782,10 +807,12 @@ jobs:
           HALE_WARM_SKIP_IRIS: "1"
         run: scripts/warm-dna-cache.sh ./target/release/hale
 
+      - *face-toolchain-save
+
       # The three binaries the browser fixtures spawn, cached across runs.
-      # A build is a function of the compiler and the sources it reads, so
-      # the key is the compiler id (see the cli job for why that and not
-      # the Rust sources) and every file under dna/ and iris/: the seeds'
+      # A build is a function of the compiler, the host and the sources it
+      # reads, so the key is the compiler id and the host (see the cli job
+      # for why those) and every file under dna/ and iris/: the seeds'
       # imports, followed transitively (`hale inputs` on each seed), reach
       # dna/{api,core,operations,organization_source,organization_runtime,ui}
       # and iris/process_identity and nothing outside those two trees. The
