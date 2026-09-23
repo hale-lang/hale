@@ -256,6 +256,9 @@ test('practice interaction: recovery follows its exact candidate and remains ava
   await prepareProposal(page, service, service.pending_text);
   await submitProposal(page);
   await expect(page.locator('.practice-detail').getByRole('region', { name: 'Command recovery', exact: true })).toBeVisible();
+  // the recorder counts the POST only after it has read what the page
+  // saved, so the recovery region can show first (GH #1022)
+  await expect.poll(() => script.posts.length).toBe(1);
   const requestID = script.posts[0].body.request_id;
 
   await recovery(page).getByRole('link', { name: 'Open proposal review', exact: true }).click();
