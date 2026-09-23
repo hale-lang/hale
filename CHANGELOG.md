@@ -35,11 +35,6 @@ behavior.
   writes landed inside every one — the full DNA suite on a laptop hit it.
   Attempt *k* now waits (k−1)×100 ms first, about twelve seconds across
   all sixteen at most.
-- **A child's exit code is not lost in the moment after it ends.** Its
-  code is written by the shell that waited for it, just after the child
-  is gone; `exit_code` (host and API-service copies) read in between and
-  answered -1 for a run that exited 124 — a loaded CI runner hit it. It
-  now gives that write half a second before deciding no code will come.
 - `dna_design`'s `finish()` waits for the record to stand still before it
   kills the organism. A verdict's "settled" answer is the Review's own
   row; the organism's consequence (`knowledge.ratified` / `declined` /
