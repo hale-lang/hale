@@ -7,7 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
 
-assert(nodeEnvironmentPresent(), 'Supply HALE_NATIVE_COMMAND_{API,BODY,RELAY,MEMBRANE} and HALE_KNOWLEDGE_SERVICE_BIN.');
+assert(nodeEnvironmentPresent(), 'Supply HALE_NATIVE_COMMAND_{API,BODY,RELAY,MEMBRANE} and HALE_DNA_MEMORY_DSN_OWNER.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
 assert(path.isAbsolute(parent), 'Evidence parent must be absolute.');
 await mkdir(parent, { recursive: true });

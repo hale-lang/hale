@@ -768,6 +768,24 @@ jobs:
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # GH #985: Knowledge lives in memory. The browser suite's Knowledge
+    # fixture migrates its record into this Postgres with the owner's DSN
+    # (set on the step that runs the suite, below) and hands the API the
+    # head's DSN alone; its teardown drops the record's schema and roles.
+    services:
+      memory-db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dna
+          POSTGRES_PASSWORD: dna
+          POSTGRES_DB: dna
+        ports:
+          - 5480:5432
+        options: >-
+          --health-cmd "pg_isready -U dna"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       HALE_DNA_DISCOVER: "off"
     steps:
@@ -812,9 +830,9 @@ jobs:
 
       - *face-toolchain-save
 
-      # The three binaries the browser fixtures spawn, cached across runs.
+      # The four binaries the browser fixtures spawn, cached across runs.
       # A build is a function of the compiler, the machine it is tuned for
-      # and the sources it reads. These three are built for the portable
+      # and the sources it reads. These four are built for the portable
       # x86-64-v3 baseline (`--target-cpu baseline`, below) instead of the
       # host, so the CPU the runner happens to draw is not an input: keyed
       # per host they almost never hit, because the runners of four runs
@@ -827,7 +845,7 @@ jobs:
       # dna/{api,core,operations,organization_source,organization_runtime,ui}
       # and iris/process_identity and nothing outside those two trees. The
       # stdlib and the runtime are inside the compiler. The paths are the
-      # three outputs only.
+      # four outputs only.
       - name: Restore the DNA API and the head
         id: face-builds
         uses: actions/cache/restore@v4
@@ -836,22 +854,25 @@ jobs:
             dna/api/api
             dna/api/practice_review/practice_review
             dna/api/project_service/project_service
+            dna/api/tests/knowledge/knowledge
           key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
 
       - name: Build the DNA API and the head
         # The binaries the browser fixtures spawn: HALE_API_BIN,
-        # HALE_NATIVE_HEAD_BIN and HALE_NATIVE_HEAD_API below. face-api
-        # checks and tests them; this job only builds them, and on a cache
-        # hit not even that: it checks the restored three are there and
-        # executable.
+        # HALE_NATIVE_HEAD_BIN, HALE_NATIVE_HEAD_API and the Knowledge
+        # fixture (HALE_FACE_KNOWLEDGE_BIN, HALE_KNOWLEDGE_SEED_BIN) below.
+        # face-api checks and tests the first three; this job only builds
+        # them, and on a cache hit not even that: it checks the restored
+        # four are there and executable.
         run: |
           set -euo pipefail
           if [ "${{ steps.face-builds.outputs.cache-hit }}" != "true" ]; then
             ./target/release/hale build dna/api --target-cpu baseline
             ./target/release/hale build dna/api/practice_review --target-cpu baseline
             ./target/release/hale build dna/api/project_service --target-cpu baseline
+            ./target/release/hale build dna/api/tests/knowledge --target-cpu baseline
           fi
-          for b in dna/api/api dna/api/practice_review/practice_review dna/api/project_service/project_service; do
+          for b in dna/api/api dna/api/practice_review/practice_review dna/api/project_service/project_service dna/api/tests/knowledge/knowledge; do
             if [ ! -f "$b" ] || [ ! -x "$b" ]; then
               echo "::error::$b is missing or not executable"; exit 1
             fi
@@ -868,6 +889,7 @@ jobs:
             dna/api/api
             dna/api/practice_review/practice_review
             dna/api/project_service/project_service
+            dna/api/tests/knowledge/knowledge
           key: ${{ steps.face-builds.outputs.cache-primary-key }}
 
       - name: Set up Node for face browser tests
@@ -879,6 +901,11 @@ jobs:
 
       - name: Face browser integration
         working-directory: dna/face
+        # The owner's DSN reaches only the Knowledge fixture: the harness
+        # strips memory's DSNs from every process it starts and gives the
+        # API the head's.
+        env:
+          HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
@@ -886,6 +913,9 @@ jobs:
             HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/dna/api/project_service/project_service" \
             HALE_NATIVE_HEAD_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
+            HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
+            HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
+            HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
             npm test
 
       - name: Preserve face browser failure evidence

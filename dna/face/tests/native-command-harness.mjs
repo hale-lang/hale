@@ -46,7 +46,10 @@ export async function startService(options = {}) {
   // Preview-only startup configuration is explicit, never inherited. HALE_BIN
   // selects the trusted source validator; XDG_CACHE_HOME isolates its cache.
   const apiEnv = { ...options.apiEnv };
-  const apiEnvironmentKeys = ['HALE_DNA_ORG_DRAFTS', 'HALE_DNA_KNOWLEDGE_URL', 'HALE_DNA_KNOWLEDGE_READ_KEY', 'HALE_DNA_KNOWLEDGE_COMMAND_KEY', 'HALE_BIN', 'XDG_CACHE_HOME'];
+  // Knowledge is read from memory as a head and commanded in-process (GH
+  // #985): the head's DSN and the command policy, never the owner's or the
+  // spine's DSN.
+  const apiEnvironmentKeys = ['HALE_DNA_ORG_DRAFTS', 'HALE_DNA_MEMORY_DSN_HEAD', 'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_BIN', 'XDG_CACHE_HOME'];
   for (const key of Object.keys(apiEnv)) assert(apiEnvironmentKeys.includes(key), `Unsupported explicit API environment setting: ${key}`);
   const owned = new Set(), processLog = [], requestLog = [];
   let sequence = 0, body, relay, api, dependencies, application = '', practice = '', origin = '', stopped = false;

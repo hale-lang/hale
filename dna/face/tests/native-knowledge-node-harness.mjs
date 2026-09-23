@@ -1,38 +1,40 @@
-// Real Body/relay/membrane + Review API + Knowledge service on one Git Record.
-// Every proposal, Review, activation and graph projection is native.
+// Real Body/relay/membrane + Review API on one Git Record, with Knowledge in
+// memory. Every proposal, Review and activation is native.
+//
+// There is no Knowledge service (GH #985). The API admits Knowledge commands
+// in-process under HALE_DNA_KNOWLEDGE_COMMAND_POLICY and reads the graph from
+// memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD) alone; the spine
+// projects the Record into memory on its tick. This composition cannot supply
+// that yet: the acceptance Body (dna/api/practice_review/tests/body) does not
+// project memory on its tick, and nothing here can migrate the Record it
+// creates and drop it again. Until the Body is a spine, startup refuses rather
+// than serve graph reads that could never catch up.
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
-import net from 'node:net';
+import { writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { startService, nativeCommandEnvironmentPresent } from './native-command-harness.mjs';
+import { memoryOwner } from './environment.mjs';
 
-export const nodeEnvironmentPresent = () => nativeCommandEnvironmentPresent() && process.env.HALE_KNOWLEDGE_SERVICE_BIN?.startsWith('/');
+export const nodeEnvironmentPresent = () => nativeCommandEnvironmentPresent() && Boolean(memoryOwner());
+
+// The Body's Record, migrated into memory and projected on the Body's tick:
+// the head's DSN for the API. Not available in this composition (above).
+async function memoryFor() {
+  throw new Error('Knowledge node composition is not ported to memory (GH #985): the acceptance Body must project the Record into memory on its tick (a spine, with HALE_DNA_MEMORY_DSN_SPINE), and the harness needs a way to migrate and drop the Record the Body creates.');
+}
 
 export async function startNodeService(options = {}) {
-  const binary = options.knowledge || process.env.HALE_KNOWLEDGE_SERVICE_BIN;
-  assert(binary?.startsWith('/'), 'Supply absolute HALE_KNOWLEDGE_SERVICE_BIN.');
-  let native, policyPath, policy, startKnowledge, privateOrigin;
+  assert(memoryOwner(), 'Knowledge reads memory: set HALE_DNA_MEMORY_DSN_OWNER.');
+  let policyPath, policy;
   const service = await startService({
     ...options,
     async startDependencies(context) {
-      const server = net.createServer();
-      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-      const port = server.address().port; await new Promise(resolve => server.close(resolve)); privateOrigin = `http://127.0.0.1:${port}`;
       policyPath = context.evidence + '/knowledge-authority.json';
       const grant = { mode: 'local', name: context.principal, authority: 'board', edge_link: 'direct', edge_unlink: 'direct', node_propose: 'review', node_revise: 'review', node_retire: 'review', node_scopes: [{ author: 'org', target: 'org' }], recover: true };
       policy = { format: 'dna.knowledge-authority/1', application_id: context.application, grants: options.grants || [grant] };
       await writeFile(policyPath, JSON.stringify(policy));
-      await writeFile(context.evidence + '/knowledge-service.json', JSON.stringify({ binary, sha256: createHash('sha256').update(await readFile(binary)).digest('hex'), application: context.application, origin: privateOrigin, policy: policyPath }, null, 2));
-      const readKey = 'native-node-read-' + randomUUID(), commandKey = 'native-node-command-' + randomUUID();
-      startKnowledge = async () => {
-        native = context.launch('knowledge', binary, [context.root, String(port)], { HALE_DNA_KNOWLEDGE_DSN: 'memory', HALE_DNA_KNOWLEDGE_READ_KEY: readKey, HALE_DNA_KNOWLEDGE_COMMAND_KEY: commandKey, HALE_DNA_KNOWLEDGE_COMMAND_POLICY: policyPath });
-        await context.wait('Knowledge native startup', async () => {
-          try { const response = await fetch(privateOrigin + '/identity', { signal: AbortSignal.timeout(500) }); return response.ok && (await response.json()).identity === context.application; }
-          catch { return false; }
-        }, Boolean);
-      };
-      await startKnowledge();
-      return { apiEnv: { HALE_DNA_KNOWLEDGE_URL: privateOrigin, HALE_DNA_KNOWLEDGE_READ_KEY: readKey, HALE_DNA_KNOWLEDGE_COMMAND_KEY: commandKey }, restart: async () => { await context.stopProcess(native); await startKnowledge(); } };
+      const head = await memoryFor(context);
+      return { apiEnv: { HALE_DNA_MEMORY_DSN_HEAD: head, HALE_DNA_KNOWLEDGE_COMMAND_POLICY: policyPath } };
     },
   });
   const commandPath = service.apiPath + '/dna/knowledge/commands';
@@ -41,7 +43,7 @@ export async function startNodeService(options = {}) {
     return { status: response.status, body: await response.json() };
   }
   return {
-    ...service, privateOrigin, commandPath, request,
+    ...service, commandPath, request,
     async setGrants(grants) { await writeFile(policyPath, JSON.stringify({ ...policy, grants })); await service.restart(); },
     capability: operation => request(commandPath + '/capability?' + new URLSearchParams({ operation })),
     lookup: requestId => request(commandPath + '?' + new URLSearchParams({ request_id: requestId })),

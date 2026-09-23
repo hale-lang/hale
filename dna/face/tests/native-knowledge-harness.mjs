@@ -1,11 +1,20 @@
-// Real Knowledge command service + public API. The seed binary only creates
-// prior native subjects; command admission, projection and recovery are real.
+// Real Knowledge commands + public API over memory. The seed binary only
+// creates prior native subjects and stands in for the spine; command
+// admission, projection and recovery are real.
+//
+// There is no Knowledge service (GH #985). The API admits a Knowledge command
+// into the Record in-process, under the explicit authority policy, and reads
+// the graph from memory under the head's role alone. The spine projects the
+// Record into memory on its tick; this composition has no spine, so the seed
+// binary's `project` action (migrate, then one projection under the spine's
+// role) is run in its place after every admission and API restart. `drop`
+// removes the Record's schema and roles when the fixture stops.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, memoryOwner } from './environment.mjs';
 
 const webroot = fileURLToPath(new URL('../web', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -24,44 +33,68 @@ async function stopChild(child) {
   await done; clearTimeout(timer);
 }
 
+export const knowledgeEnvironmentPresent = () => ['API', 'SEED'].every(name => process.env[`HALE_KNOWLEDGE_${name}_BIN`]?.startsWith('/'));
+
 export async function startKnowledgeService(options = {}) {
   const api = options.api || process.env.HALE_KNOWLEDGE_API_BIN;
-  const native = options.service || process.env.HALE_KNOWLEDGE_SERVICE_BIN;
   const seed = options.seed || process.env.HALE_KNOWLEDGE_SEED_BIN;
-  if (![api, native, seed].every(value => value?.startsWith('/'))) throw new Error('Supply absolute Knowledge API, service and seed binary paths.');
+  if (![api, seed].every(value => value?.startsWith('/'))) throw new Error('Supply absolute Knowledge API and seed binary paths.');
+  const owner = memoryOwner();
+  if (!owner) throw new Error('Knowledge reads memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the seed binary may migrate a Record into.');
   const root = await mkdtemp('/tmp/hale-face-browser.knowledge-command.');
   const env = isolatedEnvironment();
   const actor = options.actor || 'alice';
   env.USER = actor;
   env.XDG_CACHE_HOME = resolve(root, '.hale/face-cache');
-  const seeded = boundedNative(seed, [root, 'seed', String(options.count ?? 3)]);
-  const result = spawnSync(seeded.command, seeded.args, { env, encoding: 'utf8', timeout: 40_000, maxBuffer: 2_097_152 });
-  if (result.status !== 0) throw new Error(`Knowledge seed failed: ${result.stderr || result.error || result.stdout}`);
+  // The owner's DSN reaches the seed binary only; the API is a head.
+  const seedEnv = { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner };
+  const logs = { api: '', memory: '' };
+  let migrated = false, dropped = false;
+  const runSeed = (args, label) => {
+    const command = boundedNative(seed, [root, ...args]);
+    const result = spawnSync(command.command, command.args, { env: seedEnv, encoding: 'utf8', timeout: 40_000, maxBuffer: 2_097_152 });
+    logs.memory = (logs.memory + (result.stderr || '')).slice(-262_144);
+    if (result.status !== 0) throw new Error(`${label} failed: ${result.stderr || result.error || result.stdout}`);
+    return result.stdout;
+  };
+  runSeed(['seed', String(options.count ?? 3)], 'Knowledge seed');
   const refs = JSON.parse(await readFile(resolve(root, 'fixture.json'), 'utf8'));
   const apiPort = options.port || await port();
-  const nativePort = await port();
   const origin = `http://127.0.0.1:${apiPort}`;
-  const privateOrigin = `http://127.0.0.1:${nativePort}`;
   const apiPath = `/api/hale/v1/applications/${refs.application}`;
   const policyPath = resolve(root, 'knowledge-authority.json');
-  env.HALE_DNA_KNOWLEDGE_DSN = 'memory';
-  env.HALE_DNA_KNOWLEDGE_URL = privateOrigin;
-  env.HALE_DNA_KNOWLEDGE_READ_KEY = 'face-native-knowledge-read-fixture-key';
-  env.HALE_DNA_KNOWLEDGE_COMMAND_KEY = 'face-native-knowledge-write-fixture-key';
   env.HALE_DNA_KNOWLEDGE_COMMAND_POLICY = policyPath;
   const policy = {
     format: 'dna.knowledge-authority/1', application_id: refs.application,
     grants: options.grants || [{ mode: 'local', name: actor, authority: 'knowledge-editor', edge_link: 'direct', edge_unlink: 'direct', recover: true }],
   };
   await writeFile(policyPath, JSON.stringify(policy));
-  let apiChild, nativeChild;
-  const logs = { api: '', service: '' };
+  // One projection at a time: a browser POST and a Node-side command may
+  // both ask for the spine's tick.
+  let ticking = Promise.resolve();
+  function tick() {
+    const next = ticking.then(() => {
+      migrated = true;
+      const printed = runSeed(['project'], 'Knowledge projection').trim().split('\n').pop();
+      if (!/^postgres(ql)?:\/\//.test(printed)) throw new Error('The seed binary printed no head DSN.');
+      env.HALE_DNA_MEMORY_DSN_HEAD = printed;
+    });
+    ticking = next.catch(() => {});
+    return next;
+  }
+  function drop() {
+    if (!migrated || dropped) return;
+    dropped = true;
+    runSeed(['drop'], 'Knowledge memory drop');
+  }
+  let apiChild;
   const history = [];
   let stopped = false;
   const emergency = () => {
-    for (const child of [apiChild, nativeChild]) if (child?.exitCode === null && !child.signalCode) {
+    for (const child of [apiChild]) if (child?.exitCode === null && !child.signalCode) {
       try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already stopped */ }
     }
+    try { drop(); } catch { /* the process is exiting */ }
   };
   process.once('exit', emergency);
   const processes = () => history.map(({ role, child }) => ({ role, pid: child.pid, exitCode: child.exitCode, signal: child.signalCode, live: child.exitCode === null && !child.signalCode }));
@@ -69,7 +102,7 @@ export async function startKnowledgeService(options = {}) {
     const bounded = boundedNative(binary, args, { lock: false });
     const child = spawn(bounded.command, bounded.args, { env, cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     history.push({ role, child });
-    if (role === 'api') apiChild = child; else nativeChild = child;
+    apiChild = child;
     let failure;
     child.once('error', error => { failure = error; });
     for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { logs[role] = (logs[role] + bytes).slice(-262_144); });
@@ -81,10 +114,7 @@ export async function startKnowledgeService(options = {}) {
     throw new Error(`${role} failed readiness: ${failure || logs[role]}`);
   }
   async function start() {
-    await launch('service', native, [root, String(nativePort)], async () => {
-      const response = await fetch(`${privateOrigin}/identity`, { signal: AbortSignal.timeout(500) });
-      return response.ok && (await response.json()).identity === refs.application;
-    });
+    await tick();
     await launch('api', api, [root, String(apiPort), options.webroot || webroot], async () => {
       const response = await fetch(`${origin}/api/hale/v1/applications`, { signal: AbortSignal.timeout(500) });
       return response.ok;
@@ -95,14 +125,21 @@ export async function startKnowledgeService(options = {}) {
     return { status: response.status, body: await response.json() };
   }
   const service = {
-    root, application: refs.application, principal: { mode: 'local', name: actor }, origin, privateOrigin, apiPath,
+    root, application: refs.application, principal: { mode: 'local', name: actor }, origin, apiPath,
     url(view = 'knowledge', extra = {}) {
       return `${origin}/#/${view}?${new URLSearchParams({ app: refs.application, ...(view === 'knowledge' ? { id: refs.knowledge } : {}), ...extra })}`;
     },
     refs: async () => refs, processes, logs,
     request,
+    // The spine's tick: the Record as it stands, projected into memory.
+    tick,
     capability: operation => request('/dna/knowledge/commands/capability' + (operation ? '?' + new URLSearchParams({ operation }) : '')),
-    post: command => request('/dna/knowledge/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(command) }),
+    // An admission moves the Record; the spine's tick follows it.
+    async post(command) {
+      const response = await request('/dna/knowledge/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(command) });
+      await tick();
+      return response;
+    },
     lookup: requestId => request(`/dna/knowledge/commands?request_id=${encodeURIComponent(requestId)}`),
     async recordHead() {
       const value = await request('/capabilities');
@@ -138,27 +175,29 @@ export async function startKnowledgeService(options = {}) {
       }
       throw new Error('Relationship evidence exceeds 32 pages.');
     },
-    async mutate(action) {
-      const command = boundedNative(seed, [root, action]);
-      const result = spawnSync(command.command, command.args, { env, encoding: 'utf8', timeout: 40_000, maxBuffer: 2_097_152 });
-      if (result.status !== 0) throw new Error(`Knowledge fixture mutation failed: ${result.stderr || result.error}`);
-    },
-    async restart() { await stopChild(apiChild); await stopChild(nativeChild); await start(); },
+    // Each mutation projects again, as the spine's next tick would.
+    async mutate(action) { await ticking; runSeed([action], 'Knowledge fixture mutation'); },
+    async restart() { await stopChild(apiChild); await start(); },
     async setGrants(grants) { await writeFile(policyPath, JSON.stringify({ ...policy, grants })); await service.restart(); },
     async stop() {
       if (stopped) return;
       stopped = true;
-      await stopChild(apiChild); await stopChild(nativeChild);
-      process.removeListener('exit', emergency);
+      await stopChild(apiChild);
+      await ticking;
+      try { drop(); } finally { process.removeListener('exit', emergency); }
     },
     async exportEvidence(directory) {
       await mkdir(directory, { recursive: true });
       await Promise.all([
-        writeFile(resolve(directory, 'service.json'), JSON.stringify({ application: refs.application, root, origin, binaries: { api, native, seed }, principal: service.principal, processes: processes() }, null, 2)),
-        writeFile(resolve(directory, 'api.log'), logs.api), writeFile(resolve(directory, 'knowledge.log'), logs.service),
+        writeFile(resolve(directory, 'service.json'), JSON.stringify({ application: refs.application, root, origin, binaries: { api, seed }, principal: service.principal, processes: processes() }, null, 2)),
+        writeFile(resolve(directory, 'api.log'), logs.api), writeFile(resolve(directory, 'memory.log'), logs.memory),
       ]);
     },
   };
   try { await start(); return service; }
-  catch (error) { await service.stop(); if (options.evidence) await service.exportEvidence(options.evidence); throw error; }
+  catch (error) {
+    try { await service.stop(); } catch (failure) { error.message += `\n${failure.message}`; }
+    if (options.evidence) await service.exportEvidence(options.evidence);
+    throw error;
+  }
 }
