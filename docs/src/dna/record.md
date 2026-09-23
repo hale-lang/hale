@@ -36,7 +36,10 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
   are not numbers the organization keeps but counts it makes by reading
   its own record, so an organization that let one failed read empty its
   view would start every one of them again from nothing — and say
-  nothing about it.
+  nothing about it. The same goes for the head itself: a read of it
+  either happened (the chain's head, or no chain at all) or failed, and
+  a failed one is never taken for "no record" — a command refuses
+  with the reason instead of acting on a record that is not there.
 - **Authorship is git's.** The organization's events carry its
   configured author; a person's facts — a verdict, an intent through
   the CLI, a host's crash accounting, a node's reports — carry the

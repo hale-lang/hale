@@ -28,10 +28,21 @@ fn no_record(root: String) -> String {
     return "no record at " + RECORD_REF + " in " + root + " (run `hale dna init`)";
 }
 
+// "" when the record has a head; otherwise why a verb cannot go on: no
+// record, or a head that could not be read, which is never "no record"
+// (GH #961).
+fn record_refusal(root: String) -> String {
+    let h = record_head(root);
+    if !h.ok { return "the record at " + RECORD_REF + " in " + root + " could not be read: " + h.why; }
+    if h.absent { return no_record(root); }
+    return "";
+}
+
 // ---- status ---------------------------------------------------------
 
 fn status_verb(root: String, seed: String, toolchain: String, json: Bool) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, toolchain);
     if json { return answer(p.json() + "\n"); }
     // GH #617: the combination this organism is, detected from its
@@ -87,7 +98,8 @@ fn profile_name(root: String) -> String {
 }
 
 fn profile_verb(root: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let now = std::time::now();
     let remote = record_remote(root);
     let url = if len(remote) > 0 { rec(root).remote_url(remote) } else { "" };
@@ -124,7 +136,8 @@ fn body_lease_take(root: String, holder: String, token: Int) -> Bool {
 }
 
 fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let now = std::time::now();
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if len(sub) == 0 { return answer("body: " + body_line(root, now) + "\n"); }
@@ -200,7 +213,8 @@ fn has(ids: String, id: String) -> Bool {
 
 @unbounded
 fn history_verb(root: String, entity: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, ".", "");
     let n = p.rows();
     let mut ids = "\n";
@@ -699,7 +713,8 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
 
 // `hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run] [--as <who>]`
 fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: String, dry: Bool, who_flag: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     if len(target) == 0 { return fail("body provision: `hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path on the body>] [--dry-run]`"); }
     let remote = record_remote(root);
     if len(remote) == 0 { return fail("body provision: this record has no remote; the body clones the record from one (`git remote add origin <url>`, `hale dna sync`) — nothing was written"); }
@@ -766,7 +781,8 @@ fn env_var_name_ok(name: String) -> Bool {
 }
 
 fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_flag: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
     if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
     if !env_var_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not an environment variable name (A-Z, 0-9, _)"); }
@@ -836,7 +852,8 @@ fn credential_gap(p: Projection) -> String {
 // rows in your name that the organism reads at its next tick.
 @unbounded
 fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "pause" || sub == "resume" {
         if len(id) == 0 { return fail("schedule " + sub + ": which one? `hale dna schedule` lists them"); }
@@ -920,7 +937,8 @@ fn vault_failed(e: std::http::HttpError) -> std::http::ClientResponse {
 
 @unbounded
 fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "disclose" {
         if len(digest) == 0 || len(to) == 0 || len(purpose) == 0 { return fail("receipt disclose: `hale dna receipt disclose <digest> --to <recipient> --purpose <purpose> [--as <who>]`"); }
@@ -974,7 +992,9 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         // the point the hold is read at — the record's head, and the
         // ledger's revision once the organism has adopted it: the
         // redaction lands only there (#636)
-        let read_at = record_head(root);
+        let read_head = record_head(root);
+        if !read_head.ok { return fail("receipt redact: the record's head could not be read: " + read_head.why); }
+        let read_at = read_head.id;
         let ledger_at = ledger_revision(root);
         let p = open_projection(root, ".", "");
         let mut held = "";
@@ -1089,8 +1109,10 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
 // `digest` (GH #606), else "".
 @unbounded
 fn redaction_line(root: String, digest: String) -> String {
+    // display only: a record that could not be read shows no redaction,
+    // and the receipt beside it is still withheld or absent on its own
     let r = rec(root);
-    let text = r.text_at(r.head(JOURNAL));
+    let text = r.text_at(r.head(JOURNAL).id);
     let needle = "\"entity\": \"" + digest + "\"";
     let mut rest = text;
     while len(rest) > 0 {

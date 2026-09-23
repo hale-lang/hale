@@ -59,6 +59,19 @@ type Transfer {
     why: String = "";
 }
 
+// A chain's head as read. `ok` when the read happened; then `absent`
+// when the chain does not exist (`id` ""). A read that failed (a git
+// that could not run, a repository unreachable for a moment) is
+// `ok: false` with `why`, and is never an absent chain: taking one for
+// the other moved a clone's journal onto the remote's head and dropped
+// every local-only row (GH #961).
+type Head {
+    ok: Bool = false;
+    absent: Bool = false;
+    id: String = "";
+    why: String = "";
+}
+
 type Signer {
     signed: Bool = false; // the row carries a signature at all
     verified: Bool = false; // and the record's trust accepts it
@@ -73,7 +86,7 @@ interface Record {
     // The record's identity: its first row's id, the same in every clone.
     fn identity() -> String;
     // ---- chains
-    fn head(chain: String) -> String;
+    fn head(chain: String) -> Head;
     fn count(chain: String) -> Int;
     // The rows at `id` as the record's own line format (one JSON object
     // per line, newline-terminated; "" for no id).
@@ -295,7 +308,7 @@ locus MemRecord {
         return "";
     }
     @unbounded
-    fn head(chain: String) -> String {
+    fn head(chain: String) -> Head {
         let mut last = "";
         let mut i = 0;
         while i < self.rows.len() {
@@ -303,7 +316,7 @@ locus MemRecord {
             if r.chain == chain { last = r.row.id; }
             i = i + 1;
         }
-        return last;
+        return Head { ok: true, absent: len(last) == 0, id: last };
     }
     @unbounded
     fn count(chain: String) -> Int {
@@ -387,7 +400,7 @@ locus MemRecord {
         return ia >= 0 && ib >= 0 && ia < ib;
     }
     fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
-        if self.head(chain) != at { return Appended { error: "stale" }; }
+        if self.head(chain).id != at { return Appended { error: "stale" }; }
         let id = "mem" + to_string(self.next_id);
         self.next_id = self.next_id + 1;
         let author = if len(row.author) > 0 { row.author } else { "host" };
@@ -427,7 +440,7 @@ locus MemRecord {
     // were the chain's leave it (unreachable, as git's would be).
     @unbounded
     fn move_chain(chain: String, id: String, expected: String) -> Bool {
-        let cur = self.head(chain);
+        let cur = self.head(chain).id;
         if expected != "*" && cur != expected { return false; }
         if len(id) == 0 || self.chain_of(id) == chain { return true; }
         // the path from `id` back to the chain (or to the root)
@@ -622,9 +635,19 @@ locus GitRecord {
     fn location() -> String { return self.repo; }
     fn identity() -> String { return self.git_out("rev-list\n--max-parents=0\n" + self.ref_of("journal")); }
     // ---- chains
-    fn head(chain: String) -> String { return self.git_out("rev-parse\n-q\n--verify\n" + self.ref_of(chain)); }
+    // `rev-parse -q --verify` exits 1, silently, for a ref that does not
+    // exist; every other failure is a read that did not happen.
+    fn head(chain: String) -> Head {
+        let ref = self.ref_of(chain);
+        let r = self.git("rev-parse\n-q\n--verify\n" + ref);
+        let id = trim_nl(r.stdout);
+        if r.code == 0 && len(id) > 0 { return Head { ok: true, id: id }; }
+        if r.code == 1 && len(id) == 0 && len(trim_nl(r.stderr)) == 0 { return Head { ok: true, absent: true }; }
+        let why = trim_nl(r.stderr);
+        return Head { why: "rev-parse " + ref + " exited " + to_string(r.code) + (if len(why) > 0 { ": " + why } else { "" }) };
+    }
     fn count(chain: String) -> Int {
-        if len(self.head(chain)) == 0 { return 0; }
+        if len(self.head(chain).id) == 0 { return 0; }
         return std::str::parse_int(self.git_out("rev-list\n--count\n" + self.ref_of(chain))) or 0;
     }
     fn text_at(id: String) -> String {
@@ -633,7 +656,7 @@ locus GitRecord {
         return if len(t) == 0 { "" } else { t + "\n" };
     }
     fn ids(chain: String) -> String {
-        if len(self.head(chain)) == 0 { return ""; }
+        if len(self.head(chain).id) == 0 { return ""; }
         return self.git_out("rev-list\n--reverse\n" + self.ref_of(chain)) + "\n";
     }
     fn row_of(id: String) -> Row { return parse_row(last_line(self.text_at(id)), id); }
@@ -645,7 +668,9 @@ locus GitRecord {
     }
     fn precedes(a: String, b: String) -> Bool { return self.git_ok("merge-base\n--is-ancestor\n" + a + "\n" + b); }
     fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
-        if self.head(chain) != at { return Appended { error: "stale" }; }
+        let h = self.head(chain);
+        if !h.ok { return Appended { error: "io: " + h.why }; }
+        if h.id != at { return Appended { error: "stale" }; }
         let id = self.build(at, row, sign, note);
         if len(id) == 0 { return Appended { error: "io: " + self.last_error }; }
         if self.move_chain(chain, id, at) { return Appended { ok: true, id: id }; }
@@ -695,7 +720,10 @@ locus GitRecord {
     fn keep(text: String) -> String {
         let digest = hex_digest(text);
         let ref = self.ref_of("receipts/" + digest);
-        if len(self.git_out("rev-parse\n-q\n--verify\n" + ref)) > 0 { return digest; }
+        // a failed read is not an absent receipt: nothing is written on it
+        let held = self.head("receipts/" + digest);
+        if !held.ok { self.last_error = held.why; return ""; }
+        if !held.absent { return digest; }
         self.make_scratch();
         let tmp = self.tmp("receipt");
         std::io::fs::write_file(tmp, text) or self.io_failed(err);
@@ -910,8 +938,10 @@ locus GitJournal {
     // (GH #748). A stale view is recoverable; an empty one is not.
     @effects(is: { journal_io })
     fn load() -> Bool {
-        let head = self.record.head(self.chain());
-        if head == "" {
+        let read = self.record.head(self.chain());
+        if !read.ok { self.read_failed("the chain's head could not be read: " + read.why); return false; }
+        let head = read.id;
+        if read.absent {
             // a chain that held rows has not become one with no rows
             if self.rows.len() > 0 { self.read_failed("the chain's head could not be read"); return false; }
             self.head_sha = "";
@@ -974,7 +1004,9 @@ locus GitJournal {
     // now the chain's. A read that failed moved nothing.
     @effects(is: { journal_io })
     fn refresh() -> Bool {
-        let now = self.record.head(self.chain());
+        let read = self.record.head(self.chain());
+        if !read.ok { self.read_failed("the chain's head could not be read: " + read.why); return false; }
+        let now = read.id;
         if now == self.head_sha { return false; }
         return self.load() && self.head_sha == now;
     }
@@ -995,7 +1027,7 @@ locus GitJournal {
     // its row count is ours.
     fn verify_chain() -> Bool {
         let now = self.record.head(self.chain());
-        if now != self.head_sha { return false; }
+        if !now.ok || now.id != self.head_sha { return false; }
         if self.head_sha == "" { return self.rows.len() == 0; }
         return self.record.count(self.chain()) == self.rows.len();
     }
@@ -1108,8 +1140,10 @@ locus GitLeases {
     birth() { self.record.repo = self.repo; }
     // The routing is read from the record whenever its head moved.
     fn in_store() -> Bool {
-        let head = self.record.head("journal");
-        if head != self.head_seen {
+        // a head that could not be read keeps the routing last read
+        let read = self.record.head("journal");
+        let head = read.id;
+        if read.ok && head != self.head_seen {
             self.head_seen = head;
             self.routing = routing_of_text(self.record.text_at(head));
         }

@@ -124,7 +124,9 @@ locus OwnershipDraftWire {
         b.field("ownership", q.ownership_json()); b.field("impact", self.impact(original.owners, text));
         b.string_field("validation", if drafting { "valid_draft" } else { "parsed_source" }); b.string_field("publication", "unavailable"); b.end_object();
         let record = dna::GitRecord { repo: context.root };
-        if !organization.unchanged(original) || record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "the ownership basis changed while building the response", false); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if !organization.unchanged(original) || record_now.id != context.source.head { return http.error(409, "snapshot_changed", "the ownership basis changed while building the response", false); }
         return http.success(context.source, b.result());
     }
 }

@@ -15,7 +15,7 @@ locus BindingFaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -81,7 +81,7 @@ locus BindingAdmissionCases {
     fn recovery(repo: String) {
         let idea = self.setup(repo); let record = BindingFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
         let commands = ops::KnowledgeCommands { record: record, authority: BindingAuthority { } };
-        let c = self.command(context, record.head("journal"), "bind", "bind", idea, "org", "org/support");
+        let c = self.command(context, record.head("journal").id, "bind", "bind", idea, "org", "org/support");
         std::test::assert(commands.capability_for(context, c.operation).available, "native binding Review capability is available");
         record.fault = "lost";
         let admitted = commands.submit(context, c);
@@ -112,25 +112,25 @@ locus BindingAdmissionCases {
         let idea = self.setup(repo); let record = BindingFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
         let commands = ops::KnowledgeCommands { record: record, authority: BindingAuthority { } };
         let codec = ops::KnowledgeCommandCodec { };
-        let wrong = self.command(context, record.head("journal"), "wrong-id", "unbind", idea, "org", "org/support"); wrong.binding_id = dna::digest_of("wrong tuple");
+        let wrong = self.command(context, record.head("journal").id, "wrong-id", "unbind", idea, "org", "org/support"); wrong.binding_id = dna::digest_of("wrong tuple");
         std::test::assert_eq_str(commands.submit(context, wrong).code, "invalid_command", "caller cannot override native tuple identity");
-        let lateral = self.command(context, record.head("journal"), "lateral", "bind", idea, "org/a", "org/b");
+        let lateral = self.command(context, record.head("journal").id, "lateral", "bind", idea, "org/a", "org/b");
         std::test::assert(!codec.valid(context, lateral), "lateral intent is invalid before effect");
-        let denied = self.command(context, record.head("journal"), "denied", "bind", idea, "org", "org/other");
+        let denied = self.command(context, record.head("journal").id, "denied", "bind", idea, "org", "org/other");
         std::test::assert_eq_str(commands.submit(context, denied).code, "forbidden", "scope equality is exact");
-        let removed = commands.submit(context, self.command(context, record.head("journal"), "already-absent", "unbind", idea, "org", "org/support"));
+        let removed = commands.submit(context, self.command(context, record.head("journal").id, "already-absent", "unbind", idea, "org", "org/support"));
         std::test::assert(removed.ok && self.fact(commands, removed.receipt.sequence).binding.binding_basis == "", "already absent exact tuple can be reviewed for removal");
         let original = ops::KnowledgeCommands { record: record, authority: BindingAuthority { scopes: "[{\"author\":\"org\",\"target\":\"org\"}]" } };
-        let original_request = original.submit(context, self.command(context, record.head("journal"), "original", "unbind", idea, "org", "org"));
+        let original_request = original.submit(context, self.command(context, record.head("journal").id, "original", "unbind", idea, "org", "org"));
         let captured = ops::GovernanceJournal { snapshot: commands.capture() };
         std::test::assert(original_request.ok && self.fact(commands, original_request.receipt.sequence).binding.binding_basis == captured.read(1).digest, "original ratification supplies exact tuple basis");
         let j = dna::GitJournal { repo: repo }; self.append(j, "knowledge.retired", idea, "{}");
-        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "inactive", "bind", idea, "org", "org/support")).code, "stale_subject", "new binding requires active idea");
-        std::test::assert(commands.submit(context, self.command(context, record.head("journal"), "historical", "unbind", idea, "org", "org/support")).ok, "retired visible item permits exact removal without reactivation");
-        let stale = self.command(context, record.head("journal"), "stale", "unbind", idea, "org", "org/support"); self.append(j, "application.observed", "org", "{}");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal").id, "inactive", "bind", idea, "org", "org/support")).code, "stale_subject", "new binding requires active idea");
+        std::test::assert(commands.submit(context, self.command(context, record.head("journal").id, "historical", "unbind", idea, "org", "org/support")).ok, "retired visible item permits exact removal without reactivation");
+        let stale = self.command(context, record.head("journal").id, "stale", "unbind", idea, "org", "org/support"); self.append(j, "application.observed", "org", "{}");
         std::test::assert_eq_str(commands.submit(context, stale).code, "stale_subject", "checked head is never silently rebased");
         record.fault = "unknown";
-        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "unknown", "unbind", idea, "org", "org/support")).code, "command_outcome_unknown", "unresolved append stays unknown");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal").id, "unknown", "unbind", idea, "org", "org/support")).code, "command_outcome_unknown", "unresolved append stays unknown");
         std::test::assert_eq_int(record.appends, 4, "only three admitted changes and one uncertain attempt reached append");
     }
     fn check() {

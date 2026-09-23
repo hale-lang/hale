@@ -17,7 +17,7 @@ locus UnknownRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; review: String = ""; fault: Bool = false; attempts: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -98,7 +98,7 @@ fn exercise(repo: String, mode: String) {
     std::test::assert(source_capability.available && source_capability.authorized, "explicit enabled source profile advertises its own grant");
     let input = source::OrganizationSource { root: repo, allow_drafts: true }; let basis = input.read(); std::test::assert(basis.ok, "real Organization source basis");
     let command = ops::GovernanceCommand { request_id: "source", operation: "dna.organization.propose", application_id: alice.application_id, target_kind: "dna.organization.module", target_id: "dna/org/main.hl",
-        subject_digest: basis.module_digest, source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal"), source_text: PREPARED, rationale: "Clarify responsibility." };
+        subject_digest: basis.module_digest, source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal").id, source_text: PREPARED, rationale: "Clarify responsibility." };
     let admitted = service.submit(alice, command);
     std::test::assert(admitted.ok && admitted.receipt.state == "recorded", "real source admission is pending: " + admitted.code);
     run_body(repo, admitted.receipt.command_id);
@@ -179,8 +179,8 @@ fn exercise(repo: String, mode: String) {
     // A malformed cross-kind reuse must also invalidate the original source
     // receipt's quorum evidence, not only direct lookup of the colliding key.
     let collision = ops::GovernanceCommand { request_id: "review", application_id: bob.application_id, operation: "dna.practice.propose", target_kind: "dna.practice", target_id: "prior", subject_digest: "prior", text: "Other operation.", rationale: "Conflicting key fixture." };
-    let body = service.fact(bob, collision, "collision", ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture" }, record.head("journal"));
-    std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "practice.requested", entity: queued.receipt.command_id, author: "bob", body: body }, false, "").ok, "cross-kind collision fixture retained");
+    let body = service.fact(bob, collision, "collision", ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture" }, record.head("journal").id);
+    std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "practice.requested", entity: queued.receipt.command_id, author: "bob", body: body }, false, "").ok, "cross-kind collision fixture retained");
     std::test::assert_eq_str(service.lookup(bob, "review").code, "command_history_invalid", "direct command lookup rejects shared-key collision");
     let original = service.lookup(alice, "source");
     std::test::assert(original.ok && original.receipt.review_state == "unavailable", "original source receipt cannot count conflicting command key toward quorum");

@@ -17,7 +17,7 @@ type BodyLeaseView {
 
 locus HostAuthority {
     params { root: String = ""; }
-    fn record_head() -> String { let r = dna::GitRecord { repo: self.root }; return r.head("journal"); }
+    fn record_head() -> dna::Head { let r = dna::GitRecord { repo: self.root }; return r.head("journal"); }
     fn owner() -> String { let r = dna::GitRecord { repo: self.root }; return r.setting("owner"); }
     fn trust() -> String { let r = dna::GitRecord { repo: self.root }; let t = r.setting("trust"); return if len(t) == 0 { "local" } else { t }; }
     fn row_verified(sha: String) -> Bool { let r = dna::GitRecord { repo: self.root }; return r.signer(sha).verified; }

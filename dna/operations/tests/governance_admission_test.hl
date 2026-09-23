@@ -13,7 +13,7 @@ locus FaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; subject: String = ""; appends: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -121,12 +121,12 @@ fn test_verdict(repo: String) {
 }
 fn test_exact_head(repo: String) {
     let digest = subject(repo, true); let r = dna::GitRecord { repo: repo }; let j = dna::GitJournal { repo: repo };
-    let head = r.head("journal"); let parent = dna::line_at(r.ids("journal"), 1);
+    let head = r.head("journal").id; let parent = dna::line_at(r.ids("journal"), 1);
     let replacement = r.build(parent, dna::Row { kind: "knowledge.refused", entity: digest, body: "replacement", author: "fixture" }, false, "");
     std::test::assert(r.move_chain("journal", replacement, head), "same-count chain replacement installed");
     let result = j.append_exact(j.revision(), "test.decision", "decision", "based on old head");
     std::test::assert(!result.ok && result.error == "stale_revision", "same-count replacement invalidates Journal decision basis: ok=" + to_string(result.ok) + " error=" + result.error);
-    std::test::assert_eq_str(r.head("journal"), replacement, "stale decision did not mutate replacement");
+    std::test::assert_eq_str(r.head("journal").id, replacement, "stale decision did not mutate replacement");
 }
 fn test_payload_bound(repo: String, byte: Int) {
     let digest = subject(repo, true); let context = who(repo);

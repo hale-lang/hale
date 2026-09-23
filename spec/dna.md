@@ -1810,6 +1810,21 @@ derives from a scan of its own record began again from nothing: how
 often a source has raised a concern, which Review is open, which Task
 is in flight.
 
+**A head read tells an absent chain from a read that failed
+(GH #961).** `Record.head(chain)` answers a `Head`: `ok` when the read
+happened, then `absent` for a chain that does not exist or `id` for
+its head; a read that did not happen is `ok: false` with `why`, and no
+caller takes it for an absent chain. `GitRecord` reads `absent` only
+from `rev-parse -q --verify` exiting 1 with nothing on either stream.
+Every caller that compares a head it read earlier — an admission
+fence, an API response's final check, a writer's compare-and-swap —
+refuses on a failed read with the reason (`record_unavailable`, or an
+`io:` append error), never treating it as a Record that did not move.
+A CLI verb says the record could not be read rather than that there
+is none, `record-head` answers `none` only for a record known absent
+(the driver seeds on it), and a receipt is not written again on a
+read that did not happen. Both used to be the empty string.
+
 Every external dependency of the DNA is declared the same way, one
 interface in the core with one implementation over the real thing and
 one in memory: `Infrastructure` (a body's database, supervisor and

@@ -24,7 +24,7 @@ locus EdgeFaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -82,7 +82,7 @@ locus KnowledgeAdmissionCases {
     fn recovery(repo: String) {
         let endpoints = self.setup(repo, true); let context = self.who(repo, "alice", "local");
         let record = dna::GitRecord { repo: repo };
-        let head = record.head("journal"); let before = record.count("journal");
+        let head = record.head("journal").id; let before = record.count("journal");
         let command = self.command(context, endpoints, head, "request/équipe/1", RELATION);
         let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
         let capability = provider.capability(context);
@@ -136,20 +136,20 @@ locus KnowledgeAdmissionCases {
         let record = EdgeFaultRecord { inner: dna::GitRecord { repo: repo } };
         let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
         record.fault = "lost";
-        let lost = provider.submit(context, self.command(context, endpoints, record.head("journal"), "lost", RELATION));
+        let lost = provider.submit(context, self.command(context, endpoints, record.head("journal").id, "lost", RELATION));
         std::test::assert(lost.ok && lost.receipt.state == "recorded", "lost append reply recovers persisted exact effect");
         std::test::assert_eq_int(record.appends, 1, "lost reply never appends twice");
         record.fault = "unknown";
-        let unknown = provider.submit(context, self.command(context, endpoints, record.head("journal"), "unknown", RELATION));
+        let unknown = provider.submit(context, self.command(context, endpoints, record.head("journal").id, "unknown", RELATION));
         std::test::assert(!unknown.ok && unknown.code == "command_outcome_unknown", "uncertain absence remains unknown");
         std::test::assert_eq_int(record.appends, 2, "uncertain reply never blindly retries append");
         std::test::assert_eq_str(provider.lookup(context, "unknown").code, "command_not_found", "lookup never invents an outcome or effect");
         std::test::assert_eq_int(record.appends, 2, "lookup is read-only");
         record.fault = "stale";
-        let stale = provider.submit(context, self.command(context, endpoints, record.head("journal"), "raced", RELATION));
+        let stale = provider.submit(context, self.command(context, endpoints, record.head("journal").id, "raced", RELATION));
         std::test::assert_eq_str(stale.code, "stale_subject", "CAS conflict refuses despite unchanged endpoint eligibility");
         std::test::assert_eq_int(record.appends, 3, "CAS conflict never rebases command onto new Record head");
-        let old = self.command(context, endpoints, record.head("journal"), "old-basis", RELATION);
+        let old = self.command(context, endpoints, record.head("journal").id, "old-basis", RELATION);
         let j = dna::GitJournal { repo: repo }; self.append(j, "application.observed", "org", "{}");
         std::test::assert_eq_str(provider.submit(context, old).code, "stale_subject", "already moved Record head refuses before append");
         std::test::assert_eq_int(record.appends, 3, "old basis never attempts an append");
@@ -164,7 +164,7 @@ locus KnowledgeAdmissionCases {
         let selected = if mode == "missing" { Endpoints { left: endpoints.left, right: MISSING } } else { endpoints };
         let record = dna::GitRecord { repo: repo }; let before = record.count("journal");
         let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
-        let result = provider.submit(context, self.command(context, selected, record.head("journal"), "ineligible", RELATION));
+        let result = provider.submit(context, self.command(context, selected, record.head("journal").id, "ineligible", RELATION));
         std::test::assert_eq_str(result.code, "stale_subject", mode + " has the same safe refusal as unavailable Knowledge");
         std::test::assert_eq_int(record.count("journal"), before, mode + " creates no durable relationship");
     }
@@ -175,11 +175,11 @@ locus KnowledgeAdmissionCases {
         let capability = provider.capability(context);
         std::test::assert(capability.authorized && capability.available && capability.mode == "review", "native Review policy exposes reviewed admission");
         let direct = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
-        let old = direct.submit(context, self.command(context, endpoints, record.head("journal"), "old-direct", "old direct relationship"));
+        let old = direct.submit(context, self.command(context, endpoints, record.head("journal").id, "old-direct", "old direct relationship"));
         std::test::assert(old.ok && !old.receipt.reviewed, "old direct admission keeps its receipt variant");
         let recovered_direct = provider.lookup(context, "old-direct");
         std::test::assert(recovered_direct.ok && !recovered_direct.receipt.reviewed && recovered_direct.receipt.event_id == old.receipt.event_id, "Review policy recovers the original direct fact without reinterpretation");
-        let c = self.command(context, endpoints, record.head("journal"), "review-required", RELATION);
+        let c = self.command(context, endpoints, record.head("journal").id, "review-required", RELATION);
         record.fault = "lost";
         let result = provider.submit(context, c);
         std::test::assert(result.ok && result.receipt.reviewed && result.receipt.state == "recorded" && result.receipt.relationship.proposal_state == "pending", "lost real append reply recovers reviewed admission only");
@@ -231,10 +231,10 @@ locus KnowledgeAdmissionCases {
         self.append(j, "knowledge.ratified", right, "{\"digest\":\"" + right + "\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
         let context = self.who(repo, "alice", "local"); let record = dna::GitRecord { repo: repo };
         let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
-        let linked = provider.submit(context, self.command(context, Endpoints { left: left, right: right }, record.head("journal"), "direct-ratification", RELATION));
+        let linked = provider.submit(context, self.command(context, Endpoints { left: left, right: right }, record.head("journal").id, "direct-ratification", RELATION));
         std::test::assert(linked.ok, "directly ratified unnamed Knowledge is eligible without Practice proposal metadata: " + linked.code);
         let before = record.count("journal");
-        let refused = provider.submit(context, self.command(context, Endpoints { left: left, right: blob }, record.head("journal"), "blob-only", RELATION));
+        let refused = provider.submit(context, self.command(context, Endpoints { left: left, right: blob }, record.head("journal").id, "blob-only", RELATION));
         std::test::assert_eq_str(refused.code, "stale_subject", "canonical receipt blob alone cannot establish accepted graph membership");
         std::test::assert_eq_int(record.count("journal"), before, "unratified receipt creates no edge");
         let bytes = std::bytes::BytesBuilder { };
@@ -243,7 +243,7 @@ locus KnowledgeAdmissionCases {
         bytes.append_str("\", \"author\": \"org\", \"target\": \"org\", \"provenance\": \"native direct ratification\" }");
         let large = "sha256:" + receipts.store(std::str::from_bytes(bytes.snapshot()));
         let moved = j.refresh(); self.append(j, "knowledge.ratified", large, "{\"class\":\"initiative\"}");
-        let large_result = provider.submit(context, self.command(context, Endpoints { left: left, right: large }, record.head("journal"), "large-native-receipt", RELATION));
+        let large_result = provider.submit(context, self.command(context, Endpoints { left: left, right: large }, record.head("journal").id, "large-native-receipt", RELATION));
         std::test::assert(large_result.ok, "30 KB schema-valid native receipt admits without document re-encoding: " + large_result.code);
     }
 
@@ -269,9 +269,9 @@ locus KnowledgeAdmissionCases {
         let endpoints = self.setup(repo, true); let context = self.who(repo, "alice", "local");
         let record = EdgeFaultRecord { inner: dna::GitRecord { repo: repo } };
         let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
-        let linked = provider.submit(context, self.command(context, endpoints, record.head("journal"), "link", RELATION));
+        let linked = provider.submit(context, self.command(context, endpoints, record.head("journal").id, "link", RELATION));
         std::test::assert(linked.ok, "setup native link before removal");
-        let head = std::str::clone(record.head("journal"));
+        let head = std::str::clone(record.head("journal").id);
         let command = self.removal(context, endpoints, head, "remove");
         let codec = ops::KnowledgeCommandCodec { };
         let bad = self.removal(context, endpoints, head, "wrong-edge"); bad.edge_id = MISSING;
@@ -290,25 +290,25 @@ locus KnowledgeAdmissionCases {
         std::test::assert(restored.ok && restored.receipt.event_id == removed.receipt.event_id && restored.receipt.operation == "dna.knowledge.edge.unlink", "restart and lost write grant preserve authorized original removal lookup");
         let duplicate = fresh.submit(context, command);
         std::test::assert(duplicate.ok && duplicate.receipt.event_id == removed.receipt.event_id, "same removal request recovers even old basis");
-        let again = provider.submit(context, self.removal(context, endpoints, record.head("journal"), "ensure-absent"));
+        let again = provider.submit(context, self.removal(context, endpoints, record.head("journal").id, "ensure-absent"));
         std::test::assert(again.ok, "a new exact removal can ensure an already absent tuple");
         let old = self.removal(context, endpoints, head, "old-unlink");
         std::test::assert_eq_str(provider.submit(context, old).code, "stale_subject", "new removal never rebases a stale Record head");
         record.fault = "unknown";
-        let unknown = provider.submit(context, self.removal(context, endpoints, record.head("journal"), "unknown-unlink"));
+        let unknown = provider.submit(context, self.removal(context, endpoints, record.head("journal").id, "unknown-unlink"));
         std::test::assert_eq_str(unknown.code, "command_outcome_unknown", "unknown removal remains unresolved without retrying append");
         std::test::assert_eq_int(record.appends, 4, "unknown removal never retries append");
         let refreshed = j.refresh(); self.append(j, "knowledge.retired", endpoints.right, "{}");
-        let retired = provider.submit(context, self.removal(context, endpoints, record.head("journal"), "retired-unlink"));
+        let retired = provider.submit(context, self.removal(context, endpoints, record.head("journal").id, "retired-unlink"));
         std::test::assert(retired.ok, "visible retired knowledge can have historical relationships removed");
         let updated = j.refresh(); self.append(j, "receipt.withheld", endpoints.right, "{}");
-        std::test::assert_eq_str(provider.submit(context, self.removal(context, endpoints, record.head("journal"), "hidden-unlink")).code, "stale_subject", "hidden endpoint cannot be targeted by removal");
+        std::test::assert_eq_str(provider.submit(context, self.removal(context, endpoints, record.head("journal").id, "hidden-unlink")).code, "stale_subject", "hidden endpoint cannot be targeted by removal");
         let hidden = provider.lookup(context, command.request_id);
         std::test::assert(hidden.ok && !hidden.receipt.details_visible && hidden.receipt.edge_id == "", "historical removal lookup masks newly hidden relationship");
         let review = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { mode: "review" } };
         let capability = review.capability_for(context, "dna.knowledge.edge.unlink");
         std::test::assert(capability.authorized && capability.available && capability.mode == "review", "removal Review policy advertises the supported reviewed path");
-        std::test::assert_eq_str(review.submit(context, self.removal(context, endpoints, record.head("journal"), "review-unlink")).code, "stale_subject", "Review-required removal still refuses the protected endpoint");
+        std::test::assert_eq_str(review.submit(context, self.removal(context, endpoints, record.head("journal").id, "review-unlink")).code, "stale_subject", "Review-required removal still refuses the protected endpoint");
     }
     fn check() {
         let root = "/tmp/dna-knowledge-admission-" + to_string(std::process::pid());

@@ -423,7 +423,7 @@ fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     let org_alive = s3_pid_alive(org);
     if !body_alive && !org_alive { return s3_refuse("body_not_running", s3_reason("body_not_running")); }
     let record = dna::GitRecord { repo: root };
-    let head_before = record.head("journal");
+    let before = record.head("journal");
     // the host's pid: the first line of the fence mandate it wrote
     let mandate = std::io::fs::read_file(d + "/body.fence") or "";
     let nl = std::str::index_of(mandate, "\n");
@@ -465,7 +465,7 @@ fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     b.string_field("released_by", released_by);
     b.int_field("exit_code", code);
     if len(released_text) > 0 { b.string_field("release", released_text); }
-    b.field("record", record_evidence(root, head_before));
+    b.field("record", if before.ok { record_evidence(root, before.id) } else { record_unread("", before.why) });
     b.end_object();
     return s3_inline(b.result());
 }
@@ -917,7 +917,9 @@ fn s3_handoffs_json(root: String, journal: String) -> String {
         refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
         if !std::str::starts_with(ref, "exchange/") { continue; }
         let sender = ref[9..len(ref)];
-        let mut lines = r.text_at(r.head(ref));
+        // display only: an unreadable exchange shows no handoffs, as the
+        // project's `record: null` already shows it unread
+        let mut lines = r.text_at(r.head(ref).id);
         while len(lines) > 0 {
             let lnl = std::str::index_of(lines, "\n");
             let line = if lnl < 0 { lines } else { lines[0..lnl] };
@@ -960,7 +962,8 @@ fn s3_secrets_json(journal: String) -> String {
 // through the core's GitRecord); nothing here touches the network.
 fn s3_project_detail_json(ctx: HeadContext, root: String) -> String {
     let r = dna::GitRecord { repo: root };
-    let journal = r.text_at(r.head("journal"));
+    // display only, beside the project's `record` (null when unread)
+    let journal = r.text_at(r.head("journal").id);
     let b = std::json::Builder { };
     b.begin_object();
     b.field("connections", s3_connections_json(journal));

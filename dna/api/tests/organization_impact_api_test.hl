@@ -40,7 +40,7 @@ locus OrganizationImpactApiCases {
         let codec = ops::OrganizationAuthorityPolicyCodec { };
         let policy = codec.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"reviewer\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":false,\"recover\":true}]}", app, "local");
         std::test::assert(policy.valid, "explicit recovery-only source read grant"); let authority = ops::FixedOrganizationAuthority { policy: policy };
-        let suffix = "&snapshot=" + record.head("journal"); let baseline = self.request(root, id, authority, "reviewer", suffix);
+        let suffix = "&snapshot=" + record.head("journal").id; let baseline = self.request(root, id, authority, "reviewer", suffix);
         std::test::assert_eq_int(baseline.status, 200, baseline.body); let initial = w.raw(baseline.body, "data");
         std::test::assert_eq_str(w.text(initial, "profile"), "dna.organization.source-impact.v1", "typed responsibility read");
         std::test::assert_eq_str(w.text(initial, "review_id"), id, "exact Review"); std::test::assert_eq_str(w.text(initial, "mutation_id"), id, "exact mutation");
@@ -98,12 +98,12 @@ locus OrganizationImpactApiCases {
             std::io::fs::write_file(evidence + "/impact-response.json", response.body) or raise; std::io::fs::write_file(evidence + "/impact-data.json", data) or raise;
             std::io::fs::write_file(evidence + "/reviews-response.json", reviews.body) or raise; std::io::fs::write_file(evidence + "/handed-task.json", handed.body) or raise;
         }
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: task, author: "test", body: "{}" }, false, "").ok, "owned operational privacy input");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: task, author: "test", body: "{}" }, false, "").ok, "owned operational privacy input");
         let hidden_task = self.request(root, id, authority, "reviewer", ""); std::test::assert_eq_int(hidden_task.status, 200, hidden_task.body); std::test::assert_eq_str(w.raw(w.raw(hidden_task.body, "data"), "counts"), "null", "protected operational evidence cannot expose partial counts");
         std::test::assert_eq_str(w.text(w.raw(hidden_task.body, "data"), "state"), "unavailable", "private responsibility suppresses the entire assessment");
         std::test::assert_eq_str(w.text(w.raw(hidden_task.body, "data"), "reason_code"), "impact_source_unavailable", "private operational reason is collapsed");
         let support = self.event(journal, "mutation.candidate", id); std::test::assert(support.kind != "", "actual candidate support row");
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: support.digest, author: "test", body: "{}" }, false, "").ok, "owned candidate-support privacy input");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: support.digest, author: "test", body: "{}" }, false, "").ok, "owned candidate-support privacy input");
         let hidden = self.request(root, id, authority, "reviewer", ""); let missing = self.request(root, "missing", authority, "reviewer", "");
         std::test::assert_eq_int(hidden.status, 404, hidden.body); std::test::assert_eq_str(hidden.body, missing.body, "protected candidate support and absent source indistinguishable");
         println("PASS source-impact API: exact retained candidate/Review, default-denied grant, snapshot/query guards, intact baseline, real native handed-task counts, partial/private suppression and hidden candidate support");

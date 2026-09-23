@@ -194,7 +194,9 @@ locus Node {
         let s = sync_record(self.root);
         if !s.ok { self.say("sync: " + s.summary); }
         self.reap();
-        if len(record_head(self.root)) == 0 { return; }
+        // no record, or one that could not be read: nothing to do this pass
+        let now = record_head(self.root);
+        if !now.ok || now.absent { return; }
         let p = open_projection(self.root, ".", "");
         let mut i = p.rows() - 1;
         let mut deploy = dna::Event { seq: -1 };

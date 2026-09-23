@@ -316,7 +316,9 @@ locus Api {
         // A redaction appended while receipt text was read invalidates the
         // entire response. The next request loads its suppression marker.
         let record = dna::GitRecord { repo: self.root };
-        if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
         return http.success(source, b.result());
     }
     fn definition_draft_handle(req: std::http::Request, has_query: Bool, context: CommandContext) -> std::http::Response {
@@ -334,7 +336,9 @@ locus Api {
         let result = drafts.validate(request.base_id, request.basis, request.candidate);
         let data = if result.status == 200 { wire.data(request, context.principal_mode, context.principal_name, result) } else { "" };
         let record = dna::GitRecord { repo: self.root };
-        if record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "the Record changed during definition draft validation", true); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != context.source.head { return http.error(409, "snapshot_changed", "the Record changed during definition draft validation", true); }
         if result.status != 200 { return http.error(result.status, result.code, result.message, result.status == 409 || result.status == 503); }
         return http.success(context.source, data);
     }
@@ -396,7 +400,9 @@ locus Api {
             valid = candidate.ok; document = candidate.document; digest = candidate.request.candidate_digest; proposer = candidate.request.by; sequence = candidate.sequence;
         }
         if !valid || wire.string(dna::line_at(source.text, sequence), "author") != proposer { return http.error(404, "candidate_not_found", "no visible canonical candidate was found", false); }
-        if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed while reading the candidate", true); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while reading the candidate", true); }
         let b = std::json::Builder { }; b.begin_object(); b.string_field("kind", kind); b.string_field("review_id", query.id);
         b.string_field("candidate_digest", digest); b.field("document", dna::record_json_quote(document)); b.end_object();
         return http.success(context.source, b.result());
@@ -411,7 +417,9 @@ locus Api {
         let request = KnowledgeRequest { source: source, reader: actor, kind: kind, query: query };
         let response = wire.response(request, self.knowledge.read(request));
         let record = dna::GitRecord { repo: self.root };
-        if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed during the Knowledge read", true); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed during the Knowledge read", true); }
         return response;
     }
     fn definitions_read(source: Source, query: Query) -> std::http::Response {
@@ -439,7 +447,9 @@ locus Api {
         b.field("page", http.page(query.limit, query.offset, total, snapshot));
         b.field("basis", q.basis_json()); b.end_object();
         let record = dna::GitRecord { repo: self.root };
-        if record.head("journal") != source.head {
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head {
             return http.error(409, "snapshot_changed", "the Record changed while the catalog response was built", true);
         }
         return http.success(source, b.result());
@@ -476,7 +486,9 @@ locus Api {
         b.field("ownership", q.ownership_json());
         b.end_object();
         let record = dna::GitRecord { repo: self.root };
-        if !self.organization.unchanged(artifact) || record.head("journal") != source.head {
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if !self.organization.unchanged(artifact) || record_now.id != source.head {
             return http.error(409, "snapshot_changed", "the organization or Record changed while the response was built", true);
         }
         return http.success(source, b.result());

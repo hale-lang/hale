@@ -29,7 +29,7 @@ locus TaskApiSeed {
         let record = dna::GitRecord { repo: root };
         std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
         // Eligibility input only, not proof of the person retirement command.
-        if browser { std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "person.retired", entity: "retired", body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}", author: "fixture" }, false, "").ok, "explicit recipient-retirement eligibility fixture"); }
+        if browser { std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "person.retired", entity: "retired", body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}", author: "fixture" }, false, "").ok, "explicit recipient-retirement eligibility fixture"); }
         let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root }; let work = TaskApiWork { }; work.bind(journal, receipts);
         let first_id = work.ask("task-api-first", "Human review\r\nΔ <literal & markup>"); let first = self.handed(journal, first_id);
         let second_id = work.ask("task-api-second", "Another person's responsibility"); let second = self.handed(journal, second_id);

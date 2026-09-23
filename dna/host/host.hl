@@ -412,7 +412,9 @@ fn edge_admits_here(root: String, r: dna::KnowledgeEdgeRequest) -> Bool {
 @unbounded
 fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String) -> RelayState {
     let mut state = RelayState { relayed: relayed };
-    if len(record_head(root)) == 0 { return state; }
+    // no record, or one that could not be read: nothing to do this pass
+    let now = record_head(root);
+    if !now.ok || now.absent { return state; }
     let p = open_projection(root, seed, toolchain);
     let trust = trust_mode(root);
     let mut i = 0;
@@ -808,7 +810,9 @@ locus Host {
         return false;
     }
     fn write_status() {
-        if len(record_head(self.root)) == 0 { return; }
+        // no record, or one that could not be read: nothing to do this pass
+        let now = record_head(self.root);
+        if !now.ok || now.absent { return; }
         let p = open_projection(self.root, self.seed, self.toolchain);
         let tmp = self.status_path + ".tmp";
         let w = write_text(tmp, p.json()) or false;
@@ -1259,7 +1263,9 @@ locus Host {
         let n = self.relay_record_membrane();
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root); }
         self.write_status();
-        if len(record_head(self.root)) == 0 { return; }
+        // no record, or one that could not be read: nothing to do this pass
+        let now = record_head(self.root);
+        if !now.ok || now.absent { return; }
         let p = open_projection(self.root, self.seed, self.toolchain);
         let req = pending_restart(p, self.handled);
         if req.seq < 0 { return; }

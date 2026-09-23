@@ -161,7 +161,7 @@ locus CommandWireCases {
         let review_commands = ops::KnowledgeCommands { record: record, authority: review_authority };
         let review_cap = wire.handle(self.request("capability", cap, COMMAND_KEY), review_commands, COMMAND_KEY, READ_KEY);
         std::test::assert(std::json::find_field_raw(review_cap.body, "authorized") == "true" && std::json::find_field_raw(review_cap.body, "available") == "true" && core::native_json_string(review_cap.body, "mode") == "review", "Review policy advertises native reviewed admission");
-        let pending = ops::KnowledgeCommand { request_id: "wire/review", application_id: application_id, target_id: from, record_head: record.head("journal"), from_id: from, to_id: to, rel: "requires Review", rationale: "Policy requires Review." };
+        let pending = ops::KnowledgeCommand { request_id: "wire/review", application_id: application_id, target_id: from, record_head: record.head("journal").id, from_id: from, to_id: to, rel: "requires Review", rationale: "Policy requires Review." };
         let reviewed = wire.handle(self.request("submit", "{\"context\":" + raw_context + ",\"command\":" + command_codec.canonical(context, pending) + "}", COMMAND_KEY), review_commands, COMMAND_KEY, READ_KEY);
         std::test::assert_eq_int(reviewed.status, 202, "private transport admits reviewed request");
         let reviewed_receipt = std::json::find_field_raw(reviewed.body, "receipt"); let relationship = std::json::find_field_raw(reviewed_receipt, "relationship");
@@ -175,7 +175,7 @@ locus CommandWireCases {
         let removal_commands = ops::KnowledgeCommands { record: record, authority: removal_authority };
         let removal_cap = wire.handle(self.request("capability", unlink_cap, COMMAND_KEY), removal_commands, COMMAND_KEY, READ_KEY);
         std::test::assert(std::json::find_field_raw(removal_cap.body, "available") == "true", "explicit removal capability is separate from link");
-        let removal = ops::KnowledgeCommand { operation: "dna.knowledge.edge.unlink", edge_id: command_codec.edge_id(from, to, command.rel), request_id: "wire/remove", application_id: application_id, target_id: from, record_head: record.head("journal"), from_id: from, to_id: to, rel: command.rel, rationale: "Remove selected relationship." };
+        let removal = ops::KnowledgeCommand { operation: "dna.knowledge.edge.unlink", edge_id: command_codec.edge_id(from, to, command.rel), request_id: "wire/remove", application_id: application_id, target_id: from, record_head: record.head("journal").id, from_id: from, to_id: to, rel: command.rel, rationale: "Remove selected relationship." };
         let removal_body = "{\"context\":" + raw_context + ",\"command\":" + command_codec.canonical(context, removal) + "}";
         std::test::assert_eq_int(wire.handle(self.request("submit", removal_body, COMMAND_KEY), commands, COMMAND_KEY, READ_KEY).status, 403, "link-only grant cannot submit removal");
         let removed_edge = wire.handle(self.request("submit", removal_body, COMMAND_KEY), removal_commands, COMMAND_KEY, READ_KEY);
@@ -196,7 +196,7 @@ locus CommandWireCases {
         let capability = wire.handle(self.request("capability", "{\"context\":" + raw_context + ",\"operation\":\"dna.knowledge.binding.bind\"}", COMMAND_KEY), commands, COMMAND_KEY, READ_KEY);
         std::test::assert_eq_int(capability.status, 200, "binding capability private transport");
         std::test::assert(std::json::find_field_raw(capability.body, "available") == "true" && core::native_json_string(capability.body, "mode") == "review", "only real reviewed binding capability");
-        let c = ops::KnowledgeCommand { operation: "dna.knowledge.binding.bind", request_id: "binding-wire", application_id: context.application_id, record_head: record.head("journal"), target_id: idea, idea_id: idea, author: "org", target: "org/support", rationale: "Keep exact scope 🧭\r\nwith Review." };
+        let c = ops::KnowledgeCommand { operation: "dna.knowledge.binding.bind", request_id: "binding-wire", application_id: context.application_id, record_head: record.head("journal").id, target_id: idea, idea_id: idea, author: "org", target: "org/support", rationale: "Keep exact scope 🧭\r\nwith Review." };
         let codec = ops::KnowledgeCommandCodec { }; let native = core::KnowledgeBindingCodec { };
         let payload = "{\"context\":" + raw_context + ",\"command\":" + codec.canonical(context, c) + "}";
         std::test::assert_eq_int(wire.handle(self.request("submit", payload, READ_KEY), commands, COMMAND_KEY, READ_KEY).status, 401, "read transport key grants no binding write");

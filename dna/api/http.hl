@@ -1,5 +1,7 @@
 // Read-only HTTP boundary. Native identifiers are decoded once, never cleaned.
 
+import "../core" as dna;
+
 const API_VERSION: String = "hale.v1";
 const API_PREFIX: String = "/api/hale/v1/applications";
 
@@ -31,6 +33,12 @@ locus Http {
         b.end_object();
         b.end_object();
         return self.response(status, b.result());
+    }
+    // A Record head that could not be read: the response is refused as
+    // the Record unavailable, never taken for a Record that did not move
+    // (GH #961).
+    fn unreadable(h: dna::Head) -> std::http::Response {
+        return self.error(503, "record_unavailable", "the Record's head could not be read: " + h.why, true);
     }
     fn success(source: Source, data: String) -> std::http::Response {
         let b = std::json::Builder { };

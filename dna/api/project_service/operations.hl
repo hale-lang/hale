@@ -414,12 +414,27 @@ fn count_lines(text: String) -> Int {
     return n;
 }
 
+// The evidence when a head could not be read: no row is claimed for
+// the command, and the read that failed is named (GH #961).
+fn record_unread(head_before: String, why: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("head_before", head_before);
+    b.string_field("unreadable", why);
+    b.begin_array_field("rows");
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
 // `{"head_before","head_after","rows":[{seq,kind,entity,author}]}`:
 // the rows of `refs/dna/journal` at its head now beyond the count at
 // `head_before` (the reads the API's SourceReader does).
 fn record_evidence(root: String, head_before: String) -> String {
     let record = dna::GitRecord { repo: root };
-    let head_after = record.head("journal");
+    let read = record.head("journal");
+    if !read.ok { return record_unread(head_before, read.why); }
+    let head_after = read.id;
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("head_before", head_before);

@@ -32,7 +32,7 @@ locus TaskApiCases {
         let second_id = w.text(fixture, "second_id"); let second_handoff = self.event(journal, "task.handed", second_id);
         std::test::assert(handoff.digest == w.text(fixture, "first_handoff") && second_handoff.digest == w.text(fixture, "second_handoff"), "real seed handoff identity retained");
         let text = "Human review\r\nΔ <literal & markup>";
-        let before = record.head("journal"); let all = self.request(root, ""); std::test::assert_eq_int(all.status, 200, all.body);
+        let before = record.head("journal").id; let all = self.request(root, ""); std::test::assert_eq_int(all.status, 200, all.body);
         let data = w.raw(all.body, "data"); let basis = w.raw(data, "basis"); let page = w.raw(data, "page");
         std::test::assert_eq_str(w.text(data, "profile"), "dna.task-administration.v1", "native handoff profile");
         std::test::assert_eq_str(w.text(basis, "record_head"), before, "exact captured Record");
@@ -63,7 +63,7 @@ locus TaskApiCases {
         std::test::assert_eq_int(self.request(root, "?position=org").status, 400, "no inferred position filter");
         std::test::assert_eq_int(self.request(root, "?id=one&id=two").status, 400, "duplicate query refused");
         let missing = self.request(root, "?id=absent"); std::test::assert_eq_int(missing.status, 404, "exact absent Task");
-        std::test::assert_eq_str(record.head("journal"), before, "all reads leave native Record untouched");
+        std::test::assert_eq_str(record.head("journal").id, before, "all reads leave native Record untouched");
         if evidence != "" { std::io::fs::write_file(evidence + "/tasks-response.json", all.body) or raise; std::io::fs::write_file(evidence + "/task-response.json", exact.body) or raise; }
         let policy_codec = ops::TaskAuthorityPolicyCodec { };
         let policy = policy_codec.decode("{\"format\":\"dna.task-authority/1\",\"application_id\":\"" + record.identity() + "\",\"owner\":\"operations\",\"members\":[\"alex\",\"blair\"],\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"reassign\":true,\"recover\":true}]}", record.identity(), "local");
@@ -88,7 +88,7 @@ locus TaskApiCases {
         if evidence != "" { std::io::fs::write_file(evidence + "/task-reassigned-response.json", updated.body) or raise; }
         // Visibility inputs over actual supporting identities; no fabricated
         // Task outcome is introduced to exercise hidden collection behavior.
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: handoff.digest, body: "{}", author: "test" }, false, "").ok, "protect actual supporting handoff");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: handoff.digest, body: "{}", author: "test" }, false, "").ok, "protect actual supporting handoff");
         let hidden = self.request(root, "?id=" + dna::url_encode(first_id));
         std::test::assert(hidden.status == 404 && hidden.body == missing.body, "protected and absent Task indistinguishable");
         let remaining = self.request(root, ""); std::test::assert_eq_int(remaining.status, 200, remaining.body);
@@ -96,14 +96,14 @@ locus TaskApiCases {
         std::test::assert_eq_str(w.text(self.first(remaining), "id"), second_id, "visible native Task retained");
         // Terminal-after-handoff is a labelled read-projection probe, not a
         // claim that this test exercised the native completion command.
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "task.done", entity: second_id, body: "terminal read fixture", author: "test" }, false, "").ok, "explicit terminal read fixture");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "task.done", entity: second_id, body: "terminal read fixture", author: "test" }, false, "").ok, "explicit terminal read fixture");
         let terminal = self.request(root, "?id=" + dna::url_encode(second_id)); std::test::assert_eq_int(terminal.status, 200, terminal.body);
         std::test::assert_eq_str(w.text(self.first(terminal), "state"), "done", "terminal-after-handoff remains inspectable");
         std::test::assert_eq_str(w.raw(self.first(terminal), "reassignment_supported"), "false", "terminal Task cannot be reassigned");
         // A recorded Task birth alone does not establish human administration.
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "task.born", entity: "read-only-no-handoff", body: "input: No human handoff", author: "test" }, false, "").ok, "explicit read-contract no-handoff fixture");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "task.born", entity: "read-only-no-handoff", body: "input: No human handoff", author: "test" }, false, "").ok, "explicit read-contract no-handoff fixture");
         let unborn = self.request(root, "?id=read-only-no-handoff"); std::test::assert(unborn.status == 404 && unborn.body == missing.body, "no-handoff and absent share response");
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "ledger.adopted", entity: "org", body: "{}", author: "test" }, false, "").ok, "explicit split-history read-contract fixture");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "ledger.adopted", entity: "org", body: "{}", author: "test" }, false, "").ok, "explicit split-history read-contract fixture");
         std::test::assert_eq_int(self.request(root, "").status, 503, "split operational history cannot yield a partial Task list");
         println("PASS Task API: actual native handoffs and reassignment, exact lifecycle/read basis, original acceptance, Unicode/CRLF, pagination/snapshot, protected-support privacy and labelled terminal/split read probes");
     }

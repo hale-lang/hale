@@ -66,7 +66,9 @@ locus OrganizationDraftWire {
         if drafting && !self.same_base(base, original, context.source) { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed; reload before validating", false); }
         let result = if drafting { organization.draft(original, candidate) } else { original };
         let record = dna::GitRecord { repo: context.root };
-        if !organization.unchanged(original) || record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed during validation", false); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if !organization.unchanged(original) || record_now.id != context.source.head { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed during validation", false); }
         if !result.ok { return http.error(if result.code == "snapshot_changed" { 409 } else if result.code == "organization_check_failed" { 422 } else { 503 }, result.code, result.error, false); }
         let projected = self.project(result, context.source);
         if len(projected) == 0 { return http.error(503, "organization_draft_projection_unavailable", "the checked draft must have a valid projection with at most 256 static instances", false); }
@@ -79,7 +81,9 @@ locus OrganizationDraftWire {
         b.begin_object_field("module"); b.string_field("path", "dna/org/main.hl"); b.field("text", codec.quote_json(text)); b.string_field("digest", dna::digest_of(text)); b.end_object();
         b.field("projection", projected); b.string_field("validation", if drafting { "valid_draft" } else { "checked_source" }); b.string_field("publication", "unavailable"); b.end_object();
         // The projection is built before the final race check as well.
-        if !organization.unchanged(original) || record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "the inspected basis changed while building the response", false); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if !organization.unchanged(original) || record_now.id != context.source.head { return http.error(409, "snapshot_changed", "the inspected basis changed while building the response", false); }
         return http.success(context.source, b.result());
     }
 }

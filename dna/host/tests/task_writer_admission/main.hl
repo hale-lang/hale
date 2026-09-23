@@ -7,7 +7,7 @@ import "../../../operations" as ops;
 locus RetirementFaultBatch {
     params { inner: dna::GitRecord; fault: String = ""; builds: Int = 0; moves: Int = 0; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String {
         self.builds = self.builds + 1;
         if self.fault == "build-fails" && self.builds == 2 { return ""; }

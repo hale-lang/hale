@@ -6,7 +6,7 @@ import "../../core" as dna;
 locus RetirementFaultBatch {
     params { inner: dna::GitRecord; mode: String = ""; builds: Int = 0; swaps: Int = 0; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String {
         self.builds = self.builds + 1;
         if self.mode == "partial" && self.builds == 2 { return ""; }
@@ -88,13 +88,13 @@ locus RetirementCases {
         let context = self.context(record.identity()); let policy = self.policy(context.application_id, ",\"retire\":true"); let authority = ops::FixedTaskAuthority { policy: policy }; let service = ops::PersonRetirement { };
         let plan = service.plan(j, "alice", policy.basis); std::test::assert(plan.ok, "plan available"); let command = self.command(context, plan, "retirement-key", if mode == "empty" || mode == "no-successor" { "" } else { "bob" });
         let batch = RetirementFaultBatch { inner: record, mode: mode }; let provider = ops::GovernanceCommands { record: record, tasks_enabled: true, task_authority: authority, retirement_enabled: true, retirement_record: batch };
-        let before = record.head("journal"); let revision = record.count("journal"); let result = provider.submit(context, command);
+        let before = record.head("journal").id; let revision = record.count("journal"); let result = provider.submit(context, command);
         if mode == "wrong-manifest" || mode == "wrong-author" { std::test::assert(!result.ok && result.code == "command_history_invalid" && batch.swaps == 1, "corrupt exact batch evidence never claims success " + mode); eprintln("native " + mode + " passed"); return; }
-        if mode == "partial" { std::test::assert(!result.ok && record.head("journal") == before && record.count("journal") == revision && batch.swaps == 0, "off-ref partial build publishes nothing"); eprintln("native partial passed"); return; }
-        if mode == "no-successor" { std::test::assert(!result.ok && result.code == "forbidden" && record.head("journal") == before && batch.builds == 0, "held work cannot be dropped"); eprintln("native no-successor passed"); return; }
+        if mode == "partial" { std::test::assert(!result.ok && record.head("journal").id == before && record.count("journal") == revision && batch.swaps == 0, "off-ref partial build publishes nothing"); eprintln("native partial passed"); return; }
+        if mode == "no-successor" { std::test::assert(!result.ok && result.code == "forbidden" && record.head("journal").id == before && batch.builds == 0, "held work cannot be dropped"); eprintln("native no-successor passed"); return; }
         if mode == "unknown" || mode == "arrival" || mode == "successor" {
             std::test::assert(result.ok && result.receipt.state == "outcome_unknown" && result.receipt.person.transferred == -1 && batch.swaps == 1, "uncertain CAS never repeats " + result.code);
-            if mode == "unknown" { std::test::assert(record.head("journal") == before, "no effect invented"); }
+            if mode == "unknown" { std::test::assert(record.head("journal").id == before, "no effect invented"); }
             let fresh = dna::GitJournal { repo: repo }; std::test::assert(service.active(fresh, "alice"), "failed CAS leaves target active"); let q = ops::Queries { j: fresh }; let view = ops::TaskProjection { j: fresh, visibility: q };
             std::test::assert(view.load() && view.task_of("task / one é").assignee == "alice", "failed CAS publishes no earlier move"); eprintln("native " + mode + " passed"); return;
         }

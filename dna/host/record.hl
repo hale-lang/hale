@@ -36,7 +36,7 @@ fn write_text(path: String, text: String) -> Bool fallible(IoError) {
     return true;
 }
 
-fn record_head(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.record_head(); }
+fn record_head(root: String) -> dna::Head { let authority = org_runtime::HostAuthority { root: root }; return authority.record_head(); }
 
 // The remote the record syncs with ("" when the repository has none).
 fn record_remote(repo: String) -> String {
@@ -332,7 +332,9 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
     while tries < 200 {
         tries = tries + 1;
         let head = r.head(JOURNAL);
-        let a = r.append(JOURNAL, head, dna::Row { kind: kind, entity: entity, body: body, author: author }, sign, "");
+        // a tail that could not be read is not an empty chain to append at
+        if !head.ok { return false; }
+        let a = r.append(JOURNAL, head.id, dna::Row { kind: kind, entity: entity, body: body, author: author }, sign, "");
         if a.ok { return true; }
         if a.error != "stale" { return false; }
         // the chain moved under us: re-read and re-append at the new tail
@@ -350,7 +352,9 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
 fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String) -> String {
     if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author); }
     let r = rec(repo);
-    if r.head(JOURNAL) != expected { return "stale_revision"; }
+    let now = r.head(JOURNAL);
+    if !now.ok { return "the record's head could not be read: " + now.why; }
+    if now.id != expected { return "stale_revision"; }
     let a = r.append(JOURNAL, expected, dna::Row { kind: kind, entity: entity, body: body, author: author }, signing(repo), "");
     if a.ok { return ""; }
     if a.error == "stale" { return "stale_revision"; }
@@ -527,8 +531,8 @@ fn sync_record_rows(repo: String) -> SyncResult {
     let mut round = 0;
     while round < 3 {
         round = round + 1;
-        let local = r.head(JOURNAL);
-        let remote_head = r.head(REMOTE_JOURNAL);
+        let local = r.head(JOURNAL).id;
+        let remote_head = r.head(REMOTE_JOURNAL).id;
         if len(local) == 0 {
             if len(remote_head) > 0 {
                 if !r.move_chain(JOURNAL, remote_head, "*") { return sync_failed("update-ref failed"); }
@@ -600,7 +604,7 @@ fn sync_record_rows(repo: String) -> SyncResult {
             summary = "re-appended " + to_string(n) + " local event(s) onto the remote's " + to_string(count_lines(r.between(local, remote_head)));
         }
         if r.share(remote, SYNC_SHARES, "").ok {
-            let h = r.head(JOURNAL);
+            let h = r.head(JOURNAL).id;
             let t = r.move_chain(REMOTE_JOURNAL, h, "*");
             return SyncResult { ok: true, summary: summary };
         }

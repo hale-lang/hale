@@ -34,7 +34,7 @@ locus FaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -64,7 +64,7 @@ fn command(repo: String, context: ops::GovernanceContext, key: String) -> ops::G
     return ops::GovernanceCommand { request_id: key, operation: "dna.organization.propose", application_id: context.application_id,
         target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: dna::digest_of("original module"),
         source_head: context.application_id, dependency_source: "local_vendor_snapshot", dependency_digest: dna::digest_of("original dependencies"),
-        record_head: record.head("journal"), source_text: "// Exact é 🧭\r\nlocus Org { params { } }\r\n", rationale: "Clarify responsibility." };
+        record_head: record.head("journal").id, source_text: "// Exact é 🧭\r\nlocus Org { params { } }\r\n", rationale: "Clarify responsibility." };
 }
 fn legacy(context: ops::GovernanceContext, key: String) -> ops::GovernanceCommand {
     return ops::GovernanceCommand { request_id: key, operation: "dna.practice.propose", application_id: context.application_id,
@@ -96,7 +96,7 @@ fn test_recovery(repo: String) {
     std::test::assert_eq_int(inputs.checks, 1, "recovery never checks a new source basis");
     let mut changed = c; changed.source_text = c.source_text + " ";
     std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed exact source conflicts before stale/disabled checks");
-    changed = c; changed.record_head = record.head("journal");
+    changed = c; changed.record_head = record.head("journal").id;
     std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed Record basis cannot silently rebase the request");
     std::test::assert_eq_str(fresh.submit(context, legacy(context, c.request_id)).code, "request_conflict", "legacy operation cannot reuse source key");
     std::test::assert_eq_int(record.count("journal"), admitted.revision, "recovery and conflicts append nothing");
@@ -104,7 +104,7 @@ fn test_recovery(repo: String) {
     std::test::assert_eq_str(denied.lookup(context, c.request_id).code, "forbidden", "legacy authority never recovers source receipts by itself");
     let current = command(repo, context, "drift");
     std::test::assert_eq_str(service.submit(context, current).code, "stale_subject", "fresh source drift is refused");
-    let started = native.started(fact.request); let advanced = record.append("journal", record.head("journal"), dna::Row { kind: "organization.source.started", entity: e.entity, body: started, author: "body" }, false, "");
+    let started = native.started(fact.request); let advanced = record.append("journal", record.head("journal").id, dna::Row { kind: "organization.source.started", entity: e.entity, body: started, author: "body" }, false, "");
     std::test::assert(advanced.ok, "native stage fixture retained");
     let pending = fresh.lookup(context, c.request_id);
     std::test::assert(pending.ok && pending.receipt.state == "recorded" && pending.receipt.organization.proposal_state == "pending", "exact started proof is pending until a candidate and Review exist");
@@ -145,8 +145,8 @@ fn test_legacy_occupation(repo: String) {
     let context = initialize(repo); let record = dna::GitRecord { repo: repo }; let authority = Authority { }; let inputs = SourceInputs { };
     let service = ops::GovernanceCommands { record: record, authority: authority, organization_enabled: true, organization_authority: authority, organization_inputs: inputs };
     let old = legacy(context, "occupied"); let codec = ops::GovernanceCommandCodec { };
-    let body = service.fact(context, old, "evidence", ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture-policy" }, record.head("journal"));
-    let inserted = record.append("journal", record.head("journal"), dna::Row { kind: "practice.requested", entity: codec.identity(context, old.request_id), body: body, author: "alice" }, false, "");
+    let body = service.fact(context, old, "evidence", ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture-policy" }, record.head("journal").id);
+    let inserted = record.append("journal", record.head("journal").id, dna::Row { kind: "practice.requested", entity: codec.identity(context, old.request_id), body: body, author: "alice" }, false, "");
     std::test::assert(inserted.ok, "legacy admitted key fixture");
     std::test::assert_eq_str(service.submit(context, command(repo, context, old.request_id)).code, "request_conflict", "source operation cannot reuse legacy key");
     std::test::assert_eq_int(inputs.preparations, 0, "cross-operation conflict precedes source preparation");

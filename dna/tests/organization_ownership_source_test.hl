@@ -86,7 +86,7 @@ main locus App {
         std::test::assert(base.ok, "actual committed source: " + base.code);
         return ops::GovernanceCommand { request_id: key, operation: "dna.organization.ownership.propose", application_id: record.identity(),
             target_kind: "dna.organization.module", target_id: "dna/org/owners", subject_digest: dna::digest_of(BEFORE), source_head: base.source_head,
-            dependency_source: base.dependency_source, dependency_digest: base.dependency_digest, record_head: record.head("journal"), source_text: AFTER, rationale: "Move support ownership with both affected owners' Review." };
+            dependency_source: base.dependency_source, dependency_digest: base.dependency_digest, record_head: record.head("journal").id, source_text: AFTER, rationale: "Move support ownership with both affected owners' Review." };
     }
     fn request(repo: String, c: ops::GovernanceCommand) -> dna::OrganizationSourceRequest {
         let record = dna::GitRecord { repo: repo }; let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };

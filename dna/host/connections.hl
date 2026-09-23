@@ -97,8 +97,9 @@ fn peer_identity(root: String, name: String, url: String) -> String {
 }
 
 // This record's mailbox in the connected record, fetched fresh into the
-// cache: the envelopes this record sent there, and nothing else.
-fn outbound_mailbox(cache: String, c: Connection, mine: String) -> String {
+// cache: the envelopes this record sent there, and nothing else. Its head
+// as read: one that could not be read is never an empty mailbox.
+fn outbound_mailbox(cache: String, c: Connection, mine: String) -> dna::Head {
     let chain = "exchange/" + mine;
     let pc = rec(cache);
     let dropped = pc.drop_chain(chain);
@@ -139,7 +140,9 @@ fn peer_append(root: String, c: Connection, kind: String, entity: String, body: 
         if len(cache) == 0 { return PeerWrite { why: "no cache for connection " + c.name }; }
         if peer_identity(root, c.name, c.url) != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
         let pc = rec(cache);
-        let before = outbound_mailbox(cache, c, mine);
+        let read = outbound_mailbox(cache, c, mine);
+        if !read.ok { return PeerWrite { why: "this record's mailbox in the other record could not be read (" + read.why + "); deliver again later", unreachable: true }; }
+        let before = read.id;
         let commit = pc.build(before, dna::Row { kind: kind, entity: entity, body: body, author: author }, false, "");
         if len(commit) == 0 { return PeerWrite { why: "the envelope could not be written" }; }
         if !pc.move_chain(chain, commit, "*") { continue; }
@@ -148,46 +151,31 @@ fn peer_append(root: String, c: Connection, kind: String, entity: String, body: 
     return PeerWrite { why: "the other record's mailbox kept moving; nothing was written" };
 }
 
-// Whether this record's mailbox in the connected record already holds an
-// envelope of `kind` about `entity`.
-@unbounded
-fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool {
-    if service_url(c.url) { return len(delivered_commit(root, c, kind, entity)) > 0; }
-    let cache = peer_cache(root, c.name);
-    if len(cache) == 0 { return false; }
-    let head = outbound_mailbox(cache, c, record_identity(root));
-    let mut rest = rec(cache).text_at(head);
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { return true; }
-    }
-    return false;
-}
-
 // The commit in this record's mailbox in the connected record that carries
-// an envelope of `kind` about `entity` ("" when none is there): a handoff
-// retried after its envelope landed and before this record's own row did
-// reuses it instead of writing a second (#637).
+// an envelope of `kind` about `entity` (`commit` "" when none is there): a
+// handoff retried after its envelope landed and before this record's own
+// row did reuses it instead of writing a second (#637). A mailbox that
+// could not be read says so in `why` and is never one without the
+// envelope: taken for that, the envelope was written twice (GH #961).
 @unbounded
-fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> String {
+fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> PeerWrite {
     if service_url(c.url) {
         let mine = record_identity(root);
         let resp = std::http::get(c.url + "/exchange/has?sender=" + dna::url_encode(mine) + "&kind=" + dna::url_encode(kind) + "&entity=" + dna::url_encode(entity)) or http_failed(err);
-        if resp.status != 200 { return ""; }
-        if !std::json::find_bool_field(std::str::from_bytes(resp.body), "has") { return ""; }
-        return mine + "/" + kind + "/" + entity;
+        if resp.status != 200 { return PeerWrite { }; }
+        if !std::json::find_bool_field(std::str::from_bytes(resp.body), "has") { return PeerWrite { }; }
+        return PeerWrite { commit: mine + "/" + kind + "/" + entity };
     }
-    if !delivered(root, c, kind, entity) { return ""; }
     let cache = peer_cache(root, c.name);
+    if len(cache) == 0 { return PeerWrite { }; }
+    let mine = record_identity(root);
+    let head = outbound_mailbox(cache, c, mine);
+    if !head.ok { return PeerWrite { why: "this record's mailbox in the other record could not be read (" + head.why + ")", unreachable: true }; }
+    if head.absent { return PeerWrite { }; }
     let pc = rec(cache);
-    let chain = "exchange/" + record_identity(root);
-    let head = pc.head(chain);
-    if len(head) == 0 { return ""; }
     // the k-th row of the mailbox is its k-th id (oldest first)
-    let ids = pc.ids(chain);
-    let mut rest = pc.text_at(head);
+    let ids = pc.ids("exchange/" + mine);
+    let mut rest = pc.text_at(head.id);
     let mut k = 0;
     let mut found = -1;
     while len(rest) > 0 {
@@ -198,8 +186,8 @@ fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -
         if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { found = k; }
         k = k + 1;
     }
-    if found < 0 { return ""; }
-    return dna::line_at(ids, found);
+    if found < 0 { return PeerWrite { }; }
+    return PeerWrite { commit: dna::line_at(ids, found) };
 }
 
 // The envelope rows a mailbox holds ("" when absent): a ref in this
@@ -220,8 +208,10 @@ fn mailbox_text(root: String, ref: String) -> String {
         return out;
     }
     let chain = if std::str::starts_with(ref, "refs/dna/") { ref[9..len(ref)] } else { ref };
+    // a lookup: a mailbox that could not be read lists nothing, as the
+    // service branch above lists nothing for a service that does not answer
     let r = rec(root);
-    return r.text_at(r.head(chain));
+    return r.text_at(r.head(chain).id);
 }
 
 // The sender a mailbox ref names.
@@ -363,7 +353,8 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     let bad_classes = dna::classes_refusal(classes);
     if len(bad_classes) > 0 { return fail("connect: " + bad_classes); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let prior = connection_of(p, name);
     if prior.present && len(prior.closed) == 0 { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
@@ -406,7 +397,8 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
 @unbounded
 fn connections_list(root: String, seed: String) -> Answer {
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let mut out = "";
     let mut n = 0;
@@ -427,7 +419,8 @@ fn connections_list(root: String, seed: String) -> Answer {
 fn disconnect_verb(root: String, seed: String, name: String, why: String, by_flag: String) -> Answer {
     if len(name) == 0 || len(why) == 0 { return fail("disconnect: `hale dna disconnect <name> --why <why> [--by <who>]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let c = connection_of(p, name);
     if !c.present { return fail("disconnect: no connection `" + name + "`"); }
@@ -451,7 +444,8 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         return fail("handoff: `hale dna handoff <connection> task <id> | receipt <digest> [--note …] [--as <who>]`, `handoff accept <id>`, `handoff sync`, or `hale dna handoff` to list");
     }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let c = connection_of(p, name);
     if !c.present { return fail("handoff: no connection `" + name + "`; `hale dna connect <record-url> --name " + name + " …` proposes one"); }
@@ -552,7 +546,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     // an envelope already in the other record's mailbox (a crash after it
     // landed and before this record's row) is not written twice (#637)
     let existing = delivered_commit(root, c, "handoff.received", "handoff:" + hid);
-    let landed = if len(existing) > 0 { PeerWrite { commit: existing } } else { peer_append(root, c, "handoff.received", "handoff:" + hid, b.result(), who) };
+    let landed = if len(existing.commit) > 0 || len(existing.why) > 0 { existing } else { peer_append(root, c, "handoff.received", "handoff:" + hid, b.result(), who) };
     if len(landed.commit) == 0 { return fail("handoff: " + landed.why + "; nothing was recorded here" + (if landed.unreachable { " — `hale dna handoff " + name + " " + kind + " " + subject_in + "` again delivers it" } else { "" })); }
     let pb = std::json::Builder { };
     pb.begin_object();
@@ -623,7 +617,8 @@ fn received_line(root: String, entity: String) -> String {
 @unbounded
 fn handoff_list_verb(root: String, seed: String) -> Answer {
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let mut sent = "";
     let mut i = 0;
@@ -666,7 +661,8 @@ fn handoff_list_verb(root: String, seed: String) -> Answer {
 fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, who_flag: String) -> Answer {
     if len(hid) == 0 { return fail("handoff accept: `hale dna handoff accept <id> [--note …] [--as <who>]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let ent = "handoff:" + hid;
     let line = received_line(root, ent);
@@ -678,7 +674,9 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
     let c = connection_to(p, origin);
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let already = p.has_row("handoff.accepted", ent);
-    if already && delivered(root, c, "handoff.accepted", ent) { return fail("handoff accept: " + hid + " is already accepted"); }
+    let accepted = if already { delivered_commit(root, c, "handoff.accepted", ent) } else { PeerWrite { } };
+    if len(accepted.why) > 0 { return fail("handoff accept: " + accepted.why + "; nothing was recorded here"); }
+    if len(accepted.commit) > 0 { return fail("handoff accept: " + hid + " is already accepted"); }
     if !already {
         // admitted into this record: the fact, with its origin and purpose
         let b = std::json::Builder { };
@@ -717,7 +715,8 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
 @unbounded
 fn handoff_sync_verb(root: String, seed: String) -> Answer {
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let mine = record_identity(root);
     let mut out = "";
@@ -742,7 +741,9 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
             if p.has_row("handoff.accepted_by_peer", e.entity) { continue; }
             let envelope = std::json::find_string_field(e.body, "envelope");
             if len(envelope) == 0 { continue; }
-            if len(delivered_commit(root, c, "handoff.received", e.entity)) > 0 { continue; }
+            let held = delivered_commit(root, c, "handoff.received", e.entity);
+            if len(held.why) > 0 { out = out + "  " + name + ": " + e.entity[8..len(e.entity)] + " not checked: " + held.why + "\n"; continue; }
+            if len(held.commit) > 0 { continue; }
             let again = peer_append(root, c, "handoff.received", e.entity, envelope, std::json::find_string_field(e.body, "by"));
             out = out + "  " + name + ": " + e.entity[8..len(e.entity)] + (if len(again.commit) > 0 { " delivered again (the other record did not hold it)" } else { " not delivered: " + again.why }) + "\n";
         }

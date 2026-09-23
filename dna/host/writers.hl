@@ -70,7 +70,9 @@ locus RecordTaskWriterAdmission {
     params { root: String = "."; }
     fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String {
         let r = rec(self.root);
-        if r.head(JOURNAL) != expected { return "stale_revision"; }
+        let now = r.head(JOURNAL);
+        if !now.ok { return "the record's head could not be read: " + now.why; }
+        if now.id != expected { return "stale_revision"; }
         if routing > 0 {
             // Preserve the existing owning-Ledger path. This is not a joint
             // Record/Ledger transaction; atomic person retirement is Record-only.
@@ -101,7 +103,8 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
 fn task_done_admit(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 { return fail("task done: which Task? `hale dna task done <id>`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let mut stage = 0;
     let mut tries = 0;
     while tries < 16 {
@@ -213,7 +216,8 @@ fn task_authorize_verb(root: String, seed: String, id: String, exception: String
 fn task_authorize_admit(root: String, seed: String, id: String, exception: String, who_flag: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 || len(exception) == 0 { return fail("task authorize: `hale dna task authorize <id> --exception <why> [--as <authorizer>]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
@@ -270,7 +274,8 @@ fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, 
 fn task_decide_admit(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 { return fail("task decide: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
@@ -340,7 +345,8 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
 @unbounded
 fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: String) -> Answer {
     if len(path) == 0 { return fail("receipt file: `hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]`"); }
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let text = std::io::fs::read_file(path) or "";
     if len(text) == 0 { return fail("receipt file: nothing to file at " + path); }
     let class = if len(class_flag) > 0 { class_flag } else { "internal" };
@@ -395,7 +401,8 @@ fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_fla
 fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_flag: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 || len(to) == 0 { return fail("task reassign: `hale dna task reassign <id> --to <who> [--as <by>]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
@@ -445,7 +452,8 @@ fn task_accept_verb(root: String, seed: String, id: String, who_flag: String, no
 fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, note: String, writer: TaskWriterAdmission) -> Answer {
     if len(id) == 0 { return fail("task accept: `hale dna task accept <id> [--as <who>] [--note <why>]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
     while tries < 16 {
         tries = tries + 1;
@@ -491,7 +499,8 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
 fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: String) -> Answer {
     if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
     let synced = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     return retire_rows(root, seed, who, to, by_flag);
 }
 
@@ -567,7 +576,8 @@ fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: St
     if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
     let synced = sync_record(root);
     let record = dna::GitRecord { repo: root };
-    if len(record.head(JOURNAL)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let principal = record.setting("principal");
     // The atomic batch below is the trusted-local Record's. A record with
     // Ledger routing or a hosted principal retires the way it did before
@@ -635,7 +645,8 @@ fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: St
 fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String, who_flag: String, note: String) -> Answer {
     if len(key) == 0 || !(outcome == "ok" || outcome == "failed") { return fail("effect resolve: `hale dna effect resolve <key> --outcome ok|failed [--as <who>] [--note …]`"); }
     let s = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     let mut requested = false;
     let mut last = "";
@@ -662,7 +673,8 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
 fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {
     if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
     let s0 = sync_record(root);
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, ".", "");
     let before = p.rows();
     let intent_id = "i" + hex(millis());
@@ -915,7 +927,8 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     }
     let local = membrane_up(root);
     if !local { let s = sync_record(root); }
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "");
     // GH #596 C: `design` names every pending seeded practice; each is
     // decided by its own verdict, in turn — a convenience over the
@@ -1040,7 +1053,8 @@ fn concern_raise(root: String, source: String, what: String, severity: Int) -> A
 @unbounded
 fn practice_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String) -> Answer {
     let usage = "practice: `hale dna practice propose <name> --text <text> [--because <what prompted it>] [--supersedes <digest>] [--as <who>]`, or `hale dna practice` to list";
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     if sub == "propose" {
         if len(name) == 0 || len(text) == 0 { return fail(usage); }
         let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
@@ -1119,7 +1133,9 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
 fn sync_verb(root: String) -> Answer {
     let s = sync_record(root);
     if !s.ok { return fail(s.summary); }
-    let n = if len(record_head(root)) == 0 { 0 } else { open_projection(root, ".", "").rows() };
+    let h = record_head(root);
+    if !h.ok { return fail("record " + RECORD_REF + ": " + s.summary + "; its head could not be read after: " + h.why); }
+    let n = if h.absent { 0 } else { open_projection(root, ".", "").rows() };
     return answer("record " + RECORD_REF + ": " + s.summary + "; " + to_string(n) + " event(s)\n");
 }
 
@@ -1247,7 +1263,8 @@ fn deploy_verb(root: String, fleet: String, plan_rel: String, what: String, roll
     let mut entity = "";
     let mut reason = "deploy by operator";
     if rollback {
-        if len(record_head(root)) == 0 { return fail(no_record(root)); }
+        let no_head = record_refusal(root);
+        if len(no_head) > 0 { return fail(no_head); }
         let base = base_of(open_projection(root, ".", ""), what);
         if len(base) == 0 { return fail(what + ": no Review in the record names its base"); }
         rev = base;
