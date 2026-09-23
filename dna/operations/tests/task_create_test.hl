@@ -12,7 +12,7 @@ locus CreateFaultRecord {
     params { inner: dna::GitRecord; fault: String = ""; appends: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -46,11 +46,11 @@ locus CreateCases {
         while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == entity { found = e; } i = i + 1; }
         return found;
     }
-    fn author_of(record: dna::GitRecord, seq: Int) -> String { return std::json::find_string_field(dna::line_at(record.text_at(record.head("journal")), seq), "author"); }
+    fn author_of(record: dna::GitRecord, seq: Int) -> String { return std::json::find_string_field(dna::line_at(record.text_at(record.head("journal").id), seq), "author"); }
     fn native(repo: String, mode: String) {
         let record = dna::GitRecord { repo: repo }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
         std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
-        let context = self.context(record.identity()); let head = record.head("journal");
+        let context = self.context(record.identity()); let head = record.head("journal").id;
         let outcome = "Confirm the supplier handover\r\né 🧭 <literal & markup>";
         let command = self.command(context, "shared-key", head, outcome, "org");
         let fault = CreateFaultRecord { inner: record, fault: mode };
@@ -93,7 +93,7 @@ locus CreateCases {
         std::test::assert(j.append(j.revision(), "task.born", "org:t1", intent + ": " + outcome).ok, "born");
         let born = fresh.lookup(context, "shared-key"); std::test::assert(born.receipt.state == "succeeded" && born.receipt.task_create.intent_state == "born" && born.receipt.task_create.task_id == "org:t1" && born.receipt.task_create.intent_id == intent, "born names the Task by the intent prefix");
         // a second ask at the current head mints a distinct id and can be refused
-        let now = record.head("journal"); let second = provider.submit(context, self.command(context, "second-key", now, "Another outcome", "org/support"));
+        let now = record.head("journal").id; let second = provider.submit(context, self.command(context, "second-key", now, "Another outcome", "org/support"));
         std::test::assert(second.ok && second.receipt.task_create.intent_state == "requested" && second.receipt.task_create.intent_id != intent, "a distinct intent id: " + second.code);
         std::test::assert(j.append(j.revision(), "intent.refused", second.receipt.task_create.intent_id, "refused: not this organization's to admit").ok, "refused");
         let refused = fresh.lookup(context, "second-key"); std::test::assert(refused.ok && refused.receipt.state == "succeeded" && refused.receipt.task_create.intent_state == "refused" && refused.receipt.task_create.task_id == "", "the organism's refusal is a separate fact on a succeeded command");
@@ -109,7 +109,7 @@ locus CreateCases {
         std::test::assert(recovering.lookup(context, "shared-key").ok && fresh.lookup(context, "shared-key").ok, "and does not corrupt command history");
         // after Ledger adoption new asks fail closed, recovery survives
         std::test::assert(j.append(j.revision(), "ledger.adopted", "org", "{}").ok, "adopted");
-        std::test::assert(provider.submit(context, self.command(context, "adopted-key", record.head("journal"), "late", "org")).code == "commands_unsupported", "adopted Ledger refuses new asks");
+        std::test::assert(provider.submit(context, self.command(context, "adopted-key", record.head("journal").id, "late", "org")).code == "commands_unsupported", "adopted Ledger refuses new asks");
         std::test::assert(fresh.lookup(context, "shared-key").ok, "recorded asks stay recoverable");
     }
     fn count(repo: String, kind: String) -> Int {

@@ -144,7 +144,9 @@ locus OrganizationCandidateWire {
     }
     fn source_unchanged(record: dna::GitRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
         let c = read.candidate;
-        return read.ok && record.head("journal") == source.head
+        // a head that could not be read is not a Record that did not move
+        let now = record.head("journal");
+        return read.ok && now.ok && now.id == source.head
             && self.ref_id(record, record.ref_of("candidates/" + c.candidate_key), "commit") == c.candidate_commit
             && self.ref_id(record, c.request.source_head, "commit") == c.request.source_head;
     }

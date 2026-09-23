@@ -60,7 +60,7 @@ locus SourceCandidateCases {
         let service = ops::GovernanceCommands { record: record, organization_authority: authority, organization_enabled: true, organization_ownership_enabled: true, organization_inputs: inputs };
         let inspector = orgsource::OrganizationSource { root: root, allow_drafts: true }; let basis = inspector.read(); std::test::assert(basis.ok, "actual source basis");
         let alice = ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "alice" };
-        let command = ops::GovernanceCommand { request_id: "immutable-source", operation: if self.ownership { "dna.organization.ownership.propose" } else { "dna.organization.propose" }, application_id: app, target_kind: "dna.organization.module", target_id: module_path, subject_digest: dna::digest_of(original), source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal"), source_text: prepared, rationale: "Clarify the exact source." };
+        let command = ops::GovernanceCommand { request_id: "immutable-source", operation: if self.ownership { "dna.organization.ownership.propose" } else { "dna.organization.propose" }, application_id: app, target_kind: "dna.organization.module", target_id: module_path, subject_digest: dna::digest_of(original), source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal").id, source_text: prepared, rationale: "Clarify the exact source." };
         let admitted = service.submit(alice, command); std::test::assert(admitted.ok, "actual source admission: " + admitted.code);
         self.body(root, admitted.receipt.command_id);
         let result = service.lookup(alice, command.request_id); std::test::assert(result.ok && result.receipt.organization.proposal_state == "created", "actual candidate and Review: " + result.code);
@@ -133,16 +133,16 @@ locus SourceCandidateCases {
         std::test::assert(!reader.unchanged(record, snapshot, object_read), "diff pointer loss fails final fence");
         std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "missing native diff is not invented");
         std::test::assert_eq_int(record.git("update-ref\n" + diff_ref + "\n" + object_read.diff_json.object).code, 0, "restore exact native diff");
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: candidate.request.source_digest, author: "privacy", body: "{}" }, false, "").ok, "real source visibility input");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: candidate.request.source_digest, author: "privacy", body: "{}" }, false, "").ok, "real source visibility input");
         std::test::assert(!reader.unchanged(record, snapshot, object_read), "new restriction changes Record fence");
         std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 409, "old snapshot invalidated");
-        let latest = record.head("journal"); let hidden_suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + latest;
+        let latest = record.head("journal").id; let hidden_suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + latest;
         let protected_read = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate" + hidden_suffix });
         let missing = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=missing&snapshot=" + latest });
         std::test::assert_eq_int(protected_read.status, 404, "protected source candidate hidden"); std::test::assert_eq_str(protected_read.body, missing.body, "protected and missing evidence are identical");
         self.hidden(self.first(head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews" + hidden_suffix })));
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "review.requested", entity: "review:" + candidate.mutation_id, author: "malformed", body: "{\"question\":\"private duplicate question\"}" }, false, "").ok, "malformed duplicate input");
-        let hidden_duplicate = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + record.head("journal") });
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "review.requested", entity: "review:" + candidate.mutation_id, author: "malformed", body: "{\"question\":\"private duplicate question\"}" }, false, "").ok, "malformed duplicate input");
+        let hidden_duplicate = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + record.head("journal").id });
         self.hidden(self.first(hidden_duplicate)); std::test::assert(!std::str::contains(hidden_duplicate.body, "private duplicate"), "untagged later duplicate cannot remove source masking");
         eprintln("PASS immutable Organization candidate: real admission/Body, recovery grant, pinned objects, history, masking and races");
     }

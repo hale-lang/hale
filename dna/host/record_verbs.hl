@@ -28,7 +28,8 @@ fn review_for_mutation(p: Projection, mutation_id: String) -> ReviewRow {
 
 @unbounded
 fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: String, who_flag: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let r = rec(root);
     if len(sub) == 0 {
         let p = open_projection(root, seed, "");
@@ -80,8 +81,10 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
 
 // The record's head, or `none`: the driver asks before it seeds.
 fn record_head_verb(root: String) -> Answer {
+    // `none` only for a record known absent: the driver seeds on it
     let h = record_head(root);
-    return answer((if len(h) == 0 { "none" } else { h }) + "\n");
+    if !h.ok { return fail("the record at " + RECORD_REF + " in " + root + " could not be read: " + h.why); }
+    return answer((if h.absent { "none" } else { h.id }) + "\n");
 }
 
 // Append every row of a file (one JSON object per line: kind, entity,
@@ -146,9 +149,13 @@ fn in_list(list: String, item: String) -> Bool { return std::str::contains(list,
 
 // The record's design states, by name, from the rows and the receipts.
 @unbounded
-fn design_in_record(root: String, states: DesignStates) {
+fn design_in_record(root: String, states: DesignStates) -> Bool {
     let r = rec(root);
-    let text = r.text_at(r.head(JOURNAL));
+    // a head that could not be read is not a record with no design in it:
+    // every practice would be proposed again
+    let h = r.head(JOURNAL);
+    if !h.ok { return false; }
+    let text = r.text_at(h.id);
     let names = DigestNames { };
     let mut ratified = "\n"; // in order
     let mut retired = "\n";
@@ -214,6 +221,7 @@ fn design_in_record(root: String, states: DesignStates) {
         if cur.latest != digest { continue; }
         states.set(DesignState { name: cur.name, latest_text: cur.latest_text, latest: cur.latest, active: cur.active, pending: !in_list(decided, digest), refused: in_list(refused, digest) });
     }
+    return true;
 }
 
 // The practice's document, byte for byte as the toolchain has always
@@ -268,11 +276,12 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
 // `proposed=<n> superseding=<m> waiting=<w>`.
 @unbounded
 fn design_upgrade_verb(root: String, path: String, toolchain: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     let practices = std::io::fs::read_file(path) or "";
     if len(practices) == 0 { return fail("design-upgrade: no practices at " + path); }
     let states = DesignStates { };
-    design_in_record(root, states);
+    if !design_in_record(root, states) { return fail("design-upgrade: the record's head could not be read; nothing was proposed"); }
     let mut proposed = 0;
     let mut superseding = 0;
     let mut waiting = 0;
@@ -327,7 +336,8 @@ fn ledger_status(root: String) -> String {
 
 @unbounded
 fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: String) -> Answer {
-    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
     if len(sub) == 0 || sub == "status" { return answer(ledger_status(root)); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let url = knowledge_url(root);

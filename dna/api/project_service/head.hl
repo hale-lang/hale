@@ -396,7 +396,10 @@ fn receipts_json(cfg: HeadConfig, application_id: String, n: Int, full: Bool) ->
 // One `GET /head/projects` item; `detail` adds the `?id=` fields.
 fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) -> String {
     let record = dna::GitRecord { repo: r.root };
-    let head = record.head("journal");
+    // `record` is null for a head there is none of to show, absent or
+    // unreadable alike: the face reads null as "record unread", and
+    // nothing is decided on this listing
+    let head = record.head("journal").id;
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("application_id", r.application_id);
@@ -484,6 +487,7 @@ locus Head {
         if code == "command_too_large" { return self.error(413, code, "the command body exceeds the supported byte limit", false); }
         if code == "unsupported_media_type" { return self.error(415, code, "commands require Content-Type application/json", false); }
         if code == "commands_unsupported" { return self.error(503, code, "the head's command origin is not configured", false); }
+        if code == "record_unavailable" { return self.error(503, code, "the attached project's Record head could not be read", true); }
         return self.error(503, "head_detached", "no project is attached; attach one from the Projects workspace", true);
     }
 
@@ -694,8 +698,12 @@ locus Head {
         }
         let mut head_before = "";
         if len(ctx.active_root) > 0 {
+            // a head that could not be read would stand as "no record
+            // before" and every row would read as this command's evidence
             let record = dna::GitRecord { repo: ctx.active_root };
-            head_before = record.head("journal");
+            let read = record.head("journal");
+            if !read.ok { return self.command_error("record_unavailable"); }
+            head_before = read.id;
         }
         let s = j.submit(self.cfg.principal_mode, self.cfg.principal_name, body, allowlist, head_before);
         if s.code == "request_conflict" { return self.command_error("request_conflict"); }

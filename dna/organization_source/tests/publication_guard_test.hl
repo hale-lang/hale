@@ -23,7 +23,7 @@ locus PublicationGuardCases {
             principal_mode: "local", by: "alice", authority: "board", authority_basis: "source grant",
             source_owner: "acme", source_head: base.source_head, module_digest: base.module_digest,
             dependency_source: base.dependency_source, dependency_digest: base.dependency_digest,
-            record_head: record.head("journal"), source_text: text, source_digest: dna::digest_of(text), rationale: "Exact prepared source."
+            record_head: record.head("journal").id, source_text: text, source_digest: dna::digest_of(text), rationale: "Exact prepared source."
         };
     }
     fn exercise() {
@@ -61,7 +61,7 @@ locus PublicationGuardCases {
         std::test::assert_eq_str(std::io::fs::read_file(metadata) or "", "retained topology path proof", "actual bounded metadata path is writable");
 
         std::test::assert(guard.manifest(r, record).ok, "manifest addressed by native retained receipt");
-        std::test::assert_eq_str(record.head("journal"), request.record_head, "preparation creates no admission fact");
+        std::test::assert_eq_str(record.head("journal").id, request.record_head, "preparation creates no admission fact");
         std::test::assert_eq_str(self.git("rev-parse\nHEAD"), request.source_head, "preparation does not change source HEAD");
         let denied = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "north" };
         std::test::assert(!denied.current(r).ok, "trusted source owner cannot be substituted by request");
@@ -95,7 +95,7 @@ locus PublicationGuardCases {
         std::test::assert_eq_str(guard.materialize(r, self.repo).code, "organization_worktree_invalid", "destination never accepted as mutation worktree");
         let missing = guard.with_receipt(r, dna::digest_of("missing dependency receipt"));
         std::test::assert_eq_str(guard.current(missing).code, "organization_dependencies_unavailable", "missing retained storage remains retryable, not stale/refused");
-        let moved = record.append("journal", record.head("journal"), dna::Row { kind: "fixture.moved", entity: "guard", body: "{}", author: "fixture" }, false, "");
+        let moved = record.append("journal", record.head("journal").id, dna::Row { kind: "fixture.moved", entity: "guard", body: "{}", author: "fixture" }, false, "");
         std::test::assert(moved.id != "", "move real Record");
         std::test::assert_eq_str(guard.prepare(request).code, "stale_subject", "prepare checks original exact Record head");
         std::test::assert(guard.current(r).ok, "later materialization/current does not require pre-admission Record head");

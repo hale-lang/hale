@@ -7,7 +7,7 @@ interface GovernanceRecord {
     // share this locus opens a record of its own over it (GH #967)
     fn location() -> String;
     fn identity() -> String;
-    fn head(chain: String) -> String;
+    fn head(chain: String) -> dna::Head;
     fn count(chain: String) -> Int;
     fn between(from: String, to: String) -> String;
     fn text_at(id: String) -> String;
@@ -194,12 +194,14 @@ locus GovernanceCommands {
         if profile == source.profile() { return self.organization_authority.authorize(context, operation, recovery, j); }
         return self.authorize(context, operation, recovery, j);
     }
-    fn unchanged(s: GovernanceSnapshot) -> Bool { return self.record.head("journal") == s.head && self.record.identity() == s.application_id; }
+    // A head that could not be read is never a Record that did not move:
+    // the fence refuses (GH #961).
+    fn unchanged(s: GovernanceSnapshot) -> Bool { let now = self.record.head("journal"); return now.ok && now.id == s.head && self.record.identity() == s.application_id; }
     fn capture() -> GovernanceSnapshot {
         let cap = self.limits;
         if cap.max_rows < 1 || cap.max_rows > 10000 || cap.max_bytes < 1 || cap.max_bytes > 16777216 || cap.attempts < 1 || cap.attempts > 8 { return GovernanceSnapshot { code: "command_read_limit" }; }
-        let head = self.record.head("journal"); let identity = self.record.identity(); let revision = self.record.count("journal");
-        if len(head) == 0 || len(identity) == 0 || len(head) > 256 || len(identity) > 256 || revision < 1 { return GovernanceSnapshot { code: "record_unavailable" }; }
+        let read = self.record.head("journal"); let head = read.id; let identity = self.record.identity(); let revision = self.record.count("journal");
+        if !read.ok || read.absent || len(identity) == 0 || len(head) > 256 || len(identity) > 256 || revision < 1 { return GovernanceSnapshot { code: "record_unavailable" }; }
         if revision > cap.max_rows { return GovernanceSnapshot { code: "command_read_limit" }; }
         let ids = self.record.between("", head); let text = self.record.text_at(head);
         let s = GovernanceSnapshot { application_id: identity, head: head, revision: revision, ids: ids, text: text };

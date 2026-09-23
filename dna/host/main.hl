@@ -142,14 +142,16 @@ fn main() {
     } else if verb == "history" {
         ans = history_verb(root, word(a, 0));
     } else if verb == "review" {
-        if len(record_head(root)) == 0 { ans = fail(no_record(root)); }
+        let no_head = record_refusal(root);
+        if len(no_head) > 0 { ans = fail(no_head); }
         else {
             let p = open_projection(root, seed, toolchain);
             let id = word(a, 0);
             if len(id) == 0 { ans = review_list(p); } else { ans = render_review(p, id, has_flag(a, "--iris")); }
         }
     } else if verb == "board" || verb == "report" || verb == "pressure" || verb == "fleet" {
-        if len(record_head(root)) == 0 { ans = fail(no_record(root)); }
+        let no_head = record_refusal(root);
+        if len(no_head) > 0 { ans = fail(no_head); }
         else {
             let p = open_projection(root, seed, toolchain);
             if verb == "board" { ans = board_verb(p); }

@@ -27,7 +27,8 @@ locus KnowledgeCommands {
         let reader = if len(self.record.location()) > 0 { GovernanceCommands { record: dna::GitRecord { repo: self.record.location() }, limits: self.limits } } else { reader_over(self.record, self.limits) };
         return reader.capture();
     }
-    fn unchanged(s: GovernanceSnapshot) -> Bool { return self.record.identity() == s.application_id && self.record.head("journal") == s.head; }
+    // A head that could not be read is never a Record that did not move (GH #961).
+    fn unchanged(s: GovernanceSnapshot) -> Bool { let now = self.record.head("journal"); return self.record.identity() == s.application_id && now.ok && now.id == s.head; }
     fn source_supported(j: dna::Journal) -> Bool {
         let mut i = 0;
         while i < j.revision() {

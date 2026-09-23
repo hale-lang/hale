@@ -25,7 +25,7 @@ locus OrganizationStatusCases {
         let codec = ops::OrganizationAuthorityPolicyCodec { };
         let policy = codec.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"reviewer\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":false,\"recover\":true}]}", app, "local");
         std::test::assert(policy.valid, "separate recovery-only read grant"); let authority = ops::FixedOrganizationAuthority { policy: policy };
-        let suffix = "&snapshot=" + record.head("journal"); let response = self.request(root, id, authority, "reviewer", suffix);
+        let suffix = "&snapshot=" + record.head("journal").id; let response = self.request(root, id, authority, "reviewer", suffix);
         std::test::assert_eq_int(response.status, 200, response.body); let data = w.raw(response.body, "data");
         std::test::assert_eq_str(w.text(data, "profile"), "dna.organization.source-status.v1", "typed status");
         std::test::assert_eq_str(w.text(data, "review_id"), id, "exact Review identity"); std::test::assert_eq_str(w.text(w.raw(data, "source"), "candidate_commit"), w.text(meta, "candidate_commit"), "exact native candidate");
@@ -73,11 +73,11 @@ locus OrganizationStatusCases {
         let denied = api::Api { root: root, local_name: "outsider", organization_candidates: reader, organization_runtime: probe };
         std::test::assert_eq_int(denied.handle(std::http::Request { method: "GET", path: path }).status, 403, "denied runtime read"); std::test::assert_eq_int(probe.calls, 1, "denial occurs before provider");
         let native_codec = dna::OrganizationSourceRequestCodec { }; let forged = native_codec.fact(journal, "organization.source.launched", attempt.attempt_id);
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: forged.kind, entity: forged.entity, author: "forged", body: forged.body }, false, "").ok, "owned malformed-author input");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: forged.kind, entity: forged.entity, author: "forged", body: forged.body }, false, "").ok, "owned malformed-author input");
         let malformed = self.request(root, id, authority, "reviewer", ""); std::test::assert_eq_int(malformed.status, 200, malformed.body);
         std::test::assert_eq_str(w.text(w.raw(w.raw(malformed.body, "data"), "launch"), "state"), "unknown", "wrong-author stage fails closed");
         std::test::assert_eq_str(w.text(w.raw(w.raw(malformed.body, "data"), "observation"), "state"), "unknown", "later observation cannot repair invalid launch");
-        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: journal.read(reviewed.review.sequence).digest, author: "test", body: "{}" }, false, "").ok, "owned privacy input");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: journal.read(reviewed.review.sequence).digest, author: "test", body: "{}" }, false, "").ok, "owned privacy input");
         let hidden = self.request(root, id, authority, "reviewer", ""); let missing = self.request(root, "missing", authority, "reviewer", "");
         std::test::assert_eq_int(hidden.status, 404, "withheld exact Review settlement hides stage summaries: " + hidden.body); std::test::assert_eq_str(hidden.body, missing.body, "protected and missing status indistinguishable");
         println("PASS Organization source status: actual native history, recovery-only grant, staged evidence, privacy, typed runtime identity and final fence");

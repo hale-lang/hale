@@ -64,7 +64,9 @@ locus TaskWire {
         b.end_array(); b.field("page", http.page(query.limit, query.offset, total, source.head));
         b.begin_object_field("basis"); b.string_field("projection", "dna.task-administration/1"); b.string_field("memory", "record"); b.string_field("routing", "0");
         b.string_field("record_head", source.head); b.string_field("record_revision", to_string(source.revision)); b.end_object(); b.end_object();
-        if record.head("journal") != source.head || status.trust(record) != "local" {
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head || status.trust(record) != "local" {
             return http.error(409, "snapshot_changed", "the Record or operational trust changed while Tasks were read", true);
         }
         return http.success(context.source, b.result());

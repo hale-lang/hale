@@ -21,7 +21,8 @@ locus OrganizationLaunchSource {
         let reviewed = view.review_evidence(j, candidate, j.text); let applied = application.read(j, candidate, reviewed);
         if applied.state != "applied" || applied.handoff_state != "requested" || applied.applied_sequence < 0 || applied.handoff_sequence < 0 { return OrganizationLaunchBasis { }; }
         let request = candidate.request; let effect = j.read(applied.applied_sequence); let handoff = j.read(applied.handoff_sequence);
-        if request.source_owner != authority.owner() || authority.record_head() != j.head() { return OrganizationLaunchBasis { }; }
+        let at = authority.record_head();
+        if request.source_owner != authority.owner() || !at.ok || at.id != j.head() { return OrganizationLaunchBasis { }; }
         if authority.trust() == "signed" && (!authority.row_verified(j.read(candidate.request_sequence).digest)
                 || !authority.row_verified(effect.digest) || !authority.row_verified(handoff.digest)) { return OrganizationLaunchBasis { }; }
         return OrganizationLaunchBasis { ok: true, request: request, candidate: candidate.candidate_commit,

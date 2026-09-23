@@ -159,8 +159,10 @@ locus SourceReader {
     fn read() -> Source {
         let r = dna::GitRecord { repo: self.root };
         if !r.is_repository() { return Source { error: "the configured project is not an accessible Git repository" }; }
-        let head = r.head("journal");
-        if len(head) == 0 { return Source { error: "the project has no readable DNA Record" }; }
+        let read = r.head("journal");
+        if !read.ok { return Source { error: "the Record's head could not be read: " + read.why }; }
+        if read.absent { return Source { error: "the project has no readable DNA Record" }; }
+        let head = read.id;
         let rows = r.git("show\n" + head + ":journal.jsonl");
         let ids = r.git("rev-list\n--reverse\n" + head);
         if rows.code != 0 || ids.code != 0 { return Source { error: "the Record snapshot could not be read" }; }
@@ -178,7 +180,9 @@ locus SourceReader {
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
         }
         if seq != count { return Source { code: "record_malformed", error: "Record rows and commits disagree" }; }
-        if r.head("journal") != head { return Source { code: "snapshot_changed", error: "the Record changed while it was being read" }; }
+        let now = r.head("journal");
+        if !now.ok { return Source { error: "the Record's head could not be read: " + now.why }; }
+        if now.id != head { return Source { code: "snapshot_changed", error: "the Record changed while it was being read" }; }
         let root = r.root();
         let mut name = root;
         let mut i = 0;

@@ -3596,7 +3596,7 @@
             }
           },
           "503": {
-            "description": "head_detached or head_api_unavailable; retryable",
+            "description": "head_detached, head_api_unavailable or record_unavailable; retryable",
             "content": {
               "application/json": {
                 "schema": {

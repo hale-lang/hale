@@ -16,11 +16,12 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 fn record_contract(r: dna::Record, label: String) {
     // ---- chains: append under compare-and-swap
-    std::test::assert_eq_str(r.head("journal"), "", label + ": an empty chain has no head");
+    let empty = r.head("journal");
+    std::test::assert(empty.ok && empty.absent && empty.id == "", label + ": an empty chain reads as absent, not as a failed read");
     std::test::assert_eq_int(r.count("journal"), 0, label + ": and no rows");
     let a = r.append("journal", "", dna::Row { kind: "task.born", entity: "t1", body: "reduce checkout failures", author: "riley" }, false, "");
     std::test::assert(a.ok, label + ": the first append lands on the empty chain");
-    std::test::assert_eq_str(r.head("journal"), a.id, label + ": the head is the row's id");
+    std::test::assert_eq_str(r.head("journal").id, a.id, label + ": the head is the row's id");
     let stale = r.append("journal", "", dna::Row { kind: "task.done", entity: "t1" }, false, "");
     std::test::assert(!stale.ok && stale.error == "stale", label + ": an append at a head the chain left is stale");
     let b = r.append("journal", a.id, dna::Row { kind: "task.done", entity: "t1", author: "riley" }, false, "");
@@ -39,16 +40,17 @@ fn record_contract(r: dna::Record, label: String) {
     // ---- a chain built beside the live one moves nothing until it is swapped in
     let built = r.build(a.id, dna::Row { kind: "task.failed", entity: "t1", author: "riley" }, false, "Rebuilt-From: " + b.id);
     std::test::assert(len(built) > 0 && built != b.id, label + ": a build on the first row is a new id");
-    std::test::assert_eq_str(r.head("journal"), b.id, label + ": and moved no chain");
+    std::test::assert_eq_str(r.head("journal").id, b.id, label + ": and moved no chain");
     std::test::assert(!r.move_chain("journal", built, a.id), label + ": a swap expecting an old head is refused");
     std::test::assert(r.move_chain("journal", built, b.id), label + ": a swap expecting the head lands");
-    std::test::assert_eq_str(r.head("journal"), built, label + ": the chain is where it was swapped to");
+    std::test::assert_eq_str(r.head("journal").id, built, label + ": the chain is where it was swapped to");
     // ---- another chain is its own
     let m = r.append("exchange/peer", "", dna::Row { kind: "handoff.received", entity: "h1", author: "peer" }, false, "");
     std::test::assert(m.ok, label + ": a mailbox chain appends from empty");
     std::test::assert_eq_int(r.count("journal"), 2, label + ": without touching the journal");
     std::test::assert(r.drop_chain("exchange/peer"), label + ": and can be dropped");
-    std::test::assert_eq_str(r.head("exchange/peer"), "", label + ": leaving no head");
+    let dropped = r.head("exchange/peer");
+    std::test::assert(dropped.ok && dropped.absent, label + ": leaving no head");
     // ---- bodies by digest
     let digest = r.keep("a receipt");
     std::test::assert_eq_int(len(digest), 64, label + ": a body is kept under its sha256");
@@ -102,11 +104,17 @@ main locus App {
         std::test::assert(std::str::contains(subject.stdout, "Rebuilt-From: "), "git: the note is the message's body: " + subject.stdout);
         std::test::assert_eq_int(g.count("candidates"), 0, "git: a pointer family is not a chain");
         std::test::assert_eq_str(g.pointers("candidates"), "", "git: no pointers under a prefix");
-        std::test::assert(g.point("candidates/m1", g.head("journal")) && g.point("candidates/m2", g.head("journal")), "git: two pointers");
+        std::test::assert(g.point("candidates/m1", g.head("journal").id) && g.point("candidates/m2", g.head("journal").id), "git: two pointers");
         std::test::assert_eq_str(g.pointers("candidates"), "candidates/m1\ncandidates/m2\n", "git: listed under their prefix, by name");
         std::test::assert_eq_str(g.remote(), "", "git: no remote");
         let t = g.receive("nowhere", "journal");
         std::test::assert(!t.ok, "git: a receive from nowhere fails");
+        // a head that could not be read is never an absent chain (GH #961)
+        let gone = dna::GitRecord { repo: dir + "/missing" };
+        let h = gone.head("journal");
+        std::test::assert(!h.ok && !h.absent && len(h.why) > 0, "git: a head that could not be read is a failed read: " + h.why);
+        let lost = gone.append("journal", "", dna::Row { kind: "task.born", entity: "t9" }, false, "");
+        std::test::assert(!lost.ok && std::str::starts_with(lost.error, "io: "), "git: an append on it is an i/o failure, never stale: " + lost.error);
         // the record's three storage loci stand on it
         let j = dna::GitJournal { repo: dir };
         std::test::assert_eq_int(j.revision(), 2, "GitJournal: loads the chain's rows");
@@ -114,7 +122,7 @@ main locus App {
         std::test::assert(j.verify_chain(), "GitJournal: the chain verifies");
         let ap = j.append(2, "task.born", "t2", "");
         std::test::assert(ap.ok && j.revision() == 3, "GitJournal: appends through the record");
-        std::test::assert_eq_str(g.row_of(g.head("journal")).kind, "task.born", "and the record sees it");
+        std::test::assert_eq_str(g.row_of(g.head("journal").id).kind, "task.born", "and the record sees it");
         let rc = dna::GitReceipts { repo: dir };
         let d2 = rc.store("evidence");
         std::test::assert(g.body(d2).present, "GitReceipts: stores a body of the record");

@@ -35,7 +35,7 @@ locus EdgeReviewReadCases {
         let authority = EdgeReadAuthority { }; let commands = ops::KnowledgeCommands { record: record, authority: authority };
         let alice = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
         let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1); let why = std::str::from_bytes(bytes.snapshot());
-        let command = ops::KnowledgeCommand { request_id: "edge-read", operation: "dna.knowledge.edge.link", application_id: alice.application_id, target_id: idea, from_id: idea, to_id: other, record_head: record.head("journal"), rel: "exact é 🧭 relationship", rationale: why };
+        let command = ops::KnowledgeCommand { request_id: "edge-read", operation: "dna.knowledge.edge.link", application_id: alice.application_id, target_id: idea, from_id: idea, to_id: other, record_head: record.head("journal").id, rel: "exact é 🧭 relationship", rationale: why };
         let admitted = commands.submit(alice, command); std::test::assert(admitted.ok, "native admission: " + admitted.code);
         let captured = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { }; let fact = codec.decode_fact(captured.read(admitted.receipt.sequence));
         std::test::assert(fact.valid, "original request retains exact command and grant");
@@ -51,7 +51,7 @@ locus EdgeReviewReadCases {
         let projection_view = ops::GovernanceProjection { };
         std::test::assert(foreign.valid && !projection_view.edge_fact(foreign, request.candidate_digest, review_id).valid, "foreign application cannot borrow a canonical admitted candidate");
         self.append(journal, "knowledge.retired", other, "{}");
-        let api_head = api::Api { root: root, local_name: "bob" }; let prefix = api::API_PREFIX + "/" + alice.application_id; let head = record.head("journal");
+        let api_head = api::Api { root: root, local_name: "bob" }; let prefix = api::API_PREFIX + "/" + alice.application_id; let head = record.head("journal").id;
         let path = prefix + "/dna/reviews/candidate?id=" + dna::url_encode(review_id) + "&snapshot=" + head;
         let response = api_head.handle(std::http::Request { method: "GET", path: path });
         std::test::assert_eq_int(response.status, 200, response.body);
@@ -80,7 +80,7 @@ locus EdgeReviewReadCases {
         std::test::assert(accepted.ok && accepted.receipt.verdict_state == "pending", "independent exact Review command is admitted");
         std::test::assert_eq_int(api_head.handle(std::http::Request { method: "GET", path: path }).status, 409, "old candidate snapshot is stale after admission");
         self.append(journal, "receipt.withheld", other, "{}");
-        let hidden_head = record.head("journal");
+        let hidden_head = record.head("journal").id;
         let hidden = api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=" + dna::url_encode(review_id) + "&snapshot=" + hidden_head });
         std::test::assert_eq_int(hidden.status, 404, "protected underlying item hides candidate exactly like missing");
         let missing = api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=missing&snapshot=" + hidden_head });

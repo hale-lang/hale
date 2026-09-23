@@ -225,8 +225,8 @@ locus OrganizationPublicationInputs {
         if !self.source() || !self.request_valid(r, true) || r.dependency_receipt != "" { return dna::OrganizationSourcePreparation { code: "invalid_command" }; }
         let record = dna::GitRecord { repo: self.root };
         let head = record.head("journal");
-        if head == "" { return dna::OrganizationSourcePreparation { }; }
-        if head != r.record_head { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
+        if !head.ok || head.absent { return dna::OrganizationSourcePreparation { }; }
+        if head.id != r.record_head { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
         let source = OrganizationSource { root: self.root, compiler: self.compiler, allow_drafts: true, inspection_seconds: self.inspection_seconds };
         let base = source.read();
         if !base.ok { return dna::OrganizationSourcePreparation { code: base.code }; }
@@ -251,8 +251,8 @@ locus OrganizationPublicationInputs {
         let checked_current = self.current(prepared);
         if !checked_current.ok { return dna::OrganizationSourcePreparation { code: checked_current.code }; }
         let final_head = record.head("journal");
-        if final_head == "" { return dna::OrganizationSourcePreparation { }; }
-        if final_head != r.record_head { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
+        if !final_head.ok || final_head.absent { return dna::OrganizationSourcePreparation { }; }
+        if final_head.id != r.record_head { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
         return dna::OrganizationSourcePreparation { ok: true, code: "", request: prepared };
     }
     fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck {

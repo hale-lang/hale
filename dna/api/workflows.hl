@@ -176,7 +176,9 @@ locus WorkflowWire {
         b.end_array(); b.field("page", http.page(query.limit, query.offset, total, source.head));
         b.begin_object_field("basis"); b.string_field("projection", "dna.workflow-projection/1"); b.string_field("memory", "record"); b.string_field("routing", "0"); b.bool_field("runtime_association", false); b.end_object(); b.end_object();
         let record = dna::GitRecord { repo: root };
-        if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed while executions were read", true); }
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while executions were read", true); }
         return http.success(source, b.result());
     }
 }

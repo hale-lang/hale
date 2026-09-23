@@ -4,14 +4,14 @@ import "../core" as dna;
 
 interface GovernanceBatchRecord {
     fn identity() -> String;
-    fn head(chain: String) -> String;
+    fn head(chain: String) -> dna::Head;
     fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String;
     fn move_chain(chain: String, id: String, expected: String) -> Bool;
 }
 locus NoGovernanceBatchRecord {
     params { }
     fn identity() -> String { return ""; }
-    fn head(chain: String) -> String { return ""; }
+    fn head(chain: String) -> dna::Head { return dna::Head { ok: true, absent: true }; }
     fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String { return ""; }
     fn move_chain(chain: String, id: String, expected: String) -> Bool { return false; }
 }
@@ -167,7 +167,10 @@ locus PersonRetirement {
         let codec = PersonRetirementCodec { }; let common = GovernanceCommandCodec { };
         if !codec.valid(context, c) || !snapshot.ok || context.application_id != snapshot.application_id || batch.identity() != snapshot.application_id
             || !grant.allowed || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false) { return PersonRetirementPublication { code: "forbidden" }; }
-        if batch.head("journal") != snapshot.head { return PersonRetirementPublication { code: "stale" }; }
+        // a head that could not be read is refused as unavailable, never read as unmoved
+        let before = batch.head("journal");
+        if !before.ok { return PersonRetirementPublication { code: "record_unavailable" }; }
+        if before.id != snapshot.head { return PersonRetirementPublication { code: "stale" }; }
         let j = GovernanceJournal { snapshot: snapshot }; if !j.valid { return PersonRetirementPublication { code: "command_history_invalid" }; }
         let actual = self.plan(j, c.target_id, grant.basis);
         if !actual.ok { return PersonRetirementPublication { code: actual.code }; }
@@ -190,7 +193,9 @@ locus PersonRetirement {
         if record_bytes + len(dna::row_line(snapshot.revision + index, final_row, context.principal_name)) > 16777216 { return PersonRetirementPublication { code: "person_read_limit" }; }
         let event_id = batch.build(parent, final_row, sign, "");
         if event_id == "" { return PersonRetirementPublication { code: "record_unavailable" }; }
-        if batch.head("journal") != snapshot.head || batch.identity() != snapshot.application_id { return PersonRetirementPublication { code: "stale" }; }
+        let now = batch.head("journal");
+        if !now.ok { return PersonRetirementPublication { code: "record_unavailable" }; }
+        if now.id != snapshot.head || batch.identity() != snapshot.application_id { return PersonRetirementPublication { code: "stale" }; }
         if !batch.move_chain("journal", event_id, snapshot.head) { return PersonRetirementPublication { ok: true, code: "", unknown: true }; }
         return PersonRetirementPublication { ok: true, code: "", event_id: event_id, body: body, transferred: actual.transferred };
     }

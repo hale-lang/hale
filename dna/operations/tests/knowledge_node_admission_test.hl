@@ -15,7 +15,7 @@ locus NodeFaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
     fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
     fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
     fn text_at(id: String) -> String { return self.inner.text_at(id); }
@@ -67,7 +67,7 @@ locus NodeAdmissionCases {
     fn recovery(repo: String) {
         self.setup(repo); let record = NodeFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
         let commands = ops::KnowledgeCommands { record: record, authority: NodeAuthority { } };
-        let c = self.command(context, record.head("journal"), "create", "propose", "", "org", "org");
+        let c = self.command(context, record.head("journal").id, "create", "propose", "", "org", "org");
         let cap = commands.capability_for(context, c.operation);
         std::test::assert(cap.available && cap.authorized && cap.mode == "review", "native node Review is a submittable capability");
         record.fault = "lost";
@@ -100,29 +100,29 @@ locus NodeAdmissionCases {
         self.setup(repo); let old = self.old(repo, "org", "org", "");
         let record = NodeFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
         let commands = ops::KnowledgeCommands { record: record, authority: NodeAuthority { } };
-        let revise = self.command(context, record.head("journal"), "revision", "revise", old, "org", "org");
+        let revise = self.command(context, record.head("journal").id, "revision", "revise", old, "org", "org");
         std::test::assert(commands.submit(context, revise).ok, "visible ratified unnamed predecessor is revisable");
-        let retire = self.command(context, record.head("journal"), "retirement", "retire", old, "", "");
+        let retire = self.command(context, record.head("journal").id, "retirement", "retire", old, "", "");
         let retired = commands.submit(context, retire);
         std::test::assert(retired.ok, "retirement requests native governance");
         let f = self.fact(commands, retired.receipt.sequence);
         std::test::assert(f.node.kind == "retirement" && f.node.supersedes == old && f.node.name == "" && f.node.author == "org" && f.node.target == "org" && f.node.text == retire.rationale, "service derives exact retirement metadata from canonical old receipt");
         let no_scope = ops::KnowledgeCommands { record: record, authority: NodeAuthority { scopes: "[{\"author\":\"org.child\",\"target\":\"org.child\"}]" } };
-        std::test::assert_eq_str(no_scope.submit(context, self.command(context, record.head("journal"), "unauthorized-old", "revise", old, "org.child", "org.child")).code, "forbidden", "new scope grant cannot replace an old item outside its grant");
-        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "unauthorized-new", "revise", old, "org.child", "org.child")).code, "forbidden", "old scope grant cannot move a revision outside its grant");
+        std::test::assert_eq_str(no_scope.submit(context, self.command(context, record.head("journal").id, "unauthorized-old", "revise", old, "org.child", "org.child")).code, "forbidden", "new scope grant cannot replace an old item outside its grant");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal").id, "unauthorized-new", "revise", old, "org.child", "org.child")).code, "forbidden", "old scope grant cannot move a revision outside its grant");
         let direct = ops::KnowledgeCommands { record: record, authority: NodeAuthority { mode: "direct" } };
         std::test::assert(!direct.capability_for(context, "dna.knowledge.node.propose").available, "direct grant never bypasses native node Review");
-        std::test::assert_eq_str(direct.submit(context, self.command(context, record.head("journal"), "direct", "propose", "", "org", "org")).code, "commands_unsupported", "direct node submission cannot skip governance");
+        std::test::assert_eq_str(direct.submit(context, self.command(context, record.head("journal").id, "direct", "propose", "", "org", "org")).code, "commands_unsupported", "direct node submission cannot skip governance");
         std::test::assert_eq_int(record.appends, 2, "denied changes never append requests");
-        let stale = self.command(context, record.head("journal"), "stale", "retire", old, "", "");
+        let stale = self.command(context, record.head("journal").id, "stale", "retire", old, "", "");
         let j = dna::GitJournal { repo: repo }; self.append(j, "application.observed", "org", "{}");
         std::test::assert_eq_str(commands.submit(context, stale).code, "stale_subject", "new command cannot rebase checked head");
         let successor = dna::digest_of("reserved successor");
         self.append(j, "knowledge.proposed", successor, "{\"supersedes\":\"" + old + "\"}");
         self.append(j, "knowledge.ratified", successor, "{}");
-        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "reserved", "retire", old, "", "")).code, "stale_subject", "ratified successor reserves predecessor before retirement recovery");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal").id, "reserved", "retire", old, "", "")).code, "stale_subject", "ratified successor reserves predecessor before retirement recovery");
         record.fault = "unknown";
-        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "unknown", "propose", "", "org", "org")).code, "command_outcome_unknown", "unresolved append remains unknown without an automatic second attempt");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal").id, "unknown", "propose", "", "org", "org")).code, "command_outcome_unknown", "unresolved append remains unknown without an automatic second attempt");
         std::test::assert_eq_int(record.appends, 3, "unknown append attempted exactly once");
     }
     fn policy() {
@@ -140,7 +140,7 @@ locus NodeAdmissionCases {
     fn contradictory_outcome(repo: String) {
         self.setup(repo); let record = dna::GitRecord { repo: repo }; let context = self.who(record);
         let commands = ops::KnowledgeCommands { record: record, authority: NodeAuthority { } };
-        let c = self.command(context, record.head("journal"), "exact-outcome", "propose", "", "org", "org");
+        let c = self.command(context, record.head("journal").id, "exact-outcome", "propose", "", "org", "org");
         let admitted = commands.submit(context, c); let f = self.fact(commands, admitted.receipt.sequence);
         let native = dna::KnowledgeNodeRequestCodec { }; let codec = ops::KnowledgeNodeCommandCodec { };
         let bad = std::str::replace(codec.fact(context, c, NodeAuthority { }.authorize(context, c.operation, false, dna::MemJournal { }), f.node), f.node.candidate_digest, dna::digest_of("wrong candidate"));

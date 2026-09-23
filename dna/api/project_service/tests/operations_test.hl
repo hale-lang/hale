@@ -202,13 +202,13 @@ locus OperationCases {
         std::test::assert(!std::json::find_bool_field(nothing, "committed"), "nothing committed");
         // the record evidence: rows beyond head_before
         let record = dna::GitRecord { repo: self.project };
-        let before = record.head("journal");
+        let before = record.head("journal").id;
         let journal = dna::GitJournal { repo: self.project };
         let refreshed = journal.refresh();
         let appended = journal.append(journal.revision(), "secret.rotated", "OPENAI_API_KEY", "{\"where\":\"local\",\"by\":\"tester\"}");
         std::test::assert(appended.ok, "append a row: " + appended.error);
         let evidence = head::record_evidence(self.project, before);
-        std::test::assert(std::json::find_string_field(evidence, "head_before") == before && std::json::find_string_field(evidence, "head_after") == record.head("journal") && before != record.head("journal"), "heads: " + evidence);
+        std::test::assert(std::json::find_string_field(evidence, "head_before") == before && std::json::find_string_field(evidence, "head_after") == record.head("journal").id && before != record.head("journal").id, "heads: " + evidence);
         let rows = std::json::find_field_raw(evidence, "rows");
         let first = std::json::array_first(rows);
         std::test::assert(!first.done && std::json::find_string_field(first.element, "kind") == "secret.rotated" && std::json::find_string_field(first.element, "entity") == "OPENAI_API_KEY" && std::json::array_next(first).done, "exactly the new row: " + rows);

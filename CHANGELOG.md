@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+### A failed head read is never an absent record (GH #961, part 1)
+
+- **`Record.head(chain)` answers a `Head`** (`ok`, `absent`, `id`,
+  `why`) on the `Record` interface and on the operations'
+  `GovernanceRecord` and `GovernanceBatchRecord`. `GitRecord` reads
+  `absent` only from `rev-parse -q --verify` exiting 1 in silence;
+  every other outcome is a failed read. Both used to be `""`.
+- **Every fence that compares heads refuses on a failed read**:
+  governance and knowledge admission, person retirement
+  (`record_unavailable`), the read API's final checks (503
+  `record_unavailable`), the head's command submission, the host's
+  compare-and-swap appends, and an append itself (`io:`, never
+  `stale`).
+- **The CLI says the record could not be read** instead of "no
+  record"; `record-head` answers `none` only for a record known
+  absent, since `hale dna init` seeds on it; `design-upgrade` proposes
+  nothing on an unreadable record; a receipt is not rewritten, and a
+  handoff envelope not written twice, on a read that did not happen.
+
 ### macOS in CI, and the last Mac-only test failures (GH #970)
 
 - **The DNA suite runs on macOS in CI** (`macos.yml` step h). Every DNA
