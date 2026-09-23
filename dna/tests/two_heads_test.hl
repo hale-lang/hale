@@ -4,10 +4,11 @@
 // verdict and an intent posted with it act as the member the subject maps
 // to, whatever the form says; without a session they are refused and
 // nothing reaches the record; an unmapped subject gets no session; a
-// sign-in is used once; a sign-out ends the session.
+// sign-in is used once; a sign-out ends the session. Both heads' writes
+// are requests in the record; the spine (the body host) is the one
+// admission controller and the ledger's one writer (GH #985).
 
 import "../core" as dna;
-import "../knowledge" as know;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -16,6 +17,71 @@ fn toolchain() -> String {
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// `argv` in `dir` with memory's head role named (GH #985).
+fn as_head(dir: String, head_dsn: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + dir + "\n" + head_dsn + "\n" + argv);
+}
+
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// The spine: `hale dna dev` in the background with the owner's DSN (dev
+// migrates and hands the host the spine's role), bounded; its pid.
+fn start_spine(app: String, owner: String) -> String {
+    let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && nohup timeout 600 \"$3\" dna dev . --no-iris >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + owner + "\n" + toolchain());
+    return dna::trim_nl(started.stdout);
+}
+
+// The host, then everything it started.
+fn stop_spine(app: String, pid: String) {
+    let k = dna::run_tool("kill\n" + pid);
+    let gone = dna::run_tool("sh\n-c\nn=0; while kill -0 \"$1\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; cd \"$2\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + pid + "\n" + app);
+}
+
+// Whether the record comes to hold a `kind` row whose body contains
+// `needle`, within `secs`.
+fn record_has(app: String, kind: String, needle: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        let j = dna::GitJournal { repo: app };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && std::str::contains(e.body, needle) { return true; }
+            i = i + 1;
+        }
+        std::time::sleep(200ms);
+    }
+    return false;
+}
+
+// The ledger's rows, read as a head, once they hold every one of
+// `needles` (newline-separated) or `secs` pass; the rows it last read.
+fn ledger_holding(app: String, head_dsn: String, needles: String, secs: Int) -> String {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    let mut rows = "";
+    while std::time::now() <= deadline {
+        rows = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nrows").stdout;
+        let mut all = true;
+        let mut rest = needles + "\n";
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let n = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if len(n) > 0 && !std::str::contains(rows, n) { all = false; }
+        }
+        if all { return rows; }
+        std::time::sleep(200ms);
+    }
+    return rows;
 }
 
 fn b64(s: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(s)); }
@@ -48,7 +114,7 @@ fn form_field(body: String, name: String) -> String {
         let amp = std::str::index_of(rest, "&");
         let part = rest[0..amp];
         rest = rest[(amp + 1)..len(rest)];
-        if std::str::starts_with(part, name + "=") { return know::url_decode(part[(len(name) + 1)..len(part)]); }
+        if std::str::starts_with(part, name + "=") { return dna::url_decode(part[(len(name) + 1)..len(part)]); }
     }
     return "";
 }
@@ -81,7 +147,7 @@ locus FakeIssuer {
             return std::http::Response { status: 200, content_type: "application/json", body: "{\"issuer\": \"" + self.base + "\", \"authorization_endpoint\": \"" + self.base + "/authorize\", \"token_endpoint\": \"" + self.base + "/token\"}" };
         }
         if std::http::is_route(ctx, "GET", "/authorize") {
-            let back = know::url_decode(std::http::query_param(ctx.params, "redirect_uri"));
+            let back = dna::url_decode(std::http::query_param(ctx.params, "redirect_uri"));
             let hint = std::http::query_param(ctx.params, "login_hint");
             let code = "code-" + to_string(self.codes.len() + 1);
             self.codes.push(IssuedCode { code: code, nonce: std::http::query_param(ctx.params, "nonce"), sub: if len(hint) > 0 { hint } else { "alice-sub" } });
@@ -150,9 +216,7 @@ main locus App {
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/shared";
         let port = dna::free_port(0);
-        let kport = dna::free_port(1);
         let ui = "http://127.0.0.1:" + to_string(port);
-        let service = "http://127.0.0.1:" + to_string(kport);
         let g1 = in_dir(app, "git\nconfig\nuser.name\nhead-operator");
         let g2 = in_dir(app, "git\nconfig\nuser.email\nhead@local");
         let g3 = in_dir(app, "git\nadd\n-A");
@@ -169,21 +233,24 @@ main locus App {
         let c6 = in_dir(app, "git\nconfig\ndna.oidc.board\nalice");
         std::test::assert_eq_int(c6.code, 0, "configured: " + c6.stderr);
 
-        // the one logical admission controller: the service, and the record adopted into its ledger
-        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 300 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
-        let kpid = dna::trim_nl(ksrv.stdout);
-        let mut kup = false;
-        let mut ktries = 0;
-        while !kup && ktries < 600 {
-            if curl("GET", service + "/ledger/head", "", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
-            ktries = ktries + 1;
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 {
+            eprintln("two_heads_test: no HALE_DNA_MEMORY_DSN_OWNER; the heads have no spine to admit their requests, so nothing was exercised");
+            dna::scratch_done(scratch);
+            return;
         }
-        std::test::assert(kup, "the service came up at " + service);
-        let adopted = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_URL=\"$1\" exec \"$2\" dna ledger adopt --as head-operator\nsh\n" + service + "\n" + toolchain());
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adopted at"), "adopted: " + adopted.stdout + adopted.stderr);
+        let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + app + "\n" + owner + "\n" + toolchain());
+        let head_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
+        std::test::assert(migrated.code == 0 && std::str::starts_with(head_dsn, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
 
-        // the hosted head, told where the service is
-        let started = in_dir(app, "sh\n-c\nHALE_DNA_OIDC_SECRET=fake-secret HALE_DNA_KNOWLEDGE_URL=\"$3\" nohup timeout 300 \"$1\" dna ui . --port \"$2\" >.hale/ui.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port) + "\n" + service);
+        // the one logical admission controller: the spine, and the record adopted into its ledger
+        let spine = start_spine(app, owner);
+        let adopted = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nadopt\n--as\nhead-operator");
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption requested as"), "adoption requested: " + adopted.stdout + adopted.stderr);
+        std::test::assert(record_has(app, "ledger.adopted", "checkpoint", 300), "the spine adopts the ledger on its tick");
+
+        // the hosted head, with the head's role in memory
+        let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_OIDC_SECRET=fake-secret HALE_DNA_MEMORY_DSN_HEAD=\"$4\" && nohup timeout 600 \"$2\" dna ui . --port \"$3\" >.hale/ui.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + toolchain() + "\n" + to_string(port) + "\n" + head_dsn);
         let pid = dna::trim_nl(started.stdout);
         let mut up = false;
         let mut tries = 0;
@@ -201,48 +268,39 @@ main locus App {
         std::test::assert_eq_int(a1.status, 200, "alice's ask is taken: " + a1.body);
         let b1 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b1.status, 200, "bob's ask is taken: " + b1.body);
-        let ledger = curl("GET", service + "/ledger/rows?from=0", "", "").body;
-        std::test::assert(std::str::contains(ledger, "chase the late invoice") && std::str::contains(ledger, "reconcile the payroll account"), "both asks are rows of the ledger: " + ledger);
+        let ledger = ledger_holding(app, head_dsn, "chase the late invoice\nreconcile the payroll account", 120);
+        std::test::assert(std::str::contains(ledger, "chase the late invoice") && std::str::contains(ledger, "reconcile the payroll account"), "both asks are admitted as rows of the ledger: " + ledger);
         // each in the name the session proves, whatever the form said
         let arow = row_with(ledger, "chase the late invoice");
         let brow = row_with(ledger, "reconcile the payroll account");
         std::test::assert(std::str::contains(arow, "\"author\": \"alice\"") && !std::str::contains(arow, "\"author\": \"bob\""), "alice's ask, in alice's name whatever the form said: " + arow);
         std::test::assert(std::str::contains(brow, "\"author\": \"bob\"") && !std::str::contains(brow, "\"author\": \"alice\""), "bob's ask, in bob's name whatever the form said: " + brow);
+        // the record holds the request, not the day's work
         let record = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
-        std::test::assert(!std::str::contains(record, "chase the late invoice"), "the asks did not go into the record: the day's work is the ledger's");
+        std::test::assert(std::str::contains(row_with(record, "chase the late invoice"), "\"kind\": \"ledger.requested\""), "the ask reached the record as a request: " + row_with(record, "chase the late invoice"));
         // a session is not a shared secret: bob's cookie on alice's form field is bob
         let b2 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b2.status, 200, "taken");
-        let ledger2 = curl("GET", service + "/ledger/rows?from=0", "", "").body;
+        let ledger2 = ledger_holding(app, head_dsn, "file the returns", 120);
         std::test::assert(std::str::contains(row_with(ledger2, "file the returns"), "\"author\": \"bob\""), "in bob's name: " + ledger2);
 
-        // ---- the service away: a request is queued on the head; back, it is
-        // re-checked against the record as it is then
-        let kstop = dna::run_tool("kill\n" + kpid);
-        std::time::sleep(500ms);
-        let queued = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
-        std::test::assert_eq_int(queued.status, 200, "captured while the service is away: " + queued.body);
-        let listed = in_dir(app, toolchain() + "\ndna\nqueue");
-        std::test::assert(std::str::contains(listed.stdout, "1 request(s) waiting") && std::str::contains(listed.stdout, "as bob"), "queued on the head, in bob's name: " + listed.stdout + listed.stderr);
+        // ---- the spine away: the head still takes a request into the record;
+        // back, the spine checks it against the record as it is then
+        stop_spine(app, spine);
+        let requested = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
+        std::test::assert_eq_int(requested.status, 200, "taken while the spine is away: " + requested.body);
+        std::test::assert(record_has(app, "ledger.requested", "close the quarter", 30), "a request in the record, waiting for the spine");
         // bob retires meanwhile — a fact of the record
         let retired = in_dir(app, toolchain() + "\ndna\nretire\nbob\n--to\nalice\n--as\nalice");
         std::test::assert(retired.code == 0, "bob retired: " + retired.stdout + retired.stderr);
-        let ksrv2 = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 300 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge2.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
-        let kpid2 = dna::trim_nl(ksrv2.stdout);
-        kup = false;
-        ktries = 0;
-        while !kup && ktries < 600 {
-            if curl("GET", service + "/ledger/head", "", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
-            ktries = ktries + 1;
-        }
-        std::test::assert(kup, "the service is back");
-        let sent = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_URL=\"$1\" exec \"$2\" dna queue submit\nsh\n" + service + "\n" + toolchain());
-        std::test::assert(std::str::contains(sent.stdout, "REFUSED") && std::str::contains(sent.stdout, "bob retired from this organism"), "the queued request is checked against the record as it is now, not as it was: " + sent.stdout + sent.stderr);
-        let ledger3 = curl("GET", service + "/ledger/rows?from=0", "", "").body;
+        let spine2 = start_spine(app, owner);
+        std::test::assert(record_has(app, "ledger.request_refused", "bob retired from this organism", 300), "the request is checked against the record as it is now, not as it was, and refused in the record");
+        let ledger3 = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nrows").stdout;
         std::test::assert(!std::str::contains(ledger3, "close the quarter"), "and nothing landed for it");
 
         let stop = dna::run_tool("kill\n" + pid);
-        let stop2 = dna::run_tool("kill\n" + kpid2);
+        stop_spine(app, spine2);
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitJournal { repo: app }.genesis()), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }
 }

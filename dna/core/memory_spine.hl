@@ -108,6 +108,13 @@ locus MemoryLedger {
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.cutover(checkpoint, copied, routing); }
     fn checkpoint() -> Cutover { if !self.ensure_open() { return Cutover { }; } return self.store.checkpoint(); }
     fn abandon() -> Bool { if !self.ensure_open() { return false; } return self.store.abandon(); }
+    // A lease the record held, put into memory as it stands, token and all,
+    // unless memory already holds one under `key`.
+    fn carry_lease(key: String, holder: String, token: Int, expires: Int) -> Bool {
+        if !self.ensure_open() { return false; }
+        if self.leases.current(key).known { return true; }
+        return self.leases.put(key, holder, token, expires, true, 0);
+    }
     fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
 }
 
@@ -526,6 +533,11 @@ locus RequestAdmission {
         root: String = ".";
         ledger: MemoryLedger = MemoryLedger { };
         j: GitJournal = GitJournal { repo: ".", author: "spine" };
+        // The record's cell for this spine's own body lease and its key in
+        // memory: adoption carries it across, so the body that adopts does
+        // not find its lease gone once leases are read from memory.
+        carry_cell: String = "";
+        carry_key: String = "";
         admitted: Int = 0;
         refused: Int = 0;
         last_error: String = "";
@@ -656,6 +668,13 @@ locus RequestAdmission {
             i = i + 1;
         }
         if !self.ledger.cutover(head, copied, ROUTING_VERSION) { self.last_error = "the ledger could not record the cutover: " + self.ledger.last_error(); return false; }
+        // before `ledger.adopted` moves leases to memory: the body lease
+        // this spine holds goes with them, at its token
+        if len(self.carry_cell) > 0 && len(self.carry_key) > 0 {
+            let cell = GitRecord { repo: self.root }.cell(self.carry_cell);
+            let held = GitLeases { repo: self.root }.parse(self.carry_key, if cell.present { cell.text } else { "" });
+            if held.present && !self.ledger.carry_lease(self.carry_key, held.holder, held.token, held.expires) { self.last_error = "the ledger could not take the body lease across: " + self.ledger.last_error(); return false; }
+        }
         let c = std::json::Builder { };
         c.begin_object();
         c.int_field("routing", ROUTING_VERSION);

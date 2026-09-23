@@ -772,6 +772,8 @@ locus Host {
         self.admission.root = self.root;
         self.admission.j.repo = self.root;
         self.admission.ledger.repo = self.root;
+        self.admission.carry_cell = BODY_LEASE;
+        self.admission.carry_key = store_lease_key(self.root);
         self.vault.repo = self.root;
         self.vault.j.repo = self.root;
         self.memory_on = true;
