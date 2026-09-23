@@ -350,6 +350,117 @@ jobs:
           # scope that goes stale every time a directory is added.
           ./target/release/hale fmt --check .
 
+      # The compiler's identity and the host's, for the toolchain cache
+      # below and the face's builds cache in face-browser. A cached output
+      # is only as good as the compiler that made it: the toolchain cache's
+      # own directory name (`iris/<hash>`) hashes the version and the
+      # embedded DNA and iris sources but not codegen or the runtime, and a
+      # binary already there is exec'd without a staleness check, so a
+      # compiler change that left the key alone would run binaries the old
+      # compiler built.
+      #
+      # `id` is what the compiler binary was built from, as cargo itself
+      # records it: every local file in `target/release/hale.d` (each
+      # crate's sources, the runtime C, and everything the binary embeds
+      # through include_str!: dna/, iris/, spec/, the stdlib), with its
+      # content, plus Cargo.lock for the registry crates and `rustc -vV`.
+      # That is exactly the set cargo rebuilds `hale` on, so any compiler
+      # change misses. Not the binary's own bytes: they differ between two
+      # builds of one tree (measured on this PR's two runs), not least
+      # because hale-cli's build.rs frames the git commit into
+      # HALE_TOOLCHAIN_SHA256, so a key on them would never hit. The
+      # commit is the one input left out on purpose; what a hit reuses
+      # differs from a fresh build only in the commit its execution
+      # identity names. The id also carries what the compiler calls at
+      # build time without carrying it: `clang` (the runtime TUs and the
+      # link) and libLLVM (linked dynamically).
+      #
+      # `host` is the runner image and the CPU. `hale build` tunes for the
+      # machine it runs on (`-march=native`, and the runtime object cache
+      # assumes it is never shared across machines), and hosted runners
+      # are not all one CPU model, so a binary built on one could stop
+      # with SIGILL on another. The CPU is what clang resolves `native`
+      # to, which is what LLVM tunes the Hale code for too. (The face's
+      # builds cache uses `image` alone: face-browser builds those three
+      # for a fixed baseline CPU instead.)
+      #
+      # Anchored here and reused (`*compiler-identity`) by dna, face-api
+      # and face-browser, so every job computes the key the same way.
+      - &compiler-identity
+        name: Compiler identity (the caches' key)
+        id: compiler
+        run: |
+          set -euo pipefail
+          inputs=$(python3 - target/release/hale.d <<'PY'
+          import hashlib, os, re, subprocess, sys
+          root = os.getcwd()
+          deps = set()
+          for line in open(sys.argv[1]).read().replace("\\\n", " ").splitlines():
+              if ": " in line:
+                  for p in re.split(r"(?<!\\) +", line.split(": ", 1)[1].strip()):
+                      if p:
+                          deps.add(os.path.realpath(p.replace("\\ ", " ")))
+          files = set()
+          for p in deps:
+              if os.path.isdir(p):
+                  files.update(os.path.join(d, f) for d, _, fs in os.walk(p) for f in fs)
+              else:
+                  files.add(p)
+          h = hashlib.sha256()
+          for p in sorted(files):
+              rel = os.path.relpath(p, root)
+              if rel.startswith("target/"):
+                  rel = "target/.../" + os.path.basename(p)  # an OUT_DIR file; its dir name is a cargo hash
+              body = open(p, "rb").read() if os.path.isfile(p) else b"(missing)"
+              h.update(rel.encode() + b"\0" + hashlib.sha256(body).digest())
+          h.update(open("Cargo.lock", "rb").read())
+          h.update(subprocess.run(["rustc", "-vV"], capture_output=True, check=True).stdout)
+          print(h.hexdigest(), len(files))
+          PY
+          )
+          read -r src nfiles <<< "$inputs"
+          tools="$(clang --version | head -1); $(dpkg-query -W -f='${Package} ${Version}' libllvm18)"
+          id=$(printf '%s\n%s\n' "$src" "$tools" | sha256sum | cut -c1-32)
+          cpu=$(clang -march=native -### -c -x c /dev/null 2>&1 \
+            | grep -oE '"-target-(cpu|feature)" "[^"]*"' | tr '\n' ' ')
+          host=$(printf '%s\n%s\n' "${ImageOS:-unknown}" "$cpu" | sha256sum | cut -c1-16)
+          echo "compiler: $nfiles input files, sources $src; $tools; id $id"
+          echo "host: ${ImageOS:-unknown}, $(echo "$cpu" | grep -oE '"-target-cpu" "[^"]*"'); host $host"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "host=$host" >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          # The toolchain cache's key (below), here so every job spells it
+          # once: the compiler, the host, and the warm script.
+          warm=$(sha256sum scripts/warm-dna-cache.sh | cut -c1-16)
+          echo "toolchain=$RUNNER_OS-$id-$host-$warm" >> "$GITHUB_OUTPUT"
+
+      # The toolchain cache the warm step fills: `~/.cache/hale` (nothing
+      # here sets XDG_CACHE_HOME), which holds `iris/<hash>/` (the embedded
+      # DNA and iris sources materialized, with the host, the membrane
+      # client, the observer and the knowledge service built beside them)
+      # and the runtime object cache, `runtime/`. Everything in it is built
+      # from what the compiler binary embeds, so the compiler id and the
+      # host cover its inputs: the checkout's dna/ and iris/ are not read
+      # as such (an edit to an embedded file is in hale.d, so it changes
+      # the id), and keying on the whole trees would only miss on every
+      # test or face change. The warm script is in the key because it
+      # decides what gets built.
+      #
+      # On a hit the warm step still runs. It is idempotent (each build is
+      # skipped when its binary is there) and it recreates what is per run:
+      # the scratch project, the knowledge probe, and the
+      # `hale-tests-iris-cache` symlink, which is not cached. Nothing per
+      # run lives in the directory: `.build.lock` is only an flock target,
+      # and materialization's pid-named temp files are renamed into place
+      # before it returns.
+      - &toolchain-restore
+        name: Restore the DNA toolchain cache
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/hale
+          key: dna-toolchain-${{ steps.compiler.outputs.toolchain }}
+
       - name: Warm the DNA toolchain cache
         # The first host verb of this binary builds the host and the membrane
         # client into the cache: paid once here, not inside a test's own
@@ -357,6 +468,20 @@ jobs:
         env:
           HALE_DNA_DISCOVER: "off"
         run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      # Saved straight after the warm, not at the end of the job, so the
+      # entry holds what the warm built and nothing the tests left behind.
+      # The cli and dna jobs save this entry; the face jobs, whose warm
+      # skips the observer, save theirs under another name (see face-api),
+      # so a partition never restores a cache without the observer. The
+      # savers of one key race; the losers log that it exists and carry on.
+      - &toolchain-save
+        name: Save the DNA toolchain cache
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/hale
+          key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
 
       - name: cargo nextest run (cli part ${{ matrix.part }}/3)
         # Everything the other families do not own: hale-cli's 111
@@ -495,6 +620,10 @@ jobs:
         # The fixtures run through the `hale` binary this builds.
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      # The compiler id and the toolchain cache, as in the cli job.
+      - *compiler-identity
+      - *toolchain-restore
+
       - name: Warm the DNA toolchain cache
         # The first host verb of this binary builds the host and the membrane
         # client into the cache: paid once here, not inside a test's own
@@ -502,6 +631,9 @@ jobs:
         env:
           HALE_DNA_DISCOVER: "off"
         run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      - *toolchain-save
+
       - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
         # The suite alone on its runner: sixteen slice tests, hashed
         # across two jobs, running four-wide (the `dna-fixtures`
@@ -563,6 +695,24 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      # The compiler id and the toolchain cache, as in the cli job. This
+      # job's warm skips the observer, so it prefers the partitions' entry
+      # (which has everything this job needs) and falls back to one of its
+      # own, `dna-toolchain-no-observer-…`, which it saves only when it
+      # restored neither. The two names differ right after
+      # `dna-toolchain-`, so neither is a prefix of the other and a
+      # partition can never restore the smaller one. Anchored here and
+      # reused by face-browser.
+      - *compiler-identity
+      - &face-toolchain-restore
+        name: Restore the DNA toolchain cache
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/hale
+          key: dna-toolchain-${{ steps.compiler.outputs.toolchain }}
+          restore-keys: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
+
       - name: Warm the DNA toolchain cache
         # The head fixtures create fresh projects with hale dna new under
         # their own budgets; the first host build of this binary is paid
@@ -572,6 +722,16 @@ jobs:
           HALE_DNA_DISCOVER: "off"
           HALE_WARM_SKIP_IRIS: "1"
         run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      # Only when neither entry was there (`cache-matched-key` is empty on
+      # a miss); after the warm, as in the cli job.
+      - &face-toolchain-save
+        name: Save the DNA toolchain cache
+        if: steps.toolchain-cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/hale
+          key: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
 
       - name: DNA read API contract and integration
         # The fixtures own their Git environment: no GIT_CONFIG_* here, and
@@ -636,6 +796,10 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      # The compiler id and the toolchain cache, as in face-api.
+      - *compiler-identity
+      - *face-toolchain-restore
+
       - name: Warm the DNA toolchain cache
         # The face's browser fixtures create fresh projects with hale dna
         # new under their own budgets; the first host build of this binary
@@ -646,14 +810,65 @@ jobs:
           HALE_WARM_SKIP_IRIS: "1"
         run: scripts/warm-dna-cache.sh ./target/release/hale
 
+      - *face-toolchain-save
+
+      # The three binaries the browser fixtures spawn, cached across runs.
+      # A build is a function of the compiler, the machine it is tuned for
+      # and the sources it reads. These three are built for the portable
+      # x86-64-v3 baseline (`--target-cpu baseline`, below) instead of the
+      # host, so the CPU the runner happens to draw is not an input: keyed
+      # per host they almost never hit, because the runners of four runs
+      # of this PR were znver3, znver4, graniterapids, sapphirerapids and
+      # one LLVM 18 has no name for. The browser suite exercises what they
+      # serve, not how fast; face-api still builds and tests them native.
+      # So the key is the compiler id (see the cli job), the runner image,
+      # and every file under dna/ and iris/: the seeds' imports, followed
+      # transitively (`hale inputs` on each seed), reach
+      # dna/{api,core,operations,organization_source,organization_runtime,ui}
+      # and iris/process_identity and nothing outside those two trees. The
+      # stdlib and the runtime are inside the compiler. The paths are the
+      # three outputs only.
+      - name: Restore the DNA API and the head
+        id: face-builds
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            dna/api/api
+            dna/api/practice_review/practice_review
+            dna/api/project_service/project_service
+          key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
+
       - name: Build the DNA API and the head
         # The binaries the browser fixtures spawn: HALE_API_BIN,
         # HALE_NATIVE_HEAD_BIN and HALE_NATIVE_HEAD_API below. face-api
-        # checks and tests them; this job only builds them.
+        # checks and tests them; this job only builds them, and on a cache
+        # hit not even that: it checks the restored three are there and
+        # executable.
         run: |
-          ./target/release/hale build dna/api
-          ./target/release/hale build dna/api/practice_review
-          ./target/release/hale build dna/api/project_service
+          set -euo pipefail
+          if [ "${{ steps.face-builds.outputs.cache-hit }}" != "true" ]; then
+            ./target/release/hale build dna/api --target-cpu baseline
+            ./target/release/hale build dna/api/practice_review --target-cpu baseline
+            ./target/release/hale build dna/api/project_service --target-cpu baseline
+          fi
+          for b in dna/api/api dna/api/practice_review/practice_review dna/api/project_service/project_service; do
+            if [ ! -f "$b" ] || [ ! -x "$b" ]; then
+              echo "::error::$b is missing or not executable"; exit 1
+            fi
+          done
+
+      # Saved under the key the restore computed, not a fresh hashFiles:
+      # the builds just wrote their outputs under dna/, which would change
+      # the hash.
+      - name: Save the DNA API and the head
+        if: steps.face-builds.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            dna/api/api
+            dna/api/practice_review/practice_review
+            dna/api/project_service/project_service
+          key: ${{ steps.face-builds.outputs.cache-primary-key }}
 
       - name: Set up Node for face browser tests
         uses: actions/setup-node@v4
