@@ -317,7 +317,7 @@ locus PqLedger {
         let rows = self.run_q("SELECT value FROM ledger_meta WHERE key = $1", a);
         if !rows.ok { self.error = "meta " + key + ": " + rows.err.kind + " " + rows.err.detail; return ""; }
         if rows.n == 0 { return ""; }
-        return trim_nl(first_line(rows.csv));
+        return trim_nl(line_one(rows.csv));
     }
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
         return self.put_meta("checkpoint", checkpoint) && self.put_meta("copied", to_string(copied)) && self.put_meta("routing", to_string(routing)) && self.put_meta("record", self.record_id);
@@ -341,7 +341,7 @@ locus PqLedger {
         a.add(request_id);
         let rows = self.run_q("SELECT revision FROM ledger_requests WHERE request_id = $1", a);
         if !rows.ok || rows.n == 0 { return -2; }
-        return std::str::parse_int(trim_nl(first_line(rows.csv))) or - 2;
+        return std::str::parse_int(trim_nl(line_one(rows.csv))) or - 2;
     }
     fn mark(request_id: String, revision: Int) -> Bool {
         let a = db::Args { };
@@ -458,7 +458,7 @@ locus PqLeaseStore {
         let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
         if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
         if rows.n == 0 { return StoredLease { key: key }; }
-        let row = trim_nl(first_line(rows.csv));
+        let row = trim_nl(line_one(rows.csv));
         return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
     }
     // One statement: insert when nothing is there and 0 was expected,
