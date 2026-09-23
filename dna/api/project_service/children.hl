@@ -183,9 +183,30 @@ fn cmd_matches(dir: String, name: String, pid: Int) -> Bool {
     if pid <= 0 { return false; }
     let want = read_cmd(dir, name);
     if len(want) == 0 { return false; }
-    let r = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(pid));
-    if r.code != 0 { return false; }
-    return cmdline_is(dir, name, dna::trim_nl(r.stdout), want);
+    let line = cmdline_of(pid);
+    if len(line) == 0 { return false; }
+    return cmdline_is(dir, name, line, want);
+}
+
+// `/proc/<pid>/cmdline` as newline-separated words; "" when it cannot be
+// read, or reads empty for longer than an exec takes. Every stage of
+// `start`'s wrappers is an exec, and while a process is inside execve —
+// its new image mapped, its arguments not yet placed — the kernel shows
+// it with no command line at all: an empty read of a live pid is not an
+// answer yet, so it is read again, half a second at most. A process that
+// stays empty (a zombie, a kernel thread) is nobody's argv and matches
+// nothing.
+fn cmdline_of(pid: Int) -> String {
+    let mut tries = 0;
+    while tries < 50 {
+        let r = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(pid));
+        if r.code != 0 { return ""; }
+        let line = dna::trim_nl(r.stdout);
+        if len(line) > 0 { return line; }
+        std::time::sleep(10ms);
+        tries = tries + 1;
+    }
+    return "";
 }
 
 // Whether a command line (newline-separated words) is the argv digested
