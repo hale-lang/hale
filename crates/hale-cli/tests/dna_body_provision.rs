@@ -141,7 +141,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
         "HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\"",
         "git clone -q \"$REMOTE\" \"$DIR\"",
         "hale dna upgrade .",
-        "HALE_DNA_KNOWLEDGE_DSN=$DSN",
+        "HALE_DNA_MEMORY_DSN_OWNER=$DSN",
         "hale-dna-$NAME.service",
         "WorkingDirectory=%h/dna/prov",
         &format!("EnvironmentFile=-%h/.config/hale-dna/{key}.env"),

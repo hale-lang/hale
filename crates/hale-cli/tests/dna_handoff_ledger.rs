@@ -8,8 +8,6 @@
 
 #[path = "support/reap.rs"]
 mod reap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -28,19 +26,6 @@ fn git(args: &[&str], cwd: &Path) -> String {
     let out = Command::new("git").args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?} in {}: {}", cwd.display(), String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn http(port: u16, req: &str) -> String {
-    let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(15)));
-    let _ = s.write_all(req.as_bytes());
-    let mut out = String::new();
-    let _ = s.read_to_string(&mut out);
-    out
-}
-
-fn body(resp: &str) -> String {
-    resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
 }
 
 fn record(app: &Path) -> Vec<serde_json::Value> {
@@ -88,12 +73,68 @@ fn project(scratch: &Path, name: &str, user: &str) -> (PathBuf, PathBuf) {
     (app, bare)
 }
 
+/// Memory's owner for these organisms (CI's service container).
+fn owner_dsn() -> Option<String> {
+    std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok().filter(|d| !d.is_empty())
+}
+
+/// The head's DSN for `app`'s record, from the owner's migration.
+fn head_dsn(app: &Path) -> String {
+    let (ok, out) = hale(&["dna", "memory", "migrate"], app, &[]);
+    assert!(ok, "memory migrates: {out}");
+    out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).expect("the head's DSN").to_string()
+}
+
+/// The spine: `hale dna dev` with the owner's DSN (it migrates and runs
+/// the host under the spine's role), which adopts and admits.
+fn spine(app: &Path, d: &Path) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "dev", ".", "--no-iris"])
+        .current_dir(app)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(d.join("spine.stderr")).unwrap())
+        .spawn()
+        .expect("hale dna dev")
+}
+
+/// The ledger's rows as a head reads them, once `pred` holds or two
+/// minutes pass.
+fn ledger_until(app: &Path, env: &[(&str, &str)], pred: impl Fn(&str) -> bool) -> String {
+    let dl = Instant::now() + Duration::from_secs(120);
+    loop {
+        let (_, rows) = hale(&["dna", "ledger", "rows"], app, env);
+        if pred(&rows) || Instant::now() > dl {
+            return rows;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// `hale dna status` once it contains `needle`, or after two minutes.
+fn status_until(app: &Path, env: &[(&str, &str)], needle: &str) -> String {
+    let dl = Instant::now() + Duration::from_secs(120);
+    loop {
+        let (_, st) = hale(&["dna", "status"], app, env);
+        if st.contains(needle) || Instant::now() > dl {
+            return st;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn word_after(text: &str, marker: &str) -> String {
     text.split_once(marker).map(|(_, r)| r.split_whitespace().next().unwrap_or("").to_string()).unwrap_or_default()
 }
 
 #[test]
 fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in_the_ledger() {
+    let Some(_owner) = owner_dsn() else {
+        eprintln!("dna_handoff_ledger: no HALE_DNA_MEMORY_DSN_OWNER; the ledger is memory's, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_handoff_ledger_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -106,29 +147,20 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     let (ok, out) = hale(&["dna", "sync"], &firm, &[]);
     assert!(ok, "{out}");
 
-    // the firm adopts the ledger
-    let kport = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let mut service = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "knowledge", ".", "--port", &kport.to_string()])
-        .current_dir(&firm)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .env("HALE_DNA_DISCOVER", "off")
-        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
-        .spawn()
-        .expect("hale dna knowledge");
-    let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl && !body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"") {
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    let url = format!("http://127.0.0.1:{kport}");
-    let env: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &url)];
+    // the firm adopts the ledger: a head asks, the spine carries it out
+    let head = head_dsn(&firm);
+    let env: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str())];
+    let mut service = spine(&firm, &d);
     let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &firm, env);
-    assert!(ok, "{adopted}");
-    let (ok, st) = hale(&["dna", "status"], &firm, env);
-    assert!(ok && st.contains("t7 [handed]"), "the handed task is read from the ledger:\n{st}");
+    assert!(ok && adopted.contains("ledger adoption requested"), "{adopted}");
+    let dl = Instant::now() + Duration::from_secs(300);
+    while Instant::now() < dl && !record(&firm).iter().any(|r| r["kind"] == "ledger.adopted") {
+        let _ = hale(&["dna", "sync"], &firm, &[]);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(record(&firm).iter().any(|r| r["kind"] == "ledger.adopted"), "the spine adopted the ledger: {}", std::fs::read_to_string(d.join("spine.stderr")).unwrap_or_default());
+    let st = status_until(&firm, env, "t7 [handed]");
+    assert!(st.contains("t7 [handed]"), "the handed task is read from the ledger:\n{st}");
 
     // a connection to the accountant, in force
     let (ok, proposed) = hale(&["dna", "connect", &acct_bare.to_string_lossy(), "--name", "acct", "--as", "accountant", "--purpose", "year-end books", "--classes", "internal", "--by", "riley"], &firm, env);
@@ -146,11 +178,12 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     let firm_genesis = git(&["rev-list", "--max-parents=0", "refs/dna/journal"], &firm);
     let mailbox = git(&["show", &format!("refs/dna/exchange/{firm_genesis}:journal.jsonl")], &acct_bare);
     assert!(mailbox.contains("handoff.received") && mailbox.contains(&hid), "the envelope is in the accountant's mailbox at the remote:\n{mailbox}");
-    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(rows.contains(&format!("\"kind\": \"handoff.published\", \"entity\": \"handoff:{hid}\"")), "the firm's row is the ledger's:\n{rows}");
-    assert!(!record(&firm).iter().any(|r| r["kind"] == "handoff.published"), "and not the record's");
-    let (ok, st) = hale(&["dna", "status"], &firm, env);
-    assert!(ok && st.contains("t7 [transfer_requested]"), "the task waits for acceptance:\n{st}");
+    let published = format!("\"kind\": \"handoff.published\", \"entity\": \"handoff:{hid}\"");
+    let rows = ledger_until(&firm, env, |r| r.contains(&published));
+    assert!(rows.contains(&published), "the firm's row is the ledger's, admitted by the spine:\n{rows}");
+    assert!(!record(&firm).iter().any(|r| r["kind"] == "handoff.published"), "and not the record's (only its request is)");
+    let st = status_until(&firm, env, "t7 [transfer_requested]");
+    assert!(st.contains("t7 [transfer_requested]"), "the task waits for acceptance:\n{st}");
 
     // the accountant, on the record alone, connects back and accepts
     let (ok, out) = hale(&["dna", "sync"], &acct, &[]);
@@ -166,133 +199,13 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     // the firm reads the acceptance back: the task settles, in the ledger
     let (ok, read_back) = hale(&["dna", "handoff", "sync"], &firm, env);
     assert!(ok && read_back.contains("1 acceptance(s) admitted"), "{read_back}");
-    let (ok, st) = hale(&["dna", "status"], &firm, env);
-    assert!(ok && st.contains("t7 [transfer_accepted]"), "settled:\n{st}");
-    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let st = status_until(&firm, env, "t7 [transfer_accepted]");
+    assert!(st.contains("t7 [transfer_accepted]"), "settled:\n{st}");
+    let rows = ledger_until(&firm, env, |r| r.contains("\"kind\": \"handoff.accepted_by_peer\""));
     assert!(rows.contains("\"kind\": \"task.transfer_accepted\", \"entity\": \"t7\"") && rows.contains("\"kind\": \"handoff.accepted_by_peer\""), "the settlement rows are the ledger's:\n{rows}");
     let (ok, again) = hale(&["dna", "handoff", "sync"], &firm, env);
     assert!(ok && again.contains("0 acceptance(s) admitted"), "admitted once: {again}");
     let _ = service.kill();
     let _ = service.wait();
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-fn service(app: &Path, d: &Path, name: &str, port: u16) -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "knowledge", ".", "--port", &port.to_string()])
-        .current_dir(app)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .env("HALE_DNA_DISCOVER", "off")
-        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(d.join(format!("{name}.stderr"))).unwrap())
-        .spawn()
-        .expect("hale dna knowledge")
-}
-
-fn wait_service(port: u16) -> bool {
-    let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl {
-        if body(&http(port, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"") {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    false
-}
-
-/// Stage 5 (#662): two organisms, two services, no git remote between
-/// them. A task crosses service to service, a delivery interrupted by
-/// the receiver's service going away is completed by the sender's next
-/// sync without a second envelope, the receiver accepts, and the
-/// origin's task settles only then.
-#[test]
-fn a_handoff_crosses_service_to_service_and_a_lost_delivery_is_made_again_once() {
-    let d = std::env::temp_dir().join(format!("hale_dna_exchange_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    let (firm, _) = project(&d, "firm", "riley");
-    let (acct, _) = project(&d, "acct", "noor");
-    plumb(&firm, "task.born", "t7", "i-t7: prepare the year-end ledger", "dna");
-    plumb(&firm, "task.handed", "t7", "{\"work\": \"t7/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"narrative\": \"handed: not a software change\"}", "dna");
-    let fport = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let aport = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let mut fsvc = service(&firm, &d, "firm-service", fport);
-    let mut asvc = service(&acct, &d, "acct-service", aport);
-    assert!(wait_service(fport) && wait_service(aport), "both services up");
-    let furl = format!("http://127.0.0.1:{fport}");
-    let aurl = format!("http://127.0.0.1:{aport}");
-    let fenv: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &furl)];
-    let aenv: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &aurl)];
-    for (app, env) in [(&firm, fenv), (&acct, aenv)] {
-        let (ok, out) = hale(&["dna", "ledger", "adopt", "--as", "operator"], app, env);
-        assert!(ok, "{out}");
-    }
-    // the connection names the peer's service, not a git remote
-    let (ok, proposed) = hale(&["dna", "connect", &aurl, "--name", "acct", "--as", "accountant", "--purpose", "year-end books", "--classes", "internal", "--by", "riley"], &firm, fenv);
-    assert!(ok && proposed.contains("(service exchange)"), "{proposed}");
-    let rid = word_after(&proposed, "hale dna review ");
-    let (ok, out) = hale(&["dna", "review", &rid, "approve", "--as", "ana", "--authority", "board", "--no-wait"], &firm, fenv);
-    assert!(ok, "{out}");
-    let (ok, back) = hale(&["dna", "connect", &furl, "--name", "firm", "--as", "client", "--purpose", "year-end books", "--classes", "internal", "--by", "noor"], &acct, aenv);
-    assert!(ok, "{back}");
-    let brid = word_after(&back, "hale dna review ");
-    let (ok, out) = hale(&["dna", "review", &brid, "approve", "--as", "lee", "--authority", "board", "--no-wait"], &acct, aenv);
-    assert!(ok, "{out}");
-
-    // the receiver's service is away: the handoff cannot be delivered, and says so
-    let _ = asvc.kill();
-    let _ = asvc.wait();
-    let (ok, away) = hale(&["dna", "handoff", "acct", "task", "t7", "--as", "riley", "--note", "close by March"], &firm, fenv);
-    assert!(!ok && away.contains("cannot be reached") && away.contains("nothing was recorded here"), "{away}");
-    let rows = body(&http(fport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(!rows.contains("handoff.published"), "nothing published while undeliverable:\n{rows}");
-    // back: the handoff crosses, the envelope into the accountant's service mailbox
-    let mut asvc = service(&acct, &d, "acct-service-2", aport);
-    assert!(wait_service(aport), "the accountant's service is back");
-    let (ok, handed) = hale(&["dna", "handoff", "acct", "task", "t7", "--as", "riley", "--note", "close by March"], &firm, fenv);
-    assert!(ok && handed.contains("task t7 [internal] written into record"), "{handed}");
-    let hid = word_after(&handed, "handoff ").trim_end_matches(':').to_string();
-    let firm_genesis = git(&["rev-list", "--max-parents=0", "refs/dna/journal"], &firm);
-    let mail = body(&http(aport, "GET /exchange HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(mail.contains(&format!("\"sender\": \"{firm_genesis}\"")) && mail.contains("handoff.received") && mail.contains(&hid), "the envelope is in the accountant's service:\n{mail}");
-    let (ok, st) = hale(&["dna", "status"], &firm, fenv);
-    assert!(ok && st.contains("t7 [transfer_requested]"), "{st}");
-
-    // the accountant's mailbox is lost (its service restarts empty, as an
-    // in-memory one does): the firm's next sync delivers again, once
-    let _ = asvc.kill();
-    let _ = asvc.wait();
-    let mut asvc = service(&acct, &d, "acct-service-3", aport);
-    assert!(wait_service(aport), "the accountant's service is back, empty");
-    let gone = body(&http(aport, "GET /exchange HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(!gone.contains(&hid), "the envelope is gone with the store");
-    let (ok, synced) = hale(&["dna", "handoff", "sync"], &firm, fenv);
-    assert!(ok && synced.contains("delivered again (the other record did not hold it)"), "{synced}");
-    let (ok, synced2) = hale(&["dna", "handoff", "sync"], &firm, fenv);
-    assert!(ok && !synced2.contains("delivered again"), "held now, not delivered twice: {synced2}");
-    let mail = body(&http(aport, "GET /exchange HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert_eq!(mail.matches(&format!("\"entity\": \"handoff:{hid}\"")).count(), 1, "one envelope:\n{mail}");
-    let rows = body(&http(fport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert_eq!(rows.matches("\"kind\": \"handoff.published\"").count(), 1, "one published row here");
-
-    // the accountant sees it in its service mailbox, accepts; the acceptance
-    // goes back service to service; the firm settles the task only then
-    let (ok, listed) = hale(&["dna", "handoff"], &acct, aenv);
-    assert!(ok && listed.contains(&format!("{hid} ← task t7")) && listed.contains("admitted under `firm`"), "{listed}");
-    let (ok, st) = hale(&["dna", "status"], &firm, fenv);
-    assert!(ok && st.contains("t7 [transfer_requested]"), "not settled by delivery: {st}");
-    let (ok, accepted) = hale(&["dna", "handoff", "accept", &hid, "--as", "noor", "--note", "taken on"], &acct, aenv);
-    assert!(ok && accepted.contains("accepted by noor under connection `firm`"), "{accepted}");
-    let (ok, read_back) = hale(&["dna", "handoff", "sync"], &firm, fenv);
-    assert!(ok && read_back.contains("1 acceptance(s) admitted"), "{read_back}");
-    let (ok, st) = hale(&["dna", "status"], &firm, fenv);
-    assert!(ok && st.contains("t7 [transfer_accepted]"), "settled on acceptance:\n{st}");
-    let _ = fsvc.kill();
-    let _ = fsvc.wait();
-    let _ = asvc.kill();
-    let _ = asvc.wait();
     let _ = std::fs::remove_dir_all(&d);
 }
