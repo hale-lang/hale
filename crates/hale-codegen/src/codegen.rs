@@ -31046,14 +31046,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// declaration list; the LLVM FunctionType for the indirect
     /// call is synthesized from the interface method signature
     /// (with `self: ptr` prepended to match the locus-method ABI).
-    fn lower_iface_method_call(
+    /// The part of an interface dispatch both call shapes share: the
+    /// method's signature, the callee loaded from the vtable slot, and
+    /// the lowered args (data ptr first) with their LLVM types.
+    #[allow(clippy::type_complexity)]
+    fn iface_dispatch_prelude(
         &mut self,
         fat_ptr: PointerValue<'ctx>,
         iface_name: &str,
         method_name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+    ) -> Result<
+        (
+            hale_syntax::ast::InterfaceMethodSig,
+            PointerValue<'ctx>,
+            Vec<BasicMetadataValueEnum<'ctx>>,
+            Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>>,
+        ),
+        CodegenError,
+    > {
         // GH #884: module nesting flattened.
         let iface_decl = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
@@ -31176,6 +31188,121 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             llvm_args.push(v.into());
             llvm_param_tys.push(self.llvm_basic_type(&want).into());
         }
+        Ok((method_sig, fn_ptr, llvm_args, llvm_param_tys))
+    }
+
+    /// An interface method's declared signature, if the interface and
+    /// method exist.
+    pub(crate) fn iface_method_sig(
+        &self,
+        iface_name: &str,
+        method_name: &str,
+    ) -> Option<hale_syntax::ast::InterfaceMethodSig> {
+        hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Interface(i) if i.name.name == iface_name => i
+                .methods
+                .iter()
+                .find(|m| m.name.name == method_name)
+                .cloned(),
+            _ => None,
+        })
+    }
+
+    /// GH #732: a call through an interface on a method declared
+    /// `fallible(E)`, under an `or`. The vtable slot holds a callee
+    /// with the fallible locus-method ABI — the method itself, or the
+    /// adapter `ensure_vtable` puts in front of an infallible one:
+    ///
+    /// ```text
+    /// (self_ptr, <params...>, [out_val: T* if T != Unit], out_err: E*) -> i1
+    /// ```
+    ///
+    /// so the result is the same `FallibleCallResult` a direct call
+    /// produces, and every `or` form lowers identically.
+    pub(crate) fn lower_iface_fallible_method_call(
+        &mut self,
+        fat_ptr: PointerValue<'ctx>,
+        iface_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (method_sig, fn_ptr, mut llvm_args, mut llvm_param_tys) = self
+            .iface_dispatch_prelude(fat_ptr, iface_name, method_name, args, scope)?;
+        let payload_te = method_sig.fallible.as_ref().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "`or` on `{}.{}`, which the interface does not declare fallible",
+                iface_name, method_name
+            ))
+        })?;
+        let payload_ty = self.type_expr_to_codegen_ty(payload_te)?;
+        let success_ty: Option<CodegenTy> = match &method_sig.ret {
+            None => None,
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+        };
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let out_val_slot: Option<PointerValue<'ctx>> = match &success_ty {
+            Some(st) => Some(self.alloca_for(st, "iface.or.out_val.slot")?),
+            None => None,
+        };
+        let out_err_slot = self.alloca_for(&payload_ty, "iface.or.out_err.slot")?;
+        if let Some(slot) = &out_val_slot {
+            llvm_args.push((*slot).into());
+            llvm_param_tys.push(ptr_t.into());
+        }
+        llvm_args.push(out_err_slot.into());
+        llvm_param_tys.push(ptr_t.into());
+        let fn_ty = self.context.bool_type().fn_type(&llvm_param_tys, false);
+        self.emit_set_caller_arena()?;
+        let call = self
+            .builder
+            .build_indirect_call(
+                fn_ty,
+                fn_ptr,
+                &llvm_args,
+                &format!("iface.{}.{}.fallible.call", iface_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i1_path = call
+            .try_as_basic_value()
+            .left()
+            .expect("fallible interface dispatch returns i1")
+            .into_int_value();
+        Ok(FallibleCallResult {
+            i1_path,
+            out_val_slot,
+            out_err_slot,
+            success_ty,
+            payload_ty,
+        })
+    }
+
+    fn lower_iface_method_call(
+        &mut self,
+        fat_ptr: PointerValue<'ctx>,
+        iface_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        // GH #732: a fallible interface method is called through
+        // `lower_iface_fallible_method_call`, under an `or`; reaching
+        // here is a call that does not address the error. The
+        // typechecker reports it where the receiver is typed; this is
+        // the same rule for the positions it types as `Unknown`.
+        if let Some(sig) = self.iface_method_sig(iface_name, method_name) {
+            if sig.fallible.is_some() {
+                return Err(CodegenError::Unsupported(format!(
+                    "error not addressed: `{}.{}` is fallible — handle its \
+                     error with an `or` clause (`or raise`, `or discard`, \
+                     `or <fallback>`, or `or handler(err)`)",
+                    iface_name, method_name
+                )));
+            }
+        }
+        let (method_sig, fn_ptr, llvm_args, llvm_param_tys) = self
+            .iface_dispatch_prelude(fat_ptr, iface_name, method_name, args, scope)?;
         let ret_codegen_ty = match &method_sig.ret {
             Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
             None => None,
@@ -33070,12 +33197,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // order. Method bodies are not allowed (no defaults at v0);
         // signatures-only is exactly what we need.
         // GH #884: module nesting flattened.
-        let iface_methods: Vec<String> =
+        let iface_methods: Vec<hale_syntax::ast::InterfaceMethodSig> =
             hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
-                TopDecl::Interface(i) if i.name.name == iface_name => Some(
-                    i.methods.iter().map(|m| m.name.name.clone()).collect(),
-                ),
+                TopDecl::Interface(i) if i.name.name == iface_name => {
+                    Some(i.methods.clone())
+                }
                 _ => None,
             })
             .ok_or_else(|| {
@@ -33093,14 +33220,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let mut entries: Vec<inkwell::values::PointerValue<'ctx>> =
             Vec::with_capacity(iface_methods.len());
-        for method_name in &iface_methods {
-            let func = info.user_methods.get(method_name).ok_or_else(|| {
+        for m in &iface_methods {
+            let method_name = &m.name.name;
+            let func = *info.user_methods.get(method_name).ok_or_else(|| {
                 CodegenError::Unsupported(format!(
                     "vtable synth: locus `{}` has no method `{}` (interface `{}`)",
                     locus_name, method_name, iface_name
                 ))
             })?;
-            entries.push(func.as_global_value().as_pointer_value());
+            // GH #732: an infallible method satisfies a fallible
+            // interface method; its slot holds an adapter with the
+            // fallible ABI that always takes the success path.
+            let entry = if m.fallible.is_some()
+                && !self.locus_method_is_fallible(locus_name, method_name)
+            {
+                let has_success = match &m.ret {
+                    None => false,
+                    Some(TypeExpr::Tuple(parts, _)) => !parts.is_empty(),
+                    Some(_) => true,
+                };
+                self.fallible_adapter(locus_name, method_name, func, has_success)?
+            } else {
+                func
+            };
+            entries.push(entry.as_global_value().as_pointer_value());
         }
         let array_ty = ptr_t.array_type(entries.len() as u32);
         let init = ptr_t.const_array(&entries);
@@ -33114,6 +33257,96 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
+
+    /// Whether the locus declares `method_name` with `fallible(E)`.
+    fn locus_method_is_fallible(&self, locus_name: &str, method_name: &str) -> bool {
+        hale_syntax::ast::flat_decls(&self.program.items).any(|item| match item {
+            TopDecl::Locus(l) if l.name.name == locus_name => l.members.iter().any(|m| {
+                matches!(m, LocusMember::Fn(fd)
+                    if fd.name.name == method_name && fd.fallible.is_some())
+            }),
+            _ => false,
+        })
+    }
+
+    /// GH #732: `<Locus>.<method>.__fallible` — the fallible
+    /// locus-method ABI in front of an infallible method, for the
+    /// vtable slot of an interface method declared `fallible(E)`:
+    ///
+    /// ```text
+    /// (self_ptr, <params...>, [out_val: T*], out_err: E*) -> i1
+    /// ```
+    ///
+    /// It calls the method, stores its result in `out_val`, and
+    /// returns 0 (the success path); `out_err` is never written.
+    fn fallible_adapter(
+        &mut self,
+        locus_name: &str,
+        method_name: &str,
+        func: inkwell::values::FunctionValue<'ctx>,
+        has_success: bool,
+    ) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
+        let name = format!("{}.{}.__fallible", locus_name, method_name);
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let inner_ty = func.get_type();
+        let mut param_tys: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            inner_ty.get_param_types().into_iter().map(|t| t.into()).collect();
+        let inner_params = param_tys.len();
+        if has_success {
+            param_tys.push(ptr_t.into());
+        }
+        param_tys.push(ptr_t.into());
+        let fn_ty = self.context.bool_type().fn_type(&param_tys, false);
+        let adapter = self.module.add_function(
+            &name,
+            fn_ty,
+            Some(inkwell::module::Linkage::Internal),
+        );
+        // Built mid-lowering (the first coercion to the interface):
+        // keep the caller's block and debug location out of it.
+        let saved_block = self.builder.get_insert_block();
+        let saved_di_loc = self.di_current_loc;
+        let saved_di_pos = self.di_current_pos;
+        let entry = self.context.append_basic_block(adapter, "entry");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let args: Vec<BasicMetadataValueEnum<'ctx>> = (0..inner_params)
+            .map(|i| adapter.get_nth_param(i as u32).expect("adapter param").into())
+            .collect();
+        let call = self
+            .builder
+            .build_call(func, &args, "adapter.call")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if has_success {
+            let out_val = adapter
+                .get_nth_param(inner_params as u32)
+                .expect("out_val param")
+                .into_pointer_value();
+            let v = call
+                .try_as_basic_value()
+                .left()
+                .expect("a method with a success value returns one");
+            self.builder
+                .build_store(out_val, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder
+            .build_return(Some(&self.context.bool_type().const_zero()))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(b) = saved_block {
+            self.builder.position_at_end(b);
+        }
+        self.di_current_loc = saved_di_loc;
+        self.di_current_pos = saved_di_pos;
+        match saved_di_loc {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
+        }
+        Ok(adapter)
+    }
 
     /// The LLVM struct type for an interface fat pointer, used by
     /// coercion (store) and dispatch (load) sites so both agree on

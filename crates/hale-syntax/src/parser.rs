@@ -3123,11 +3123,15 @@ impl Parser {
             } else {
                 None
             };
+            // GH #732: the same contextual `fallible(E)` marker a fn
+            // declaration takes.
+            let fallible = self.parse_fallible_marker_opt()?;
             self.expect(TokenKind::Semi, ";")?;
             methods.push(InterfaceMethodSig {
                 name: mname,
                 params,
                 ret,
+                fallible,
                 span: kw_fn.span.merge(close.span),
             });
         }

@@ -1,0 +1,97 @@
+// GH #732: an interface method declares `fallible(E)`, and a call
+// through the interface carries the error channel exactly as a
+// direct call on a fallible method does — success, failure, and every
+// `or` form. An infallible method satisfies a fallible interface
+// method and always takes the success path.
+
+type StoreError { kind: String = ""; }
+
+interface Store {
+    fn put(k: String) -> Int fallible(StoreError);
+    fn name_of(k: String) -> String fallible(StoreError);
+    fn check(k: String) fallible(StoreError);
+}
+
+locus Strict {
+    params { }
+    fn put(k: String) -> Int fallible(StoreError) {
+        if k == "" { fail StoreError { kind: "empty" }; }
+        return len(k);
+    }
+    fn name_of(k: String) -> String fallible(StoreError) {
+        if k == "" { fail StoreError { kind: "no name" }; }
+        return "name:" + k;
+    }
+    fn check(k: String) fallible(StoreError) {
+        if k == "" { fail StoreError { kind: "unchecked" }; }
+    }
+}
+
+// Infallible throughout: satisfies every fallible method of Store.
+locus Lenient {
+    params { }
+    fn put(k: String) -> Int { return 7; }
+    fn name_of(k: String) -> String { return "lenient"; }
+    fn check(k: String) { }
+}
+
+locus Holder {
+    params { store: Store = Strict { }; }
+    fn stored(k: String) -> Int { return self.store.put(k) or - 1; }
+}
+
+fn put_or(s: Store, k: String, fallback: Int) -> Int { return s.put(k) or fallback; }
+
+fn put_raising(s: Store, k: String) -> Int fallible(StoreError) {
+    let n = s.put(k) or raise;
+    return n * 10;
+}
+
+fn kind_of(e: StoreError) -> Int { return len(e.kind); }
+
+fn put_handled(s: Store, k: String) -> Int { return s.put(k) or kind_of(err); }
+
+fn check_then(s: Store, k: String) -> Bool fallible(StoreError) {
+    s.check(k) or raise;
+    return true;
+}
+
+fn checked(s: Store, k: String) -> Bool { return check_then(s, k) or false; }
+
+fn main() {
+    let strict = Strict { };
+    let lenient = Lenient { };
+
+    // success and failure through the interface, substitute form
+    std::test::assert_eq_int(put_or(strict, "abc", 0), 3, "success value through the vtable");
+    std::test::assert_eq_int(put_or(strict, "", 0), 0, "failure takes the substitute");
+
+    // the infallible implementation behind a fallible slot
+    std::test::assert_eq_int(put_or(lenient, "", 0), 7, "an infallible method always succeeds");
+
+    // `or raise` propagates the interface's error to the caller
+    std::test::assert_eq_int(put_raising(strict, "ab") or - 1, 20, "raise passes success through");
+    std::test::assert_eq_int(put_raising(strict, "") or - 1, -1, "raise propagates the failure");
+
+    // `or <handler(err)>` sees the payload the method failed with
+    std::test::assert_eq_int(put_handled(strict, ""), 5, "the handler reads the error payload");
+    std::test::assert_eq_int(put_handled(strict, "abcd"), 4, "the handler is not run on success");
+
+    // a String success value
+    let s: Store = strict;
+    std::test::assert_eq_str(s.name_of("x") or "none", "name:x", "a String success value");
+    std::test::assert_eq_str(s.name_of("") or "none", "none", "a String-returning failure");
+    let l: Store = lenient;
+    std::test::assert_eq_str(l.name_of("") or "none", "lenient", "a String through the adapter");
+
+    // a unit-returning fallible method, and `or discard`
+    std::test::assert(checked(strict, "x"), "unit success");
+    std::test::assert(!checked(strict, ""), "unit failure");
+    std::test::assert(checked(lenient, ""), "unit through the adapter");
+    s.check("") or discard;
+
+    // an interface-typed field
+    let h = Holder { };
+    std::test::assert_eq_int(h.stored("hello"), 5, "through an interface-typed field");
+    std::test::assert_eq_int(h.stored(""), -1, "failure through an interface-typed field");
+}

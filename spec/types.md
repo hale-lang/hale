@@ -341,6 +341,34 @@ declares an interface-typed param: missing-method, arity-
 mismatch, param-type, or return-type mismatches all produce
 typed diagnostics at typecheck time.
 
+**Fallible methods (GH #732).** An interface method may declare
+`fallible(E)` after its return type, as a fn does:
+
+```
+interface Store {
+    fn put(k: String) -> Int fallible(StoreError);
+}
+```
+
+A call through the interface is a fallible call: `or <fallback>`,
+`or handler(err)`, `or raise` and `or discard` apply as on a direct
+call, and a call that does not address the error is rejected.
+Which methods satisfy one:
+
+- An **infallible** method satisfies a fallible interface method;
+  a call through the interface then always takes the success path.
+- A **fallible** method does **not** satisfy an infallible
+  interface method.
+- The error types must be the **same type**; there is no
+  subtyping of error payloads.
+
+A mismatch is a check-time error naming both signatures. An
+imported interface keeps its methods' error types and enforces
+them the same way. The vtable slot of a fallible interface method
+holds a callee with the fallible locus-method ABI (`i1` return,
+`out_val` / `out_err` slots); for an infallible method, the
+compiler puts a small adapter with that ABI in front of it.
+
 **v0.1 scope (Phase A + Phase B).** Interface declarations
 parse, register, and the typechecker enforces the structural
 rule (Phase A, shipped 2026-05-10). **Codegen vtable dispatch
@@ -1214,6 +1242,8 @@ declared on:
   #24, shipped 2026-05-25). Heap-bearing success and err
   payload types are supported via the same TLS caller-arena
   snapshot non-fallible heap-returning locus methods use.
+- **Interface method signatures** (GH #732) — see § "Interface
+  types (F.20)" for which methods satisfy one.
 
 `fallible(E)` is **rejected** on substrate-facing surfaces
 that have no caller frame to address the error channel:

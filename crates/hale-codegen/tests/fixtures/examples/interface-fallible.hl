@@ -1,0 +1,15 @@
+// GH #732 (friction F.7): an interface method declares `fallible(E)`,
+// and a call through the interface carries the error channel. This
+// used to fail to parse: `expected ;, got Ident("fallible")`.
+type E { kind: String = ""; }
+interface Store {
+    fn put(k: String) -> Int fallible(E);
+}
+locus Mem { fn put(k: String) -> Int fallible(E) { if k == "" { fail E { kind: "empty" }; } return 1; } }
+fn keep(s: Store, k: String) -> Int { return s.put(k) or 0; }
+fn main() {
+    let m = Mem { };
+    println(m.put("a") or 0);
+    println(keep(m, "a"));
+    println(keep(m, ""));
+}

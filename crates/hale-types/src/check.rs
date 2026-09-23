@@ -5162,6 +5162,25 @@ fn receiver_display(e: &Expr) -> String {
 ///     publish/subscribe declarations on this topic. Pub-only →
 ///     connect, sub-only → listen, both → compile error
 ///     ("specify `role:`").
+/// A method signature as a diagnostic shows it (GH #732):
+/// `fn put(String) -> Int fallible(E)`.
+fn sig_text<'a>(
+    name: &str,
+    params: impl Iterator<Item = &'a Ty>,
+    ret: &Ty,
+    fallible: Option<&Ty>,
+) -> String {
+    let params: Vec<String> = params.map(|t| t.display()).collect();
+    let mut s = format!("fn {}({})", name, params.join(", "));
+    if *ret != Ty::Unit {
+        s.push_str(&format!(" -> {}", ret.display()));
+    }
+    if let Some(e) = fallible {
+        s.push_str(&format!(" fallible({})", e.display()));
+    }
+    s
+}
+
 /// Wave B: verify an adapter-binding locus satisfies the bus's
 /// `__StdBusAdapter` contract (currently a single `send(subject:
 /// String, bytes: Bytes)` method). Stand-alone shape — same logic
@@ -13204,6 +13223,31 @@ impl<'a> Checker<'a> {
                     lm.ret.display()
                 ));
             }
+            // GH #732: an infallible method satisfies a fallible
+            // interface method; a fallible one never satisfies an
+            // infallible one, and the error types must be the same
+            // type (no subtyping of error payloads).
+            let clash = match (&im.fallible, &lm.fallible) {
+                (None, Some(_)) => Some("is fallible where the interface's is not"),
+                (Some(ie), Some(le)) if ie != le => {
+                    Some("declares a different error type")
+                }
+                _ => None,
+            };
+            if let Some(why) = clash {
+                let iface_sig = sig_text(
+                    &im.name,
+                    im.params.iter().map(|(_, t)| t),
+                    &im.ret,
+                    im.fallible.as_ref(),
+                );
+                let locus_sig =
+                    sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref());
+                return Err(format!(
+                    "locus `{}` method `{}` {}: interface `{}` declares `{}`, locus declares `{}`",
+                    locus_name, im.name, why, iface_name, iface_sig, locus_sig
+                ));
+            }
         }
         Ok(())
     }
@@ -15834,6 +15878,13 @@ impl<'a> Checker<'a> {
                         .find(|m| m.name == name.name)
                         .and_then(|m| m.fallible.clone()),
                     TopSymbol::Perspective(info) => info
+                        .methods
+                        .iter()
+                        .find(|m| m.name == name.name)
+                        .and_then(|m| m.fallible.clone()),
+                    // GH #732: a call through an interface carries the
+                    // method's declared error channel.
+                    TopSymbol::Interface(info) => info
                         .methods
                         .iter()
                         .find(|m| m.name == name.name)

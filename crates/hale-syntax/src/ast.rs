@@ -691,6 +691,10 @@ pub struct InterfaceMethodSig {
     pub name: Ident,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
+    /// GH #732: `fallible(E)` after the return type. A call through
+    /// the interface carries the error channel, as a direct call on
+    /// a fallible method does.
+    pub fallible: Option<TypeExpr>,
     pub span: Span,
 }
 
