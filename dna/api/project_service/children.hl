@@ -75,8 +75,22 @@ fn alive(p: Proc) -> Bool {
 // The exit code once the process ended; -2 while it runs.
 fn exit_code(p: Proc) -> Int {
     if p.pid <= 0 { return -1; }
-    let text = std::io::fs::read_file(p.dir + "/" + p.name + ".exit") or "";
-    if len(dna::trim_nl(text)) == 0 { if alive(p) { return -2; } return -1; }
+    let mut text = std::io::fs::read_file(p.dir + "/" + p.name + ".exit") or "";
+    if len(dna::trim_nl(text)) == 0 {
+        if alive(p) { return -2; }
+        // Gone, and the code not written yet: the shell that records it
+        // writes the moment `wait` returns, so between the process's end
+        // and that write this read raced it and answered -1 for a run
+        // that exited 124 (a loaded CI runner hit it, GH #970). Give the
+        // write half a second before deciding the code will never come.
+        let mut tries = 0;
+        while len(dna::trim_nl(text)) == 0 && tries < 10 {
+            std::time::sleep(50ms);
+            text = std::io::fs::read_file(p.dir + "/" + p.name + ".exit") or "";
+            tries = tries + 1;
+        }
+        if len(dna::trim_nl(text)) == 0 { return -1; }
+    }
     return std::str::parse_int(dna::trim_nl(text)) or - 1;
 }
 
