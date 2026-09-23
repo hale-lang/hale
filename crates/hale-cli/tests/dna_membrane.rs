@@ -41,12 +41,19 @@ fn organism_fixture(root: &Path) -> PathBuf {
     let core_src = repo().join("dna/core");
     let core_dst = root.join("dna/core");
     std::fs::create_dir_all(&core_dst).unwrap();
-    for e in std::fs::read_dir(&core_src).unwrap() {
-        let e = e.unwrap();
-        if e.path().extension().and_then(|x| x.to_str()) == Some("hl") {
-            std::fs::copy(e.path(), core_dst.join(e.file_name())).unwrap();
+    // the core and what it imports beneath it (pond's driver, GH #985)
+    fn copy_hl(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.path().is_dir() {
+                copy_hl(&e.path(), &to.join(e.file_name()));
+            } else if e.path().extension().and_then(|x| x.to_str()) == Some("hl") {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
         }
     }
+    copy_hl(&core_src, &core_dst);
     let src = std::fs::read_to_string(repo().join("dna/organism/main.hl")).unwrap();
     let relocated = src
         .replace("/tmp/hale-dna.review.verdict.sock", &format!("{}/hale-dna.review.verdict.sock", root.display()))

@@ -84,6 +84,20 @@ fn ledger_holding(app: String, head_dsn: String, needles: String, secs: Int) -> 
     return rows;
 }
 
+// Every line of `text` holding `needle`, newline-joined.
+@unbounded
+fn row_with_all(text: String, needle: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, needle) { out = out + line + "\n"; }
+    }
+    return out;
+}
+
 fn b64(s: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(s)); }
 
 type Http {
@@ -273,8 +287,9 @@ main locus App {
         let ledger = ledger_holding(app, head_dsn, "chase the late invoice\nreconcile the payroll account", 120);
         std::test::assert(std::str::contains(ledger, "chase the late invoice") && std::str::contains(ledger, "reconcile the payroll account"), "both asks are admitted as rows of the ledger: " + ledger);
         // each in the name the session proves, whatever the form said
-        let arow = row_with(ledger, "chase the late invoice");
-        let brow = row_with(ledger, "reconcile the payroll account");
+        // the ask's own row (the organism's `intent.offered` names the text too)
+        let arow = row_with(row_with_all(ledger, "\"kind\": \"intent.requested\""), "chase the late invoice");
+        let brow = row_with(row_with_all(ledger, "\"kind\": \"intent.requested\""), "reconcile the payroll account");
         std::test::assert(std::str::contains(arow, "\"author\": \"alice\"") && !std::str::contains(arow, "\"author\": \"bob\""), "alice's ask, in alice's name whatever the form said: " + arow);
         std::test::assert(std::str::contains(brow, "\"author\": \"bob\"") && !std::str::contains(brow, "\"author\": \"alice\""), "bob's ask, in bob's name whatever the form said: " + brow);
         // the record holds the request, not the day's work
@@ -284,7 +299,7 @@ main locus App {
         let b2 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b2.status, 200, "taken");
         let ledger2 = ledger_holding(app, head_dsn, "file the returns", 120);
-        std::test::assert(std::str::contains(row_with(ledger2, "file the returns"), "\"author\": \"bob\""), "in bob's name: " + ledger2);
+        std::test::assert(std::str::contains(row_with(row_with_all(ledger2, "\"kind\": \"intent.requested\""), "file the returns"), "\"author\": \"bob\""), "in bob's name: " + ledger2);
 
         // ---- connections stay bounded: each process holds one handle on
         // memory for its life, so ticking longer opens nothing more (GH #985)

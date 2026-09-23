@@ -73,6 +73,7 @@ type ProtectedRow {
         self.opened = false;
     }
     fn last_error() -> String { return self.error; }
+    @unbounded
     fn open() -> Bool {
         if self.opened { return true; }
         let dialled = dial_from_env(self.conn, self.dsn_env);
@@ -121,6 +122,7 @@ type ProtectedRow {
         self.error = "put: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
         return false;
     }
+    @unbounded
     fn erase(digest: String) -> Bool {
         if !self.open() { return false; }
         let a = db::Args { };
@@ -141,6 +143,7 @@ type ProtectedRow {
     }
     // Read as JSON built by the server: a body is an ordinary paragraph,
     // and the driver's tab-separated rows cannot carry one.
+    @unbounded
     fn get(digest: String) -> Protected {
         // the error is this read's, not one left by an earlier call: an
         // absent body with no error is absent

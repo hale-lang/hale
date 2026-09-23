@@ -364,6 +364,7 @@ locus Pq {
     // applied (there is nothing to apply); its first row moves it to
     // its own schema.
     fn schema() -> String { return schema_for(self.record_id); }
+    @unbounded
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -374,9 +375,11 @@ locus Pq {
     // statement timeout — reached a caller as "there is no knowledge
     // here" (the third-round review's finding 3). The caller compares
     // `last_error` around a read and refuses rather than answering.
+    @unbounded
     fn note(what: String, e: db::DbError) {
         self.error = what + ": " + e.kind + " " + e.detail;
     }
+    @unbounded
     fn open() -> Bool {
         if self.opened { return true; }
         // A failed migration or scope change may have left a live session.
@@ -409,6 +412,7 @@ locus Pq {
         self.opened = true;
         return true;
     }
+    @unbounded
     fn healthy() -> Bool {
         if !self.opened { return false; }
         let r = self.conn.query_one("SELECT 1");

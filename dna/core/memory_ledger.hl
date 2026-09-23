@@ -113,6 +113,7 @@ locus PqLedger {
         self.opened = false;
     }
     fn schema() -> String { return schema_for(self.record_id); }
+    @unbounded
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -212,6 +213,7 @@ locus PqLedger {
         let e = self.rows.get(self.rows.len() - 1) or Event { };
         return e.digest;
     }
+    @unbounded
     fn refresh() -> Bool {
         // last_error describes this read, not an earlier refused command.
         self.error = "";
@@ -241,6 +243,7 @@ locus PqLedger {
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
     // One insert conditioned on the tail: zero rows means another writer
     // got there first (or a claim is taken: a unique violation).
+    @unbounded
     fn insert(seq: Int, kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> String {
         let prev = self.head();
         let digest = event_digest(prev, kind, entity, body);
@@ -413,6 +416,7 @@ locus PqLeaseStore {
         self.opened = false;
     }
     fn last_error() -> String { return self.error; }
+    @unbounded
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -447,6 +451,7 @@ locus PqLeaseStore {
         if r.ok || !self.redial() { return r; }
         return self.conn.query_params(sql, a);
     }
+    @unbounded
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
@@ -458,6 +463,7 @@ locus PqLeaseStore {
     }
     // One statement: insert when nothing is there and 0 was expected,
     // else update where the stored token is the one expected.
+    @unbounded
     fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
         let a = db::Args { };
         a.add(key);

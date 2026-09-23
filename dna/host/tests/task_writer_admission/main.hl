@@ -96,7 +96,7 @@ locus TaskWriterAdmissionProof {
             std::io::fs::write_file(root + "/dna/org/owners", "host = receiving\norg = receiving\nreceiving: operator\n") or discard;
             self.append(j, "task.transfer_requested", id, "{\"owner\":\"sending\",\"to\":\"receiving\",\"assignee\":\"bob\"}");
             let race = RacingTaskAdmission { root: root, kind: "person.retired", entity: "bob", body: "{\"by\":\"concurrent\",\"to\":\"\",\"transferred\":0}" };
-            let result = host::task_accept_admit(root, ".", id, "operator", "accept", race);
+            let result = host::task_accept_admit(root, ".", id, "operator", "accept", race, dna::Memory { repo: root });
             std::test::assert(!result.ok && std::str::contains(result.text, "retired"), "recheck transfer recipient after stale: " + result.text);
             let refreshed = j.refresh(); std::test::assert(self.count(j, "task.transfer_accepted", id) == 0, "no stale transfer acceptance");
         } else {
@@ -106,38 +106,38 @@ locus TaskWriterAdmissionProof {
             let evidence = "sha256:" + record.keep("actual fixture evidence");
             if mode == "reassign-retired-recipient" {
                 let race = RacingTaskAdmission { root: root, kind: "person.retired", entity: "bob", body: "{\"by\":\"concurrent\",\"to\":\"\",\"transferred\":0}" };
-                let result = host::task_reassign_admit(root, ".", id, "bob", "operator", race);
+                let result = host::task_reassign_admit(root, ".", id, "bob", "operator", race, dna::Memory { repo: root });
                 std::test::assert(!result.ok && std::str::contains(result.text, "retired"), "recipient rechecked after retirement: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "task.reassigned", id) == 0, "no stale reassignment");
             } else if mode == "reassign-fresh-from" {
                 let race = RacingTaskAdmission { root: root, kind: "task.reassigned", entity: id, body: "{\"from\":\"alice\",\"to\":\"charlie\",\"by\":\"concurrent\"}" };
-                let result = host::task_reassign_admit(root, ".", id, "bob", "operator", race);
+                let result = host::task_reassign_admit(root, ".", id, "bob", "operator", race, dna::Memory { repo: root });
                 std::test::assert(result.ok && std::str::contains(result.text, "from charlie"), "retry computes current from: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "task.reassigned", id) == 2, "one concurrent plus one exact CLI reassignment");
                 std::test::assert(dna::native_json_string(j.read(j.revision() - 1).body, "from") == "charlie", "recorded current predecessor assignee");
             } else if mode == "done-retired-author" {
                 let race = RacingTaskAdmission { root: root, kind: "person.retired", entity: "alice", body: "{\"by\":\"concurrent\",\"to\":\"\",\"transferred\":0}" };
-                let result = host::task_done_admit(root, ".", id, "alice", "done", "", "", "", race);
+                let result = host::task_done_admit(root, ".", id, "alice", "done", "", "", "", race, dna::Memory { repo: root });
                 std::test::assert(!result.ok && std::str::contains(result.text, "retired"), "retired author cannot use empty-assignee fallback: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "task.done", id) == 0, "no retired-author completion");
             } else if mode == "done-between-evidence-and-completion" {
                 let race = RacingTaskAdmission { root: root, kind: "task.reassigned", entity: id, body: "{\"from\":\"alice\",\"to\":\"bob\",\"by\":\"concurrent\"}", at: 2 };
-                let result = host::task_done_admit(root, ".", id, "alice", "done", evidence, "", "", race);
+                let result = host::task_done_admit(root, ".", id, "alice", "done", evidence, "", "", race, dna::Memory { repo: root });
                 std::test::assert(!result.ok && std::str::contains(result.text, "not to alice"), "recheck final completion author after evidence: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "completion.linked", id) == 1 && self.count(j, "task.done", id) == 0, "evidence retained without false completion");
             } else if mode == "decide-stale-assignee" {
                 let race = RacingTaskAdmission { root: root, kind: "task.reassigned", entity: id, body: "{\"from\":\"alice\",\"to\":\"bob\",\"by\":\"concurrent\"}" };
-                let result = host::task_decide_admit(root, ".", id, "customer", "mail", evidence, "reported", "alice", race);
+                let result = host::task_decide_admit(root, ".", id, "customer", "mail", evidence, "reported", "alice", race, dna::Memory { repo: root });
                 std::test::assert(!result.ok && std::str::contains(result.text, "not to alice"), "decision reporter rechecked: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "decision.reported", id) == 0, "no stale decision");
             } else if mode == "authorize-retired-author" {
                 let race = RacingTaskAdmission { root: root, kind: "person.retired", entity: "bob", body: "{\"by\":\"concurrent\",\"to\":\"\",\"transferred\":0}" };
-                let result = host::task_authorize_admit(root, ".", id, "exact exception", "bob", race);
+                let result = host::task_authorize_admit(root, ".", id, "exact exception", "bob", race, dna::Memory { repo: root });
                 std::test::assert(!result.ok && std::str::contains(result.text, "retired"), "exception author rechecked: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "exception.authorized", id) == 0, "no retired-author authorization");
             } else if mode == "done-unrelated-stale" {
                 let race = RacingTaskAdmission { root: root, kind: "application.observed", entity: "concurrent", body: "{}" };
-                let result = host::task_done_admit(root, ".", id, "alice", "done", evidence, "", "", race);
+                let result = host::task_done_admit(root, ".", id, "alice", "done", evidence, "", "", race, dna::Memory { repo: root });
                 std::test::assert(result.ok, "unrelated movement rechecks and completes: " + result.text);
                 let refreshed = j.refresh(); std::test::assert(self.count(j, "completion.linked", id) == 1 && self.count(j, "task.done", id) == 1, "one evidence fact and one completion");
             } else { std::test::assert(false, "unknown case"); }

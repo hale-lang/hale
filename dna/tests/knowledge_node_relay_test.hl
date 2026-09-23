@@ -55,7 +55,7 @@ fn maximum() {
     let removed = dna::run_tool("rm\n-rf\n" + root);
 }
 fn relay_max(root: String) {
-    let result = host::relay_record_membrane(root, ".", "", "test", "\n");
+    let result = host::relay_record_membrane(root, ".", "", "test", "\n", dna::Memory { repo: root });
     if result.count != 1 {
         let p = host::open_projection(root, ".", "", dna::Memory { repo: root }); let codec = dna::KnowledgeNodeRequestCodec { }; let r = codec.decode(p.row(1).body);
         eprintln("max probe error=", result.error, " rows=", p.rows(), " kind=", p.row(1).kind, " valid=", codec.valid(r), " id=", r.request_id, " text=", len(r.text), " rationale=", len(r.because));
@@ -96,7 +96,7 @@ fn check() {
     let owner = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.owner\nsouth");
     let wrote = host::write_text(root + "/dna/org/owners", "org = north\norg/team = south\n") or false;
     std::test::assert(trust.code == 0 && owner.code == 0 && wrote, "explicit other-owner signed profile");
-    let state = host::relay_record_membrane(root, ".", "", "test", "\n");
+    let state = host::relay_record_membrane(root, ".", "", "test", "\n", dna::Memory { repo: root });
     std::test::assert_eq_int(state.count, 0, "another owner's request is not relayed");
     std::test::assert_eq_str(state.relayed, "\n", "another owner's unsigned request is not marked refused by this keyring");
     let refreshed = j.refresh();
