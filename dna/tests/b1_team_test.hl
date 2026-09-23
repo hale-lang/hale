@@ -312,6 +312,21 @@ main locus App {
         }
         return "";
     }
+    // Wait, bounded, for `clone` to list the Review `id`, syncing it each
+    // try. A Review the founder's clone lists is in the remote only once
+    // that clone's next sync pushes it: `wait_review` syncs before it
+    // reads, so the organism can put the Review there in between.
+    @unbounded
+    fn wait_listed(clone: String, service: String, id: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            let s = through(clone, service, toolchain() + "\ndna\nsync");
+            if len(row_with(through(clone, service, toolchain() + "\ndna\nreview").stdout, id)) > 0 { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
     fn head_up(ui: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
@@ -442,10 +457,14 @@ main locus App {
         // the organism hears it through the record and puts it to the Board
         let rid = self.wait_review(app, service, "Chase an invoice at seven days.", 240);
         std::test::assert(len(rid) > 0, "the practice became a Review the Board must decide: " + through(app, service, toolchain() + "\ndna\nreview").stdout);
-        // bob approves his own proposal from his head: his authority is not the Board's
-        let sync_b = through(other, service, toolchain() + "\ndna\nsync");
+        // bob approves his own proposal from his head: his authority is not the Board's.
+        // Head B decides against bob's clone, so the Review has to be there first
+        std::test::assert(self.wait_listed(other, service, rid, 240), "bob's clone has the Review: " + through(other, service, toolchain() + "\ndna\nreview").stdout);
         let bobs = curl("POST", ui_b + "/api/verdict", bob, "{\"id\":\"" + rid + "\",\"verdict\":\"approve\",\"as\":\"alice\",\"comment\":\"mine\"}");
         std::test::assert_eq_int(bobs.status, 200, "head B takes the verdict: " + bobs.body);
+        // the head answers 200 whatever the verb said; the verb's own words
+        // say whether the verdict is in the record
+        std::test::assert(std::str::contains(bobs.body, "sent into the record"), "head B put bob's verdict into the record: " + bobs.body);
         let refused = self.wait_in_record(app, service, "\"kind\": \"review.refused\", \"entity\": \"" + rid + "\"", 240);
         std::test::assert(std::str::contains(refused, "authority reviewer does not satisfy board"), "bob's verdict is refused for want of the Board's authority: " + refused);
         let bob_verdict = row_with(record(app), "\"kind\": \"review.verdict\", \"entity\": \"" + rid + "\"");
