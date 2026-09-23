@@ -237,6 +237,9 @@ test('Projects: an attach reserves the identity before the POST, follows the rec
   expect(body).toMatchObject({ operation: 'dna.project.attach', operation_version: '1', context: { head: 'local', application_id: '' }, target: { kind: 'dna.head', id: 'local' }, preconditions: { principal: PRINCIPAL }, arguments: { root: '/home/operator/dna/demo' } });
   expect(Object.keys(body).sort()).toEqual(['arguments', 'context', 'operation', 'operation_version', 'preconditions', 'request_id', 'target']);
   expect(body.request_id).toMatch(/^head-[0-9a-f-]{36}$/);
+  // The browser reports the POST as it leaves; the scripted head records it
+  // only once it has read the body. Wait on the head's own record.
+  await expect.poll(() => host.state().posts.length).toBe(1);
   expect(host.state().posts[0].headers['x-hale-command']).toBe('1');
   await expect(request(page)).toHaveAttribute('data-state', 'running');
   await expect(request(page)).toHaveAttribute('data-observation', 'pending');
@@ -330,6 +333,9 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   await page.evaluate(() => { window.controller = window.FaceProjects.mount(document.querySelector('main'), {}); });
   await expect(request(page)).toContainText('Saved request');
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded');
+  // The receipt renders first; the saved identity is cleared only once the
+  // head has been read again, which is when the observation settles.
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed');
   expect(host.state().posts).toHaveLength(0);
   expect(host.state().gets).toEqual(['head-restored']);
   expect(await saved(page)).toEqual([]);
@@ -354,6 +360,7 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   expect(await saved(page)).toHaveLength(1);
   await page.unroute('**/api/hale/v1/head/commands');
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed');
   expect(host.state().posts).toHaveLength(1);
   expect(host.state().gets.at(-1)).toBe(host.state().posts[0].body.request_id);
   expect(await saved(page)).toEqual([]);
