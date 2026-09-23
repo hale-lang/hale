@@ -76,6 +76,18 @@ fn curl(method: String, url: String, cookie: String, body: String) -> HttpRespon
     return HttpResponse { status: status, headers: headers, body: result.stdout[(split + 4)..len(result.stdout)] };
 }
 
+// The contract schema's text once it has passed the validator's profile. Every
+// response a Fixture sees is checked against it, and profiling the schema
+// takes most of a second, so a program with many Fixtures profiles it once and
+// hands the text to each as profiled_schema (#1009).
+fn contract_schema() -> String {
+    let validator = wire_contract::Validator { root: std::env::var("HALE_API_CONTRACT_ROOT") };
+    let schema = std::io::fs::read_file(validator.root + "/schema.json") or "";
+    let profile = validator.schema_profile(schema);
+    std::test::assert(profile.ok, "contract schema profile: " + profile.error);
+    return schema;
+}
+
 fn cookie(response: HttpResponse) -> String {
     let raw = dna::response_header(response.headers, "Set-Cookie");
     let semi = std::str::index_of(raw, ";");
@@ -96,9 +108,13 @@ locus Fixture {
         receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/hale-api-fixture" };
         json: Json = Json { };
         validator: wire_contract::Validator = wire_contract::Validator { root: std::env::var("HALE_API_CONTRACT_ROOT") };
+        // The contract schema text, already profiled: from contract_schema()
+        // when one program builds many Fixtures, or empty to profile it here.
+        profiled_schema: String = "";
     }
     birth() {
         std::test::assert(len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/"), "owned fixture root required");
+        self.validator.profiled = self.profiled_schema;
         std::io::fs::mkdir(self.root) or discard;
         self.git("init\n-q\n-b\nmain");
         self.git("config\nuser.name\napi-fixture");

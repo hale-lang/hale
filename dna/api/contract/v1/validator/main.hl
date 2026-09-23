@@ -290,8 +290,15 @@ locus ContractSchema {
     }
 }
 
+// A schema's profile depends on its text alone, and parsing and profiling the
+// whole contract schema (about 300 KB) takes most of a second, against well
+// under a millisecond for one response. So a Validator remembers the last text
+// that passed, `profiled`, and checks only the document when it sees that text
+// again; any other text, or one that failed, is profiled afresh (#1009). A
+// program that builds many Validators may seed `profiled` with a text that has
+// passed `schema_profile`, and with nothing else.
 locus Validator {
-    params { root: String = "dna/api/contract/v1"; }
+    params { root: String = "dna/api/contract/v1"; profiled: String = ""; }
     fn schema_profile(schema: String) -> ValidationResult {
         let syntax = JsonSyntax { };
         if !syntax.valid(schema) { return ValidationResult { error: "schema: invalid JSON or unsupported object key encoding" }; }
@@ -300,8 +307,11 @@ locus Validator {
         return ValidationResult { ok: len(error) == 0, error: error };
     }
     fn validate_schema(schema: String, name: String, json: String) -> ValidationResult {
-        let profile = self.schema_profile(schema);
-        if !profile.ok { return profile; }
+        if len(self.profiled) == 0 || schema != self.profiled {
+            let profile = self.schema_profile(schema);
+            if !profile.ok { return profile; }
+            self.profiled = schema;
+        }
         let syntax = JsonSyntax { };
         if !syntax.valid(json) { return ValidationResult { error: "response: invalid JSON or unsupported object key encoding" }; }
         let rules = ContractSchema { document: schema };
