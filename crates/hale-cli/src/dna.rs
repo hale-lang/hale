@@ -533,8 +533,12 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
-    eprintln!("       hale dna ledger [status | adopt | abandon --why <w>]");
-    eprintln!("                                    the operational memory: where the day's work lives, and the one-way move of it into the store");
+    eprintln!("       hale dna ledger [status | rows | adopt | abandon --why <w>]");
+    eprintln!("                                    the operational memory: where the day's work lives, its rows as JSON lines, and the one-way");
+    eprintln!("                                    move of it into memory — adopt and abandon are requested; the body carries them out on its tick");
+    eprintln!("                                    once the ledger is adopted, a head's write (a task done, a receipt filed …) is REQUESTED: a");
+    eprintln!("                                    `ledger.requested` row, its digest printed; the body admits or refuses it on its tick, and");
+    eprintln!("                                    `hale dna history <entity>` shows which (a refusal is a `ledger.request_refused` row)");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
     eprintln!("                                    the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one");
     eprintln!("       hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]");
@@ -550,6 +554,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>");
     eprintln!("       hale dna receipt file <path> [--class internal|customer|confidential]   file a document as evidence");
     eprintln!("                                    a hold refuses redaction until released; a redaction removes the body and keeps the digest, as a row");
+    eprintln!("                                    (a body kept in memory is erased by the body on its tick, and filing it again is refused)");
     eprintln!("                                    protected evidence (customer, confidential): kept in memory alone, sealed there;");
     eprintln!("                                    disclosure and every read are rows in the reader's name (--as <who>)");
     eprintln!("       hale dna schedule [pause <id> | resume <id>]");
@@ -561,6 +566,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>");
     eprintln!("                                    ask for an outcome: over the membrane here, into the record otherwise; prints the Task born or the refusal");
+    eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
     eprintln!("       hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)");

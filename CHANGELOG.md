@@ -20,19 +20,38 @@ behavior.
   that touches a socket, so a claim about such a program's subjects
   no longer has an unresolved publish to fail closed on.
 
-### Memory's schema belongs to its owner (GH #985, part 1)
+### Memory is Postgres, per record, with a role per client (GH #985)
 
-- **`hale dna memory migrate`** applies memory's schema for the record
-  with the owner's DSN (`HALE_DNA_KNOWLEDGE_DSN`, or dna/compose.yaml):
-  every store's tables, a role of the record's own
-  (`dna_<identity>_spine`), and a schema version. `hale dna dev` runs it
-  before the host starts and hands the host only the role's DSN
-  (`HALE_DNA_MEMORY_DSN_SPINE`); `hale dna upgrade` runs it when the
-  owner's DSN is set.
-- **The stores no longer create their tables on open.** They select the
-  record's schema and check its version, refusing another version by
-  name; the knowledge service connects as the spine role, which cannot
-  change the schema or read another record's.
+The knowledge service is gone; memory is a Postgres schema per record
+that the organism's host (the spine) and its heads reach under roles of
+their own.
+
+- **The owner migrates; nothing else holds the owner's DSN.**
+  `hale dna memory migrate` applies memory's schema with
+  `HALE_DNA_MEMORY_DSN_OWNER` (or dna/compose.yaml) and prints the
+  record's spine and head DSNs; `dev`, `upgrade` and a provisioned body
+  run it. The host runs on `HALE_DNA_MEMORY_DSN_SPINE` alone, heads on
+  `HALE_DNA_MEMORY_DSN_HEAD`; a schema of another version is refused.
+- **A head's write is a request.** On an adopted ledger a head writes a
+  `ledger.requested` row and reports its digest; the spine admits it on
+  its tick (owner keys, claims, fences, retirement, transfers) or records
+  `ledger.request_refused` with the reason. Adoption and abandonment are
+  requested the same way. The ledger has one writer, the spine.
+- **One spine per record.** A `spine` lease in memory decides which
+  body projects, admits and erases; the others read and forward, and
+  `spine.taken` / `spine.lost` rows name the holder. The host signs as
+  its owner, and its rows carry the owner's name.
+- **Protected evidence is sealed inside memory.** The receipt key is
+  memory's, set once at migration; `receipt_file`, `receipt_read` and
+  `receipt_erase` are the only way to the sealed table, and an erased
+  digest cannot be filed again. A database dump carries the key and the
+  ciphertext together — treat it as the evidence itself (#989).
+- **Removed:** `hale dna knowledge`, `hale dna queue`, the memory mode,
+  `HALE_DNA_KNOWLEDGE_DSN`/`_URL`/`_READ_KEY`/`_COMMAND_KEY`, and service
+  connections (`connect` takes git remotes only). `dna::ServiceLedger`,
+  `dna::KnowledgeClient` and `dna::ReceiptVault` are gone: delete their
+  lines from an organization's main.hl (`hale dna upgrade` says where).
+
 ### Interface methods declare `fallible(E)` (GH #732)
 
 - **`interface I { fn put(k: String) -> Int fallible(E); }`** parses,
