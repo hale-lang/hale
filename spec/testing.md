@@ -194,6 +194,23 @@ tests by suffix (`_test.hl`) regardless of location.
 `hale test` runs Layer 1 + Layer 2 today; `hale bench` runs
 Layer 3's single-language half.
 
+`hale test` compiles and runs its files **in parallel**: up to N at
+once, N being `-j N` / `--jobs N` if given, else `HALE_TEST_JOBS`,
+else the number of available cores; `-j 1` runs them one after
+another. The job count changes the wall time and nothing else a
+reader sees. The report is printed once every file is done, one
+`ok` / `FAIL` line per file in sorted path order with each failure's
+detail beneath its own line, then the summary; `--json` rows come in
+the same order; the exit status is the same. A test's stdout and
+stderr are captured with its own run, so one test's output never
+lands under another's line. The runner changes no process-wide
+state: every test binary starts in the cwd and with the environment
+`hale test` was started with. A test that shares a fixed resource
+with another test — a port, a path, a record — is a test that races
+under the default; a fixture takes its port and scratch directory
+per run (2026-09-22, GH #1009; before it the files ran one after
+another).
+
 `check` and `verify` resolve the whole import graph, and a parse
 failure **anywhere** in it — the target's own files, a library it
 imports, a library that library imports — fails both, at the
@@ -502,7 +519,7 @@ observation records.
 | `assert_closure(name, tolerance)` | not shipped — needs closure-test introspection |
 | `mock_locus<T>(...)` | not shipped |
 | `bench_iter(n, f)` | not shipped |
-| `hale test` CLI runner | shipped — discovery→compile→run→report driver over `*_test.hl` (`-run`, `--json`) |
+| `hale test` CLI runner | shipped — discovery→compile→run→report driver over `*_test.hl` (`-run`, `-j`, `--json`), files in parallel |
 
 ## Determinism
 

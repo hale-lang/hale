@@ -8,7 +8,7 @@
 # come from. The CLI tests keep their own cache directory
 # (temp_dir()/hale-tests-iris-cache); it is pointed at the same build.
 #
-# HALE_WARM_SKIP_IRIS=1 skips the observer build: the face job's fixtures
+# HALE_WARM_SKIP_IRIS=1 skips the observer build: the face jobs' fixtures
 # never run hale iris, while the cli partitions (iris_cli builds fuse-hl)
 # and the dna partitions (hale dna run launches iris) still need it.
 #
