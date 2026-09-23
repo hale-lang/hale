@@ -8,6 +8,49 @@ behavior.
 
 ## Unreleased
 
+### macOS in CI, and the last Mac-only test failures (GH #970)
+
+- **The DNA suite runs on macOS in CI** (`macos.yml` step h). Every DNA
+  gap fixed for the Mac so far was invisible to CI, which ran the suite
+  on Linux alone.
+- **A machine without `timeout` runs the DNA suite.** Sixteen fixtures
+  cap a background host with `timeout <secs>`, which is GNU coreutils
+  and not on a stock Mac; each failed to start its host at all. The
+  suite puts a stand-in on the fixtures' PATH where there is none, with
+  GNU's semantics rather than just its name: the command runs in a
+  process group of its own, and expiry or a signal to `timeout` reaches
+  the whole group (124 on expiry, 128+n on a signal). A first stand-in
+  that exec'd the command under an alarm let a stopped host's children
+  run on, and `books_slice` and `two_heads` read their record still
+  moving after the organism was down.
+- `process_child_adopt_test` skips its procfs-only reap counts silently:
+  the note it printed failed it on every Mac, since a passing test prints
+  nothing.
+- `the_existing_aliases_are_unchanged` skips its wasm32 half when the
+  `clang` on PATH has no wasm32 backend (Apple's), as the wasm suite skips
+  without its toolchain; CI's LLVM 18 clang runs it.
+- **`hale dna task done` / `authorize` / `decide` / `reassign` / `accept`
+  wait between append attempts.** Each tried sixteen times back to back
+  and gave up with "the Record kept changing" when a busy organism's own
+  writes landed inside every one — the full DNA suite on a laptop hit it.
+  Attempt *k* now waits (k−1)×100 ms first, about twelve seconds across
+  all sixteen at most.
+- `journal_test`'s `wait_exit` waits through a transient -1: a run's code
+  is written by the shell that waited for it just after the run ends, and
+  a read in between saw a dead pid and no code — a loaded CI runner read
+  -1 for a run that exited 124. (That grace put inside `exit_code` itself
+  stalled every host tick polling a child gone for good, and broke
+  `b1_team_test` on a Mac; it stays in the test's bounded wait.)
+- `dna_design`'s `finish()` waits for the record to stand still before it
+  kills the organism. A verdict's "settled" answer is the Review's own
+  row; the organism's consequence (`knowledge.ratified` / `declined` /
+  `retired`) lands just after, and killing on the last answer lost it —
+  reliably on a Mac, now and then on Linux (it failed this PR's CI once).
+- `organization_source_request_test` grants its guard a 120 s inspection
+  budget (`INSPECTION`). Production keeps its 30 s bound; the whole suite
+  in parallel on a laptop pushed one candidate check past it
+  (`organization_unavailable`) while the fixture passed alone.
+
 ### `hale test` runs files in parallel (GH #1009)
 
 `hale test <dir>` compiles and runs up to one test file per available

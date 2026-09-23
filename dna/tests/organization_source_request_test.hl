@@ -5,6 +5,14 @@ import "../core" as dna;
 import "../operations" as ops;
 import "../organization_source" as source;
 
+// The inspection budget the fixture grants. Production keeps its 30 s
+// bound on inspecting candidate source; the whole DNA suite running in
+// parallel on a laptop can push one `hale check` of a candidate past it,
+// which failed this fixture with `organization_unavailable` while it
+// passed alone (GH #970). The guard's behaviour is what is under test,
+// not the machine's speed.
+const INSPECTION: Int = 120;
+
 const ORIGINAL: String = "main locus Org {\n    params { title: String = \"Original\"; }\n    run() { }\n}\nfn main() { Org { }; }\n";
 const PREPARED: String = "// Exact équipe 🧭 <literal>\r\nmain locus Org {\n    params { title: String = \"Prepared\"; }\n    run() { }\n}\nfn main() { Org { }; }\n";
 
@@ -64,7 +72,7 @@ fn source_body(repo: String, st: Stage, request_id: String, owner: String, owner
     let body = dna::Dna {
         journal: SourceStageJournal { inner: dna::GitJournal { repo: repo }, stage: st.stage, entity_prefix: st.entity_prefix, blocked: st.blocked, lost_reply: st.lost_reply, faults: faults_of(repo), faults_path: faults_path(repo) },
         organization_source_facts: ops::StrictOrganizationSourceFacts { },
-        organization_source_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
+        organization_source_inputs: source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner },
         ownership: dna::Ownership { text: owners, me: owner, me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
@@ -88,12 +96,12 @@ main locus App {
     }
     fn request(repo: String, j: dna::Journal, label: String, owner: String) -> dna::OrganizationSourceRequest {
         let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity");
-        let input = source::OrganizationSource { root: repo, allow_drafts: true }; let basis = input.read(); std::test::assert(basis.ok, "real captured Organization basis: " + basis.error);
+        let input = source::OrganizationSource { inspection_seconds: INSPECTION, root: repo, allow_drafts: true }; let basis = input.read(); std::test::assert(basis.ok, "real captured Organization basis: " + basis.error);
         let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
         let c = ops::GovernanceCommand { application_id: context.application_id, request_id: label, operation: "dna.organization.propose", target_kind: "dna.organization.module", target_id: "dna/org/main.hl",
             subject_digest: basis.module_digest, source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest,
             record_head: std::str::clone(j.head()), source_text: PREPARED, rationale: "Prepare exact Organization source." };
-        let codec = ops::OrganizationCommandCodec { }; let guard = source::OrganizationPublicationInputs { root: repo, source_owner: owner };
+        let codec = ops::OrganizationCommandCodec { }; let guard = source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner };
         let r = codec.request(context, c, ops::GovernanceGrant { allowed: true, authority: "organization-editor", basis: "native-source-test-policy" }, owner);
         let prepared = guard.prepare(r); std::test::assert(prepared.ok, "shared guard accepts exact candidate inputs: " + prepared.code);
         let fact = codec.fact(context, c, prepared.request); std::test::assert(len(fact) > 0, "strict native incoming fact");

@@ -402,6 +402,65 @@ fn report_timings(slice: usize, timings: &mut Vec<FixtureTiming>) {
     }
 }
 
+/// A directory holding a `timeout` for the fixtures, on a machine that has
+/// none (a stock Mac: `timeout` is GNU coreutils), `None` where one is on
+/// PATH. The fixtures cap every host they start in the background with
+/// `timeout <secs> …`, sixteen sites in all; without it on PATH each one
+/// failed to start its host at all (GH #970).
+///
+/// The stand-in has GNU's semantics, not merely its name, because the
+/// fixtures lean on them: `timeout` puts itself and the command in a
+/// process group of their own, and when it is signalled — a fixture
+/// stopping the host it started — or its time runs out, it signals that
+/// whole GROUP, so what the command started stops with it; 124 on expiry,
+/// 128+n when the command died of signal n. A first stand-in that merely
+/// exec'd the command under an alarm let a host's children outlive it,
+/// and two fixtures read their record still moving after "the organism is
+/// down". Perl, which every Mac ships. One per process, made once.
+fn timeout_shim_dir() -> Option<PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let has = Command::new("sh")
+            .args(["-c", "command -v timeout >/dev/null 2>&1"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if has {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("hale-dna-suite-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let shim = dir.join("timeout");
+        std::fs::write(&shim, TIMEOUT_SHIM).ok()?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).ok()?;
+        Some(dir)
+    })
+    .clone()
+}
+
+/// GNU `timeout <secs> <cmd…>`, in perl: see [`timeout_shim_dir`].
+const TIMEOUT_SHIM: &str = r#"#!/usr/bin/env perl
+# GNU timeout, for a machine without coreutils (dna_native_suite.rs).
+use strict;
+my $secs = shift @ARGV;
+setpgrp(0, 0);                        # a group of our own, as GNU does
+my $pid = fork();
+die "timeout: fork: $!
+" unless defined $pid;
+if ($pid == 0) { exec { $ARGV[0] } @ARGV; exit 127; }
+my $expired = 0;
+# signal the whole group once, never ourselves again
+sub group { my ($sig) = @_; $SIG{$_} = 'IGNORE' for qw(TERM INT HUP QUIT); kill $sig, -$$; }
+for my $s (qw(TERM INT HUP QUIT)) { $SIG{$s} = sub { group($s) }; }
+$SIG{ALRM} = sub { $expired = 1; group('TERM') };
+alarm $secs;
+while (waitpid($pid, 0) < 0) { last unless $!{EINTR}; }
+my $st = $?;
+exit 124 if $expired;
+exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);
+"#;
+
 /// Run one fixture, returning what it cost or why it failed. `hale test
 /// --json` is what carries the cost: the text form reports only the
 /// pass/fail summary, and the wall time of the child here would fold
@@ -429,6 +488,12 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     // rather than minutes.
     if std::env::var_os("HALE_DNA_WAIT_SCALE").is_none() {
         cmd.env("HALE_DNA_WAIT_SCALE", "2");
+    }
+    if let Some(dir) = timeout_shim_dir() {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut parts = vec![dir.clone()];
+        parts.extend(std::env::split_paths(&path));
+        cmd.env("PATH", std::env::join_paths(parts).expect("PATH"));
     }
     let out = cmd.output().expect("invoke hale test on a DNA fixture");
     let stdout = String::from_utf8_lossy(&out.stdout);

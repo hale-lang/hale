@@ -132,12 +132,11 @@ fn main() {
         "the field's stdout pipe is readable after the factory returned");
 
     // Does procfs report children on this kernel? Probe with a child
-    // we know is alive; if not, the child-count assertions below are
-    // skipped rather than flaky.
+    // we know is alive; if not (a kernel without CONFIG_PROC_CHILDREN,
+    // or no procfs at all — macOS), the child-count assertions below
+    // are skipped rather than flaky. Silently: a passing test prints
+    // nothing, and a note here failed it on every Mac (GH #970).
     let kids_work = own_children() == to_string(p1);
-    if !kids_work {
-        println("note: /proc/self/task/<tid>/children unavailable — skipping the reap-count assertions");
-    }
 
     // 2. Re-adopting the handle already in the field is a no-op.
     j.re_adopt_self();
