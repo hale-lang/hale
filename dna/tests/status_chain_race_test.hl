@@ -1,0 +1,76 @@
+// GH #1017 — `hale dna status` verifies the chain at the head it loaded.
+// It used to count the LIVE ref and compare that with the rows loaded a
+// moment earlier, so a writer that appended in between made a healthy
+// record read `chain: BROKEN` (66 of 135 polls, measured). A second
+// writer appends rows here in a loop, as git plumbing, the way
+// `GitRecord` does, while status is polled; every poll says verified
+// and names the head it verified.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// Appends one row after another to refs/dna/journal until `<stop>`
+// exists, then leaves `<stop>.done`.
+const WRITER: String = "cd \"$1\" || exit 1; stop=$2; tick=$3; i=0\n"
+    + "while [ ! -e \"$stop\" ] && [ $i -lt 5000 ]; do\n"
+    + "  h=$(git rev-parse -q --verify refs/dna/journal) || break\n"
+    + "  n=$(git rev-list --count \"$h\")\n"
+    + "  git show \"$h:journal.jsonl\" > \"$tick\"\n"
+    + "  printf '{\"seq\": %s, \"kind\": \"fixture.tick\", \"entity\": \"tick:%s\", \"body\": \"\", \"author\": \"writer\"}\\n' \"$n\" \"$i\" >> \"$tick\"\n"
+    + "  blob=$(git hash-object -w \"$tick\")\n"
+    + "  tree=$(printf '100644 blob %s\\tjournal.jsonl\\n' \"$blob\" | git mktree)\n"
+    + "  c=$(git commit-tree \"$tree\" -p \"$h\" -m \"fixture.tick tick:$i\")\n"
+    + "  git update-ref refs/dna/journal \"$c\" \"$h\"\n"
+    + "  i=$((i+1))\n"
+    + "done\n"
+    + ": > \"$stop.done\"\n";
+
+main locus App {
+    params {
+        core: dna::Dna = dna::Dna { planned: true, org_id: "status-chain-race-placeholder" };
+    }
+    run() {
+        let scratch = dna::scratch_root("status-chain-race");
+        dna::reap_on_exit(scratch);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nraced");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/raced";
+        let c1 = in_dir(app, "git\nconfig\nuser.name\nmara");
+        let c2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");
+        let r = dna::GitRecord { repo: app };
+        let before = r.count("journal");
+        std::test::assert(before > 0, "the new record has rows");
+
+        std::io::fs::write_file(scratch + "/writer.sh", WRITER) or discard;
+        let stop = scratch + "/stop";
+        let started = dna::run_tool("sh\n-c\nsh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + scratch + "/writer.sh\n" + app + "\n" + stop + "\n" + scratch + "/tick");
+        std::test::assert_eq_int(started.code, 0, "the second writer starts");
+
+        let mut i = 0;
+        while i < 60 {
+            let st = in_dir(app, toolchain() + "\ndna\nstatus\n--json");
+            std::test::assert_eq_int(st.code, 0, "status answers: " + st.stderr);
+            let journal = std::json::find_field_raw(st.stdout, "journal");
+            std::test::assert_eq_str(std::json::find_string_field(journal, "chain"), "verified", "poll " + to_string(i) + ": a record that grew is not broken: " + journal);
+            std::test::assert(len(std::json::find_string_field(journal, "chain_head")) == 40, "poll " + to_string(i) + ": and names the head it verified: " + journal);
+            i = i + 1;
+        }
+        let stopped = dna::run_tool("sh\n-c\n: > \"$1\"; n=0; while [ ! -e \"$1.done\" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done; [ -e \"$1.done\" ]\nsh\n" + stop);
+        std::test::assert_eq_int(stopped.code, 0, "the second writer stops");
+        std::test::assert(r.count("journal") > before + 10, "the writer appended while status was polled: " + to_string(r.count("journal") - before) + " row(s)");
+
+        let quiet = in_dir(app, toolchain() + "\ndna\nstatus");
+        std::test::assert(std::str::contains(quiet.stdout, "chain verified at " + r.head("journal").id[0..12]), "the text line names the verified head: " + quiet.stdout);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

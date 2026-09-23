@@ -337,8 +337,23 @@ locus Projection {
         return pending;
     }
     fn review_count() -> Int { return list_len(self.review_ids()); }
+    // The head the rows were loaded from ("" for an empty chain). The
+    // chain is verified there, never at the live ref: a writer that
+    // appended since the load grew the record, it did not break it
+    // (GH #1017).
+    fn chain_head() -> String {
+        if self.j.record.revision() == 0 { return ""; }
+        return self.j.record.head();
+    }
     fn chain_ok() -> Bool {
-        return rec(self.root).count(JOURNAL) == self.j.record.revision();
+        let head = self.chain_head();
+        if len(head) == 0 { return true; }
+        return dna::count_lines(rec(self.root).between("", head)) == self.j.record.revision();
+    }
+    fn chain_line() -> String {
+        if !self.chain_ok() { return "chain BROKEN at " + short(self.chain_head()); }
+        let head = self.chain_head();
+        return "chain verified" + (if len(head) > 0 { " at " + short(head) } else { "" });
     }
     fn organism_line() -> String {
         if membrane_up(self.root) { return "running (membrane bound)"; }
@@ -372,6 +387,8 @@ locus Projection {
         b.string_field("ref", RECORD_REF);
         b.int_field("revision", self.rows());
         b.string_field("chain", if self.chain_ok() { "verified" } else { "BROKEN" });
+        let head = self.chain_head();
+        if len(head) > 0 { b.string_field("chain_head", head); } else { b.null_field("chain_head"); }
         b.end_object();
         b.begin_object_field("expression");
         let attached = self.first_of("application.attached");
@@ -562,7 +579,7 @@ locus Projection {
     fn text() -> String {
         self.build();
         let mut out = "organism:   " + self.organism_line() + "\n";
-        out = out + "journal:    " + to_string(self.rows()) + " event(s), chain " + (if self.chain_ok() { "verified" } else { "BROKEN" }) + "\n";
+        out = out + "journal:    " + to_string(self.rows()) + " event(s), " + self.chain_line() + "\n";
         let attached = self.first_of("application.attached");
         let current = std::io::fs::read_file(self.root + "/.hale/dna/current.topology") or "";
         let cur_shape = std::json::find_string_field(current, "shape_hash");

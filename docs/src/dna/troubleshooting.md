@@ -101,8 +101,10 @@ expresses. Add the section — [Operating the fleet](./operating.md).
 but a claim the plan makes over them fails. The witness is in the
 `fleet` receipt of the denied mutation.
 
-**`journal: … chain BROKEN`.** `refs/dna/journal` has more or fewer
-commits than rows. Someone rewrote the branch. `git reflog
+**`journal: … chain BROKEN at <head>`.** At the head this status
+loaded (`chain_head` in `--json`), `refs/dna/journal` has more or fewer
+commits than rows. A record that grew since the load is not broken;
+this one's history was rewritten. `git reflog
 refs/dna/journal` finds the old head; `hale dna sync` from a clone
 that has it restores the rest.
 

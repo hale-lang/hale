@@ -125,7 +125,7 @@ In another terminal:
 ```text
 $ hale dna status
 organism:   running (membrane bound)
-journal:    23 event(s), chain verified
+journal:    23 event(s), chain verified at 5f0c2e9a41d7
 expression: attached Chat (shape 3c9b9327e480d349) · current shape 3c9b9327e480d349 · build 812f3c9bd9e4
 intents:    0 offered, 0 refused
 tasks:      none
