@@ -313,3 +313,19 @@ fn migrated_head(owner: String, record_id: String) -> Dsn {
     if !m.ok { return Dsn { why: m.why }; }
     return parse_dsn(m.head_dsn);
 }
+
+// A fixture's record, gone again: its schema and both of its roles, with
+// the owner's DSN. Roles belong to the server, not the database, so a
+// slice dropping its database leaves them behind. "" when nothing is
+// left, else why.
+fn unmigrate(owner: String, record_id: String) -> String {
+    let d = parse_dsn(owner);
+    if !d.ok { return "the owner DSN: " + d.why; }
+    let c = pq_conn(d);
+    let st = c.open();
+    if !st.ok { return "open: " + st.err.kind + " " + st.err.detail; }
+    let dropped = c.exec("DROP SCHEMA IF EXISTS " + schema_for(record_id) + " CASCADE; DROP ROLE IF EXISTS " + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id));
+    c.close();
+    if !dropped.ok { return dropped.err.kind + " " + dropped.err.detail; }
+    return "";
+}
