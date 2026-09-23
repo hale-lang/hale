@@ -664,8 +664,16 @@ Each `_test.hl` file is compiled and run as its own binary, and its
 exit status is the verdict. Finding nothing to run is success, not
 an error.
 
+Files compile and run in parallel, one worker per available core by
+default. The report is the same whatever the job count: results are
+printed in sorted file order once every file is done, and each test's
+own output stays with its own file.
+
   -run <substr>   only files whose path contains <substr>
                   (`--run`, `-run=<substr>` and `--run=<substr>` too)
+  -j, --jobs <N>  compile and run at most N files at once (`-jN`,
+                  `--jobs=N` too); `-j 1` runs them one after another.
+                  HALE_TEST_JOBS=N sets the default; the flag wins
   --json          the results as JSON on stdout
 ",
         "bench" => "\
@@ -7125,11 +7133,25 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
         }
         return Err(msg.trim_end().to_string());
     }
+    // GH #1009: files compile concurrently now, so the path must be
+    // unique per build and not merely per file name. The pid keeps
+    // two `hale test` processes apart; the process-local counter
+    // keeps two builds of this one apart structurally (the hash of
+    // the entry path alone could, in principle, collide). The `.o`
+    // (and `.ll`/`.bc` under the dump knobs) codegen writes beside
+    // it is derived from this path, so it is unique too.
+    static TEST_BIN_NONCE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let nonce = TEST_BIN_NONCE.fetch_add(1, Ordering::Relaxed);
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
     h.write(entry.display().to_string().as_bytes());
-    h.write_u32(std::process::id());
-    bin.push(format!("hale_test_{:016x}", h.finish()));
+    bin.push(format!(
+        "hale_test_{}_{}_{:016x}",
+        std::process::id(),
+        nonce,
+        h.finish()
+    ));
     // Stage-2 FFI pickup, same as `hale build` (2026-07-18; closes
     // pond FRICTION "hale test cannot link @ffi libs"): a test that
     // imports an FFI-bearing lib (sqlite et al.) needs the lib's
@@ -7156,6 +7178,133 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     Ok(bin)
 }
 
+/// `-j N` / `--jobs N` / `HALE_TEST_JOBS=N`: a positive worker count.
+fn parse_test_jobs(v: &str) -> Result<usize, ()> {
+    match v.trim().parse::<usize>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(()),
+    }
+}
+
+/// Stack for a `hale test` worker thread. The compiler's passes are
+/// recursive (descent parser, typechecker, lowering) and a spawned
+/// thread's default is 2 MiB, well under the main thread's (8 MiB
+/// under the usual `ulimit -s`) that `hale build` compiles on; a large
+/// program that builds there must not overflow on a worker. The
+/// reservation is virtual — pages are committed only as the stack is
+/// used.
+const TEST_WORKER_STACK: usize = 256 << 20;
+
+/// GH #1009: compile and run every file, up to `jobs` at once, and
+/// hand the outcomes back in `files` order — the order the report
+/// prints them in, whatever order the workers finished in.
+///
+/// Each worker takes the next index off a shared counter, so a slow
+/// file holds up one worker, not the queue. What a worker touches is
+/// its own: the test binary's path is unique per build (pid + counter,
+/// `compile_test_binary`), codegen's intermediates derive from it, the
+/// runtime-object cache writes through a unique temp name and an
+/// atomic rename, and each test's stdout and stderr come back through
+/// its own pipes (`Command::output`) into its own `TestOutcome` —
+/// nothing a test prints reaches the terminal, so two tests cannot
+/// interleave there. The runner changes no process-wide state: no
+/// `set_current_dir`, no `set_var`; every child inherits the cwd and
+/// the environment `hale test` was started with, as it did serially.
+///
+/// `jobs == 1` runs on the calling thread, one file after another —
+/// exactly the loop this replaced.
+fn run_test_files(files: &[PathBuf], jobs: usize) -> Vec<TestOutcome> {
+    let jobs = jobs.min(files.len()).max(1);
+    if jobs == 1 {
+        return files.iter().map(|f| run_one_test_file(f)).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<TestOutcome>>> =
+        files.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..jobs {
+            std::thread::Builder::new()
+                .name("hale-test-worker".to_string())
+                .stack_size(TEST_WORKER_STACK)
+                .spawn_scoped(s, || loop {
+                    let idx = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(f) = files.get(idx) else { break };
+                    let outcome = run_one_test_file(f);
+                    *slots[idx].lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(outcome);
+                })
+                .expect("spawn a hale test worker thread");
+        }
+    });
+    // A worker that panicked re-raises at the end of the scope above,
+    // as the panic did on the serial loop, so every slot is filled here.
+    slots
+        .into_iter()
+        .map(|m| {
+            m.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("every test file has an outcome")
+        })
+        .collect()
+}
+
+/// Compile and run one `_test.hl` file and judge it by the
+/// `spec/testing.md` contract.
+fn run_one_test_file(f: &Path) -> TestOutcome {
+    let start = std::time::Instant::now();
+    let (passed, message) = match compile_test_binary(f) {
+        Err(diag) => (false, Some(diag)),
+        Ok(bin) => {
+            let output = std::process::Command::new(&bin).output();
+            let _ = std::fs::remove_file(&bin);
+            match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    // spec/testing.md: pass = exit 0 AND empty stdout.
+                    if out.status.success() && out.stdout.is_empty() {
+                        (true, None)
+                    } else {
+                        let mut m = String::new();
+                        let body = stdout.trim_end();
+                        if !body.is_empty() {
+                            m.push_str(body);
+                        }
+                        if !out.status.success() {
+                            if !m.is_empty() {
+                                m.push('\n');
+                            }
+                            match out.status.code() {
+                                Some(c) => {
+                                    m.push_str(&format!("(exited with code {})", c))
+                                }
+                                None => m.push_str("(terminated by signal)"),
+                            }
+                        } else if !body.is_empty() {
+                            // Exit 0 but produced output — a passing
+                            // test must be silent (spec contract).
+                            m = format!(
+                                "test exited 0 but produced stdout \
+                                 (a passing test must be silent):\n{}",
+                                body
+                            );
+                        }
+                        (false, Some(m))
+                    }
+                }
+                Err(e) => {
+                    (false, Some(format!("could not execute compiled test: {}", e)))
+                }
+            }
+        }
+    };
+    TestOutcome {
+        file: f.to_path_buf(),
+        passed,
+        message,
+        elapsed_ms: start.elapsed().as_millis(),
+    }
+}
+
 /// `hale test [file | dir] [-run <substr>] [--json]`.
 ///
 /// Discovers `*_test.hl` files, compiles+runs each as an ordinary
@@ -7167,6 +7316,7 @@ fn run_test(args: &[String]) -> ExitCode {
     let mut target: Option<PathBuf> = None;
     let mut run_filter: Option<String> = None;
     let mut json = false;
+    let mut jobs: Option<usize> = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -7190,6 +7340,41 @@ fn run_test(args: &[String]) -> ExitCode {
         } else if a == "--json" {
             json = true;
             i += 1;
+        } else if a == "-j" || a == "--jobs" {
+            match args.get(i + 1).map(|v| parse_test_jobs(v)) {
+                Some(Ok(n)) => {
+                    jobs = Some(n);
+                    i += 2;
+                }
+                Some(Err(())) => {
+                    eprintln!(
+                        "hale test: {} takes a positive integer, got `{}`",
+                        a,
+                        args[i + 1]
+                    );
+                    return ExitCode::from(2);
+                }
+                None => {
+                    eprintln!("hale test: {} requires a job count", a);
+                    return ExitCode::from(2);
+                }
+            }
+        } else if let Some(v) = a
+            .strip_prefix("--jobs=")
+            .or_else(|| a.strip_prefix("-j="))
+            .or_else(|| a.strip_prefix("-j").filter(|v| !v.is_empty()))
+        {
+            match parse_test_jobs(v) {
+                Ok(n) => jobs = Some(n),
+                Err(()) => {
+                    eprintln!(
+                        "hale test: -j/--jobs takes a positive integer, got `{}`",
+                        v
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+            i += 1;
         } else if a.starts_with('-') {
             eprintln!("hale test: unknown flag `{}`", a);
             return ExitCode::from(2);
@@ -7203,6 +7388,26 @@ fn run_test(args: &[String]) -> ExitCode {
     }
     let target = target
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // GH #1009: `-j` wins, then `HALE_TEST_JOBS`, then one worker per
+    // available core.
+    let jobs = match jobs {
+        Some(n) => n,
+        None => match env::var("HALE_TEST_JOBS") {
+            Ok(v) if !v.is_empty() => match parse_test_jobs(&v) {
+                Ok(n) => n,
+                Err(()) => {
+                    eprintln!(
+                        "hale test: HALE_TEST_JOBS takes a positive integer, got `{}`",
+                        v
+                    );
+                    return ExitCode::from(2);
+                }
+            },
+            _ => std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+        },
+    };
 
     let mut files: Vec<PathBuf> = Vec::new();
     if let Err(e) = collect_test_files(&target, &mut files) {
@@ -7231,61 +7436,7 @@ fn run_test(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let mut outcomes: Vec<TestOutcome> = Vec::with_capacity(files.len());
-    for f in &files {
-        let start = std::time::Instant::now();
-        let (passed, message) = match compile_test_binary(f) {
-            Err(diag) => (false, Some(diag)),
-            Ok(bin) => {
-                let output = std::process::Command::new(&bin).output();
-                let _ = std::fs::remove_file(&bin);
-                match output {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout);
-                        // spec/testing.md: pass = exit 0 AND empty stdout.
-                        if out.status.success() && out.stdout.is_empty() {
-                            (true, None)
-                        } else {
-                            let mut m = String::new();
-                            let body = stdout.trim_end();
-                            if !body.is_empty() {
-                                m.push_str(body);
-                            }
-                            if !out.status.success() {
-                                if !m.is_empty() {
-                                    m.push('\n');
-                                }
-                                match out.status.code() {
-                                    Some(c) => {
-                                        m.push_str(&format!("(exited with code {})", c))
-                                    }
-                                    None => m.push_str("(terminated by signal)"),
-                                }
-                            } else if !body.is_empty() {
-                                // Exit 0 but produced output — a passing
-                                // test must be silent (spec contract).
-                                m = format!(
-                                    "test exited 0 but produced stdout \
-                                     (a passing test must be silent):\n{}",
-                                    body
-                                );
-                            }
-                            (false, Some(m))
-                        }
-                    }
-                    Err(e) => {
-                        (false, Some(format!("could not execute compiled test: {}", e)))
-                    }
-                }
-            }
-        };
-        outcomes.push(TestOutcome {
-            file: f.clone(),
-            passed,
-            message,
-            elapsed_ms: start.elapsed().as_millis(),
-        });
-    }
+    let outcomes = run_test_files(&files, jobs);
 
     let passed = outcomes.iter().filter(|o| o.passed).count();
     let failed = outcomes.len() - passed;
