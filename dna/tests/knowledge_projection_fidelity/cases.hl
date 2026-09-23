@@ -1,12 +1,13 @@
 // Explicitly invoked by the registered native knowledge_store_test.hl entrypoint.
 // The store preserves native practice identity and supersession metadata.
-// PostgreSQL coverage is opt-in through the existing test DSN convention.
+// Memory is Postgres (GH #985): each store is a migrated record of its own,
+// under the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER).
 import "../../core" as dna;
-import "../../knowledge" as know;
+import "../../operations" as ops;
 
 locus FidelityCases {
     params { }
-    fn check_row(row: know::Stored, expected: dna::Idea, seq: Int, label: String) {
+    fn check_row(row: dna::Stored, expected: dna::Idea, seq: Int, label: String) {
         std::test::assert(row.present, label + ": idea present");
         std::test::assert_eq_str(row.idea.id, expected.id, label + ": identity");
         std::test::assert_eq_str(row.idea.kind, expected.kind, label + ": kind");
@@ -19,7 +20,7 @@ locus FidelityCases {
         std::test::assert_eq_str(row.idea.supersedes, expected.supersedes, label + ": exact predecessor");
         std::test::assert_eq_int(row.ratified_seq, seq, label + ": ratification sequence");
     }
-    fn exercise(store: know::KnowledgeStore, label: String) {
+    fn exercise(store: dna::KnowledgeStore, label: String) {
         std::test::assert(store.open(), label + ": opens: " + store.last_error());
         let before = store.count("ideas");
         let proposed = dna::Idea { id: "sha256:fidelity", kind: "practice", text: "First line\nSecond line\twith a tab", author: "org/finance", provenance: "proposed", revision: 4, name: "practice/équipe \"quoted\"\nnext", supersedes: "sha256:predecessor-one" };
@@ -47,54 +48,48 @@ locus FidelityCases {
         std::test::assert_eq_str(store.context_ids("org/finance/child", 8), accepted.id, label + ": existing applicability unchanged");
         std::test::assert_eq_str(store.last_error(), "", label + ": no read error");
     }
-    fn tail_metadata() {
+    fn tail_metadata(owner: String) {
         let original = dna::Idea { kind: "practice", text: "Canonical practice text", author: "org", provenance: "design", name: "design/review-équipe", supersedes: dna::digest_of("prior canonical document") };
         let document = dna::knowledge_document(original, "org/finance");
         let digest = dna::digest_of(document);
-        let store = know::Mem { };
-        let proposed = know::idea_of(digest, document, "proposed", false, 4);
+        let record = "knowledgetail" + to_string(std::process::pid());
+        let dsn = dna::migrated(owner, record); std::test::assert(dsn.ok, "tail: memory migrates: " + dsn.why);
+        let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: record };
+        std::test::assert(store.open(), "tail: opens: " + store.last_error());
+        let proposed = ops::idea_of(digest, document, "proposed", false, 4);
         std::test::assert(store.upsert(proposed, 0), "tail: store canonical proposal");
         let proposal = dna::Idea { id: digest, kind: original.kind, text: original.text, author: original.author, provenance: "proposed", revision: 4, name: original.name, supersedes: original.supersedes };
         self.check_row(store.idea(digest), proposal, 0, "tail canonical proposal");
-        let ratified = know::idea_of(digest, document, "ratified", true, 8);
+        let ratified = ops::idea_of(digest, document, "ratified", true, 8);
         std::test::assert(store.upsert(ratified, 8), "tail: store canonical ratification");
         let accepted = dna::Idea { id: digest, kind: original.kind, text: original.text, author: original.author, provenance: "ratified", revision: 8, accepted: true, name: original.name, supersedes: original.supersedes };
         self.check_row(store.idea(digest), accepted, 8, "tail canonical ratification");
         std::test::assert_eq_str(std::json::find_string_field(document, "provenance"), "design", "tail: document origin remains distinct from projection lifecycle");
         let legacy = dna::knowledge_document(dna::Idea { kind: "idea", text: "No optional metadata", author: "org" }, "org");
-        let old = know::idea_of(dna::digest_of(legacy), legacy, "declined", false, 10);
+        let old = ops::idea_of(dna::digest_of(legacy), legacy, "declined", false, 10);
         std::test::assert(old.name == "" && old.supersedes == "" && old.provenance == "declined", "tail: absent optional fields stay empty without changing lifecycle provenance");
+        store.close(); std::test::assert_eq_str(dna::unmigrate(owner, record), "", "tail: the record's schema and roles dropped");
     }
-    fn memory() {
-        let mem = know::Mem { };
-        self.exercise(mem, "memory");
-        let binding = mem.bindings.get(0) or dna::KnowledgeBinding { };
-        std::test::assert_eq_str(binding.class, "initiative", "memory: same triple replaces its stored class");
-        std::test::assert_eq_str(binding.idea, "sha256:fidelity", "memory: replacement keeps idea");
-        std::test::assert_eq_str(binding.target, "org/finance", "memory: replacement keeps target");
-        std::test::assert_eq_str(binding.author, "org", "memory: replacement keeps author");
-    }
-    fn postgres() {
+    fn postgres(owner: String) {
         // the owner's DSN applies the schema; the store opens as the
         // record's spine role (GH #985)
-        let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
-        let dsn = know::parse_dsn(owner);
+        let dsn = dna::parse_dsn(owner);
         std::test::assert(dsn.ok, "Postgres test DSN must parse");
         let record = "knowledgefidelity" + to_string(std::process::pid());
-        let spine = know::migrated(owner, record);
+        let spine = dna::migrated(owner, record);
         std::test::assert(spine.ok, "postgres: the schema is applied: " + spine.why);
-        let pg = know::Pq { conn: know::pq_conn(spine), record_id: record };
+        let pg = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(pg.open(), "postgres: opens: " + pg.last_error());
         // Only this run's scoped schema is changed. Existing databases and
         // public tables are never wiped to make the fixture pass.
         let legacy = dna::Idea { id: "sha256:legacy", kind: "practice", text: "Legacy body", author: "org", provenance: "ratified", revision: 3, accepted: true };
         std::test::assert(pg.upsert(legacy, 3), "postgres: seed legacy row");
-        let admin = know::pq_conn(dsn);
+        let admin = dna::pq_conn(dsn);
         let st = admin.open();
         std::test::assert(st.ok, "postgres: the owner connects: " + st.err.detail);
         let old_schema = admin.exec("ALTER TABLE " + pg.schema() + ".knowledge_ideas DROP COLUMN name; ALTER TABLE " + pg.schema() + ".knowledge_ideas DROP COLUMN supersedes");
         std::test::assert(old_schema.ok, "postgres: simulate prior scoped schema: " + old_schema.err.detail);
-        std::test::assert(know::migrated(owner, record).ok, "postgres: the migration brings existing rows forward");
+        std::test::assert(dna::migrated(owner, record).ok, "postgres: the migration brings existing rows forward");
         std::test::assert(pg.reopen(), "postgres: reopens on the migrated schema: " + pg.last_error());
         self.check_row(pg.idea(legacy.id), legacy, 3, "postgres migrated legacy");
         self.exercise(pg, "postgres");
@@ -102,26 +97,20 @@ locus FidelityCases {
         std::test::assert(binding.ok && dna::trim_nl(binding.data) == "initiative", "postgres: same triple replaces its stored class");
         // Migrating again is idempotent, and a new connection reads what
         // the first wrote, proving the metadata survived persistence.
-        std::test::assert(know::migrated(owner, record).ok, "postgres: the migration applies again");
-        let other = know::Pq { conn: know::pq_conn(spine), record_id: record };
+        std::test::assert(dna::migrated(owner, record).ok, "postgres: the migration applies again");
+        let other = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(other.open(), "postgres: second open: " + other.last_error());
         self.check_row(other.idea("sha256:fidelity"), pg.idea("sha256:fidelity").idea, 8, "postgres reopened");
         self.check_row(other.idea(legacy.id), legacy, 3, "postgres repeated migration");
-        pg.conn.close();
-        other.conn.close();
-        let cleanup = admin.exec("DROP SCHEMA " + pg.schema() + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record));
-        std::test::assert(cleanup.ok, "postgres: remove only this run's schema and role: " + cleanup.err.detail);
+        pg.close();
+        other.close();
         admin.close();
+        std::test::assert_eq_str(dna::unmigrate(owner, record), "", "postgres: remove only this run's schema and roles");
     }
 }
 
-fn run_cases() {
+fn run_cases(owner: String) {
     let cases = FidelityCases { };
-    cases.memory();
-    cases.tail_metadata();
-    if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && len(std::env::var("HALE_DNA_KNOWLEDGE_DSN")) > 0 && std::env::var("HALE_DNA_KNOWLEDGE_DSN") != "memory" {
-        cases.postgres();
-    } else {
-        eprintln("knowledge_projection_fidelity_test: no Postgres HALE_DNA_KNOWLEDGE_DSN; Postgres persistence and migration were not exercised");
-    }
+    cases.tail_metadata(owner);
+    cases.postgres(owner);
 }

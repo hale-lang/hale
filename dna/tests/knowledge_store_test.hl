@@ -1,6 +1,7 @@
 // dna/tests/knowledge_store_test.hl — GH #583 K1: the knowledge store
-// and the record's tail, in memory and (when HALE_DNA_KNOWLEDGE_DSN
-// names a Postgres) for real.
+// and the record's tail, on Postgres: memory is Postgres (GH #985), each
+// store a migrated record of its own under the owner's DSN
+// (HALE_DNA_MEMORY_DSN_OWNER); without it nothing here is exercised.
 //
 // A record with proposals, their ratifications, a declined proposal,
 // the code's structure, the fleet's signals and noise is applied into a
@@ -15,7 +16,7 @@
 // shape a tool prints.
 
 import "../core" as dna;
-import "../knowledge" as know;
+import "../operations" as ops;
 import "./knowledge_projection_fidelity" as fidelity_cases;
 import "./knowledge_visibility" as visibility_cases;
 import "./knowledge_graph_service" as graph_service_cases;
@@ -37,11 +38,10 @@ locus App {
     params {
         j: dna::MemJournal = dna::MemJournal { };
         receipts: dna::FileReceipts = dna::FileReceipts { dir: "/tmp/dna-know-receipts" };
-        mem: know::Mem = know::Mem { };
-        pg: know::Pq = know::Pq { };
+        pg: dna::Pq = dna::Pq { };
     }
     @unbounded
-    fn exercise(store: know::KnowledgeStore, label: String) {
+    fn exercise(store: dna::KnowledgeStore, label: String) {
         // the record: a goal proposed by a parent for its child, ratified;
         // a sibling's initiative proposed and declined; other rows between
         let d1 = "sha256:" + self.receipts.store(doc("practice", "retry a mail send once", "org/sup", "org/sup/worker"));
@@ -64,7 +64,7 @@ locus App {
         let a6 = self.j.append(self.j.revision(), "knowledge.proposed", d3, "{\"class\": \"goal\", \"target\": \"org/sup/worker\"}");
         let a7 = self.j.append(self.j.revision(), "knowledge.ratified", d3, "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"riley\"}");
         std::test::assert(store.open(), label + ": open: " + store.last_error());
-        let r = know::apply_record(store, self.j, self.receipts);
+        let r = ops::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_str(r.error, "", label + ": applied clean");
         std::test::assert_eq_int(r.ratified, 2, label + ": two ratified");
         std::test::assert_eq_int(r.proposed, 3, label + ": three proposed");
@@ -95,12 +95,12 @@ locus App {
         std::test::assert_eq_str(store.context_ids("org/sup/api", 8), "", label + ": not a sibling");
         std::test::assert_eq_str(store.context_ids("org/sup", 8), "", label + ": not the parent");
         // K3: ranked inside the bound — the budget keeps what the work is about
-        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 1, know::embed_text("retry the mail send when it fails")), d1, label + ": a mail objective keeps the mail practice");
-        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 1, know::embed_text("compress the archive before the upload")), d3, label + ": an archive objective keeps the archive practice");
-        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, know::embed_text("compress the archive")), d3 + " " + d1, label + ": the whole bound, most relevant first");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 1, dna::embed_text("retry the mail send when it fails")), d1, label + ": a mail objective keeps the mail practice");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 1, dna::embed_text("compress the archive before the upload")), d3, label + ": an archive objective keeps the archive practice");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, dna::embed_text("compress the archive")), d3 + " " + d1, label + ": the whole bound, most relevant first");
         std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, ""), d1 + " " + d3, label + ": no query is ratification order");
-        std::test::assert_eq_str(store.ranked_ids("org/sup/api", 8, know::embed_text("mail")), "", label + ": ranking never leaves the bound");
-        // ---- the shakeout's findings 8, 9 and 12, in both stores ----
+        std::test::assert_eq_str(store.ranked_ids("org/sup/api", 8, dna::embed_text("mail")), "", label + ": ranking never leaves the bound");
+        // ---- the shakeout's findings 8, 9 and 12 ----
         // 8: `_` is a SQL LIKE wildcard and an ordinary character in a
         // project name, so `org/orders_api` matched `org/ordersXapi`.
         let du = "sha256:" + self.receipts.store(doc("practice", "invoice before shipping", "org", "org/orders_api"));
@@ -109,7 +109,7 @@ locus App {
         // are tab- and newline-separated with no escaping.
         let dm = "sha256:" + self.receipts.store(doc("practice", "First line\nSecond line\twith a tab", "org/sup", "org/sup/worker"));
         let m1 = self.j.append(self.j.revision(), "knowledge.ratified", dm, "{\"class\": \"goal\", \"target\": \"org/sup/worker\"}");
-        let more = know::apply_record(store, self.j, self.receipts);
+        let more = ops::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_str(more.error, "", label + ": applied");
         std::test::assert_eq_str(store.context_ids("org/orders_api/worker", 8), du, label + ": the underscored path gets its own practice");
         std::test::assert_eq_str(store.context_ids("org/ordersXapi/worker", 8), "", label + ": and no other path matches it");
@@ -130,7 +130,7 @@ locus App {
         std::test::assert_eq_str(store.signals(), before_signals, label + ": nor does an earlier row count again");
 
         // applying the same record again converges
-        let again = know::apply_record(store, self.j, self.receipts);
+        let again = ops::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_int(again.rows, 0, label + ": nothing new to apply");
         std::test::assert_eq_int(store.count("ideas"), 5, label + ": idempotent (three, plus the underscored and the multiline practice)");
         std::test::assert_eq_int(store.structure_count(""), 2, label + ": projections idempotent");
@@ -139,97 +139,90 @@ locus App {
     }
     run() {
         // Dispatch in the actual lifecycle entry. Only this isolated child
-        // clears private database/Git settings; the parent retains CI's DSN.
-        if std::env::arg_or(1, "") == "--graph-service-cases" {
-            graph_service_cases::run_cases();
+        // clears private database/Git settings; the parent keeps the owner's
+        // DSN and hands it to the child explicitly.
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 {
+            eprintln("knowledge_store_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+        } else if std::env::arg_or(1, "") == "--graph-service-cases" {
+            graph_service_cases::run_cases(owner);
         } else {
-            graph_service_cases::run_isolated();
-            self.registered_cases();
+            graph_service_cases::run_isolated(owner);
+            self.registered_cases(owner);
         }
     }
-    fn registered_cases() {
-        fidelity_cases::run_cases();
-        visibility_cases::run_cases();
-        graph_store_cases::run_cases();
+    fn registered_cases(owner: String) {
+        fidelity_cases::run_cases(owner);
+        visibility_cases::run_cases(owner);
+        graph_store_cases::run_cases(owner);
         std::io::fs::mkdir("/tmp/dna-know-receipts") or discard;
-        self.exercise(self.mem, "mem");
-        // a second store over the same record, from zero, reaches the same state
-        let fresh = know::Mem { };
-        let back = know::apply_record(fresh, self.j, self.receipts);
-        std::test::assert_eq_int(back.ratified, 4, "mem: a fresh store replays the record");
-        std::test::assert_eq_int(fresh.count("ideas"), 5, "mem: five ideas");
+
         // the embedding: deterministic, normalized, lexical
-        let e1 = know::embed_text("retry a mail send once");
-        std::test::assert(know::cosine(e1, know::embed_text("Retry a MAIL send, once!")) > 0.99, "the same words, however written");
-        std::test::assert(know::cosine(e1, know::embed_text("compress the nightly archive")) < 0.5, "different words, far");
-        std::test::assert(know::cosine(e1, know::embed_text("")) == 0.0, "the zero vector");
+        let e1 = dna::embed_text("retry a mail send once");
+        std::test::assert(dna::cosine(e1, dna::embed_text("Retry a MAIL send, once!")) > 0.99, "the same words, however written");
+        std::test::assert(dna::cosine(e1, dna::embed_text("compress the nightly archive")) < 0.5, "different words, far");
+        std::test::assert(dna::cosine(e1, dna::embed_text("")) == 0.0, "the zero vector");
         std::test::assert(std::str::starts_with(e1, "[") && std::str::ends_with(e1, "]"), "a pgvector literal: " + e1);
-        std::test::assert_eq_str(know::url_decode("retry%20the%20mail%2Fsend+now"), "retry the mail/send now", "the service decodes what the client encodes");
-        std::test::assert(fresh.idea("sha256:" + self.receipts.store(doc("practice", "retry a mail send once", "org/sup", "org/sup/worker"))).idea.accepted, "mem: the goal is ratified there too");
+        std::test::assert_eq_str(dna::url_decode("retry%20the%20mail%2Fsend+now"), "retry the mail/send now", "the service decodes what the client encodes");
 
         // the DSN parser
-        let d = know::parse_dsn("postgres://dna:s3cret@db.example:5480/graph?sslmode=require");
+        let d = dna::parse_dsn("postgres://dna:s3cret@db.example:5480/graph?sslmode=require");
         std::test::assert(d.ok && d.user == "dna" && d.password == "s3cret" && d.host == "db.example" && d.port == 5480 && d.database == "graph" && d.sslmode == "require", "a full DSN: " + d.host);
-        let d2 = know::parse_dsn("postgresql://localhost/dna");
+        let d2 = dna::parse_dsn("postgresql://localhost/dna");
         std::test::assert(d2.ok && d2.user == "postgres" && d2.host == "localhost" && d2.port == 5432 && d2.database == "dna" && d2.sslmode == "prefer", "a bare DSN");
-        std::test::assert(!know::parse_dsn("mysql://x").ok, "not postgres");
+        std::test::assert(!dna::parse_dsn("mysql://x").ok, "not postgres");
 
-        // Postgres, when a DSN is given (CI's service container; dev's compose)
-        if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") {
-            // the owner's DSN applies the schema; the store opens as the
-            // record's spine role (GH #985)
-            let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
-            let dsn = know::parse_dsn(owner);
-            std::test::assert(dsn.ok, "the DSN parses: " + dsn.why);
-            // the store is scoped by the record's identity (GH #613):
-            // a schema per record, named here for this run
-            let record = "fixture" + to_string(std::process::pid());
-            // a clean slate for this run, as the owner: a store in `public`
-            // from before stores were scoped is refused by the migration,
-            // so it goes first
-            let admin = know::pq_conn(dsn);
-            let pre = admin.open();
-            std::test::assert(pre.ok, "postgres connects: " + pre.err.detail);
-            let wipe = admin.exec("DROP TABLE IF EXISTS public.knowledge_bindings, public.knowledge_edges, public.knowledge_ideas, public.knowledge_meta, public.knowledge_structure, public.knowledge_signals; DROP SCHEMA IF EXISTS dna_" + record + " CASCADE");
-            std::test::assert(wipe.ok, "wiped: " + wipe.err.detail);
-            let spine = know::migrated(owner, record);
-            std::test::assert(spine.ok, "the schema is applied: " + spine.why);
-            // a locus is structure: built here from the DSN's fields, not handed back by a factory
-            self.pg = know::Pq { conn: know::pq_conn(spine), record_id: record };
-            std::test::assert(self.pg.open(), "postgres opens: " + self.pg.last_error());
-            std::test::assert_eq_str(self.pg.schema(), "dna_" + record, "the schema is the record's");
-            self.j = dna::MemJournal { };
-            self.exercise(self.pg, "pq");
-            // the store outlives the process: a second connection sees the same graph
-            let other = know::Pq { conn: know::pq_conn(spine), record_id: record };
-            std::test::assert(other.open(), "a second connection opens: " + other.last_error());
-            std::test::assert_eq_int(other.watermark(), self.j.revision(), "pq: the watermark is durable");
-            std::test::assert_eq_int(other.count("ratified"), 4, "pq: the ratified ideas are there for anyone");
-            std::test::assert_eq_str(other.context_ids("org/sup/worker/mailer", 8), self.mem.context_ids("org/sup/worker/mailer", 8), "pq and mem answer the same package");
-            // another record on the same database sees none of it: its
-            // own schema, its own watermark (GH #613)
-            let spine_b = know::migrated(owner, record + "b");
-            std::test::assert(spine_b.ok, "the other record's schema is applied: " + spine_b.why);
-            let stranger = know::Pq { conn: know::pq_conn(spine_b), record_id: record + "b" };
-            std::test::assert(stranger.open(), "a second record opens on the same database: " + stranger.last_error());
-            std::test::assert_eq_int(stranger.watermark(), 0, "pq: the other record's watermark is its own");
-            std::test::assert_eq_int(stranger.count("ratified"), 0, "pq: the other record has no ideas of the first");
-            std::test::assert_eq_str(stranger.context_ids("org/sup/worker/mailer", 8), "", "pq: and an empty package");
-            // a schema that names another record is refused, not read
-            let tamper = self.pg.conn.exec("UPDATE knowledge_meta SET value = 'someone-else' WHERE key = 'record'");
-            std::test::assert(tamper.ok, "tampered: " + tamper.err.detail);
-            let wrong = know::Pq { conn: know::pq_conn(spine), record_id: record };
-            std::test::assert(!wrong.open(), "a schema belonging to another record is refused");
-            std::test::assert(std::str::contains(wrong.last_error(), "belongs to record someone-else, not " + record), "and says whose it is: " + wrong.last_error());
-            self.pg.conn.close();
-            other.conn.close();
-            stranger.conn.close();
-            let drop_a = admin.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE; DROP SCHEMA " + know::schema_for(record + "b") + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record) + "; DROP ROLE IF EXISTS " + know::spine_role(record + "b"));
-            std::test::assert(drop_a.ok, "this run's schemas and roles dropped: " + drop_a.err.detail);
-            admin.close();
-        } else {
-            eprintln("knowledge_store_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");
-        }
+        // the owner's DSN applies the schema; the store opens as the
+        // record's spine role (GH #985). The store is scoped by the
+        // record's identity (GH #613): a schema per record, named here
+        // for this run.
+        let record = "fixture" + to_string(std::process::pid());
+        let spine = dna::migrated(owner, record);
+        std::test::assert(spine.ok, "the schema is applied: " + spine.why);
+        // a locus is structure: built here from the DSN's fields, not handed back by a factory
+        self.pg = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
+        std::test::assert(self.pg.open(), "postgres opens: " + self.pg.last_error());
+        std::test::assert_eq_str(self.pg.schema(), "dna_" + record, "the schema is the record's");
+        self.exercise(self.pg, "pq");
+        // the store outlives the process: a second connection sees the same graph
+        let other = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
+        std::test::assert(other.open(), "a second connection opens: " + other.last_error());
+        std::test::assert_eq_int(other.watermark(), self.j.revision(), "pq: the watermark is durable");
+        std::test::assert_eq_int(other.count("ratified"), 4, "pq: the ratified ideas are there for anyone");
+        // a second store over the same record, from zero (a fresh record's
+        // schema), reaches the same state and answers the same package
+        let fresh_record = record + "fresh";
+        let fresh_spine = dna::migrated(owner, fresh_record);
+        std::test::assert(fresh_spine.ok, "the fresh store's schema is applied: " + fresh_spine.why);
+        let fresh = dna::Pq { conn: dna::pq_conn(fresh_spine), record_id: fresh_record };
+        std::test::assert(fresh.open(), "the fresh store opens: " + fresh.last_error());
+        let back = ops::apply_record(fresh, self.j, self.receipts);
+        std::test::assert_eq_int(back.ratified, 4, "pq: a fresh store replays the record");
+        std::test::assert_eq_int(fresh.count("ideas"), 5, "pq: five ideas");
+        std::test::assert(fresh.idea("sha256:" + self.receipts.store(doc("practice", "retry a mail send once", "org/sup", "org/sup/worker"))).idea.accepted, "pq: the goal is ratified there too");
+        std::test::assert_eq_str(other.context_ids("org/sup/worker/mailer", 8), fresh.context_ids("org/sup/worker/mailer", 8), "the store and a rebuilt one answer the same package");
+        // another record on the same database sees none of it: its
+        // own schema, its own watermark (GH #613)
+        let spine_b = dna::migrated(owner, record + "b");
+        std::test::assert(spine_b.ok, "the other record's schema is applied: " + spine_b.why);
+        let stranger = dna::Pq { conn: dna::pq_conn(spine_b), record_id: record + "b" };
+        std::test::assert(stranger.open(), "a second record opens on the same database: " + stranger.last_error());
+        std::test::assert_eq_int(stranger.watermark(), 0, "pq: the other record's watermark is its own");
+        std::test::assert_eq_int(stranger.count("ratified"), 0, "pq: the other record has no ideas of the first");
+        std::test::assert_eq_str(stranger.context_ids("org/sup/worker/mailer", 8), "", "pq: and an empty package");
+        // a schema that names another record is refused, not read
+        let tamper = self.pg.conn.exec("UPDATE knowledge_meta SET value = 'someone-else' WHERE key = 'record'");
+        std::test::assert(tamper.ok, "tampered: " + tamper.err.detail);
+        let wrong = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
+        std::test::assert(!wrong.open(), "a schema belonging to another record is refused");
+        std::test::assert(std::str::contains(wrong.last_error(), "belongs to record someone-else, not " + record), "and says whose it is: " + wrong.last_error());
+        self.pg.close();
+        other.close();
+        fresh.close();
+        stranger.close();
+        std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, fresh_record), "", "the fresh store's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, record + "b"), "", "the other record's schema and roles dropped");
         // the receipts directory is a fixed path (a param default, so it
         // cannot carry this process's pid): removed here, not registered
         // with the slice, since another run may be inside it

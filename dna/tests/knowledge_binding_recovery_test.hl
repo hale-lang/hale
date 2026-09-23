@@ -2,7 +2,6 @@
 // binding requests; production domain code writes proposal, decision and effects.
 import "../core" as dna;
 import "../operations" as ops;
-import "../knowledge" as know;
 
 locus BindingStageJournal {
     params {
@@ -141,32 +140,41 @@ main locus App {
         let decision = dna::review_command_decision(j, "effect/decision"); std::test::assert(std::json::find_bool_field(decision, "accepted"), "original approved Review remains a separate recorded fact");
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
-    fn flow() {
+    // Memory is Postgres (GH #985): each store is a migrated record of its own.
+    fn flow(owner: String) {
         let repo = self.repo("flow"); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; let idea = self.bootstrap(repo, j);
-        let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeBindingCodec { }; let store = know::Mem { };
-        let before = know::apply_record(store, j, receipts); std::test::assert_eq_str(before.error, "", "native baseline projects");
+        let id = "bindingrecovery" + to_string(std::process::pid());
+        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeBindingCodec { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
+        std::test::assert(store.open(), "the store opens: " + store.last_error());
+        let before = ops::apply_record(store, j, receipts); std::test::assert_eq_str(before.error, "", "native baseline projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "original org/source binding does not cover support");
         let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" } };
         let add = self.request(repo, j, "add", "bind", idea, "org/support"); body.on_knowledge_binding_requested(add);
         let delayed = self.request(repo, j, "delayed", "bind", idea, "org/support"); body.on_knowledge_binding_requested(delayed);
         self.verdict(add, "add/decision", "approve"); self.wait(j, "knowledge.binding.bound", add.request_id);
-        let added = know::apply_record(store, j, receipts); std::test::assert_eq_str(added.error, "", "real approved add projects");
+        let added = ops::apply_record(store, j, receipts); std::test::assert_eq_str(added.error, "", "real approved add projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), idea, "binding changes future descendant context membership");
         let package = dna::ContextPackage { target: "org/support/urgent", digest: dna::digest_of(store.context_ids("org/support/urgent", 10)), included: idea, included_n: 1 };
         let work = dna::WorkRequest { work_id: "historical/work", task_id: "historical/task", context_digest: package.digest, knowledge_bindings: dna::bindings_of(package) };
         let historical = capture_request(work);
         let remove = self.request(repo, j, "remove", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(remove); self.verdict(remove, "remove/decision", "approve"); self.wait(j, "knowledge.binding.unbound", remove.request_id);
-        let removed = know::apply_record(store, j, receipts); std::test::assert_eq_str(removed.error, "", "real approved removal projects");
+        let removed = ops::apply_record(store, j, receipts); std::test::assert_eq_str(removed.error, "", "real approved removal projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "removed tuple leaves future package");
         std::test::assert_eq_str(store.context_ids("org/source", 10), idea, "original tuple is retained");
-        let partial = know::Mem { };
+        let partial_id = id + "partial";
+        let partial_dsn = dna::migrated(owner, partial_id); std::test::assert(partial_dsn.ok, "the partial store's memory migrates: " + partial_dsn.why);
+        let partial = dna::Pq { conn: dna::pq_conn(partial_dsn), record_id: partial_id };
+        std::test::assert(partial.open(), "the partial store opens: " + partial.last_error());
         std::test::assert(partial.begin_projection(partial.projection_basis(), j.revision(), j.head()), "pending suffix precedes binding projection");
-        let pending = partial.projection_basis(); let first_pass = know::apply_record(partial, j, receipts);
+        let pending = partial.projection_basis(); let first_pass = ops::apply_record(partial, j, receipts);
         std::test::assert_eq_str(first_pass.error, "", "pending suffix reaches exact removal");
         // Simulate losing only this last event's watermark write after its
         // unbind succeeded. The existing pending fence remains authoritative.
-        std::test::assert(partial.set_watermark(event(j, "knowledge.binding.unbound", remove.request_id).seq), "interrupted watermark fixture");
-        let resumed = know::apply_record(partial, j, receipts);
+        // `set_watermark` only advances, so the loss is made in SQL.
+        let lost = event(j, "knowledge.binding.unbound", remove.request_id).seq;
+        std::test::assert(partial.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'").ok && partial.watermark() == lost, "interrupted watermark fixture");
+        let resumed = ops::apply_record(partial, j, receipts);
         std::test::assert_eq_str(resumed.error, "", "exact removal replays after lost watermark");
         std::test::assert_eq_str(partial.context_ids("org/support/urgent", 10), "", "resuming removal cannot resurrect earlier add");
         std::test::assert(partial.checkpoint_projection(pending, j.revision(), j.head()), "same pending suffix checkpoints after replay");
@@ -176,8 +184,12 @@ main locus App {
         std::test::assert(std::json::find_bool_field(dna::review_command_decision(j, "delayed/decision"), "accepted"), "stale candidate still has its real accepted Review");
         std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.binding.apply_refused", delayed.request_id).body, "reason_code"), "binding_changed", "ABA is refused despite absent original and current tuples");
         let again = self.request(repo, j, "again", "bind", idea, "org/support"); body.on_knowledge_binding_requested(again); self.verdict(again, "again/decision", "approve"); self.wait(j, "knowledge.binding.bound", again.request_id);
-        let replay = know::apply_record(store, j, receipts); std::test::assert_eq_str(replay.error, "", "fresh-basis rebind projects");
-        let rebuilt = know::Mem { }; let rebuilt_result = know::apply_record(rebuilt, j, receipts); std::test::assert_eq_str(rebuilt_result.error, "", "empty Mem rebuilds from actual Record outcomes");
+        let replay = ops::apply_record(store, j, receipts); std::test::assert_eq_str(replay.error, "", "fresh-basis rebind projects");
+        let rebuilt_id = id + "rebuilt";
+        let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "the rebuilt store's memory migrates: " + rebuilt_dsn.why);
+        let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };
+        std::test::assert(rebuilt.open(), "the rebuilt store opens: " + rebuilt.last_error());
+        let rebuilt_result = ops::apply_record(rebuilt, j, receipts); std::test::assert_eq_str(rebuilt_result.error, "", "an empty store rebuilds from actual Record outcomes");
         std::test::assert_eq_str(rebuilt.context_ids("org/support/urgent", 10), idea, "rebuild preserves ordered add/remove/rebind");
         std::test::assert_eq_int(rebuilt.count("bindings"), 2, "only original and current exact tuple exist");
         let no = self.request(repo, j, "decline", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(no); self.verdict(no, "no/decision", "abstain"); self.wait(j, "review.command_decided", "no/decision");
@@ -192,21 +204,27 @@ main locus App {
         self.wait(j, "knowledge.retired", idea); self.verdict(retiring, "retiring-binding/decision", "approve"); self.wait(j, "knowledge.binding.apply_refused", retiring.request_id);
         std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.binding.apply_refused", retiring.request_id).body, "reason_code"), "subject_inactive", "approved binding cannot reactivate a retired item");
         let cleanup = self.request(repo, j, "retired-remove", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(cleanup); self.verdict(cleanup, "retired-remove/decision", "approve"); self.wait(j, "knowledge.binding.unbound", cleanup.request_id);
-        let cleaned = know::apply_record(store, j, receipts); std::test::assert_eq_str(cleaned.error, "", "visible retired item permits exact historical binding removal");
+        let cleaned = ops::apply_record(store, j, receipts); std::test::assert_eq_str(cleaned.error, "", "visible retired item permits exact historical binding removal");
         std::test::assert_eq_int(store.count("bindings"), 1, "retired removal preserves original historical tuple");
         std::test::assert(store.idea(idea).present && !store.idea(idea).idea.accepted, "retired receipt and readable historical node remain");
         std::test::assert_eq_str(capture_request(work), historical, "retirement and unbind retain original task package evidence");
         // Explicit corrupted-input fixture: no native writer emits this row.
         let invalid_seq = j.revision(); let bad = j.append_exact(j.revision(), "knowledge.binding.unbound", "malformed", "{\"binding_id\":\"wrong\"}"); std::test::assert(bad.ok, "malformed projection fixture");
-        let invalid = know::apply_record(store, j, receipts); std::test::assert(len(invalid.error) > 0 && store.watermark() == invalid_seq, "invalid binding fact stops before offending watermark");
+        let invalid = ops::apply_record(store, j, receipts); std::test::assert(len(invalid.error) > 0 && store.watermark() == invalid_seq, "invalid binding fact stops before offending watermark");
         std::test::assert_eq_int(store.count("bindings"), 1, "malformed removal cannot remove remaining historical binding");
+        store.close(); partial.close(); rebuilt.close();
+        std::test::assert_eq_str(dna::unmigrate(owner, id), "", "record's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, partial_id), "", "partial record's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, rebuilt_id), "", "rebuilt record's schema and roles dropped");
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     run() {
         self.proposal("knowledge.binding.started", false); self.proposal("review.requested", false); self.proposal("knowledge.binding.proposed", false);
         self.proposal("knowledge.binding.started", true); self.proposal("knowledge.binding.proposed", true);
         self.recovery("review.settled", false); self.recovery("knowledge.binding.bound", false); self.recovery("knowledge.binding.bound", true);
-        self.flow();
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) > 0 { self.flow(owner); }
+        else { eprintln("knowledge_binding_recovery_test: the projection flow was not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); }
         self.protection("withheld"); self.protection("candidate"); self.protection("public"); self.protection("internal"); self.protection("duplicate"); self.protection("escaped");
     }
 }
