@@ -53,6 +53,7 @@ main locus App {
         bare: dna::Dna = dna::Dna { };
         hosted: dna::FakeModel = dna::FakeModel { name: "hosted" };
         head: dna::Pq = dna::Pq { };
+        spine: dna::Pq = dna::Pq { };
         owner_conn: dna::Pq = dna::Pq { };
     }
     @unbounded
@@ -185,7 +186,30 @@ main locus App {
         std::test::assert(!raw.ok, "the head cannot read the sealed table");
         let held_key = self.head.conn.query_one("SELECT value FROM " + dna::schema_for(record) + ".memory_keys LIMIT 1");
         std::test::assert(!held_key.ok, "nor memory's key");
+        // erasing is the spine's, through memory's function alone; once
+        // erased, the digest is kept and filing the body again is refused
+        // inside memory, whoever asks (GH #985)
+        let head_erase = self.head.conn.query_one("SELECT " + dna::schema_for(record) + ".receipt_erase('" + d1 + "', 1)");
+        std::test::assert(!head_erase.ok, "a head cannot erase evidence");
         self.head.conn.close();
+        let spine_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_SPINE");
+        self.spine = dna::Pq { conn: dna::pq_conn(dna::parse_dsn(spine_dsn)) };
+        let ss = self.spine.conn.open();
+        std::test::assert(ss.ok, "the spine's role connects: " + ss.err.detail);
+        let raw_delete = self.spine.conn.exec("DELETE FROM " + dna::schema_for(record) + ".protected_receipts");
+        std::test::assert(!raw_delete.ok, "the spine has no hand on the sealed table itself");
+        let erased = self.spine.conn.query_one("SELECT " + dna::schema_for(record) + ".receipt_erase('" + d1 + "', 1)");
+        std::test::assert(erased.ok, "the spine erases through the function: " + erased.err.detail);
+        self.spine.conn.close();
+        let refiled = as_head(app, head_dsn, toolchain() + "\ndna\nreceipt\nfile\n" + secret_path + "\n--class\nconfidential\n--as\nmara");
+        std::test::assert(refiled.code != 0, "an erased body is not filed again: " + refiled.stdout + refiled.stderr);
+        self.owner_conn = dna::Pq { conn: dna::pq_conn(dna::parse_dsn(owner)) };
+        let os = self.owner_conn.conn.open();
+        let gone = self.owner_conn.conn.query_one("SELECT count(*) FROM " + dna::schema_for(record) + ".protected_receipts WHERE digest = '" + d1 + "'");
+        std::test::assert(os.ok && dna::trim_nl(gone.data) == "0", "and memory holds no body for it: " + gone.data);
+        let direct = self.owner_conn.conn.query_one("SELECT " + dna::schema_for(record) + ".receipt_file('" + d1 + "', 'confidential', '" + secret + "', 1)");
+        std::test::assert(!direct.ok && std::str::contains(direct.err.detail, "was redacted"), "refused inside memory, not only by the head: " + direct.err.detail);
+        self.owner_conn.conn.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }

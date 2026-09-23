@@ -72,19 +72,24 @@ fn ledger_ddl() -> String {
         + "DROP TABLE IF EXISTS ledger_mailboxes;"
         + "CREATE TABLE IF NOT EXISTS ledger_leases (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, expires bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now());"
         + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS protected_redactions (digest text PRIMARY KEY, erased_at bigint NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS memory_keys (name text PRIMARY KEY, value text NOT NULL);";
 }
 
-// Protected evidence is sealed and opened inside memory (GH #985): the
-// receipt key lives in `memory_keys`, which no role but the owner reads,
-// and these two functions run as the owner. A role that may EXECUTE them
-// files and reads a body without ever holding the key; filing refuses a
-// class that is not protected and a digest that is not the body's.
+// Protected evidence is sealed, opened and erased inside memory (GH #985):
+// the receipt key lives in `memory_keys`, which no role but the owner
+// reads, and these three functions run as the owner — they are the whole
+// surface of `protected_receipts`. A role that may EXECUTE them files and
+// reads a body without ever holding the key; filing refuses a class that
+// is not protected, a digest that is not the body's, and a digest memory
+// erased under a redaction (`protected_redactions` keeps it, so a replay
+// cannot put erased bytes back).
 fn receipt_functions(sch: String) -> String {
     let fix = "hale dna memory migrate with HALE_DNA_RECEIPT_KEY";
     return "CREATE OR REPLACE FUNCTION " + sch + ".receipt_file(p_digest text, p_class text, p_body text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ DECLARE k text; BEGIN "
         + "IF p_class NOT IN ('customer', 'confidential') THEN RAISE EXCEPTION 'class % is not protected (customer | confidential)', p_class; END IF; "
         + "IF p_digest <> 'sha256:' || encode(digest(p_body, 'sha256'), 'hex') THEN RAISE EXCEPTION 'the digest is not the body''s'; END IF; "
+        + "IF EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) THEN RAISE EXCEPTION '% was redacted; a redacted body is not kept again', p_digest; END IF; "
         + "SELECT value INTO k FROM memory_keys WHERE name = 'receipt'; "
         + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
         + "INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES (p_digest, p_class, armor(pgp_sym_encrypt(p_body, k, 'cipher-algo=aes256')), p_at) ON CONFLICT (digest) DO NOTHING; "
@@ -94,7 +99,11 @@ fn receipt_functions(sch: String) -> String {
         + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
         + "SELECT row_to_json(t) INTO r FROM (SELECT class, pgp_sym_decrypt(dearmor(body), k) AS text, stored_at FROM protected_receipts WHERE digest = p_digest) t; "
         + "RETURN r; END $f$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text) FROM PUBLIC";
+        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_erase(p_digest text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ BEGIN "
+        + "DELETE FROM protected_receipts WHERE digest = p_digest; "
+        + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
+        + "RETURN true; END $f$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC";
 }
 
 // Match the public bytewise tuple order with database indexes, so
@@ -132,13 +141,13 @@ fn role_sql(role: String) -> String {
 
 // What the spine may do in its record's schema: read and write every
 // table, empty the projection's (a rebuild), fire the triggers, and file,
-// read and erase protected evidence — through the functions, never the
-// key. No DDL: the owner's.
+// read and erase protected evidence — through the three functions only,
+// never the table or the key. No DDL: the owner's.
 fn spine_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
         + "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA " + sch + " TO " + role + ";"
         + "REVOKE ALL ON " + sch + ".memory_keys FROM " + role + ";"
-        + "REVOKE SELECT, INSERT, UPDATE, TRUNCATE ON " + sch + ".protected_receipts FROM " + role + ";"
+        + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM " + role + ";"
         + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
 }

@@ -338,6 +338,7 @@ locus MemoryVault {
         dsn_env: String = SPINE_DSN_ENV;
         store: PqProtected = PqProtected { };
         j: GitJournal = GitJournal { repo: ".", author: "vault" };
+        erased: String = "\n"; // digests erased by this process, one per line
         opened: Bool = false;
         last_error: String = "";
     }
@@ -468,11 +469,15 @@ locus MemoryVault {
             let e = self.j.read(i);
             i = i + 1;
             if e.kind != "receipt.redacted" { continue; }
-            let p = self.store.get(e.entity);
-            if !p.present { continue; }
+            if std::str::contains(self.erased, "\n" + e.entity + "\n") { continue; }
             if len(self.hold_of(e.entity)) > 0 { continue; }
+            // erased through memory's function whether a body is kept or not:
+            // the digest is kept, so a body redacted before it was ever filed
+            // is refused if a head files it later
+            let p = self.store.get(e.entity);
             if !self.store.erase(e.entity) { self.last_error = self.store.last_error(); return -1; }
-            n = n + 1;
+            self.erased = self.erased + e.entity + "\n";
+            if p.present { n = n + 1; }
         }
         return n;
     }

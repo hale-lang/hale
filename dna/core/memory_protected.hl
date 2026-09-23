@@ -126,10 +126,13 @@ type ProtectedRow {
         if !self.open() { return false; }
         let a = db::Args { };
         a.add(digest);
-        let r = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
+        a.add(to_string(std::time::now()));
+        // through memory's own function: the body goes, and its digest is
+        // kept so that filing it again is refused (GH #985)
+        let r = self.conn.exec_params("SELECT receipt_erase($1, $2::bigint)", a);
         if r.ok { return true; }
         if self.redial() {
-            let again = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
+            let again = self.conn.exec_params("SELECT receipt_erase($1, $2::bigint)", a);
             if again.ok { self.error = ""; return true; }
             self.error = "erase: " + again.err.kind + " " + again.err.detail;
             return false;
