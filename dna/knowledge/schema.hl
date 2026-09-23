@@ -1,0 +1,215 @@
+// dna/knowledge/schema.hl — memory's schema, applied by its owner
+// (GH #985).
+//
+// Every store used to create its own tables on every open and every
+// reconnect, so every process that touched memory needed the rights to
+// change its shape. The schema is now applied once, by `migrate`, with
+// the schema owner's DSN (`hale dna memory migrate`, `hale dna upgrade`,
+// and `hale dna dev` before it starts the organism), and the processes
+// that run connect as a role that can read and write the tables but not
+// change them. A store's `open` checks the schema version and refuses a
+// memory at another one, naming both, the same fence the record keeps.
+
+// The version `migrate` writes and every `open` requires.
+const MEMORY_SCHEMA_VERSION: Int = 1;
+
+type Migrated {
+    ok: Bool = false;
+    why: String = "";
+    // the spine's DSN: the owner's host and database, the spine's role
+    spine_dsn: String = "";
+}
+
+// A record's roles are its own: one role granted on every record's schema
+// would read every other record's evidence on the same server. Named from
+// the record's schema, cut to fit Postgres's 63-byte identifiers.
+fn spine_role(record_id: String) -> String {
+    let base = schema_for(record_id);
+    let cut = if len(base) > 57 { base[0..57] } else { base };
+    return cut + "_spine";
+}
+
+// Placeholder-local credentials until the vault holds them (GH #989).
+fn role_password(role: String) -> String { return role; }
+
+// `owner` with the role in place of the owner's user and password.
+fn role_dsn(owner: Dsn, role: String) -> Dsn {
+    return Dsn { ok: owner.ok, user: role, password: role_password(role), host: owner.host, port: owner.port, database: owner.database, sslmode: owner.sslmode };
+}
+
+fn dsn_text(d: Dsn) -> String {
+    return "postgres://" + d.user + ":" + d.password + "@" + d.host + ":" + to_string(d.port) + "/" + d.database + "?sslmode=" + d.sslmode;
+}
+
+fn knowledge_ddl() -> String {
+    return "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
+        + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
+        + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';"
+        + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS supersedes text NOT NULL DEFAULT '';"
+        + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
+        + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));"
+        + "CREATE TABLE IF NOT EXISTS knowledge_structure (kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL, PRIMARY KEY (kind, name));"
+        + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));";
+}
+
+fn ledger_ddl() -> String {
+    return "CREATE TABLE IF NOT EXISTS ledger_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, prev text NOT NULL, digest text NOT NULL, at timestamptz NOT NULL DEFAULT now(), record_seq bigint, record_commit text);"
+        + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
+        + "DROP INDEX IF EXISTS ledger_rows_claim;"
+        + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claims ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'spend.reserved', 'task.born');"
+        + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
+        + "CREATE TABLE IF NOT EXISTS ledger_mailboxes (n bigserial PRIMARY KEY, sender text NOT NULL, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, at timestamptz NOT NULL DEFAULT now(), UNIQUE (sender, kind, entity));"
+        + "CREATE TABLE IF NOT EXISTS ledger_leases (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, expires bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now());"
+        + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);";
+}
+
+// Match the public bytewise tuple order with database indexes, so
+// advancing a keyset does not repeatedly sort the whole projection.
+fn graph_indexes() -> String {
+    return "CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_order ON knowledge_ideas (id COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_edges_order ON knowledge_edges (src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_bindings_order ON knowledge_bindings (idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\")";
+}
+
+// Only the transaction that first claims the protocol initializes its
+// metadata. An older populated projection cannot prove that no partial
+// event escaped its old stamp, even at live watermark zero. Preserve
+// its rows/live progress but require an explicit projection rebuild.
+// A later migration never recreates missing metadata or clears a known
+// pending suffix: corruption and incomplete migrations remain unavailable.
+fn projection_protocol() -> String {
+    return "WITH claimed AS (INSERT INTO knowledge_meta (key, value) SELECT 'graph_projection_protocol', CASE WHEN EXISTS (SELECT 1 FROM knowledge_ideas) OR EXISTS (SELECT 1 FROM knowledge_bindings) OR EXISTS (SELECT 1 FROM knowledge_edges) OR EXISTS (SELECT 1 FROM knowledge_structure) OR EXISTS (SELECT 1 FROM knowledge_signals) OR EXISTS (SELECT 1 FROM knowledge_meta WHERE (key IN ('watermark', 'graph_projection_watermark') AND value <> '0') OR (key = 'graph_projection_head' AND value <> '') OR key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head')) THEN 'rebuild_required' ELSE '1' END ON CONFLICT (key) DO NOTHING RETURNING key), initialized AS (INSERT INTO knowledge_meta (key, value) SELECT defaults.key, CASE defaults.key WHEN 'watermark' THEN coalesce((SELECT value FROM knowledge_meta WHERE key = 'watermark'), '0') WHEN 'graph_generation' THEN (coalesce((SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation'), -1) + 1)::text ELSE defaults.value END FROM claimed CROSS JOIN (VALUES ('watermark', '0'), ('graph_generation', '0'), ('graph_projection_watermark', '0'), ('graph_projection_head', ''), ('graph_projection_pending_watermark', '0'), ('graph_projection_pending_head', '')) AS defaults(key, value) ON CONFLICT (key) DO UPDATE SET value = CASE WHEN knowledge_meta.key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head') THEN knowledge_meta.value ELSE EXCLUDED.value END RETURNING key) SELECT count(*) FROM initialized";
+}
+
+fn graph_generation_ddl(sch: String) -> String {
+    return "CREATE OR REPLACE FUNCTION " + sch + ".knowledge_graph_changed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN UPDATE " + sch + ".knowledge_meta SET value = ((value::bigint) + 1)::text WHERE key = ''graph_generation''; IF NOT FOUND THEN RAISE EXCEPTION ''knowledge graph generation missing''; END IF; RETURN NULL; END';"
+        + "CREATE OR REPLACE TRIGGER knowledge_ideas_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_ideas FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_edges_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_edges FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_bindings_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_bindings FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_ideas_truncate_generation AFTER TRUNCATE ON knowledge_ideas FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_edges_truncate_generation AFTER TRUNCATE ON knowledge_edges FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_bindings_truncate_generation AFTER TRUNCATE ON knowledge_bindings FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();";
+}
+
+// The spine's role, created once per server and tolerating another
+// database on the same server creating it at the same moment (an
+// advisory lock is per database and does not cover that).
+fn role_sql(role: String) -> String {
+    return "DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD '" + role_password(role) + "'; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$";
+}
+
+// What the spine may do in its record's schema: read and write every
+// table, empty the projection's (a rebuild), and fire the triggers. No
+// DDL: the owner's.
+fn spine_grants(sch: String, role: String) -> String {
+    return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
+        + "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA " + sch + " TO " + role + ";"
+        + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
+        + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
+}
+
+// Apply memory's schema for one record with the owner's DSN, in one
+// transaction: the tables of every store, the record's claim on its
+// schema, the projection protocol, the spine's role and grants, and the
+// version row. Idempotent; a memory a newer toolchain migrated is refused.
+@unbounded
+fn migrate(owner: Dsn, record_id: String) -> Migrated {
+    if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
+    let c = pq::PgConn { host: owner.host, port: owner.port, user: owner.user, password: owner.password, database: owner.database, sslmode: owner.sslmode };
+    let st = c.open();
+    if !st.ok { return Migrated { why: "open: " + st.err.kind + " " + st.err.detail }; }
+    let why = migrate_on(c, record_id);
+    c.close();
+    if len(why) > 0 { return Migrated { why: why }; }
+    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))) };
+}
+
+@unbounded
+fn migrate_on(c: pq::PgConn, record_id: String) -> String {
+    // pgvector ranks inside the bound (K3) and pgcrypto seals protected
+    // evidence (GH #606); a Postgres without either says so here
+    let ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    if !ext.ok { return "extensions (vector, pgcrypto): " + ext.err.kind + " " + ext.err.detail; }
+    // A store from before records were namespaced lives in `public`
+    // and belongs to no record anyone can name. It is not migrated:
+    // the projection rebuilds from the record, so the way forward is
+    // to drop it (GH #613).
+    let legacy = c.query_one("SELECT (to_regclass('public.knowledge_meta') IS NOT NULL)::text");
+    if !legacy.ok { return "scope: " + legacy.err.kind + " " + legacy.err.detail; }
+    if dna::trim_nl(legacy.data) == "true" {
+        return "scope: this database holds a knowledge store in `public` from before stores were scoped by record; it is not migrated. Drop its tables (knowledge_meta, knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals) or the database, and the projection rebuilds from the record";
+    }
+    let sch = schema_for(record_id);
+    let begun = c.exec("BEGIN; SELECT pg_advisory_xact_lock(hashtext('" + sch + "')); CREATE SCHEMA IF NOT EXISTS " + sch + "; SET LOCAL search_path TO " + sch + ", public; CREATE TABLE IF NOT EXISTS memory_meta (key text PRIMARY KEY, value text NOT NULL)");
+    if !begun.ok { return abort(c, "scope (schema " + sch + ")", begun.err); }
+    let have = c.query_one("SELECT value FROM memory_meta WHERE key = 'schema_version'");
+    if !have.ok && have.err.kind != "no_row" { return abort(c, "schema version", have.err); }
+    if have.ok && (std::str::parse_int(dna::trim_nl(have.data)) or 0) > MEMORY_SCHEMA_VERSION {
+        let rb = c.exec("ROLLBACK");
+        return "memory schema " + sch + " is at version " + dna::trim_nl(have.data) + ", newer than this toolchain's " + to_string(MEMORY_SCHEMA_VERSION) + "; it is not migrated back";
+    }
+    let tables = c.exec(knowledge_ddl() + ledger_ddl());
+    if !tables.ok { return abort(c, "migrate", tables.err); }
+    // the schema names its record, and the record it names must be
+    // this one: a schema renamed or copied under another record's
+    // name is refused, not read
+    if len(record_id) > 0 {
+        let named = c.query_one("SELECT value FROM knowledge_meta WHERE key = 'record'");
+        if !named.ok && named.err.kind != "no_row" { return abort(c, "scope", named.err); }
+        if named.ok && dna::trim_nl(named.data) != record_id {
+            let rb = c.exec("ROLLBACK");
+            return "scope: schema " + sch + " belongs to record " + dna::trim_nl(named.data) + ", not " + record_id + "; it is not migrated";
+        }
+        if !named.ok {
+            let a = db::Args { };
+            a.add(record_id);
+            let claim = c.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('record', $1) ON CONFLICT (key) DO NOTHING", a);
+            if !claim.ok { return abort(c, "scope", claim.err); }
+        }
+    }
+    let indexes = c.exec(graph_indexes());
+    if !indexes.ok { return abort(c, "graph indexes", indexes.err); }
+    let protocol = c.query_one(projection_protocol());
+    if !protocol.ok { return abort(c, "projection protocol migration", protocol.err); }
+    let tracked = c.exec(graph_generation_ddl(sch));
+    if !tracked.ok { return abort(c, "graph migration", tracked.err); }
+    let role = spine_role(record_id);
+    let made = c.exec(role_sql(role));
+    if !made.ok { return abort(c, "role " + role, made.err); }
+    let granted = c.exec(spine_grants(sch, role));
+    if !granted.ok { return abort(c, "grants to " + role, granted.err); }
+    let versioned = c.exec("INSERT INTO memory_meta (key, value) VALUES ('schema_version', '" + to_string(MEMORY_SCHEMA_VERSION) + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; COMMIT");
+    if !versioned.ok { return abort(c, "schema version", versioned.err); }
+    return "";
+}
+
+fn abort(c: pq::PgConn, what: String, e: db::DbError) -> String {
+    let rb = c.exec("ROLLBACK");
+    return what + ": " + e.kind + " " + e.detail;
+}
+
+// "" when the schema this connection has selected is at the version this
+// toolchain requires; otherwise why the store refuses it, naming both
+// versions and the command that fixes it.
+fn memory_fence(c: pq::PgConn, sch: String) -> String {
+    let fix = "run `hale dna memory migrate` with the owner's DSN in HALE_DNA_KNOWLEDGE_DSN";
+    let v = c.query_one("SELECT value FROM " + sch + ".memory_meta WHERE key = 'schema_version'");
+    if !v.ok {
+        if v.err.kind == "no_row" { return "memory schema " + sch + " has no schema version (this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "); " + fix; }
+        return "memory schema " + sch + " is not migrated for this toolchain (version " + to_string(MEMORY_SCHEMA_VERSION) + "): " + v.err.kind + " " + v.err.detail + "; " + fix;
+    }
+    let have = dna::trim_nl(v.data);
+    if have != to_string(MEMORY_SCHEMA_VERSION) {
+        return "memory schema " + sch + " is at version " + have + "; this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "; " + fix;
+    }
+    return "";
+}
+
+// The fixtures' step: apply the schema with the owner's DSN and hand back
+// the spine's, which is what a store opens with. Not ok, with `why`, when
+// the schema could not be applied.
+fn migrated(owner: String, record_id: String) -> Dsn {
+    let m = migrate(parse_dsn(owner), record_id);
+    if !m.ok { return Dsn { why: m.why }; }
+    return parse_dsn(m.spine_dsn);
+}

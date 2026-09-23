@@ -155,9 +155,14 @@ main locus App {
 
         // ---- over Postgres: encrypted at rest, and a wrong key reads nothing
         if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::str::starts_with(std::env::var("HALE_DNA_KNOWLEDGE_DSN"), "postgres") {
-            let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+            // the owner's DSN applies the schema; the stores open as the
+            // record's spine role (GH #985)
+            let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
+            let dsn = know::parse_dsn(owner);
             let record = "vault" + to_string(std::process::pid());
-            let store = know::PqProtected { conn: know::pq_conn(dsn), key: "a receipt key of forty characters, test", env_var: "" };
+            let spine = know::migrated(owner, record);
+            std::test::assert(spine.ok, "the schema is applied: " + spine.why);
+            let store = know::PqProtected { conn: know::pq_conn(spine), key: "a receipt key of forty characters, test", env_var: "" };
             store.scope(record);
             std::test::assert(store.put(d1, "confidential", secret, 1789351200), "kept over Postgres: " + store.last_error());
             let back = store.get(d1);
@@ -167,14 +172,14 @@ main locus App {
             std::test::assert(st.ok, "a plain connection: " + st.err.detail);
             let at_rest = raw.conn.query_one("SELECT body FROM " + know::schema_for(record) + ".protected_receipts WHERE digest = '" + d1 + "'");
             std::test::assert(at_rest.ok && std::str::contains(at_rest.data, "BEGIN PGP MESSAGE") && !std::str::contains(at_rest.data, "3321"), "at rest it is an OpenPGP message, not the body: " + at_rest.data);
-            let wrong = know::PqProtected { conn: know::pq_conn(dsn), key: "a different key, also long enough", env_var: "" };
+            let wrong = know::PqProtected { conn: know::pq_conn(spine), key: "a different key, also long enough", env_var: "" };
             wrong.scope(record);
             let nothing = wrong.get(d1);
             std::test::assert(!nothing.present && std::str::contains(wrong.last_error(), "Wrong key"), "a wrong key reads nothing: " + wrong.last_error());
-            let short = know::PqProtected { conn: know::pq_conn(dsn), key: "short", env_var: "" };
+            let short = know::PqProtected { conn: know::pq_conn(spine), key: "short", env_var: "" };
             std::test::assert(!short.ready() && !short.put(d1, "confidential", secret, 1) && std::str::contains(short.last_error(), "no receipt key"), "a short key is no key");
-            let cleanup = raw.conn.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE");
-            std::test::assert(cleanup.ok, "this run's schema dropped: " + cleanup.err.detail);
+            let cleanup = raw.conn.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record));
+            std::test::assert(cleanup.ok, "this run's schema and role dropped: " + cleanup.err.detail);
         } else {
             eprintln("receipt_vault_test: no postgres HALE_DNA_KNOWLEDGE_DSN; encryption at rest was not exercised here");
         }

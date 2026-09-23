@@ -12,7 +12,11 @@ hale dna --embedded-digest [--from-tree <dir>]
                              checkout, what that tree would embed (unequal = the binary predates it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
 hale dna knowledge [project] [--port N]
-                             the knowledge service in the foreground (HALE_DNA_KNOWLEDGE_DSN: postgres://…, or memory)
+                             the knowledge service in the foreground, as the record's spine role
+                             (HALE_DNA_MEMORY_DSN_SPINE), or HALE_DNA_KNOWLEDGE_DSN=memory
+hale dna memory migrate [dir]
+                             apply memory's schema with the owner's DSN (HALE_DNA_KNOWLEDGE_DSN, or
+                             dna/compose.yaml) and print the record's spine DSN
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
                              restart the application on an apply, watch the window, report back

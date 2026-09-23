@@ -776,74 +776,26 @@ locus Pq {
         self.close();
         let st = self.conn.open();
         if !st.ok { return self.fail("open", st.err); }
-        // pgvector ranks inside the bound (K3); the extension ships with the
-        // image compose and CI use, and a Postgres without it says so here
-        let ext = self.conn.exec("CREATE EXTENSION IF NOT EXISTS vector");
-        if !ext.ok { return self.fail("pgvector (CREATE EXTENSION vector)", ext.err); }
-        // A store from before records were namespaced lives in `public`
-        // and belongs to no record anyone can name. It is not migrated:
-        // the projection rebuilds from the record, so the way forward is
-        // to drop it (GH #613).
-        let legacy = self.conn.query_one("SELECT (to_regclass('public.knowledge_meta') IS NOT NULL)::text");
-        if !legacy.ok { return self.fail("scope", legacy.err); }
-        if dna::trim_nl(legacy.data) == "true" {
-            self.error = "scope: this database holds a knowledge store in `public` from before stores were scoped by record; it is not migrated. Drop its tables (knowledge_meta, knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals) or the database, and the service rebuilds the projection from the record";
-            return false;
-        }
         // one schema per record, selected for this session; `public`
-        // stays on the path for the vector type
+        // stays on the path for the vector type. The schema is the
+        // owner's to create (GH #985): here it is only checked.
         let sch = self.schema();
-        let ns = self.conn.exec("CREATE SCHEMA IF NOT EXISTS " + sch + "; SET search_path TO " + sch + ", public");
+        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
         if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
-        let ddl = "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
-            + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
-            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
-            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';"
-            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS supersedes text NOT NULL DEFAULT '';"
-            + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
-            + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));"
-            + "CREATE TABLE IF NOT EXISTS knowledge_structure (kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL, PRIMARY KEY (kind, name));"
-            + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));";
-        let r = self.conn.exec(ddl);
-        if !r.ok { return self.fail("migrate", r.err); }
+        let fence = memory_fence(self.conn, sch);
+        if len(fence) > 0 { self.error = fence; self.close(); return false; }
         // the schema names its record, and the record it names must be
         // this one: a schema renamed or copied under another record's
         // name is refused, not read
         if len(self.record_id) > 0 {
             let owner = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'record'");
             if !owner.ok && owner.err.kind != "no_row" { return self.fail("scope", owner.err); }
-            if owner.ok && dna::trim_nl(owner.data) != self.record_id {
-                self.error = "scope: schema " + sch + " belongs to record " + dna::trim_nl(owner.data) + ", not " + self.record_id + "; it is not read";
+            if !owner.ok || dna::trim_nl(owner.data) != self.record_id {
+                self.error = "scope: schema " + sch + " belongs to " + (if owner.ok { "record " + dna::trim_nl(owner.data) } else { "no record" }) + ", not " + self.record_id + "; it is not read";
+                self.close();
                 return false;
             }
-            if !owner.ok {
-                let a = db::Args { };
-                a.add(self.record_id);
-                let claim = self.conn.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('record', $1) ON CONFLICT (key) DO NOTHING", a);
-                if !claim.ok { return self.fail("scope", claim.err); }
-            }
         }
-        // Match the public bytewise tuple order with database indexes, so
-        // advancing a keyset does not repeatedly sort the whole projection.
-        let indexes = self.conn.exec("CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_order ON knowledge_ideas (id COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_edges_order ON knowledge_edges (src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_bindings_order ON knowledge_bindings (idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\")");
-        if !indexes.ok { return self.fail("graph indexes", indexes.err); }
-        // Only the transaction that first claims the protocol initializes its
-        // metadata. An older populated projection cannot prove that no partial
-        // event escaped its old stamp, even at live watermark zero. Preserve
-        // its rows/live progress but require an explicit projection rebuild.
-        // Reopen never recreates missing metadata or clears a known pending
-        // suffix: corruption and incomplete migrations remain unavailable.
-        let protocol = self.conn.query_one("WITH claimed AS (INSERT INTO knowledge_meta (key, value) SELECT 'graph_projection_protocol', CASE WHEN EXISTS (SELECT 1 FROM knowledge_ideas) OR EXISTS (SELECT 1 FROM knowledge_bindings) OR EXISTS (SELECT 1 FROM knowledge_edges) OR EXISTS (SELECT 1 FROM knowledge_structure) OR EXISTS (SELECT 1 FROM knowledge_signals) OR EXISTS (SELECT 1 FROM knowledge_meta WHERE (key IN ('watermark', 'graph_projection_watermark') AND value <> '0') OR (key = 'graph_projection_head' AND value <> '') OR key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head')) THEN 'rebuild_required' ELSE '1' END ON CONFLICT (key) DO NOTHING RETURNING key), initialized AS (INSERT INTO knowledge_meta (key, value) SELECT defaults.key, CASE defaults.key WHEN 'watermark' THEN coalesce((SELECT value FROM knowledge_meta WHERE key = 'watermark'), '0') WHEN 'graph_generation' THEN (coalesce((SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation'), -1) + 1)::text ELSE defaults.value END FROM claimed CROSS JOIN (VALUES ('watermark', '0'), ('graph_generation', '0'), ('graph_projection_watermark', '0'), ('graph_projection_head', ''), ('graph_projection_pending_watermark', '0'), ('graph_projection_pending_head', '')) AS defaults(key, value) ON CONFLICT (key) DO UPDATE SET value = CASE WHEN knowledge_meta.key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head') THEN knowledge_meta.value ELSE EXCLUDED.value END RETURNING key) SELECT count(*) FROM initialized");
-        if !protocol.ok { return self.fail("projection protocol migration", protocol.err); }
-        let generation_ddl = "CREATE OR REPLACE FUNCTION " + sch + ".knowledge_graph_changed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN UPDATE " + sch + ".knowledge_meta SET value = ((value::bigint) + 1)::text WHERE key = ''graph_generation''; IF NOT FOUND THEN RAISE EXCEPTION ''knowledge graph generation missing''; END IF; RETURN NULL; END';"
-            + "CREATE OR REPLACE TRIGGER knowledge_ideas_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_ideas FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-            + "CREATE OR REPLACE TRIGGER knowledge_edges_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_edges FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-            + "CREATE OR REPLACE TRIGGER knowledge_bindings_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_bindings FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-            + "CREATE OR REPLACE TRIGGER knowledge_ideas_truncate_generation AFTER TRUNCATE ON knowledge_ideas FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-            + "CREATE OR REPLACE TRIGGER knowledge_edges_truncate_generation AFTER TRUNCATE ON knowledge_edges FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-            + "CREATE OR REPLACE TRIGGER knowledge_bindings_truncate_generation AFTER TRUNCATE ON knowledge_bindings FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();";
-        let tracked = self.conn.exec(generation_ddl);
-        if !tracked.ok { return self.fail("graph migration", tracked.err); }
         self.opened = true;
         return true;
     }

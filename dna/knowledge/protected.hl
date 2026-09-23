@@ -115,13 +115,13 @@ locus MemProtected {
         if self.opened { return true; }
         let st = self.conn.open();
         if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
-        let ext = self.conn.exec("CREATE EXTENSION IF NOT EXISTS pgcrypto");
-        if !ext.ok { self.error = "pgcrypto (CREATE EXTENSION pgcrypto): " + ext.err.kind + " " + ext.err.detail; return false; }
+        // the schema (and pgcrypto) are the owner's to create (GH #985):
+        // checked here
         let sch = schema_for(self.record_id);
-        let ns = self.conn.exec("CREATE SCHEMA IF NOT EXISTS " + sch + "; SET search_path TO " + sch + ", public");
+        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
         if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
-        let t = self.conn.exec("CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL)");
-        if !t.ok { self.error = "migrate: " + t.err.kind + " " + t.err.detail; return false; }
+        let fence = memory_fence(self.conn, sch);
+        if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
         self.opened = true;
         return true;
     }

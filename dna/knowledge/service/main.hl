@@ -7,8 +7,10 @@
 // by `hale dna dev` beside the organization (the DSN from compose) or
 // as an instance in the plan with a node; `hale dna knowledge` asks it.
 //
-//   knowledge <root> <port>   with HALE_DNA_KNOWLEDGE_DSN in the environment
-//                             ("memory" runs the in-memory store: dev with nothing)
+//   knowledge <root> <port>   with HALE_DNA_MEMORY_DSN_SPINE in the environment:
+//                             the record's spine role, never the schema owner
+//                             (GH #985; `hale dna memory migrate` prints it), or
+//                             HALE_DNA_KNOWLEDGE_DSN=memory for the in-memory store
 //
 // Every request applies the record first (the reader sees it as it is
 // now), so there is no tick to fall behind.
@@ -805,9 +807,13 @@ fn refusal(status: Int, why: String) -> std::http::Response {
 fn main() {
     let root = if len(arg(1)) > 0 { arg(1) } else { "." };
     let port = std::str::parse_int(arg(2)) or 8791;
-    let dsn = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
+    // GH #985: the service connects as its record's spine role; the
+    // owner's DSN applies the schema and is not held at runtime
+    let spine = if std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE") { std::env::var("HALE_DNA_MEMORY_DSN_SPINE") } else { "" };
+    let memory = std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") == "memory";
+    let dsn = if len(spine) > 0 { spine } else if memory { "memory" } else { "" };
     if len(dsn) == 0 {
-        eprintln("hale dna knowledge: HALE_DNA_KNOWLEDGE_DSN is not set (a postgres:// URL, or `memory` for a store that lives only as long as this process)");
+        eprintln("hale dna knowledge: HALE_DNA_MEMORY_DSN_SPINE is not set: the service connects as its record's spine role, never with the schema owner's DSN (`hale dna memory migrate` applies the schema and prints the spine's DSN), or HALE_DNA_KNOWLEDGE_DSN=memory for a store that lives only as long as this process");
         std::process::exit(2);
     }
     let policy = knowledge_policy(root);
@@ -824,7 +830,7 @@ fn main() {
         return;
     }
     let d = know::parse_dsn(dsn);
-    if !d.ok { eprintln("hale dna knowledge: HALE_DNA_KNOWLEDGE_DSN: ", d.why); std::process::exit(2); }
+    if !d.ok { eprintln("hale dna knowledge: HALE_DNA_MEMORY_DSN_SPINE: ", d.why); std::process::exit(2); }
     eprintln("hale dna knowledge: postgres at ", d.host, ":", d.port, "/", d.database, ", serving :", port, " over ", root);
     let store = know::Pq { conn: know::pq_conn(d) };
     Knowledge {

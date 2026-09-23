@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### Memory's schema belongs to its owner (GH #985, part 1)
+
+- **`hale dna memory migrate`** applies memory's schema for the record
+  with the owner's DSN (`HALE_DNA_KNOWLEDGE_DSN`, or dna/compose.yaml):
+  every store's tables, a role of the record's own
+  (`dna_<identity>_spine`), and a schema version. `hale dna dev` runs it
+  before the host starts and hands the host only the role's DSN
+  (`HALE_DNA_MEMORY_DSN_SPINE`); `hale dna upgrade` runs it when the
+  owner's DSN is set.
+- **The stores no longer create their tables on open.** They select the
+  record's schema and check its version, refusing another version by
+  name; the knowledge service connects as the spine role, which cannot
+  change the schema or read another record's.
+
 ### `hale dna status` verifies the chain at the head it loaded (GH #1017)
 
 - A writer appending between the status's load and its count made a

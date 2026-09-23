@@ -146,7 +146,10 @@ in the service development plan.
   PostgreSQL DSN while the service child clears private settings. All participate
   in the existing native CI suite without changing its fixture inventory.
 
-Postgres tests use `HALE_DNA_KNOWLEDGE_DSN` and private per-run schemas. A missing
-DSN is an explicit skip, not Postgres validation. Compile and run native tests
+Postgres tests use `HALE_DNA_KNOWLEDGE_DSN` as the schema owner's DSN and private
+per-run schemas: `know::migrated(owner, record)` applies the schema and hands back
+the record's spine DSN, which the stores open with (GH #985); cleanup drops the
+schema and the role as the owner. A missing DSN is an explicit skip, not Postgres
+validation. Compile and run native tests
 separately with hard memory/CPU limits; a wall timeout alone does not contain
 native allocation failures.

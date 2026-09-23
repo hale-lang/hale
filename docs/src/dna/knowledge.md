@@ -59,6 +59,17 @@ so and runs without a knowledge service; point
 (`postgres://user:password@host:port/db`) to use one anyway, or at
 `memory` for the in-process store.
 
+That DSN is the schema's **owner**, and nothing that runs holds it.
+Before it starts anything, `dev` applies memory's schema for the
+record with it — the tables, a role of the record's own, and a
+schema version — and hands the host only that role's DSN
+(`HALE_DNA_MEMORY_DSN_SPINE`); the knowledge service connects as the
+role, which can read and write the tables but not change them. `hale
+dna memory migrate` does the same step by hand and prints the role's
+DSN, and `hale dna upgrade` does it when the owner's DSN is set. A
+store opened on a schema at another version refuses it, naming both
+versions and the command that fixes it.
+
 One Postgres can hold many records. The store is scoped by the
 record — its identity is the sha of the record's first commit, the
 same in every clone and different for every record — and each record

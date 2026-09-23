@@ -75,30 +75,43 @@ locus FidelityCases {
         std::test::assert_eq_str(binding.author, "org", "memory: replacement keeps author");
     }
     fn postgres() {
-        let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+        // the owner's DSN applies the schema; the store opens as the
+        // record's spine role (GH #985)
+        let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
+        let dsn = know::parse_dsn(owner);
         std::test::assert(dsn.ok, "Postgres test DSN must parse");
         let record = "knowledgefidelity" + to_string(std::process::pid());
-        let pg = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+        let spine = know::migrated(owner, record);
+        std::test::assert(spine.ok, "postgres: the schema is applied: " + spine.why);
+        let pg = know::Pq { conn: know::pq_conn(spine), record_id: record };
         std::test::assert(pg.open(), "postgres: opens: " + pg.last_error());
         // Only this run's scoped schema is changed. Existing databases and
         // public tables are never wiped to make the fixture pass.
         let legacy = dna::Idea { id: "sha256:legacy", kind: "practice", text: "Legacy body", author: "org", provenance: "ratified", revision: 3, accepted: true };
         std::test::assert(pg.upsert(legacy, 3), "postgres: seed legacy row");
-        let old_schema = pg.conn.exec("ALTER TABLE knowledge_ideas DROP COLUMN name; ALTER TABLE knowledge_ideas DROP COLUMN supersedes");
+        let admin = know::pq_conn(dsn);
+        let st = admin.open();
+        std::test::assert(st.ok, "postgres: the owner connects: " + st.err.detail);
+        let old_schema = admin.exec("ALTER TABLE " + pg.schema() + ".knowledge_ideas DROP COLUMN name; ALTER TABLE " + pg.schema() + ".knowledge_ideas DROP COLUMN supersedes");
         std::test::assert(old_schema.ok, "postgres: simulate prior scoped schema: " + old_schema.err.detail);
-        std::test::assert(pg.reopen(), "postgres: migrate existing rows: " + pg.last_error());
+        std::test::assert(know::migrated(owner, record).ok, "postgres: the migration brings existing rows forward");
+        std::test::assert(pg.reopen(), "postgres: reopens on the migrated schema: " + pg.last_error());
         self.check_row(pg.idea(legacy.id), legacy, 3, "postgres migrated legacy");
         self.exercise(pg, "postgres");
         let binding = pg.conn.query_one("SELECT class FROM knowledge_bindings WHERE idea = 'sha256:fidelity' AND target = 'org/finance' AND author = 'org'");
         std::test::assert(binding.ok && dna::trim_nl(binding.data) == "initiative", "postgres: same triple replaces its stored class");
-        // Opening again reapplies the idempotent migration and reads through
-        // a new connection, proving the metadata survived persistence.
-        let other = know::Pq { conn: know::pq_conn(dsn), record_id: record };
+        // Migrating again is idempotent, and a new connection reads what
+        // the first wrote, proving the metadata survived persistence.
+        std::test::assert(know::migrated(owner, record).ok, "postgres: the migration applies again");
+        let other = know::Pq { conn: know::pq_conn(spine), record_id: record };
         std::test::assert(other.open(), "postgres: second open: " + other.last_error());
         self.check_row(other.idea("sha256:fidelity"), pg.idea("sha256:fidelity").idea, 8, "postgres reopened");
         self.check_row(other.idea(legacy.id), legacy, 3, "postgres repeated migration");
-        let cleanup = pg.conn.exec("DROP SCHEMA " + pg.schema() + " CASCADE");
-        std::test::assert(cleanup.ok, "postgres: remove only this run's schema: " + cleanup.err.detail);
+        pg.conn.close();
+        other.conn.close();
+        let cleanup = admin.exec("DROP SCHEMA " + pg.schema() + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record));
+        std::test::assert(cleanup.ok, "postgres: remove only this run's schema and role: " + cleanup.err.detail);
+        admin.close();
     }
 }
 
