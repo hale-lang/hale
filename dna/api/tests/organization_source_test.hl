@@ -17,13 +17,13 @@ locus SnapshotCases {
     }
     fn commit() {
         self.git("add\n-A");
-        self.git("-c\nuser.name=Iris fixture\n-c\nuser.email=iris@example.invalid\ncommit\n--quiet\n-m\nOrganization source fixture");
+        self.git("-c\nuser.name=Face fixture\n-c\nuser.email=face@example.invalid\ncommit\n--quiet\n-m\nOrganization source fixture");
     }
     fn exercise() {
         let dirs = dna::run_tool("mkdir\n-p\n" + self.repo + "/dna/org\n" + self.repo + "/vendor/support\n" + self.root + "/inspection");
         std::test::assert_eq_int(dirs.code, 0, "fixture directories");
         self.git("init\n--quiet");
-        self.write(self.repo + "/hale.toml", "[package]\nname = \"iris-snapshot\"\nversion = \"0.0.0\"\n");
+        self.write(self.repo + "/hale.toml", "[package]\nname = \"face-snapshot\"\nversion = \"0.0.0\"\n");
         self.write(self.repo + "/.gitignore", "vendor/\n");
         self.write(self.repo + "/dna/org/main.hl", ORG);
         self.write(self.repo + "/vendor/support/main.hl", SUPPORT);

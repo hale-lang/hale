@@ -1,4 +1,4 @@
-// Iris read adapter over the native wf1 recipe and pure projection. It never
+// The face's read adapter over the native wf1 recipe and pure projection. It never
 // dispatches work or decides a transition. Initial source: trusted-local Record
 // routing 0; a split Ledger or hosted identity needs an owning-service reader.
 import "../core" as dna;

@@ -141,7 +141,7 @@ test('Native draft boundary requires exact identity, source basis, framing and m
   expect((await post({ ...request, base: { ...data.base, module_digest: hash('another') } })).status()).toBe(409);
   expect((await post({ ...request, source_text: 'x'.repeat(16385) })).status()).toBe(413);
   expect((await post(request, {}, '?snapshot=x')).status()).toBe(400);
-  expect((await post({ ...request, source_text: 'import "/tmp/iris-outside-not-captured" as outside;\n' + data.module.text })).status()).not.toBe(200);
+  expect((await post({ ...request, source_text: 'import "/tmp/face-outside-not-captured" as outside;\n' + data.module.text })).status()).not.toBe(200);
   expect(await service.projectState()).toEqual(before);
 });
 

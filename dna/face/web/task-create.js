@@ -72,5 +72,5 @@
     root.append(el("p", "detail-note", "The service checks your signed-in identity and the current Record head when you confirm. Whether the locus is this organization's to admit is the organism's answer, recorded separately."));
     return root;
   }
-  window.IrisTaskCreate = { validate, render };
+  window.FaceTaskCreate = { validate, render };
 })();

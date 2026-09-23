@@ -653,7 +653,7 @@
             "observation_tick": "23"
           },
           "runtime": {
-            "profile": "hale.iris.process.v1",
+            "profile": "hale.face.process.v1",
             "process_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             "pid": "12"
           }
@@ -694,7 +694,7 @@
             "observation_tick": "23"
           },
           "runtime": {
-            "profile": "hale.iris.process.v1",
+            "profile": "hale.face.process.v1",
             "pid": "12"
           }
         }
@@ -734,7 +734,7 @@
             "observation_tick": "23"
           },
           "runtime": {
-            "profile": "hale.iris.process.v1",
+            "profile": "hale.face.process.v1",
             "process_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             "pid": "12"
           }
@@ -775,7 +775,7 @@
             "observation_tick": "23"
           },
           "runtime": {
-            "profile": "hale.iris.process.v1",
+            "profile": "hale.face.process.v1",
             "process_key": "pid:12",
             "pid": "12"
           }

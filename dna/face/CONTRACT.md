@@ -12,7 +12,7 @@ requirements, not a declaration that a service exposes them.
 The branch also implements the deliberately smaller `hale.application.v1`
 [generic service profile](service/README.md). It registers an application-owned
 control provider, serves captured state and capabilities, accepts one guarded
-enum change and recovers an exact request receipt. The [plain Hale intake example](../../iris/examples/intake-control/README.md)
+enum change and recovers an exact request receipt. The [plain Hale intake example](examples/intake-control/README.md)
 owns its SQLite configuration, authority and durable outcomes; the face has no
 universal command database. This implementation does not imply the broader
 runtime joins, contextual authority or DNA operations below are available.
@@ -160,7 +160,7 @@ Illustrative envelope (the operation name is proposed, not shipped):
 
 ```json
 {
-  "request_id": "iris-request-7b82",
+  "request_id": "face-request-7b82",
   "operation": "dna.practice.propose",
   "operation_version": "1",
   "context": {

@@ -65,7 +65,7 @@ test('Native application: exact recovery survives API and target restarts', asyn
 
 test('Native application: transport, operation and principal restrictions precede effects', async ({ application: app }) => {
   const command = app.command(await app.state());
-  for (const headers of [{ Origin: 'http://foreign.invalid' }, { 'X-Iris-Command': '0' }, { 'Content-Type': 'text/plain' }]) {
+  for (const headers of [{ Origin: 'http://foreign.invalid' }, { 'X-Face-Command': '0' }, { 'Content-Type': 'text/plain' }]) {
     const refused = await app.request('/commands', { method: 'POST', body: command, headers });
     expect(refused.status).toBeGreaterThanOrEqual(400);
   }
@@ -90,7 +90,7 @@ async function prepare(page, value = 'Paused') {
   await page.getByRole('button', { name: 'Review change', exact: true }).click();
   await expect(page.getByRole('group', { name: 'Application change confirmation', exact: true })).toBeFocused();
 }
-const savedRequests = page => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('iris.application-recovery.v1:')).map(key => JSON.parse(localStorage.getItem(key))));
+const savedRequests = page => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('face.application-recovery.v1:')).map(key => JSON.parse(localStorage.getItem(key))));
 
 test('Application workspace: actual control and effect, literal evidence', async ({ page, application: app }, testInfo) => {
   const paths = [];

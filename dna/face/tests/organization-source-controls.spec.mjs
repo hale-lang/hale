@@ -10,7 +10,7 @@ import path from 'node:path';
 const evidence = process.env.HALE_ORGANIZATION_REVIEW_EVIDENCE;
 const web = fileURLToPath(new URL('../web/', import.meta.url));
 const API = '/api/hale/v1/applications';
-const STORAGE = 'iris.practice-recovery.v1:';
+const STORAGE = 'face.practice-recovery.v1:';
 const NOTE = 'Approve the exact retained source — 第二版.\nKeep <img src=x onerror="window.__sourceInjected=true"> literal.';
 test.skip(!evidence, 'Supply retained native candidate-response.json and review-response.json.');
 let server, origin, native;

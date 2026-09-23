@@ -30,7 +30,7 @@ async function mount(page, host, changes = {}) {
   const options = { applicationId: 'app-contract', principal: { mode: 'local', name: 'alice' }, basis: { projection_record_head: 'a'.repeat(40) }, snapshot: 'captured-snapshot', target: 'org/filter', item: ITEM, relationships: EMPTY, bindings: { ...EMPTY, items: [BIND] }, ...changes };
   await page.evaluate(options => {
     window.reviews = []; window.submissions = []; window.previews = []; window.invalidations = []; window.returns = 0;
-    window.handle = window.IrisKnowledgeDraft.mount(document.querySelector('main'), { ...options,
+    window.handle = window.FaceKnowledgeDraft.mount(document.querySelector('main'), { ...options,
       onReview: async ({ operation, relatedId }) => { window.reviews.push({ operation, relatedId }); return { relationships: options.relationships, bindings: options.bindings, commandCapability: { enabled: true, mode: 'review' } }; },
       onSubmit: async (draft, current) => window.submissions.push({ draft, current: current() }),
       onPreview: draft => window.previews.push(draft), onInvalidate: error => window.invalidations.push(error.status), onReturn: () => { window.returns++; }
@@ -73,7 +73,7 @@ test('Practice context: creation opens only a pinned Practice draft and uses the
   await page.getByRole('textbox', { name: 'Practice name', exact: true }).fill('Careful evidence — équipe');
   await page.getByRole('textbox', { name: 'Practice text', exact: true }).fill('Keep <script>window.injected=true</script> literal.');
   const result = await reviewAndSubmit(page);
-  expect(result.profile).toBe('iris.knowledge.change-draft.v1');
+  expect(result.profile).toBe('face.knowledge.change-draft.v1');
   expect(result.operation).toBe('node.propose');
   expect(result.arguments).toEqual({ kind: 'practice', name: 'Careful evidence — équipe', text: 'Keep <script>window.injected=true</script> literal.', author: 'org', target: 'org/support', rationale: 'Explain exact change — approved route' });
   expect(result.base).toEqual({ snapshot: 'captured-snapshot', basis: { projection_record_head: 'a'.repeat(40) } });

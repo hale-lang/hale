@@ -17,7 +17,7 @@ const decision = page => page.getByRole('region', { name: 'Review intervention',
 const verdictReceipt = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const label = 'clarifies café 東京 🧭 <edge>';
 const rationale = 'Exact direction and label. Keep <img src=x onerror="window.__edgeInjected=true"> literal.';
-const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('iris.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
+const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
 const trackPosts = page => { const values = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/dna/knowledge/commands')) values.push(request.postDataJSON()); }); return values; };
 async function prepare(page, service, { other = service.practice, edge = null, rel = label } = {}) {
   await service.quiesce(); await page.goto(service.url('knowledge', { id: service.practice }));
@@ -97,7 +97,7 @@ test('reviewed relationships: lost reply recovers legacy metadata by GET after p
   const posts = trackPosts(page); await prepare(page, service); await service.pauseDelivery(); let command, admitted;
   await page.route('**/dna/knowledge/commands', async route => { if (route.request().method() !== 'POST') return route.continue(); const response = await route.fetch(); expect(response.status()).toBe(202); command = route.request().postDataJSON(); admitted = (await response.json()).data; expect(admitted.relationship.proposal_state).toBe('pending'); await route.abort('failed'); });
   await editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true }).click(); await expect(receipt(page)).toContainText('could not be confirmed');
-  await page.evaluate(() => { const [key, raw] = Object.entries(localStorage).find(([key]) => key.startsWith('iris.knowledge-recovery.v1:')); const m = JSON.parse(raw); m.version = 1; delete m.operation; localStorage.setItem(key, JSON.stringify(m)); });
+  await page.evaluate(() => { const [key, raw] = Object.entries(localStorage).find(([key]) => key.startsWith('face.knowledge-recovery.v1:')); const m = JSON.parse(raw); m.version = 1; delete m.operation; localStorage.setItem(key, JSON.stringify(m)); });
   await page.unroute('**/dna/knowledge/commands'); await service.setGrants([{ ...edgeReviewGrant, edge_link: 'direct' }]);
   await service.waitRelationship(command.request_id, r => r.relationship.proposal_state === 'created'); await service.quiesce(); await page.reload();
   await expect(receipt(page)).toContainText('Proposal created'); await expect(receipt(page)).toContainText('Relationship effect'); await expect(receipt(page)).not.toContainText('Observed in graph');

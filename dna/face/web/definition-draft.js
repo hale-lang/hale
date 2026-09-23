@@ -441,5 +441,5 @@
     render();
     return { destroy() { if (disposed) return; disposed = true; stop(); draft = result = null; container.replaceChildren(); } };
   }
-  window.IrisDefinitionDraft = Object.freeze({ mount });
+  window.FaceDefinitionDraft = Object.freeze({ mount });
 })();

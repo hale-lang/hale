@@ -354,7 +354,7 @@ HALE_DNA_TASK_POLICY=/absolute/path/task-authority.json \
 
 Under the launcher the [head](#head-project-service) starts this binary itself
 as the attached project's API child, with the two policies it synthesized
-under `<root>/.hale/dna/iris/` when the operator wrote none:
+under `<root>/.hale/dna/face/` when the operator wrote none:
 
 ```sh
 dna/face/start.sh /absolute/path/project --api /absolute/path/practice_review --port 8792

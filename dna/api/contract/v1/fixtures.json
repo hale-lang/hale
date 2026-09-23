@@ -7069,7 +7069,7 @@
           "profile": "hale.workflow-registration.v1",
           "name": "workflows.generated.hl",
           "digest": "sha256:exact-export-bytes",
-          "text": "// Generated captured catalog · équipe\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
+          "text": "// Generated captured catalog · équipe\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
           "scope": "captured_catalog"
         },
         "publication": "unavailable"
@@ -8247,7 +8247,7 @@
           "profile": "hale.workflow-registration.v1",
           "name": "workflows.generated.hl",
           "digest": "sha256:exact-export-bytes",
-          "text": "// Generated captured catalog · équipe\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
+          "text": "// Generated captured catalog · équipe\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
           "scope": "captured_catalog"
         },
         "publication": "unavailable"
@@ -8310,7 +8310,7 @@
           "profile": "hale.workflow-registration.v1",
           "name": "workflows.generated.hl",
           "digest": "sha256:exact-export-bytes",
-          "text": "// Generated captured catalog · équipe\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
+          "text": "// Generated captured catalog · équipe\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
           "scope": "captured_catalog"
         },
         "publication": "unavailable"
@@ -8430,7 +8430,7 @@
           "profile": "hale.workflow-registration.v1",
           "name": "workflows.generated.hl",
           "digest": "sha256:exact-export-bytes",
-          "text": "// Generated captured catalog · équipe\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
+          "text": "// Generated captured catalog · équipe\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
           "scope": "captured_catalog"
         },
         "publication": "published"
@@ -8493,7 +8493,7 @@
           "profile": "hale.workflow-registration.v1",
           "name": "workflows.generated.hl",
           "digest": "sha256:exact-export-bytes",
-          "text": "// Generated captured catalog · équipe\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
+          "text": "// Generated captured catalog · équipe\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
           "scope": "captured_catalog"
         },
         "publication": "unavailable"
@@ -8556,7 +8556,7 @@
           "profile": "hale.workflow-registration.v1",
           "name": "workflows.generated.hl",
           "digest": "sha256:exact-export-bytes",
-          "text": "// Generated captured catalog · équipe\nfn iris_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
+          "text": "// Generated captured catalog · équipe\nfn face_register_workflows(catalog: dna::WorkflowCatalog) -> String { return \"\"; }\n",
           "scope": "original_source"
         },
         "publication": "unavailable"
@@ -9484,7 +9484,7 @@
                 "performer": "sample-reviewer",
                 "result": "An earlier incomplete reconciliation",
                 "result_ref": "",
-                "evidence_ref": "sha256:iris-evidence",
+                "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
                 "accepted": false
               },
@@ -9497,7 +9497,7 @@
                 "performer": "sample-reviewer",
                 "result": "Reconciled ✓\n<img src=x onerror=\"window.bad=true\">",
                 "result_ref": "",
-                "evidence_ref": "sha256:iris-evidence",
+                "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
                 "accepted": true
               },
@@ -9871,7 +9871,7 @@
                 "performer": "sample-reviewer",
                 "result": "An earlier incomplete reconciliation",
                 "result_ref": "",
-                "evidence_ref": "sha256:iris-evidence",
+                "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
                 "accepted": false
               },
@@ -9884,7 +9884,7 @@
                 "performer": "sample-reviewer",
                 "result": "Reconciled ✓\n<img src=x onerror=\"window.bad=true\">",
                 "result_ref": "",
-                "evidence_ref": "sha256:iris-evidence",
+                "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
                 "accepted": true
               },

@@ -233,7 +233,7 @@
           const fresh = await onReview({ relatedId: operation === "edge.link" ? draft.to_id : "", operation: reviewedOperation, signal: controller.signal });
           if (disposed || token !== generation) return;
           if (operation !== reviewedOperation || JSON.stringify(argumentsOf()) !== JSON.stringify(reviewedArguments)) return;
-          result = { profile: "iris.knowledge.change-draft.v1", application_id: applicationId, prepared_by: captured.principal, base: { snapshot: captured.snapshot, basis: captured.basis }, operation: reviewedOperation, arguments: reviewedArguments, source_checked: true, submitted: false };
+          result = { profile: "face.knowledge.change-draft.v1", application_id: applicationId, prepared_by: captured.principal, base: { snapshot: captured.snapshot, basis: captured.basis }, operation: reviewedOperation, arguments: reviewedArguments, source_checked: true, submitted: false };
           const supported = actions.some(([action]) => action === reviewedOperation) && fresh.commandCapability?.enabled && typeof onSubmit === "function";
           const bindingChange = reviewedOperation.startsWith("binding."), nodeChange = reviewedOperation.startsWith("node."), reviewedChange = bindingChange || nodeChange || fresh.commandCapability?.mode === "review";
           const removing = reviewedOperation === "edge.unlink";
@@ -289,5 +289,5 @@
     else if (practiceContext) begin();
     return { begin, destroy() { if (disposed) return; disposed = true; invalidateResult(); draft = null; active = false; host.replaceChildren(); emitPreview(); } };
   }
-  window.IrisKnowledgeDraft = { mount };
+  window.FaceKnowledgeDraft = { mount };
 })();

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { httpFixture } from './http-fixture.mjs';
 
 const APP = 'a'.repeat(40), PRINCIPAL = { mode: 'local', name: 'riley' }, RECORD = 'b'.repeat(40), NEXT = 'c'.repeat(40);
-const STORAGE = 'iris.projects-recovery.v1:';
+const STORAGE = 'face.projects-recovery.v1:';
 const KEY = STORAGE + encodeURIComponent(JSON.stringify([PRINCIPAL.mode, PRINCIPAL.name]));
 const OPERATIONS = ['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.detach', 'dna.project.forget', 'dna.project.sync', 'dna.project.publish', 'dna.forge.configure', 'dna.forge.sync', 'dna.body.local.start', 'dna.body.local.stop', 'dna.body.provision', 'dna.body.start', 'dna.body.stop', 'dna.body.logs', 'dna.secret.set', 'dna.secret.rotate', 'dna.models.probe', 'dna.connection.propose', 'dna.connection.close', 'dna.handoff.publish', 'dna.handoff.accept', 'dna.handoff.sync'];
 const HEAD_SCOPED = new Set(['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.forget']);
@@ -116,7 +116,7 @@ async function mount(page, host, options = {}) {
   await page.goto(host.origin);
   await page.evaluate(() => {
     window.heads = []; window.attached = []; window.invalidated = [];
-    window.controller = window.IrisProjects.mount(document.querySelector('main'), { onHead: head => window.heads.push(head), onAttached: id => window.attached.push(id), onInvalidate: error => window.invalidated.push(error.message) });
+    window.controller = window.FaceProjects.mount(document.querySelector('main'), { onHead: head => window.heads.push(head), onAttached: id => window.attached.push(id), onInvalidate: error => window.invalidated.push(error.message) });
   });
   await expect(workspace(page)).toBeVisible();
   await expect.poll(() => host.state().requests.filter(r => r.path === '/api/hale/v1/head').length).toBeGreaterThan(0);
@@ -132,7 +132,7 @@ test('Projects: the head envelope validates closed at every level and never as a
   await page.goto(host.origin);
   const s = host.script({ active: true });
   const results = await page.evaluate(({ head, projects }) => {
-    const attempt = (value, kind) => { try { window.IrisProjects.validate(value, kind); return 'ok'; } catch (error) { return error.message; } };
+    const attempt = (value, kind) => { try { window.FaceProjects.validate(value, kind); return 'ok'; } catch (error) { return error.message; } };
     const clone = () => structuredClone(head);
     const out = { valid: attempt(clone(), 'head'), projects: attempt(projects, 'projects') };
     let value = clone(); value.extra = 1; out.topLevel = attempt(value, 'head');
@@ -149,7 +149,7 @@ test('Projects: the head envelope validates closed at every level and never as a
   expect(results.valid).toBe('ok'); expect(results.projects).toBe('ok');
   for (const key of ['topLevel', 'recordEnvelope', 'data', 'profile', 'activeMismatch', 'child', 'operation', 'principal', 'projectItem']) expect(results[key], key).not.toBe('ok');
   const receipts = await page.evaluate(({ good }) => {
-    const attempt = value => { try { window.IrisProjects.validate(value, 'command'); return 'ok'; } catch (error) { return error.message; } };
+    const attempt = value => { try { window.FaceProjects.validate(value, 'command'); return 'ok'; } catch (error) { return error.message; } };
     const out = { valid: attempt(structuredClone(good)) };
     let value = structuredClone(good); value.data.state = 'queued'; out.state = attempt(value);
     value = structuredClone(good); value.data.run.log = '/head/logs?run=other'; out.log = attempt(value);
@@ -327,7 +327,7 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   const body = { request_id: 'head-restored', operation: 'dna.project.sync', operation_version: '1', context: { head: 'local', application_id: APP }, target: { kind: 'dna.project', id: APP }, preconditions: { principal: PRINCIPAL }, arguments: {} };
   s.receipts.set('head-restored', { body, remaining: 0, state: 'succeeded' });
   await page.evaluate(([key, value]) => localStorage.setItem(key, value), [KEY, JSON.stringify({ version: 1, request_id: 'head-restored', operation: 'dna.project.sync', target: body.target })]);
-  await page.evaluate(() => { window.controller = window.IrisProjects.mount(document.querySelector('main'), {}); });
+  await page.evaluate(() => { window.controller = window.FaceProjects.mount(document.querySelector('main'), {}); });
   await expect(request(page)).toContainText('Saved request');
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded');
   expect(host.state().posts).toHaveLength(0);
@@ -336,7 +336,7 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   await request(page).getByRole('button', { name: 'Dismiss', exact: true }).click();
 
   await page.evaluate(([key, value]) => localStorage.setItem(key, value), [KEY, JSON.stringify({ version: 1, request_id: 'head-missing', operation: 'dna.project.sync', target: body.target })]);
-  await page.evaluate(() => { window.controller.destroy(); window.controller = window.IrisProjects.mount(document.querySelector('main'), {}); });
+  await page.evaluate(() => { window.controller.destroy(); window.controller = window.FaceProjects.mount(document.querySelector('main'), {}); });
   await expect(request(page)).toContainText('No receipt was found for the saved request');
   await expect(request(page).getByRole('button', { name: 'Check status', exact: true })).toBeVisible();
   await expect(form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true })).toBeDisabled();

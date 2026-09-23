@@ -48,14 +48,14 @@ locus OrganizationSource {
         return r.git_out("cat-file\n-t\n" + h + ":dna/org") == "tree";
     }
     fn remove_scratch(path: String) {
-        if std::str::starts_with(path, "/tmp/hale-iris-org.") && len(path) > 20 {
+        if std::str::starts_with(path, "/tmp/hale-face-org.") && len(path) > 20 {
             let removed = dna::run_tool("rm\n-rf\n--\n" + path);
         }
     }
     fn scratch() -> String {
-        let made = dna::run_tool("mktemp\n-d\n/tmp/hale-iris-org.XXXXXXXX");
+        let made = dna::run_tool("mktemp\n-d\n/tmp/hale-face-org.XXXXXXXX");
         let path = dna::trim_nl(made.stdout);
-        return if made.code == 0 && std::str::starts_with(path, "/tmp/hale-iris-org.") && len(path) > 20 { path } else { "" };
+        return if made.code == 0 && std::str::starts_with(path, "/tmp/hale-face-org.") && len(path) > 20 { path } else { "" };
     }
     fn local_vendor(inspection: OrganizationInspection) -> Int {
         return inspection.execute("sh\n-c\nif [ -L vendor ]; then exit 1; elif [ -d vendor ]; then exit 0; elif [ -e vendor ]; then exit 1; else exit 3; fi", self.root, 4096).code;

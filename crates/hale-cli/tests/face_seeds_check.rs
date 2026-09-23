@@ -2,9 +2,10 @@
 //! the face, so they are checked here rather than in
 //! `iris_seeds_check.rs`: the generic application service
 //! (`hale.application.v1`) that serves the face's shell and its boundary
-//! test, plus the browser fixtures' Organization source declaration and
-//! Record fixture. A compiler change that breaks any of them fails this
-//! build instead of the browser suite.
+//! test, the intake-control example that proves an application-owned
+//! control through that service (GH #1008), plus the browser fixtures'
+//! Organization source declaration and Record fixture. A compiler change
+//! that breaks any of them fails this build instead of the browser suite.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,12 +22,18 @@ fn face() -> PathBuf {
 }
 
 /// Seeds that must `hale check` clean.
-const CHECKED: &[&str] = &["service", "tests/organization", "tests/record"];
+const CHECKED: &[&str] = &[
+    "examples/intake-control",
+    "examples/intake-control/sqlite",
+    "service",
+    "tests/organization",
+    "tests/record",
+];
 
 /// Directories of standalone single-file test programs (each with its own
 /// `main`), checked one FILE at a time — as a seed they would be
 /// duplicate declarations.
-const CHECKED_PER_FILE: &[&str] = &["service/tests"];
+const CHECKED_PER_FILE: &[&str] = &["examples/intake-control/tests", "service/tests"];
 
 #[test]
 fn every_face_seed_checks_clean() {

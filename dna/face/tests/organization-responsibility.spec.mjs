@@ -29,15 +29,15 @@ async function mount(page, host, input = data(), unavailableReason = '') {
   await page.goto(host.origin);
   await page.evaluate(({ input, review, source, unavailableReason }) => {
     window.refreshes = 0;
-    const model = input === null ? null : window.IrisOrganizationImpact.validate(input, review, source);
-    document.querySelector('main').replaceChildren(window.IrisOrganizationImpact.render(model, { inspectedAt: new Date('2026-09-19T22:00:00Z'), unavailableReason, onRefresh: () => { window.refreshes++; } }));
+    const model = input === null ? null : window.FaceOrganizationImpact.validate(input, review, source);
+    document.querySelector('main').replaceChildren(window.FaceOrganizationImpact.render(model, { inspectedAt: new Date('2026-09-19T22:00:00Z'), unavailableReason, onRefresh: () => { window.refreshes++; } }));
   }, { input, review: REVIEW, source: SOURCE, unavailableReason });
 }
 
 test('Organization responsibility: exact closed wire joins and honest unavailable states validate without candidate plaintext', async ({ page, host }) => {
   await page.goto(host.origin);
   const result = await page.evaluate(({ input, review, source }) => {
-    const valid = (value, r = review, s = source) => { try { window.IrisOrganizationImpact.validate(value, r, s); return true; } catch { return false; } };
+    const valid = (value, r = review, s = source) => { try { window.FaceOrganizationImpact.validate(value, r, s); return true; } catch { return false; } };
     const none = structuredClone(input); none.state = 'none_observed'; none.reason_code = 'impact_none_observed';
     for (const key of Object.keys(none.counts)) if (!['workflow_tasks', 'legacy_tasks'].includes(key)) none.counts[key] = '0';
     const unavailable = ['impact_read_limit', 'impact_source_invalid', 'impact_source_unavailable', 'impact_unsupported_history'].map(reason_code => valid({ ...input, state: 'unavailable', reason_code, counts: null }));
@@ -58,7 +58,7 @@ test('Organization responsibility: malformed identity, scope, counts and contrad
       value => { value.state = 'unavailable'; value.reason_code = 'impact_source_unavailable'; }, value => { value.state = 'none_observed'; value.reason_code = 'impact_none_observed'; }, value => { value.reason_code = 'impact_none_observed'; },
       value => { for (const key of Object.keys(value.counts)) value.counts[key] = '0'; }, value => { value.counts = null; }, value => { value.state = 'unavailable'; value.counts = null; value.reason_code = 'revealed_private_data'; }
     ];
-    return changes.map(change => { const value = structuredClone(input); change(value); try { window.IrisOrganizationImpact.validate(value, review, source); return 'accepted'; } catch { return 'rejected'; } });
+    return changes.map(change => { const value = structuredClone(input); change(value); try { window.FaceOrganizationImpact.validate(value, review, source); return 'accepted'; } catch { return 'rejected'; } });
   }, { input: data(), review: REVIEW, source: SOURCE });
   expect(result).toHaveLength(28); expect(result.every(value => value === 'rejected')).toBe(true);
 });
@@ -99,7 +99,7 @@ test('Organization responsibility: zero stays bounded and unavailable refreshes 
   await expect(inspector(page).locator('[data-count="workflow_tasks"] dd')).toHaveText('9007199254740993');
   await expect(region(page)).toContainText('not an assessment retained at decision time');
   for (const input of [{ ...data(), state: 'unavailable', reason_code: 'impact_source_unavailable', counts: null }, null]) {
-    await page.evaluate(({ input, review, source }) => { const model = input === null ? null : window.IrisOrganizationImpact.validate(input, review, source); document.querySelector('main').replaceChildren(window.IrisOrganizationImpact.render(model, { unavailableReason: 'Read unavailable — <img src=x onerror="window.injected=true">', onRefresh() {} })); }, { input, review: REVIEW, source: SOURCE });
+    await page.evaluate(({ input, review, source }) => { const model = input === null ? null : window.FaceOrganizationImpact.validate(input, review, source); document.querySelector('main').replaceChildren(window.FaceOrganizationImpact.render(model, { unavailableReason: 'Read unavailable — <img src=x onerror="window.injected=true">', onRefresh() {} })); }, { input, review: REVIEW, source: SOURCE });
     await expect(region(page)).toHaveAttribute('data-state', 'unavailable');
     await expect(region(page).locator('[data-count]')).toHaveCount(0); await expect(region(page).getByRole('group', { name: 'Responsibility categories', exact: true })).toHaveCount(0);
     await expect(region(page)).not.toContainText('9007199254740993'); await expect(region(page)).toContainText('Counts are withheld');

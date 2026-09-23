@@ -1,5 +1,5 @@
 import "sqlite" as sqlite;
-import "../../../dna/face/service" as service;
+import "../../service" as service;
 
 const MAX_EXACT: Int = 9223372036854775807;
 const RECEIPT_LIMIT: Int = 4096;

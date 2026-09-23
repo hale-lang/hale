@@ -90,14 +90,14 @@ CLI subcommand, complete Compose profile or hosted deployment.
 ### Ordinary Hale application controls
 
 The [generic application service](service/README.md) serves the same shell
-with the Application workspace. The [intake-control example](../../iris/examples/intake-control/README.md)
+with the Application workspace. The [intake-control example](examples/intake-control/README.md)
 provides a real application-owned mode control, durable receipts and a work loop
 whose intake follows the committed mode. Build it using that example's SQLite
 development prerequisites, then run two processes:
 
 ```sh
-iris/examples/intake-control/intake-control run /tmp/intake.sqlite operator
-iris/examples/intake-control/intake-control serve /tmp/intake.sqlite 8793 "$PWD/dna/face/web" operator
+dna/face/examples/intake-control/intake-control run /tmp/intake.sqlite operator
+dna/face/examples/intake-control/intake-control serve /tmp/intake.sqlite 8793 "$PWD/dna/face/web" operator
 ```
 
 Open <http://127.0.0.1:8793/>. The generic host selects `#/application`; this
@@ -212,7 +212,7 @@ it cannot restore suppressed text or infer hidden relationships.
 
 ## Projects and the project service
 
-`web/projects.js` (`window.IrisProjects`) is the Projects workspace. It talks
+`web/projects.js` (`window.FaceProjects`) is the Projects workspace. It talks
 only to the four head paths under `/api/hale/v1/head`, validates their closed
 envelope (`api_version`, `head.profile === "dna.head.v1"`, principal, active
 project; an unexpected key anywhere is a different service) and never treats a
@@ -237,7 +237,7 @@ against the verbs' own grammars before anything is sent; an invalid value is
 listed beside its field and no request leaves the page.
 
 A submission reserves its identity first: one `localStorage` slot,
-`iris.projects-recovery.v1:<principal>`, holding only `{version, request_id,
+`face.projects-recovery.v1:<principal>`, holding only `{version, request_id,
 operation, target}`, taken under a Web Lock before the POST and cleared once
 the receipt is terminal. A reload restores it as a GET lookup, never a POST.
 The receipt lifecycle `queued → recorded → admitted|refused → running →
@@ -558,7 +558,7 @@ basis; a missing row on one page is not proof of removal. No optimistic graph
 change is presented as an observed native effect.
 
 Services without the required command capability retain preparation and
-**Download knowledge draft**. The exported `iris.knowledge.change-draft.v1`
+**Download knowledge draft**. The exported `face.knowledge.change-draft.v1`
 artifact is not a native command, receipt or accepted proposal. Its
 `source_checked` flag means only that the browser rechecked visible service
 reads; `submitted` remains false. Impact shows the loaded pages and explicitly

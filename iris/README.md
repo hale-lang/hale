@@ -41,7 +41,7 @@ DNA API with the browser. An application's composed API can be supplied through
 
 Ordinary Hale applications can compose the face's [generic application service](../dna/face/service/README.md)
 and expose an application-owned control in the face. The
-[intake-control example](examples/intake-control/README.md) demonstrates a real
+[intake-control example](../dna/face/examples/intake-control/README.md) demonstrates a real
 mode change, observed work behavior and durable receipt recovery across process
 restarts. Its database and authority belong to that application; the generic
 head does not require DNA or implement a shared command store.

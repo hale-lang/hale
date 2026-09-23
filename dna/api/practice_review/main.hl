@@ -106,7 +106,7 @@ fn main() {
     let http = api::Http { };
     let port = http.integer(std::env::arg_or(2, ""), 65535);
     if std::env::args_count() < 3 || std::env::args_count() > 4 || port < 1 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
-        eprintln("hale dna practice-review api: expected <project-root> <port 1..65535> [iris-webroot]");
+        eprintln("hale dna practice-review api: expected <project-root> <port 1..65535> [face-webroot]");
         std::process::exit(2);
     }
     let policy_path = std::env::var("HALE_DNA_COMMAND_POLICY");

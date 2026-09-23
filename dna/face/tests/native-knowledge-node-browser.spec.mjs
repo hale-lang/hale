@@ -23,7 +23,7 @@ const receipt = page => page.getByRole('region', { name: 'Knowledge change reque
 const decision = page => page.getByRole('region', { name: 'Review intervention', exact: true });
 const verdictReceipt = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const detail = page => page.getByRole('region', { name: 'Knowledge item', exact: true });
-const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('iris.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
+const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
 const posts = page => { const values = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/commands')) values.push(request.postDataJSON()); }); return values; };
 const statusResponse = (page, path, method) => page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === method);
 const originalText = 'A non-Practice idea — café 東京 🧭.\nKeep <img src=x onerror="window.__nodeInjected=true"> as literal evidence.\n';

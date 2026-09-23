@@ -1,6 +1,6 @@
 // dna/api/project_service/policy.hl — the per-project policies the
 // head synthesizes (GH #965, §2.8 of the head's contract). An attached
-// project's API child composes under `<root>/.hale/dna/iris/
+// project's API child composes under `<root>/.hale/dna/face/
 // {authority.json,task-policy.json}`: the shape the native harness
 // writes, granting the head's principal what `hale dna ui` grants at
 // the terminal (board authority, propose, verdict, recover; task
@@ -15,7 +15,7 @@
 import "../../core" as dna;
 import "../../operations" as ops;
 
-const POLICY_DIR: String = ".hale/dna/iris";
+const POLICY_DIR: String = ".hale/dna/face";
 const AUTHORITY_FILE: String = "authority.json";
 const TASK_POLICY_FILE: String = "task-policy.json";
 const ORGANIZATION_POLICY_FILE: String = "organization-policy.json";

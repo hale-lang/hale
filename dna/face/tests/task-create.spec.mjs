@@ -26,19 +26,19 @@ async function mount(page, host, options = {}) {
   await page.goto(host.origin);
   await page.evaluate(({ options, positions }) => {
     window.calls = [];
-    document.querySelector('main').replaceChildren(window.IrisTaskCreate.render({ canCreate: true, positions, onPrepare: ask => { window.calls.push(ask); return {}; }, ...options }));
+    document.querySelector('main').replaceChildren(window.FaceTaskCreate.render({ canCreate: true, positions, onPrepare: ask => { window.calls.push(ask); return {}; }, ...options }));
   }, { options, positions: options.positions ?? positions() });
 }
 
 test('Task creation: exact asks validate and anything beyond an outcome for a locus fails closed', async ({ page, host }) => {
   await page.goto(host.origin);
   const result = await page.evaluate(() => {
-    const ok = window.IrisTaskCreate.validate({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
+    const ok = window.FaceTaskCreate.validate({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
     const rejected = [
       { outcome: '', to: 'org' }, { outcome: 'x', to: '' }, { outcome: 'x', to: 'a\nb' }, { outcome: 'x', to: 'x'.repeat(257) }, { outcome: 'é'.repeat(4097), to: 'org' },
       { outcome: 'x\u0000y', to: 'org' }, { outcome: 'x', to: 'org', from: 'riley' }, { outcome: 'x', to: 'org', intent_id: 'i1' }, { outcome: 'x' }, { to: 'org' }, null, 'ask', { outcome: 7, to: 'org' }
-    ].map(value => { try { window.IrisTaskCreate.validate(value); return false; } catch { return true; } });
-    const exact = window.IrisTaskCreate.validate({ outcome: 'é'.repeat(4096), to: 'x'.repeat(256) });
+    ].map(value => { try { window.FaceTaskCreate.validate(value); return false; } catch { return true; } });
+    const exact = window.FaceTaskCreate.validate({ outcome: 'é'.repeat(4096), to: 'x'.repeat(256) });
     return { ok, rejected, exactBytes: new TextEncoder().encode(exact.outcome).length, exactTo: exact.to.length };
   });
   expect(result.ok).toEqual({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
@@ -105,7 +105,7 @@ test('Task creation: a pending preparation rejects duplicate submission and a re
   await mount(page, host);
   await page.evaluate(positions => {
     window.calls = [];
-    document.querySelector('main').replaceChildren(window.IrisTaskCreate.render({ canCreate: true, positions, onPrepare(ask) { window.calls.push(ask); return new Promise(resolve => { window.finish = resolve; }); } }));
+    document.querySelector('main').replaceChildren(window.FaceTaskCreate.render({ canCreate: true, positions, onPrepare(ask) { window.calls.push(ask); return new Promise(resolve => { window.finish = resolve; }); } }));
   }, positions());
   await outcome(page).fill('Raise the schedule'); await review(page).click(); await expect(outcome(page)).toBeDisabled();
   await page.evaluate(() => document.querySelector('.task-create-form').dispatchEvent(new Event('submit', { cancelable: true })));

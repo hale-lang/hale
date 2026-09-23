@@ -8,7 +8,7 @@ subprocess dispatch, or observer-to-application identity inference is involved.
 
 The head owns transport checks and response validation. The application owns
 authorization, current incarnation, revision checks, state, immutable receipts
-and recovery. The [intake-control example](../../../iris/examples/intake-control/README.md)
+and recovery. The [intake-control example](../examples/intake-control/README.md)
 is a separate application-owned proof adapter; other providers must establish
 their own completion and persistence guarantees.
 
@@ -25,7 +25,7 @@ The exact signature is `serve(port: Int, actor: Actor, provider:
 ApplicationProvider, webroot: String)`. The provider is a named, explicit
 binding. The head captures its 64-character lowercase hexadecimal application
 identity at startup and refuses a replacement identity. It binds only
-`127.0.0.1`. Its readiness marker is `iris-application:listening`, emitted after
+`127.0.0.1`. Its readiness marker is `face-application:listening`, emitted after
 the native socket listens. An empty `webroot` selects API-only mode.
 
 The first profile is explicitly **trusted local**. `actor.mode` must be
@@ -37,7 +37,7 @@ advisory: providers recheck current access for both commands and recovery.
 This does not provide hosted sessions, OIDC or remote multi-user authentication.
 
 With a webroot, the head loads the ten fixed browser assets once, injects the
-constant `data-iris-profile="application"` on the HTML element and serves the
+constant `data-face-profile="application"` on the HTML element and serves the
 face's shell. Asset reads precede provider access. The shell has no
 runtime view; inspect the running application with `hale iris`. Restart the
 head after changing assets or configuration.
@@ -66,7 +66,7 @@ strings, scoped as defined by the application; tick is not wall-clock time.
 
 All requests require the exact configured `Host`; a supplied `Origin` must match
 the loopback origin. POST additionally requires exactly one matching `Origin`,
-`Content-Type: application/json`, `X-Iris-Command: 1`, and canonical decimal
+`Content-Type: application/json`, `X-Face-Command: 1`, and canonical decimal
 `Content-Length` equal to the actual 1–8192 body bytes. Duplicate security or
 framing headers and `Transfer-Encoding` are rejected. Browser fetch and ordinary
 curl requests supply Content-Length; direct API clients must also send the
@@ -90,7 +90,7 @@ These byte and cross-field checks are imperative in addition to JSON Schema.
 
 ## Runtime association
 
-State may include `runtime: {profile:"hale.iris.process.v1", process_key, pid}`
+State may include `runtime: {profile:"hale.face.process.v1", process_key, pid}`
 while online. The provider explicitly binds this evidence to the returned
 application and incarnation; omission means no established association. The
 64-hex process key matches the native observer's optional `process_key`, and PID

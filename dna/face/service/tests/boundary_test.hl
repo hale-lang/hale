@@ -43,7 +43,7 @@ locus Cases {
     fn body() -> String {
         return "{\"request_id\":\"request-1\",\"operation\":\"example.intake.set_mode\",\"operation_version\":\"1\",\"context\":{\"application_id\":\"" + APP + "\"},\"target\":{\"application_id\":\"" + APP + "\",\"kind\":\"application.control\",\"id\":\"intake\"},\"preconditions\":{\"incarnation_id\":\"" + INSTANCE + "\",\"revision\":\"0\",\"principal\":{\"mode\":\"trusted_local\",\"name\":\"operator\"}},\"arguments\":{\"value\":\"paused\"}}";
     }
-    fn headers(body: String) -> String { return "Host: " + HOST + "\r\nOrigin: " + ORIGIN + "\r\nContent-Type: application/json\r\nX-Iris-Command: 1\r\nContent-Length: " + to_string(len(body)); }
+    fn headers(body: String) -> String { return "Host: " + HOST + "\r\nOrigin: " + ORIGIN + "\r\nContent-Type: application/json\r\nX-Face-Command: 1\r\nContent-Length: " + to_string(len(body)); }
     fn call(method: String, suffix: String, headers: String, body: String) -> std::http::Response {
         let web = assets::WebAssets { };
         let api = service::ApplicationApi { actor: service::Actor { name: "operator" }, provider: self.provider, application_id: APP, host: HOST, origin: ORIGIN, web: web };
@@ -69,13 +69,13 @@ locus Cases {
         let mut observed = self.provider.inspect(service::Actor { name: "operator" }).state;
         observed.runtime_pid = "12"; observed.runtime_process_key = APP; observed.online = true;
         std::test::assert(wire.state_ok(observed, APP), "well formed online association");
-        std::test::assert(std::str::contains(wire.state(observed), "hale.iris.process.v1"), "association has an explicit profile");
+        std::test::assert(std::str::contains(wire.state(observed), "hale.face.process.v1"), "association has an explicit profile");
         observed.online = false;
         std::test::assert(!wire.state_ok(observed, APP), "offline association rejected");
         observed.online = true; observed.runtime_process_key = "pid:12";
         std::test::assert(!wire.state_ok(observed, APP), "PID-only association rejected");
         observed.runtime_process_key = "";
-        std::test::assert(!std::str::contains(wire.state(observed), "hale.iris.process.v1"), "missing key never falls back to PID");
+        std::test::assert(!std::str::contains(wire.state(observed), "hale.face.process.v1"), "missing key never falls back to PID");
         self.rejected(std::str::replace(body, "\"request_id\":", "\"extra\":0,\"request_id\":"), 400, "extra mutation field");
         self.rejected(std::str::replace(body, "\"request_id\":", "\"request_id\":\"duplicate\",\"request_id\":"), 400, "duplicate key");
         self.rejected(std::str::replace(body, "request_id", "request_\\u0069d"), 400, "escaped key");

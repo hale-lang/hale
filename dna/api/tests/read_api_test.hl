@@ -312,7 +312,7 @@ locus Cases {
             } else if i == 10 { f.webroot = f.root + "/absent"; }
             else if i == 11 { f.webroot = ""; }
             else { std::io::fs::write_file(f.webroot + "/index.html", "") or discard; }
-            let before = f.refs(); f.startup_refused("iris-webroot");
+            let before = f.refs(); f.startup_refused("face-webroot");
             std::test::assert_eq_str(f.refs(), before, "invalid webroot preserves refs");
             i = i + 1;
         }

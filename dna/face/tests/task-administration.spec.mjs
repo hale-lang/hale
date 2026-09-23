@@ -32,9 +32,9 @@ async function mount(page, host, input = row(), options = {}) {
   await page.goto(host.origin);
   await page.evaluate(({ input, options }) => {
     window.calls = []; window.refreshes = 0; window.input = input;
-    const model = window.IrisTaskAdministration.validate(input);
+    const model = window.FaceTaskAdministration.validate(input);
     window.model = model;
-    document.querySelector('main').replaceChildren(window.IrisTaskAdministration.render(model, {
+    document.querySelector('main').replaceChildren(window.FaceTaskAdministration.render(model, {
       canReassign: true, recipients: ['noor', 'mara', 'dev'], inspectedAt: new Date('2026-09-19T22:00:00Z'),
       onPrepareReassignment: value => { window.calls.push(value); return {}; }, onRefresh: () => { window.refreshes++; }, ...options
     }));
@@ -45,12 +45,12 @@ test('Task administration: exact supported and retained lifecycle rows validate 
   await page.goto(host.origin);
   const valid = await page.evaluate(input => {
     const results = ['handed', 'done', 'failed', 'cancelled', 'refused', 'decided', 'declined', 'timeout', 'escalated', 'transfer_requested', 'transfer_accepted'].map(state => {
-      const value = { ...input, state, reassignment_supported: state === 'handed' }; window.IrisTaskAdministration.validate(value); return state;
+      const value = { ...input, state, reassignment_supported: state === 'handed' }; window.FaceTaskAdministration.validate(value); return state;
     });
     const empty = structuredClone(input); empty.assignee = ''; empty.history = [{ ...empty.history[0], to: '', by: '' }]; empty.acceptance_digest = ''; empty.acceptance_bound = true;
-    window.IrisTaskAdministration.validate(empty);
-    const repeated = structuredClone(input); repeated.history.push({ ...repeated.history[0], event_id: '3'.repeat(64), sequence: '9007199254740997', from: 'noor', to: 'dev', by: '' }); repeated.assignee = 'dev'; window.IrisTaskAdministration.validate(repeated);
-    const copied = window.IrisTaskAdministration.validate(input); input.history[0].to = 'changed after validation';
+    window.FaceTaskAdministration.validate(empty);
+    const repeated = structuredClone(input); repeated.history.push({ ...repeated.history[0], event_id: '3'.repeat(64), sequence: '9007199254740997', from: 'noor', to: 'dev', by: '' }); repeated.assignee = 'dev'; window.FaceTaskAdministration.validate(repeated);
+    const copied = window.FaceTaskAdministration.validate(input); input.history[0].to = 'changed after validation';
     return { states: results, copied: copied.history[0].to, acceptance: copied.acceptance_digest };
   }, row());
   expect(valid.states).toHaveLength(11); expect(valid.copied).toBe('mara'); expect(valid.acceptance).toBe('acceptance:original/v1');
@@ -69,7 +69,7 @@ test('Task administration: malformed assignment chains, identity and unsupported
       value => { value.history[1].sequence = '01'; }, value => { value.history[1].sequence = '9223372036854775808'; }, value => { value.history[1].sequence = 6; },
       value => { value.history[1].from = 'unrelated'; }, value => { value.history[1].to = ''; }, value => { value.history[1].by = ''; }, value => { value.assignee = 'different'; }
     ];
-    return mutations.map(mutate => { const value = structuredClone(input); mutate(value); try { window.IrisTaskAdministration.validate(value); return false; } catch { return true; } });
+    return mutations.map(mutate => { const value = structuredClone(input); mutate(value); try { window.FaceTaskAdministration.validate(value); return false; } catch { return true; } });
   }, row());
   expect(rejected).toHaveLength(26); expect(rejected.every(Boolean)).toBe(true);
 });
@@ -129,7 +129,7 @@ test('Task administration: pending preparation rejects duplicate submission and 
   await mount(page, host);
   await page.evaluate(input => {
     window.calls = [];
-    document.querySelector('main').replaceChildren(window.IrisTaskAdministration.render(input, { canReassign: true, recipients: ['dev', 'mara'], onPrepareReassignment(value) { window.calls.push(value); return new Promise(resolve => { window.finish = resolve; }); } }));
+    document.querySelector('main').replaceChildren(window.FaceTaskAdministration.render(input, { canReassign: true, recipients: ['dev', 'mara'], onPrepareReassignment(value) { window.calls.push(value); return new Promise(resolve => { window.finish = resolve; }); } }));
   }, row());
   const people = region(page).getByRole('combobox', { name: 'New assignee', exact: true });
   const prepare = region(page).getByRole('button', { name: 'Review reassignment', exact: true });

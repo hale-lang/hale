@@ -17,7 +17,7 @@ locus WebAssets {
     }
     fn load(root: String) -> Bool {
         self.enabled = false;
-        self.error = "iris-webroot must contain readable, nonempty index.html, application.js, definition-draft.js, organization-draft.js, knowledge-draft.js, task-administration.js, projects.js, task-create.js, app.js and styles.css";
+        self.error = "face-webroot must contain readable, nonempty index.html, application.js, definition-draft.js, organization-draft.js, knowledge-draft.js, task-administration.js, projects.js, task-create.js, app.js and styles.css";
         if len(root) == 0 || std::str::contains(root, "\n") || std::str::contains(root, "\r") { return false; }
         // No fallback to the project root or the process's working directory.
         self.index = std::io::fs::read_file(root + "/index.html") or "";

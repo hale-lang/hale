@@ -94,8 +94,8 @@ locus HeadCases {
         self.f.json.is_bool(outcome, "authority_written", true);
         let registry = std::io::fs::read_file(self.f.state + "/projects.jsonl") or "";
         std::test::assert(std::str::contains(registry, "\"event\":\"registered\"") && std::str::contains(registry, "\"event\":\"activated\"") && std::str::contains(registry, self.f.identity), "registry lines: " + registry);
-        let authority = std::io::fs::read_file(self.f.project + "/.hale/dna/iris/authority.json") or "";
-        let task = std::io::fs::read_file(self.f.project + "/.hale/dna/iris/task-policy.json") or "";
+        let authority = std::io::fs::read_file(self.f.project + "/.hale/dna/face/authority.json") or "";
+        let task = std::io::fs::read_file(self.f.project + "/.hale/dna/face/task-policy.json") or "";
         let authority_codec = ops::AuthorityPolicyCodec { };
         let task_codec = ops::TaskAuthorityPolicyCodec { };
         std::test::assert(authority_codec.decode(authority, self.f.identity, "local").valid, "authority.json decodes for this identity: " + authority);

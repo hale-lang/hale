@@ -49,7 +49,7 @@ const test = base.extend({
       const git = args => execute('git', ['-C', root, ...args], { env, timeout: 5000 }).then(r => r.stdout.trim());
       // Organization inspection is explicitly committed-source inspection.
       await git(['add', '--', '.gitignore', 'hale.toml', 'hale.lock', 'main.hl', 'tests', 'dna']);
-      await git(['-c', 'user.name=Iris startup test', '-c', 'user.email=iris@example.invalid', 'commit', '-q', '-m', 'Capture generated source']);
+      await git(['-c', 'user.name=Face startup test', '-c', 'user.email=face@example.invalid', 'commit', '-q', '-m', 'Capture generated source']);
       const state = async () => ({ refs: await git(['show-ref']), status: await git(['status', '--porcelain']), source: await readFile(path.join(root, 'dna/org/main.hl'), 'utf8') });
       const start = async ({ build = false, drafts = false, extraEnv = {} } = {}) => {
         const chosenPort = await port(), origin = `http://127.0.0.1:${chosenPort}`;
@@ -87,7 +87,7 @@ const test = base.extend({
           } catch { }
           await sleep(50);
         }
-        throw failure || new Error('Iris launcher did not become ready: ' + log);
+        throw failure || new Error('Face launcher did not become ready: ' + log);
       };
       await use({ root, env, scratch, state, start });
     } finally { for (const child of children) await stop(child); await stopRecordedChildren(); await rm(scratch, { recursive: true, force: true }); }
@@ -95,7 +95,7 @@ const test = base.extend({
 });
 test.setTimeout(900000);
 
-test('One-command startup builds native Iris for a fresh DNA project without changing it', async ({ page, project }, testInfo) => {
+test('One-command startup builds the native face for a fresh DNA project without changing it', async ({ page, project }, testInfo) => {
   const before = await project.state(); const service = await project.start({ build: true, drafts: true });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const organization = page.waitForResponse(r => r.url().includes('/dna/organization?') && !new URL(r.url()).searchParams.has('id'));
@@ -111,7 +111,7 @@ test('One-command startup builds native Iris for a fresh DNA project without cha
   // face it serves can write practices and verdicts; definitions stay off.
   const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(false); expect(caps.data.writes.practice_propose).toBe(true);
   expect(await project.state()).toEqual(before); expect(errors).toEqual([]);
-  await page.screenshot({ path: testInfo.outputPath('fresh-project-iris.png') });
+  await page.screenshot({ path: testInfo.outputPath('fresh-project-face.png') });
   await writeFile(testInfo.outputPath('startup-capabilities.json'), JSON.stringify(caps, null, 2));
   await stop(service.child); expect(await readdir(service.tmpdir)).toEqual([]);
 });

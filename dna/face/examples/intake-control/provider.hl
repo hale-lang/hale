@@ -1,4 +1,4 @@
-import "../../process_identity" as identity;
+import "../../../../iris/process_identity" as identity;
 
 // Application authority is the owner stored in this application database.
 // Every request uses its own named connection; no global cached mutable state.
