@@ -35,6 +35,11 @@ behavior.
   writes landed inside every one — the full DNA suite on a laptop hit it.
   Attempt *k* now waits (k−1)×100 ms first, about twelve seconds across
   all sixteen at most.
+- `dna_design`'s `finish()` waits for the record to stand still before it
+  kills the organism. A verdict's "settled" answer is the Review's own
+  row; the organism's consequence (`knowledge.ratified` / `declined` /
+  `retired`) lands just after, and killing on the last answer lost it —
+  reliably on a Mac, now and then on Linux (it failed this PR's CI once).
 - `organization_source_request_test` grants its guard a 120 s inspection
   budget (`INSPECTION`). Production keeps its 30 s bound; the whole suite
   in parallel on a laptop pushed one candidate check past it

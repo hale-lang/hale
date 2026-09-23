@@ -103,6 +103,26 @@ fn start_org(app: &Path) -> std::process::Child {
 }
 
 fn finish(app: &Path, host: &mut std::process::Child) {
+    // A verdict's "settled" answer is the Review's own row; what the
+    // organism does ABOUT it — `knowledge.ratified` / `declined` /
+    // `retired` — it appends just after, in `on_review_settled`. Killing
+    // the organism on the last answer raced those rows: a slower machine
+    // (a Mac, reliably) lost the last one, and the assertions below read a
+    // record one consequence short (GH #970). Wait for the record to stand
+    // still — no new row for two seconds, thirty at most — first.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut seen = journal(app).len();
+    let mut still_since = std::time::Instant::now();
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let now = journal(app).len();
+        if now != seen {
+            seen = now;
+            still_since = std::time::Instant::now();
+        } else if still_since.elapsed() >= std::time::Duration::from_secs(2) {
+            break;
+        }
+    }
     if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
         let _ = Command::new("kill").args(["-9", pid.trim()]).status();
     }
