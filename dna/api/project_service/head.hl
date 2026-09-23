@@ -78,13 +78,13 @@ fn context_of(cfg: HeadConfig) -> HeadContext {
 }
 
 // The environment lines every child gets (§2.6). `kind` is run | api |
-// body: the Knowledge DSN reaches the body only, and
+// body: memory's owner and spine DSNs reach the body only (GH #985), and
 // observation is never attached to a child the head starts. `env -u`
 // options come first, where `env` reads them.
 fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
     let p = cfg.principal_name;
     let mut out = "-u\nLOTUS_OBS\n";
-    if kind != "body" { out = out + "-u\nHALE_DNA_KNOWLEDGE_DSN\n"; }
+    if kind != "body" { out = out + "-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n"; }
     out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
     return out + policy_env(root);
 }

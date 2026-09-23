@@ -1,6 +1,6 @@
-// Public Knowledge is an authenticated, read-only adapter. The private service
-// owns graph projection, visibility and pagination; browser input never supplies
-// a reader or authority. This seed deliberately does not import dna/knowledge.
+// Public Knowledge is an authenticated, read-only adapter. The spine owns graph
+// projection; visibility and pagination are read from memory under the head's
+// role (knowledge_memory.hl); browser input never supplies a reader or authority.
 import "../core" as dna;
 import "../operations" as ops;
 
@@ -31,53 +31,6 @@ locus NoKnowledge {
     params { }
     fn supported() -> Bool { return false; }
     fn read(request: KnowledgeRequest) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
-}
-locus ConfiguredKnowledge {
-    params { url: String = ""; read_key: String = ""; }
-    fn supported() -> Bool { return len(self.url) > 0 && len(self.read_key) > 0; }
-    fn configured() -> Bool {
-        if !self.supported() || len(self.read_key) < 32 || len(self.read_key) > 4096 || len(self.url) > 2048 { return false; }
-        let mut i = 0;
-        while i < len(self.read_key) {
-            let c = std::str::byte_at_unchecked(self.read_key, i);
-            if c < 32 || c == 127 { return false; }
-            i = i + 1;
-        }
-        if !std::str::starts_with(self.url, "http://") && !std::str::starts_with(self.url, "https://") { return false; }
-        i = 0;
-        while i < len(self.url) {
-            let c = std::str::byte_at_unchecked(self.url, i);
-            if c <= 32 || c == 127 || c == 64 || c == 63 || c == 35 { return false; }
-            i = i + 1;
-        }
-        return true;
-    }
-    fn read(request: KnowledgeRequest) -> KnowledgeUpstream {
-        if !self.configured() { return KnowledgeUpstream { }; }
-        let wire = KnowledgeWire { };
-        let body = wire.request_json(request);
-        if len(body) > 16384 { return KnowledgeUpstream { }; }
-        let base = if std::str::ends_with(self.url, "/") { self.url[0..(len(self.url) - 1)] } else { self.url };
-        let url = std::http::parse_url(base + "/graph/read") or std::http::Url { host: "" };
-        if len(url.host) == 0 { return KnowledgeUpstream { }; }
-        // Current native Client does not consume timeout_ms. A real enforced
-        // transport deadline remains a deployment prerequisite, not a claim
-        // made by this adapter. Zero retries also avoids replay/backoff.
-        let client = std::http::Client { max_retries: 0, max_body: 1048576 };
-        let bytes = std::bytes::BytesBuilder { };
-        let size = len(body);
-        let mut i = 0;
-        while i < size { bytes.append_u8(std::str::byte_at_unchecked(body, i)); i = i + 1; }
-        let response = client.request(std::http::ClientRequest {
-            method: "POST", url: url,
-            headers: "Authorization: Bearer " + self.read_key + "\r\nContent-Type: application/json",
-            body: bytes.snapshot()
-        }) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
-        let text = std::str::from_bytes(response.body);
-        // Reject embedded NUL rather than accepting a truncated native String.
-        if len(text) != len(response.body) { return KnowledgeUpstream { }; }
-        return KnowledgeUpstream { transport_ok: response.status > 0, status: response.status, body: text };
-    }
 }
 
 locus KnowledgeWire {

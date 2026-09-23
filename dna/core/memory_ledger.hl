@@ -16,10 +16,6 @@
 // here keyed by their commit, so a copy interrupted anywhere is rerun,
 // never repaired; the cutover row names the record head it was taken at.
 
-import "../core" as dna;
-import "../pond/db" as db;
-import "../pond/pq" as pq;
-
 // What the Ledger says about its adoption.
 type Cutover {
     adopted: Bool = false;
@@ -28,8 +24,20 @@ type Cutover {
     routing: Int = 0;
 }
 
-// The Ledger as the service holds it: a `Journal`, scoped to a record,
-// opened before use, with the adoption steps.
+// What a reader of the ledger needs — the graph's visibility, a head's
+// status: the rows, their head and the adoption checkpoint (GH #985).
+interface LedgerView {
+    fn revision() -> Int;
+    fn head() -> String;
+    fn refresh() -> Bool;
+    fn read(i: Int) -> Event;
+    fn verify_chain() -> Bool;
+    fn checkpoint() -> Cutover;
+    fn last_error() -> String;
+}
+
+// The Ledger as memory holds it: a `Journal`, scoped to a record, opened
+// before use, with the adoption steps.
 interface Ledger {
     fn kind() -> String;
     fn scope(record: String);
@@ -39,9 +47,9 @@ interface Ledger {
     fn revision() -> Int;
     fn head() -> String;
     fn refresh() -> Bool;
-    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult;
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult;
-    fn read(i: Int) -> dna::Event;
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
+    fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
     fn author_of(i: Int) -> String;
     // ---- adoption
@@ -58,35 +66,10 @@ interface Ledger {
     fn mark(request_id: String, revision: Int) -> Bool;
     // The row at `i` is in a person's name (the service admitted it as them).
     fn name_author(i: Int, author: String) -> Bool;
-    // ---- mailboxes (GH #646 stage 5, #662): what a connected record put
-    // here, keyed by its identity and the envelope's (kind, entity); once.
-    fn mailbox_put(sender: String, kind: String, entity: String, body: String, author: String) -> Bool;
-    fn mailbox_has(sender: String, kind: String, entity: String) -> Bool;
-    // Every envelope here, one JSON object per line (sender, kind, entity, body, author).
-    fn mailboxes() -> String;
-}
-
-fn mailbox_line(sender: String, kind: String, entity: String, body: String, author: String) -> String {
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("sender", sender);
-    b.string_field("kind", kind);
-    b.string_field("entity", entity);
-    b.string_field("body", body);
-    b.string_field("author", author);
-    b.end_object();
-    return b.result();
-}
-
-type MemMail { key: String = ""; line: String = ""; }
-
-@form(hashmap)
-locus MemMails {
-    capacity { pool rows of MemMail indexed_by key; }
 }
 
 // The row as it is served: the event plus its author.
-fn row_json(e: dna::Event, author: String) -> String {
+fn row_json(e: Event, author: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.int_field("seq", e.seq);
@@ -106,124 +89,19 @@ fn claim_kind(kind: String) -> Bool {
 
 // ---- in memory ------------------------------------------------------------
 
-locus MemLedger {
-    params {
-        j: dna::MemJournal = dna::MemJournal { };
-        authors: dna::Authors = dna::Authors { };
-        record_id: String = "";
-        cut: Cutover = Cutover { };
-        commits: String = "\n"; // adopted commits, newline-fenced
-        requests: SeenRequests = SeenRequests { };
-        mails: MemMails = MemMails { };
-        mail_order: String = "";
-        error: String = "";
-    }
-    fn kind() -> String { return "memory"; }
-    fn scope(record: String) { self.record_id = record; }
-    fn open() -> Bool { return true; }
-    fn last_error() -> String { return self.error; }
-    fn revision() -> Int { return self.j.revision(); }
-    fn head() -> String { return self.j.head(); }
-    fn refresh() -> Bool { self.error = ""; return false; }
-    @unbounded
-    fn claimed(kind: String, entity: String) -> Bool {
-        if !claim_kind(kind) { return false; }
-        let mut i = 0;
-        while i < self.j.revision() {
-            let e = self.j.read(i);
-            if e.kind == kind && e.entity == entity { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
-    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
-        if self.claimed(kind, entity) { self.error = "claimed"; return dna::AppendResult { error: "claimed", expected: expected, actual: self.j.revision() }; }
-        let r = self.j.append(expected, kind, entity, body);
-        if r.ok { self.authors.push("ledger"); }
-        return r;
-    }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
-    fn read(i: Int) -> dna::Event { return self.j.read(i); }
-    fn verify_chain() -> Bool { return self.j.verify_chain(); }
-    fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
-    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
-        if std::str::contains(self.commits, "\n" + commit + "\n") { return true; }
-        let r = self.j.append(self.j.revision(), kind, entity, body);
-        if !r.ok { return false; }
-        self.authors.push(author);
-        self.commits = self.commits + commit + "\n";
-        return true;
-    }
-    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
-        self.cut = Cutover { adopted: true, checkpoint: checkpoint, copied: copied, routing: routing };
-        return true;
-    }
-    fn checkpoint() -> Cutover { return self.cut; }
-    fn abandon() -> Bool {
-        self.j = dna::MemJournal { };
-        while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
-        self.commits = "\n";
-        self.cut = Cutover { };
-        return true;
-    }
-    fn name_author(i: Int, author: String) -> Bool {
-        if i < 0 || i >= self.authors.len() { return false; }
-        self.authors.set(i, author) or discard;
-        return true;
-    }
-    fn mailbox_put(sender: String, kind: String, entity: String, body: String, author: String) -> Bool {
-        let key = sender + "|" + kind + "|" + entity;
-        let have = self.mails.get(key) or MemMail { };
-        if len(have.key) > 0 { return true; }
-        self.mails.set(MemMail { key: key, line: mailbox_line(sender, kind, entity, body, author) });
-        self.mail_order = self.mail_order + key + "\n";
-        return true;
-    }
-    fn mailbox_has(sender: String, kind: String, entity: String) -> Bool {
-        let have = self.mails.get(sender + "|" + kind + "|" + entity) or MemMail { };
-        return len(have.key) > 0;
-    }
-    @unbounded
-    fn mailboxes() -> String {
-        let mut out = "";
-        let mut rest = self.mail_order;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let key = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if len(key) == 0 { continue; }
-            let m = self.mails.get(key) or MemMail { };
-            out = out + m.line + "\n";
-        }
-        return out;
-    }
-    fn seen(request_id: String) -> Int {
-        let r = self.requests.get(request_id) or SeenRequest { revision: -2 };
-        return r.revision;
-    }
-    fn mark(request_id: String, revision: Int) -> Bool {
-        self.requests.set(SeenRequest { request_id: request_id, revision: revision });
-        return true;
-    }
-}
-
-type SeenRequest { request_id: String = ""; revision: Int = -2; }
-
-@form(hashmap)
-locus SeenRequests {
-    capacity { pool rows of SeenRequest indexed_by request_id; }
-}
-
 // ---- Postgres ---------------------------------------------------------------
 
 locus PqLedger {
     params {
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        // GH #985: the environment variable naming this store's DSN, read
+        // at open; "" when the connection was built from a DSN in hand
+        dsn_env: String = "";
         record_id: String = "";
         opened: Bool = false;
         error: String = "";
-        rows: dna::EventRows = dna::EventRows { };
-        authors: dna::Authors = dna::Authors { };
+        rows: EventRows = EventRows { };
+        authors: Authors = Authors { };
         dialling: Bool = false;
     }
     fn kind() -> String { return "postgres"; }
@@ -242,6 +120,8 @@ locus PqLedger {
     // Ledger's tables beside it. Claim kinds are unique by (kind, entity).
     fn open() -> Bool {
         if self.opened { return true; }
+        let dialled = dial_from_env(self.conn, self.dsn_env);
+        if len(dialled) > 0 { self.error = dialled; return false; }
         let st = self.conn.open();
         if !st.ok { return self.fail("open", st.err); }
         // the schema is the owner's to create (GH #985): checked here
@@ -310,10 +190,10 @@ locus PqLedger {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if len(dna::trim_nl(line)) == 0 { continue; }
+            if len(trim_nl(line)) == 0 { continue; }
             let seq = std::json::find_int_field(line, "seq");
             if seq != self.rows.len() { self.error = "load: Ledger sequence is not contiguous"; return; }
-            self.rows.push(dna::Event {
+            self.rows.push(Event {
                 seq: seq,
                 kind: std::json::find_string_field(line, "kind"),
                 entity: std::json::find_string_field(line, "entity"),
@@ -327,7 +207,7 @@ locus PqLedger {
     fn revision() -> Int { return self.rows.len(); }
     fn head() -> String {
         if self.rows.len() == 0 { return "genesis"; }
-        let e = self.rows.get(self.rows.len() - 1) or dna::Event { };
+        let e = self.rows.get(self.rows.len() - 1) or Event { };
         return e.digest;
     }
     fn refresh() -> Bool {
@@ -338,7 +218,7 @@ locus PqLedger {
         // density and the authoritative tail in the same database statement.
         let n = self.run_one("SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM ledger_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM ledger_rows");
         if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
-        let row = dna::trim_nl(n.data);
+        let row = trim_nl(n.data);
         let count = std::str::parse_int(tab_field(row, 0)) or - 1;
         let first = std::str::parse_int(tab_field(row, 1)) or - 1;
         let last = std::str::parse_int(tab_field(row, 2)) or - 2;
@@ -354,14 +234,14 @@ locus PqLedger {
         if self.rows.len() != count || self.head() != head { self.error = "refresh: Ledger changed during read or rows are incomplete"; return false; }
         return true;
     }
-    fn read(i: Int) -> dna::Event { return self.rows.get(i) or dna::Event { }; }
+    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
-    fn verify_chain() -> Bool { return dna::chain_ok(self.rows); }
+    fn verify_chain() -> Bool { return chain_ok(self.rows); }
     // One insert conditioned on the tail: zero rows means another writer
     // got there first (or a claim is taken: a unique violation).
     fn insert(seq: Int, kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> String {
         let prev = self.head();
-        let digest = dna::event_digest(prev, kind, entity, body);
+        let digest = event_digest(prev, kind, entity, body);
         let a = db::Args { };
         a.add(to_string(seq));
         a.add(kind);
@@ -380,7 +260,7 @@ locus PqLedger {
             return "io";
         }
         if r.n == 0 { return "stale"; }
-        self.rows.push(dna::Event { seq: seq, kind: kind, entity: entity, body: body, prev: prev, digest: digest });
+        self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: prev, digest: digest });
         self.authors.push(author);
         return "";
     }
@@ -388,28 +268,28 @@ locus PqLedger {
     // the store's; a lost race reloads and re-appends at the new tail,
     // as the record does (GH #603).
     @unbounded
-    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
-        if expected != rev { return dna::AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         let mut attempt = 0;
         while attempt < 200 {
             let out = self.insert(self.rows.len(), kind, entity, body, "ledger", -1, "");
-            if len(out) == 0 { return dna::AppendResult { ok: true, revision: self.rows.len() }; }
-            if out != "stale" { return dna::AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() }; }
+            if len(out) == 0 { return AppendResult { ok: true, revision: self.rows.len() }; }
+            if out != "stale" { return AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() }; }
             self.load();
             attempt = attempt + 1;
         }
         self.error = "append lost the tail two hundred times";
-        return dna::AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
     }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let moved = self.refresh();
         let rev = self.rows.len();
-        if expected != rev { return dna::AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         let out = self.insert(rev, kind, entity, body, "ledger", -1, "");
-        if len(out) == 0 { return dna::AppendResult { ok: true, revision: self.rows.len() }; }
-        if out == "stale" { self.load(); return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() }; }
-        return dna::AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() };
+        if len(out) == 0 { return AppendResult { ok: true, revision: self.rows.len() }; }
+        if out == "stale" { self.load(); return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() }; }
+        return AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() };
     }
     @unbounded
     fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
@@ -437,7 +317,7 @@ locus PqLedger {
         let rows = self.run_q("SELECT value FROM ledger_meta WHERE key = $1", a);
         if !rows.ok { self.error = "meta " + key + ": " + rows.err.kind + " " + rows.err.detail; return ""; }
         if rows.n == 0 { return ""; }
-        return dna::trim_nl(first_line(rows.csv));
+        return trim_nl(first_line(rows.csv));
     }
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
         return self.put_meta("checkpoint", checkpoint) && self.put_meta("copied", to_string(copied)) && self.put_meta("routing", to_string(routing)) && self.put_meta("record", self.record_id);
@@ -456,37 +336,12 @@ locus PqLedger {
         if i >= 0 && i < self.authors.len() { self.authors.set(i, author) or discard; }
         return true;
     }
-    fn mailbox_put(sender: String, kind: String, entity: String, body: String, author: String) -> Bool {
-        let a = db::Args { };
-        a.add(sender);
-        a.add(kind);
-        a.add(entity);
-        a.add(body);
-        a.add(author);
-        let r = self.run_x("INSERT INTO ledger_mailboxes (sender, kind, entity, body, author) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (sender, kind, entity) DO NOTHING", a);
-        if !r.ok { return self.fail("mailbox", r.err); }
-        return true;
-    }
-    fn mailbox_has(sender: String, kind: String, entity: String) -> Bool {
-        let a = db::Args { };
-        a.add(sender);
-        a.add(kind);
-        a.add(entity);
-        let rows = self.run_q("SELECT n FROM ledger_mailboxes WHERE sender = $1 AND kind = $2 AND entity = $3", a);
-        return rows.ok && rows.n > 0;
-    }
-    @unbounded
-    fn mailboxes() -> String {
-        let rows = self.run_all("SELECT row_to_json(t) FROM (SELECT sender, kind, entity, body, author FROM ledger_mailboxes ORDER BY n) t");
-        if !rows.ok { self.error = "mailboxes: " + rows.err.kind + " " + rows.err.detail; return ""; }
-        return rows.csv;
-    }
     fn seen(request_id: String) -> Int {
         let a = db::Args { };
         a.add(request_id);
         let rows = self.run_q("SELECT revision FROM ledger_requests WHERE request_id = $1", a);
         if !rows.ok || rows.n == 0 { return -2; }
-        return std::str::parse_int(dna::trim_nl(first_line(rows.csv))) or - 2;
+        return std::str::parse_int(trim_nl(first_line(rows.csv))) or - 2;
     }
     fn mark(request_id: String, revision: Int) -> Bool {
         let a = db::Args { };
@@ -499,7 +354,7 @@ locus PqLedger {
     fn abandon() -> Bool {
         let r = self.run_sql("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");
         if !r.ok { return self.fail("abandon", r.err); }
-        while self.rows.len() > 0 { let gone = self.rows.pop() or dna::Event { }; }
+        while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
         while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
         return true;
     }
@@ -545,32 +400,12 @@ fn stored_lease_json(l: StoredLease) -> String {
     return b.result();
 }
 
-@form(hashmap)
-locus StoredLeases {
-    capacity { pool rows of StoredLease indexed_by key; }
-}
-
-locus MemLeaseStore {
-    params { rows: StoredLeases = StoredLeases { }; record_id: String = ""; }
-    fn kind() -> String { return "memory"; }
-    fn scope(record: String) { self.record_id = record; }
-    fn open() -> Bool { return true; }
-    fn last_error() -> String { return ""; }
-    fn current(key: String) -> StoredLease {
-        let l = self.rows.get(key) or StoredLease { key: key };
-        return l;
-    }
-    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
-        let cur = self.rows.get(key) or StoredLease { key: key };
-        if cur.token != expected { return false; }
-        self.rows.set(StoredLease { known: true, key: key, holder: holder, token: token, expires: expires, present: present });
-        return true;
-    }
-}
-
 locus PqLeaseStore {
     params {
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        // GH #985: the environment variable naming this store's DSN, read
+        // at open; "" when the connection was built from a DSN in hand
+        dsn_env: String = "";
         record_id: String = "";
         opened: Bool = false;
         error: String = "";
@@ -589,6 +424,8 @@ locus PqLeaseStore {
     }
     fn open() -> Bool {
         if self.opened { return true; }
+        let dialled = dial_from_env(self.conn, self.dsn_env);
+        if len(dialled) > 0 { self.error = dialled; return false; }
         let st = self.conn.open();
         if !st.ok { return self.fail("open", st.err); }
         // the schema is the owner's to create (GH #985): checked here
@@ -621,7 +458,7 @@ locus PqLeaseStore {
         let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
         if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
         if rows.n == 0 { return StoredLease { key: key }; }
-        let row = dna::trim_nl(first_line(rows.csv));
+        let row = trim_nl(first_line(rows.csv));
         return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
     }
     // One statement: insert when nothing is there and 0 was expected,

@@ -79,13 +79,6 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
     let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
     let membrane = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
-    // GH #583 K1: `dev` runs the knowledge service beside the
-    // organization; the binary is built here, once, like the others
-    let knowledge = if verb == "dev" {
-        crate::iris::ensure_built_in(&cache, hale_dna::KNOWLEDGE_SEED, hale_dna::KNOWLEDGE_BIN, "the knowledge service")?
-    } else {
-        PathBuf::new()
-    };
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(&host);
     cmd.arg(verb)
@@ -104,8 +97,7 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         // outside `run`/`dev` (the review's second round, finding 2).
         .env("HALE_DNA_GENOME", &root)
         .env("HALE_DNA_MEMBRANE", &membrane)
-        .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN)
-        .env("HALE_DNA_KNOWLEDGE_BIN", &knowledge);
+        .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN);
     Ok((cmd, root))
 }
 
@@ -122,27 +114,29 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// What `memory-migrate` found (GH #985): the spine's DSN once the
-/// schema is applied, the in-memory store, or no database to apply it to.
+/// What `memory-migrate` found (GH #985): the spine's and the head's DSNs
+/// once the schema is applied, or no database to apply it to.
 enum MemoryPlan {
-    Spine(String),
-    InMemory,
+    Roles { spine: String, head: String },
     NoDatabase(String),
 }
 
-/// Apply memory's schema with the owner's DSN: HALE_DNA_KNOWLEDGE_DSN,
+/// The owner's DSN: used to apply memory's schema, never held by a process
+/// that runs the organism.
+const OWNER_DSN_ENV: &str = "HALE_DNA_MEMORY_DSN_OWNER";
+
+/// Apply memory's schema with the owner's DSN: HALE_DNA_MEMORY_DSN_OWNER,
 /// or the database dna/compose.yaml brings up. The host verb does it; a
 /// short-lived process, so the owner's DSN never reaches a host that
 /// runs the organism.
 fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
     let out = host_run("memory-migrate", dir, &[])?;
+    let spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE="));
+    let head = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD="));
+    if let (Some(spine), Some(head)) = (spine, head) {
+        return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string() });
+    }
     let line = out.trim();
-    if let Some(dsn) = line.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE=") {
-        return Ok(MemoryPlan::Spine(dsn.to_string()));
-    }
-    if line == "memory" {
-        return Ok(MemoryPlan::InMemory);
-    }
     Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
 }
 
@@ -295,12 +289,9 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("memory") if args.get(1).map(String::as_str) == Some("migrate") => {
             let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             match memory_migrate(&dir) {
-                Ok(MemoryPlan::Spine(dsn)) => {
-                    println!("HALE_DNA_MEMORY_DSN_SPINE={dsn}");
-                    ExitCode::SUCCESS
-                }
-                Ok(MemoryPlan::InMemory) => {
-                    println!("memory: HALE_DNA_KNOWLEDGE_DSN=memory has no schema to apply");
+                Ok(MemoryPlan::Roles { spine, head }) => {
+                    println!("HALE_DNA_MEMORY_DSN_SPINE={spine}");
+                    println!("HALE_DNA_MEMORY_DSN_HEAD={head}");
                     ExitCode::SUCCESS
                 }
                 Ok(MemoryPlan::NoDatabase(why)) => {
@@ -331,17 +322,16 @@ pub fn run(args: &[String]) -> ExitCode {
             // DSN, and the host that runs the organism is handed only the
             // spine's: the owner's is taken out of its environment
             match memory_migrate(&dir) {
-                Ok(MemoryPlan::Spine(dsn)) => host_exec_env(
+                Ok(MemoryPlan::Roles { spine, .. }) => host_exec_env(
                     "dev",
                     &dir,
                     &rest,
-                    &[("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(&dsn))],
-                    &["HALE_DNA_KNOWLEDGE_DSN"],
+                    &[("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(&spine))],
+                    &[OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD"],
                 ),
-                Ok(MemoryPlan::InMemory) => host_exec("dev", &dir, &rest),
                 Ok(MemoryPlan::NoDatabase(why)) => {
                     eprintln!("hale dna dev: {why}");
-                    host_exec_env("dev", &dir, &rest, &[], &["HALE_DNA_KNOWLEDGE_DSN"])
+                    host_exec_env("dev", &dir, &rest, &[], &[OWNER_DSN_ENV])
                 }
                 Err(e) => {
                     eprintln!("hale dna dev: memory: {e}");
@@ -418,7 +408,6 @@ pub fn run(args: &[String]) -> ExitCode {
         // #650: the operational memory, adopted by an explicit step
         Some("ledger") => host_exec("ledger", Path::new("."), &args[1..]),
         // #652: requests kept while the service cannot be reached
-        Some("queue") => host_exec("queue", Path::new("."), &args[1..]),
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("board", &dir, &rest)
@@ -440,7 +429,6 @@ pub fn run(args: &[String]) -> ExitCode {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("models", &dir, &rest)
         }
-        Some("knowledge") => knowledge_cmd(&args[1..]),
         Some("deploy") => host_exec("deploy", Path::new("."), &args[1..]),
         Some("rollback") => host_exec("rollback", Path::new("."), &args[1..]),
         // a list or a render, or a verdict: the host's (GH #566 F8)
@@ -527,17 +515,13 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
     eprintln!("       hale dna memory migrate [dir]");
-    eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_KNOWLEDGE_DSN, or dna/compose.yaml)");
-    eprintln!("                                    and print the record's spine DSN (HALE_DNA_MEMORY_DSN_SPINE)");
+    eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)");
+    eprintln!("                                    and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
-    eprintln!("       hale dna knowledge [project] [--port N]");
-    eprintln!("                                    the knowledge service in the foreground: the record's ratified knowledge applied into");
-    eprintln!("                                    memory as the record's spine role (HALE_DNA_MEMORY_DSN_SPINE, or HALE_DNA_KNOWLEDGE_DSN=memory),");
-    eprintln!("                                    context packages over HTTP");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
     eprintln!("                                    build and run the organization (dna/org) and hold its membrane; iris inspects its process");
     eprintln!("       hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]");
@@ -547,7 +531,6 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
-    eprintln!("       hale dna queue [submit]      the requests kept here while the service could not be reached; send them");
     eprintln!("       hale dna ledger [status | adopt | abandon --why <w>]");
     eprintln!("                                    the operational memory: where the day's work lives, and the one-way move of it into the store");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
@@ -565,7 +548,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>");
     eprintln!("       hale dna receipt file <path> [--class internal|customer|confidential]   file a document as evidence");
     eprintln!("                                    a hold refuses redaction until released; a redaction removes the body and keeps the digest, as a row");
-    eprintln!("                                    protected evidence (customer, confidential): kept by the knowledge service alone;");
+    eprintln!("                                    protected evidence (customer, confidential): kept in memory alone, sealed there;");
     eprintln!("                                    disclosure and every read are rows in the reader's name (--as <who>)");
     eprintln!("       hale dna schedule [pause <id> | resume <id>]");
     eprintln!("                                    the schedules the org chart declared (an ask on an interval or a cron), as the");
@@ -855,7 +838,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
     if created(&mut out, &app.root.join("dna/compose.yaml"), &compose_yaml(&app.project))? {
-        out.push("knowledge dna/compose.yaml: `hale dna dev` brings its Postgres up and runs the knowledge service against it (docker compose on PATH); `hale dna run` needs HALE_DNA_KNOWLEDGE_DSN".to_string());
+        out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres up and applies memory's schema to it (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE".to_string());
     }
     out.push(format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED));
     // 5. the manifest's environments: the application's, and the organization's
@@ -977,15 +960,27 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     }
     if main_text.contains("journal: dna::GitJournal {") {
         out.push(format!(
-            "note    {}/main.hl wires the record alone as its journal; the day's work can move to the ledger (GH #646) once it reads both: `journal: dna::RoutedJournal {{ record: dna::GitJournal {{ repo: \".\" }}, ledger: dna::ServiceLedger {{ url_env: \"HALE_DNA_KNOWLEDGE_URL\" }} }}`",
+            "note    {}/main.hl wires the record alone as its journal; the day's work can move to the ledger (GH #646) once it reads both: `journal: dna::RoutedJournal {{ record: dna::GitJournal {{ repo: \".\" }} }}` (the ledger is memory's, GH #985)",
             ORG_SEED
         ));
     }
     if main_text.contains("dna::Leader {") && !main_text.contains("charter: charter()") {
         out.push(format!(
-            "note    {}/main.hl builds its Leader without a brief; give it `charter: charter(), purpose: purpose(), knowledge: dna::KnowledgeClient {{ url_env: \"HALE_DNA_KNOWLEDGE_URL\" }}` so it reads the charter, the purpose, the law and the ratified design before it decides",
+            "note    {}/main.hl builds its Leader without a brief; give it `charter: charter(), purpose: purpose()` so it reads the charter, the purpose, the law and the ratified design before it decides",
             ORG_SEED
         ));
+    }
+    // GH #985: the knowledge service and its clients are gone; memory is
+    // the organism's own handles, which main.hl and law.hl need not name
+    if main_text.contains("dna::ServiceLedger") || main_text.contains("dna::KnowledgeClient") {
+        out.push(format!(
+            "note    {}/main.hl names dna::ServiceLedger or dna::KnowledgeClient, which no longer exist: delete the `ledger:`, `knowledge_client:` and Leader `knowledge:` lines — the organism opens memory itself (HALE_DNA_MEMORY_DSN_SPINE)",
+            ORG_SEED
+        ));
+    }
+    let law_text = fs::read_to_string(org_dir.join("law.hl")).unwrap_or_default();
+    if law_text.contains("dna::KnowledgeClient") {
+        out.push(format!("note    {}/law.hl groups dna::KnowledgeClient; it is dna::MemoryKnowledge now", ORG_SEED));
     }
     if record_exists(&root)? {
         let (proposed, superseded, waiting) = design_upgrade(&root)?;
@@ -998,9 +993,9 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     }
     // GH #985: with the owner's DSN given, memory's schema moves to this
     // toolchain's version here; without one, `dev` applies it at start
-    let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap_or_default();
+    let owner = std::env::var(OWNER_DSN_ENV).unwrap_or_default();
     if owner.starts_with("postgres") && record_exists(&root)? {
-        if let MemoryPlan::Spine(_) = memory_migrate(&root)? {
+        if let MemoryPlan::Roles { .. } = memory_migrate(&root)? {
             out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
         }
     }
@@ -1011,19 +1006,20 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
 // the knowledge graph's environment (GH #583 K1)
 // ---------------------------------------------------------------
 
-/// `dna/compose.yaml`: the knowledge graph's Postgres (with pgvector)
+/// `dna/compose.yaml`: memory's Postgres (with pgvector)
 /// for `hale dna dev`, a named volume per repository so the graph
 /// outlives the container. Part of the genome, project-owned.
 fn compose_yaml(project: &str) -> String {
     let name = project.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-").to_lowercase();
     format!(
-        r#"# dna/compose.yaml — the knowledge graph's environment for `hale dna dev`
-# (project-owned; generated by `hale dna init`). The knowledge service
-# owns the live, shared half of the graph in this Postgres; the record
-# (refs/dna/*) holds the decided half. `hale dna dev` runs
-# `docker compose -f dna/compose.yaml up -d`, waits for the database,
-# and hands the service its DSN. Beyond one machine, and for
-# `hale dna run`, point HALE_DNA_KNOWLEDGE_DSN at a Postgres of your own.
+        r#"# dna/compose.yaml — memory's environment for `hale dna dev`
+# (project-owned; generated by `hale dna init`). The organism
+# keeps its working memory in this Postgres — the ledger, the graph,
+# protected evidence — and the record (refs/dna/*) holds the decided
+# half. `hale dna dev` runs `docker compose -f dna/compose.yaml up -d`,
+# waits for the database, applies memory's schema as its owner, and
+# hands the organism its own role. Beyond one machine, point
+# HALE_DNA_MEMORY_DSN_OWNER at a Postgres of your own.
 services:
   knowledge-db:
     image: pgvector/pgvector:pg16
@@ -1050,60 +1046,6 @@ fn compose_port(project: &str) -> u16 {
     5400 + (h % 100) as u16
 }
 
-/// `hale dna knowledge [project] [--port N]`: the knowledge service in
-/// the foreground (GH #583 K1), built once into the toolchain cache,
-/// against HALE_DNA_KNOWLEDGE_DSN (`memory` for a store that lives as
-/// long as the process). `hale dna dev` runs the same binary itself.
-fn knowledge_cmd(args: &[String]) -> ExitCode {
-    let mut dir = PathBuf::from(".");
-    let mut port = "8791".to_string();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--port" => match it.next() {
-                Some(p) => port = p.clone(),
-                None => {
-                    eprintln!("hale dna knowledge: --port needs a value");
-                    return ExitCode::from(2);
-                }
-            },
-            f if f.starts_with("--") => {
-                eprintln!("hale dna knowledge: unknown flag `{f}`");
-                return ExitCode::from(2);
-            }
-            p => dir = PathBuf::from(p),
-        }
-    }
-    let run = || -> Result<i32, String> {
-        let (root, _) = project(&dir)?;
-        // GH #985: the service runs as the record's spine role; the
-        // owner's DSN applies the schema (`hale dna memory migrate`) and
-        // is not handed to it
-        let set = |k: &str| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
-        let memory = std::env::var("HALE_DNA_KNOWLEDGE_DSN").map(|v| v == "memory").unwrap_or(false);
-        if !set("HALE_DNA_MEMORY_DSN_SPINE") && !memory {
-            return Err("HALE_DNA_MEMORY_DSN_SPINE is not set: the record's spine role, which `hale dna memory migrate` prints once it has applied the schema with the owner's HALE_DNA_KNOWLEDGE_DSN; or HALE_DNA_KNOWLEDGE_DSN=memory for a store that lives only as long as this process".to_string());
-        }
-        let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
-        let bin = crate::iris::ensure_built_in(&cache, hale_dna::KNOWLEDGE_SEED, hale_dna::KNOWLEDGE_BIN, "the knowledge service")?;
-        let me = std::env::current_exe().map_err(|e| e.to_string())?;
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new(&bin);
-        cmd.arg(&root).arg(&port).current_dir(&root).env("HALE_BIN", &me);
-        if !memory {
-            cmd.env_remove("HALE_DNA_KNOWLEDGE_DSN");
-        }
-        let e = cmd.exec();
-        Err(format!("hale dna knowledge: {e}"))
-    };
-    match run() {
-        Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
-        Err(e) => {
-            eprintln!("hale dna knowledge: {e}");
-            ExitCode::from(1)
-        }
-    }
-}
 
 // ---------------------------------------------------------------
 // the catalog (GH #583 M1)
@@ -1675,12 +1617,12 @@ main locus Org {{
         core: dna::Dna = dna::Dna {{
             // Two memories read as one (GH #646): the record — one commit per
             // event on refs/dna/journal, what changes this organization,
-            // synced to every clone — and the ledger, the day's work, in the
-            // store behind the knowledge service once `hale dna ledger adopt`
-            // has moved it there. Until then every row is the record's.
+            // synced to every clone — and the ledger, the day's work, in
+            // memory (Postgres, opened as this record's spine role) once
+            // `hale dna ledger adopt` has moved it there. Until then every
+            // row is the record's.
             journal: dna::RoutedJournal {{
-                record: dna::GitJournal {{ repo: "." }},
-                ledger: dna::ServiceLedger {{ url_env: "HALE_DNA_KNOWLEDGE_URL" }}
+                record: dna::GitJournal {{ repo: "." }}
             }},
             // Models: every position's router comes from the catalog in
             // models.hl (a backend is a constructor function there; a
@@ -1697,10 +1639,6 @@ main locus Org {{
             // is the only owner; once the record is shared, every position
             // names its owner and this body says which it is (dna.owner).
             ownership: dna::Ownership {{ path: "dna/org/owners" }},
-            // The knowledge service, when the host runs one (`hale dna dev`):
-            // what the organization ratified for a target is folded into the
-            // objective the editor gets; the editor itself never reaches it.
-            knowledge_client: dna::KnowledgeClient {{ url_env: "HALE_DNA_KNOWLEDGE_URL" }},
             // The Leader's grant, owned by the Board: what the organization
             // may decide on its own terms. An `application` change is outside
             // this grant and escalates to the Board; widen it here, in a
@@ -1737,10 +1675,9 @@ main locus Org {{
             source: dna::SourceReader {{ repo: "." }},
             // GH #596 L: what the leader reads before it thinks — its
             // charter and the purpose from this program, the law from the
-            // genome, the ratified practices for `org` from the service
+            // genome, the ratified practices for `org` from memory
             charter: charter(),
-            purpose: purpose(),
-            knowledge: dna::KnowledgeClient {{ url_env: "HALE_DNA_KNOWLEDGE_URL" }}
+            purpose: purpose()
         }};
         // The baseline review: ratify purpose.hl. The Board's; it settles
         // only on a verdict naming this exact digest.
@@ -1805,7 +1742,7 @@ group leader = { dna::Leader };
 group substrate = { dna::Dna };
 group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
 group editors = { dna::SourceEditor, dna::WorktreeTools };
-group knowledge = { dna::Knowledge, dna::KnowledgeClient };
+group knowledge = { dna::Knowledge, dna::MemoryKnowledge };
 group credentials = { dna::CredentialSource, dna::HostedCredential };
 
 constitution Org {

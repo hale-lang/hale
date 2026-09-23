@@ -1132,7 +1132,7 @@ locus GitLeases {
     params {
         repo: String = ".";
         record: GitRecord = GitRecord { };
-        service: ServiceLeases = ServiceLeases { url_env: "HALE_DNA_KNOWLEDGE_URL" };
+        service: MemoryLeases = MemoryLeases { };
         head_seen: String = "";
         routing: Int = 0;
         races: Int = 0;

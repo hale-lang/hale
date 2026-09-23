@@ -27,15 +27,12 @@
 use std::path::Path;
 
 /// The directories the toolchain embeds, with the extensions each
-/// contributes, listed NON-recursively (`dna/knowledge/service` is
-/// its own entry, and `dna/pond/README.md` is not source). Keep this
-/// in step with the `FILES` / `HOST_FILES` / `KNOWLEDGE_FILES` …
+/// contributes, listed NON-recursively (`dna/pond/README.md` is not
+/// source). Keep this in step with the `FILES` / `HOST_FILES` / `POND_FILES` …
 /// lists in `lib.rs`; the unit tests fail if it drifts.
 pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
     ("dna/core", &["hl"]),
     ("dna/host", &["hl"]),
-    ("dna/knowledge", &["hl"]),
-    ("dna/knowledge/service", &["hl"]),
     ("dna/membrane", &["hl"]),
     ("dna/operations", &["hl"]),
     ("dna/organization_runtime", &["hl"]),

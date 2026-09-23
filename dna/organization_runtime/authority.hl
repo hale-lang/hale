@@ -23,11 +23,6 @@ locus HostAuthority {
     fn row_verified(sha: String) -> Bool { let r = dna::GitRecord { repo: self.root }; return r.signer(sha).verified; }
     fn shared() -> Bool { let o = dna::Ownership { path: self.root + "/dna/org/owners", me: self.owner(), me_env: "" }; return o.shared(); }
     fn routing() -> Int { let j = dna::GitJournal { repo: self.root, author: "host" }; return dna::routing_of(j); }
-    fn knowledge_url() -> String {
-        if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { return std::env::var("HALE_DNA_KNOWLEDGE_URL"); }
-        let saved = std::io::fs::read_file(self.root + "/.hale/dna/knowledge.url") or "";
-        return dna::trim_nl(saved);
-    }
     fn lease_key() -> String { if self.shared() { return "owner/" + self.owner(); } return "body"; }
     fn parse_lease(sha: String, text: String) -> BodyLeaseView {
         if len(text) == 0 { return BodyLeaseView { }; }
@@ -46,7 +41,9 @@ locus HostAuthority {
         return BodyLeaseView { present: present, holder: holder, token: token, expires: expires, sha: sha };
     }
     fn store_lease() -> BodyLeaseView {
-        let sl = dna::ServiceLeases { url: self.knowledge_url() }; let l = sl.current(self.lease_key());
+        // GH #985: the lease table in memory, under whichever role this
+        // process holds (the body's spine, or a head)
+        let sl = dna::MemoryLeases { repo: self.root, dsn_env: dna::own_dsn_env() }; let l = sl.current(self.lease_key());
         if !sl.reachable { return BodyLeaseView { ok: false }; }
         if len(l.holder) == 0 && l.token == 0 { return BodyLeaseView { }; }
         return BodyLeaseView { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };

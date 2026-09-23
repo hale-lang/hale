@@ -340,8 +340,8 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
 
 // GH #616: file a document — a mail, a signed page — as evidence a report
 // can cite. Internal text goes under the record's receipts with a
-// `receipt.filed` row; a protected class goes to the knowledge service
-// alone (GH #606), and is refused when no service is known.
+// `receipt.filed` row; a protected class is kept in memory alone (GH #606),
+// and is refused when this head names no memory.
 @unbounded
 fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: String) -> Answer {
     if len(path) == 0 { return fail("receipt file: `hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]`"); }
@@ -354,19 +354,13 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let s = sync_record(root);
     if dna::protected_class(class) {
-        let url = knowledge_url(root);
-        if len(url) == 0 { return fail("receipt file: a " + class + " body is kept by the knowledge service alone, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
-        let kb = std::json::Builder { };
-        kb.begin_object();
-        kb.string_field("class", class);
-        kb.string_field("text", text);
-        kb.string_field("by", who);
-        kb.end_object();
-        let resp = std::http::post(url + "/receipt", std::bytes::from_string(kb.result()), "application/json") or vault_failed(err);
-        let body = std::str::from_bytes(resp.body);
-        if resp.status != 200 { return fail("receipt file: " + std::json::find_string_field(body, "error")); }
+        // kept in memory alone (GH #606), sealed there under a key this
+        // head never holds: filing runs a function memory owns (GH #985)
+        let vault = dna::MemoryVault { repo: root, dsn_env: dna::own_dsn_env() };
+        let kept = vault.keep(text, class, who);
+        if len(kept) == 0 { return fail("receipt file: " + vault.last_error); }
         let s2 = sync_record(root);
-        return answer("receipt " + dna::evidence_digest(std::json::find_string_field(body, "digest")) + " filed (" + class + ", kept by the knowledge service; receipt.classified, by " + who + ")\n");
+        return answer("receipt " + dna::evidence_digest(kept) + " filed (" + class + ", kept in memory; receipt.classified, by " + who + ")\n");
     }
     let digest = dna::evidence_digest(dna::digest_of(text));
     // a receipt the record says was redacted is not filed again: its ref

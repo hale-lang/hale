@@ -21,7 +21,7 @@ fn answer(text: String) -> Answer {
 
 // A loaded projection, or the reason there is none.
 fn open_projection(root: String, seed: String, toolchain: String) -> Projection {
-    return Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: dna::ServiceLedger { url: knowledge_url(root) } } };
+    return Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: dna::MemoryLedger { repo: root, dsn_env: dna::own_dsn_env() } } };
 }
 
 fn no_record(root: String) -> String {
@@ -109,9 +109,9 @@ fn profile_verb(root: String) -> Answer {
     out = out + "head:        this clone (" + root + "); hosted head: none\n";
     let fleet = fleet_name(root);
     out = out + "fleet:       " + (if len(fleet) == 0 { "none (`[dna] fleet = \"<name>\"` in hale.toml names one)" } else { fleet }) + "\n";
-    let dsn = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
+    let owner = std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER");
     let compose = std::io::fs::file_exists(root + "/dna/compose.yaml");
-    out = out + "knowledge:   " + (if len(dsn) > 0 { (if dsn == "memory" { "in-memory (HALE_DNA_KNOWLEDGE_DSN=memory)" } else { "a Postgres of your own (HALE_DNA_KNOWLEDGE_DSN)" }) } else if compose { "compose (dna/compose.yaml, under `hale dna dev`)" } else { "none" }) + "\n";
+    out = out + "memory:      " + (if owner { "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)" } else if compose { "compose (dna/compose.yaml, under `hale dna dev`)" } else { "none" }) + (if dna::dsn_set(dna::HEAD_DSN_ENV) { "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)" } else { "" }) + "\n";
     out = out + "trust:       " + trust_mode(root) + (if trust_mode(root) == "signed" { " (rows from the record are admitted only with a signature git verifies)" } else { " (every writer to the record is trusted)" }) + "\n";
     // GH #648: the forge the host found, whichever it is
     out = out + "github:      " + forge_name(root) + "\n";
@@ -927,13 +927,7 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
 // `hale dna receipt` lists what the record says of protected evidence;
 // `receipt disclose <digest> --to <who> --purpose <p>` authorizes a
 // reader for a purpose, as a row in your name; `receipt show <digest>
-// --purpose <p>` reads it through the knowledge service in your name.
-
-fn knowledge_url(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.knowledge_url(); }
-
-fn vault_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-    return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": \"the knowledge service did not answer: " + e.kind + "\"}") };
-}
+// --purpose <p>` reads it from memory in your name (GH #985).
 
 @unbounded
 fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String) -> Answer {
@@ -1016,25 +1010,26 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         }
         if len(held) > 0 { return fail("receipt redact: held: " + held + "; redaction waits for the hold's release"); }
         let local_hex = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-        // a protected body is the service's to know about: a redaction
-        // recorded before its erasure was interrupted is completed there
-        // (the second review of #628), and the service says when there is
-        // nothing left to erase
+        // a protected body is memory's (GH #985): the redaction is recorded
+        // here, at the head the hold was read at, and the body — the spine,
+        // the only writer of protected evidence — erases it on its next tick
         if redacted && !classified && (withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
         if classified {
-            let url = knowledge_url(root);
-            if len(url) == 0 { return fail("receipt redact: " + digest + " is kept by the knowledge service, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
+            if redacted { return answer("receipt " + digest + ": the redaction is in the record; the body erases it from memory on its next tick\n"); }
             let b = std::json::Builder { };
             b.begin_object();
             b.string_field("by", who);
             b.string_field("why", why);
             b.string_field("policy", policy);
+            b.string_field("class", class);
+            b.string_field("store", "memory");
             b.end_object();
-            let resp = std::http::post(url + "/receipt/" + dna::url_encode(digest) + "/erase", std::bytes::from_string(b.result()), "application/json") or vault_failed(err);
-            if resp.status != 200 { return fail("receipt redact: " + std::json::find_string_field(std::str::from_bytes(resp.body), "error")); }
+            let r = rec(root);
+            let a = r.append(JOURNAL, read_at, dna::Row { kind: "receipt.redacted", entity: digest, body: b.result(), author: who }, signing(root), "");
+            if !a.ok && a.error == "stale" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
+            if !a.ok { return fail("receipt redact: the record refused the redaction of " + digest + " (" + a.error + ")"); }
             let s2 = sync_record(root);
-            if redacted { return answer("receipt " + digest + ": the redaction already in the record is completed (" + class + ", erased by the knowledge service)\n"); }
-            return answer("receipt " + digest + " redacted (" + class + ", erased by the knowledge service; receipt.redacted, by " + who + " under " + policy + ")\n");
+            return answer("receipt " + digest + " redacted (" + class + "; receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n");
         }
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let had = receipt_read(root, hexd).present;
@@ -1061,13 +1056,12 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
     }
     if sub == "show" {
         if len(digest) == 0 || len(purpose) == 0 { return fail("receipt show: `hale dna receipt show <digest> --purpose <purpose> [--as <who>]`"); }
-        let url = knowledge_url(root);
-        if len(url) == 0 { return fail("receipt show: no knowledge service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`); protected evidence is kept there alone"); }
-        let resp = std::http::get(url + "/receipt/" + dna::url_encode(digest) + "?as=" + dna::url_encode(who) + "&purpose=" + dna::url_encode(purpose)) or vault_failed(err);
-        let body = std::str::from_bytes(resp.body);
-        if resp.status != 200 { return fail("receipt show: " + std::json::find_string_field(body, "error")); }
-        let text = std::json::find_string_field(body, "text");
-        return answer("receipt " + digest + " (" + std::json::find_string_field(body, "class") + ", " + to_string(len(text)) + " bytes, disclosed to " + who + " for " + purpose + ")\n" + text + "\nend of receipt\n");
+        // read from memory under this head's role, in your name (GH #985)
+        let vault = dna::MemoryVault { repo: root, dsn_env: dna::own_dsn_env() };
+        let got = vault.read(digest, who, purpose);
+        if !got.present { return fail("receipt show: " + got.refused); }
+        let s2 = sync_record(root);
+        return answer("receipt " + digest + " (" + got.class + ", " + to_string(len(got.text)) + " bytes, disclosed to " + who + " for " + purpose + ")\n" + got.text + "\nend of receipt\n");
     }
     if len(sub) > 0 && sub != "list" { return fail("receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, `receipt show <digest> --purpose <p>`, `receipt hold|release-hold <digest> --why <w>`, or `receipt redact <digest> --why <w> --policy <p>`"); }
     let p = open_projection(root, ".", "");

@@ -114,9 +114,9 @@ locus ReferenceInfrastructure {
     // needed instead.
     fn knowledge_database(project: String) -> dna::Database {
         let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no HALE_DNA_KNOWLEDGE_DSN: the knowledge service is not running (`hale dna upgrade` writes the compose file)" }; }
+        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER: there is no memory to run on (`hale dna upgrade` writes the compose file)" }; }
         let have = dna::run_tool("docker\ncompose\nversion");
-        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_KNOWLEDGE_DSN to a Postgres of your own (or `memory`) to run the knowledge service" }; }
+        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
         let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nknowledge-db");
         if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
         let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nknowledge-db\n5432");
@@ -188,7 +188,7 @@ locus ReferenceInfrastructure {
     // The database's part: a DSN given lands in the env file; none
     // given means compose on the body, which must have it.
     fn database_fragment() -> String {
-        return "if [ -n \"$DSN\" ]; then f=\"$HOME/.config/hale-dna/$NAME.env\"; { [ -f \"$f\" ] && grep -v '^HALE_DNA_KNOWLEDGE_DSN=' \"$f\" || true; echo \"HALE_DNA_KNOWLEDGE_DSN=$DSN\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; echo \"knowledge: the DSN given\"; else docker compose version >/dev/null 2>&1 || { echo \"no docker compose on the body and no --dsn: the knowledge database has to come from one of them\"; exit 4; }; echo \"knowledge: compose (dna/compose.yaml)\"; fi\n";
+        return "if [ -n \"$DSN\" ]; then f=\"$HOME/.config/hale-dna/$NAME.env\"; { [ -f \"$f\" ] && grep -v '^HALE_DNA_MEMORY_DSN_OWNER=' \"$f\" || true; echo \"HALE_DNA_MEMORY_DSN_OWNER=$DSN\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; echo \"memory: the DSN given\"; else docker compose version >/dev/null 2>&1 || { echo \"no docker compose on the body and no --dsn: memory has to come from one of them\"; exit 4; }; echo \"memory: compose (dna/compose.yaml)\"; fi\n";
     }
     // What the probe must have found for this infrastructure to be
     // installable; "" when it can.
@@ -196,7 +196,7 @@ locus ReferenceInfrastructure {
         if std::str::contains(facts, "git=no") { return "has no git; the body clones the record with it"; }
         if std::str::contains(facts, "systemd=no") { return "has no systemd (`systemctl`); the reference supervisor is a user unit — write your own supervisor around `hale dna dev . --no-iris`"; }
         if std::str::contains(facts, "curl=no") { return "has no curl; the toolchain installs with it"; }
-        if len(dsn) == 0 && std::str::contains(facts, "compose=no") { return "has no docker compose and no --dsn was given; the knowledge database has to come from one of them"; }
+        if len(dsn) == 0 && std::str::contains(facts, "compose=no") { return "has no docker compose and no --dsn was given; memory has to come from one of them"; }
         return "";
     }
 }

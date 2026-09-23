@@ -1,6 +1,12 @@
-// Authenticated private graph reads. The public head supplies its authenticated
-// reader; the state service owns projection, visibility and graph consistency.
-import "../../operations" as ops;
+// Knowledge in memory, read and commanded in-process (GH #985).
+//
+// The knowledge service that answered these over HTTP is gone. A graph read
+// opens memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD) and answers
+// from the spine's projection as it stands: a projection that has not reached
+// the record's head is `knowledge_projection_unavailable` until the body's
+// tick applies it — the head reads, it never projects. A Knowledge command is
+// admitted into the record by the operations' `KnowledgeCommands` in this
+// process, under the explicit authority policy it always required.
 
 type GraphRequest {
     ok: Bool = false;
@@ -17,17 +23,6 @@ type GraphRequest {
     first: String = "";
     second: String = "";
     third: String = "";
-}
-
-locus NoGraphStore {
-    params { }
-    fn projection_basis() -> know::GraphProjection { return know::GraphProjection { }; }
-    fn begin_projection(previous: know::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
-    fn checkpoint_projection(previous: know::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
-    fn graph_generation() -> Int { return -1; }
-    fn read_graph(query: know::GraphQuery, policy: know::KnowledgeReadPolicy, sink: know::GraphSink) -> know::GraphPage {
-        return know::GraphPage { error: "knowledge_unsupported" };
-    }
 }
 
 locus GraphHttp {
@@ -54,20 +49,6 @@ locus GraphHttp {
             i = i + 1;
         }
         return true;
-    }
-    fn authorized(req: std::http::Request, key: String) -> Bool {
-        if len(key) < 32 || !self.plain(key, 4096) { return false; }
-        let supplied = std::http::header(req, "Authorization");
-        let expected = "Bearer " + key;
-        let n = len(expected);
-        if len(supplied) != n { return false; }
-        let mut difference = 0;
-        let mut i = 0;
-        while i < n {
-            if std::str::byte_at_unchecked(supplied, i) != std::str::byte_at_unchecked(expected, i) { difference = difference + 1; }
-            i = i + 1;
-        }
-        return difference == 0;
     }
     fn fields(body: String, strings: String, integers: String) -> Bool {
         if !self.syntax.valid(body) || !std::str::starts_with(std::str::trim(body), "{") { return false; }
@@ -135,15 +116,15 @@ locus GraphHttp {
             if self.text(cursor, "snapshot") != r.snapshot || self.text(cursor, "kind") != r.kind || self.text(cursor, "id") != r.id || self.text(cursor, "target") != r.target || self.text(cursor, "limit") != to_string(r.limit) { return GraphRequest { }; }
             r.first = self.text(cursor, "first"); r.second = self.text(cursor, "second"); r.third = self.text(cursor, "third");
         }
-        let rules = know::GraphRules { };
+        let rules = dna::GraphRules { };
         if len(rules.validate(self.query(r))) > 0 { return GraphRequest { }; }
         r.ok = true;
         return r;
     }
-    fn query(r: GraphRequest) -> know::GraphQuery {
+    fn query(r: GraphRequest) -> dna::GraphQuery {
         // Edges are incident relationships, not target applicability claims.
         // Keep target in the public basis while filtering bindings/nodes only.
-        return know::GraphQuery { kind: if r.kind == "dependents" { "bindings" } else { r.kind }, id: r.id, target: if r.kind == "edges" { "" } else { r.target }, after_first: r.first, after_second: r.second, after_third: r.third, limit: r.limit };
+        return dna::GraphQuery { kind: if r.kind == "dependents" { "bindings" } else { r.kind }, id: r.id, target: if r.kind == "edges" { "" } else { r.target }, after_first: r.first, after_second: r.second, after_third: r.third, limit: r.limit };
     }
     fn record_budget(record: dna::Journal) -> Bool {
         let n = record.revision();
@@ -159,13 +140,13 @@ locus GraphHttp {
         }
         return true;
     }
-    fn cursor(r: GraphRequest, page: know::GraphPage, snapshot: String) -> String {
+    fn cursor(r: GraphRequest, page: dna::GraphPage, snapshot: String) -> String {
         let b = std::json::Builder { };
         b.begin_object(); b.string_field("snapshot", snapshot); b.string_field("kind", r.kind); b.string_field("id", r.id); b.string_field("target", r.target);
         b.string_field("limit", to_string(r.limit)); b.string_field("first", page.last_first); b.string_field("second", page.last_second); b.string_field("third", page.last_third); b.end_object();
         return dna::hex(std::bytes::from_string(b.result()));
     }
-    fn basis(r: GraphRequest, policy: know::KnowledgeVisibilityBasis, page: know::GraphPage) -> String {
+    fn basis(r: GraphRequest, policy: ops::KnowledgeVisibilityBasis, page: dna::GraphPage) -> String {
         let b = std::json::Builder { };
         b.begin_object(); b.string_field("record_id", r.record_id); b.string_field("projection_record_head", r.record_head);
         b.string_field("projection_record_revision", r.record_revision); b.string_field("projection_watermark", to_string(page.watermark)); b.string_field("store_generation", to_string(page.generation));
@@ -177,37 +158,8 @@ locus GraphHttp {
     }
 }
 
-// Projection reads pin each receipt ref to a blob and inspect its size before
-// transporting its body. A read must not trigger unlimited catch-up work before
-// the graph query's own row/byte bounds can run. This adapter never writes.
-locus GraphReceipts {
-    params { source: dna::GitReceipts; remaining: Int = 8388608; error: String = ""; }
-    fn kind() -> String { return "git"; }
-    fn store(text: String) -> String { self.error = "knowledge_projection_unavailable"; return ""; }
-    fn erase(digest: String) -> Bool { self.error = "knowledge_projection_unavailable"; return false; }
-    fn read(digest: String) -> String {
-        if len(self.error) > 0 { return ""; }
-        if len(digest) != 64 || !dna::digest_well_formed("sha256:" + digest) { self.error = "knowledge_projection_unavailable"; return ""; }
-        let record = self.source.record;
-        let object = record.git_out("rev-parse\n-q\n--verify\n" + record.ref_of("receipts/" + digest));
-        if len(object) == 0 { return ""; }
-        // cat-file with an expected type can peel a tag. Size and body must
-        // refer to the exact same blob, never a small tag over a large body.
-        let kind = record.git("cat-file\n-t\n" + object);
-        if kind.code != 0 || dna::trim_nl(kind.stdout) != "blob" { self.error = "knowledge_projection_unavailable"; return ""; }
-        let sized = record.git("cat-file\n-s\n" + object);
-        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or - 1;
-        if sized.code != 0 || size < 0 { self.error = "knowledge_projection_unavailable"; return ""; }
-        if size > self.remaining { self.error = "knowledge_read_limit"; return ""; }
-        let body = record.git("cat-file\nblob\n" + object);
-        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + digest { self.error = "knowledge_projection_unavailable"; return ""; }
-        self.remaining = self.remaining - size;
-        return body.stdout;
-    }
-}
-
 locus GraphItems {
-    params { policy: know::KnowledgeReadPolicy; bytes: std::bytes::BytesBuilder = std::bytes::BytesBuilder { }; count: Int = 0; size: Int = 0; target: String = ""; }
+    params { policy: dna::KnowledgeReadPolicy; bytes: std::bytes::BytesBuilder = std::bytes::BytesBuilder { }; count: Int = 0; size: Int = 0; target: String = ""; }
     // Native graph text can approach the response budget. The current stdlib
     // quote helper retains one growing String prefix per byte; encode each
     // value with a byte buffer before passing its raw JSON to the fixed shape.
@@ -241,7 +193,7 @@ locus GraphItems {
         self.bytes.append_str(item); self.count = self.count + 1; self.size = self.size + len(item) + 1;
         return true;
     }
-    fn node(row: know::Stored) -> Bool {
+    fn node(row: dna::Stored) -> Bool {
         let i = row.idea;
         if len(i.id) + len(i.kind) + len(i.text) + len(i.author) + len(i.name) + len(i.supersedes) + len(i.provenance) > 1000000 - self.size { return false; }
         let b = std::json::Builder { };
@@ -268,7 +220,7 @@ locus GraphItems {
     fn result() -> String { return "[" + std::str::clone(self.bytes.text_view()) + "]"; }
 }
 
-fn graph_read(r: GraphRequest, store: know::KnowledgeStore, graph: know::GraphStore, record: dna::GitJournal, ledger: know::Ledger) -> std::http::Response {
+fn graph_read(r: GraphRequest, store: dna::KnowledgeStore, graph: dna::GraphStore, record: dna::GitJournal, ledger: dna::LedgerView) -> std::http::Response {
     let http = GraphHttp { };
     if record.genesis() != r.record_id || store.record() != r.record_id { return http.error(503, "knowledge_scope_mismatch"); }
     if record.head() != r.record_head || to_string(record.revision()) != r.record_revision { return http.error(409, "snapshot_changed"); }
@@ -279,7 +231,7 @@ fn graph_read(r: GraphRequest, store: know::KnowledgeStore, graph: know::GraphSt
         if e.kind == "person.retired" && e.entity == r.reader { return http.error(403, "knowledge_unavailable"); }
         seq = seq + 1;
     }
-    let policy = know::KnowledgeVisibility { record: record, ledger: ledger, syntax: ops::OrganizationJson { } };
+    let policy = ops::KnowledgeVisibility { record: record, ledger: ledger, syntax: ops::OrganizationJson { } };
     let captured = policy.load();
     if !captured.available { return http.error(if captured.error == "snapshot_changed" { 409 } else { 503 }, captured.error); }
     if captured.record_head != r.record_head || to_string(captured.record_revision) != r.record_revision { return http.error(409, "snapshot_changed"); }
@@ -311,4 +263,166 @@ fn graph_read(r: GraphRequest, store: know::KnowledgeStore, graph: know::GraphSt
     if !policy.unchanged() { return http.error(if policy.basis.error == "snapshot_changed" { 409 } else { 503 }, policy.basis.error); }
     if absent { return http.error(404, "knowledge_not_found"); }
     return http.response(200, body);
+}
+
+// The request a command handler reads (the service's HTTP request, minus
+// what only a transport has).
+type LocalCommandRequest { method: String = "POST"; path: String = ""; body: String = ""; }
+
+locus KnowledgeLocalWire {
+    params { }
+    fn receipt(r: ops::KnowledgeReceipt) -> String {
+        let c = ops::KnowledgeCommandCodec { }; let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"details_visible\":"); b.append_str(if r.details_visible { "true" } else { "false" });
+        c.field(b, "command_id", r.command_id); c.field(b, "request_id", r.request_id); c.field(b, "application_id", r.application_id);
+        c.field(b, "principal_mode", r.principal_mode); c.field(b, "principal_name", r.principal_name);
+        c.field(b, "operation", r.operation); c.field(b, "operation_version", r.operation_version); c.field(b, "position_id", r.position_id);
+        c.field(b, "target_id", r.target_id); c.field(b, "fingerprint", r.fingerprint); c.field(b, "state", r.state); c.field(b, "edge_id", r.edge_id);
+        c.field(b, "event_id", r.event_id); c.field(b, "admission_head", r.admission_head); c.field(b, "authority", r.authority); c.field(b, "authority_basis", r.authority_basis);
+        b.append_str(",\"sequence\":"); b.append_str(to_string(r.sequence));
+        let node = ops::KnowledgeNodeCommandCodec { };
+        if node.known(r.operation) {
+            b.append_str(",\"node\":{\"proposal_state\":"); let wire = ops::GovernanceCommandCodec { }; b.append_str(wire.quote(r.node.proposal_state));
+            c.field(b, "candidate_digest", r.node.candidate_digest); c.field(b, "review_id", r.node.review_id);
+            c.field(b, "review_state", r.node.review_state); c.field(b, "review_outcome", r.node.review_outcome);
+            c.field(b, "activation_state", r.node.activation_state); c.field(b, "activation_reason", r.node.activation_reason); c.field(b, "reason", r.node.reason); b.append_str("}");
+        }
+        let binding = ops::KnowledgeBindingCommandCodec { };
+        if binding.known(r.operation) {
+            b.append_str(",\"binding\":{\"binding_id\":"); let wire = ops::GovernanceCommandCodec { }; b.append_str(wire.quote(r.binding.binding_id));
+            c.field(b, "proposal_state", r.binding.proposal_state); c.field(b, "candidate_digest", r.binding.candidate_digest); c.field(b, "review_id", r.binding.review_id);
+            c.field(b, "review_state", r.binding.review_state); c.field(b, "review_outcome", r.binding.review_outcome);
+            c.field(b, "effect_state", r.binding.effect_state); c.field(b, "effect_reason", r.binding.effect_reason); c.field(b, "reason", r.binding.reason); b.append_str("}");
+        }
+        if r.reviewed {
+            b.append_str(",\"relationship\":{\"proposal_state\":"); let wire = ops::GovernanceCommandCodec { }; b.append_str(wire.quote(r.relationship.proposal_state));
+            c.field(b, "candidate_digest", r.relationship.candidate_digest); c.field(b, "review_id", r.relationship.review_id);
+            c.field(b, "review_state", r.relationship.review_state); c.field(b, "review_outcome", r.relationship.review_outcome);
+            c.field(b, "effect_state", r.relationship.effect_state); c.field(b, "effect_reason", r.relationship.effect_reason); c.field(b, "reason", r.relationship.reason); b.append_str("}");
+        }
+        b.append_str("}");
+        return std::str::from_bytes(b.snapshot());
+    }
+    fn result(r: ops::KnowledgeResult) -> String {
+        let c = ops::KnowledgeCommandCodec { }; let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"ok\":"); b.append_str(if r.ok { "true" } else { "false" });
+        c.field(b, "code", r.code); c.field(b, "application_id", r.application_id); c.field(b, "head", r.head);
+        b.append_str(",\"revision\":"); b.append_str(to_string(r.revision)); b.append_str(",\"receipt\":"); b.append_str(self.receipt(r.receipt)); b.append_str("}");
+        return std::str::from_bytes(b.snapshot());
+    }
+    fn capability(c: ops::KnowledgeCapability) -> String {
+        let wire = ops::GovernanceCommandCodec { };
+        return "{\"available\":" + (if c.available { "true" } else { "false" }) + ",\"authorized\":" + (if c.authorized { "true" } else { "false" })
+            + ",\"mode\":" + wire.quote(c.mode) + ",\"reason\":" + wire.quote(c.reason) + ",\"policy_basis\":" + wire.quote(c.policy_basis) + "}";
+    }
+    fn response(result: ops::KnowledgeResult, submitting: Bool) -> std::http::Response {
+        let code = result.code;
+        let status = if result.ok { if submitting { 202 } else { 200 } }
+        else if code == "invalid_command" { 400 } else if code == "forbidden" { 403 }
+        else if code == "command_not_found" { 404 }
+        else if code == "stale_subject" || code == "request_conflict" || code == "command_context_changed" { 409 } else { 200 };
+        // This private RPC transports typed domain refusals as successful
+        // exchanges. The public adapter assigns their browser HTTP status.
+        // Native Client discards 5xx bodies even with retries disabled; using
+        // 5xx here would erase Review-required and uncertain-outcome codes.
+        return std::http::Response { status: status, content_type: "application/json", headers: "Cache-Control: no-store", body: self.result(result) };
+    }
+    // One command, in-process (GH #985): `kind` is capability | lookup | submit.
+    fn handle(kind: String, body: String, commands: ops::KnowledgeCommands) -> std::http::Response {
+        let req = LocalCommandRequest { path: "/graph/commands/" + kind, body: body };
+        let submit = req.path == "/graph/commands/submit";
+        let lookup = req.path == "/graph/commands/lookup";
+        let capability = req.path == "/graph/commands/capability";
+        if !submit && !lookup && !capability { return self.response(ops::KnowledgeResult { code: "invalid_command" }, false); }
+        let syntax = ops::OrganizationJson { }; let fields = ops::DefinitionCodec { }; let shape = ops::AuthorityPolicyCodec { }; let wire = ops::GovernanceCommandCodec { };
+        let named = capability && len(std::json::find_field_raw(req.body, "operation")) > 0;
+        if len(req.body) > 98304 || !syntax.valid(req.body) || !shape.fields(req.body, if submit { "context command" } else if lookup { "context request_id" } else if named { "context operation" } else { "context" }, if capability && !named { 1 } else { 2 }) { return self.response(ops::KnowledgeResult { code: "invalid_command" }, false); }
+        let raw = std::json::find_field_raw(req.body, "context");
+        if !fields.fields(raw, "application_id principal_mode principal_name", "") { return self.response(ops::KnowledgeResult { code: "invalid_command" }, false); }
+        let context = ops::GovernanceContext { application_id: wire.string(raw, "application_id"), principal_mode: wire.string(raw, "principal_mode"), principal_name: wire.string(raw, "principal_name") };
+        if !wire.context_valid(context) { return self.response(ops::KnowledgeResult { code: "invalid_command" }, false); }
+        if capability {
+            let operation = if named { wire.string(req.body, "operation") } else { "dna.knowledge.edge.link" };
+            let node = ops::KnowledgeNodeCommandCodec { };
+            let binding = ops::KnowledgeBindingCommandCodec { };
+            if operation != "dna.knowledge.edge.link" && operation != "dna.knowledge.edge.unlink" && !node.known(operation) && !binding.known(operation) { return self.response(ops::KnowledgeResult { code: "invalid_command" }, false); }
+            return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: self.capability(commands.capability_for(context, operation)) };
+        }
+        if lookup { return self.response(commands.lookup(context, wire.string(req.body, "request_id")), false); }
+        let codec = ops::KnowledgeCommandCodec { };
+        let command = codec.decode(context, std::json::find_field_raw(req.body, "command")); let node = ops::KnowledgeNodeCommandCodec { };
+        if !node.known(command.operation) && len(req.body) > 32768 { return self.response(ops::KnowledgeResult { code: "invalid_command" }, false); }
+        return self.response(commands.submit(context, command), true);
+    }
+}
+
+fn knowledge_policy(root: String) -> ops::KnowledgePolicy {
+    let path = std::env::var("HALE_DNA_KNOWLEDGE_COMMAND_POLICY");
+    if len(path) == 0 { return ops::KnowledgePolicy { }; }
+    let size = std::io::fs::file_size(path) or - 1;
+    if size < 1 || size > 65536 {
+        eprintln("hale dna api: Knowledge commands require an explicit bounded authority policy (HALE_DNA_KNOWLEDGE_COMMAND_POLICY)"); std::process::exit(2);
+    }
+    let record = dna::GitRecord { repo: root };
+    let configured = record.git("config\n--get\ndna.trust");
+    if configured.code != 0 && configured.code != 1 { eprintln("hale dna api: cannot read Record trust policy"); std::process::exit(2); }
+    let declared = dna::trim_nl(configured.stdout);
+    let wire = ops::KnowledgePolicyCodec { };
+    let policy = wire.decode(std::io::fs::read_file(path) or "", record.identity(), if len(declared) == 0 { "local" } else { declared });
+    if !policy.valid { eprintln("hale dna api: invalid command authority policy or Record trust mode"); std::process::exit(2); }
+    return policy;
+}
+
+// Graph reads from memory under the head's role.
+locus LocalKnowledge {
+    params { root: String = "."; dsn_env: String = dna::HEAD_DSN_ENV; }
+    fn supported() -> Bool { return dna::dsn_set(self.dsn_env); }
+    fn read(request: KnowledgeRequest) -> KnowledgeUpstream {
+        let wire = KnowledgeWire { };
+        let body = wire.request_json(request);
+        let http = GraphHttp { };
+        if len(body) > 16384 { return KnowledgeUpstream { }; }
+        let q = http.request(body);
+        if !q.ok { let e = http.error(400, "invalid_query"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
+        let j = dna::GitJournal { repo: self.root, author: "api" };
+        let moved = j.refresh();
+        let store = dna::Pq { dsn_env: self.dsn_env };
+        store.scope(j.genesis());
+        if !store.reopen() { let e = http.error(503, "knowledge_unavailable"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
+        let ledger = dna::MemoryLedger { repo: self.root, dsn_env: self.dsn_env };
+        let r = graph_read(q, store, store, j, ledger);
+        store.close();
+        return KnowledgeUpstream { transport_ok: true, status: r.status, body: r.body };
+    }
+}
+
+// Knowledge commands admitted into the record in this process.
+locus LocalKnowledgeCommands {
+    params { root: String = "."; }
+    fn supported() -> Bool { return len(std::env::var("HALE_DNA_KNOWLEDGE_COMMAND_POLICY")) > 0; }
+    fn send(kind: String, body: String) -> KnowledgeUpstream {
+        if !self.supported() || len(body) == 0 || len(body) > 98304 { return KnowledgeUpstream { }; }
+        let policy = knowledge_policy(self.root);
+        let authority = ops::FixedKnowledgeAuthority { policy: policy };
+        let record = dna::GitRecord { repo: self.root };
+        let commands = ops::KnowledgeCommands { record: record, authority: authority, sign: policy.sign };
+        let wire = KnowledgeLocalWire { };
+        let r = wire.handle(kind, body, commands);
+        return KnowledgeUpstream { transport_ok: true, status: r.status, body: r.body };
+    }
+    fn capability(context: CommandContext) -> KnowledgeUpstream {
+        return self.capability_for(context, "dna.knowledge.edge.link");
+    }
+    fn capability_for(context: CommandContext, operation: String) -> KnowledgeUpstream {
+        let wire = KnowledgeCommandWire { };
+        return self.send("capability", wire.private_request(context, "capability", ops::KnowledgeCommand { operation: operation }, ""));
+    }
+    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> KnowledgeUpstream {
+        let wire = KnowledgeCommandWire { };
+        return self.send("submit", wire.private_request(context, "submit", command, ""));
+    }
+    fn lookup(context: CommandContext, request_id: String) -> KnowledgeUpstream {
+        let wire = KnowledgeCommandWire { };
+        return self.send("lookup", wire.private_request(context, "lookup", ops::KnowledgeCommand { }, request_id));
+    }
 }

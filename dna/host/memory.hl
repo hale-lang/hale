@@ -2,40 +2,38 @@
 //
 // `hale dna memory migrate` (and `upgrade`, and `dev` before it starts
 // the organism) runs `memory-migrate`: the schema owner's DSN from
-// HALE_DNA_KNOWLEDGE_DSN, or from dna/compose.yaml brought up, applies
-// the record's schema and prints the spine's DSN. The host that runs the
-// organism never holds the owner's DSN: it is handed the spine's and
-// checks the schema version before it starts anything on it.
+// HALE_DNA_MEMORY_DSN_OWNER, or from dna/compose.yaml brought up, applies
+// the record's schema and prints the spine's and the head's DSNs. The host
+// that runs the organism never holds the owner's DSN: it is handed the
+// spine's and checks the schema version before it starts anything on it.
 
-import "../knowledge" as know;
+const OWNER_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_OWNER";
 
-// `memory-migrate`: `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` when the schema was
-// applied, `memory` for the in-memory store, `none: <why>` when there is
-// no database to apply it to.
+// `memory-migrate`: `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and
+// `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` when the schema was applied, `none:
+// <why>` when there is no database to apply it to.
 fn memory_migrate_verb(root: String) -> Answer {
-    let given = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
-    if given == "memory" { return answer("memory\n"); }
-    let mut owner = given;
+    let mut owner = if std::env::var_exists(OWNER_DSN_ENV) { std::env::var(OWNER_DSN_ENV) } else { "" };
     if len(owner) == 0 {
         let infra = ReferenceInfrastructure { root: root };
         let db = infra.knowledge_database(root);
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
     }
-    let m = know::migrate(know::parse_dsn(owner), record_identity(root));
+    let m = dna::migrate(dna::parse_dsn(owner), record_identity(root));
     if !m.ok { return fail("memory migrate: " + m.why); }
-    return answer("HALE_DNA_MEMORY_DSN_SPINE=" + m.spine_dsn + "\n");
+    return answer(dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "=" + m.head_dsn + "\n");
 }
 
 // "" when the spine's DSN reaches a schema at this toolchain's version;
-// otherwise why the host refuses to start the knowledge service on it.
+// otherwise why the host refuses to start on it.
 fn memory_fence_for(spine: String, root: String) -> String {
-    let d = know::parse_dsn(spine);
+    let d = dna::parse_dsn(spine);
     if !d.ok { return "HALE_DNA_MEMORY_DSN_SPINE: " + d.why; }
-    let c = know::pq_conn(d);
+    let c = dna::pq_conn(d);
     let st = c.open();
     if !st.ok { return "memory: " + st.err.kind + " " + st.err.detail; }
-    let why = know::memory_fence(c, know::schema_for(record_identity(root)));
+    let why = dna::memory_fence(c, dna::schema_for(record_identity(root)));
     c.close();
     return why;
 }

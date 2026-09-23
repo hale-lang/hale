@@ -8,7 +8,6 @@
 // memory, for tests and for a laptop with nothing. Nothing here lives
 // on the local filesystem.
 
-import "../core" as dna;
 import "../pond/db" as db;
 import "../pond/pq" as pq;
 
@@ -47,17 +46,17 @@ interface KnowledgeStore {
     // re-appended rows beneath a stamped prefix is the reason this exists.
     fn rebuild() -> Bool;
     // Idempotent by id: a second write with the same id updates in place.
-    fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool;
+    fn upsert(i: Idea, ratified_seq: Int) -> Bool;
     // The idea is no longer accepted (a ratified supersession retired
     // it): it leaves every package but stays readable by id.
     fn retire(id: String, seq: Int) -> Bool;
-    fn bind(b: dna::KnowledgeBinding) -> Bool;
+    fn bind(b: KnowledgeBinding) -> Bool;
     // Exact idea/target/author tuple; absent is an idempotent success.
-    fn unbind(b: dna::KnowledgeBinding) -> Bool;
-    fn link(e: dna::KnowledgeEdge) -> Bool;
+    fn unbind(b: KnowledgeBinding) -> Bool;
+    fn link(e: KnowledgeEdge) -> Bool;
     // Ensure this exact directed tuple is absent. Missing is an idempotent
     // success; only an actual removal changes the graph generation.
-    fn unlink(e: dna::KnowledgeEdge) -> Bool;
+    fn unlink(e: KnowledgeEdge) -> Bool;
     // One idea by id (`present` false when absent).
     fn idea(id: String) -> Stored;
     // Ids of accepted ideas bound to `target` or any of its ancestors
@@ -98,7 +97,7 @@ fn signal_json(x: Signal) -> String {
 
 type Stored {
     present: Bool = false;
-    idea: dna::Idea = dna::Idea { };
+    idea: Idea = Idea { };
     ratified_seq: Int = 0;
 }
 
@@ -117,8 +116,8 @@ type GraphQuery {
 interface KnowledgeReadPolicy { fn visible(id: String) -> Bool; }
 interface GraphSink {
     fn node(row: Stored) -> Bool;
-    fn edge(row: dna::KnowledgeEdge) -> Bool;
-    fn binding(row: dna::KnowledgeBinding) -> Bool;
+    fn edge(row: KnowledgeEdge) -> Bool;
+    fn binding(row: KnowledgeBinding) -> Bool;
 }
 type GraphProjection {
     ok: Bool = false;
@@ -219,12 +218,12 @@ locus GraphRules {
     fn after(k: GraphKey, q: GraphQuery) -> Bool {
         return len(q.after_first) == 0 || self.compare_key(k, GraphKey { first: q.after_first, second: q.after_second, third: q.after_third }) > 0;
     }
-    fn node_bytes(i: dna::Idea) -> Int { return len(i.id) + len(i.kind) + len(i.text) + len(i.author) + len(i.provenance) + len(i.name) + len(i.supersedes) + 32; }
-    fn edge_bytes(e: dna::KnowledgeEdge) -> Int { return len(e.from) + len(e.to) + len(e.rel); }
-    fn binding_bytes(b: dna::KnowledgeBinding) -> Int { return len(b.idea) + len(b.target) + len(b.author) + len(b.class); }
-    fn applies(bound: String, target: String) -> Bool { return bound == target || dna::is_ancestor(bound, target); }
+    fn node_bytes(i: Idea) -> Int { return len(i.id) + len(i.kind) + len(i.text) + len(i.author) + len(i.provenance) + len(i.name) + len(i.supersedes) + 32; }
+    fn edge_bytes(e: KnowledgeEdge) -> Int { return len(e.from) + len(e.to) + len(e.rel); }
+    fn binding_bytes(b: KnowledgeBinding) -> Int { return len(b.idea) + len(b.target) + len(b.author) + len(b.class); }
+    fn applies(bound: String, target: String) -> Bool { return bound == target || is_ancestor(bound, target); }
     fn stored(row: String) -> Stored {
-        return Stored { present: true, idea: dna::Idea {
+        return Stored { present: true, idea: Idea {
             id: std::json::find_string_field(row, "id"), kind: std::json::find_string_field(row, "kind"),
             text: std::json::find_string_field(row, "text"), author: std::json::find_string_field(row, "author"),
             provenance: std::json::find_string_field(row, "provenance"), revision: std::json::find_int_field(row, "revision"),
@@ -238,8 +237,8 @@ locus GraphRules {
     }
     fn emit(row: String, kind: String, sink: GraphSink) -> Bool {
         if kind == "nodes" { return sink.node(self.stored(row)); }
-        if kind == "edges" { return sink.edge(dna::KnowledgeEdge { from: std::json::find_string_field(row, "src"), to: std::json::find_string_field(row, "dst"), rel: std::json::find_string_field(row, "rel") }); }
-        return sink.binding(dna::KnowledgeBinding { idea: std::json::find_string_field(row, "idea"), target: std::json::find_string_field(row, "target"), author: std::json::find_string_field(row, "author"), class: std::json::find_string_field(row, "class") });
+        if kind == "edges" { return sink.edge(KnowledgeEdge { from: std::json::find_string_field(row, "src"), to: std::json::find_string_field(row, "dst"), rel: std::json::find_string_field(row, "rel") }); }
+        return sink.binding(KnowledgeBinding { idea: std::json::find_string_field(row, "idea"), target: std::json::find_string_field(row, "target"), author: std::json::find_string_field(row, "author"), class: std::json::find_string_field(row, "class") });
     }
     // One ordered candidate per round trip avoids the driver's unbounded
     // row concatenation. Values, cursors and the remaining byte budget are
@@ -294,402 +293,6 @@ locus GraphSelection {
 
 // ---- in memory ----------------------------------------------------------
 
-@form(vec)
-locus IdeaRows { capacity { heap rows of dna::Idea; } }
-@form(vec)
-locus SeqRows { capacity { heap rows of Int; } }
-@form(vec)
-locus BindingRows { capacity { heap rows of dna::KnowledgeBinding; } }
-@form(vec)
-locus EdgeRows { capacity { heap rows of dna::KnowledgeEdge; } }
-@form(vec)
-locus SignalRows { capacity { heap rows of Signal; } }
-@form(vec)
-locus StructureRows { capacity { heap rows of Structure; } }
-
-locus Mem {
-    params {
-        ideas: IdeaRows = IdeaRows { };
-        seqs: SeqRows = SeqRows { };
-        embeds: Words = Words { }; // one literal per idea, in step with `ideas`
-        bindings: BindingRows = BindingRows { };
-        edges: EdgeRows = EdgeRows { };
-        signal_rows: SignalRows = SignalRows { };
-        structure: StructureRows = StructureRows { };
-        mark: Int = 0;
-        graph_version: Int = 0;
-        projection_mark: Int = 0;
-        projection_head: String = "";
-        projection_pending_mark: Int = 0;
-        projection_pending_head: String = "";
-        record_id: String = "";
-    }
-    fn kind() -> String { return "memory"; }
-    fn scope(record: String) { self.record_id = record; }
-    fn record() -> String { return self.record_id; }
-    fn open() -> Bool { return true; }
-    // Nothing to lose and nothing to dial: memory is always both.
-    fn healthy() -> Bool { return true; }
-    fn reopen() -> Bool { return true; }
-    fn forget_error() { }
-    fn last_error() -> String { return ""; }
-    fn graph_generation() -> Int { return self.graph_version; }
-    fn projection_basis() -> GraphProjection {
-        let basis = GraphProjection { ok: true, watermark: self.projection_mark, head: self.projection_head, live_watermark: self.mark, pending_watermark: self.projection_pending_mark, pending_head: self.projection_pending_head };
-        let rules = GraphRules { };
-        return if rules.projection_valid(basis) { basis } else { GraphProjection { } };
-    }
-    fn projection_matches(previous: GraphProjection) -> Bool {
-        return self.projection_mark == previous.watermark && self.projection_head == previous.head && self.projection_pending_mark == previous.pending_watermark && self.projection_pending_head == previous.pending_head;
-    }
-    fn begin_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
-        let rules = GraphRules { };
-        if !rules.projection_begin_valid(previous, watermark, head) || !self.projection_matches(previous) || self.mark != previous.live_watermark { return false; }
-        if self.projection_pending_mark == watermark && self.projection_pending_head == head { return true; }
-        self.projection_pending_mark = watermark;
-        self.projection_pending_head = head;
-        self.graph_version = self.graph_version + 1;
-        return true;
-    }
-    fn checkpoint_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
-        let rules = GraphRules { };
-        if !rules.projection_valid(previous) || watermark < 1 || len(head) == 0 || len(head) > 4096 { return false; }
-        if self.mark != watermark || !self.projection_matches(previous) { return false; }
-        if self.projection_pending_mark == 0 { return self.projection_mark == watermark && self.projection_head == head; }
-        if self.projection_pending_mark != watermark || self.projection_pending_head != head { return false; }
-        self.projection_mark = watermark;
-        self.projection_head = head;
-        self.projection_pending_mark = 0;
-        self.projection_pending_head = "";
-        self.graph_version = self.graph_version + 1;
-        return true;
-    }
-    fn watermark() -> Int { return self.mark; }
-    fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
-    fn rebuild() -> Bool {
-        while self.ideas.len() > 0 { let gone = self.ideas.pop() or dna::Idea { }; }
-        while self.seqs.len() > 0 { let gone = self.seqs.pop() or 0; }
-        while self.embeds.len() > 0 { let gone = self.embeds.pop() or ""; }
-        while self.bindings.len() > 0 { let gone = self.bindings.pop() or dna::KnowledgeBinding { }; }
-        while self.edges.len() > 0 { let gone = self.edges.pop() or dna::KnowledgeEdge { }; }
-        while self.signal_rows.len() > 0 { let gone = self.signal_rows.pop() or Signal { }; }
-        while self.structure.len() > 0 { let gone = self.structure.pop() or Structure { }; }
-        self.mark = 0;
-        self.projection_mark = 0;
-        self.projection_head = "";
-        self.projection_pending_mark = 0;
-        self.projection_pending_head = "";
-        self.graph_version = self.graph_version + 1;
-        return true;
-    }
-    @unbounded
-    fn index_of(id: String) -> Int {
-        let mut i = 0;
-        while i < self.ideas.len() {
-            let x = self.ideas.get(i) or dna::Idea { };
-            if x.id == id { return i; }
-            i = i + 1;
-        }
-        return -1;
-    }
-    @unbounded
-    fn retire(id: String, seq: Int) -> Bool {
-        let mut i = 0;
-        while i < self.ideas.len() {
-            let x = self.ideas.get(i) or dna::Idea { };
-            if x.id == id {
-                self.graph_version = self.graph_version + 1;
-                self.ideas.set(i, dna::Idea { id: x.id, kind: x.kind, text: x.text, author: x.author, provenance: "retired", revision: seq, accepted: false, name: x.name, supersedes: x.supersedes }) or discard;
-                return true;
-            }
-            i = i + 1;
-        }
-        return true;
-    }
-    fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
-        self.graph_version = self.graph_version + 1;
-        let at = self.index_of(i.id);
-        if at < 0 {
-            self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted, name: i.name, supersedes: i.supersedes });
-            self.seqs.push(ratified_seq);
-            self.embeds.push(embed_text(i.text));
-            return true;
-        }
-        self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted, name: i.name, supersedes: i.supersedes }) or discard;
-        self.seqs.set(at, ratified_seq) or discard;
-        self.embeds.set(at, embed_text(i.text)) or discard;
-        return true;
-    }
-    @unbounded
-    fn bind(b: dna::KnowledgeBinding) -> Bool {
-        let mut i = 0;
-        while i < self.bindings.len() {
-            let x = self.bindings.get(i) or dna::KnowledgeBinding { };
-            if x.idea == b.idea && x.target == b.target && x.author == b.author {
-                if x.class == b.class { return true; }
-                self.graph_version = self.graph_version + 1;
-                self.bindings.set(i, dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class }) or discard;
-                return true;
-            }
-            i = i + 1;
-        }
-        self.graph_version = self.graph_version + 1;
-        self.bindings.push(dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class });
-        return true;
-    }
-    @unbounded
-    fn unbind(b: dna::KnowledgeBinding) -> Bool {
-        let mut i = 0;
-        while i < self.bindings.len() {
-            let x = self.bindings.get(i) or dna::KnowledgeBinding { };
-            if x.idea == b.idea && x.target == b.target && x.author == b.author {
-                let last = self.bindings.len() - 1;
-                if i != last { self.bindings.set(i, self.bindings.get(last) or dna::KnowledgeBinding { }) or discard; }
-                let removed = self.bindings.pop() or dna::KnowledgeBinding { };
-                self.graph_version = self.graph_version + 1; return true;
-            }
-            i = i + 1;
-        }
-        return true;
-    }
-    @unbounded
-    fn link(e: dna::KnowledgeEdge) -> Bool {
-        let mut i = 0;
-        while i < self.edges.len() {
-            let x = self.edges.get(i) or dna::KnowledgeEdge { };
-            if x.from == e.from && x.to == e.to && x.rel == e.rel { return true; }
-            i = i + 1;
-        }
-        self.graph_version = self.graph_version + 1;
-        self.edges.push(dna::KnowledgeEdge { from: e.from, to: e.to, rel: e.rel });
-        return true;
-    }
-    @unbounded
-    fn unlink(e: dna::KnowledgeEdge) -> Bool {
-        let mut i = 0;
-        while i < self.edges.len() {
-            let x = self.edges.get(i) or dna::KnowledgeEdge { };
-            if x.from == e.from && x.to == e.to && x.rel == e.rel {
-                // Graph reads sort by the native tuple, not storage order.
-                // Compact with the last row so repeated unlink/relink reuses
-                // vector capacity and leaves no tombstones in counts or scans.
-                let last = self.edges.len() - 1;
-                if i != last { self.edges.set(i, self.edges.get(last) or dna::KnowledgeEdge { }) or discard; }
-                let removed = self.edges.pop() or dna::KnowledgeEdge { };
-                self.graph_version = self.graph_version + 1;
-                return true;
-            }
-            i = i + 1;
-        }
-        return true;
-    }
-    fn idea(id: String) -> Stored {
-        let at = self.index_of(id);
-        if at < 0 { return Stored { }; }
-        return Stored { present: true, idea: self.ideas.get(at) or dna::Idea { }, ratified_seq: self.seqs.get(at) or 0 };
-    }
-    fn graph_identity(at: Int) -> String { return (self.ideas.get(at) or dna::Idea { }).id; }
-    fn graph_node(at: Int, sink: GraphSink) -> Bool {
-        return sink.node(Stored { present: true, idea: self.ideas.get(at) or dna::Idea { }, ratified_seq: self.seqs.get(at) or 0 });
-    }
-    fn read_graph(query: GraphQuery, policy: KnowledgeReadPolicy, sink: GraphSink) -> GraphPage {
-        let rules = GraphRules { };
-        let invalid = rules.validate(query);
-        if len(invalid) > 0 { return GraphPage { error: invalid }; }
-        let generation = self.graph_version;
-        let mark = self.mark;
-        let record = self.record_id;
-        let stamped = self.projection_basis();
-        if !stamped.ok { return GraphPage { error: "read_failed" }; }
-        let selection = GraphSelection { };
-        let targets = GraphTargets { };
-        let mut subject_present = false;
-        if query.kind != "nodes" && len(query.id) > 0 {
-            // Relationship reads must not materialize/encode a node body to
-            // prove its existence. The unordered memory source requires a
-            // complete identity-only pass, charged to the same 10k/8MiB
-            // budget as relationship rows. Hidden and missing ids receive
-            // the same scan treatment and cannot bypass a limit failure.
-            let mut subject = 0;
-            while subject < self.ideas.len() {
-                let identity = self.graph_identity(subject);
-                if !selection.account(len(identity)) { return GraphPage { error: "read_limit" }; }
-                if identity == query.id { subject_present = true; }
-                subject = subject + 1;
-            }
-            subject_present = subject_present && policy.visible(query.id);
-        }
-        if query.kind == "nodes" && len(query.target) > 0 {
-            let mut b = 0;
-            while b < self.bindings.len() {
-                let row = self.bindings.get(b) or dna::KnowledgeBinding { };
-                if !selection.account(rules.binding_bytes(row)) { return GraphPage { error: "read_limit" }; }
-                if rules.applies(row.target, query.target) { targets.set(GraphTarget { id: row.idea }); }
-                b = b + 1;
-            }
-        }
-        let total = if query.kind == "nodes" { self.ideas.len() } else if query.kind == "edges" { self.edges.len() } else { self.bindings.len() };
-        let mut at = 0;
-        while at < total {
-            let mut key = GraphKey { index: at };
-            let mut eligible = false;
-            if query.kind == "nodes" {
-                let row = self.ideas.get(at) or dna::Idea { };
-                if !selection.account(rules.node_bytes(row)) { return GraphPage { error: "read_limit" }; }
-                key.first = row.id;
-                eligible = (len(query.id) == 0 || query.id == row.id) && (len(query.target) == 0 || (row.accepted && (targets.get(row.id) or GraphTarget { }).id == row.id));
-            } else if query.kind == "edges" {
-                let row = self.edges.get(at) or dna::KnowledgeEdge { };
-                if !selection.account(rules.edge_bytes(row)) { return GraphPage { error: "read_limit" }; }
-                key.first = row.from; key.second = row.to; key.third = row.rel;
-                eligible = row.from == query.id || row.to == query.id;
-            } else {
-                let row = self.bindings.get(at) or dna::KnowledgeBinding { };
-                if !selection.account(rules.binding_bytes(row)) { return GraphPage { error: "read_limit" }; }
-                key.first = row.idea; key.second = row.target; key.third = row.author;
-                eligible = (len(query.id) == 0 || query.id == row.idea) && (len(query.target) == 0 || rules.applies(row.target, query.target));
-            }
-            if !rules.key_ok(key) { return GraphPage { error: "read_limit" }; }
-            if len(key.first) == 0 { return GraphPage { error: "read_failed" }; }
-            if query.kind == "nodes" && len(query.id) > 0 && query.id == key.first && policy.visible(key.first) { subject_present = true; }
-            if eligible && rules.after(key, query) && policy.visible(key.first) {
-                if query.kind != "edges" || policy.visible(key.second) { selection.offer(key, query.limit); }
-            }
-            at = at + 1;
-        }
-        let mut page = GraphPage { ok: true, record: record, generation: generation, watermark: mark, projection_watermark: stamped.watermark, projection_head: stamped.head, projection_pending_watermark: stamped.pending_watermark, projection_pending_head: stamped.pending_head, subject_present: subject_present, has_more: selection.keys.len() > query.limit };
-        let mut n = 0;
-        while n < selection.keys.len() && n < query.limit {
-            let key = selection.keys.get(n) or GraphKey { };
-            let accepted = if query.kind == "nodes" { self.graph_node(key.index, sink) } else if query.kind == "edges" { sink.edge(self.edges.get(key.index) or dna::KnowledgeEdge { }) } else { sink.binding(self.bindings.get(key.index) or dna::KnowledgeBinding { }) };
-            if !accepted { return GraphPage { error: "read_limit" }; }
-            page.last_first = key.first; page.last_second = key.second; page.last_third = key.third;
-            n = n + 1;
-        }
-        return page;
-    }
-    @unbounded
-    fn context_ids(target: String, budget: Int) -> String {
-        let mut out = "";
-        let mut n = 0;
-        let mut i = 0;
-        while i < self.bindings.len() && n < budget {
-            let b = self.bindings.get(i) or dna::KnowledgeBinding { };
-            i = i + 1;
-            if !(b.target == target || dna::is_ancestor(b.target, target)) { continue; }
-            if std::str::contains(out, b.idea + " ") { continue; }
-            let s = self.idea(b.idea);
-            if !s.present || !s.idea.accepted { continue; }
-            out = out + b.idea + " ";
-            n = n + 1;
-        }
-        return dna::trim_nl(out);
-    }
-    // The bounded set as `context_ids` finds it, then the `budget` most
-    // similar to the query, by selection (the set is small by design).
-    @unbounded
-    fn ranked_ids(target: String, budget: Int, query_vec: String) -> String {
-        if len(query_vec) == 0 { return self.context_ids(target, budget); }
-        let all = self.context_ids(target, 1000000);
-        let mut picked = "";
-        let mut n = 0;
-        while n < budget {
-            let mut best = "";
-            let mut best_score = 0.0 - 2.0;
-            let mut rest = all + " ";
-            while len(rest) > 1 {
-                let sp = std::str::index_of(rest, " ");
-                let id = rest[0..sp];
-                rest = rest[(sp + 1)..len(rest)];
-                if len(id) == 0 || std::str::contains(picked + " ", " " + id + " ") { continue; }
-                let at = self.index_of(id);
-                let score = cosine(self.embeds.get(at) or "", query_vec);
-                if score > best_score { best_score = score; best = id; }
-            }
-            if len(best) == 0 { break; }
-            picked = picked + " " + best;
-            n = n + 1;
-        }
-        return dna::trim_nl(if len(picked) > 0 { picked[1..len(picked)] } else { "" });
-    }
-    @unbounded
-    fn put_structure(kind: String, name: String, seq: Int, body: String) -> Bool {
-        let mut i = 0;
-        while i < self.structure.len() {
-            let x = self.structure.get(i) or Structure { };
-            if x.kind == kind && x.name == name { self.structure.set(i, Structure { kind: kind, name: name, seq: seq }) or discard; return true; }
-            i = i + 1;
-        }
-        self.structure.push(Structure { kind: kind, name: name, seq: seq });
-        return true;
-    }
-    @unbounded
-    fn structure_count(kind: String) -> Int {
-        let mut n = 0;
-        let mut i = 0;
-        while i < self.structure.len() {
-            let x = self.structure.get(i) or Structure { };
-            if len(kind) == 0 || x.kind == kind { n = n + 1; }
-            i = i + 1;
-        }
-        return n;
-    }
-    @unbounded
-    fn structure_names(kind: String) -> String {
-        let mut out = "";
-        let mut i = 0;
-        while i < self.structure.len() {
-            let x = self.structure.get(i) or Structure { };
-            if len(kind) == 0 || x.kind == kind { out = out + x.name + " "; }
-            i = i + 1;
-        }
-        return dna::trim_nl(out);
-    }
-    @unbounded
-    fn put_signal(kind: String, source: String, what: String, seq: Int) -> Bool {
-        let mut i = 0;
-        while i < self.signal_rows.len() {
-            let x = self.signal_rows.get(i) or Signal { };
-            if x.kind == kind && x.source == source && x.what == what {
-                // the same record row twice is the same event once (finding 12)
-                if x.last_seq >= seq { return true; }
-                self.signal_rows.set(i, Signal { kind: kind, source: source, what: what, count: x.count + 1, last_seq: seq }) or discard;
-                return true;
-            }
-            i = i + 1;
-        }
-        self.signal_rows.push(Signal { kind: kind, source: source, what: what, count: 1, last_seq: seq });
-        return true;
-    }
-    @unbounded
-    fn signals() -> String {
-        let out = std::str::builder_new();
-        std::str::builder_append(out, "[");
-        let mut i = 0;
-        while i < self.signal_rows.len() {
-            if i > 0 { std::str::builder_append(out, ", "); }
-            std::str::builder_append(out, signal_json(self.signal_rows.get(i) or Signal { }));
-            i = i + 1;
-        }
-        std::str::builder_append(out, "]");
-        return std::str::builder_finish(out);
-    }
-    @unbounded
-    fn count(what: String) -> Int {
-        if what == "bindings" { return self.bindings.len(); }
-        if what == "edges" { return self.edges.len(); }
-        if what == "ideas" { return self.ideas.len(); }
-        let mut n = 0;
-        let mut i = 0;
-        while i < self.ideas.len() {
-            let x = self.ideas.get(i) or dna::Idea { };
-            if (what == "ratified" && x.accepted) || (what == "proposed" && x.provenance == "proposed") { n = n + 1; }
-            i = i + 1;
-        }
-        return n;
-    }
-}
-
 // ---- Postgres -----------------------------------------------------------
 //
 // One connection, the schema migrated at open. Idea writes are keyed by
@@ -722,10 +325,10 @@ fn ids_of(csv: String) -> String {
         let id = tab_field(line, 0);
         if len(id) > 0 { out = out + id + " "; }
     }
-    return dna::trim_nl(out);
+    return trim_nl(out);
 }
 
-fn first_line(s: String) -> String {
+fn line_one(s: String) -> String {
     let nl = std::str::index_of(s, "\n");
     return if nl < 0 { s } else { s[0..nl] };
 }
@@ -733,6 +336,9 @@ fn first_line(s: String) -> String {
 locus Pq {
     params {
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        // GH #985: the environment variable naming this store's DSN, read
+        // at open; "" when the connection was built from a DSN in hand
+        dsn_env: String = "";
         opened: Bool = false;
         error: String = "";
         record_id: String = "";
@@ -774,6 +380,8 @@ locus Pq {
         // A failed migration or scope change may have left a live session.
         // Never replace its socket while retaining a session advisory claim.
         self.close();
+        let dialled = dial_from_env(self.conn, self.dsn_env);
+        if len(dialled) > 0 { self.error = dialled; return false; }
         let st = self.conn.open();
         if !st.ok { return self.fail("open", st.err); }
         // one schema per record, selected for this session; `public`
@@ -790,8 +398,8 @@ locus Pq {
         if len(self.record_id) > 0 {
             let owner = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'record'");
             if !owner.ok && owner.err.kind != "no_row" { return self.fail("scope", owner.err); }
-            if !owner.ok || dna::trim_nl(owner.data) != self.record_id {
-                self.error = "scope: schema " + sch + " belongs to " + (if owner.ok { "record " + dna::trim_nl(owner.data) } else { "no record" }) + ", not " + self.record_id + "; it is not read";
+            if !owner.ok || trim_nl(owner.data) != self.record_id {
+                self.error = "scope: schema " + sch + " belongs to " + (if owner.ok { "record " + trim_nl(owner.data) } else { "no record" }) + ", not " + self.record_id + "; it is not read";
                 self.close();
                 return false;
             }
@@ -1006,7 +614,7 @@ locus Pq {
         // P3 — a fresh Postgres answered 503 over an empty record)
         if !row.ok && row.err.kind == "no_row" { return 0; }
         if !row.ok { self.note("watermark", row.err); return 0; }
-        return std::str::parse_int(dna::trim_nl(row.data)) or 0;
+        return std::str::parse_int(trim_nl(row.data)) or 0;
     }
     fn set_watermark(seq: Int) -> Bool {
         let a = db::Args { };
@@ -1015,7 +623,7 @@ locus Pq {
         if !r.ok { return self.fail("watermark", r.err); }
         return true;
     }
-    fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
+    fn upsert(i: Idea, ratified_seq: Int) -> Bool {
         let a = db::Args { };
         a.add(i.id);
         a.add(i.kind);
@@ -1040,7 +648,7 @@ locus Pq {
         if !r.ok { return self.fail("retire", r.err); }
         return true;
     }
-    fn bind(b: dna::KnowledgeBinding) -> Bool {
+    fn bind(b: KnowledgeBinding) -> Bool {
         let a = db::Args { };
         a.add(b.idea);
         a.add(b.target);
@@ -1050,13 +658,13 @@ locus Pq {
         if !r.ok { return self.fail("bind", r.err); }
         return true;
     }
-    fn unbind(b: dna::KnowledgeBinding) -> Bool {
+    fn unbind(b: KnowledgeBinding) -> Bool {
         let a = db::Args { }; a.add(b.idea); a.add(b.target); a.add(b.author);
         let r = self.conn.exec_params("DELETE FROM knowledge_bindings WHERE idea = $1 AND target = $2 AND author = $3", a);
         if !r.ok { return self.fail("unbind", r.err); }
         return true;
     }
-    fn link(e: dna::KnowledgeEdge) -> Bool {
+    fn link(e: KnowledgeEdge) -> Bool {
         let a = db::Args { };
         a.add(e.from);
         a.add(e.to);
@@ -1065,7 +673,7 @@ locus Pq {
         if !r.ok { return self.fail("link", r.err); }
         return true;
     }
-    fn unlink(e: dna::KnowledgeEdge) -> Bool {
+    fn unlink(e: KnowledgeEdge) -> Bool {
         let a = db::Args { };
         a.add(e.from);
         a.add(e.to);
@@ -1086,11 +694,11 @@ locus Pq {
         let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq, name, supersedes FROM knowledge_ideas WHERE id = $1) t", a);
         if !rows.ok { self.note("idea", rows.err); return Stored { }; }
         if rows.n == 0 { return Stored { }; }
-        let row = dna::trim_nl(first_line(rows.csv));
+        let row = trim_nl(line_one(rows.csv));
         if len(row) == 0 { return Stored { }; }
         return Stored {
             present: true,
-            idea: dna::Idea {
+            idea: Idea {
                 id: std::json::find_string_field(row, "id"),
                 kind: std::json::find_string_field(row, "kind"),
                 text: std::json::find_string_field(row, "text"),
@@ -1141,7 +749,7 @@ locus Pq {
         a.add(kind);
         let rows = self.conn.query_params("SELECT count(*) FROM knowledge_structure WHERE $1 = '' OR kind = $1", a);
         if !rows.ok { self.note("structure_count", rows.err); return 0; }
-        return std::str::parse_int(dna::trim_nl(first_line(rows.csv))) or 0;
+        return std::str::parse_int(trim_nl(line_one(rows.csv))) or 0;
     }
     fn structure_names(kind: String) -> String {
         let a = db::Args { };
@@ -1170,7 +778,7 @@ locus Pq {
     fn signals() -> String {
         let rows = self.conn.query_all("SELECT coalesce(json_agg(row_to_json(t) ORDER BY t.last_seq DESC, t.source), '[]') FROM (SELECT kind, source, what, count, last_seq FROM knowledge_signals) t");
         if !rows.ok { self.note("signals", rows.err); return "[]"; }
-        let row = dna::trim_nl(first_line(rows.csv));
+        let row = trim_nl(line_one(rows.csv));
         if len(row) == 0 { return "[]"; }
         return row;
     }
@@ -1182,7 +790,7 @@ locus Pq {
         else { "SELECT count(*) FROM knowledge_ideas" };
         let row = self.conn.query_one(sql);
         if !row.ok { self.note("count " + what, row.err); return 0; }
-        return std::str::parse_int(dna::trim_nl(row.data)) or 0;
+        return std::str::parse_int(trim_nl(row.data)) or 0;
     }
 }
 

@@ -47,19 +47,15 @@ type PeerWrite {
     unreachable: Bool = false; // the peer could not be reached at all: delivered again later
 }
 
-// GH #646 stage 5 (#662): a connection whose url is a service (`http://…`)
-// exchanges envelopes service to service; one whose url is a record's
-// remote exchanges them as mailbox refs in a private peer cache. Both
-// are the core's `Exchange`: a stable identity per envelope, delivery
-// repeated after an interruption landing once, the connection's classes
-// as the disclosure scope, settlement only on the receiver's acceptance.
+// GH #646 stage 5 (#662): a connection exchanges envelopes as mailbox
+// refs in a private peer cache of the other record's remote — the core's
+// `Exchange`: a stable identity per envelope, delivery repeated after an
+// interruption landing once, the connection's classes as the disclosure
+// scope, settlement only on the receiver's acceptance. (The service half —
+// a record's knowledge service as another's mailbox, `http://…` urls — went
+// with the service, GH #985: reaching another record live is the nerves',
+// GH #986.)
 fn service_url(url: String) -> Bool { return std::str::starts_with(url, "http://") || std::str::starts_with(url, "https://"); }
-
-fn exchange_kind(url: String) -> String { return if service_url(url) { "service" } else { "git" }; }
-
-fn http_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-    return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
-}
 
 // A path relative to the project, made absolute (git resolves a relative
 // url against the directory it runs in, which is the peer cache).
@@ -82,13 +78,8 @@ fn peer_cache(root: String, name: String) -> String {
 }
 
 // The identity the record at `url` publishes ("" when it publishes none):
-// its service's `/identity`, or the identity ref at its remote.
+// the identity ref at its remote.
 fn peer_identity(root: String, name: String, url: String) -> String {
-    if service_url(url) {
-        let resp = std::http::get(url + "/identity") or http_failed(err);
-        if resp.status != 200 { return ""; }
-        return std::json::find_string_field(std::str::from_bytes(resp.body), "identity");
-    }
     let cache = peer_cache(root, name);
     if len(cache) == 0 { return ""; }
     let pc = rec(cache);
@@ -113,25 +104,6 @@ fn outbound_mailbox(cache: String, c: Connection, mine: String) -> dna::Head {
 fn peer_append(root: String, c: Connection, kind: String, entity: String, body: String, author: String) -> PeerWrite {
     let mine = record_identity(root);
     if len(mine) == 0 { return PeerWrite { why: "this record has no identity yet (no journal)" }; }
-    if service_url(c.url) {
-        // unreachable is not "another record": a service that does not
-        // answer is delivered to again later
-        let probe = std::http::get(c.url + "/identity") or http_failed(err);
-        if probe.status == 0 { return PeerWrite { why: "the other record's service cannot be reached (" + std::str::from_bytes(probe.body) + "); deliver again later", unreachable: true }; }
-        if probe.status != 200 || std::json::find_string_field(std::str::from_bytes(probe.body), "identity") != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
-        let e = std::json::Builder { };
-        e.begin_object();
-        e.string_field("kind", kind);
-        e.string_field("entity", entity);
-        e.string_field("body", body);
-        e.string_field("author", author);
-        e.end_object();
-        let resp = std::http::post(c.url + "/exchange/" + dna::url_encode(mine), std::bytes::from_string(e.result()), "application/json") or http_failed(err);
-        let text = std::str::from_bytes(resp.body);
-        if resp.status == 0 { return PeerWrite { why: "the other record's service cannot be reached (" + text + "); deliver again later", unreachable: true }; }
-        if resp.status != 200 { return PeerWrite { why: "the other record's service refused the envelope: " + std::json::find_string_field(text, "error") }; }
-        return PeerWrite { commit: std::json::find_string_field(text, "ref") };
-    }
     let chain = "exchange/" + mine;
     let mut tries = 0;
     while tries < 5 {
@@ -159,13 +131,6 @@ fn peer_append(root: String, c: Connection, kind: String, entity: String, body: 
 // envelope: taken for that, the envelope was written twice (GH #961).
 @unbounded
 fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> PeerWrite {
-    if service_url(c.url) {
-        let mine = record_identity(root);
-        let resp = std::http::get(c.url + "/exchange/has?sender=" + dna::url_encode(mine) + "&kind=" + dna::url_encode(kind) + "&entity=" + dna::url_encode(entity)) or http_failed(err);
-        if resp.status != 200 { return PeerWrite { }; }
-        if !std::json::find_bool_field(std::str::from_bytes(resp.body), "has") { return PeerWrite { }; }
-        return PeerWrite { commit: mine + "/" + kind + "/" + entity };
-    }
     let cache = peer_cache(root, c.name);
     if len(cache) == 0 { return PeerWrite { }; }
     let mine = record_identity(root);
@@ -190,48 +155,23 @@ fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -
     return PeerWrite { commit: dna::line_at(ids, found) };
 }
 
-// The envelope rows a mailbox holds ("" when absent): a ref in this
-// clone, or `service:<sender>` — the envelopes that sender put in this
-// record's service.
+// The envelope rows a mailbox ref in this clone holds ("" when absent).
 @unbounded
 fn mailbox_text(root: String, ref: String) -> String {
-    if std::str::starts_with(ref, "service:") {
-        let sender = ref[8..len(ref)];
-        let mut out = "";
-        let mut rest = service_mailboxes(root);
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if std::json::find_string_field(line, "sender") == sender { out = out + line + "\n"; }
-        }
-        return out;
-    }
     let chain = if std::str::starts_with(ref, "refs/dna/") { ref[9..len(ref)] } else { ref };
-    // a lookup: a mailbox that could not be read lists nothing, as the
-    // service branch above lists nothing for a service that does not answer
+    // a lookup: a mailbox that could not be read lists nothing
     let r = rec(root);
     return r.text_at(r.head(chain).id);
 }
 
 // The sender a mailbox ref names.
 fn mailbox_sender(ref: String) -> String {
-    if std::str::starts_with(ref, "service:") { return ref[8..len(ref)]; }
     return ref[len(EXCHANGE_PREFIX)..len(ref)];
 }
 
-// Every envelope in this record's service ("" with no service known here).
-fn service_mailboxes(root: String) -> String {
-    let url = knowledge_url(root);
-    if len(url) == 0 { return ""; }
-    let resp = std::http::get(url + "/exchange") or http_failed(err);
-    if resp.status != 200 { return ""; }
-    return std::str::from_bytes(resp.body);
-}
-
-// The rows a peer put in this record's mailboxes, by either exchange.
+// The rows a peer put in this record's mailbox.
 fn mailbox_text_for(root: String, peer: String) -> String {
-    return mailbox_text(root, EXCHANGE_PREFIX + peer) + mailbox_text(root, "service:" + peer);
+    return mailbox_text(root, EXCHANGE_PREFIX + peer);
 }
 
 // This clone's inbound mailboxes (its sync fetches them from its remote),
@@ -245,16 +185,6 @@ fn mailboxes(root: String) -> String {
         let name = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(name) > 0 { out = out + "refs/dna/" + name + "\n"; }
-    }
-    // and the senders with envelopes in this record's service, once each
-    let mut senders = "\n";
-    let mut lines = service_mailboxes(root);
-    while len(lines) > 0 {
-        let nl = std::str::index_of(lines, "\n");
-        let line = if nl < 0 { lines } else { lines[0..nl] };
-        lines = if nl < 0 { "" } else { lines[(nl + 1)..len(lines)] };
-        let sender = std::json::find_string_field(line, "sender");
-        if len(sender) > 0 && !std::str::contains(senders, "\n" + sender + "\n") { senders = senders + sender + "\n"; out = out + "service:" + sender + "\n"; }
     }
     return out + "\n";
 }
@@ -359,6 +289,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     let prior = connection_of(p, name);
     if prior.present && len(prior.closed) == 0 { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
     let url = absolute_url(root, url_in);
+    if service_url(url) { return fail("connect: " + url + " is a service url; a connection exchanges through the other record's git remote (its mailbox refs), and reaching a record live is the nerves' (GH #986)"); }
     let peer = peer_identity(root, name, url);
     if len(peer) == 0 { return fail("connect: no record identity at " + url + " (`" + IDENTITY_REF + "`; a record publishes it when it syncs — `hale dna sync` there)"); }
     if peer == record_identity(root) { return fail("connect: " + url + " serves this record itself; a replica is inside the horizon and sync carries it — a connection crosses to a separate record"); }
@@ -376,7 +307,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     b.string_field("classes", norm);
     b.string_field("by", by);
     b.string_field("review_id", review_id);
-    b.string_field("exchange", exchange_kind(url));
+    b.string_field("exchange", "git");
     b.end_object();
     if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
     let question = "connect this record to record " + short(peer) + " at " + url + " as `" + position + "` for `" + purpose + "`, carrying " + norm + "?";
@@ -391,7 +322,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     q.end_object();
     if !append_as(root, "review.requested", "review:" + review_id, q.result(), by) { return fail("the record refused the append"); }
     let s2 = sync_record(root);
-    return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + " (" + exchange_kind(url) + " exchange), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
+    return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + " (git exchange), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
 }
 
 @unbounded

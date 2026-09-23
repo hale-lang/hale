@@ -208,8 +208,6 @@ fn main() {
     } else if verb == "ledger" {
         // GH #646 stage 1: the operational memory, adopted by an explicit step
         ans = ledger_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--as"));
-    } else if verb == "queue" {
-        ans = queue_verb(root, word(a, 0));
     } else if verb == "memory-migrate" {
         // GH #985: memory's schema, applied with the owner's DSN
         ans = memory_migrate_verb(root);

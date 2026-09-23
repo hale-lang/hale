@@ -529,9 +529,14 @@ locus Host {
         app_log: Int = 0;
         app_bin: String = "";
         observer: Proc = Proc { };
-        knowledge: Proc = Proc { }; // GH #583 K1: the knowledge service, under `dev`
-        knowledge_dsn: String = "";
-        knowledge_url: String = ""; // where the organization asks for packages, once the service is up
+        // GH #985: memory, as the spine — the graph projected from the
+        // record, the heads' requests admitted, redactions carried out —
+        // on this body's tick, under the record's spine role
+        graph_projection: ops::MemoryProjection = ops::MemoryProjection { };
+        admission: dna::RequestAdmission = dna::RequestAdmission { };
+        vault: dna::MemoryVault = dna::MemoryVault { };
+        memory_on: Bool = false;
+        memory_said: String = "";
         handled: String = "\n";
         relayed: String = "\n";
         app_gone_reported: Bool = false;
@@ -664,7 +669,6 @@ locus Host {
         self.stop_fence();
         stop_proc(self.org);
         if self.observer.pid > 0 { stop_proc(self.observer); }
-        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
@@ -740,10 +744,6 @@ locus Host {
         // a child starts, so the fence finds them even once that child is gone
         if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + dna::body_mark(self.holder, self.lease.token, std::process::pid()); }
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
-        // GH #583 K2: the organization's line to the knowledge service —
-        // the one this host started, or the one the operator named
-        let url = if len(self.knowledge_url) > 0 { self.knowledge_url } else if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { std::env::var("HALE_DNA_KNOWLEDGE_URL") } else { "" };
-        if len(url) > 0 { e = e + "\nHALE_DNA_KNOWLEDGE_URL=" + url; }
         // GH #664: which owner this body is, over a shared record
         let me = owner_here(self.root);
         if len(me) > 0 { e = e + "\nHALE_DNA_OWNER=" + me; }
@@ -753,39 +753,47 @@ locus Host {
         if len(self.holder) > 0 && body_in_store(self.root) { e = e + "\nHALE_DNA_LEASE=" + store_lease_key(self.root) + "\nHALE_DNA_LEASE_TOKEN=" + to_string(self.lease.token); }
         return e;
     }
-    // ---- the knowledge graph's environment (GH #583 K1) ----------------
-    // `dev` applies memory's schema before the host starts (GH #985): the
-    // driver runs `memory-migrate` with the owner's DSN, from
-    // HALE_DNA_KNOWLEDGE_DSN or dna/compose.yaml brought up, and hands the
-    // host only the record's spine DSN. The host checks the schema version
-    // on it and runs the knowledge service as the spine. Without it the
-    // host says so and runs without a knowledge service.
-    fn start_knowledge() {
-        let bin = std::env::var("HALE_DNA_KNOWLEDGE_BIN");
-        if len(bin) == 0 { return; }
-        let memory = std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") == "memory";
-        let spine = if std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE") { std::env::var("HALE_DNA_MEMORY_DSN_SPINE") } else { "" };
-        if len(spine) == 0 && !memory {
-            self.say("no HALE_DNA_MEMORY_DSN_SPINE: the knowledge service is not running (`hale dna dev` applies memory's schema from HALE_DNA_KNOWLEDGE_DSN or dna/compose.yaml and hands the host the spine's DSN)");
+    // ---- memory, as the spine (GH #985) ----------------------------------
+    // `dev` applies memory's schema before the host starts: the driver runs
+    // `memory-migrate` with the owner's DSN and hands the host only the
+    // record's spine DSN, which the organization inherits. The host refuses
+    // a memory at another schema version, naming both; without a DSN it
+    // says so and runs with no memory (nothing is projected or admitted).
+    fn start_memory() {
+        if !dna::dsn_set(dna::SPINE_DSN_ENV) {
+            self.say("no memory: " + dna::SPINE_DSN_ENV + " is not set (`hale dna dev` applies memory's schema from HALE_DNA_MEMORY_DSN_OWNER or dna/compose.yaml and hands the host the spine's DSN); nothing is projected or admitted");
             return;
         }
-        let dsn = if len(spine) > 0 { spine } else { "memory" };
-        if len(spine) > 0 {
-            let fence = memory_fence_for(spine, self.root);
-            if len(fence) > 0 { self.say("the knowledge service is not started: " + fence); return; }
+        let fence = memory_fence_for(std::env::var(dna::SPINE_DSN_ENV), self.root);
+        if len(fence) > 0 { self.say("memory: " + fence); self.quit(2); }
+        self.graph_projection.root = self.root;
+        self.graph_projection.j.repo = self.root;
+        self.graph_projection.receipts.repo = self.root;
+        self.admission.root = self.root;
+        self.admission.j.repo = self.root;
+        self.admission.ledger.repo = self.root;
+        self.vault.repo = self.root;
+        self.vault.j.repo = self.root;
+        self.memory_on = true;
+        self.say("memory: the graph, the ledger and protected evidence under the record's spine role");
+    }
+    // One pass of the spine's memory work: the record applied into the
+    // graph, the heads' requests admitted (and an adoption carried out),
+    // the redactions the record holds erased. What failed is said once,
+    // when it changes, and tried again next tick.
+    fn memory_tick() {
+        if !self.memory_on { return; }
+        let applied = self.graph_projection.apply();
+        let admitted = self.admission.tick();
+        let erased = self.vault.complete_redactions();
+        let mut why = "";
+        if len(applied.error) > 0 { why = "projection: " + applied.error; }
+        if admitted < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "admission: " + self.admission.last_error; }
+        if erased < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "redaction: " + self.vault.last_error; }
+        if why != self.memory_said {
+            if len(why) > 0 { self.say("memory: " + why); } else if len(self.memory_said) > 0 { self.say("memory: answering again"); }
+            self.memory_said = why;
         }
-        self.knowledge_dsn = dsn;
-        std::io::fs::unlink(self.dna_dir + "/knowledge.log") or discard;
-        let port = if std::env::var_exists("HALE_DNA_KNOWLEDGE_PORT") { std::env::var("HALE_DNA_KNOWLEDGE_PORT") } else { "8791" };
-        let env = if len(spine) > 0 { "\nHALE_DNA_MEMORY_DSN_SPINE=" + spine } else { "\nHALE_DNA_KNOWLEDGE_DSN=memory" };
-        self.knowledge = start(self.dna_dir, "knowledge", self.root, self.child_envs("", "") + env, bin + "\n" + self.root + "\n" + port);
-        if self.knowledge.pid <= 0 { self.say("cannot start the knowledge service"); return; }
-        self.knowledge_url = "http://127.0.0.1:" + port;
-        let kw = write_text(self.dna_dir + "/knowledge.pid", to_string(self.knowledge.pid)) or false;
-        let kd = write_text(self.dna_dir + "/knowledge.dsn", dsn) or false;
-        // GH #606: where the CLI reaches the keeper of protected evidence
-        let ku = write_text(self.dna_dir + "/knowledge.url", self.knowledge_url) or false;
-        self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres, as the record's spine role" }));
     }
     fn remove_sockets() {
         std::io::fs::unlink(self.dna_dir + "/" + VERDICT_SOCK) or discard;
@@ -1250,6 +1258,7 @@ locus Host {
         }
         let s = sync_record(self.root);
         if !s.ok { self.say("sync: " + s.summary); }
+        self.memory_tick();
         if forge_kind(self.root) != "none" {
             let g = github_sync(self.root, self.seed);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
@@ -1304,9 +1313,8 @@ locus Host {
         // 1. the expression identity: a fresh artifact of the application
         let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
         if len(cut) > 0 { self.say(cut); self.quit(1); }
-        // 2. dev: the knowledge service first, so the organization's
-        //    environment names it (GH #583 K2)
-        if self.verb == "dev" { self.start_knowledge(); }
+        // 2. memory, before the organization that reads and writes it (GH #985)
+        self.start_memory();
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
         let incoming = open_projection(self.root, self.seed, self.toolchain);
@@ -1323,7 +1331,6 @@ locus Host {
             std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
             std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
             if !self.body_assert("the organization") {
-                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
                 self.quit(3);
             }
             self.org = start(self.dna_dir, "org", self.root, self.child_envs("", ""), org_bin);
@@ -1342,7 +1349,6 @@ locus Host {
             self.app_bin = bin;
             if !self.body_assert("the expression") {
                 stop_proc(self.org);
-                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
                 self.quit(3);
             }
             self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
@@ -1382,7 +1388,6 @@ locus Host {
         self.stop_started();
         self.org_log = drain_log(self.org, self.org_log);
         if self.observer.pid > 0 { stop_proc(self.observer); }
-        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
@@ -1462,8 +1467,8 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
     // GH #646 decision 3: an adopted organism starts active work only
     // when its store is reachable — `dev` brings the service up itself;
     // `run` needs to be told where it is
-    if verb == "run" && routing_here(root) > 0 && len(knowledge_url(root)) == 0 {
-        eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no ledger service is known here (HALE_DNA_KNOWLEDGE_URL); a body without its store admits nothing — set the url, or run under `hale dna dev`");
+    if verb == "run" && routing_here(root) > 0 && !dna::dsn_set(dna::SPINE_DSN_ENV) {
+        eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no memory is named here (", dna::SPINE_DSN_ENV, "); a body without its memory admits nothing — set it, or run under `hale dna dev`");
         std::process::exit(2);
     }
     // GH #664: a body over a shared record says which owner it is, and it
@@ -1481,7 +1486,7 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
         // GH #665: the owners' controllers coordinate through the ledger —
         // a lease per owner in the store, an epoch on every write
         if verb == "run" && routing_here(root) == 0 {
-            eprintln("hale dna run: this record is shared (", OWNERS_FILE, ": ", owners_here(root), "), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`, or with HALE_DNA_KNOWLEDGE_URL)");
+            eprintln("hale dna run: this record is shared (", OWNERS_FILE, ": ", owners_here(root), "), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`)");
             std::process::exit(2);
         }
     }

@@ -343,16 +343,12 @@ fn completion_of(journal: String, task: String, state: String) -> String {
 // Every bill filed as evidence whose date falls in [from, to], with its
 // obligation as the record has it; totals by currency; the record's head.
 @unbounded
-// The ledger's rows, when a service is known here (GH #646 stage 4): the
-// export is a supported ledger query, `/ledger/rows`, never SQL of its
-// own; with no service the record alone is read, as before adoption.
+// The ledger's rows, when memory is named here (GH #646 stage 4; GH #985):
+// the export is a supported ledger query, `hale dna ledger rows`, never SQL
+// of its own; with no memory the record alone is read, as before adoption.
 fn ledger_rows() -> String {
-    if !std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { return ""; }
-    let url = std::env::var("HALE_DNA_KNOWLEDGE_URL");
-    if len(url) == 0 { return ""; }
-    let resp = std::http::get(url + "/ledger/rows?from=0") or std::http::ClientResponse { status: 0, body: b"" };
-    if resp.status != 200 { return ""; }
-    return std::str::from_bytes(resp.body);
+    let out = hale("dna\nledger\nrows");
+    return if out.code == 0 { out.stdout } else { "" };
 }
 
 fn export_week(from: String, to: String) -> String {
