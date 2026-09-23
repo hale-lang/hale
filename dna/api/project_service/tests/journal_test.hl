@@ -281,6 +281,19 @@ locus JournalCases {
         head::write_cmd(dir, "probe", argv);
         let p = head::start(dir, "probe", self.cwd, "", argv);
         std::test::assert(p.pid > 0 && head::alive(p), "the probe child runs");
+        // `start` returns once the pid file is written, and the pid is still
+        // exec'ing through `sh`, `env` and `setsid` on its way to `sleep`:
+        // until it arrives, /proc/<pid>/cmdline is `setsid sleep 7`, not the
+        // recorded line. On a loaded machine (other test files compiling
+        // beside this one, GH #1009) the check below used to land in that
+        // window. A head re-adopts a child a previous head started, long
+        // after that exec, so wait for the child to reach its argv — the
+        // property under test is the match once it is running it.
+        let mut settled = 0;
+        while settled < 250 && !head::cmd_matches(dir, "probe", p.pid) {
+            std::time::sleep(20ms);
+            settled = settled + 1;
+        }
         std::test::assert(head::cmd_matches(dir, "probe", p.pid), "a live pid running the recorded argv is re-adoptable");
         head::write_cmd(dir, "probe", "sleep\n8");
         std::test::assert(!head::cmd_matches(dir, "probe", p.pid), "another argv is not");
