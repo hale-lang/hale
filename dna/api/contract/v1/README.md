@@ -91,8 +91,10 @@ and Knowledge fixtures. They reject unexplained actor and runtime fields, check
 all declared read and command submission/recovery paths, validate request and
 response references, and exercise the validator's rejection paths.
 Fixture batches validate the complete schema profile once, then strictly parse
-and evaluate every example and injected-field mutation. Standalone validation
-still validates the schema profile on every call.
+and evaluate every example and injected-field mutation. A `Validator` profiles
+a schema text the first time it sees it and then only checks documents against
+that text; a different text is profiled afresh. The standalone check below
+validates one response per run, so it profiles the schema on every run.
 Definitions fixtures include leaf/child relationships, multiple exact revisions,
 large and signed native values, a valid empty catalog, and structured refusals. To check a captured response:
 

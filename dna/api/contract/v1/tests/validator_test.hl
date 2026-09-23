@@ -1,10 +1,11 @@
 import "../validator" as wire_contract;
 
 locus Cases {
-    params { root: String; schema: String; fixtures: String; }
+    // expect() checks every case against the one contract schema text, so it
+    // shares one Validator, which profiles that text once (#1009).
+    params { root: String; schema: String; fixtures: String; validator: wire_contract::Validator = wire_contract::Validator { }; }
     fn expect(name: String, json: String, valid: Bool, note: String) {
-        let validator = wire_contract::Validator { root: self.root };
-        let result = validator.validate_schema(self.schema, name, json);
+        let result = self.validator.validate_schema(self.schema, name, json);
         std::test::assert(result.ok == valid, note + ": " + result.error);
         if !valid { std::test::assert(len(result.error) > 0, note + ": rejection must explain failure"); }
     }
@@ -418,7 +419,7 @@ locus Cases {
 
 fn main() {
     let root = if std::env::var_exists("HALE_API_CONTRACT_ROOT") { std::env::var("HALE_API_CONTRACT_ROOT") } else { "dna/api/contract/v1" };
-    let suite = Cases { root: root, schema: std::io::fs::read_file(root + "/schema.json") or raise, fixtures: std::io::fs::read_file(root + "/fixtures.json") or raise };
+    let suite = Cases { root: root, schema: std::io::fs::read_file(root + "/schema.json") or raise, fixtures: std::io::fs::read_file(root + "/fixtures.json") or raise, validator: wire_contract::Validator { root: root } };
     suite.file_cases();
     suite.wire_cases();
     suite.definition_cases();
