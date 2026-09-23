@@ -163,7 +163,7 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: d
         // the lease just before a renewal reads it again and claims the
         // renewed one, a few times, before giving up
         if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while claiming; try again"); }
-        let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + "}", who);
+        let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + owner_json(root) + "}", who);
         let s = sync_record(root, memory);
         return answer("body: the lease of " + cur.holder + " was taken by " + who + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n");
     }
@@ -172,7 +172,7 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: d
         let mine = body_holder(root);
         if cur.holder != mine && !force { return fail("body: the lease is held by " + cur.holder + ", not this clone (" + mine + "); `hale dna body release --force` releases another's"); }
         if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while releasing; try again"); }
-        let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + "}", who);
+        let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + owner_json(root) + "}", who);
         let s = sync_record(root, memory);
         return answer("body: released the lease of " + cur.holder + " (body.released)\n");
     }
@@ -1028,7 +1028,9 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.end_object();
             let r = rec(root);
             let a = r.append(JOURNAL, read_at, dna::Row { kind: "receipt.redacted", entity: digest, body: b.result(), author: who }, signing(root), "");
-            if !a.ok && a.error == "stale" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
+            // a swap that failed with the head where it was read is a record
+            // that could not be written, not one that moved
+            if !a.ok && a.error == "stale" && r.head(JOURNAL).id != read_at { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
             if !a.ok { return fail("receipt redact: the record refused the redaction of " + digest + " (" + a.error + ")"); }
             let s2 = sync_record(root, memory);
             return answer("receipt " + digest + " redacted (" + class + "; receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n");

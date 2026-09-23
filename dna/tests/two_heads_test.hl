@@ -249,6 +249,7 @@ main locus App {
         let adopted = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nadopt\n--as\nhead-operator");
         std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption requested as"), "adoption requested: " + adopted.stdout + adopted.stderr);
         std::test::assert(record_has(app, "ledger.adopted", "checkpoint", 300), "the spine adopts the ledger on its tick");
+        std::test::assert(record_has(app, "spine.taken", "\"holder\"", 30), "the spine that adopted holds the spine lease, and the record names it");
 
         // the hosted head, with the head's role in memory
         let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_OIDC_SECRET=fake-secret HALE_DNA_MEMORY_DSN_HEAD=\"$4\" && nohup timeout 600 \"$2\" dna ui . --port \"$3\" >.hale/ui.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + toolchain() + "\n" + to_string(port) + "\n" + head_dsn);

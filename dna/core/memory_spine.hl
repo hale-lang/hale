@@ -600,6 +600,10 @@ locus RequestAdmission {
         if len(owner) == 0 || len(mac) == 0 { return "this record is shared: a request in " + author + "'s name comes from a head that names its owner and signs with that owner's key (git config dna.owner, dna.owner.key)"; }
         let key = owner_key_in(keys, owner);
         if len(key) == 0 || request_mac(key, material) != mac { return "this request is not signed with a key of " + owner + "'s"; }
+        // the organism's own writes: a body is its owner's (its lease is
+        // `owner/<owner>`), so `host` acts under whichever owner's key signs
+        // it, and the row names that owner in its body (GH #985)
+        if author == "host" { return ""; }
         let owners = Ownership { path: self.root + "/dna/org/owners", me_env: "" };
         let theirs = owners.owner_of_person(author);
         if theirs != owner { return author + " is " + (if len(theirs) > 0 { theirs + "'s" } else { "no owner's" }) + " member; " + owner + "'s head cannot act in their name"; }
@@ -751,6 +755,12 @@ locus RequestAdmission {
     fn tick() -> Int {
         if !self.ledger.ready() { return 0; }
         let moved = self.j.refresh();
+        // the organism appends to the ledger on its own connection: what this
+        // spine checks a request against is the ledger as it stands now
+        if routing_of(self.j) > 0 {
+            let lmoved = self.ledger.refresh();
+            if len(self.ledger.last_error()) > 0 { self.last_error = "the ledger could not be read: " + self.ledger.last_error(); return -1; }
+        }
         // the last adoption step asked for, and whether it was carried out
         let mut pending = Event { seq: -1 };
         let mut i = 0;

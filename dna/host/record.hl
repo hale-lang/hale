@@ -159,6 +159,13 @@ fn request_id(root: String) -> String {
 // history` and `status` show which once the spine has run. Over a shared
 // record the request is signed with this owner's key, which stays here.
 @unbounded
+// `, "owner": "<owner>"` for a body's own rows when the record names an
+// owner (GH #985): a row written as `host` still says whose body it was.
+fn owner_json(root: String) -> String {
+    let o = owner_here(root);
+    return if len(o) > 0 { ", \"owner\": " + quote(o) } else { "" };
+}
+
 fn ledger_submit(root: String, kind: String, entity: String, body: String, author: String) -> Bool {
     let digest = ledger_request(root, -1, kind, entity, body, author);
     if len(digest) == 0 { return false; }
@@ -589,6 +596,16 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
 const BODY_LEASE: String = org_runtime::BODY_LEASE;
 const BODY_LEASE_TRACK: String = org_runtime::BODY_LEASE_TRACK;
 const BODY_TTL: Int = 30;
+// GH #985: the spine lease — which body's spine projects memory, admits
+// the heads' requests and erases redacted evidence. On a shared record
+// every owner runs a body; this lease, held in memory and arbitrated
+// there, picks one: whichever spine takes it first. The others read and
+// forward.
+const SPINE_LEASE: String = "spine";
+const SPINE_TTL: Int = 30;
+// The host's tick: supervision, the record's sync, and memory's work (the
+// spine lease is renewed on it, so SPINE_TTL is many ticks).
+const HOST_TICK: Duration = 1s;
 // The body fence stops the organism this many seconds before the lease
 // it could last prove expires; another body can take the lease only once
 // it has expired.

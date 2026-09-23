@@ -539,6 +539,9 @@ locus Host {
         // this process's one handle on the ledger and the leases (GH #985):
         // opened on first use, held for the host's life, closed with it
         memory: dna::Memory = dna::Memory { };
+        spine_token: Int = 0; // the spine lease's token while this spine holds it
+        spine_projected: Int = 0; // record rows this spine projected into memory
+        spine_erased: Int = 0; // protected bodies this spine erased
         memory_on: Bool = false;
         memory_said: String = "";
         handled: String = "\n";
@@ -579,12 +582,12 @@ locus Host {
         let was_missing = len(credential_gap(p)) > 0;
         if !have && !was_missing {
             self.say("no credential for the model: none of " + names + " is set here or in ~/.config/hale-dna/" + body_key(self.root) + ".env (`hale dna secret set <NAME>`); the board says so until one is");
-            let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + "}", "host");
+            let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host");
         }
         if !have && was_missing { self.say("no credential for the model (still): none of " + names + " is set"); }
         if have && was_missing {
             self.say("the model's credential is present now");
-            let r = append_as(self.root, "body.credential_present", "model", "{\"holder\": " + quote(self.holder) + "}", "host");
+            let r = append_as(self.root, "body.credential_present", "model", "{\"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host");
         }
     }
     // GH #617: the lease is asserted before every consequential act
@@ -664,11 +667,13 @@ locus Host {
         dna::kill_marked(dna::body_mark(self.holder, self.lease.token, std::process::pid()));
     }
     fn quit(code: Int) {
+        self.release_spine();
         self.stop_started();
         self.stop_fence();
         std::process::exit(code);
     }
     fn stop_body(code: Int) {
+        self.release_spine();
         self.stop_started();
         self.stop_fence();
         stop_proc(self.org);
@@ -790,11 +795,65 @@ locus Host {
     // graph, the heads' requests admitted (and an adoption carried out),
     // the redactions the record holds erased. What failed is said once,
     // when it changes, and tried again next tick.
+    // Whether this spine holds the spine lease for this tick: renewed at its
+    // token while held, taken when free. A spine without it reads and
+    // forwards; it neither projects, admits nor erases.
+    fn spine_held() -> Bool {
+        let now = std::time::now();
+        let leases = self.memory.leases;
+        if self.spine_token > 0 {
+            if leases.put(SPINE_LEASE, dna::Lease { key: SPINE_LEASE, holder: self.holder, token: self.spine_token, expires: now + SPINE_TTL, present: true }, self.spine_token) { return true; }
+            let now_held = leases.current(SPINE_LEASE);
+            self.spine_row("spine.lost", self.spine_token, if !leases.reachable { "memory did not answer" } else if now_held.present && now_held.holder != self.holder { "taken by " + now_held.holder } else { "expired" });
+            self.spine_token = 0;
+            return false;
+        }
+        let l = leases.acquire(SPINE_LEASE, self.holder, now, SPINE_TTL);
+        if !l.present { return false; }
+        self.spine_token = l.token;
+        self.spine_row("spine.taken", l.token, "");
+        self.say("spine: this body projects memory and admits requests (the spine lease, token " + to_string(l.token) + ")");
+        return true;
+    }
+    // A change of the spine lease, as a row of the record naming the holder
+    // and its owner, so the record shows which spine projected what.
+    fn spine_row(kind: String, token: Int, why: String) {
+        let body = "{\"holder\": " + quote(self.holder) + ", \"token\": " + to_string(token) + (if len(why) > 0 { ", \"why\": " + quote(why) } else { "" }) + owner_json(self.root) + "}";
+        let ok = append_as(self.root, kind, SPINE_LEASE, body, "host");
+    }
+    fn release_spine() {
+        if self.spine_token <= 0 { return; }
+        let gave = self.memory.leases.complete(SPINE_LEASE, self.spine_token, std::time::now());
+        self.spine_row("spine.lost", self.spine_token, "released");
+        self.spine_token = 0;
+    }
+    // What this spine has done on its ticks, beside the status: whether it
+    // holds the spine lease, and the rows it projected, the requests it
+    // decided and the bodies it erased while it did (GH #985).
+    fn write_spine(held: Bool) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("holder", self.holder);
+        b.bool_field("held", held);
+        b.int_field("token", self.spine_token);
+        b.int_field("projected", self.spine_projected);
+        b.int_field("decided", self.admission.admitted + self.admission.refused);
+        b.int_field("erased", self.spine_erased);
+        b.end_object();
+        let tmp = self.dna_dir + "/spine.json.tmp";
+        let w = write_text(tmp, b.result()) or false;
+        if w { std::io::fs::rename(tmp, self.dna_dir + "/spine.json") or discard; }
+    }
     fn memory_tick() {
         if !self.memory_on { return; }
+        let held = self.spine_held();
+        if !held { self.write_spine(false); return; }
         let applied = self.graph_projection.apply();
         let admitted = self.admission.tick();
         let erased = self.vault.complete_redactions();
+        if applied.rows > 0 { self.spine_projected = self.spine_projected + applied.rows; }
+        if erased > 0 { self.spine_erased = self.spine_erased + erased; }
+        self.write_spine(true);
         let mut why = "";
         if len(applied.error) > 0 { why = "projection: " + applied.error; }
         if admitted < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "admission: " + self.admission.last_error; }
@@ -1315,7 +1374,7 @@ locus Host {
             std::process::exit(3);
         }
         self.lease = l;
-        let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"}", "host");
+        let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"" + owner_json(self.root) + "}", "host");
         self.say("body lease taken as " + self.holder + " (token " + to_string(l.token) + ")");
         self.start_fence();
         self.check_credentials();
@@ -1378,7 +1437,7 @@ locus Host {
             code = exit_code(self.org);
             if code == -2 {
                 self.tick();
-                std::time::sleep(1s);
+                std::time::sleep(HOST_TICK);
             } else {
                 // A proven failed prepared child may still need its exact
                 // rollback acknowledgment. Keep this host/lease alive to
@@ -1387,7 +1446,7 @@ locus Host {
                 let handoff_fact = pending_restart(waiting, self.handled);
                 if handoff_fact.seq >= 0 && prepared_source_restart(waiting, handoff_fact) {
                     if !self.body_alive() { self.stop_body(3); }
-                    self.tick(); code = -2; std::time::sleep(1s);
+                    self.tick(); code = -2; std::time::sleep(HOST_TICK);
                 }
             }
         }
@@ -1402,8 +1461,9 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.write_status();
         self.stop_fence();
+        self.release_spine();
         if body_release(self.root, self.lease, self.memory) {
-            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"}", "host");
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host");
             let s3 = sync_record(self.root, self.memory);
         }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
