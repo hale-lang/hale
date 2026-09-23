@@ -380,7 +380,9 @@ jobs:
       # assumes it is never shared across machines), and hosted runners
       # are not all one CPU model, so a binary built on one could stop
       # with SIGILL on another. The CPU is what clang resolves `native`
-      # to, which is what LLVM tunes the Hale code for too.
+      # to, which is what LLVM tunes the Hale code for too. (The face's
+      # builds cache uses `image` alone: face-browser builds those three
+      # for a fixed baseline CPU instead.)
       #
       # Anchored here and reused (`*compiler-identity`) by dna, face-api
       # and face-browser, so every job computes the key the same way.
@@ -426,6 +428,7 @@ jobs:
           echo "host: ${ImageOS:-unknown}, $(echo "$cpu" | grep -oE '"-target-cpu" "[^"]*"'); host $host"
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "host=$host" >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
           # The toolchain cache's key (below), here so every job spells it
           # once: the compiler, the host, and the warm script.
           warm=$(sha256sum scripts/warm-dna-cache.sh | cut -c1-16)
@@ -810,10 +813,17 @@ jobs:
       - *face-toolchain-save
 
       # The three binaries the browser fixtures spawn, cached across runs.
-      # A build is a function of the compiler, the host and the sources it
-      # reads, so the key is the compiler id and the host (see the cli job
-      # for why those) and every file under dna/ and iris/: the seeds'
-      # imports, followed transitively (`hale inputs` on each seed), reach
+      # A build is a function of the compiler, the machine it is tuned for
+      # and the sources it reads. These three are built for the portable
+      # x86-64-v3 baseline (`--target-cpu baseline`, below) instead of the
+      # host, so the CPU the runner happens to draw is not an input: keyed
+      # per host they almost never hit, because the runners of four runs
+      # of this PR were znver3, znver4, graniterapids, sapphirerapids and
+      # one LLVM 18 has no name for. The browser suite exercises what they
+      # serve, not how fast; face-api still builds and tests them native.
+      # So the key is the compiler id (see the cli job), the runner image,
+      # and every file under dna/ and iris/: the seeds' imports, followed
+      # transitively (`hale inputs` on each seed), reach
       # dna/{api,core,operations,organization_source,organization_runtime,ui}
       # and iris/process_identity and nothing outside those two trees. The
       # stdlib and the runtime are inside the compiler. The paths are the
@@ -826,7 +836,7 @@ jobs:
             dna/api/api
             dna/api/practice_review/practice_review
             dna/api/project_service/project_service
-          key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.id }}-${{ steps.compiler.outputs.host }}-${{ hashFiles('dna/**', 'iris/**') }}
+          key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
 
       - name: Build the DNA API and the head
         # The binaries the browser fixtures spawn: HALE_API_BIN,
@@ -837,9 +847,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.face-builds.outputs.cache-hit }}" != "true" ]; then
-            ./target/release/hale build dna/api
-            ./target/release/hale build dna/api/practice_review
-            ./target/release/hale build dna/api/project_service
+            ./target/release/hale build dna/api --target-cpu baseline
+            ./target/release/hale build dna/api/practice_review --target-cpu baseline
+            ./target/release/hale build dna/api/project_service --target-cpu baseline
           fi
           for b in dna/api/api dna/api/practice_review/practice_review dna/api/project_service/project_service; do
             if [ ! -f "$b" ] || [ ! -x "$b" ]; then
