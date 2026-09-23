@@ -130,7 +130,9 @@ fn body_alive(cfg: HeadConfig) -> Bool {
 }
 
 // At startup: a live pid whose command line is the one recorded in
-// `.cmd` is re-adopted; anything else is forgotten (its pid file removed).
+// `.cmd`, or still one of the wrappers `start` runs it through on its
+// way there (`cmdline_is`), is re-adopted; anything else is forgotten
+// (its pid file removed).
 @unbounded
 fn readopt_children(cfg: HeadConfig) -> String {
     let mut kept = "";

@@ -421,7 +421,8 @@ Switching a project replaces the child. The head re-implements no verb: each
 operation runs `$HALE_BIN dna …` (or `git config` for the two forge keys) as a
 detached child under `timeout -k 10 <secs> sh -e`, with its pid, exit and log
 as files, so restarting the head interrupts nothing and the next head re-adopts
-the children whose command line matches what it recorded.
+the children whose command line matches what it recorded, or is still one of
+the head's own wrappers on its way there.
 
 ```sh
 hale build dna/api/practice_review

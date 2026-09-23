@@ -292,9 +292,10 @@ locus JournalCases {
         // until it arrives, /proc/<pid>/cmdline is `setsid sleep 7`, not the
         // recorded line. On a loaded machine (other test files compiling
         // beside this one, GH #1009) the check below used to land in that
-        // window. A head re-adopts a child a previous head started, long
-        // after that exec, so wait for the child to reach its argv — the
-        // property under test is the match once it is running it.
+        // window, before the head knew the wrappers as its own. The window
+        // is `child_exec_window`'s case now; this one waits for the child
+        // to reach its argv, since the property under test is the match
+        // once it is running it.
         let mut settled = 0;
         while settled < 250 && !head::cmd_matches(dir, "probe", p.pid) {
             std::time::sleep(20ms);
@@ -316,6 +317,76 @@ locus JournalCases {
         std::test::assert(past.text == "" && past.offset == 6 && past.complete, "past the end");
         std::test::assert_eq_str(head::mode_of(dir + "/missing"), "", "no mode for a missing file");
     }
+
+    // The window `child_files` settles through, closed in the head: a head
+    // restarted the moment after `start` returned reads the child's
+    // cmdline while it is still one of the wrappers `start` runs it
+    // through, and must still know it as its own. So every check here is
+    // at once, with no wait — and repeated, since one start may land past
+    // the window. A live process under the record that is neither the
+    // wrappers nor the argv stays foreign.
+    fn child_exec_window() {
+        let dir = self.state + "/children";
+        std::io::fs::mkdir(dir) or discard;
+        let argv = "sleep\n9";
+        let mut round = 0;
+        while round < 10 {
+            head::write_cmd(dir, "early", argv);
+            let p = head::start(dir, "early", self.cwd, "PROBE=1\nOTHER=two", argv);
+            std::test::assert(p.pid > 0, "the early child has a pid");
+            std::test::assert(head::cmd_matches(dir, "early", p.pid), "a child still exec'ing through its wrapper is ours (round " + to_string(round) + ")");
+            head::stop_proc(p);
+            std::test::assert(!head::alive(p) && !head::cmd_matches(dir, "early", p.pid), "a stopped child is not re-adoptable (round " + to_string(round) + ")");
+            round = round + 1;
+        }
+        // The same, held in the window rather than raced into it: a FIFO
+        // for a log with no reader stops the inner shell in its
+        // redirection, before its `exec env`, so the pid reads stage 1 of
+        // `cmdline_is` for as long as this looks. Its parent, the outer
+        // shell, reads stage 0 — what the pid itself reads between its
+        // fork and its first exec.
+        std::test::assert(dna::run_tool("mkfifo\n" + dir + "/held.log").code == 0, "a FIFO for the held child's log");
+        head::write_cmd(dir, "held", argv);
+        let held = head::start(dir, "held", self.cwd, "PROBE=1", argv);
+        std::test::assert(held.pid > 0, "the held child has a pid");
+        let now = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(held.pid)).stdout;
+        std::test::assert(std::str::starts_with(now, "sh\n-c\ncd "), "the held child is still its inner shell: " + now);
+        std::test::assert(head::cmd_matches(dir, "held", held.pid), "a child held in its inner shell is ours");
+        let outer = std::str::parse_int(std::str::trim(dna::run_tool("ps\n-o\nppid=\n-p\n" + to_string(held.pid)).stdout)) or - 1;
+        std::test::assert(outer > 0 && head::cmd_matches(dir, "held", outer), "the outer shell's command line is ours");
+        std::test::assert(!head::cmd_matches(dir, "early", held.pid), "the held child's wrappers are not another child's");
+        head::stop_proc(held);
+        std::test::assert(!head::alive(held) && !head::cmd_matches(dir, "held", held.pid), "a stopped held child is not re-adoptable");
+        std::io::fs::unlink(dir + "/held.log") or discard;
+        // The stages no FIFO can hold, as command lines.
+        let want = head::cmd_digest(argv);
+        std::test::assert(head::cmdline_is(dir, "early", "env\nPROBE=1\nOTHER=two\n" + dna::in_new_session(argv), want), "stage 2, env");
+        std::test::assert(head::cmdline_is(dir, "early", dna::in_new_session(argv), want), "stage 3, the session shell");
+        std::test::assert(head::cmdline_is(dir, "early", "setsid\n" + argv, want), "stage 4, setsid");
+        std::test::assert(head::cmdline_is(dir, "early", argv, want), "stage 5, the program");
+        std::test::assert(!head::cmdline_is(dir, "early", "setsid\nsleep\n8", want), "setsid of another argv is foreign");
+        std::test::assert(!head::cmdline_is(dir, "early", "env\nA=1\n" + dna::in_new_session("sleep\n8"), want), "env of another argv is foreign");
+        std::test::assert(!head::cmdline_is(dir, "early", "sh\n-c\nexec \"$@\"\nsh\n" + argv, want), "a shell running another script is foreign");
+        std::test::assert(!head::cmdline_is(dir, "early", "sleep\n9\nx", want), "another program is foreign");
+        let own_env = "env\nX=1\nsleep\n9";
+        std::test::assert(head::cmdline_is(dir, "early", own_env, head::cmd_digest(own_env)), "an argv that begins with env matches as itself");
+        // The wrappers of ANOTHER child, checked as early, against this
+        // record: its own pid file and log in them, and another argv at
+        // their end.
+        head::write_cmd(dir, "foreign", argv);
+        let other = head::start(dir, "other", self.cwd, "PROBE=1", "sleep\n11");
+        std::test::assert(other.pid > 0 && !head::cmd_matches(dir, "foreign", other.pid), "another child's wrappers are not this child's");
+        // A process this fixture started itself, running something else,
+        // written into the record's pid file.
+        let r = dna::run_tool("sh\n-c\nsleep 12 </dev/null >/dev/null 2>&1 & echo $!");
+        let stranger = std::str::parse_int(dna::trim_nl(r.stdout)) or - 1;
+        std::io::fs::write_file(dir + "/foreign.pid", to_string(stranger) + "\n") or discard;
+        let s = head::Proc { pid: stranger, dir: dir, name: "foreign" };
+        std::test::assert(head::alive(s), "the stranger runs");
+        std::test::assert(!head::cmd_matches(dir, "foreign", stranger), "a live process running another command is foreign");
+        head::stop_proc(s);
+        head::stop_proc(other);
+    }
 }
 
 fn main() {
@@ -331,6 +402,7 @@ fn main() {
     cases.child_receipts();
     cases.registry();
     cases.child_files();
+    cases.child_exec_window();
     dna::scratch_done(root);
     eprintln("head journal cases passed");
 }

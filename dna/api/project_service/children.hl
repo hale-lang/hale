@@ -12,6 +12,9 @@
 // from `dna/host/procs.hl` (GH #566 F8): the host is embedded in the
 // `hale` binary and importing it from here would pull the whole host
 // seed into a head that needs one file of it. Keep the two in step.
+// Here `start`'s two shell scripts are named (`pid_script`,
+// `log_redirect`), because `cmdline_is` recognizes them in a command
+// line; the host writes the same strings inline.
 
 import "../../core" as dna;
 
@@ -22,19 +25,22 @@ type Proc {
 }
 
 // `argv` newline-separated; `envs` as `NAME=value` lines; cwd = `cwd`.
-// The pid recorded is the program's own: the inner shell execs `env`,
-// which execs the program, so `/proc/<pid>/cmdline` is `argv`.
+// The pid recorded is the program's own: every wrapper below execs the
+// next, so `/proc/<pid>/cmdline` ends as `argv`. It is not `argv` yet
+// when this returns: the pid file is written as the pid is forked, and
+// the pid is still exec'ing through the wrappers on its way to the
+// program (`cmdline_is` names them).
 fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc {
     std::io::fs::mkdir(dir) or discard;
     std::io::fs::unlink(dir + "/" + name + ".exit") or discard;
     std::io::fs::unlink(dir + "/" + name + ".pid") or discard;
-    // the inner shell: run the program, record its pid, wait, record its code
-    let script = "cd " + shq(cwd) + " && exec env " + env_words(envs) + " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
+    // the inner shell: into the cwd, the program under `env`, output to the log
+    let script = "cd " + shq(cwd) + " && exec env " + env_words(envs) + log_redirect(dir, name);
     // a session of its own: what it starts stays in it, however it is
     // regrouped or reparented, and `kill_tree` stops the whole session
     // (GH #970)
     let argv = dna::in_new_session(argv);
-    let outer = "( sh -c " + shq("\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > " + shq(dir + "/" + name + ".exit")) + " sh sh -c " + shq(script) + " sh " + argv_words(argv) + " ) >/dev/null 2>&1 &";
+    let outer = "( sh -c " + shq(pid_script(dir, name)) + " sh sh -c " + shq(script) + " sh " + argv_words(argv) + " ) >/dev/null 2>&1 &";
     let r = dna::run_tool("sh\n-c\n" + outer);
     let mut waited = 0;
     while waited < 50 {
@@ -65,6 +71,18 @@ fn env_words(envs: String) -> String {
 
 fn argv_words(argv: String) -> String {
     return env_words(argv);
+}
+
+// The outer shell's script: run the rest, record its pid, wait, record
+// its code.
+fn pid_script(dir: String, name: String) -> String {
+    return "\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > " + shq(dir + "/" + name + ".exit");
+}
+
+// How the inner shell's script ends: the rest exec'd, with the log as
+// its output.
+fn log_redirect(dir: String, name: String) -> String {
+    return " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
 }
 
 fn alive(p: Proc) -> Bool {
@@ -156,17 +174,89 @@ fn read_cmd(dir: String, name: String) -> String {
 }
 
 // Whether `pid` is alive and running the argv line recorded in
-// `<dir>/<name>.cmd`. Linux only: the argv comes from
-// `/proc/<pid>/cmdline`, NUL-separated, read through `tr` because a
-// NUL ends a String. A reused pid running an identical line would pass
-// (the contract's R6, theoretical).
+// `<dir>/<name>.cmd`, or still on its way there through the wrappers
+// `start` runs it through (`cmdline_is`). Linux only: the argv comes
+// from `/proc/<pid>/cmdline`, NUL-separated, read through `tr` because
+// a NUL ends a String. A reused pid running an identical line would
+// pass (the contract's R6, theoretical).
 fn cmd_matches(dir: String, name: String, pid: Int) -> Bool {
     if pid <= 0 { return false; }
     let want = read_cmd(dir, name);
     if len(want) == 0 { return false; }
     let r = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(pid));
     if r.code != 0 { return false; }
-    return cmd_digest(r.stdout) == want;
+    return cmdline_is(dir, name, dna::trim_nl(r.stdout), want);
+}
+
+// Whether a command line (newline-separated words) is the argv digested
+// as `want`, or one of the wrappers `start` runs `<name>` through with
+// that argv at its end. `start` returns once the pid file is written,
+// which is as the pid is forked, before it execs anything, so a head
+// restarted the moment after reads one of these stages, each exec'ing
+// the next:
+//
+//   0  sh -c <pid_script(dir, name)> sh <1>     the outer shell, forked
+//   1  sh -c 'cd … && exec env …<log_redirect(dir, name)>' sh <3>
+//   2  env NAME=value… <3>                      the inner shell's exec
+//   3  sh -c <session_script()> sh <4>
+//   4  setsid <argv>
+//   5  <argv>
+//
+// A stage is peeled only when the line begins with exactly its wrapper:
+// 0 and 1 name this child's own pid file and log, 3 is a fixed script,
+// and 2 and 4 only exec the words after them. So a line matches only
+// when what it will exec is the recorded argv; another program, or a
+// shell running any other script, is foreign. The digest is compared
+// before every peel, so an argv that itself begins with `env` or
+// `setsid` matches as itself. (Where there is no `setsid`, stage 4 is
+// perl, on macOS, which has no /proc to read.)
+fn cmdline_is(dir: String, name: String, cmdline: String, want: String) -> Bool {
+    let mut line = cmdline;
+    let mut stage = 0;
+    while stage < 5 {
+        if cmd_digest(line) == want { return true; }
+        line = peel(dir, name, line, stage);
+        stage = stage + 1;
+    }
+    return cmd_digest(line) == want;
+}
+
+// `line` without the wrapper of `stage` (`cmdline_is`), or `line` itself
+// when it does not begin with exactly that wrapper.
+fn peel(dir: String, name: String, line: String, stage: Int) -> String {
+    let first = dna::line_at(line, 0);
+    if stage == 2 {
+        if first != "env" { return line; }
+        // what `env` itself takes as assignments: every word up to the
+        // first without a `=`
+        let mut rest = drop_words(line, 1);
+        while std::str::contains(dna::line_at(rest, 0), "=") { rest = drop_words(rest, 1); }
+        return rest;
+    }
+    if stage == 4 { return if first == "setsid" { drop_words(line, 1) } else { line }; }
+    if first != "sh" || dna::line_at(line, 1) != "-c" || dna::line_at(line, 3) != "sh" { return line; }
+    let script = dna::line_at(line, 2);
+    let ours = if stage == 0 { script == pid_script(dir, name) } else if stage == 1 { std::str::starts_with(script, "cd ") && std::str::contains(script, " && exec env ") && std::str::ends_with(script, log_redirect(dir, name)) } else { script == session_script() };
+    return if ours { drop_words(line, 4) } else { line };
+}
+
+// The script `dna::in_new_session` runs its argv under: the third word
+// of what it returns.
+fn session_script() -> String {
+    return dna::line_at(dna::in_new_session("x"), 2);
+}
+
+// `line` without its first `n` newline-separated words; "" past the end.
+fn drop_words(line: String, n: Int) -> String {
+    let mut rest = line;
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return ""; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    return rest;
 }
 
 // `max` bytes of the file at `path` from `offset`; `complete` when the

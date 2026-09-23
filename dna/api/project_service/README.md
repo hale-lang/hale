@@ -35,7 +35,7 @@ routes, envelopes and operations are described in
 | `registry.hl` | `Registry` over `projects.jsonl`: register, activate, deactivate, forget, restore |
 | `policy.hl` | the two per-project policies the head synthesizes when absent, and their decode checks |
 | `proxy.hl` | the one-connection HTTP exchange: the proxy, the readiness probe |
-| `children.hl` | detached children with pid/exit/log files (the host's `procs.hl` idiom), `.cmd` digests for re-adoption, log pages, private files |
+| `children.hl` | detached children with pid/exit/log files (the host's `procs.hl` idiom), `.cmd` digests for re-adoption (a child still exec'ing through the head's own wrappers on its way to the recorded argv is re-adopted too, so a head restarted the moment after a start keeps it), log pages, private files |
 | `types.hl` | `HeadContext`, `Plan`, `ChildView`, `Receipt`, `Registered`, the `Outcomes` interface |
 
 ## State
