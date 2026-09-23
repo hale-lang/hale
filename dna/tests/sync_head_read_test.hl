@@ -1,0 +1,128 @@
+// GH #961 — a sync never acts on a head it could not read. A clone whose
+// record has diverged from the remote's (a row only here, a row only
+// there) syncs under a `git` that fails ONE `rev-parse --verify` of a
+// journal ref, the first after the sync's fetch. Before the fix a
+// failed read of this clone's head was "no record here yet": the ref
+// was moved to the remote's head and the local-only row left the chain,
+// while the sync reported "pulled the record". A failed read of the
+// remote's head was "the remote has none", and the local chain was
+// pushed as if it did. Each now refuses with the chain untouched, and
+// the sync after them, under the real `git`, reconciles both rows.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// `argv` in `dir` with the shim's directory first on PATH.
+fn shimmed(dir: String, shim: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && PATH=\"$2:$PATH\" && export PATH && shift 2 && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + shim + "\n" + argv);
+}
+
+// A `git` that fails the first `rev-parse --verify <ref>` after a fetch,
+// once (it leaves `<state>.done` when it has), and runs the real one for
+// everything else.
+fn write_shim(dir: String, real_git: String, ref: String, state: String) {
+    let script = "#!/bin/sh\n"
+        + "for last; do :; done\n"
+        + "case \" $* \" in *\" fetch \"*) [ -e '" + state + ".done' ] || : > '" + state + ".armed';; esac\n"
+        + "case \" $* \" in *\" rev-parse \"*\" --verify \"*)\n"
+        + "  if [ -e '" + state + ".armed' ] && [ \"$last\" = '" + ref + "' ]; then\n"
+        + "    rm -f '" + state + ".armed'; : > '" + state + ".done'\n"
+        + "    echo \"fatal: unable to read " + ref + " (shim)\" >&2; exit 128\n"
+        + "  fi;;\n"
+        + "esac\n"
+        + "exec '" + real_git + "' \"$@\"\n";
+    let mk = dna::run_tool("mkdir\n-p\n" + dir);
+    std::io::fs::write_file(dir + "/git", script) or discard;
+    let x = dna::run_tool("chmod\n+x\n" + dir + "/git");
+}
+
+@unbounded
+fn on_chain(r: dna::GitRecord, id: String) -> Bool {
+    return std::str::contains(r.ids("journal"), id + "\n");
+}
+
+main locus App {
+    params {
+        core: dna::Dna = dna::Dna { planned: true, org_id: "sync-head-read-placeholder" };
+    }
+    run() {
+        let scratch = dna::scratch_root("sync-head-read");
+        dna::reap_on_exit(scratch);
+        let bare = scratch + "/origin.git";
+        let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        std::test::assert_eq_int(b0.code, 0, "a bare remote: " + b0.stderr);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\ndiverged");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/diverged";
+        let c1 = in_dir(app, "git\nconfig\nuser.name\nmara");
+        let c2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");
+        let c3 = in_dir(app, "git\nadd\n-A");
+        let c4 = in_dir(app, "git\ncommit\n-q\n-m\nthe app");
+        let c5 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
+        let first = in_dir(app, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(first.code, 0, "the first sync shares the record: " + first.stdout + first.stderr);
+
+        // diverge: a row only on the remote, a row only in this clone
+        let r = dna::GitRecord { repo: app };
+        let base = r.head("journal");
+        std::test::assert(base.ok && !base.absent, "the record has a head: " + base.why);
+        let theirs = r.build(base.id, dna::Row { kind: "task.born", entity: "theirs", body: "on the remote only", author: "jo" }, false, "");
+        std::test::assert(len(theirs) > 0, "a remote-only row is built");
+        let pushed = in_dir(app, "git\npush\n-q\norigin\n" + theirs + ":refs/dna/journal");
+        std::test::assert_eq_int(pushed.code, 0, "and pushed straight to the remote: " + pushed.stderr);
+        let mine = r.append("journal", base.id, dna::Row { kind: "task.born", entity: "mine", body: "in this clone only", author: "mara" }, false, "");
+        std::test::assert(mine.ok, "a local-only row lands: " + mine.error);
+
+        let found = dna::run_tool("sh\n-c\ncommand -v git");
+        let real_git = dna::trim_nl(found.stdout);
+        std::test::assert(len(real_git) > 0, "the real git is on PATH");
+
+        // this clone's head cannot be read once, right after the fetch
+        let local_shim = scratch + "/shim-local";
+        write_shim(local_shim, real_git, "refs/dna/journal", scratch + "/local");
+        let refused = shimmed(app, local_shim, toolchain() + "\ndna\nsync");
+        std::test::assert(std::io::fs::file_exists(scratch + "/local.done"), "the shim failed this clone's head read: " + refused.stdout + refused.stderr);
+        std::test::assert(refused.code != 0, "a sync that could not read this clone's head refuses: " + refused.stdout + refused.stderr);
+        std::test::assert(std::str::contains(refused.stdout + refused.stderr, "could not be read"), "and says why: " + refused.stdout + refused.stderr);
+        std::test::assert(!std::str::contains(refused.stdout + refused.stderr, "pulled the record"), "never that it pulled the record");
+        std::test::assert_eq_str(r.head("journal").id, mine.id, "this clone's head is where it was");
+        std::test::assert(on_chain(r, mine.id), "the local-only row is still on the chain");
+
+        // the remote's head cannot be read once
+        let remote_shim = scratch + "/shim-remote";
+        write_shim(remote_shim, real_git, "refs/dna/remote/journal", scratch + "/remote");
+        let remote_before = in_dir(app, "git\nls-remote\norigin\nrefs/dna/journal");
+        let refused2 = shimmed(app, remote_shim, toolchain() + "\ndna\nsync");
+        std::test::assert(std::io::fs::file_exists(scratch + "/remote.done"), "the shim failed the remote's head read: " + refused2.stdout + refused2.stderr);
+        std::test::assert(refused2.code != 0, "a sync that could not read the remote's head refuses: " + refused2.stdout + refused2.stderr);
+        std::test::assert(std::str::contains(refused2.stdout + refused2.stderr, "could not be read"), "and says why: " + refused2.stdout + refused2.stderr);
+        std::test::assert_eq_str(r.head("journal").id, mine.id, "this clone's head is still where it was");
+        let remote_after = in_dir(app, "git\nls-remote\norigin\nrefs/dna/journal");
+        std::test::assert_eq_str(remote_after.stdout, remote_before.stdout, "and nothing was pushed to the remote");
+
+        // under the real git the sync reconciles: both rows on the chain
+        let healed = in_dir(app, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(healed.code, 0, "a sync that can read both heads reconciles: " + healed.stdout + healed.stderr);
+        std::test::assert(on_chain(r, theirs), "the remote-only row is on the chain");
+        let j = dna::GitJournal { repo: app };
+        let mut kept = false;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "task.born" && e.entity == "mine" { kept = true; }
+            i = i + 1;
+        }
+        std::test::assert(kept, "and the local-only row, rebuilt onto it");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }
