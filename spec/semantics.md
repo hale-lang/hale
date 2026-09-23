@@ -3611,6 +3611,12 @@ sites. The mapping is canonical, not advisory:
     callers hold a frame, can address the error channel
     inline, and the value-error path doesn't conflict with
     the closure-violation channel.
+  - **Interface method signatures** (GH #732). A call through
+    the interface carries the channel exactly as a direct call
+    on a fallible method does: every `or` form applies, and a
+    call that does not address the error is rejected as any
+    unaddressed fallible call is. See `spec/types.md`
+    § "Interface types (F.20)" for which methods satisfy one.
 - **`fallible(E)` may NOT be declared on:**
   - **Lifecycle methods** (`birth` / `run` / `accept` /
     `drain` / `dissolve` / `on_failure`). The substrate

@@ -131,6 +131,35 @@ let id = parse_count(primary) or parse_count(fallback) or 0;
 "Try the primary; if that fails, try the fallback; if *that*
 fails, use 0."
 
+## Through an interface
+
+An interface method can say it fails, the same way:
+
+```hale
+type StoreError { kind: String; }
+
+interface Store {
+    fn put(key: String) -> Int fallible(StoreError);
+}
+
+locus Strict {
+    fn put(key: String) -> Int fallible(StoreError) {
+        if key == "" { fail StoreError { kind: "empty key" }; }
+        return len(key);
+    }
+}
+
+fn store_or_zero(s: Store, key: String) -> Int {
+    return s.put(key) or 0;
+}
+```
+
+A call through the interface is addressed like any other fallible
+call. A locus whose `put` cannot fail still satisfies `Store`; one
+whose `put` fails with a different error type, or that fails where
+the interface says it cannot, does not — `hale check` names both
+signatures.
+
 ## Why it works this way
 
 This is the only failure channel you need at the basics level,

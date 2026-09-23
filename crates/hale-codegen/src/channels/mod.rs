@@ -2255,6 +2255,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 let (recv_val, recv_ty) =
                     self.lower_expr(receiver, scope)?;
+                // GH #732: a fallible method called through an
+                // interface dispatches through its vtable slot.
+                if let CodegenTy::Interface(iface_name) = &recv_ty {
+                    return self.lower_iface_fallible_method_call(
+                        recv_val.into_pointer_value(),
+                        iface_name,
+                        method_name,
+                        args,
+                        scope,
+                    );
+                }
                 let locus_name = match recv_ty {
                     CodegenTy::LocusRef(n) => n,
                     other => {
