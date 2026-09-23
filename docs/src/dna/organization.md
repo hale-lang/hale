@@ -205,9 +205,10 @@ relays it, and `hale dna status` in acme's clone shows it as
 `[unadmitted]` with north's name until then. Changing the map is a
 mutation of the organization that every affected owner approves, each
 through one of its members; one rejection settles it. Each owner's body
-holds its own lease in the store (a shared record runs no body until
-its ledger is adopted), and a write the body makes after its lease was
-taken over is refused by the service, whatever the body still believes.
+holds its own lease in memory, `owner/<owner>` (a shared record runs
+no body until its ledger is adopted), and a write the body makes after
+its lease was taken over is refused `fenced`, whatever the body still
+believes.
 Each owner mints its own ids (`acme:t3`, `acme:m2`) and claims its own
 effects (`acme:apply:<candidate>`), so nothing two owners do contends
 for one name; a birth the store says is already claimed is minted again.
@@ -218,12 +219,17 @@ from there. Only the receiving owner settles a transfer. Money is each
 owner's own: a grant names who pays (`funder: "acme/ops"`), every
 allocation is reserved once by the store, every attempt's spend is
 retained, and a purchase two owners fund is two reservations that may
-not both land — undoing one is a compensation someone authorizes. One
-owner (or a third party) hosts the shared record's service, named in
-the map (`host = acme`) and changed only with every owner's approval;
-it hands each owner a key (`HALE_DNA_OWNER_KEYS` on the service, `git
-config dna.owner.key` on each head), and a write in a person's name is
-admitted only from a head of that person's owner.
+not both land — undoing one is a compensation someone authorizes.
+Every owner runs a body, and the **spine lease** in memory picks one
+of them to project the record, admit the heads' requests and erase
+redacted evidence; the others read and forward
+([Operating](./operating.md#the-spine-lease)). Each owner holds a key
+out of band: the spine has them all (`HALE_DNA_OWNER_KEYS`,
+`<owner>=<key> …`), each head its own owner's (`git config dna.owner`,
+`dna.owner.key`), and a request in a person's name is admitted only
+when it is signed with the key of that person's owner. The map may
+also name a `host = <owner>`, changed only with every owner's
+approval; it no longer decides where anything runs.
 
 ## Who decides what
 

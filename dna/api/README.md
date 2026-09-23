@@ -2,10 +2,11 @@
 
 The service API reads practices, reviews and handed Tasks from an existing local DNA Record
 and inspects the project's committed organization source. An application-composed
-head can also expose its real workflow catalog. Configured Knowledge reads use
-the private native state service and its authoritative graph store. The API runs
-separately from the organization body and iris. Record and source reads do not
-require Postgres; configured Knowledge reads require the state service.
+head can also expose its real workflow catalog. Configured Knowledge reads open
+memory (Postgres) in the API's own process, as the record's head role, and read
+the graph the body's spine projects there. The API runs separately from the
+organization body and iris. Record and source reads do not require Postgres;
+configured Knowledge reads require memory.
 Typed projections in `dna/operations` are shared with the native CLI. The API
 does not invoke CLI operational commands or parse terminal rendering. Organization
 inspection uses the native compiler's machine-readable topology export.
@@ -169,20 +170,27 @@ errors; they never masquerade as empty catalogs. Reader resource bounds produce
 
 ## Knowledge reads
 
-Set `HALE_DNA_KNOWLEDGE_URL` to the private state service base URL and configure
-`HALE_DNA_KNOWLEDGE_READ_KEY` on both services. The key is at least 32 bytes and
-contains no control characters. The public API sends an authenticated native
-`POST /graph/read`; it does not invoke a CLI or forward browser authorization
-headers. Missing either setting means `reads.knowledge=false` and
-`knowledge_unsupported`. Configured failures remain unavailable, never an empty
-successful graph. Support is a configuration claim, not a health check.
+Set `HALE_DNA_MEMORY_DSN_HEAD` to the record's head DSN (`hale dna memory
+migrate` prints it). The API reads the graph from memory in its own process,
+as the head's role, which may read the graph but never write it: there is no
+Knowledge service, URL or read key. The API holds one memory handle, opened on
+the first read and kept for the life of the process; a session that no longer
+answers is dialled again. It does not forward browser authorization headers.
+Without the DSN, `reads.knowledge=false` and reads answer `knowledge_unsupported`.
+Configured failures remain unavailable, never an empty successful graph. Support
+is a configuration claim, not a health check.
+
+A read answers from the spine's projection as it stands. The head never
+projects: a projection that has not reached the record's head answers 503
+`knowledge_projection_unavailable` until the body's tick applies it, and a
+memory scoped to another record answers `knowledge_scope_mismatch`.
 
 The API derives the reader from its trusted local configuration or existing OIDC
-session before any upstream call. Public queries accept only `id`, `target`,
+session before any memory read. Public queries accept only `id`, `target`,
 `limit` (default 25, range 1..100), `cursor` and `snapshot`. Edges, bindings and
 dependents require an exact node `id`; nodes allow optional exact lookup. Unknown
 or duplicate fields, noncanonical limits and cursor without snapshot fail before
-transport. A missing or hidden exact node receives the same 404. A target is a
+memory is read. A missing or hidden exact node receives the same 404. A target is a
 native locus-path relevance context, not identity or authority.
 
 Knowledge pages use `returned`, `has_more` and `next_cursor`, with no offset or
@@ -192,8 +200,8 @@ visibility, reader scope and target. All graph collections for that captured vie
 share it. A changed view returns 409. The public adapter strictly validates every
 nested response, exact Int64 decimal string and the canonical basis hash; it
 rejects a wrong Record, reader scope, target or inconsistent page. It rebuilds
-public errors with known codes and generic messages, without upstream diagnostic
-text or credentials.
+public errors with known codes and generic messages, without the store's
+diagnostic text or credentials.
 
 Node `projection_state` is the native projection lifecycle; `source_provenance`
 remains null. Historical empty names remain unknown; empty `supersedes` can also
@@ -206,17 +214,54 @@ consumption, source-provenance backfill, curation or write authority.
 `Api.knowledge` accepts the structural `KnowledgeProvider` interface for a
 composed host or focused tests. `supported()` does no read; `read(request)` gets
 the captured Source and authenticated reader. The existing `serve` signature
-constructs `ConfiguredKnowledge` from environment settings internally. Response
-bodies are capped at 1 MiB and outbound requests at 16 KiB; the private service
-also enforces its scan budgets. The public API is source-built; the compiler's
-embedded DNA inventory does not currently package this API seed. Packaging a
+constructs `LocalKnowledge` (`dna/api/knowledge_memory.hl`) internally. The
+read keeps its own bounds: a request of at most 16 KiB, a Record of at most
+10,000 rows and 8 MiB, at most 10,000 stored rows scanned per page, a cursor of
+at most 8 KiB and a response of at most 1 MiB; past any of them the read is
+`knowledge_read_limit`. The public API is source-built; the compiler's embedded
+DNA inventory does not currently package this API seed. Packaging a
 distributable API belongs to the service deployment work.
 
-Transport deployment prerequisites remain: the current native HTTP client's
-`timeout_ms` field is not enforced, so this adapter does not claim a request
-deadline. Its `max_retries=0` disables repeat attempts, but the client discards 5xx
-response bodies; these become generic `knowledge_unavailable`. An enforced native
-transport deadline is required before relying on this path for remote deployment.
+## Knowledge commands
+
+Knowledge commands (`dna.knowledge.edge.link@1` and `.unlink@1`, and the
+reviewed node and binding profiles) are admitted into the Record in the API's
+own process, by the operations' `KnowledgeCommands` (`LocalKnowledgeCommands`
+in `dna/api/knowledge_memory.hl`). There is no command key and no service to
+reach. Set `HALE_DNA_KNOWLEDGE_COMMAND_POLICY` to the path of an explicit
+authority document; without it the API advertises no Knowledge command and
+answers `commands_unsupported`. The API reads the document once, when it
+starts, so an edit to the file does not change the basis a running API decides
+on. A document that is empty, larger than 64 KiB or invalid for this Record
+stops the API at startup (exit 2).
+
+```json
+{
+  "format": "dna.knowledge-authority/1",
+  "application_id": "<Record genesis identity>",
+  "grants": [
+    {
+      "mode": "local",
+      "name": "alice",
+      "authority": "knowledge-editor",
+      "edge_link": "direct",
+      "edge_unlink": "direct",
+      "recover": true
+    }
+  ]
+}
+```
+
+`ops::KnowledgePolicyCodec` (`dna/operations/knowledge_policy.hl`) decodes it
+against the Record's identity and its `dna.trust` (`local` or `signed`; a
+signed Record signs the facts the commands admit). Grants match the exact
+authenticated mode/name pair, at most 128 of them. `edge_link` and optional
+`edge_unlink` are `direct`, `review` or `deny`; omitting `edge_unlink` denies
+removal. The optional `node_propose`, `node_revise`, `node_retire`,
+`binding_bind` and `binding_unbind` are `review` or `deny`, and a `review` grant
+among them needs its `node_scopes` or `binding_scopes` (`{author, target}`
+pairs, at most 32, never lateral). The public contract is in
+[contract/v1](contract/v1/README.md#optional-knowledge-relationship-command).
 
 ## Practice and Review command providers
 
@@ -388,7 +433,7 @@ service checks these and current eligibility in the captured Record, then admits
 one `task.reassigned` fact at the exact predecessor. This fact is both the
 durable command identity and the assignment effect. The same Task remains open;
 its obligation, acceptance, evidence and prior assignment history are preserved.
-No Body, Host or Knowledge graph service is needed for this direct operation.
+No Body, Host or Knowledge memory is needed for this direct operation.
 The whole request is bounded to 32768 encoded bytes, request keys to 128 bytes
 and person/Task identities to 256 bytes.
 

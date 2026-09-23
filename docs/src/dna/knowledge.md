@@ -27,72 +27,67 @@ bound upward a **concern**, one's own an **initiative**, and siblings
 do not privately coordinate — a lateral proposal is refused before
 any Review.
 
-**The knowledge service holds the live half.** A small Hale program,
-`dna/knowledge/service`, tails the record — every `knowledge.*` row
-from where it left off, each digest resolved to its receipt — into a
-store, and answers questions about it over HTTP. The store is
-Postgres: shared, so the organization on your workstation and the
-services on their nodes see one graph; durable, so a restart resumes
-from a watermark and converges. Nothing about it is on the local
-filesystem. In a pinch (a laptop with nothing installed, a test) the
-same service runs over an in-memory store that lives as long as the
-process.
+**Memory holds the live half.** The body's host tails the record —
+every `knowledge.*` row from where it left off, each digest resolved
+to its receipt — into a graph in Postgres, and everything that asks a
+question of the graph reads it there. The store is shared, so the
+organization on your workstation and the services on their nodes see
+one graph, and durable, so a restart resumes from a watermark and
+converges. Nothing about it is on the local filesystem. There is no
+service in front of it and no in-process stand-in: memory is Postgres.
+
+The tail is `MemoryProjection`, and it lives in the operations
+(`dna/operations/memory_tail.hl`), beside the command codecs it
+decodes admitted facts with, not in the core. The stores it writes
+into are the core's (`dna/core/memory_*.hl`), and they reach Postgres
+through pond's driver, pinned under `dna/core/pond` and vendored into
+your project at `vendor/dna/pond`. The projection runs on the host's
+tick, once a second, while that host holds the **spine lease** (see
+[Operating](./operating.md#memory)): the record is projected by
+exactly one spine at a time, and nothing else writes the graph.
 
 ## Running it
 
-`hale dna dev` runs the service for you. `init` wrote
-`dna/compose.yaml`, the graph's Postgres with a named volume per
-repository, and `dev` brings it up, waits for it, derives the
-connection string and starts the service beside the organization:
+`hale dna dev` gives the organization its memory. `init` wrote
+`dna/compose.yaml`, memory's Postgres with a named volume per
+repository, and `dev` brings it up, waits for it, applies memory's
+schema for the record, and starts the host on it:
 
 ```text
 $ hale dna dev
+hale dna dev: memory: the graph, the ledger and protected evidence under the record's spine role
 hale dna dev: organization (pid 41200) from …/chat under LOTUS_OBS=1
-hale dna dev: membrane bound at …/chat/.hale/dna
-hale dna dev: knowledge service (pid 41233) at :8791 over postgres
-hale dna dev: expression chat (pid 41240) under LOTUS_OBS=1
+…
+hale dna dev: spine: this body projects memory and admits requests (the spine lease, token 1)
 ```
 
-`docker compose` on `PATH` is all it needs. Without it, the host says
-so and runs without a knowledge service; point
-`HALE_DNA_KNOWLEDGE_DSN` at a Postgres of your own
-(`postgres://user:password@host:port/db`) to use one anyway, or at
-`memory` for the in-process store.
+`docker compose` on `PATH` is all it needs. Without it, point
+`HALE_DNA_MEMORY_DSN_OWNER` at a Postgres of your own
+(`postgres://user:password@host:port/db`). With neither, the host
+says so and runs with no memory: nothing is projected, and a package
+is empty and says why.
 
 That DSN is the schema's **owner**, and nothing that runs holds it.
 Before it starts anything, `dev` applies memory's schema for the
-record with it — the tables, a role of the record's own, and a
-schema version — and hands the host only that role's DSN
-(`HALE_DNA_MEMORY_DSN_SPINE`); the knowledge service connects as the
-role, which can read and write the tables but not change them. `hale
-dna memory migrate` does the same step by hand and prints the role's
-DSN, and `hale dna upgrade` does it when the owner's DSN is set. A
-store opened on a schema at another version refuses it, naming both
-versions and the command that fixes it.
+record with it — the tables, two roles of the record's own, and a
+schema version — and hands the host only the spine role's DSN
+(`HALE_DNA_MEMORY_DSN_SPINE`), which can read and write the tables but
+not change them. `hale dna memory migrate` does the same step by hand
+and prints both roles' DSNs, and `hale dna upgrade` does it when the
+owner's DSN is set. A store opened on a schema at another version
+refuses it, naming both versions and the command that fixes it.
 
-One Postgres can hold many records. The store is scoped by the
-record — its identity is the sha of the record's first commit, the
-same in every clone and different for every record — and each record
-gets its own schema, `dna_<sha>`, so two projects pointed at the same
-database see two graphs, each with its own watermark. The summary
-reports the scope. A schema that names a different record than the
-service was opened for is refused, not read; so is a store in
-`public` from before stores were scoped (drop its tables, and the
-service rebuilds the projection from the record). Beyond one machine, and under
-`hale dna run`, the service is an instance in the plan against your
-Postgres, like any other service; `hale dna knowledge` runs it in
-the foreground.
+One Postgres can hold many records. Memory is scoped by the record —
+its identity is the sha of the record's first commit, the same in
+every clone and different for every record — and each record gets its
+own schema, `dna_<sha>`, and its own roles, so two projects pointed at
+the same database see two graphs, each with its own watermark, and
+neither role can read the other record's. A schema that names a
+different record is refused, not read; so is a store in `public` from
+before stores were scoped (drop its tables, and the spine rebuilds the
+projection from the record).
 
 ## Asking it
-
-```text
-$ curl -s localhost:8791/
-{"store": "postgres", "open": true, "scope": "9f3c…e1a0", "watermark": 58, "record": 58, "ideas": 3, "ratified": 1, "bindings": 1, "structure": 12, "ticks": 412, "error": ""}
-
-$ curl -s 'localhost:8791/context?target=org/leader/worker/mailer&budget=8'
-{"target": "org/leader/worker/mailer", "revision": 58, "digest": "sha256:…", "included": "sha256:8f17…", "included_n": 1,
- "ideas": [{"id": "sha256:8f17…", "kind": "practice", "text": "retry a mail send once before raising pressure", "author": "org/leader", "ratified_seq": 41}]}
-```
 
 A **context package** is what a position receives: the accepted ideas
 bound to its locus path or to any path above it (goals flow down;
@@ -101,9 +96,25 @@ store's revision and a digest over the target and the ids — the thing
 a model call's evidence names. A sibling's package does not carry
 your wing's practice.
 
+The package is read from memory under the spine's role by
+`MemoryKnowledge`, which the organization holds. It answers for the
+record as it stands *now*: a practice ratified a moment ago may not be
+projected yet, so the package waits — up to 20 seconds — for the
+projection to reach the record's head, and refuses rather than hand
+over a stale one:
+
+```text
+memory's projection is at row 57 of the record's 58; the spine applies it on its tick
+```
+
+The read API reads the same graph with the head's DSN
+(`HALE_DNA_MEMORY_DSN_HEAD`), which may select from the graph and
+change none of it; a projection that has not caught up is
+`knowledge_projection_unavailable` there, never an empty graph.
+
 ## How it reaches the work
 
-The editor never talks to the service; the law says so
+The editor never reads memory; the law says so
 (`editors_never_learn`). Its owner does. When a change opens, the
 substrate asks for the package of the change's place in the tower —
 `org` for the organization's own source, `org/<app>` for the
@@ -126,43 +137,31 @@ Every model call of that attempt names the package it was given:
 ```
 
 So what was ratified today is in the prompt tomorrow, and the
-receipt says which package. With no service running, the package is
+receipt says which package. With no memory named, the package is
 empty and says so; nothing waits.
 
 ## What the graph knows besides ideas
 
-The service also projects two things the record already holds. The
+The projection also carries two things the record already holds. The
 code's **structure** as `init` observed it — loci, topics, bindings,
 effect classes, claims — by kind and name, so an idea has something
 to bind to; and the fleet's **signals**, every `pressure.raised` and
-`concern.raised`, counted per source:
-
-```text
-$ curl -s localhost:8791/structure
-{"rows": 9, "loci": 3, "topics": 2, "bindings": 0, "effect_classes": 1, "claims": 2, "loci_names": "Gateway Ledger TrioGateway", "topic_names": "Orders"}
-$ curl -s localhost:8791/signals
-{"signals": [{"kind": "concern", "source": "org/trio/worker", "what": "mail backlog behind fulfilment", "count": 3, "last_seq": 58}]}
-```
+`concern.raised`, counted per source. They live in the record's
+schema beside the ideas (`knowledge_structure`, `knowledge_signals`).
 
 ## Ranking inside the bound
 
 A package is bounded first: only ideas bound to the target or above
 it, never a sibling's. Inside that set, the objective ranks. The
 substrate sends what the work is about as the query, and the budget
-keeps the most relevant:
-
-```text
-$ curl -s 'localhost:8791/context?target=org/trio/worker&budget=1&query=retry the mail send'
-{"target": "org/trio/worker", …, "included_n": 1, "ranked": true, "ideas": [{…"text": "retry a mail send once before raising pressure"…}]}
-```
+keeps the most relevant.
 
 The embedding is deliberately small: a hashed bag of words, the same
 on every machine, rendered as a pgvector literal so Postgres ranks
-with `<=>` and the in-memory store with the same cosine. It cannot
-tell synonyms apart; it can tell a mail objective from an archive
-one, which is what a budget of eight over a wing's practices needs.
-A hosted embedder is the same shape, text in and a vector out, when
-one is worth its cost.
+with `<=>`. It cannot tell synonyms apart; it can tell a mail
+objective from an archive one, which is what a budget of eight over a
+wing's practices needs. A hosted embedder is the same shape, text in
+and a vector out, when one is worth its cost.
 
 ## Concerns
 

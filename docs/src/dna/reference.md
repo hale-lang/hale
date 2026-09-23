@@ -11,18 +11,17 @@ hale dna --embedded-digest [--from-tree <dir>]
                              the digest of the DNA source this binary embeds, alone on stdout; with a
                              checkout, what that tree would embed (unequal = the binary predates it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
-hale dna knowledge [project] [--port N]
-                             the knowledge service in the foreground, as the record's spine role
-                             (HALE_DNA_MEMORY_DSN_SPINE), or HALE_DNA_KNOWLEDGE_DSN=memory
 hale dna memory migrate [dir]
-                             apply memory's schema with the owner's DSN (HALE_DNA_KNOWLEDGE_DSN, or
-                             dna/compose.yaml) and print the record's spine DSN
+                             apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
+                             dna/compose.yaml) and print the record's spine and head DSNs
+                             (HALE_DNA_MEMORY_DSN_SPINE=…, HALE_DNA_MEMORY_DSN_HEAD=…)
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
                              restart the application on an apply, watch the window, report back
 hale dna run [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization only; the fleet ([dna] fleet), or a deployment
-                             gateway, expresses the application
+                             gateway, expresses the application; memory from HALE_DNA_MEMORY_DSN_SPINE
+                             (an owner's or head's DSN is taken out of the host's environment)
 hale dna ui [project] [--port N]
                              (under `git config dna.principal oidc`: a hosted head behind sign-in at
                              dna.oidc.issuer; dna.oidc.client, dna.oidc.redirect, dna.oidc.member
@@ -38,9 +37,9 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
-hale dna queue [submit]      the requests kept here while the service could not be reached; send them
-hale dna ledger [status | adopt | abandon --why <w>]
-                             the operational memory: where the day's work lives, and the one-way move of it into the store
+hale dna ledger [status | rows | adopt | abandon --why <w>]
+                             the operational memory: where the day's work lives, the ledger as JSON
+                             lines, and requests for the body to adopt or abandon it
 hale dna candidates [<mutation> | drop <mutation> --why <w>]
                              the candidates the record keeps; one as a diff; stop keeping one
 hale dna profile [project]   the organism's combination, detected from its pieces
@@ -52,7 +51,7 @@ hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run]
 hale dna body start|stop|logs [--body <user@host>]
                              the body's unit, over ssh
 hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]
-                             protected evidence: kept by the knowledge service alone; disclosure
+                             protected evidence: kept in memory alone, sealed there; disclosure
                              and every read are rows in the reader's name
 hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
 hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]
@@ -100,6 +99,19 @@ nodes](./run.md)). `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are what
 `HostedCredential` sources it names. Git config: `dna.remote` (default
 `origin`), `dna.github` (`owner/repo`), `dna.github.board` (logins).
 
+Memory ([Operating](./operating.md#memory)):
+`HALE_DNA_MEMORY_DSN_OWNER`, the schema owner's DSN, used only to
+apply the schema (`memory migrate`, `dev`, `upgrade`, and a
+provisioned body's env file); `HALE_DNA_MEMORY_DSN_SPINE`, the DSN the
+host that runs the organism is handed and the organization inherits;
+`HALE_DNA_MEMORY_DSN_HEAD`, a head's (the CLI, `hale dna ui`, the read
+API). `HALE_DNA_RECEIPT_KEY` (sixteen characters at least) is read
+once, at migration, into memory. `HALE_DNA_OWNER_KEYS` (`<owner>=<key>
+…`) is the spine's, over a shared record; a head signs with `git
+config dna.owner` and `dna.owner.key`. The host hands its organization
+its body lease as `HALE_DNA_LEASE` / `HALE_DNA_LEASE_TOKEN` once the
+ledger is adopted.
+
 The head (`dna/face/start.sh`) reads `HALE_BIN` (the
 compiler every operation execs, absolute), `HALE_DNA_HEAD_STATE`
 (its state directory, default
@@ -117,7 +129,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 
 The **memory** column is where the row lives once the organism has
 adopted the ledger (`hale dna ledger adopt`, routing 1): `record` is
-git, `ledger` is the store behind the knowledge service. Before
+git, `ledger` is memory (Postgres, the record's own schema). Before
 adoption every kind is the record's, and the two are read as one
 sequence either way — see [The record](./record.md).
 
@@ -131,7 +143,11 @@ sequence either way — see [The record](./record.md).
 | `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for, and who asked (`… (from alice)`, a schedule, an optimizer) / the refusal |
 | `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
 | `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
-| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | `ledger` | the move of the day's work into the store: `ledger` (the service), `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
+| `ledger.adopting` / `ledger.adopted` | record | `ledger` | a head's request to adopt (`routing`, `by`), and the spine's adoption: `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
+| `ledger.abandoning` / `ledger.abandoned` | record | `ledger` | a head's request to abandon, and the spine's abandonment: `by`, `why` |
+| `ledger.requested` | record | `<kind> <entity>` | a head's operational write after adoption, as a request: `kind`, `entity`, `body`, `as`, `expected` (the ledger revision the decision was read at, -1 for the tail), `nonce`, and over a shared record `head_owner`, `head_mac` |
+| `ledger.request_refused` | record | the request's digest | the spine's refusal: `kind`, `entity`, `as`, `why` |
+| `spine.taken` / `spine.lost` | record | `spine` | the spine lease taken or lost: `holder`, `token`, `owner` (when the clone names one), and for a loss `why` (`released`, `expired`, `taken by <holder>`, `memory did not answer`) |
 | `task.born` | ledger | `t<n>` (`<owner>:t<n>` over a shared record) | `<intent>: <outcome>` |
 | `task.handed` | ledger | `t<n>` | handed to a person: `work`, `assignee`, `by`, `narrative`, `obligation`, `acceptance`, `evidence_required` |
 | `task.reassigned` | ledger | `t<n>` | the assignment moved: `to`, and who moved it |
@@ -183,8 +199,8 @@ sequence either way — see [The record](./record.md).
 | `spend.compensated` | ledger | the allocation | money that came back, authorized by name: child, attempt, amount, by |
 | `grant.reserved` / `grant.released` | ledger | a child | a reservation and its settlement from before GH #668 (`op` in the body); read as above |
 | `grant.fenced` | ledger | a child | an admission refused because the grant's epoch moved since |
-| `receipt.classified` | ledger | a digest | a protected body the knowledge service keeps: class, by, store |
-| `receipt.withheld` | ledger | a digest | a protected body no service could keep: class, by, why |
+| `receipt.classified` | ledger | a digest | a protected body memory keeps: class, by, store |
+| `receipt.withheld` | ledger | a digest | a protected body no memory could keep: class, by, why |
 | `receipt.disclosed` | ledger | a digest | a reader authorized: recipient, purpose, by |
 | `receipt.read` / `receipt.read_refused` | ledger | a digest | a read in the reader's name, or its refusal: by, purpose, class |
 | `receipt.filed` | ledger | a digest | an internal document filed as evidence: by, name, bytes, class, store |
@@ -207,7 +223,7 @@ sequence either way — see [The record](./record.md).
 | `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | a source | one the organization would not admit, and why |
 | `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s). Which raise a concern is — its `occurrence` — is counted from the record, so a restart continues the count; and a source found over the threshold with no proposal of its own, which an organism stopped between the third raise and its proposal leaves behind, is proposed when it comes back |
-| `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by |
+| `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by, owner (when the clone names one) |
 | `body.provisioned` | record | `<user>@<host>` | a machine made able to run it: dir, toolchain, knowledge (`compose` or `dsn`), by |
 | `body.credential_missing` / `body.credential_present` | ledger | `model` | whether the model's key is set where the body runs: any_of, holder |
 | `secret.rotated` | record | the variable's name | a credential set or rotated: where (`local` or the body), by — never the value |
@@ -258,9 +274,9 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `org.hl` | `Leader`, `SourceReader` |
 | `journal.hl` | `Journal`, `MemJournal`, `Receipts` (`FileReceipts`), `Coordination` (`MemLeases`), the effect idempotency helpers |
 | `record.hl` | `Record` — the record's own API — with `GitRecord` (the one file that spells `git` for the record) and `MemRecord`; `GitJournal`, `GitReceipts`, `GitLeases` over it |
-| `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one), `ServiceLedger` (the ledger over the knowledge service), `ServiceLeases` (leases in the store, swapped by token; `GitLeases` moves to it with the routing) |
+| `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one; its ledger is a `MemoryLedger`), `routing_of`, `checkpoint_of`; `GitLeases` moves its leases to memory's `MemoryLeases` with the routing |
 | `infrastructure.hl` | `Infrastructure` (a body's database, supervisor, credentials) and `Transport` (how a head reaches a body), with their memory implementations; the host's `infra.hl` is the reference one — compose, a systemd user unit, the env file, over ssh or this machine's shell |
-| `exchange.hl` | `Exchange` (one record's mailbox in another: deliver once, delivered?, received) and `MemExchange`; the host's `connections.hl` exchanges through the peer's service or as mailbox refs, by the connection's url |
+| `exchange.hl` | `Exchange` (one record's mailbox in another: deliver once, delivered?, received) and `MemExchange`; the host's `connections.hl` exchanges as mailbox refs in the peer's git remote, and refuses a service url |
 | `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge`; the host's `forge_github.hl` is `GitHubForge` over `gh` and the `FileForge` fixtures use |
 | `performers.hl` (card 18) | `Performing`: what the engine asks of the system that performs its attempts (`identity_of`, `perform_as`, `reconcile_as`); `NoPerformers`, the runtime's inert default, so a runtime constructed without a system designates no routing policy |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers; `EditRelay` (card 15): the `edit` performer kind, relaying an edit leaf's attempt to the assembly (`EditRequested`) and answering pending; `HumanRelay` (card 16): the `human` kind, relaying a human leaf's attempt as a case (`CaseRequested`) and answering pending |
@@ -283,7 +299,13 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
 
-Beside the core, `dna/knowledge` (the `KnowledgeStore` interface, `Pq`, `Mem`, `apply_record`), `dna/knowledge/service` (the service `hale dna knowledge` and `hale dna dev` run) and `dna/pond` (pond's `db` and `pq`, pinned):
+| `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables, the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
+| `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres), `Dsn` / `parse_dsn`, `schema_for` |
+| `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
+| `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |
+| `memory_embed.hl` | the hashed bag-of-words embedding the graph ranks with |
+| `memory_spine.hl` | `Memory` (one process's handle), `MemoryLedger`, `MemoryLeases`, `MemoryKnowledge` (the context package), `MemoryVault` (protected evidence), `RequestAdmission` (the spine's admission of the heads' requests, adoption and abandonment) |
+| `pond/` | pond's `db` and `pq`, pinned: the Postgres driver the memory files open through (`vendor/dna/pond` in a project) |
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |
 | `editing.hl` | `WorktreeTools`, `SourceEditor` |
@@ -297,6 +319,10 @@ behaviour rather than manifest or scaffolding), `dna/membrane` (the
 client it publishes through) and `dna/ui` (the surface) ship in the
 toolchain the same way; `hale dna` resolves the project and execs the
 host. The compiler keeps `init` / `new` / `upgrade`, `hale fleet
-check` and the plan schema. The contract the library and the commands promise is
+check` and the plan schema. The projection of the record into the
+graph, `MemoryProjection`, is not in the core: it lives with the
+command codecs it decodes admitted facts with, in
+`dna/operations/memory_tail.hl`, and the host runs it on its tick.
+The contract the library and the commands promise is
 `spec/dna.md`. Friction the DNA has logged against the language and
 the toolchain, with reproducers, is `dna/FRICTION.md`.

@@ -87,9 +87,13 @@ using a temporary native Record. It checks auth before upstream access, ignored
 browser reader/credential headers, call counts, all four routes, strict query
 and nested response shapes, exact signed Int64 values, Unicode escapes,
 Source/basis/snapshot consistency and sanitized upstream errors. It is a public
-boundary test; native state-service projection and HTTP transport have separate
-integration coverage. The fixture re-executes with inherited Git plumbing and
-private store/auth settings removed before making temporary Record writes.
+boundary test. With `HALE_DNA_MEMORY_DSN_OWNER` set it also reads memory as a
+child holding only `HALE_DNA_MEMORY_DSN_HEAD`, after projecting the record under
+the spine's role the way the spine's tick does; without it those cases say they
+were not exercised. `knowledge_local_test.hl` covers Knowledge commands admitted
+in the API's own process under a fixed policy. The fixture re-executes with
+inherited Git plumbing and private store/auth settings removed before making
+temporary Record writes.
 
 During recovery validation, serialize native builds/runs with
 `flock /tmp/face-native-validation.lock`. Build with hard address space 2 GiB,

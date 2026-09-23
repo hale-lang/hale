@@ -25,6 +25,19 @@ membrane rows in the record, re-projects `status.json`, and answers
 the organization's restart requests. It holds no Task state; when
 the organization exits, the host reaps iris and exits with its code.
 
+The host is also memory's **spine**, when it holds the spine lease:
+on each tick — once a second — it projects the record into the
+knowledge graph, admits the requests heads have left in the record,
+and erases the protected evidence the record says was redacted, all
+under the record's spine role (`HALE_DNA_MEMORY_DSN_SPINE`). A host
+without the lease reads and forwards. `dev` applies memory's schema
+first, with `HALE_DNA_MEMORY_DSN_OWNER` or the database
+`dna/compose.yaml` brings up, and hands the host the spine's DSN
+alone; `run` takes the spine's DSN from its environment and keeps any
+owner's or head's DSN away from the host. The host checks the
+schema's version before it starts anything on it. See
+[Operating](./operating.md#memory).
+
 Under **`dev`** the application runs under the same host, and a
 restart request for it is answered here: rebuild, restart, watch the
 window, report — [Apply, express, observe](./apply.md). A restart
@@ -112,7 +125,7 @@ lease is still live, `hale dna body claim --force` releases it as a
 row in your name (`body.claimed`, `forced: true`); that body stops
 the next time it asserts, and the next `hale dna run` takes the
 lease. `hale dna profile` prints the combination the organism is —
-record, body, head, fleet, knowledge, trust — detected from the
+record, body, head, fleet, memory, trust — detected from the
 pieces, never from a stored label; `status` carries the same two
 lines at its foot.
 
@@ -128,13 +141,16 @@ $ hale dna body provision riley@srv --dsn postgres://dna:…@db:5432/dna
 body provision: riley@srv
     installing hale 0.20.0
     cloned into $HOME/dna/chat
-    knowledge: the DSN given
+    memory: the DSN given
     unit hale-dna-chat-3f9c2a1b7d04 enabled and started (systemctl --user)
     dna.body = riley@srv (start/stop/logs go there); the body takes the lease when its unit starts
 ```
 
 In order: the toolchain `hale.lock` pins, the record's remote cloned,
-Postgres from `dna/compose.yaml` or the DSN you give, and a systemd
+Postgres from `dna/compose.yaml` or the DSN you give (written to the
+body's env file as `HALE_DNA_MEMORY_DSN_OWNER`, for the body's `hale
+dna dev` to migrate with before it hands its host the spine's DSN
+alone), and a systemd
 user unit that supervises the host and restarts it on failure, so a
 failure flows up one more level before it reaches you. It stops
 before writing anything when ssh cannot reach the host, when the
@@ -153,7 +169,7 @@ secret set: ANTHROPIC_API_KEY is in /home/riley/.config/hale-dna/chat-3f9c2a1b7d
 
 The value is read from stdin — never from the command line — and
 lands in a file only that user can read; the host loads it for the
-organization and the knowledge service. Without `--body` it goes on
+organization. Without `--body` it goes on
 this machine. A body that starts with no credential for its model
 says so at once, on the board and in `status`, instead of on a task
 hours later.

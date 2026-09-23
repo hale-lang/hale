@@ -15,17 +15,22 @@ one (GH #646).
 |---|---|---|---|
 | **Structure** | what the organism *is*: positions, routes, schedules and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
 | **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | git, `refs/dna/*`, one signed commit per row, cloned and synced | the Board, the organism's pipeline, a head from its clone |
-| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | the store, in the organism's own schema behind the knowledge service | every head, the body, the app (read) |
+| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | memory: Postgres, in the record's own schema `dna_<identity>` | the spine's role alone: the body, and the heads' requests it admits |
 
 The routing table is `memory_of` in the core (`routing.hl`): the
-`intent`, `task`, `decision`, `completion`, `exception`, `schedule`,
-`receipt`, `handoff`, `pressure`, `instance`, `effect` and `report`
-families are the Ledger's, as are `concern.requested` / `.raised` /
-`.refused`, `grant.reserved` / `.released` / `.fenced` /
-`.reservation_refused` (money; `grant.refused` — a grant born wider
-than its ceiling — is authority and the record's), `body.claimed` /
-`.released` / `.credential_*`, `model.called`, `knowledge.consulted`,
-`optimize.refused` and `budget.exhausted`. Every other kind, and any
+`case`, `intent`, `task`, `decision`, `completion`, `exception`,
+`schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
+`report` and `lease` families are the Ledger's, as are
+`concern.requested` / `.raised` / `.refused`, `grant.reserved` /
+`.released` / `.fenced` / `.reservation_refused` (money;
+`grant.refused` — a grant born wider than its ceiling — is authority
+and the record's), `spend.reserved` / `.settled` / `.compensated`,
+`body.claimed` / `.released` / `.credential_*`, `model.called`,
+`knowledge.consulted`, `optimize.refused`, `budget.exhausted`, and a
+workflow execution's own facts (`workflow.admitted` / `.refused` /
+`.ask_refused` / `.settled`, `step.registered` / `.activated` /
+`.completed` / `.failed`, `work.settled`, `attempt.admitted` /
+`.outcome`). Every other kind, and any
 kind a build does not know, is the record's. **Routing is versioned and
 is a fact of the record**: version 0 is every kind in the record;
 version 1 is the table; an organism is on the version its last
@@ -36,58 +41,107 @@ reach it fails rather than writing elsewhere.
 `RoutedJournal` is the `Journal` an organism and the host stand on:
 the record's journal and the Ledger's read as one merged sequence (a
 row's `seq` as read is its merged position; rows name each other by
-id), appended to by kind under the record's routing. `ServiceLedger`
-is the Ledger as an organism or a head reaches it: over HTTP through
-the knowledge service (`/ledger/head`, `/ledger/rows?from=`,
-`/ledger/append`), which holds the store and its schema — the core
-links no database driver and a head never holds database credentials.
-`PqLedger` (Postgres, the record's `dna_<identity>` schema, one insert
-conditioned on the tail, claim kinds unique by `(kind, entity)`) and
-`MemLedger` implement it in the knowledge library.
+id), appended to by kind under the record's routing. The Ledger is
+`MemoryLedger` (`dna/core/memory_spine.hl`) over `PqLedger` (Postgres,
+the record's `dna_<identity>` schema, one insert conditioned on the
+tail, the claim kinds `effect.requested`, `spend.reserved` and
+`task.born` unique by `(kind, entity)`), opened on first use as the
+role its process's environment names (**Memory**, below). There is no
+service in front of memory (GH #985): a part that reads or writes it
+opens Postgres itself, and the role's grants are the trust boundary.
+The organization's Ledger carries the body lease and the epoch the
+host handed it (`HALE_DNA_LEASE`, `HALE_DNA_LEASE_TOKEN`): an append
+under a lease that is not held, is held at another token, or has
+expired lands nothing (`fenced: …`).
 
-**Adoption** is explicit, per organism and one-way: `hale dna ledger
-adopt` with no body live and the record synced appends
-`ledger.adopting {ledger, routing, by}` to the record, has the service
-copy every operational row of the record into the Ledger keyed by its
-commit (so a copy interrupted anywhere is rerun, never repaired) and
-record the cutover, then appends `ledger.adopted {ledger, routing,
-checkpoint, rows, by}`: the checkpoint is the record head the copy was
-taken at, and from that commit on operational kinds are written through
-the service and never into the record. Historical operational rows
-stay in git, read-only; readers of history (`history`, the projections,
-the export) read both memories as one. `hale dna ledger abandon --why`
-empties the Ledger and appends `ledger.abandoned`, and the organism is
-on routing 0 again with nothing lost. **Until every operational write
-path goes through the service (stage 3, #652) adoption is closed**; it
-opens for fixtures under `HALE_DNA_ADOPT_UNGATED`. After cutover an
-operational row reaching the host's append is forwarded to the service
-when one is known here, and refused with the checkpoint named
-otherwise — never silently accepted into the record. `hale dna run` on
-an adopted record refuses to start without a service to reach (#646
-decision 3: a body without its store admits nothing); `dev` brings its
-own up.
+**Adoption** is explicit, per organism and one-way. `hale dna ledger
+adopt`, with the record synced, appends `ledger.adopting {routing,
+by}` to the record: a request, which the spine carries out on its
+tick (**The spine**, below). It copies every operational row of the
+record up to that row into the Ledger keyed by its commit (so a copy
+interrupted anywhere is rerun, never repaired), records the cutover,
+carries the running body's lease into memory at its token (unless
+memory already holds a lease under that key), and appends
+`ledger.adopted {routing, checkpoint, rows, by}`: the checkpoint is
+the `ledger.adopting` row's commit, the record head the copy was taken
+at, and from that commit on operational kinds never go into the
+record. Historical operational rows stay in git, read-only; readers of
+history (`history`, the projections, the export) read both memories as
+one. `hale dna ledger abandon --why` appends `ledger.abandoning {by,
+why}`; the spine empties the Ledger and appends `ledger.abandoned {by,
+why}`, and the organism is on routing 0 again with nothing lost.
+Until a body with memory runs, an adoption or abandonment waits in the
+record. `hale dna run` on an adopted record refuses to start without
+`HALE_DNA_MEMORY_DSN_SPINE` (#646 decision 3: a body without its
+memory admits nothing); `dev` applies memory's schema and hands the
+host the spine's DSN. `hale dna ledger [status]` says the routing,
+whether memory is named here, and the Ledger's row count and cutover;
+`hale dna ledger rows` prints the Ledger's rows as JSON lines (`seq`,
+`kind`, `entity`, `body`, `author`, `prev`, `digest`), read under the
+head's role or the spine's.
 
-**Heads write through the service (stage 3, #652).** On routing 1 an
-operational row a verb writes from a clone goes to the service in the
-person's name (`as`), and the service admits it against the record as
-it is then: a retired person's request (`person.retired`, effective
-from the head the service has) is refused, a completion for a task
-handed to someone else is refused, and every request carries an id
-minted when it was captured — a request the service has seen is
-answered as it was answered then and writes nothing, so a request
-submitted twice lands once and one it refused stays refused. A head
-that cannot reach the service at all **queues** the request under
-`.hale/dna/queue/` (the verb says "queued locally"); `hale dna queue`
-lists what waits, `hale dna queue submit` sends it in capture order
-and every verb that reaches the service drains the queue first; a
-refused request is kept beside the queue as `<name>.refused` with the
-reason. Nothing on a head is authoritative: a queued completion is a
-request to complete, a queued spend has reserved nothing, and no head
-executes work offline (#646 decision 2). A head with no service known
-at all writes nothing and says so. With every operational write path
-through the service, **adoption is open**: `hale dna ledger adopt`
-needs no gate. A new organism still starts on routing 0 and adopts by
-that explicit step.
+**A head's writes are requests (GH #985).** A head — the CLI, `hale
+dna ui`, the API — writes nothing into the Ledger. On routing 1 an
+operational row a verb writes in a person's name is a
+`ledger.requested` row in the record, entity `<kind> <entity>`,
+authored by the person (`host` for the host's own rows), body `{kind,
+entity, body, as, expected, nonce}`: `as` is the person, `expected`
+the Ledger revision a decision was read at (-1 for the tail), `nonce`
+minted when the request was captured. A write at the tail reports
+itself requested, with the request row's digest, and says that `hale
+dna history <entity>` shows the outcome; a write decided at a revision
+(`task done`, a completion, a git receipt's redaction) is requested
+with that revision as `expected`, and its verb answers as it does on
+routing 0, naming no digest. An adoption and an abandonment
+are the record's `ledger.adopting` and `ledger.abandoning` rows above.
+The spine admits a request on its tick, once: each is keyed on its
+row's digest (`ledger_requests`), so a request already decided is
+never decided again, however often it is read. Admission checks, in
+the spine, in order:
+
+1. the kind is the Ledger's; a record kind is refused (it is appended
+   to the record and synced);
+2. over a shared record, the owner's signature (**The owners' keys**,
+   below);
+3. the person's standing: a request in the name of someone the record
+   retired (`person.retired`) is refused;
+4. a `task.transfer_accepted` is refused unless the Task is offered to
+   an owner and the person is that owner's member;
+5. `task.done`, `task.failed`, `completion.linked` and
+   `completion.excepted` are refused in any name but the Task's
+   assignee's;
+6. the append: exactly at `expected` when one was given, refused as
+   `stale_revision` when the Ledger moved past it, and refused as
+   `claimed` when a claim kind's entity is already taken.
+
+An admitted row lands in the person's name. A refusal is a
+`ledger.request_refused <request digest> {kind, entity, as, why}` row
+in the record. A request memory could not take for any other reason
+stays undecided and is tried again on the next tick. The record is the
+pager: `hale dna history` and `status` show the outcome once the spine
+has run. A head with no memory named still requests a write at the
+tail; a write decided at a revision needs the Ledger's revision read,
+and without memory its verb refuses (`the ledger's revision was not
+read`), requesting nothing. Nothing on a
+head is authoritative, and no head executes work offline (#646
+decision 2). On routing 0 an operational row goes into the record, as
+it always did.
+
+**The owners' keys (GH #669).** Over a shared record a head names its
+owner and holds that owner's key (`git config dna.owner`,
+`dna.owner.key`), and signs each request: `head_owner`, and `head_mac`,
+HMAC-SHA256 under the key over the kind, entity, body, `as`,
+`expected`, owner and nonce. The spine holds every owner's key out of
+band, never in the record (`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`),
+and when it holds any it refuses a request in a person's name that
+names no owner or signature, one not signed with a key of the owner it
+names, and one in the name of a person who is not that owner's member
+(`dna/org/owners`). **The host is a principal**: it signs its own
+requests as its owner, as a head does, and a request by author `host`
+is admitted under any owner's valid signature. Its `body.*` rows carry
+`owner` in their body when the record names one, so a row by `host`
+still says whose body it was. Who a person is remains the head's to
+establish — its issuer under `dna.principal = oidc`.
 
 **Evidence and the export across two memories (stage 4, #653).**
 Receipts are placed by what they evidence: `evidence.*` (a
@@ -95,79 +149,172 @@ verification step's output, a diff document — evidence of a mutation)
 and `review.reasoned` are the record's; `receipt.*` — a bill filed, its
 class, its disclosure, its reads, its holds, its redaction — are the
 Ledger's, whatever the class, and the body itself is where it always
-was (a git blob for an internal body, the protected store for a
-protected one; only the digest is ever a row). A redaction after
-adoption is therefore a Ledger row and the body it names may be a blob
-filed before adoption: sync applies redactions and candidate drops
+was (a git blob for an internal body, memory's sealed store for a
+protected one; only the digest is ever a row). A redaction of a git
+receipt after adoption is therefore a Ledger row, and the body it names
+may be a blob filed before adoption (a head's redaction of a protected
+body is a row of the record, which the spine reads to erase it): sync applies redactions and candidate drops
 over both memories read as one, so the treatment holds across the
-split. The books export is a supported ledger query: with a service
-known (`HALE_DNA_KNOWLEDGE_URL`) it reads `/ledger/rows` beside the
-record's rows and never SQL of its own; the SQL views are a
-convenience of the Postgres adapter only. Recovery between the two
-memories needs no transaction spanning them: every step that touches
-both writes its intent in the memory that owns the decision, acts, and
-writes its outcome, and the restart scans the merged journal — a task
-settles on its mutation's outcome, a settled review births its task
-once, an effect claim is resolved by evidence or gated as unknown, a
-retirement's reassignments are reapplied, a filed body without its row
-is filed again — exactly as they did over one journal, because the
-routed journal is that journal. **The continuity gate** is a pre-split
-record built with the real git journal — unfinished work, a
-reservation, a practice bound to a handed task, a retired participant,
-redacted evidence, a pending handoff, a schedule — adopted through the
-same steps a live organism takes, its projections read before and
-after, and a redaction after adoption removing a body filed before it
-(`dna_ledger.rs`).
+split. The books export is a supported ledger query: it reads `hale
+dna ledger rows` beside the record's rows and never SQL of its own.
+Recovery between the two memories needs no transaction spanning them:
+every step that touches both writes its intent in the memory that owns
+the decision, acts, and writes its outcome, and the restart scans the
+merged journal — a task settles on its mutation's outcome, a settled
+review births its task once, an effect claim is resolved by evidence
+or gated as unknown, a retirement's reassignments are reapplied, a
+filed body without its row is filed again — exactly as they did over
+one journal, because the routed journal is that journal. **The
+continuity gate** is a pre-split record built with the real git
+journal — unfinished work, a reservation, a practice bound to a handed
+task, a retired participant, redacted evidence, a pending handoff, a
+schedule — adopted through the same steps a live organism takes, its
+projections read before and after, and a redaction after adoption
+removing a body filed before it (`dna_ledger.rs`).
 
-**Handoffs service to service (stage 5, #662).** A handoff crosses
+**Handoffs between records (stage 5, #662).** A handoff crosses
 between records as an envelope through an `Exchange`, the core's
-contract for one record's mailbox in another and nothing of git's or
-HTTP's: `peer_identity`, `deliver` (idempotent by the envelope's kind
-and entity — its entity is `handoff:<id>` and the id is the handoff's
-origin, peer, kind and subject, so a delivery repeated after an
-interruption is one envelope), `delivered` (whether the peer already
-holds it), `received` (every mailbox of this record). A connection
-whose url is a service (`http://…`) exchanges service to service: the
-peer's service publishes its identity at `/identity`, takes an
-envelope at `POST /exchange/<sender>` once by (sender, kind, entity)
-and refuses one claiming another origin than its sender, answers
-`/exchange/has` and serves the record's mailboxes at `/exchange`; the
-connection's row says `exchange: service`. A connection whose url is
-a record's remote exchanges as before, mailbox refs in a private peer
-cache. Both keep the contract #646 set: **durable delivery** — a
-handoff published here whose envelope the peer does not hold is
-delivered again, once, by `hale dna handoff sync` from the envelope
-kept with its `handoff.published` row; a delivery that cannot reach
-the peer at all records nothing and says to deliver again; **the
-disclosure scope** is the connection's classes, checked before
-anything is delivered and again before anything is admitted;
+contract for one record's mailbox in another: `peer_identity`,
+`deliver` (idempotent by the envelope's kind and entity — its entity
+is `handoff:<id>` and the id is the handoff's origin, peer, kind and
+subject, so a delivery repeated after an interruption is one
+envelope), `delivered` (whether the peer already holds it), `received`
+(every mailbox of this record). The exchange is git's alone: mailbox
+refs in a private peer cache of the other record's remote,
+`refs/dna/exchange/<sender>`, beside the identity each record
+publishes under `refs/dna/identity`. `hale dna connect` refuses an
+`http://` or `https://` url: a connection exchanges through the other
+record's git remote. The exchange keeps the contract #646 set:
+**durable delivery** — a handoff published here whose envelope the
+peer does not hold is delivered again, once, by `hale dna handoff sync`
+from the envelope kept with its `handoff.published` row; a delivery
+that cannot reach the peer at all records nothing and says to deliver
+again; **the disclosure scope** is the connection's classes, checked
+before anything is delivered and again before anything is admitted;
 **settlement only on the receiver's acceptance** — the origin's task
 moves to `transfer_accepted` when the receiver's `handoff.accepted`
 envelope reaches it through the exchange, never when a delivery
-returned. `hale dna connect` says which exchange a connection uses.
+returned.
 
-**Coordination in the store (stage 2, #651).** On routing 1 every lease
-is a row of the store swapped by its token: the service serves
-`GET /ledger/lease?key=` and `POST /ledger/lease` (`key`, `holder`,
-`token`, `expires`, `present`, `expected`), and a put lands only when
-the stored token is the one expected (0 for an absent lease); the
-store answers 409 otherwise. `ServiceLeases` in the core is
-`Coordination` over those two calls, and `GitLeases` — the record's
+**Coordination in memory (stage 2, #651).** On routing 1 every lease
+is a row of memory's `ledger_leases`, swapped by its token:
+`MemoryLeases` is `Coordination` over `current(key)` and `put(key,
+lease, expected)`, and a put lands only when the stored token is the
+one expected (0 for an absent lease). `GitLeases` — the record's
 coordination — takes a mutation lease from the record's cells on
-routing 0 and from the store on routing 1, reading the routing from
-the record whenever its head moved: an adopted organism's leases move
-with it, and nothing in its wiring changes. The body lease moves the same way: `hale dna run` takes
-`lease/body` as a row, the fence renews the row every third of its
-life with every call bounded, a stale token — a host that lost the
-lease to another — is refused by the store, `hale dna body` reads it
-there, and `refs/dna/lease/*` is not written on routing 1. Effect
-claims are unique rows of the Ledger (`(kind, entity)`), so the
-contended-claim row the git rule needed does not arise. A store lost
+routing 0 and from memory on routing 1, reading the routing from the
+record whenever its head moved: an adopted organism's leases move with
+it, and nothing in its wiring changes. The body lease moves the same
+way: on routing 1 it is the row `body` (`owner/<owner>` over a shared
+record), the fence renews the row every third of its life with every
+call bounded, a stale token — a host that lost the lease to another —
+lands nothing, `hale dna body` reads it there, and `refs/dna/lease/*`
+is not written. A head takes and fences a lease under its own role.
+Effect claims are unique rows of the Ledger (`(kind, entity)`), so the
+contended-claim row the git rule needed does not arise. Memory lost
 after activation is the case the git lease already handles: the
 renewal fails, the fence keeps the lease it last proved until the
 margin before its expiry and then stops the organism, and `status`
 says THE LEDGER IS UNREACHABLE and that nothing is admitted until it
 answers.
+
+## Memory
+
+Memory is Postgres, and only Postgres (GH #985). Its stores are the
+core's — `dna/core/memory_store.hl` (the graph, `Pq`),
+`memory_ledger.hl` (`PqLedger`, `PqLeaseStore`), `memory_protected.hl`
+(`PqProtected`), `memory_embed.hl`, `memory_schema.hl` (the schema,
+the roles, the grants and the functions) and `memory_spine.hl`
+(`Memory`, `MemoryLedger`, `MemoryLeases`, `MemoryKnowledge`,
+`MemoryVault`, `RequestAdmission`) — and they open Postgres through
+pond's driver, pinned under `dna/core/pond` and vendored beside the
+core at `vendor/dna/pond`. The projection tail, `MemoryProjection`, is
+not in the core: it lives in `dna/operations/memory_tail.hl`, beside
+the command codecs it decodes admitted facts with, and runs on the
+host's tick (**The spine**, below).
+
+- **Memory is per record.** Each record has its own schema,
+  `dna_<identity>` (the identity lower-cased, any other character `_`,
+  at most 56 characters of it), and two roles of its own,
+  `dna_<identity>_spine` and `dna_<identity>_head`, cut to fit
+  Postgres's 63-byte names: one role granted on every record's schema
+  would read every other record's evidence on the same server. Until
+  the vault holds them (GH #989) a role's password is a placeholder
+  equal to the role's name.
+- **Three DSNs.** `HALE_DNA_MEMORY_DSN_OWNER` is the schema owner's,
+  used only to migrate: by `hale dna memory migrate [dir]`, by `hale
+  dna dev` before it starts the host, by `hale dna upgrade` when it is
+  set, and by a provisioned body, whose env file carries it for the
+  `hale dna dev` its unit runs. Without it, `memory migrate` and `dev`
+  use the database `dna/compose.yaml` brings up. `hale dna memory
+  migrate` prints two lines, `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and
+  `HALE_DNA_MEMORY_DSN_HEAD=<dsn>`: the owner's host and database, each
+  role's name and credentials. The host that runs the organism is
+  handed `HALE_DNA_MEMORY_DSN_SPINE` alone, and the organization
+  inherits it: `dev` sets it from the migration, and `hale dna run`
+  takes it from its own environment; both take
+  `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_MEMORY_DSN_HEAD` out of the
+  host's. With no database to migrate, `dev` says why and starts the
+  host without the owner's DSN. A head — the CLI, `hale dna ui`, the API — opens memory with
+  `HALE_DNA_MEMORY_DSN_HEAD`; a process given the spine's DSN uses that
+  instead, and none holds both.
+- **The migration** runs in one transaction under an advisory lock on
+  the schema: the `vector` and `pgcrypto` extensions, the schema and
+  every store's tables, the record's claim on the schema
+  (`knowledge_meta.record`; a schema that names another record is
+  refused), the projection protocol, the receipt functions and the
+  receipt key, both roles and their grants, and
+  `memory_meta.schema_version`. It is idempotent. It refuses a
+  knowledge store left in `public` from before stores were scoped
+  (drop its tables or the database; the projection rebuilds from the
+  record), and a schema a newer toolchain migrated.
+- **The version fence.** The schema version is 1. A store's `open`
+  selects the record's schema and refuses one at another version, or
+  at none, naming both and `hale dna memory migrate` with the owner's
+  DSN; it also refuses a schema whose claim names another record (`it
+  is not read`). The host checks the version on the spine's DSN before
+  it starts anything, and refuses to start (exit 2) on a mismatch.
+- **Grants.** The head's role has `SELECT` on the ledger, knowledge
+  and meta tables (`memory_meta`, `ledger_rows`, `ledger_meta`,
+  `ledger_requests`, `ledger_leases`, `knowledge_*`), `INSERT` and
+  `UPDATE` on `ledger_leases` only, to take and fence a lease, and
+  `EXECUTE` on `receipt_file` and `receipt_read`. It writes nothing
+  else: a head's write is a request in the record. The spine's role
+  reads and writes its schema's tables (`SELECT`, `INSERT`, `UPDATE`,
+  `DELETE`, `TRUNCATE`) except the owner-only `memory_keys`,
+  `protected_receipts` and `protected_redactions`, which it reaches
+  only through the functions, and has `EXECUTE` on `receipt_file`,
+  `receipt_read` and `receipt_erase`; it has no DDL. The Ledger has one
+  writer, the spine's role.
+- **Connections are bounded.** Each process holds one memory handle
+  (`Memory`: the Ledger and the leases), opened on first use and
+  closed when the process ends; everything in a process that reads the
+  Ledger or a lease takes that handle rather than building its own, and
+  each `Pq` store closes its connection when it dissolves. A host holds
+  a fixed handful of connections however long it runs.
+
+**The spine.** The host that runs a body is its spine. On each tick
+(`HOST_TICK`, 1 s) it applies the record into the graph
+(`MemoryProjection`), admits the heads' requests and carries out an
+adoption or abandonment the record asks for (`RequestAdmission`), and
+erases the protected bodies the record redacted
+(`MemoryVault.complete_redactions`) — only while it holds the **spine
+lease**. `SPINE_LEASE` is `spine`, a lease in memory's lease table;
+`SPINE_TTL` is 30 s, renewed at its token on every tick (the constants
+sit beside `BODY_TTL` in `dna/host/record.hl`). Whichever spine takes
+it first projects, admits and erases; a spine without it reads and
+forwards, and takes it once it is free. Taking it appends `spine.taken
+spine {holder, token, owner}` to the record, and losing it
+`spine.lost spine {holder, token, why, owner}` (`owner` when the
+record names one), `why` one of `released` (the host stopping),
+`expired`, `taken by <holder>` and `memory did not answer`. Each host
+writes `.hale/dna/spine.json`: `holder`, `held`, `token`, and the rows
+it projected, the requests it decided and the bodies it erased
+(`projected`, `decided`, `erased`). On a shared record every owner runs
+a body (its lease `owner/<owner>`), and the spine lease picks one
+spine among them. A host with no `HALE_DNA_MEMORY_DSN_SPINE` says so
+and runs with no memory: nothing is projected or admitted. What failed
+on a tick is said once, when it changes, and tried again on the next.
 
 ## The record
 
@@ -196,67 +343,80 @@ repository:
   the digest of their content: a verification step's output, a diff
   document. Events name receipts by digest. A receipt has a data class
   (GH #606): a `public` or `internal` body is such a blob; a `customer`
-  or `confidential` body (`protected_class`) never is. The organism
-  hands it to the knowledge service (`Dna.file_evidence(text, class,
-  by)`, through `ReceiptVault`), which keeps it in the record's own
-  schema and appends `receipt.classified <digest> {class, by, store}`.
-  `PqProtected` encrypts it at rest with pgcrypto (OpenPGP, AES-256)
-  under `HALE_DNA_RECEIPT_KEY` (sixteen characters at least), read into
-  a sealed locus and sent to the database only as a query parameter, so
-  an operator must not log statement parameters. A query that fails
-  drops the connection, dials again and tries once more, so a database
-  restart does not leave every protected read and erase failing (#637);
-  `MemProtected` keeps it
-  for the life of the process. With no service to keep it, the body is
-  withheld: `receipt.withheld <digest> {class, by, why}`, and nothing
-  holds it. The record keeps the digest and the class either way, so
-  `sync` never carries a protected body into a clone. Reading one is an
-  act in the reader's name for a purpose: the service answers `GET
-  /receipt/<digest>?as=<reader>&purpose=<purpose>` only when a
+  or `confidential` body (`protected_class`) never is. It is kept in
+  memory alone, sealed there — by the organism through
+  `Dna.file_evidence(text, class, by)`, by a head through `hale dna
+  receipt file --class`, both through `MemoryVault` — and the record
+  gets `receipt.classified <digest> {class, by, store}`. **Memory seals
+  it, and no process holds the key (GH #985).** The receipt key lives
+  in memory, in `memory_keys`, written once at migration from the
+  owner's `HALE_DNA_RECEIPT_KEY` (sixteen characters at least); a
+  different key at a later migration is refused, because bodies sealed
+  under the first would no longer open. Three `SECURITY DEFINER`
+  functions, run as the schema's owner, are the whole surface of the
+  sealed table `protected_receipts`: `receipt_file(digest, class, body,
+  at)` seals a body with pgcrypto (OpenPGP, AES-256) under the key, and
+  refuses a class that is not protected, a digest that is not the
+  body's, and a digest memory erased under a redaction, whoever files
+  it; `receipt_read(digest)` opens one; `receipt_erase(digest, at)`
+  deletes the body and keeps its digest in `protected_redactions`.
+  Heads and the spine may execute `receipt_file` and `receipt_read`;
+  only the spine may execute `receipt_erase`. Memory with no receipt
+  key keeps no protected evidence and says so. **A dump of the database
+  carries the key (`memory_keys`) and the ciphertext together, so a
+  dump is as sensitive as the evidence itself**; #989 revisits where
+  the key is held. A query that fails drops the connection, dials
+  again and tries once more, so a database restart does not leave
+  every protected read and erase failing (#637). Without memory, the
+  body is withheld: `receipt.withheld <digest> {class, by, why}`, and
+  nothing holds it. The record keeps the digest and the class either
+  way, so `sync` never carries a protected body into a clone. Reading
+  one is an act in the reader's name for a purpose (`hale dna receipt
+  show <digest> --purpose <p> [--as <who>]`): it is refused unless a
   `receipt.disclosed <digest> {recipient, purpose, by}` row names both,
-  and appends `receipt.read` on an answer and `receipt.read_refused` on a
-  refusal. The answer is given only once its `receipt.read` row is in
-  the record: a read the record cannot hold (the journal refuses the
-  append) is refused with 503 and discloses nothing, and a body kept
-  while the record refuses its `receipt.classified` row is answered 503
-  so it is filed again. `Dna.evidence_class(digest)` is the class a request carries
-  when it puts the body in a prompt, so a hosted model refuses it. This
-  is the third trust profile #606 names: the readers of a clone hold
-  digests and classes, never protected bodies. Under local trust a
-  reader's name is attribution, as `--as` is; a verified principal is
-  #612's. **Retention (part 2).** `receipt.held <digest> {by, why}`
-  stands until `receipt.hold_released`, and refuses redaction while it
-  stands. `Dna.redact_evidence(digest, by, why, policy)` (`hale dna
-  receipt redact <digest> --why --policy`) appends `receipt.redacted
-  <digest> {by, why, policy, class, store}` and then removes the body: a
-  git receipt's ref is deleted (`Receipts.erase`), a protected body is
-  erased by the knowledge service (`POST /receipt/<digest>/erase`, which
-  writes the row), a withheld one had no body. **The redaction is in the
+  a refusal appends `receipt.read_refused`, and an answer is given only
+  once its `receipt.read` row is in the record — a read the record
+  cannot hold discloses nothing. A body kept while the record refuses
+  its `receipt.classified` row is reported so, to be filed again.
+  `Dna.evidence_class(digest)` is the class a request carries when it
+  puts the body in a prompt, so a hosted model refuses it. This is the
+  third trust profile #606 names: the readers of a clone hold digests
+  and classes, never protected bodies. Under local trust a reader's
+  name is attribution, as `--as` is; a verified principal is #612's.
+  **Retention (part 2).** `receipt.held <digest> {by, why}` stands
+  until `receipt.hold_released`, and refuses redaction while it stands.
+  A redaction (`Dna.redact_evidence(digest, by, why, policy)`, `hale
+  dna receipt redact <digest> --why --policy`) appends
+  `receipt.redacted <digest> {by, why, policy, class, store}` and then
+  removes the body: a git receipt's ref is deleted (`Receipts.erase`);
+  a protected body is erased from memory through `receipt_erase`, by
+  the spine — a head's redaction of a body memory keeps records
+  `receipt.redacted` (`store: memory`) and the spine erases the body on
+  its tick, as it erases every body the record redacted and memory
+  still holds; a withheld one had no body. **The redaction is in the
   record before a byte is erased**, appended exactly at the revision the
-  hold was read at: a redaction the record refuses erases nothing, a hold
-  that arrived in between refuses it, and a redaction recorded before an
-  erase that failed is completed by redacting again. A body the record
-  says was redacted is not filed again — `Dna.file_evidence` answers its
-  digest and keeps nothing, `hale dna receipt file` refuses it, and the
-  knowledge service's `POST /receipt` refuses it 409 — and `hale dna receipt redact` appends a git receipt's
-  redaction only at the head it read the hold at — and, once the
-  organism has adopted the ledger, only at the ledger revision it read
-  the hold at (`exact` on `POST /ledger/append`, never queued) —
-  refusing "the record moved" otherwise, as the core and the service do (#636) — through the CLI and
-  `Dna.redact_evidence` alike, for a protected body too: both hand a
-  classified receipt to the knowledge service, which erases a body still
-  kept under a recorded redaction and answers `already redacted` once
-  nothing is left. A store that cannot read the body (its read failed,
-  as opposed to finding none) records nothing and reports nothing
-  erased: 503, redact again once it answers (`protected_erase_step`). The record keeps the digest, so
-  provenance survives and a reader learns the body is gone — the service
-  answers a read with 410 `redacted by … under …`, and `hale dna history`
-  says so under a redacted prompt. Every `sync` deletes redacted
-  receipts' refs from the clone and the remote, so a clone that fetched
-  one drops it at its next sync; the blob stays in each object store
-  until git collects it (`git gc --prune=now`), and a copy disclosed or
-  cloned outside the record cannot be recalled. The knowledge tail
-  retires an idea whose receipt was redacted instead of stopping.
+  hold was read at: a redaction the record refuses erases nothing, a
+  hold that arrived in between refuses it, and a redaction recorded
+  before an erase that failed is completed on a later tick or by
+  redacting again. A body the record says was redacted is not filed
+  again — `Dna.file_evidence` answers its digest and keeps nothing, and
+  `hale dna receipt file` and `receipt_file` refuse it — and `hale dna
+  receipt redact` appends a git receipt's redaction only at the head it
+  read the hold at and, once the organism has adopted the ledger, only
+  at the ledger revision it read the hold at (the request's
+  `expected`), refusing "the record moved" otherwise (#636). A store
+  that cannot read the body (its read failed, as opposed to finding
+  none) records nothing and reports nothing erased: redact again once
+  it answers (`protected_erase_step`). The record keeps the digest, so
+  provenance survives and a reader learns the body is gone — a read of
+  a redacted digest is refused `… was redacted: by … under …`, and
+  `hale dna history` says so under a redacted prompt. Every `sync`
+  deletes redacted receipts' refs from the clone and the remote, so a
+  clone that fetched one drops it at its next sync; the blob stays in
+  each object store until git collects it (`git gc --prune=now`), and a
+  copy disclosed or cloned outside the record cannot be recalled. The
+  projection retires an idea whose receipt was redacted instead of
+  stopping.
 - **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
   becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
   compare-and-swapped on the ref. Tokens are monotonic per key.
@@ -431,8 +591,9 @@ repository:
   *handoff* crosses a horizon into a separate record, and a connection is
   its only path; nothing selective leaves a record by sync. `hale dna
   connect <record-url> --name <name> --as <position> --purpose <purpose>
-  --classes <internal,customer,confidential> [--by <who>]` reads the
-  other record's identity — its genesis, the root commit of its journal,
+  --classes <internal,customer,confidential> [--by <who>]` (the url is
+  the other record's git remote; an `http://` or `https://` url is
+  refused as a service url) reads the other record's identity — its genesis, the root commit of its journal,
   which every record publishes as a blob under `refs/dna/identity` when it
   syncs (until a push of it to the remote as it is now has succeeded —
   `dna.identitypublished` names that remote and blob — each sync asks the
@@ -496,8 +657,8 @@ repository:
   when the evidence is not a receipt the record holds. `hale dna receipt
   file <path> [--class internal|customer|confidential]` files one:
   internal text under `refs/dna/receipts/` with a `receipt.filed` row
-  (`by`, `name`, `bytes`, `class`, `store`), a protected class through
-  the knowledge service alone. Whether a report settles the Task is the
+  (`by`, `name`, `bytes`, `class`, `store`), a protected class sealed
+  in memory alone (`receipt.classified`). Whether a report settles the Task is the
   obligation's **acceptance policy**: a practice named
   `acceptance/<obligation>`, ratified by the Board and not retired,
   whose text says `reported decisions: allowed`. The obligation is the
@@ -826,7 +987,7 @@ record's.
 | `schedule.declared` / `schedule.refused` | ledger | a schedule the org chart declares, or one that would not be admitted |
 | `schedule.fired` / `schedule.skipped` | ledger | the Task a schedule made, or why it did not fire |
 | `schedule.paused` / `schedule.resumed` | ledger | paused and resumed by hand, in your name |
-| `receipt.classified` / `receipt.withheld` | ledger | a protected body the knowledge service keeps, or one no service could keep |
+| `receipt.classified` / `receipt.withheld` | ledger | a protected body memory keeps sealed, or one withheld because no memory could keep it |
 | `receipt.disclosed` | ledger | a reader authorized, for a purpose |
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
@@ -1766,8 +1927,10 @@ chain verification), `Coordination` (leases with fencing tokens) and
 `Receipts` (content-addressed store and read) are interfaces in the
 core. The git-backed implementations are the ones an assembly wires
 for an organism; the in-memory ones exist for tests. Protected bodies
-go through `ReceiptVault` to the knowledge service's `ProtectedBodies`
-(`MemProtected`, `PqProtected`) instead (GH #606).
+go through `MemoryVault` to memory's sealed store instead
+(`ProtectedBodies`, `PqProtected`, which files, reads and erases only
+through `receipt_file`, `receipt_read` and `receipt_erase`; GH #606,
+#985).
 
 **The record has an API of its own (GH #646 stage 0).** `Record` is
 the one boundary the git-backed `GitJournal`, `GitReceipts` and
@@ -1895,31 +2058,29 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   controllers never contend for one id, each restores its count from
   its own births alone, and the ledger's unique constraint on a claim
   kind decides a first claim with no coordination between them: a
-  `task.born` the store answers `claimed` (409) is minted again under
+  `task.born` the Ledger answers `claimed` is minted again under
   the next id, and nothing is refused. With one owner nothing is
   prefixed. Work that crosses owners is a transfer inside the one
   ledger (GH #667), #615's rule applied between owners: a plan that
   hands a job to another owner's member appends `task.transfer_requested
   <task> {owner, to, assignee, …}` in place of `task.handed`, and the
   Task waits; a member of that owner accepts it (`hale dna task accept
-  <id> --as <who>`, `task.transfer_accepted`, admitted by the service
+  <id> --as <who>`, `task.transfer_accepted`, admitted by the spine
   only in a member of `to`'s name) and their controller then appends
   `task.handed` in its own name, naming `transferred_from` and who
   accepted, so completion is admitted in the assignee's name as
-  always. Nothing settles on the request alone. **Who hosts the shared
-  record's service** (GH #669) is every owner's trust decision, named
-  in the map — `host = acme`, an owner or a third party; changing it
-  affects every owner, so every owner approves — and the host gives
-  each owner a key to the service out of band (`HALE_DNA_OWNER_KEYS`,
-  `<owner>=<key> …`, on the service). Each owner's heads reach the
-  service with their own identities: a head names its owner and holds
-  its key (`git config dna.owner`, `dna.owner.key`; carried as
-  `head_owner`, `head_key` on `POST /ledger/append`), the service
-  admits a write in a person's name only from a head of the owner that
-  person is a member of (403 otherwise: no key, the wrong one, or a
-  member of another owner), and who the person is remains the head's
-  to establish — its issuer under `dna.principal = oidc`. A service
-  given no keys serves a single-owner record as before.
+  always. Nothing settles on the request alone. Every owner runs a
+  body over a shared record, and the spine lease picks the one spine
+  that projects, admits and erases (**The spine**). Each owner's heads
+  sign their requests with their owner's key, and the spine, holding
+  every owner's key (`HALE_DNA_OWNER_KEYS`), admits a request in a
+  person's name only from a head of the owner that person is a member
+  of (**The owners' keys**); who the person is remains the head's to
+  establish — its issuer under `dna.principal = oidc`. A spine given no
+  keys admits requests on a single-owner record without a signature.
+  The map may still name `host = <owner>` (GH #669); changing it
+  affects every owner, so every owner approves, and memory does not
+  read it.
 - **The foundational law** (`dna/org/law.hl`, generated, extendable,
   never weakened): nothing applies except through the substrate
   (`forbid reaches(positions, effects(genome_apply)) avoiding
@@ -1941,21 +2102,20 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   A record admits one body per owner at a time — one body when the
   organization is the one owner (bounded attachment; the initial
   controller model). Over a shared record (the owners map above) the
-  lease is a row of the store per owner, `owner/<owner>`, taken
-  through the service like the single body's `body` row, so two
+  lease is a row of memory's lease table per owner, `owner/<owner>`,
+  taken like the single body's `body` row, so two
   firms' controllers run side by side over one record and a firm's
   second host waits on its own firm's lease alone; a shared record
   runs no body until its ledger is adopted. The lease's token is an
   epoch: it rises when the lease is taken (a takeover, a forced
   claim, an expiry) and holds through renewals, and the host hands
   the body it starts its lease and epoch (`HALE_DNA_LEASE`,
-  `HALE_DNA_LEASE_TOKEN`), which the body's `ServiceLedger` carries
-  on every `POST /ledger/append` (`lease`, `token`). The service
-  refuses (403, `fenced: …`) a write under a lease that is not held,
-  is held at another epoch, or has expired: a controller that
-  survived a partition writes nothing after its replacement took over,
-  whatever it still believes. A head's or a host's write names no
-  lease and is admitted as before. Failover is within an owner; no
+  `HALE_DNA_LEASE_TOKEN`), which the body's `MemoryLedger` checks
+  before every append: a write under a lease that is not held, is held
+  at another epoch, or has expired lands nothing (`fenced: …`), so a
+  controller that survived a partition writes nothing after its
+  replacement took over, whatever it still believes. A head's or a
+  host's write is a request, which the spine admits. Failover is within an owner; no
   owner's positions pass to another on a timeout. The rest of this
   entry describes the lease as one body's; it holds per owner. A record
   admits one body of each. The
@@ -2046,11 +2206,13 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   order: the toolchain `hale.lock` pins (installed with the site's
   installer at that version, verified, or stop), the record's remote
   cloned (fetched into a clone that exists), `vendor/dna` and the
-  record brought up, the knowledge database from `dna/compose.yaml`
-  or a DSN (which goes into the body's env file, never the record),
+  record brought up, memory's database from `dna/compose.yaml` or a
+  DSN (which goes into the body's env file as
+  `HALE_DNA_MEMORY_DSN_OWNER`, never the record: the unit's `hale dna
+  dev` migrates with it and hands the host only the spine's DSN),
   and a systemd user unit `hale-dna-<project>-<record>` supervising `hale dna
-  dev . --no-iris` — on one server the body is the organization, the
-  application and the knowledge service under one host — with
+  dev . --no-iris` — on one server the body is the organization and
+  the application under one host — with
   `Restart=on-failure` so a failure flows up one more level. It stops
   before writing anything when the record has no remote or one local
   to this machine, when ssh cannot reach the host, or when the host
@@ -2342,8 +2504,9 @@ The organization's models are a catalog in source (GH #583 M1):
 
 ## Knowledge
 
-The knowledge graph is a service (GH #583 K1). Two halves, one
-authority.
+The knowledge graph has two halves and one authority (GH #583 K1).
+The live half is memory's, projected from the record by the spine
+(GH #985).
 
 - **The record holds the decided half.** A proposal is a document —
   canonical JSON with a fixed field order (`kind`, `text`, `author`,
@@ -2367,7 +2530,7 @@ authority.
   `kind`, `target`, `class`, `at`); any other outcome appends
   `knowledge.declined`. A pending knowledge Review is re-born from the
   record at birth like a mutation's.
-- **Binding changes preserve the item.** The service's reviewed
+- **Binding changes preserve the item.** The reviewed
   `dna.knowledge.binding.bind@1` and `.unbind@1` operations address one
   `(idea, target, author)` tuple. Independent explicit grants admit a
   `knowledge.binding.requested` fact. The Body records delivery before
@@ -2379,10 +2542,10 @@ authority.
   subject produces a separate apply refusal. Each consequence belongs
   to the original request identity. Projection changes future package
   applicability, preserving the item receipt and earlier Work packages.
-  A visible retired item permits exact unbinding. This is the service's
-  reviewed command profile, not a universal Review requirement on the
-  in-process `Knowledge.bind` primitive. See
-  `dna/knowledge/service/COMMANDS.md` for authority, recovery and visibility.
+  A visible retired item permits exact unbinding. This is the reviewed
+  command profile the API admits (**The API**, under *The surface*),
+  not a universal Review requirement on the in-process
+  `Knowledge.bind` primitive.
 - **Relationship policy selects direct or reviewed admission.** The existing
   `dna.knowledge.edge.link@1` and `.unlink@1` commands retain their exact directed
   `(from, to, rel)` identity and command encoding. A `review` grant instead admits
@@ -2398,101 +2561,74 @@ authority.
   admitted variant even if policy later changes mode. Native effects replay in
   Record order; approval alone does not establish a graph change. This policy
   does not add a universal Review requirement to the graph primitives.
-- **The store holds the live half.** `dna/knowledge` (embedded in the
-  toolchain beside the core, with pond's Postgres driver pinned under
-  `dna/pond`) declares `KnowledgeStore`: `open`, `watermark` /
-  `set_watermark` (the next record seq to apply; it only advances),
-  `upsert(idea, ratified_seq)` (idempotent by id, which is the
-  digest), `bind`, `unbind`, `link`, `unlink`, `idea(id)`, `context_ids(target, budget)`
-  (accepted ideas bound to the target or any prefix of its path —
-  goals flow down, initiatives stay local — in ratification order),
-  `count(what)`. `Pq` is Postgres (six tables: `knowledge_meta`,
-  `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`,
-  `knowledge_structure`, `knowledge_signals`; the schema migrated at
-  `open`; node writes are upserts and removals delete exact tuples; rows come back as
-  JSON built by the server, since the driver's tab- and
-  newline-separated rows cannot carry an ordinary paragraph; a signal
-  counts once per record row, keyed on that row's sequence, because
-  the projection write and the watermark advance are separate and a
-  crash between them replays the row); `Mem` is the
-  same contract in memory. **The service is a consumer of the
-  record**: `apply_record(store, journal, receipts)` walks
-  `knowledge.*` rows from the watermark, resolves each digest to its
-  receipt, upserts (`ratified` accepted with its binding; `proposed`
-  and `declined` kept as such, never over a ratification), and
-  advances the watermark row by row, so after a crash it resumes and
-  converges. Nothing in the store becomes ratified except from a
-  `knowledge.ratified` row: git is the sole authority; the store can
-  lag, never disagree. The observed and inferred tier (K3) lives only
-  in Postgres and is backed up like any Postgres; the ratified tier
-  rebuilds from git.
-- **The record is the scope of its store.** A store is opened for one
+- **Memory holds the live half.** `dna/core/memory_store.hl` declares
+  `KnowledgeStore`: `scope` / `record`, `open`, `healthy` / `reopen`,
+  `watermark` / `set_watermark` (the next record seq to apply; it only
+  advances), `upsert(idea, ratified_seq)` (idempotent by id, which is
+  the digest), `retire`, `bind`, `unbind`, `link`, `unlink`,
+  `idea(id)`, `context_ids(target, budget)` (accepted ideas bound to
+  the target or any prefix of its path — goals flow down, initiatives
+  stay local — in ratification order), `ranked_ids`, `count(what)`, and
+  the structure and signals of K3. `Pq` is Postgres (six tables:
+  `knowledge_meta`, `knowledge_ideas`, `knowledge_bindings`,
+  `knowledge_edges`, `knowledge_structure`, `knowledge_signals`, which
+  the migration creates and `open` only checks; node writes are
+  upserts and removals delete exact tuples; rows come back as JSON
+  built by the server, since the driver's tab- and newline-separated
+  rows cannot carry an ordinary paragraph; a signal counts once per
+  record row, keyed on that row's sequence, because the projection
+  write and the watermark advance are separate and a crash between
+  them replays the row). **The projection is a consumer of the
+  record**: `apply_record(store, journal, receipts)` in
+  `dna/operations/memory_tail.hl` walks `knowledge.*` rows from the
+  watermark, resolves each digest to its receipt, upserts (`ratified`
+  accepted with its binding; `proposed` and `declined` kept as such,
+  never over a ratification), and advances the watermark row by row, so
+  after a crash it resumes and converges. Nothing in memory becomes
+  ratified except from a `knowledge.ratified` row: git is the sole
+  authority; memory can lag, never disagree. The observed and inferred
+  tier (K3) lives only in Postgres and is backed up like any Postgres;
+  the ratified tier rebuilds from git.
+- **The record is the scope of its memory.** Memory is opened for one
   record, named by the record's identity — the sha of the journal's
   first commit, the same in every clone of the record and different
   for every record (`GitJournal.genesis()`; `scope(record)` on the
   store before `open`, `record()` to read it back). `Pq` keeps one
   Postgres schema per record, `dna_<identity>`, selected for the
   session at `open` (with `public` behind it for the vector type), so
-  two records on one database — an operator's `HALE_DNA_KNOWLEDGE_DSN`
-  shared across projects — each see only their own ideas, bindings,
+  two records on one database each see only their own ideas, bindings,
   structure, signals and watermark; `hale dna dev`'s compose database
   is one record's anyway. The schema's `knowledge_meta` carries a
-  `record` row naming its owner, written on first open and checked on
-  every open: a schema that names another record is refused (`scope:
-  schema … belongs to record …; it is not read`), never read. A store
-  in `public` from before stores were scoped is refused with the way
-  forward (drop its tables or the database; the projection rebuilds
-  from the record), never read as any record's. A record with no
-  rows yet has no identity: its service opens under `dna_unscoped`,
-  where nothing is ever applied, and moves to the record's own schema
-  on the request after its first row lands. The summary reports the
-  scope (`"scope"`).
-- **The service program.** `dna/knowledge/service` (`hale dna
-  knowledge [project] [--port N]`, default 8791): applies the record
-  on every request (the reader sees it as it is now) and answers over
-  HTTP. **A question it cannot answer is a refusal, never an empty
-  answer**: a package built from failing reads, or served while the
-  record's projection is stuck, is indistinguishable from "there is no
-  knowledge here" — so a read error or an `apply_record` error is 503
-  with the reason, and the summary carries whatever the counts hit.
-  The store is opened on the first request rather than at birth
-  — a database that is down must not hold the surface closed, because
-  the surface is where an operator reads that it is down — and the
-  connection is asked on each request afterwards (`healthy`), because
-  an open that succeeded once is not a connection that still answers:
-  a session dropped by a restart or a failover is re-established
-  (`reopen`), and only a store that cannot be reached at all answers
-  503. A package is never built from a store whose queries are
-  failing — `GET /` (store kind,
-  watermark, record revision, counts), `GET
-  /context?target=<locus path>&budget=<n>` (the bounded package: the
-  ids included, their ideas with text, author and `ratified_seq`, and
-  the store's revision, and a digest over the target and the ids — what is handed over, never the revision, which varies between runs and would make a tape unable to answer the same request twice), `GET /idea/<digest>`,
-  `POST /apply`. `HALE_DNA_MEMORY_DSN_SPINE` names the store: a
-  `postgres://…` URL for the record's spine role, or
-  `HALE_DNA_KNOWLEDGE_DSN=memory` for a store that lives only as long
-  as the process; neither is a refusal that says so, and the owner's
-  DSN alone is refused, never connected with.
-- **Memory's schema is its owner's (GH #985).** `HALE_DNA_KNOWLEDGE_DSN`
-  is the schema owner's DSN, used only to apply the schema — by `hale
-  dna memory migrate`, by `hale dna upgrade` when it is set, and by
-  `hale dna dev` before it starts the host — never by a process that
-  runs the organism. The migration (`dna/knowledge/schema.hl`) creates
-  the record's schema and every store's tables, refuses a store left
-  in `public` from before stores were scoped, writes the record's
-  claim on the schema, initializes the projection protocol, creates
-  the record's own role `dna_<identity>_spine` (placeholder-local
-  credentials until the vault, GH #989) with read and write on its
-  schema's tables and no DDL, and writes `memory_meta.schema_version`,
-  in one transaction. Roles are per record: one role granted on every
-  record's schema would read every other record's evidence on the same
-  server. A store's `open` selects the schema and checks the version
-  and the record's claim, and nothing more; a schema at another
-  version is refused naming both versions and `hale dna memory
-  migrate`, and a migration refuses a schema a newer toolchain wrote.
-  `dev` hands the host `HALE_DNA_MEMORY_DSN_SPINE` and takes
-  `HALE_DNA_KNOWLEDGE_DSN` out of its environment; the host checks the
-  version before it starts the knowledge service on it.
+  `record` row naming its owner, written by the migration and checked
+  by the migration and by every `open`: a schema that names another
+  record is refused (`scope: schema … belongs to record …, not …`),
+  never read. A record with no rows yet has no identity: its projection
+  opens under `dna_unscoped`, where nothing is ever applied, and moves
+  to the record's own schema once its first row lands.
+- **The spine projects; readers read.** `MemoryProjection`
+  (`dna/operations/memory_tail.hl`) applies the record into the graph
+  on the host's tick, as the record's spine role, while the host holds
+  the spine lease (**The spine**, above), so the projection advances
+  without anyone asking. **A question memory cannot answer is a
+  refusal, never an empty answer**: a package built from failing
+  reads, or from a projection behind the record, is indistinguishable
+  from "there is no knowledge here". The projection's store is opened
+  on the first tick rather than at birth, and the connection is asked
+  on each tick afterwards (`healthy`), because an open that succeeded
+  once is not a connection that still answers: a session dropped by a
+  restart or a failover is re-established (`reopen`). A reader —
+  `MemoryKnowledge` in the organism, the API as a head — never
+  projects. A package (`MemoryKnowledge.package_for(target, query)`:
+  the ids included, their ideas with kind, text and author, the
+  projection's watermark as its revision, and a digest over the target
+  and the ids — what is handed over, never the revision, which varies
+  between runs and would make a tape unable to answer the same request
+  twice) waits, bounded at 20 s (`PACKAGE_WAIT_SECS`), for the
+  projection to reach the record's head, and otherwise refuses: `memory's
+  projection is at row <n> of the record's <m>; the spine applies it on
+  its tick`. The organization's knowledge package is read from memory
+  under the spine role. The API reads the graph under the head's role
+  (**The API**, below).
 - **The design, as proposals (GH #596 C).** `init` seeds the
   toolchain's practices about how a DNA organization works — the
   design principles, the evolution pattern, structure follows intent,
@@ -2533,10 +2669,10 @@ authority.
   organism. `upgrade` writes it for an organization from before it.
 - **The leader reads its brief at both moments it thinks.** The org
   chart hands the `Leader` its `charter` and `purpose` (the program's
-  own text) and a `KnowledgeClient`; before a review and before a
+  own text) and a `MemoryKnowledge`; before a review and before a
   plan it composes its brief — `CHARTER`, `PURPOSE`, the `LAW` as the
   genome holds it at HEAD, and `PRACTICES` from the package for `org`
-  when the service has any — and puts it above the diffs. The model
+  when memory has any — and puts it above the diffs. The model
   call carries `knowledge_bindings` naming the package, so the
   evidence of every decision that read it says so.
 - **`HALE_DNA_DISCOVER=off`** makes `init`'s discovery find nothing —
@@ -2620,37 +2756,38 @@ authority.
 - **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
   (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
   volume `hale-dna-<project>-knowledge`, a host port in 54xx from the
-  project's name); it is part of the genome. `hale dna dev` runs
-  `docker compose -f dna/compose.yaml up -d --wait knowledge-db`,
-  derives the owner's DSN from the published port, applies memory's
-  schema with it, starts the knowledge service beside the organization
-  as the record's spine role (`knowledge.pid`, `knowledge.dsn`,
-  `knowledge.log` under `.hale/dna`; `HALE_DNA_KNOWLEDGE_PORT`), and
-  stops it with the rest. An operator's `HALE_DNA_KNOWLEDGE_DSN`
-  wins. With compose not on PATH, or no compose file, the host says
-  exactly which it needs and runs without a knowledge service. `hale
-  dna run` starts no service: beyond one machine the service is an
-  instance in the plan against a Postgres of the operator's.
+  project's name); it is part of the genome. With no
+  `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -f
+  dna/compose.yaml up -d --wait knowledge-db` and derives the owner's
+  DSN from the published port; an operator's
+  `HALE_DNA_MEMORY_DSN_OWNER` wins. It applies memory's schema with the
+  owner's DSN and starts the host with the record's spine DSN alone
+  (**Memory**). With compose not on PATH, or no compose file, it says
+  exactly which it needs and the host runs with no memory. `hale dna
+  run` brings up no database: beyond one machine memory is a Postgres
+  of the operator's, migrated with `hale dna memory migrate`.
 - **Knowledge changes later work (K2).** The substrate holds a
-  `KnowledgeClient` (`url`, or `url_env` read at birth — the host
-  sets `HALE_DNA_KNOWLEDGE_URL` under `dev`; `budget`), the owner's
-  line to the service; the editor never holds one, which the law
-  states (`group knowledge = { dna::Knowledge, dna::KnowledgeClient
-  }`, `editors_never_learn`). When a Mutation opens, the substrate
-  asks the service for the package of the change's target in the
+  `MemoryKnowledge` (`budget`, 8 by default; memory opened under the
+  spine's role), the owner's line to memory; the editor never holds
+  one, which the law states (`group knowledge = { dna::Knowledge,
+  dna::MemoryKnowledge }`, `editors_never_learn`). When a Mutation
+  opens, the substrate asks memory for the package of the change's
+  target in the
   tower — `org` for an organization change, `org/<child>` for the
   application, `org/<child>/<seed>` for a seed inside it — and
   journals `knowledge.consulted <mutation>` (`target`, `digest`,
-  `revision`, `included_n`, `included`, `error`) whenever a client is
-  configured, answer or not. The package's ideas are folded into the
+  `revision`, `included_n`, `included`, `error`) whenever memory is
+  named (`HALE_DNA_MEMORY_DSN_SPINE`), answer or not. The package's ideas are folded into the
   objective the editor receives (`objective_with`: the ask, then a
   `PRACTICES (ratified knowledge for <target>, package <digest>):`
   block, one idea per line) — the record, the commit message and the
   Mutation keep the ask itself — and the request names the package
   (`context_digest`, `knowledge_bindings: package:<digest> <id>…`),
   which every model call of the attempt carries into its `model.called`
-  row. No service, or a service that does not answer, is an empty
-  package that says so; nothing waits on it.
+  row. No memory named is an empty package that says so, and nothing
+  waits on it; memory that cannot answer, or whose projection has not
+  reached the record's head within 20 s, is a package refused with the
+  reason (**The spine projects; readers read**).
 - **Concerns (K2).** `ConcernRaised` (`source`, `what`, `severity`) is
   a child's live signal about the part above it: an application or
   `hale dna concern raise <source> <what…> [--severity N]` publishes
@@ -2676,25 +2813,21 @@ authority.
   refused again.
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
-  effect classes and claims) into the store by kind and name, the
+  effect classes and claims) into memory by kind and name, the
   latest row winning, and its `pressure.raised` and `concern.raised`
   rows into signals counted per (kind, source, what) with the last
-  row's seq: `GET /structure` (counts by kind, the loci and topic
-  names) and `GET /signals` answer them, so the graph has what ideas
-  bind to and what the fleet is saying. Retrieval is by binding and
+  row's seq (`knowledge_structure`, `knowledge_signals`), so the
+  graph has what ideas bind to and what the fleet is saying. Retrieval is by binding and
   provenance first: the bounded set is the accepted ideas bound to
   the target or above it, and nothing outside it is retrieved. Inside
-  it, a query — the objective, which the client sends URL-encoded as
-  `&query=` and the substrate passes from the ask — ranks by
-  similarity so the budget keeps the most relevant
-  (`KnowledgeStore.ranked_ids(target, budget, query_vec)`; the package
-  says `ranked: true`; no query is ratification order). The embedding
+  it, a query — the objective, which the substrate passes from the
+  ask, its first 2000 characters — ranks by similarity so the budget
+  keeps the most relevant (`KnowledgeStore.ranked_ids(target, budget,
+  query_vec)`; no query is ratification order). The embedding
   is lexical — `embed_text`: a hashed bag of words in 64 dimensions,
   normalized, deterministic, rendered as a pgvector literal — so `Pq`
-  ranks with `<=>` over a `vector(64)` column (the store creates the
-  `vector` extension at open and says so when the Postgres has none)
-  and `Mem` with the same `cosine`; a hosted embedder is the same
-  shape later.
+  ranks with `<=>` over a `vector(64)` column (the migration creates
+  the `vector` extension and says so when the Postgres has none).
 - **The application side (K4).** An application declares the wire
   fact itself — a type of the membrane's shape (`source`, `what`,
   `severity`) on the subject `dna.concern.raised`, no import of the
@@ -2717,11 +2850,9 @@ authority.
   membrane → `concern.raised`; the third makes a proposal by
   `org/trio/worker` bound to `org/trio` (a concern by the tower
   rule); the Board ratifies the exact digest (`hale dna review k:…
-  approve --authority board`); the knowledge service, run beside the
-  organization (`hale dna knowledge`, `HALE_DNA_KNOWLEDGE_URL` in the
-  organization's environment — the host forwards an operator's URL
-  under `run`), tails it; and the next change to the trio consults
-  the service (`knowledge.consulted m1` with the digest included),
+  approve --authority board`); the spine projects it into memory on
+  its tick; and the next change to the trio consults memory
+  (`knowledge.consulted m1` with the digest included),
   hands the editor the objective with the concern under it, and every
   `model.called` row of the attempt names the package and the digest.
   Something observed and ratified today informs the work done
@@ -2900,8 +3031,9 @@ does not identify that source — two builds of one version can embed
 different `dna/` source — so the toolchain names it (GH #726):
 `EMBEDDED_DIGEST` is a length-framed SHA-256 over the sorted `(path,
 content)` pairs of every embedded file (`dna/core`, `dna/host`,
-`dna/membrane`, `dna/ui`, `dna/knowledge`, the pinned `dna/pond`
-driver), computed when the toolchain is built. It is:
+`dna/membrane`, `dna/operations`, `dna/organization_runtime`,
+`dna/organization_source`, `dna/ui`, and pond's driver pinned under
+`dna/core/pond`), computed when the toolchain is built. It is:
 
 - the second line of `hale --version` (`embedded dna: <first 16 hex>`;
   the first line stays the version alone, since a provisioning script
@@ -2971,6 +3103,23 @@ retry and conflicts on a changed one. A run that passes its deadline
 is `outcome_unknown` when the verb reaches beyond this machine, never
 `failed`; the head appends nothing to any record itself. It is
 trusted-local and refuses an `oidc` project.
+
+**The API** (`dna/api`, source-built; the head starts one per project)
+is a head of memory. It reads the Knowledge graph in its own process
+under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`), through one handle
+opened on the first read and held for the process's life; a projection
+that has not reached the record's head answers
+`knowledge_projection_unavailable` until the spine's tick applies it,
+and without the DSN Knowledge reads are unsupported
+(`knowledge_unsupported`). It admits Knowledge commands into the
+record in the same process, under the explicit authority policy in the
+file `HALE_DNA_KNOWLEDGE_COMMAND_POLICY` names (`dna.knowledge-authority/1`,
+at most 64 KiB, decoded by `KnowledgePolicyCodec` in
+`dna/operations/knowledge_policy.hl` against the record's identity and
+`dna.trust`). The policy is read once, when the API starts: an edit to
+the file does not change a running API's basis, and a policy that does
+not decode stops the API (exit 2). `dna/api/README.md` describes the
+routes.
 
 What is deliberately not here yet: a fleet-level semantic diff (a
 Review's diff is the edited seed's; the deploy row names the instances
