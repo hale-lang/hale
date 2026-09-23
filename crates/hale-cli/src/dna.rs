@@ -310,7 +310,9 @@ pub fn run(args: &[String]) -> ExitCode {
                 eprintln!("hale dna run: {e}");
                 return ExitCode::from(2);
             }
-            host_exec("run", &dir, &rest)
+            // GH #985: the host runs on the spine's DSN alone; an owner's
+            // DSN in this environment does not reach it
+            host_exec_env("run", &dir, &rest, &[], &[OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD"])
         }
         Some("dev") => {
             let (dir, rest) = project_arg(&args[1..], true);

@@ -8,8 +8,6 @@
 
 #[path = "support/trace.rs"]
 mod trace;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -46,23 +44,6 @@ fn supersedes_of(app: &Path, digest: &str) -> String {
     v["supersedes"].as_str().unwrap_or("").to_string()
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
-fn http(port: u16, req: &str) -> String {
-    let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
-    let _ = s.write_all(req.as_bytes());
-    let mut out = String::new();
-    let _ = s.read_to_string(&mut out);
-    out
-}
-
-fn body(resp: &str) -> String {
-    resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
-}
-
 fn journal(app: &Path) -> Vec<(String, String, String)> {
     let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(app).output().unwrap();
@@ -78,6 +59,7 @@ fn journal(app: &Path) -> Vec<(String, String, String)> {
 
 /// The organization, running, until `finish`.
 fn start_org(app: &Path) -> std::process::Child {
+    let spine = memory_dsn(app, "HALE_DNA_MEMORY_DSN_SPINE=");
     let _s = trace::Span::new("start_org", "hale dna run");
     // a previous organization's sockets would answer the wait below
     // before the new one has bound
@@ -90,7 +72,7 @@ fn start_org(app: &Path) -> std::process::Child {
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
+        .env("HALE_DNA_MEMORY_DSN_SPINE", spine)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -134,32 +116,68 @@ fn finish(app: &Path, host: &mut std::process::Child, what: &str, until: impl Fn
     let _ = host.wait();
 }
 
-/// The package for `org` from a fresh knowledge service over the record:
-/// the digests included, and the raw body.
+/// Memory's owner, from the environment (CI's service container). The
+/// package is read from memory, so without one this test has nothing to
+/// look at.
+fn owner_dsn() -> Option<String> {
+    std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok().filter(|d| !d.is_empty())
+}
+
+/// A role's DSN for this record (`HALE_DNA_MEMORY_DSN_SPINE=` or `…_HEAD=`),
+/// from the owner's migration (GH #985).
+fn memory_dsn(app: &Path, line: &str) -> String {
+    let (ok, out) = hale(&["dna", "memory", "migrate"], app);
+    assert!(ok, "memory migrates: {out}");
+    out.lines().find_map(|l| l.strip_prefix(line)).unwrap_or_else(|| panic!("no {line} in: {out}")).to_string()
+}
+
+/// A head's read of the package for `org`, as memory holds it.
+const PACKAGE: &str = r#"import "vendor/dna" as dna;
+
+fn main() {
+    let k = dna::MemoryKnowledge { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_HEAD", budget: 32 };
+    let p = k.package_for("org", "");
+    let j = dna::GitJournal { repo: "." };
+    let moved = j.refresh();
+    println(p.error + "\t" + to_string(p.revision) + "\t" + to_string(j.revision()) + "\t" + p.included);
+}
+"#;
+
+/// The package for `org`, read as a head once the spine has projected
+/// every row of the record: the organization runs until its projection
+/// reaches the record's head, the head reads, the organization stops.
+/// The digests included, and the raw answer.
 fn package(app: &Path) -> (Vec<String>, String) {
-    let _s = trace::Span::new("package", "hale dna knowledge + GET /context");
-    let port = free_port();
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "knowledge", ".", "--port", &port.to_string()])
-        .current_dir(app)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .env("HALE_DNA_DISCOVER", "off")
-        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("hale dna knowledge");
-    trace::wait_until("dna knowledge: the port answered", Duration::from_secs(120), Duration::from_millis(200), || {
-        TcpStream::connect(("127.0.0.1", port)).is_ok()
+    let _s = trace::Span::new("package", "the spine projects; a head reads");
+    std::fs::create_dir_all(app.join("pkg")).unwrap();
+    std::fs::write(app.join("pkg/main.hl"), PACKAGE).unwrap();
+    let head = memory_dsn(app, "HALE_DNA_MEMORY_DSN_HEAD=");
+    let mut host = start_org(app);
+    let mut last = String::new();
+    trace::wait_until("the projection reaches the record's head", Duration::from_secs(120), Duration::from_millis(250), || {
+        let (ok, out) = hale_env(&["run", "pkg"], app, &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str())]);
+        last = out.lines().last().unwrap_or("").to_string();
+        let f: Vec<&str> = last.split('\t').collect();
+        ok && f.len() == 4 && f[0].is_empty() && f[1] == f[2]
     });
-    let ctx = trace::timed("http", "GET /context", || body(&http(port, "GET /context?target=org&budget=32 HTTP/1.0\r\nHost: x\r\n\r\n")));
-    let _ = c.kill();
-    let _ = c.wait();
-    let v: serde_json::Value = serde_json::from_str(&ctx).unwrap_or(serde_json::Value::Null);
-    // `included` is the space-separated digests, in ratification order
-    let ids: Vec<String> = v["included"].as_str().unwrap_or("").split_whitespace().map(|s| s.to_string()).collect();
-    (ids, ctx)
+    if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
+        let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+    }
+    let _ = host.kill();
+    let _ = host.wait();
+    let f: Vec<&str> = last.split('\t').collect();
+    assert!(f.len() == 4 && f[0].is_empty() && f[1] == f[2], "the projection never reached the record's head: {last}");
+    let ids: Vec<String> = f[3].split_whitespace().map(|s| s.to_string()).collect();
+    (ids, last)
+}
+
+/// This record's schema and roles, gone again.
+fn unmigrate(app: &Path, owner: &str) {
+    let out = Command::new("git").args(["rev-list", "--max-parents=0", "refs/dna/journal"]).current_dir(app).output().unwrap();
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+    let sch = format!("dna_{id}");
+    let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
+    let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
 }
 
 /// A driver that ratifies an EARLIER version of two design practices
@@ -193,6 +211,10 @@ fn main() { App { }; }
 #[test]
 fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let _t = trace::test("dna_design");
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_design_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -247,7 +269,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let rows = journal(&app);
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 2, "two ratified");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.declined").count(), 6, "six declined");
-    // the package holds exactly the two, through a fresh service (a replay of the record)
+    // the package holds exactly the two, as memory holds the record
     let (included, ctx) = package(&app);
     let (d0, d1) = (digest_of(&ids[0]), digest_of(&ids[1]));
     assert!(included.contains(&d0) && included.contains(&d1), "the approved practices are in the package: {ctx}");
@@ -393,5 +415,6 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
         .unwrap();
     assert_ne!(yet_principles, later_principles_digest);
     assert_eq!(supersedes_of(&app, &yet_principles), later_principles_digest, "the yet later principles supersede the version the Board just ratified");
+    unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }
