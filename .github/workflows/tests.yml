@@ -516,15 +516,22 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-  # The face and the DNA service API (GH #690, #998): the read
-  # contract's fixtures and validator, the API's own native tests, the
-  # head's tests, the shared query layer's Git-record fixtures, and the
-  # face's browser cases (dna/face) against the real API. The face has
-  # no observer, so this job never builds iris (fuse-hl). Its own job,
-  # on the same build the dna partitions make, so its minutes never sit
-  # on the critical path of a partition that is already the longest.
-  face:
-    name: face (DNA API + browser)
+  # The face and the DNA service API (GH #690, #998), as two jobs with
+  # no edge between them, so they run concurrently (GH #1009): the API
+  # step is the long pole, and sequenced behind it the browser step
+  # added its minutes to the workflow's wall time.
+  #
+  # face-api: the read contract's fixtures and validator, the API's own
+  # native tests, the head's tests, and the shared query layer's
+  # Git-record fixtures. face-browser: the face's browser cases
+  # (dna/face) against the real API and head, which it builds itself
+  # (the builds only; the contract tests stay in face-api). The face
+  # has no observer, so neither job builds iris (fuse-hl). Their own
+  # jobs, on the same build the dna partitions make, so their minutes
+  # never sit on the critical path of a partition that is already the
+  # longest.
+  face-api:
+    name: face (DNA API + head)
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -557,10 +564,10 @@ jobs:
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: Warm the DNA toolchain cache
-        # The head fixtures and the face's browser fixtures create fresh
-        # projects with hale dna new under their own budgets; the first host
-        # build of this binary is paid once here, not inside one of them.
-        # Nothing here runs the observer, so its build is skipped.
+        # The head fixtures create fresh projects with hale dna new under
+        # their own budgets; the first host build of this binary is paid
+        # once here, not inside one of them. Nothing here runs the
+        # observer, so its build is skipped.
         env:
           HALE_DNA_DISCOVER: "off"
           HALE_WARM_SKIP_IRIS: "1"
@@ -591,6 +598,62 @@ jobs:
             ./target/release/hale test dna/api/project_service/tests
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  face-browser:
+    name: face (browser)
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      HALE_DNA_DISCOVER: "off"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: Warm the DNA toolchain cache
+        # The face's browser fixtures create fresh projects with hale dna
+        # new under their own budgets; the first host build of this binary
+        # is paid once here, not inside one of them. Nothing here runs the
+        # observer, so its build is skipped.
+        env:
+          HALE_DNA_DISCOVER: "off"
+          HALE_WARM_SKIP_IRIS: "1"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      - name: Build the DNA API and the head
+        # The binaries the browser fixtures spawn: HALE_API_BIN,
+        # HALE_NATIVE_HEAD_BIN and HALE_NATIVE_HEAD_API below. face-api
+        # checks and tests them; this job only builds them.
+        run: |
+          ./target/release/hale build dna/api
+          ./target/release/hale build dna/api/practice_review
+          ./target/release/hale build dna/api/project_service
 
       - name: Set up Node for face browser tests
         uses: actions/setup-node@v4
