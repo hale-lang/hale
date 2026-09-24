@@ -51,9 +51,9 @@ mid-row leaves nothing of it, and any number of projectors over one
 record converge on one graph with each row applied once: a projector
 that finds the stamp moved writes nothing and leaves the row to the
 one that moved it. A projector compares its clone to the stamp by
-ancestry: behind it, it has nothing to project; ahead of it, it
-projects the rows after it; on a chain a reconcile replaced, it
-rebuilds the graph from row 0.
+ancestry: behind it — or stamped at a commit it has not received yet —
+it has nothing to project; ahead of it, it projects the rows after it;
+on a chain a reconcile replaced, it rebuilds the graph from row 0.
 
 ## Running it
 

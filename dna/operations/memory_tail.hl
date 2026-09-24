@@ -461,9 +461,12 @@ locus MemoryProjection {
     //   `descends` — nothing is stamped, or the stamped head is this
     //     clone's row at the stamp: the rows after it are the delta;
     //   `behind`   — this clone's head is an ancestor of the stamped head,
-    //     or the stamped head is a commit this clone has not received and
-    //     this clone is shorter: another projector is ahead, and there is
-    //     nothing here to project;
+    //     or the stamped head is a commit this clone has not received:
+    //     another projector is ahead, and there is nothing here to project
+    //     until the record is received (the host receives it every tick). A
+    //     head it cannot place is never taken for a replaced chain: two
+    //     nodes that append rows before they share them would otherwise
+    //     each rebuild the other's projection until they synced;
     //   `replaced` — neither: the chain was rebuilt beneath the projection
     //     (a reconcile re-appends local rows, each with a new digest, GH
     //     #603), so the graph is rebuilt from row 0. The graph is derived.
@@ -471,7 +474,7 @@ locus MemoryProjection {
         if basis.watermark == 0 { return "descends"; }
         if basis.watermark <= revision && self.j.read(basis.watermark - 1).digest == basis.head { return "descends"; }
         let r = self.j.record;
-        if !r.holds(basis.head) { return if revision < basis.watermark { "behind" } else { "replaced" }; }
+        if !r.holds(basis.head) { return "behind"; }
         if revision == 0 || r.precedes(self.j.head(), basis.head) { return "behind"; }
         return "replaced";
     }

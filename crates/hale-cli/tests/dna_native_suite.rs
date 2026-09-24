@@ -872,6 +872,7 @@ fn dna_fixture_set_is_complete() {
             "practice_test.hl",
             "principal_oidc_test.hl",
             "principal_test.hl",
+            "projection_fence_test.hl",
             "projectors_test.hl",
             "prompt_receipt_test.hl",
             "receipt_retention_test.hl",

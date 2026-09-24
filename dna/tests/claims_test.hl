@@ -103,6 +103,28 @@ main locus App {
         std::test::assert(m.ok, "memory migrates for the record: " + m.why);
         self.spine = m.spine_dsn;
 
+        // ---- the claim itself: one write, on the database's clock
+        let leases = dna::PqLeaseStore { conn: dna::pq_conn(dna::parse_dsn(self.spine)), record_id: identity };
+        std::test::assert(leases.open(), "the claims open: " + leases.last_error());
+        let first = leases.claim("probe", "x", 60);
+        std::test::assert(first.present && first.holder == "x" && first.token == 1, "a free key is claimed at token 1");
+        let clock = leases.conn.query_one("SELECT extract(epoch FROM now())::bigint");
+        let db_now = std::str::parse_int(dna::trim_nl(clock.data)) or 0;
+        std::test::assert(first.expires >= db_now + 58 && first.expires <= db_now + 60, "until is the database's now plus the ttl: " + to_string(first.expires) + " at " + to_string(db_now));
+        let taken = leases.claim("probe", "y", 60);
+        std::test::assert(taken.holder == "x" && taken.token == 1, "a live claim is someone else's: " + taken.holder);
+        let renewed = leases.claim("probe", "x", 60);
+        std::test::assert(renewed.holder == "x" && renewed.token == 1, "its holder renews it at the same token");
+        std::test::assert(leases.conn.exec("UPDATE claims SET until = extract(epoch FROM now())::bigint - 1 WHERE key = 'probe'").ok, "the claim ends a second ago by the database's clock");
+        let expired = leases.claim("probe", "y", 60);
+        std::test::assert(expired.present && expired.holder == "y" && expired.token == 2, "an expired claim is anyone's, at the next token");
+        std::test::assert(!leases.give_back("probe", "x"), "a claim that was taken over is not the old holder's to give back");
+        std::test::assert(leases.give_back("probe", "y"), "its holder gives it back");
+        let given = leases.current("probe");
+        std::test::assert(!given.present && given.token == 2, "given back, its token kept");
+        std::test::assert_eq_int(leases.claim("probe", "x", 60).token, 3, "and the next take raises it");
+        leases.conn.close();
+
         // ---- two nodes race for one ask: one claims and plans it, the
         // other finds it taken and is answered by the one admission
         let log_a = scratch + "/race-a.log";

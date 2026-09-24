@@ -46,7 +46,7 @@ main locus Node {
             if answer == "planning" {
                 taken = true;
                 println("node: claimed plan/", self.intent);
-            } else if std::str::starts_with(answer, "planning elsewhere") {
+            } else if std::str::starts_with(answer, "planning elsewhere") || std::str::starts_with(answer, "not planned:") {
                 if answer != said { println("node: ", answer); said = answer; }
                 std::time::sleep(100ms);
             } else {

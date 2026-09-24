@@ -336,21 +336,28 @@ present)`; the body lease is one of its rows. `MemoryLeases.claim(key,
 holder, ttl)` takes a key that is free, expired or already this
 holder's, with one conditional write — of two holders racing for a key
 one lands and the other finds it taken — and answers with the claim as
-it stands; `release_claim(key, holder)` gives it back on completion,
-its token kept so a late renewal is refused. A holder that dies leaves
+it stands. Expiry is the database's clock, never a node's: the write
+computes `until` from Postgres's `now()` and compares against it, so
+nodes whose clocks disagree agree on when a claim ends. A renewal by
+its holder keeps the token; any other take raises it.
+`release_claim(key, holder)` gives it back on completion, its token
+kept so a late renewal is refused. A holder that dies leaves
 its claim to expire and another finishes the act. Without memory (no
 DSN) there is no one to race and a claim is granted. The substrate
 names its node by `HALE_DNA_NODE` (the host sets it to the body's
 holder, `user@host:<clone>`; otherwise this machine and process) and
-claims before it spends: an ask is claimed as `plan/<intent>` for
-`claim_ttl` (300 s) before the leader is asked to plan it, and, once
+claims before it spends: an ask is claimed as `plan/<intent>`, and a
+human case the leader is asked to plan as `plan/case:<case>`, for
+`claim_ttl` (300 s) before the leader is asked, and, once
 claimed, the record is read again, so an ask the claim's previous
 holder admitted meanwhile is answered with that admission and the
 claim given back; a node that finds the claim taken answers `planning
 elsewhere: <holder> holds plan/<intent>` and writes nothing, and the
 ask comes back to it with the host's relay until it is answered or the
-claim expires. The claim is given back once the plan's admission is
-recorded. The optimize pass claims its window, `optimize/<n>` for the
+claim expires (a case is held and driven again by `redrive`; memory
+that cannot be reached is said as such, `not planned: memory could not
+be reached to claim …`). The claim is given back once the plan's
+admission is recorded (the case handed). The optimize pass claims its window, `optimize/<n>` for the
 cadence's length, and leaves it to expire. A claim a node acts on is a
 `claim.taken <key> {holder, token, until}` row and its return a
 `claim.released <key> {holder}` row (the Ledger's), so the record
@@ -1022,7 +1029,7 @@ record's.
 | `budget.exhausted` | ledger | the window's model allowance is spent |
 | `model.called` | ledger | a model call and its evidence |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
-| `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
+| `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
@@ -2669,8 +2676,11 @@ The live half is memory's, projected from the record by the spine
   it. Nothing stamped, or the stamped head is this clone's row at the
   stamp: the rows after it are the delta. This clone's head an ancestor
   of the stamped head, or the stamped head a commit this clone has not
-  received while this clone is shorter: another projector is ahead, and
-  there is nothing to project here. Neither: the chain was rebuilt
+  received: another projector is ahead, and there is nothing to project
+  here until the record is received (a head a clone cannot place is
+  never taken for a replaced chain, or two nodes that append before they
+  share would rebuild each other's projection until they synced).
+  Neither, of a head this clone holds: the chain was rebuilt
   beneath the projection (a reconcile re-appends local rows with new
   digests, GH #603), so the graph is rebuilt from row 0 —
   `rebuild(watermark, head)` empties it only while the stamp is still

@@ -210,7 +210,8 @@ Every act a node takes that must not be taken twice is claimed in
 memory first, by id, with an expiry: the `claims` table, one row per
 key, taken with one conditional write, so of two nodes racing for a key
 one wins and the other finds it taken. Nothing coordinates the nodes;
-the table does. An organization claims an ask (`plan/<intent>`) before
+the table does, on the database's clock, so nodes whose clocks
+disagree still agree on when a claim expires. An organization claims an ask (`plan/<intent>`) before
 its leader is asked to plan it — a model call is spend — and gives the
 claim back once the plan's admission is recorded; a node that finds
 the ask claimed leaves it (`planning elsewhere: <holder> holds

@@ -180,7 +180,7 @@ sequence either way — see [The record](./record.md).
 | `review.reasoned` | record | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
 | `org.reviewed` | record | the organization | the organization's own pass over itself, and what it answered |
 | `optimize.refused` | ledger | the organization | that pass did not run: the budget for the window is spent |
-| `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `optimize/<window>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
+| `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
 | `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
 | `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |
 | `expression.deployed` | record | `m<n>` | what a deployment gateway expressed, and its judgement |
