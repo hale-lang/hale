@@ -70,6 +70,13 @@ deployment (unix), chosen entirely at this seam.
       BrokerEvt: MyNatsAdapter { url: "nats://prod:4222" };
   }
   ```
+  An adapter a library ships is named through its import alias,
+  like any imported name — and so is a codec:
+  ```hale,fragment
+  bindings {
+      BrokerEvt: nats::NatsAdapter { url: "nats://prod:4222" } codec(nats::JsonCodec { });
+  }
+  ```
 
 The substrate stays neutral on protocol semantics — reliability,
 ordering, retries, backpressure all live in the adapter body,

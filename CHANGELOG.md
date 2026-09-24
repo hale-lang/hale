@@ -38,6 +38,14 @@ behavior.
   adapter's own (pinned) thread at its `run()`'s next yield, and the
   publisher does not wait for it. One locus can now own a socket and
   be both its `send` and its receive loop.
+### Bindings name an imported adapter or codec (GH #1034)
+
+- **`bindings { Out: lib::Adapter { … } codec(lib::Codec { }); }`**:
+  the adapter and the codec may be declared by an imported library and
+  named through its alias, as a binding's topic already could (GH #527
+  B6). Both were parse errors, so every program had to wrap a library's
+  adapter in a local one. They now bind exactly as a locally declared
+  adapter or codec.
 
 ### Operating practices, seeded beside the design (GH #994)
 

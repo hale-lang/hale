@@ -1013,24 +1013,21 @@ impl<'a> QualifiedRenameApplier<'a> {
             // a qualified bus subject is, so the checker, the model
             // builder, the desugar's role inference and codegen all
             // see the one name the topic decl ends up at.
+            //
+            // GH #1034: the adapter and codec loci too — a library
+            // ships the adapter (and codec) its topics are built
+            // around, and the importer names it through the alias
+            // (`Out: nats::NatsAdapter { } codec(nats::Json { })`).
             LocusMember::Bindings(bb) => {
                 for entry in &mut bb.entries {
-                    if !entry.topic.name.contains("::") {
-                        continue;
+                    self.rewrite_joined_ident(&mut entry.topic);
+                    if let TransportSpec::Adapter { locus, .. } =
+                        &mut entry.transport
+                    {
+                        self.rewrite_joined_ident(locus);
                     }
-                    let segs: Vec<String> = entry
-                        .topic
-                        .name
-                        .split("::")
-                        .map(|s| s.to_string())
-                        .collect();
-                    for (key, mangled) in self.renames {
-                        if key.len() == segs.len()
-                            && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
-                        {
-                            entry.topic.name = mangled.clone();
-                            break;
-                        }
+                    if let Some(codec) = &mut entry.codec {
+                        self.rewrite_joined_ident(&mut codec.locus);
                     }
                 }
             }
@@ -1674,6 +1671,17 @@ impl<'a> Mangler<'a> {
                     // name is the joined path (#527 B6).
                     self.rewrite_alias_head_joined(&mut entry.topic);
                     self.rewrite_ident(&mut entry.topic.name);
+                    // GH #1034: so do the adapter and codec loci.
+                    if let TransportSpec::Adapter { locus, .. } =
+                        &mut entry.transport
+                    {
+                        self.rewrite_alias_head_joined(locus);
+                        self.rewrite_ident(&mut locus.name);
+                    }
+                    if let Some(codec) = &mut entry.codec {
+                        self.rewrite_alias_head_joined(&mut codec.locus);
+                        self.rewrite_ident(&mut codec.locus.name);
+                    }
                 }
             }
             LocusMember::Placement(pb) => {

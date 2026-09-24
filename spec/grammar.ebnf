@@ -488,14 +488,22 @@ binding_entry     = qualified_name , ":" , transport_spec ,
    where T = topic's payload type. Both methods must be pure
    (compiler-inferred — no user-facing `pure` keyword). See
    `spec/decisions.md § F.36`. *)
-codec_spec        = "codec" , "(" , IDENTIFIER , "{" ,
+(* GH #1034 (2026-09-24): the codec locus and the adapter locus may
+   be IMPORTED ones, named through the import alias exactly as the
+   topic is (GH #527 B6) — `Out: nats::NatsAdapter { } codec(
+   nats::JsonCodec { });` — so a library ships the adapter and codecs
+   its topics are built around. Each keeps the joined-path `Ident`
+   shape and the cross-seed rename pass collapses it to the mangled
+   declaration. An adapter head is told from a transport constructor
+   by the case of its LAST segment. *)
+codec_spec        = "codec" , "(" , qualified_name , "{" ,
                     [ struct_init , { "," , struct_init } ] ,
                     "}" , ")" ;
 transport_spec    = unix_transport | shm_ring_transport | adapter_transport ;
 unix_transport    = "unix" , "(" , STRING_LIT , { "," , unix_kwarg } , ")" ;
 unix_kwarg        = "role" , ":" , transport_role ;
 transport_role    = "listen" | "connect" ;
-adapter_transport = LOCUS_IDENTIFIER , "{" , [ struct_init , { "," , struct_init } , [ "," ] ] , "}" ;
+adapter_transport = qualified_name , "{" , [ struct_init , { "," , struct_init } , [ "," ] ] , "}" ;
 
 (* Form K4b + K7 (2026-05-20): POSIX SHM ring substrate for the
    zero-copy route. Name is the shm_open object name; slot_count
