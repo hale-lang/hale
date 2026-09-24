@@ -226,7 +226,7 @@ fn codec_decodes_local_dispatch_from_a_pinned_thread() {
             placement { p: pinned; }
             bindings { InTopic: Sink { } codec(JsonCodec { }); }
             run() {
-                let i = 0;
+                let mut i = 0;
                 while self.r.got == 0 && i < 500 {
                     std::time::sleep(10ms);
                     i = i + 1;
