@@ -434,6 +434,73 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .into_pointer_value();
+            // GH #1036: a child that was already reclaimed — a
+            // handler that violated its closure, reclaimed by its
+            // `__hwrap_*` wrapper, or a `terminate` — tore down its
+            // own fields, closures and arena and left its
+            // arena-destroy latch (`__arena`, slot 0) null. Its
+            // struct lives in THIS locus's arena, so the latch is
+            // still readable here; everything below it is not
+            // (inner's param children lived in inner's arena, now
+            // freed). Test the latch BEFORE the per-child body:
+            // testing it only at inner's own arena destroy, as
+            // before, descended into the freed grandchildren first
+            // and ran inner's `dissolve()` a second time.
+            let func = self
+                .builder
+                .get_insert_block()
+                .and_then(|b| b.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "cascade dissolve outside a function".to_string(),
+                    )
+                })?;
+            let nonnull_bb = self.context.append_basic_block(
+                func,
+                &format!("{}.{}.cascade.nonnull", locus_name, fname),
+            );
+            let live_bb = self.context.append_basic_block(
+                func,
+                &format!("{}.{}.cascade.live", locus_name, fname),
+            );
+            let skip_bb = self.context.append_basic_block(
+                func,
+                &format!("{}.{}.cascade.reclaimed", locus_name, fname),
+            );
+            let is_null = self
+                .builder
+                .build_is_null(inner_ptr, &format!("{}.{}.cascade.null", locus_name, fname))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(is_null, skip_bb, nonnull_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(nonnull_bb);
+            let latch_ptr = self
+                .builder
+                .build_struct_gep(
+                    inner_info.struct_ty,
+                    inner_ptr,
+                    0,
+                    &format!("{}.{}.cascade.latch.ptr", locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let latch = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    latch_ptr,
+                    &format!("{}.{}.cascade.latch", locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let reclaimed = self
+                .builder
+                .build_is_null(latch, &format!("{}.{}.cascade.done", locus_name, fname))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(reclaimed, skip_bb, live_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(live_bb);
             // __dissolve_closures → dissolve → arena_destroy. The
             // drain step ran earlier via `emit_locus_field_drains`
             // (depth-first before outer's drain) so this teardown
@@ -498,6 +565,10 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // nothing in its arena, the slot was created at birth
             // and must be destroyed for symmetry.
             self.emit_locus_arena_destroy(&inner_info, inner_ptr, &inner_name)?;
+            self.builder
+                .build_unconditional_branch(skip_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(skip_bb);
             // Close the owned-branch (if one was emitted): jump to
             // the after-bb and position the builder there so the
             // next field's emission begins in the correct block.

@@ -632,7 +632,16 @@ calls `terminate;`). The reclaim runs when the handler returns —
 the dispatch path checks the `__drain_requested` latch after each
 handler and runs the spine on the handler's own worker. This is
 the resident-subscriber analogue of the connection child that
-`terminate`s from its `run()` recv loop.
+`terminate`s from its `run()` recv loop. A handler that `violate`s
+sets the same latch and is reclaimed the same way.
+
+A child reclaimed this way may still be named by its owner — a
+param field (`c: Child = Child { }`) keeps its handle. The owner's
+teardown cascade tests the child's arena-destroy latch (`__arena`,
+slot 0 of a struct that lives in the owner's arena) **before** the
+per-child body, and steps over a child already reclaimed: its
+`dissolve()` does not run twice, and its own children, which lived
+in its freed arena, are not visited again (GH #1036).
 
 ### `release(c)` and flow children
 
@@ -3176,6 +3185,9 @@ closure synchronously at the call site:
 4. The parent's `on_failure(child, ClosureViolation { ... })`
    handler runs — same routing as for auto-epoch closure
    violations.
+5. The method exits as a `return` does: loci it `let`-bound
+   dissolve and its per-call scratch is freed (GH #1036; `violate`
+   used to skip both).
 
 ### Reading the audit state
 

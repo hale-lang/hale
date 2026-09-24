@@ -1,0 +1,41 @@
+// GH #1036: a child that collapses inside a handler reached through
+// a bound adapter, and owns a `@form(vec)` child of its own.
+//
+// `Fwd.send` publishes `Q`, so `Child.on_q` runs from the queue
+// drain inside the adapter's send; `violate fuse` there sets the
+// child's drain latch and its `__hwrap_*` wrapper reclaims it on the
+// spot — its `Ints` vec and its arena go with it. App's exit cascade
+// then reached `c` again: it tested the child's arena-destroy latch
+// only at the child's own arena destroy, AFTER descending into the
+// child's fields, so it ran `lotus_vec_destroy` on the `Ints` that
+// lived in the freed arena (heap-use-after-free under ASan, a SIGSEGV
+// or silent corruption otherwise). The cascade now tests the latch
+// before the per-child body. And `violate` returned without the
+// method epilogue, leaking the handler's method scratch.
+//
+// This is a corpus fixture: it must run CLEAN — exit 0, terminate,
+// and pass ASan/LSan — under corpus_oracle.
+type Note { n: Int = 0; }
+type Wire { subject: String = ""; data: Bytes = b""; }
+topic Lost { payload: Note; subject: "lost"; }
+topic Q { payload: Wire; subject: "q"; }
+locus Fwd {
+    bus { publish Q; }
+    fn send(subject: String, bytes: Bytes) { Q <- Wire { subject: subject, data: bytes }; }
+}
+@form(vec)
+locus Ints { capacity { heap items of Int; } }
+locus Child {
+    params { why: String = ""; v: Ints = Ints { }; }
+    bus { subscribe Q as on_q; }
+    closure fuse { captures: why; epoch inline; }
+    fn on_q(w: Wire) { self.why = "got " + w.subject; violate fuse; }
+}
+main locus App {
+    params { c: Child = Child { }; seen: String = ""; }
+    bindings { Lost: Fwd { }; }
+    bus { publish Lost; }
+    on_failure(c: Child, err: ClosureViolation) { self.seen = f"{err.closure} {c.why}"; }
+    run() { Lost <- Note { n: 1 }; std::time::sleep(20ms); println("seen=[" + self.seen + "]"); }
+}
+fn main() { App { }; }
