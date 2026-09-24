@@ -16,7 +16,10 @@ behavior.
   broker grew without bound. When that arena's 64 MiB cap was
   reached, the runtime silently stopped calling the adapter's `send`.
   The `bytes` a `send` receives now live for the call; a `send` that
-  keeps them keeps a copy. A 500k-publish run stays flat.
+  keeps them keeps a copy. A 500k-publish run stays flat. Not yet
+  for a `send` that parks on an `async_io` pool while other publishes
+  overlap it on the same thread: the per-thread scratch is reclaimed
+  only when the last overlapping use ends, so it grows meanwhile.
 
 ### Keyed topics keep their key across an adapter (GH #1041)
 

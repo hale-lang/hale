@@ -992,8 +992,14 @@ uses nest (a `send` that publishes, a loopback relay) and
 cooperative coroutines interleave on one thread, so it is a depth
 count, not a rewind. Between uses the scratch holds no chunk: its
 chunks return to the thread's chunk pool, so steady-state publish
-through an adapter allocates nothing. Adapter inbound's key
-derivation (GH #1041) decodes into the same scratch.
+through an adapter allocates nothing — while `send` does not park.
+The depth count is per thread, not per call: a `send` that parks on
+an `async_io` pool while other publishes overlap it on that thread
+never lets the count reach zero, and the scratch grows at the full
+per-message rate for as long as the overlap lasts (measured: 10 to
+23 MB over 3000 publishes with a 4 ms sleep inside `send`; flat
+without it). Adapter inbound's key derivation (GH #1041) decodes
+into the same scratch.
 
 Cost: deserialize is invoked once per matching subscriber rather
 than once total. Acceptable for typical fan-out (1–3 subs per

@@ -1634,9 +1634,14 @@ Transport surface:
   The `bytes` a `send` call receives are valid for that call: the
   runtime builds them in a per-thread bus scratch it reclaims when
   the outermost bus use on the thread returns, so publishing
-  through an adapter holds no memory per message (GH #1038). A
-  `send` body that keeps them — stores them in a field, publishes
-  them onward — keeps a copy, as it would any stored value.
+  through an adapter holds no memory per message (GH #1038) — as
+  long as `send` does not park. A `send` that parks (a `sleep` or a
+  `recv` on an `async_io` pool) while other publishes on the same
+  thread overlap it keeps the scratch from being reclaimed until the
+  last overlapping use ends, and the scratch grows by one payload
+  per message meanwhile, without a cap. A `send` body that keeps the
+  bytes — stores them in a field, publishes them onward — keeps a
+  copy, as it would any stored value.
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name
