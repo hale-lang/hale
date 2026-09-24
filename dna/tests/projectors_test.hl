@@ -1,0 +1,124 @@
+// dna/tests/projectors_test.hl — any number of nodes project one record
+// (GH #1026).
+//
+// The projection is one transaction per record row, the stamp moved first
+// by compare-and-swap, so projectors need no coordinator: three nodes
+// applying one record into memory at once converge — memory's watermark
+// is the record's length, the graph is the one a single projector builds,
+// and every row was applied exactly once among them (the rows each says
+// it applied sum to the record's length). Memory is Postgres: without the
+// owner's DSN in HALE_DNA_MEMORY_DSN_OWNER nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source_root() -> String {
+    if std::env::var_exists("HALE_DNA_SOURCE") { return std::env::var("HALE_DNA_SOURCE"); }
+    return ".";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+// Everything the graph holds, in one ordered text: ideas with their tier
+// and ratification, bindings, the structure and the signals with their
+// counts — a row applied twice would count a signal twice.
+const SNAPSHOT: String = "SELECT coalesce((SELECT string_agg(id || '|' || provenance || '|' || accepted::text || '|' || ratified_seq::text, ',' ORDER BY id) FROM knowledge_ideas), '') || '#' || coalesce((SELECT string_agg(idea || '|' || target || '|' || author || '|' || class, ',' ORDER BY idea, target, author) FROM knowledge_bindings), '') || '#' || coalesce((SELECT string_agg(kind || '|' || name || '|' || seq::text, ',' ORDER BY kind, name) FROM knowledge_structure), '') || '#' || coalesce((SELECT string_agg(kind || '|' || source || '|' || what || '|' || count::text || '|' || last_seq::text, ',' ORDER BY kind, source, what) FROM knowledge_signals), '')";
+
+main locus App {
+    params { repo: String = ""; bin: String = ""; spine: String = ""; }
+    // `n` projectors at once, each bounded; what each said, one per line.
+    fn project(n: Int) -> String {
+        let mut script = "cd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\"; ";
+        let mut i = 0;
+        while i < n {
+            script = script + "timeout 120 \"$3\" \"$1\" 90 >\"$1/../projector-" + to_string(i) + ".log\" 2>&1 & ";
+            i = i + 1;
+        }
+        script = script + "wait; cat \"$1\"/../projector-*.log";
+        let r = sh("sh\n-c\n" + script + "\nsh\n" + self.repo + "\n" + self.spine + "\n" + self.bin);
+        return r.stdout;
+    }
+    // The rows the projectors said they applied, summed.
+    @unbounded
+    fn applied(said: String) -> Int {
+        let mut total = 0;
+        let mut rest = said;
+        while len(rest) > 0 {
+            let at = std::str::index_of(rest, "projector: applied ");
+            if at < 0 { return total; }
+            rest = rest[(at + 19)..len(rest)];
+            let sp = std::str::index_of(rest, " ");
+            total = total + (std::str::parse_int(if sp < 0 { rest } else { rest[0..sp] }) or 0);
+        }
+        return total;
+    }
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 { eprintln("projectors_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let scratch = dna::scratch_root("projectors");
+        // the projector, built beside copies of the core and the
+        // operations so the checkout is never built in
+        let copied = sh("sh\n-c\nmkdir -p \"$1/dna/tests/projectors\" && cp -r \"$2/dna/core\" \"$1/dna/core\" && cp -r \"$2/dna/operations\" \"$1/dna/operations\" && rm -rf \"$1/dna/operations/tests\" && cp \"$2/dna/tests/projectors/projector.hl\" \"$1/dna/tests/projectors/projector.hl\"\nsh\n" + scratch + "\n" + source_root());
+        std::test::assert_eq_int(copied.code, 0, "the projector, the core and the operations copied to scratch: " + copied.stderr);
+        let built = sh(toolchain() + "\nbuild\n--dev\n" + scratch + "/dna/tests/projectors/projector.hl");
+        std::test::assert_eq_int(built.code, 0, "the projector builds: " + built.stdout + built.stderr);
+        self.bin = scratch + "/dna/tests/projectors/projector";
+        self.repo = scratch + "/repo";
+        let mk = sh("sh\n-c\nmkdir -p \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '/.hale/\\n' > .gitignore && echo base > base && git add -A && git commit -q -m base\nsh\n" + self.repo);
+        std::test::assert_eq_int(mk.code, 0, "the organism's repository: " + mk.stderr);
+
+        // ---- a record of knowledge: proposals, ratifications and a
+        // declined one, the code's structure, and signals raised again
+        let j = dna::GitJournal { repo: self.repo };
+        let receipts = dna::GitReceipts { repo: self.repo };
+        std::test::assert(j.append(0, "application.observed", "org", "{}").ok, "the record's first row");
+        let mut k = 0;
+        while k < 12 {
+            let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: "practice " + to_string(k), author: "org" }, if k % 3 == 0 { "org" } else { "org/app" });
+            let id = "sha256:" + receipts.store(doc);
+            std::test::assert(j.append(j.revision(), "knowledge.proposed", id, "{\"class\":\"goal\"}").ok, "proposal " + to_string(k));
+            let settled = if k % 4 == 3 { "knowledge.declined" } else { "knowledge.ratified" };
+            std::test::assert(j.append(j.revision(), settled, id, "{\"class\":\"goal\"}").ok, "decision " + to_string(k));
+            std::test::assert(j.append(j.revision(), "structure.observed", "locus:L" + to_string(k % 5), "{\"kind\":\"locus\",\"name\":\"L" + to_string(k % 5) + "\",\"seq\":" + to_string(k) + "}").ok, "structure " + to_string(k));
+            std::test::assert(j.append(j.revision(), "pressure.raised", "org/app/w" + to_string(k % 2), "mail backlog x" + to_string(k)).ok, "pressure " + to_string(k));
+            k = k + 1;
+        }
+        let length = j.revision();
+        let identity = dna::GitRecord { repo: self.repo }.identity();
+        let m = dna::migrate(dna::parse_dsn(owner), identity);
+        std::test::assert(m.ok, "memory migrates for the record: " + m.why);
+        self.spine = m.spine_dsn;
+        let store = dna::Pq { conn: dna::pq_conn(dna::parse_dsn(self.spine)), record_id: identity };
+        std::test::assert(store.open(), "the record's memory opens: " + store.last_error());
+
+        // ---- one projector: the graph every projection must equal
+        let alone = self.project(1);
+        std::test::assert(std::str::contains(alone, "watermark " + to_string(length) + " of " + to_string(length)), "one projector reaches the record's end: " + alone);
+        std::test::assert_eq_int(self.applied(alone), length, "and applies every row: " + alone);
+        let single = store.conn.query_one(SNAPSHOT);
+        std::test::assert(single.ok && len(single.data) > 0, "the single projection reads: " + single.err.detail);
+        std::test::assert(std::str::contains(single.data, "mail backlog|6|"), "a signal raised six times is counted six times: " + single.data);
+
+        // ---- three projectors at once over the same record
+        let basis = store.projection_basis();
+        std::test::assert(store.rebuild(basis.watermark, basis.head), "the projection emptied");
+        std::test::assert_eq_int(store.watermark(), 0, "back to row 0");
+        let three = self.project(3);
+        std::test::assert(!std::str::contains(three, "projector: failed"), "no projector failed: " + three);
+        std::test::assert_eq_int(store.watermark(), length, "memory's watermark is the record's length: " + three);
+        std::test::assert_eq_str(store.projection_basis().head, j.head(), "stamped at the record's head");
+        std::test::assert_eq_int(self.applied(three), length, "every row applied exactly once among the three: " + three);
+        let converged = store.conn.query_one(SNAPSHOT);
+        std::test::assert_eq_str(converged.data, single.data, "the graph is the single projector's");
+
+        store.close();
+        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

@@ -77,7 +77,7 @@ main locus App {
         let deadline = std::time::now() + dna::wait_secs(secs);
         let mut projected = -1;
         while projected < at && std::time::now() <= deadline {
-            let w = self.owner_conn.conn.query_one("SELECT value FROM " + dna::schema_for(record) + ".knowledge_meta WHERE key = 'graph_projection_watermark'");
+            let w = self.owner_conn.conn.query_one("SELECT value FROM " + dna::schema_for(record) + ".knowledge_meta WHERE key = 'watermark'");
             projected = if w.ok { std::str::parse_int(dna::trim_nl(w.data)) or - 1 } else { -1 };
             if projected < at { std::time::sleep(200ms); }
         }

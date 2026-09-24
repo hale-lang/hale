@@ -43,8 +43,17 @@ into are the core's (`dna/core/memory_*.hl`), and they reach Postgres
 through pond's driver, pinned under `dna/core/pond` and vendored into
 your project at `vendor/dna/pond`. The projection runs on the host's
 tick, once a second, while that host holds the **spine lease** (see
-[Operating](./operating.md#memory)): the record is projected by
-exactly one spine at a time, and nothing else writes the graph.
+[Operating](./operating.md#memory)), and nothing else writes the graph.
+Each record row is one transaction: the projector moves memory's stamp
+— the row count and the last row's commit — by compare-and-swap before
+the row's effects, and both land together. So a projection interrupted
+mid-row leaves nothing of it, and any number of projectors over one
+record converge on one graph with each row applied once: a projector
+that finds the stamp moved writes nothing and leaves the row to the
+one that moved it. A projector compares its clone to the stamp by
+ancestry: behind it, it has nothing to project; ahead of it, it
+projects the rows after it; on a chain a reconcile replaced, it
+rebuilds the graph from row 0.
 
 ## Running it
 

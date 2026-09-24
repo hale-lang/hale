@@ -39,12 +39,29 @@ interface KnowledgeStore {
     fn forget_error();
     // The next record seq to apply (0 = nothing applied yet).
     fn watermark() -> Int;
-    fn set_watermark(seq: Int) -> Bool;
+    // The projection is one transaction per record row (GH #1026). Begin
+    // applying row `seq`, whose digest is `head` and whose predecessor's
+    // is `prev` ("" for row 0): the watermark moves from `seq` to
+    // `seq + 1` and the stamped head from `prev` to `head`, each by
+    // compare-and-swap, before any of the row's effects. 1 when this
+    // projector won the row, and the transaction stays open for its
+    // effects; 0 when another projector is past it or the stamp is not
+    // `prev` (nothing written, nothing open); -1 with `last_error` when
+    // memory could not answer. N projectors converge on one projection,
+    // and a loser's wasted work is the one statement that lost.
+    fn begin_row(seq: Int, prev: String, head: String) -> Int;
+    // The row begun lands: its effects and the moved stamp together.
+    fn commit_row() -> Bool;
+    // The row begun is dropped: none of its effects land.
+    fn abort_row();
     // The projection is derived and rebuildable: drop every projected row
-    // and every projection stamp, so the next apply starts from row 0. The
-    // record's identity and the store's scope stay. A reconcile that
-    // re-appended rows beneath a stamped prefix is the reason this exists.
-    fn rebuild() -> Bool;
+    // and the stamp, so the next apply starts from row 0 — only while the
+    // stamp is still `watermark` at `head`, so of several projectors that
+    // see one replaced chain, one rebuilds and the rest find it moved
+    // (false with no `last_error`). The record's identity and the store's
+    // scope stay. A reconcile that re-appended rows beneath a stamped
+    // prefix is the reason this exists.
+    fn rebuild(watermark: Int, head: String) -> Bool;
     // Idempotent by id: a second write with the same id updates in place.
     fn upsert(i: Idea, ratified_seq: Int) -> Bool;
     // The idea is no longer accepted (a ratified supersession retired
@@ -119,13 +136,12 @@ interface GraphSink {
     fn edge(row: KnowledgeEdge) -> Bool;
     fn binding(row: KnowledgeBinding) -> Bool;
 }
+// The projection's stamp: `watermark` record rows applied, the last of
+// them `head` ("" at 0).
 type GraphProjection {
     ok: Bool = false;
     watermark: Int = 0;
     head: String = "";
-    live_watermark: Int = 0;
-    pending_watermark: Int = 0;
-    pending_head: String = "";
 }
 
 type GraphPage {
@@ -133,15 +149,11 @@ type GraphPage {
     error: String = "";
     record: String = "";
     generation: Int = 0;
+    // The stamp in the same snapshot as the rows: `watermark` record rows
+    // applied, the last of them `projection_head`. A row lands with its
+    // stamp in one transaction, so the pair names exactly what was read.
     watermark: Int = 0;
-    // Last proven applied Record prefix, distinct from the live watermark
-    // while an event or catch-up is being applied. Zero/empty is unproven.
-    projection_watermark: Int = 0;
     projection_head: String = "";
-    // A target is recorded before any projection writes. Its presence
-    // withholds public reads even if a failed event left the live mark behind.
-    projection_pending_watermark: Int = 0;
-    projection_pending_head: String = "";
     // Exact requested identity exists and is visible, independent of target
     // relevance or cursor position. False for a collection without an id.
     subject_present: Bool = false;
@@ -155,12 +167,6 @@ interface GraphStore {
     // -1 means the authoritative generation could not be read.
     fn graph_generation() -> Int;
     fn projection_basis() -> GraphProjection;
-    // Compare the complete observed basis, including live progress, before
-    // writes. The caller proves both stamped and pending Record ancestry.
-    fn begin_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool;
-    // Compare stamped/pending pairs and complete only the fully applied target.
-    // An identical checkpoint succeeds without changing generation.
-    fn checkpoint_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool;
 }
 
 type GraphKey { first: String = ""; second: String = ""; third: String = ""; index: Int = 0; }
@@ -173,15 +179,7 @@ locus GraphTargets { capacity { pool rows of GraphTarget indexed_by id; } }
 locus GraphRules {
     params { }
     fn projection_valid(basis: GraphProjection) -> Bool {
-        if !basis.ok || basis.watermark < 0 || basis.live_watermark < basis.watermark || basis.pending_watermark < 0 || len(basis.head) > 4096 || len(basis.pending_head) > 4096 { return false; }
-        if (basis.watermark == 0) != (len(basis.head) == 0) || (basis.pending_watermark == 0) != (len(basis.pending_head) == 0) { return false; }
-        // A legacy unstamped store can still be inspected natively. It is
-        // never admitted by begin: clean progress must equal its stamp.
-        return basis.pending_watermark == 0 || (basis.pending_watermark > basis.watermark && basis.pending_watermark >= basis.live_watermark);
-    }
-    fn projection_begin_valid(previous: GraphProjection, watermark: Int, head: String) -> Bool {
-        if !self.projection_valid(previous) || watermark <= previous.watermark || watermark < previous.live_watermark || watermark < previous.pending_watermark || len(head) == 0 || len(head) > 4096 { return false; }
-        return previous.pending_watermark > 0 || previous.live_watermark == previous.watermark;
+        return basis.ok && basis.watermark >= 0 && len(basis.head) <= 4096 && (basis.watermark == 0) == (len(basis.head) == 0);
     }
     fn validate(q: GraphQuery) -> String {
         if q.kind != "nodes" && q.kind != "edges" && q.kind != "bindings" { return "invalid_query"; }
@@ -342,8 +340,6 @@ locus Pq {
         opened: Bool = false;
         error: String = "";
         record_id: String = "";
-        projection_claim: Bool = false;
-        projection_claim_key: String = "";
     }
     // a store holds one connection, and gives it back when it goes (GH #985)
     dissolve() { self.conn.close(); }
@@ -383,7 +379,6 @@ locus Pq {
     fn open() -> Bool {
         if self.opened { return true; }
         // A failed migration or scope change may have left a live session.
-        // Never replace its socket while retaining a session advisory claim.
         self.close();
         let dialled = dial_from_env(self.conn, self.dsn_env);
         if len(dialled) > 0 { self.error = dialled; return false; }
@@ -424,12 +419,9 @@ locus Pq {
         return self.open();
     }
     fn close() {
-        // PostgreSQL releases this session's advisory locks on disconnect,
-        // including when an error made the unlock reply indeterminate.
+        // an open row transaction goes with the session: nothing of it lands
         self.conn.close();
         self.opened = false;
-        self.projection_claim = false;
-        self.projection_claim_key = "";
     }
     fn last_error() -> String { return self.error; }
     fn forget_error() { self.error = ""; }
@@ -443,91 +435,44 @@ locus Pq {
     }
     fn projection_basis() -> GraphProjection {
         if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection basis: store is not idle and open"; return GraphProjection { }; }
-        let row = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_watermark') AS watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS head, (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS live_watermark, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_pending_watermark') AS pending_watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_pending_head') AS pending_head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
+        let row = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
         if !row.ok { self.note("projection basis", row.err); return GraphProjection { }; }
-        let basis = GraphProjection { ok: std::json::find_string_field(row.data, "protocol") == "1" && std::str::starts_with(std::json::find_field_raw(row.data, "head"), "\"") && std::str::starts_with(std::json::find_field_raw(row.data, "pending_head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(row.data, "watermark")) or - 1, head: std::json::find_string_field(row.data, "head"), live_watermark: std::str::parse_int(std::json::find_field_raw(row.data, "live_watermark")) or - 1, pending_watermark: std::str::parse_int(std::json::find_field_raw(row.data, "pending_watermark")) or - 1, pending_head: std::json::find_string_field(row.data, "pending_head") };
+        let basis = GraphProjection { ok: std::json::find_string_field(row.data, "protocol") == "2" && std::str::starts_with(std::json::find_field_raw(row.data, "head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(row.data, "watermark")) or - 1, head: std::json::find_string_field(row.data, "head") };
         let rules = GraphRules { };
         if !rules.projection_valid(basis) { self.error = "projection basis: missing or invalid stamp"; return GraphProjection { }; }
         return basis;
     }
-    fn begin_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
-        let rules = GraphRules { };
-        if !rules.projection_begin_valid(previous, watermark, head) { return false; }
-        let held = self.projection_claim;
-        if !self.claim_projection() { return false; }
-        if self.projection_change(previous, watermark, head, true) { return true; }
-        // No effect ran after this failed begin. Keep an earlier successful
-        // claim for retry, but do not strand a newly acquired session claim.
-        if !held { let released = self.release_projection(); }
-        return false;
+    // The watermark's row is taken first: a second projector racing for the
+    // same row blocks on it, and once the first commits, its compare finds
+    // the watermark moved and it rolls back having written nothing.
+    fn begin_row(seq: Int, prev: String, head: String) -> Int {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection row: store is not idle and open"; return -1; }
+        if seq < 0 || len(head) == 0 || len(head) > 4096 || (seq == 0) != (len(prev) == 0) { self.error = "projection row: invalid row " + to_string(seq); return -1; }
+        let begun = self.conn.exec("BEGIN");
+        if !begun.ok { self.note("projection row", begun.err); return -1; }
+        let w = db::Args { };
+        w.add(to_string(seq));
+        w.add(to_string(seq + 1));
+        let moved = self.conn.query_params("UPDATE knowledge_meta SET value = $2 WHERE key = 'watermark' AND value = $1 RETURNING key", w);
+        if !moved.ok { self.note("projection row", moved.err); self.abort_row(); return -1; }
+        if moved.n == 0 { self.abort_row(); return 0; }
+        let h = db::Args { };
+        h.add(prev);
+        h.add(head);
+        let stamped = self.conn.query_params("UPDATE knowledge_meta SET value = $2 WHERE key = 'graph_projection_head' AND value = $1 AND EXISTS (SELECT 1 FROM knowledge_meta WHERE key = 'graph_projection_protocol' AND value = '2') RETURNING key", h);
+        if !stamped.ok { self.note("projection row", stamped.err); self.abort_row(); return -1; }
+        if stamped.n == 0 { self.abort_row(); return 0; }
+        return 1;
     }
-    fn checkpoint_projection(previous: GraphProjection, watermark: Int, head: String) -> Bool {
-        let rules = GraphRules { };
-        if !rules.projection_valid(previous) || watermark < 1 || len(head) == 0 || len(head) > 4096 { return false; }
-        if previous.pending_watermark == 0 {
-            if previous.watermark != watermark || previous.head != head { return false; }
-        } else if previous.pending_watermark != watermark || previous.pending_head != head { return false; }
-        let held = self.projection_claim;
-        if !self.claim_projection() { return false; }
-        if self.projection_change(previous, watermark, head, false) { return self.release_projection(); }
-        if !held { let released = self.release_projection(); }
-        return false;
-    }
-    fn claim_projection() -> Bool {
-        if !self.opened || !self.conn.connected || self.conn.tx_status() != "idle" { self.error = "projection claim: store is not idle and open"; return false; }
-        let key = "hale.knowledge.projection:" + self.schema();
-        // Supported service projectors cooperate here; this does not fence
-        // legacy binaries or arbitrary direct SQL writers. Reentry after an
-        // interrupted effect must not increment PostgreSQL's
-        // advisory-lock reference count; one checkpoint releases one claim.
-        if self.projection_claim { return self.projection_claim_key == key; }
-        let args = db::Args { }; args.add(key);
-        let result = self.conn.query_params("SELECT pg_try_advisory_lock(hashtextextended($1, 0))::text", args);
-        if !result.ok {
-            self.note("projection claim", result.err);
-            self.close();
-            return false;
-        }
-        if result.n == 1 && result.csv == "false" { self.error = "projection claim: another Knowledge projector owns this Record"; return false; }
-        if result.n != 1 || result.csv != "true" {
-            self.error = "projection claim: invalid lock response";
-            self.close();
-            return false;
-        }
-        self.projection_claim = true; self.projection_claim_key = key;
+    fn commit_row() -> Bool {
+        let c = self.conn.commit();
+        if !c.ok { self.note("projection commit", c.err); self.abort_row(); return false; }
         return true;
     }
-    fn release_projection() -> Bool {
-        if !self.projection_claim { return true; }
-        let args = db::Args { }; args.add(self.projection_claim_key);
-        let result = self.conn.query_params("SELECT pg_advisory_unlock(hashtextextended($1, 0))::text", args);
-        if !result.ok {
-            self.note("projection release", result.err);
-            self.close();
-            return false;
-        }
-        if result.n != 1 || result.csv != "true" {
-            self.error = "projection release: session claim was lost";
-            self.close();
-            return false;
-        }
-        self.projection_claim = false; self.projection_claim_key = "";
-        return true;
-    }
-    fn projection_change(previous: GraphProjection, watermark: Int, head: String, begin: Bool) -> Bool {
-        if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection transition: store is not idle and open"; return false; }
-        let args = db::Args { };
-        args.add(to_string(previous.watermark)); args.add(previous.head);
-        args.add(to_string(previous.pending_watermark)); args.add(previous.pending_head);
-        args.add(to_string(previous.live_watermark)); args.add(to_string(watermark)); args.add(head);
-        args.add(if begin { "true" } else { "false" });
-        // Both transitions lock the same metadata in the same order. Begin
-        // compares the observed live mark; checkpoint expects the target live
-        // mark after application. SQL errors roll back every metadata write.
-        let sql = "WITH locked AS MATERIALIZED (SELECT key, value FROM knowledge_meta WHERE key IN ('watermark', 'graph_projection_watermark', 'graph_projection_head', 'graph_projection_pending_watermark', 'graph_projection_pending_head', 'graph_generation', 'graph_projection_protocol') ORDER BY key FOR UPDATE), checked AS MATERIALIZED (SELECT ((SELECT value::bigint FROM locked WHERE key = 'watermark') = CASE WHEN $8::boolean THEN $5::bigint ELSE $6::bigint END AND (SELECT value::bigint FROM locked WHERE key = 'graph_projection_watermark') = $1::bigint AND (SELECT value FROM locked WHERE key = 'graph_projection_head') = $2 AND (SELECT value::bigint FROM locked WHERE key = 'graph_projection_pending_watermark') = $3::bigint AND (SELECT value FROM locked WHERE key = 'graph_projection_pending_head') = $4 AND (SELECT value::bigint FROM locked WHERE key = 'graph_generation') >= 0 AND (SELECT value FROM locked WHERE key = 'graph_projection_protocol') = '1') AS valid, CASE WHEN $8::boolean THEN ($3::bigint = $6::bigint AND $4 = $7) ELSE ($3::bigint = 0 AND $1::bigint = $6::bigint AND $2 = $7) END AS unchanged), changed AS (UPDATE knowledge_meta SET value = CASE key WHEN 'graph_projection_watermark' THEN CASE WHEN $8::boolean THEN $1::text ELSE $6::text END WHEN 'graph_projection_head' THEN CASE WHEN $8::boolean THEN $2 ELSE $7 END WHEN 'graph_projection_pending_watermark' THEN CASE WHEN $8::boolean THEN $6::text ELSE '0' END WHEN 'graph_projection_pending_head' THEN CASE WHEN $8::boolean THEN $7 ELSE '' END ELSE ((value::bigint) + 1)::text END WHERE key IN ('graph_projection_watermark', 'graph_projection_head', 'graph_projection_pending_watermark', 'graph_projection_pending_head', 'graph_generation') AND (SELECT valid AND NOT unchanged FROM checked) RETURNING key) SELECT (valid AND (unchanged OR (SELECT count(*) FROM changed) = 5))::text FROM checked";
-        let result = self.conn.query_params(sql, args);
-        if !result.ok { self.note("projection transition", result.err); return false; }
-        return result.n == 1 && result.csv == "true";
+    fn abort_row() {
+        if self.conn.tx_status() == "idle" { return; }
+        let r = self.conn.rollback();
+        if !r.ok { self.note("projection rollback", r.err); self.close(); }
     }
     fn graph_abort(code: String) -> GraphPage {
         let rolled = self.conn.rollback();
@@ -540,9 +485,10 @@ locus Pq {
         args.add(query.id); args.add(query.target); args.add(after.first); args.add(after.second); args.add(after.third); args.add(to_string(remaining));
         return self.conn.query_params(rules.sql(query.kind), args);
     }
-    // Every candidate and the metadata basis use one coherent snapshot.
-    // This is not atomic application of an event: callers must also compare
-    // the captured Record revision to watermark, then recheck generation.
+    // Every candidate and the metadata basis use one coherent snapshot, and
+    // a record row lands with its stamp in one transaction, so the page's
+    // stamp names exactly the rows it read. Callers compare the captured
+    // record revision and head to that stamp, then recheck generation.
     fn read_graph(query: GraphQuery, policy: KnowledgeReadPolicy, sink: GraphSink) -> GraphPage {
         let rules = GraphRules { };
         let invalid = rules.validate(query);
@@ -551,13 +497,13 @@ locus Pq {
         self.forget_error();
         let begun = self.conn.exec("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
         if !begun.ok { self.note("graph begin", begun.err); return GraphPage { error: "read_failed" }; }
-        let basis = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT coalesce((SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'record'), '') AS record, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation') AS generation, (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS watermark, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_watermark') AS projection_watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS projection_head, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_projection_pending_watermark') AS projection_pending_watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_pending_head') AS projection_pending_head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
+        let basis = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT coalesce((SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'record'), '') AS record, (SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation') AS generation, (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS projection_head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
         if !basis.ok { self.note("graph basis", basis.err); return self.graph_abort("read_failed"); }
         let record = std::json::find_string_field(basis.data, "record");
         let generation = std::str::parse_int(std::json::find_field_raw(basis.data, "generation")) or - 1;
         let mark = std::str::parse_int(std::json::find_field_raw(basis.data, "watermark")) or - 1;
-        if std::json::find_string_field(basis.data, "protocol") != "1" || record != self.record_id || generation < 0 || mark < 0 { self.error = "graph basis: invalid scope, generation or watermark"; return self.graph_abort("read_failed"); }
-        let stamped = GraphProjection { ok: std::str::starts_with(std::json::find_field_raw(basis.data, "projection_head"), "\"") && std::str::starts_with(std::json::find_field_raw(basis.data, "projection_pending_head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(basis.data, "projection_watermark")) or - 1, head: std::json::find_string_field(basis.data, "projection_head"), live_watermark: mark, pending_watermark: std::str::parse_int(std::json::find_field_raw(basis.data, "projection_pending_watermark")) or - 1, pending_head: std::json::find_string_field(basis.data, "projection_pending_head") };
+        if std::json::find_string_field(basis.data, "protocol") != "2" || record != self.record_id || generation < 0 || mark < 0 { self.error = "graph basis: invalid scope, generation or watermark"; return self.graph_abort("read_failed"); }
+        let stamped = GraphProjection { ok: std::str::starts_with(std::json::find_field_raw(basis.data, "projection_head"), "\""), watermark: mark, head: std::json::find_string_field(basis.data, "projection_head") };
         if !rules.projection_valid(stamped) { self.error = "graph basis: missing or invalid projection stamp"; return self.graph_abort("read_failed"); }
         let mut subject_present = false;
         if len(query.id) > 0 {
@@ -570,7 +516,7 @@ locus Pq {
             if !subject.ok { self.note("graph subject", subject.err); return self.graph_abort("read_failed"); }
             subject_present = subject.n == 1 && policy.visible(query.id);
         }
-        let mut page = GraphPage { ok: true, record: record, generation: generation, watermark: mark, projection_watermark: stamped.watermark, projection_head: stamped.head, projection_pending_watermark: stamped.pending_watermark, projection_pending_head: stamped.pending_head, subject_present: subject_present };
+        let mut page = GraphPage { ok: true, record: record, generation: generation, watermark: mark, projection_head: stamped.head, subject_present: subject_present };
         let mut after = GraphKey { first: query.after_first, second: query.after_second, third: query.after_third };
         let mut scanned = 0;
         let mut bytes = 0;
@@ -603,15 +549,23 @@ locus Pq {
         if !committed.ok { self.note("graph commit", committed.err); return self.graph_abort("read_failed"); }
         return page;
     }
-    fn rebuild() -> Bool {
-        if !self.opened { self.error = "rebuild: the store is not open"; return false; }
+    fn rebuild(watermark: Int, head: String) -> Bool {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "rebuild: the store is not idle and open"; return false; }
+        let begun = self.conn.exec("BEGIN");
+        if !begun.ok { self.note("rebuild", begun.err); return false; }
+        let a = db::Args { };
+        a.add(to_string(watermark));
+        a.add(head);
+        let held = self.conn.query_params("SELECT key FROM knowledge_meta WHERE (key = 'watermark' AND value = $1) OR (key = 'graph_projection_head' AND value = $2) ORDER BY key FOR UPDATE", a);
+        if !held.ok { self.note("rebuild", held.err); self.abort_row(); return false; }
+        // the stamp moved: another projector rebuilt or advanced it
+        if held.n != 2 { self.abort_row(); return false; }
         let sql = "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals;"
-            + " UPDATE knowledge_meta SET value = '0' WHERE key IN ('watermark', 'graph_projection_watermark', 'graph_projection_pending_watermark');"
-            + " UPDATE knowledge_meta SET value = '' WHERE key IN ('graph_projection_head', 'graph_projection_pending_head');"
-            + " UPDATE knowledge_meta SET value = (value::bigint + 1)::text WHERE key = 'graph_generation'";
+            + " UPDATE knowledge_meta SET value = '0' WHERE key = 'watermark';"
+            + " UPDATE knowledge_meta SET value = '' WHERE key = 'graph_projection_head'";
         let r = self.conn.exec(sql);
-        if !r.ok { self.note("rebuild", r.err); return false; }
-        return true;
+        if !r.ok { self.note("rebuild", r.err); self.abort_row(); return false; }
+        return self.commit_row();
     }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
@@ -621,13 +575,6 @@ locus Pq {
         if !row.ok && row.err.kind == "no_row" { return 0; }
         if !row.ok { self.note("watermark", row.err); return 0; }
         return std::str::parse_int(trim_nl(row.data)) or 0;
-    }
-    fn set_watermark(seq: Int) -> Bool {
-        let a = db::Args { };
-        a.add(to_string(seq));
-        let r = self.conn.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('watermark', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value WHERE EXCLUDED.value::bigint > knowledge_meta.value::bigint", a);
-        if !r.ok { return self.fail("watermark", r.err); }
-        return true;
     }
     fn upsert(i: Idea, ratified_seq: Int) -> Bool {
         let a = db::Args { };

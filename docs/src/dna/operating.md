@@ -158,10 +158,13 @@ placeholder equal to its name, so keep the database where only the
 people and machines you trust can reach it.
 
 The migration is one transaction and can be run again at any time.
-It writes a schema version (version 1), and every store checks it when
+It writes a schema version (version 2), and every store checks it when
 it opens: a host whose memory is at another version refuses to start,
 naming both versions and `hale dna memory migrate`, and a migration
-refuses a schema a newer toolchain wrote.
+refuses a schema a newer toolchain wrote. Migrating a version-1 memory
+keeps its leases (they become rows of the `claims` table) and empties
+the knowledge graph, which the projectors then rebuild from the record:
+the graph is derived, and version 2 applies it a row at a time.
 
 `hale dna dev` migrates first — with `HALE_DNA_MEMORY_DSN_OWNER`, or
 the database `dna/compose.yaml` brings up — and hands the host only
@@ -179,8 +182,8 @@ connections.
 
 ### The spine lease
 
-On every tick — once a second — the host renews a lease in memory's
-lease table, `spine`, which lives 30 seconds. Whichever host holds it
+On every tick — once a second — the host renews a row of memory's
+`claims` table, `spine`, which lives 30 seconds. Whichever host holds it
 is *the spine*: it projects the record into the graph, admits the
 heads' requests, and erases the evidence the record says was redacted.
 A host without it reads and forwards, and does none of those. On a
@@ -201,6 +204,32 @@ spine to `.hale/dna/spine.json`:
 `projected` is record rows applied to the graph, `decided` the
 requests admitted or refused, `erased` the protected bodies removed.
 
+### Claims by id
+
+Every act a node takes that must not be taken twice is claimed in
+memory first, by id, with an expiry: the `claims` table, one row per
+key, taken with one conditional write, so of two nodes racing for a key
+one wins and the other finds it taken. Nothing coordinates the nodes;
+the table does. An organization claims an ask (`plan/<intent>`) before
+its leader is asked to plan it — a model call is spend — and gives the
+claim back once the plan's admission is recorded; a node that finds
+the ask claimed leaves it (`planning elsewhere: <holder> holds
+plan/<intent>`), and is offered it again with the host's relay. A node
+that dies holding a claim leaves it to expire — five minutes for a
+plan — and the next node offered the ask plans it. The optimize pass
+claims its window the same way, so one node runs it per window. A node
+is named in its claims by the body's holder (`HALE_DNA_NODE`, which the
+host sets). The record shows each claim a node acted on and its return:
+
+```sh
+hale dna history plan/i7
+# claim.taken plan/i7 {"holder": "you@build-1:/srv/chat", "token": 1, "until": …}
+# claim.taken plan/i7 {"holder": "you@build-2:/srv/chat", "token": 2, "until": …}
+# claim.released plan/i7 {"holder": "you@build-2:/srv/chat"}
+```
+
+The body lease is one row of the same table.
+
 ### Protected evidence and its key
 
 A customer or confidential body is sealed inside memory under the
@@ -216,7 +245,7 @@ digest, so a body that was redacted is refused if anyone files it
 again. The spine's role reaches `memory_keys`, `protected_receipts`
 and `protected_redactions` only through those functions; the head's
 may select from the ledger, the graph and the meta tables, and writes
-no table directly but the leases.
+no table directly but the claims.
 
 **A dump of the database is as sensitive as the evidence.** It carries
 the key (`memory_keys`) and the ciphertext together. Protect and

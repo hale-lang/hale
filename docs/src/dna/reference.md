@@ -180,6 +180,7 @@ sequence either way — see [The record](./record.md).
 | `review.reasoned` | record | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
 | `org.reviewed` | record | the organization | the organization's own pass over itself, and what it answered |
 | `optimize.refused` | ledger | the organization | that pass did not run: the budget for the window is spent |
+| `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `optimize/<window>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
 | `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
 | `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |
 | `expression.deployed` | record | `m<n>` | what a deployment gateway expressed, and its judgement |
@@ -304,7 +305,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
 | `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |
 | `memory_embed.hl` | the hashed bag-of-words embedding the graph ranks with |
-| `memory_spine.hl` | `Memory` (one process's handle), `MemoryLedger`, `MemoryLeases`, `MemoryKnowledge` (the context package), `MemoryVault` (protected evidence), `RequestAdmission` (the spine's admission of the heads' requests, adoption and abandonment) |
+| `memory_spine.hl` | `Memory` (one process's handle), `MemoryLedger`, `MemoryLeases` (the `claims` table: leases, and `claim` / `release_claim` by id), `MemoryKnowledge` (the context package), `MemoryVault` (protected evidence), `RequestAdmission` (the spine's admission of the heads' requests, adoption and abandonment) |
 | `pond/` | pond's `db` and `pq`, pinned: the Postgres driver the memory files open through (`vendor/dna/pond` in a project) |
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |

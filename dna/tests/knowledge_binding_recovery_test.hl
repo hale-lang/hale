@@ -166,18 +166,17 @@ main locus App {
         let partial_dsn = dna::migrated(owner, partial_id); std::test::assert(partial_dsn.ok, "the partial store's memory migrates: " + partial_dsn.why);
         let partial = dna::Pq { conn: dna::pq_conn(partial_dsn), record_id: partial_id };
         std::test::assert(partial.open(), "the partial store opens: " + partial.last_error());
-        std::test::assert(partial.begin_projection(partial.projection_basis(), j.revision(), j.head()), "pending suffix precedes binding projection");
-        let pending = partial.projection_basis(); let first_pass = ops::apply_record(partial, j, receipts);
-        std::test::assert_eq_str(first_pass.error, "", "pending suffix reaches exact removal");
-        // Simulate losing only this last event's watermark write after its
-        // unbind succeeded. The existing pending fence remains authoritative.
-        // `set_watermark` only advances, so the loss is made in SQL.
+        let first_pass = ops::apply_record(partial, j, receipts);
+        std::test::assert_eq_str(first_pass.error, "", "a second store projects through the exact removal");
+        // GH #1026: a row and its stamp land in one transaction, so a lost
+        // watermark write cannot happen; a stamp set back by hand to just
+        // before the removal replays that one row, and the replay is exact.
         let lost = event(j, "knowledge.binding.unbound", remove.request_id).seq;
-        std::test::assert(partial.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'").ok && partial.watermark() == lost, "interrupted watermark fixture");
+        std::test::assert(partial.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '" + j.read(lost - 1).digest + "' WHERE key = 'graph_projection_head'").ok && partial.watermark() == lost, "the stamp set back one row");
         let resumed = ops::apply_record(partial, j, receipts);
-        std::test::assert_eq_str(resumed.error, "", "exact removal replays after lost watermark");
-        std::test::assert_eq_str(partial.context_ids("org/support/urgent", 10), "", "resuming removal cannot resurrect earlier add");
-        std::test::assert(partial.checkpoint_projection(pending, j.revision(), j.head()), "same pending suffix checkpoints after replay");
+        std::test::assert_eq_str(resumed.error, "", "exact removal replays");
+        std::test::assert_eq_str(partial.context_ids("org/support/urgent", 10), "", "replaying the removal cannot resurrect the earlier add");
+        std::test::assert_eq_int(partial.watermark(), j.revision(), "and the stamp reaches the record's end");
         std::test::assert_eq_str(capture_request(work), historical, "captured historical Work/package evidence is unchanged");
         std::test::assert_eq_str(dna::request_for_attempt(work, 2).knowledge_bindings, work.knowledge_bindings, "later attempt retains its original Work evidence");
         self.verdict(delayed, "delayed/decision", "approve"); self.wait(j, "knowledge.binding.apply_refused", delayed.request_id);

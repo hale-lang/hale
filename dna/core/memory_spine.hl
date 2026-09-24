@@ -156,9 +156,10 @@ locus Memory {
 
 // ---- leases ----------------------------------------------------------------
 
-// Leases in memory, swapped by token: `Coordination` for the gateway,
-// `current`/`put` for the body lease. The head takes and fences a lease
-// under its own role, the spine under its.
+// Claims in memory (the `claims` table, GH #1026), swapped by token:
+// `Coordination` for the gateway, `current`/`put` for the body lease,
+// `claim`/`release_claim` for a node's acts. The head takes and fences a
+// claim under its own role, the spine under its.
 locus MemoryLeases {
     params {
         repo: String = ".";
@@ -228,6 +229,32 @@ locus MemoryLeases {
         let cur = self.current(key);
         if cur.present { return cur.holder; }
         return "";
+    }
+    // ---- claims by id (GH #1026)
+    //
+    // Every non-idempotent act a node takes is claimed by id, with an
+    // expiry, before it is taken: `holder` takes `key` for `ttl` seconds,
+    // or learns whose it is. The claim, as it stands after the attempt:
+    // this holder's (`present`, `holder` = holder) when it won, someone
+    // else's otherwise. The store decides between two racing holders —
+    // one conditional write lands, the other finds it taken — and a
+    // holder that dies leaves its claim to expire, so another finishes.
+    // Taking a claim this holder already holds renews it. Without memory
+    // (no DSN) there is no one to race and the claim is granted; with
+    // memory that cannot be reached, nothing is claimed.
+    @unbounded
+    fn claim(key: String, holder: String, ttl: Int) -> Lease {
+        let now = std::time::now();
+        if !self.ready() { return Lease { key: key, holder: holder, token: 0, expires: now + ttl, present: true }; }
+        return self.acquire(key, holder, now, ttl);
+    }
+    // Give a claim back on completion: true when `holder` held it.
+    @unbounded
+    fn release_claim(key: String, holder: String) -> Bool {
+        if !self.ready() { return true; }
+        let cur = self.current(key);
+        if !cur.present || cur.holder != holder { return false; }
+        return self.complete(key, cur.token, std::time::now());
     }
 }
 

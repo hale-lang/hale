@@ -25,8 +25,6 @@ fn request_json(r: api::GraphRequest) -> String {
 locus NoGraphStore {
     params { }
     fn projection_basis() -> dna::GraphProjection { return dna::GraphProjection { }; }
-    fn begin_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
-    fn checkpoint_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
     fn graph_generation() -> Int { return -1; }
     fn read_graph(query: dna::GraphQuery, policy: dna::KnowledgeReadPolicy, sink: dna::GraphSink) -> dna::GraphPage {
         return dna::GraphPage { error: "knowledge_unsupported" };
@@ -38,8 +36,6 @@ locus NoGraphStore {
 locus RacingGraph {
     params { reader: dna::Pq; writer: dna::Pq; record: dna::GitJournal; ledger: dna::PqLedger; mode: String; }
     fn projection_basis() -> dna::GraphProjection { return self.reader.projection_basis(); }
-    fn begin_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return self.reader.begin_projection(previous, watermark, head); }
-    fn checkpoint_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return self.reader.checkpoint_projection(previous, watermark, head); }
     fn graph_generation() -> Int { return self.reader.graph_generation(); }
     fn read_graph(q: dna::GraphQuery, policy: dna::KnowledgeReadPolicy, sink: dna::GraphSink) -> dna::GraphPage {
         let page = self.reader.read_graph(q, policy, sink);
@@ -85,6 +81,19 @@ locus GraphService {
         return r;
     }
     fn close() { self.projector.store.close(); self.reader.close(); self.ledger.conn.close(); }
+}
+
+// The stamp as a projector leaves it after `watermark` rows, the last of
+// them `head`: for a graph a fixture writes by hand (GH #1026: a row and
+// its stamp land together, so the fixture writes both).
+fn stamp(store: dna::Pq, watermark: Int, head: String) -> Bool {
+    return store.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(watermark) + "' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '" + head + "' WHERE key = 'graph_projection_head'").ok;
+}
+
+// Empty the projection at the stamp it holds now.
+fn rebuild_at_stamp(store: dna::Pq) -> Bool {
+    let b = store.projection_basis();
+    return b.ok && store.rebuild(b.watermark, b.head);
 }
 
 // Both roles over one fixture record, from the DSNs its migration handed back.
@@ -157,13 +166,9 @@ locus GraphCases {
         let spine = self.spine(); let head = self.head();
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: q.record_id };
         std::test::assert(store.open(), "large cached store open: " + store.last_error());
-        let prior = store.projection_basis();
-        std::test::assert(store.begin_projection(prior, self.f.journal.revision(), q.record_head), "large cached projection begins");
-        let pending = store.projection_basis();
         std::test::assert(store.upsert(dna::Idea { id: id, kind: "practice", text: text, author: "org", provenance: "ratified", accepted: true, revision: 1 }, 1), "large cached native node");
         std::test::assert(store.bind(dna::KnowledgeBinding { idea: id, target: "org", author: "org", class: "goal" }), "large cached native binding");
-        std::test::assert(store.set_watermark(self.f.journal.revision()), "large cached live watermark");
-        std::test::assert(store.checkpoint_projection(pending, self.f.journal.revision(), q.record_head), "large cached projection checkpoint");
+        std::test::assert(stamp(store, self.f.journal.revision(), q.record_head), "large cached projection stamped at the record's head");
         let service = graph_service(self.f.root, spine, head);
         let response = self.raw(service, request_json(q));
         std::test::assert_eq_int(response.status, 200, "600k cached node read succeeds");
@@ -186,6 +191,9 @@ locus GraphCases {
         std::test::assert_eq_str(self.http.syntax.decode(quoted), special, "escaped graph strings round trip");
         store.close(); service.close(); self.unmigrate();
     }
+    // GH #1026: a row lands with its stamp in one transaction, so a projector
+    // that dies inside a row leaves nothing of it, and the next projector
+    // applies the row from the start.
     fn interrupted_projection() {
         let spine = self.spine(); let head = self.head();
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.f.identity };
@@ -195,28 +203,20 @@ locus GraphCases {
         let clean = store.projection_basis();
         let id = self.seed("canonical completed text", "org", "knowledge.ratified", "");
         let target = self.query();
-        std::test::assert(store.begin_projection(clean, self.f.journal.revision(), target.record_head), "fence the exact application target before writes");
-        // Model an interruption after the real first mutation, before bind and
-        // watermark. The dirty row persists across the projector's restart;
-        // the interrupted projector's connection is gone with it.
-        std::test::assert(store.upsert(dna::Idea { id: id, kind: "practice", text: "partial uncommitted projection", author: "org", provenance: "ratified", accepted: true, revision: clean.watermark }, clean.watermark), "first event mutation persisted");
-        std::test::assert_eq_int(store.watermark(), clean.watermark, "failed event never advances live watermark");
+        std::test::assert_eq_int(store.begin_row(clean.watermark, clean.head, target.record_head), 1, "the row after the stamp is begun");
+        std::test::assert(store.upsert(dna::Idea { id: id, kind: "practice", text: "partial uncommitted projection", author: "org", provenance: "ratified", accepted: true, revision: clean.watermark }, clean.watermark), "the row's first effect");
+        // the projector dies inside the row: its connection goes, and the
+        // row's transaction with it
         store.close();
-        std::test::assert(self.f.journal.record.move_chain("journal", clean.head, target.record_head), "rewind owned Record to stamped prefix");
-        let restarted = graph_service(self.f.root, spine, head);
-        let refused = self.read(restarted, self.query(), 503);
-        self.json.eq(self.json.raw(refused, "error"), "code", "knowledge_projection_unavailable");
-        std::test::assert(!std::str::contains(refused, "partial uncommitted projection"), "dirty orphan row never leaves the service");
         std::test::assert(store.reopen(), "the fixture's store reopens: " + store.last_error());
-        let still_pending = store.projection_basis();
-        std::test::assert_eq_str(still_pending.pending_head, target.record_head, "refusal preserves recovery fence");
-        std::test::assert(self.f.journal.record.move_chain("journal", target.record_head, clean.head), "restore exact interrupted Record target");
+        std::test::assert(!store.idea(id).present, "nothing of the interrupted row landed");
+        let after = store.projection_basis();
+        std::test::assert(after.watermark == clean.watermark && after.head == clean.head, "the stamp stands where it was");
+        let restarted = graph_service(self.f.root, spine, head);
         let recovered = self.read(restarted, self.query(), 200);
         self.json.eq(self.json.first(recovered), "text", "canonical completed text");
-        let completed = store.projection_basis();
-        std::test::assert_eq_int(completed.pending_watermark, 0, "successful exact replay clears pending watermark");
-        std::test::assert_eq_str(completed.pending_head, "", "successful exact replay clears pending head");
-        std::test::assert_eq_str(completed.head, target.record_head, "successful exact replay stamps the intended head");
+        std::test::assert(!std::str::contains(recovered, "partial uncommitted projection"), "the partial row never reaches a reader");
+        std::test::assert_eq_str(store.projection_basis().head, target.record_head, "the next projector stamps the row's head");
         store.close(); service.close(); restarted.close(); self.unmigrate();
     }
     // A reconcile re-appends the local rows on top of the remote's head:
@@ -257,7 +257,6 @@ locus GraphCases {
         let rebuilt = store.projection_basis();
         std::test::assert_eq_str(rebuilt.head, chain, "the projection is stamped at the rebuilt head");
         std::test::assert_eq_int(rebuilt.watermark, n + 1, "and past every row of the rebuilt chain");
-        std::test::assert_eq_int(rebuilt.pending_watermark, 0, "with nothing pending");
         store.close(); service.close(); self.unmigrate();
     }
     fn syntax() {
@@ -376,16 +375,16 @@ locus GraphCases {
 
         // A fresh projector over the real same Record must rebuild its
         // projection: the record's schema is the same one, emptied first.
-        std::test::assert(store.rebuild(), "the projection is emptied for a fresh projector");
+        std::test::assert(rebuild_at_stamp(store), "the projection is emptied for a fresh projector");
         let restarted = graph_service(self.f.root, spine, head);
         let rebuilt = self.read(restarted, self.query(), 200);
         std::test::assert_eq_int(self.json.count(rebuilt), 3, "restart derives visible nodes from canonical receipts");
         restarted.close();
-        std::test::assert(store.rebuild() && store.set_watermark(self.f.journal.revision()), "legacy count-only projection");
+        std::test::assert(rebuild_at_stamp(store) && stamp(store, self.f.journal.revision(), ""), "a count with no head");
         let legacy = graph_service(self.f.root, spine, head);
         self.read(legacy, self.query(), 503);
         legacy.close();
-        std::test::assert(store.rebuild(), "the legacy projection is emptied again");
+        std::test::assert(store.rebuild(self.f.journal.revision(), ""), "the headless projection is emptied again");
         std::test::assert_eq_str(service.projector.apply().error, "", "and the record projected back into it");
 
         let exact = store.idea(a);

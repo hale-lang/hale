@@ -455,7 +455,7 @@ locus PqLeaseStore {
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
+        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, until AS expires, present FROM claims WHERE key = $1) t", a);
         if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
         if rows.n == 0 { return StoredLease { key: key }; }
         let row = trim_nl(line_one(rows.csv));
@@ -472,10 +472,10 @@ locus PqLeaseStore {
         a.add(to_string(expires));
         a.add(if present { "true" } else { "false" });
         a.add(to_string(expected));
-        let r = self.run_q("INSERT INTO ledger_leases (key, holder, token, expires, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM ledger_leases WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
+        let r = self.run_q("INSERT INTO claims (key, holder, token, until, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM claims WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
         if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
         if r.n > 0 { return true; }
-        let u = self.run_q("UPDATE ledger_leases SET holder = $2, token = $3::bigint, expires = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
+        let u = self.run_q("UPDATE claims SET holder = $2, token = $3::bigint, until = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
         if !u.ok { self.error = "put: " + u.err.kind + " " + u.err.detail; return false; }
         return u.n > 0;
     }

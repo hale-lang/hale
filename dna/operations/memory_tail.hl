@@ -1,6 +1,8 @@
 // dna/operations/memory_tail.hl — the record applied into memory (GH #583
 // K1). It lives in operations, not the core, and runs on the host's tick
-// under the spine lease (GH #985).
+// (GH #985). Any number of projectors may run it over one record at once
+// (GH #1026): each record row is one transaction that moves the stamp by
+// compare-and-swap before its effects, so they converge on one graph.
 //
 // The projection is a CONSUMER of the record: it reads `knowledge.*` rows
 // from the store's watermark on, resolves each ratified digest to its
@@ -11,7 +13,7 @@
 // kept too, so the graph shows what was asked and what was refused.
 
 type ProjectionApplied {
-    rows: Int = 0; // rows walked
+    rows: Int = 0; // rows walked by this projector (a row that failed among them)
     ratified: Int = 0;
     proposed: Int = 0;
     declined: Int = 0;
@@ -19,6 +21,7 @@ type ProjectionApplied {
     structure: Int = 0; // structure rows projected (K3)
     signals: Int = 0; // pressure and concern rows projected (K3)
     watermark: Int = 0; // the next seq to apply
+    yielded: Bool = false; // another projector was past this one; it stopped
     error: String = "";
 }
 
@@ -35,8 +38,12 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
     };
 }
 
-// Apply every knowledge row from the watermark to the record's end.
-// Bounded by the record.
+// Apply the record's rows from the store's watermark to the record's end,
+// one transaction per row: the stamp moves first, by compare-and-swap,
+// then the row's effects, then both land together. A row another
+// projector is already past ends this pass (`yielded`), having written
+// nothing; a row whose effects fail lands nothing, and the next pass
+// begins it again. Bounded by the record.
 @unbounded
 fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> ProjectionApplied {
     let mut out = ProjectionApplied { watermark: store.watermark() };
@@ -44,144 +51,160 @@ fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Rece
     let mut i = out.watermark;
     while i < n {
         let e = j.read(i);
+        let prev = if i == 0 { "" } else { j.read(i - 1).digest };
+        let won = store.begin_row(i, prev, e.digest);
+        if won < 0 { out.error = store.last_error(); return out; }
+        if won == 0 { out.yielded = true; return out; }
         out.rows = out.rows + 1;
-        // K3: the code's structure as the record observed it (init's
-        // rows: loci, topics, bindings, effect classes, claims), keyed by
-        // kind and name, the latest row winning; and the operational
-        // signals, counted per (kind, source, what)
-        if e.kind == "structure.observed" {
-            let kind = std::json::find_string_field(e.body, "kind");
-            let name = std::json::find_string_field(e.body, "name");
-            let colon = std::str::index_of(e.entity, ":");
-            let named = if len(name) > 0 { name } else if colon >= 0 { e.entity[(colon + 1)..len(e.entity)] } else { e.entity };
-            if !store.put_structure(if len(kind) > 0 { kind } else { "row" }, named, i, e.body) { out.error = store.last_error(); return out; }
-            out.structure = out.structure + 1;
-        }
-        if e.kind == "pressure.raised" || e.kind == "concern.raised" {
-            // A concern is a row of its own (GH #689 review): its words are
-            // a field, not the part of a sentence before " x". Pressure is
-            // still `<what> x<n>`, and so is a concern from before that
-            // rule, which carries no field to read.
-            let named = if e.kind == "concern.raised" { dna::concern_what(e.body) } else { "" };
-            let x = std::str::index_of(e.body, " x");
-            let what = if len(named) > 0 { named } else if x > 0 { e.body[0..x] } else { e.body };
-            if !store.put_signal(e.kind[0..(len(e.kind) - 7)], e.entity, what, i) { out.error = store.last_error(); return out; }
-            out.signals = out.signals + 1;
-        }
-        if e.kind == "knowledge.ratified" || e.kind == "knowledge.proposed" || e.kind == "knowledge.declined" {
-            let digest = e.entity;
-            let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-            let doc = receipts.read(raw);
-            if len(doc) == 0 && redacted_in(j, digest) {
-                // GH #606: a redacted receipt is an idea with no body left —
-                // retired, never an error that stops the whole projection
-                if !store.retire(digest, i) { out.error = store.last_error(); return out; }
-                out.retired = out.retired + 1;
-                i = i + 1;
-                if !store.set_watermark(i) { out.error = store.last_error(); return out; }
-                out.watermark = i;
-                continue;
-            }
-            if len(doc) == 0 {
-                out.error = "no receipt for " + digest + " (row " + to_string(i) + ")";
-                return out;
-            }
-            let target = dna::native_json_string(doc, "target");
-            let class = std::json::find_string_field(e.body, "class");
-            if e.kind == "knowledge.ratified" {
-                // a retirement proposal carries no idea of its own: its
-                // effect is the `knowledge.retired` row that follows
-                if dna::native_json_string(doc, "kind") != "retirement" {
-                    if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
-                    if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: dna::native_json_string(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
-                }
-                out.ratified = out.ratified + 1;
-            } else if e.kind == "knowledge.proposed" {
-                let have = store.idea(digest);
-                // a proposal never overwrites its own ratification (replay order is the record's, but be safe)
-                if !have.present || !have.idea.accepted {
-                    if !store.upsert(idea_of(digest, doc, "proposed", false, i), 0) { out.error = store.last_error(); return out; }
-                }
-                out.proposed = out.proposed + 1;
-            } else {
-                let have = store.idea(digest);
-                if !have.present || !have.idea.accepted {
-                    if !store.upsert(idea_of(digest, doc, "declined", false, i), 0) { out.error = store.last_error(); return out; }
-                }
-                out.declined = out.declined + 1;
-            }
-        }
-        // GH #596 C: a retired idea leaves every package; the row is
-        // the Board's decision, appended when a superseding proposal
-        // was ratified
-        if e.kind == "knowledge.retired" {
-            if !store.retire(e.entity, i) { out.error = store.last_error(); return out; }
-            out.retired = out.retired + 1;
-        }
-        if e.kind == "knowledge.edge.linked" || e.kind == "knowledge.edge.unlinked" {
-            // Admission committed the effect and its exact command together.
-            // The graph is only a projection: validate the whole fact before
-            // applying, and replay the same tuple if a crash lost the watermark.
-            // Receipt restrictions remain the graph reader's policy; projecting
-            // an edge never independently makes either endpoint visible.
-            let codec = KnowledgeCommandCodec { };
-            let fact = codec.decode_fact(e);
-            if !fact.valid || fact.context.application_id != j.read(0).digest {
-                out.error = "invalid knowledge edge fact (row " + to_string(i) + ")";
-                return out;
-            }
-            let c = fact.command;
-            let edge = dna::KnowledgeEdge { from: c.from_id, to: c.to_id, rel: c.rel };
-            let applied = if e.kind == "knowledge.edge.linked" { store.link(edge) } else { store.unlink(edge) };
-            if !applied {
-                let error = store.last_error();
-                out.error = if len(error) > 0 { error } else { "knowledge edge projection failed (row " + to_string(i) + ")" };
-                return out;
-            }
-        }
-        if e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" {
-            let codec = dna::KnowledgeBindingCodec { }; let outer = KnowledgeBindingCommandCodec { };
-            let effect = codec.effect_of(j, e); let r = effect.request;
-            let incoming = codec.fact(j, "knowledge.binding.requested", r.request_id, e.seq);
-            let admitted = outer.decode_fact(incoming);
-            if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.binding) != codec.started(r) {
-                out.error = "invalid knowledge binding effect (row " + to_string(i) + ")"; return out;
-            }
-            let basis = codec.basis(j, receipts, r, e.seq);
-            if !basis.ok || basis.event_id != r.binding_basis {
-                out.error = "invalid knowledge binding basis (row " + to_string(i) + ")"; return out;
-            }
-            let subject = codec.subject_at(j, receipts, r.idea_id, e.seq);
-            if !subject.ok || !subject.ratified || (e.kind == "knowledge.binding.bound" && !subject.active) {
-                out.error = "invalid knowledge binding subject (row " + to_string(i) + ")"; return out;
-            }
-            let binding = dna::KnowledgeBinding { idea: r.idea_id, target: r.target, author: r.author, class: dna::classify_binding(r.author, r.target) };
-            let applied = if e.kind == "knowledge.binding.bound" { store.bind(binding) } else { store.unbind(binding) };
-            if !applied { out.error = "knowledge binding projection failed (row " + to_string(i) + ")"; return out; }
-        }
-        if e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked" {
-            let codec = dna::KnowledgeEdgeCodec { }; let outer = KnowledgeEdgeCommandCodec { }; let direct = StrictKnowledgeDirectEdgeFacts { };
-            let effect = codec.effect_of(j, e); let r = effect.request;
-            let incoming = codec.fact(j, "knowledge.edge.requested", r.request_id, e.seq);
-            let admitted = outer.decode_fact(incoming);
-            if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.edge) != codec.started(r) {
-                out.error = "invalid reviewed knowledge edge effect (row " + to_string(i) + ")"; return out;
-            }
-            let basis = codec.basis(j, receipts, direct, r, e.seq);
-            if !basis.ok || basis.event_id != r.edge_basis {
-                out.error = "invalid reviewed knowledge edge basis (row " + to_string(i) + ")"; return out;
-            }
-            let endpoints = codec.endpoints(j, receipts, r, e.seq);
-            if !endpoints.ok || !endpoints.ratified || (e.kind == "knowledge.edge.reviewed_linked" && !endpoints.active) {
-                out.error = "invalid reviewed knowledge edge endpoints (row " + to_string(i) + ")"; return out;
-            }
-            let edge = dna::KnowledgeEdge { from: r.from_id, to: r.to_id, rel: r.rel };
-            let applied = if e.kind == "knowledge.edge.reviewed_linked" { store.link(edge) } else { store.unlink(edge) };
-            if !applied { out.error = "reviewed knowledge edge projection failed (row " + to_string(i) + ")"; return out; }
-        }
+        let r = apply_row(store, j, receipts, e, i);
+        if len(r.error) > 0 { store.abort_row(); out.error = r.error; return out; }
+        if !store.commit_row() { out.error = store.last_error(); return out; }
+        out.ratified = out.ratified + r.ratified;
+        out.proposed = out.proposed + r.proposed;
+        out.declined = out.declined + r.declined;
+        out.retired = out.retired + r.retired;
+        out.structure = out.structure + r.structure;
+        out.signals = out.signals + r.signals;
         i = i + 1;
-        if !store.set_watermark(i) { out.error = store.last_error(); return out; }
         out.watermark = i;
+    }
+    return out;
+}
+
+// One record row's effects on the graph, inside the row's transaction.
+@unbounded
+fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, e: dna::Event, i: Int) -> ProjectionApplied {
+    let mut out = ProjectionApplied { };
+    // K3: the code's structure as the record observed it (init's
+    // rows: loci, topics, bindings, effect classes, claims), keyed by
+    // kind and name, the latest row winning; and the operational
+    // signals, counted per (kind, source, what)
+    if e.kind == "structure.observed" {
+        let kind = std::json::find_string_field(e.body, "kind");
+        let name = std::json::find_string_field(e.body, "name");
+        let colon = std::str::index_of(e.entity, ":");
+        let named = if len(name) > 0 { name } else if colon >= 0 { e.entity[(colon + 1)..len(e.entity)] } else { e.entity };
+        if !store.put_structure(if len(kind) > 0 { kind } else { "row" }, named, i, e.body) { out.error = store.last_error(); return out; }
+        out.structure = out.structure + 1;
+    }
+    if e.kind == "pressure.raised" || e.kind == "concern.raised" {
+        // A concern is a row of its own (GH #689 review): its words are
+        // a field, not the part of a sentence before " x". Pressure is
+        // still `<what> x<n>`, and so is a concern from before that
+        // rule, which carries no field to read.
+        let named = if e.kind == "concern.raised" { dna::concern_what(e.body) } else { "" };
+        let x = std::str::index_of(e.body, " x");
+        let what = if len(named) > 0 { named } else if x > 0 { e.body[0..x] } else { e.body };
+        if !store.put_signal(e.kind[0..(len(e.kind) - 7)], e.entity, what, i) { out.error = store.last_error(); return out; }
+        out.signals = out.signals + 1;
+    }
+    if e.kind == "knowledge.ratified" || e.kind == "knowledge.proposed" || e.kind == "knowledge.declined" {
+        let digest = e.entity;
+        let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let doc = receipts.read(raw);
+        if len(doc) == 0 && redacted_in(j, digest) {
+            // GH #606: a redacted receipt is an idea with no body left —
+            // retired, never an error that stops the whole projection
+            if !store.retire(digest, i) { out.error = store.last_error(); return out; }
+            out.retired = out.retired + 1;
+            return out;
+        }
+        if len(doc) == 0 {
+            out.error = "no receipt for " + digest + " (row " + to_string(i) + ")";
+            return out;
+        }
+        let target = dna::native_json_string(doc, "target");
+        let class = std::json::find_string_field(e.body, "class");
+        if e.kind == "knowledge.ratified" {
+            // a retirement proposal carries no idea of its own: its
+            // effect is the `knowledge.retired` row that follows
+            if dna::native_json_string(doc, "kind") != "retirement" {
+                if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
+                if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: dna::native_json_string(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
+            }
+            out.ratified = out.ratified + 1;
+        } else if e.kind == "knowledge.proposed" {
+            let have = store.idea(digest);
+            // a proposal never overwrites its own ratification (replay order is the record's, but be safe)
+            if !have.present || !have.idea.accepted {
+                if !store.upsert(idea_of(digest, doc, "proposed", false, i), 0) { out.error = store.last_error(); return out; }
+            }
+            out.proposed = out.proposed + 1;
+        } else {
+            let have = store.idea(digest);
+            if !have.present || !have.idea.accepted {
+                if !store.upsert(idea_of(digest, doc, "declined", false, i), 0) { out.error = store.last_error(); return out; }
+            }
+            out.declined = out.declined + 1;
+        }
+    }
+    // GH #596 C: a retired idea leaves every package; the row is
+    // the Board's decision, appended when a superseding proposal
+    // was ratified
+    if e.kind == "knowledge.retired" {
+        if !store.retire(e.entity, i) { out.error = store.last_error(); return out; }
+        out.retired = out.retired + 1;
+    }
+    if e.kind == "knowledge.edge.linked" || e.kind == "knowledge.edge.unlinked" {
+        // Admission committed the effect and its exact command together.
+        // The graph is only a projection: validate the whole fact before
+        // applying, and replay the same tuple if a crash lost the watermark.
+        // Receipt restrictions remain the graph reader's policy; projecting
+        // an edge never independently makes either endpoint visible.
+        let codec = KnowledgeCommandCodec { };
+        let fact = codec.decode_fact(e);
+        if !fact.valid || fact.context.application_id != j.read(0).digest {
+            out.error = "invalid knowledge edge fact (row " + to_string(i) + ")";
+            return out;
+        }
+        let c = fact.command;
+        let edge = dna::KnowledgeEdge { from: c.from_id, to: c.to_id, rel: c.rel };
+        let applied = if e.kind == "knowledge.edge.linked" { store.link(edge) } else { store.unlink(edge) };
+        if !applied {
+            let error = store.last_error();
+            out.error = if len(error) > 0 { error } else { "knowledge edge projection failed (row " + to_string(i) + ")" };
+            return out;
+        }
+    }
+    if e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" {
+        let codec = dna::KnowledgeBindingCodec { }; let outer = KnowledgeBindingCommandCodec { };
+        let effect = codec.effect_of(j, e); let r = effect.request;
+        let incoming = codec.fact(j, "knowledge.binding.requested", r.request_id, e.seq);
+        let admitted = outer.decode_fact(incoming);
+        if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.binding) != codec.started(r) {
+            out.error = "invalid knowledge binding effect (row " + to_string(i) + ")"; return out;
+        }
+        let basis = codec.basis(j, receipts, r, e.seq);
+        if !basis.ok || basis.event_id != r.binding_basis {
+            out.error = "invalid knowledge binding basis (row " + to_string(i) + ")"; return out;
+        }
+        let subject = codec.subject_at(j, receipts, r.idea_id, e.seq);
+        if !subject.ok || !subject.ratified || (e.kind == "knowledge.binding.bound" && !subject.active) {
+            out.error = "invalid knowledge binding subject (row " + to_string(i) + ")"; return out;
+        }
+        let binding = dna::KnowledgeBinding { idea: r.idea_id, target: r.target, author: r.author, class: dna::classify_binding(r.author, r.target) };
+        let applied = if e.kind == "knowledge.binding.bound" { store.bind(binding) } else { store.unbind(binding) };
+        if !applied { out.error = "knowledge binding projection failed (row " + to_string(i) + ")"; return out; }
+    }
+    if e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked" {
+        let codec = dna::KnowledgeEdgeCodec { }; let outer = KnowledgeEdgeCommandCodec { }; let direct = StrictKnowledgeDirectEdgeFacts { };
+        let effect = codec.effect_of(j, e); let r = effect.request;
+        let incoming = codec.fact(j, "knowledge.edge.requested", r.request_id, e.seq);
+        let admitted = outer.decode_fact(incoming);
+        if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.edge) != codec.started(r) {
+            out.error = "invalid reviewed knowledge edge effect (row " + to_string(i) + ")"; return out;
+        }
+        let basis = codec.basis(j, receipts, direct, r, e.seq);
+        if !basis.ok || basis.event_id != r.edge_basis {
+            out.error = "invalid reviewed knowledge edge basis (row " + to_string(i) + ")"; return out;
+        }
+        let endpoints = codec.endpoints(j, receipts, r, e.seq);
+        if !endpoints.ok || !endpoints.ratified || (e.kind == "knowledge.edge.reviewed_linked" && !endpoints.active) {
+            out.error = "invalid reviewed knowledge edge endpoints (row " + to_string(i) + ")"; return out;
+        }
+        let edge = dna::KnowledgeEdge { from: r.from_id, to: r.to_id, rel: r.rel };
+        let applied = if e.kind == "knowledge.edge.reviewed_linked" { store.link(edge) } else { store.unlink(edge) };
+        if !applied { out.error = "reviewed knowledge edge projection failed (row " + to_string(i) + ")"; return out; }
     }
     return out;
 }
@@ -355,12 +378,12 @@ locus KnowledgeVisibility {
     }
 }
 
-// ---- the projection, as the spine runs it (GH #985) -----------------------
+// ---- the projection, as the spine runs it (GH #985, #1026) ----------------
 //
-// The graph is the spine's projection of the record: the host that runs the
+// The graph is the spine's projection of the record: a host that runs a
 // body applies the record into it on its tick, as the record's spine role
 // (HALE_DNA_MEMORY_DSN_SPINE), so the projection advances without anyone
-// asking. It lives here, beside the command codecs it decodes admitted facts
+// asking. Every node may: the store serializes them, one row at a time. It lives here, beside the command codecs it decodes admitted facts
 // with, rather than in the core those codecs are written against.
 locus MemoryProjection {
     params {
@@ -416,7 +439,8 @@ locus MemoryProjection {
     }
     // Tail the record: fetch is the host's job; this reads what the
     // repository has now (another process — the organization, a CLI —
-    // may have moved the ref since the last read).
+    // may have moved the ref since the last read). Any number of
+    // projectors may tail one record at once.
     fn apply() -> ProjectionApplied {
         // read the record before opening the store: the scope is the
         // record's identity as loaded, and what is applied is the same
@@ -424,67 +448,58 @@ locus MemoryProjection {
         let moved = self.j.refresh();
         return self.project(false);
     }
-    // A failed event can have written a node before its binding or watermark.
-    // Persist the intended Record suffix BEFORE any projection write. Until
-    // that entire suffix is complete, its pending fence survives errors and
-    // process restart. Reconciliation cannot turn partial effects into a clean
-    // projection merely by returning the Record to the old stamped prefix.
-    fn projection_refused(why: String, basis: dna::GraphProjection) -> ProjectionApplied {
-        self.last_error = "the Knowledge projection has no verified prefix and pending suffix of this Record; restore its source or rebuild its projection";
+    fn projection_refused(why: String) -> ProjectionApplied {
+        self.last_error = "the Knowledge projection cannot proceed over this Record: " + why;
         // Which check refused, on stderr: the fixtures dump it, and an
         // operator reading the service log sees the numbers, not a riddle.
-        eprintln("hale dna: memory: projection refused: ", why, " (stamped ", to_string(basis.watermark), " head ", basis.head, ", live ", to_string(basis.live_watermark), ", pending ", to_string(basis.pending_watermark), " head ", basis.pending_head, ", record ", to_string(self.j.revision()), ")");
+        eprintln("hale dna: memory: projection refused: ", why, " (record ", to_string(self.j.revision()), " head ", self.j.head(), ")");
         return ProjectionApplied { error: "knowledge_projection_unavailable" };
     }
-    // The record's rows are identified by content and place among equals,
-    // never by commit: a reconcile re-appends local rows on top of the
-    // remote's and every one of them gets a new digest (GH #603). A
-    // projection stamped by digest is then behind a chain it cannot prove,
-    // and the graph is derived, so the honest move is to rebuild it from
-    // row 0 rather than refuse every read until an operator does.
-    fn chain_replaced(bounded: Bool, why: String, basis: dna::GraphProjection) -> ProjectionApplied {
-        eprintln("hale dna: memory: ", why, " (stamped ", to_string(basis.watermark), " head ", basis.head, ", live ", to_string(basis.live_watermark), ", pending ", to_string(basis.pending_watermark), " head ", basis.pending_head, ", record ", to_string(self.j.revision()), ")");
-        if !self.store.rebuild() { return self.projection_refused("the store could not rebuild its projection: " + self.store.last_error(), basis); }
-        return self.project(bounded);
+    // Where this clone's record stands to memory's stamp, by ancestry
+    // (GH #1026). The record's rows are its commits, so a stamp is a
+    // commit and every clone can place it:
+    //   `descends` — nothing is stamped, or the stamped head is this
+    //     clone's row at the stamp: the rows after it are the delta;
+    //   `behind`   — this clone's head is an ancestor of the stamped head,
+    //     or the stamped head is a commit this clone has not received and
+    //     this clone is shorter: another projector is ahead, and there is
+    //     nothing here to project;
+    //   `replaced` — neither: the chain was rebuilt beneath the projection
+    //     (a reconcile re-appends local rows, each with a new digest, GH
+    //     #603), so the graph is rebuilt from row 0. The graph is derived.
+    fn fence(basis: dna::GraphProjection, revision: Int) -> String {
+        if basis.watermark == 0 { return "descends"; }
+        if basis.watermark <= revision && self.j.read(basis.watermark - 1).digest == basis.head { return "descends"; }
+        let r = self.j.record;
+        if !r.holds(basis.head) { return if revision < basis.watermark { "behind" } else { "replaced" }; }
+        if revision == 0 || r.precedes(self.j.head(), basis.head) { return "behind"; }
+        return "replaced";
     }
-    fn project(bounded: Bool) -> ProjectionApplied {
+    fn project(bounded: Bool) -> ProjectionApplied { return self.project_once(bounded, false); }
+    fn project_once(bounded: Bool, rebuilt: Bool) -> ProjectionApplied {
         if !self.ensure_open() { return ProjectionApplied { error: self.last_error }; }
-        let mut basis = self.store.projection_basis();
-        if !basis.ok && bounded { return ProjectionApplied { error: "knowledge_projection_unavailable" }; }
-        if basis.ok {
-            let mark = basis.live_watermark;
-            let revision = self.j.revision();
-            let prefix = if basis.watermark > 0 && basis.watermark <= revision { self.j.read(basis.watermark - 1).digest } else { "" };
-            if basis.watermark > 0 && basis.watermark <= revision && len(prefix) > 0 && basis.head != prefix { return self.chain_replaced(bounded, "the row at the stamp is not the one stamped (`" + prefix + "` now, head `" + self.j.head() + "`): the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0", basis); }
-            if basis.watermark < 0 || basis.watermark > revision || mark < basis.watermark || mark > revision || basis.head != prefix || (basis.watermark > 0 && len(prefix) == 0) { return self.projection_refused("the stamped prefix does not match the record: prefix digest `" + prefix + "`", basis); }
-            if basis.pending_watermark == 0 {
-                // A legacy count-only projection has no provenance to repair
-                // by guessing. Only an exactly stamped clean prefix can begin.
-                if len(basis.pending_head) > 0 || mark != basis.watermark { return self.projection_refused("live progress without a pending target", basis); }
-            } else {
-                if basis.pending_watermark <= basis.watermark || basis.pending_watermark > revision || mark > basis.pending_watermark || len(basis.pending_head) == 0 { return self.projection_refused("the pending target is not ahead of the stamp and within the record", basis); }
-                if self.j.read(basis.pending_watermark - 1).digest != basis.pending_head { return self.chain_replaced(bounded, "the row at the pending target is not the one begun: the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0", basis); }
+        let basis = self.store.projection_basis();
+        if !basis.ok { return self.projection_refused("memory holds no valid projection stamp (" + self.store.last_error() + "); `hale dna memory migrate` sets one"); }
+        let revision = self.j.revision();
+        let target = if revision > 0 { self.j.read(revision - 1).digest } else { "" };
+        if revision > 0 && target != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + target + "`"); }
+        let place = self.fence(basis, revision);
+        if place == "behind" { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
+        if place == "replaced" {
+            eprintln("hale dna: memory: the stamped head `", basis.head, "` at row ", to_string(basis.watermark), " is neither this clone's row there nor ahead of it (record ", to_string(revision), " head ", self.j.head(), "): the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0");
+            // once per pass: a second projector over another chain moves
+            // it back on its own pass, until the reconcile ends the race
+            if rebuilt { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
+            if !self.store.rebuild(basis.watermark, basis.head) {
+                if len(self.store.last_error()) == 0 { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
+                return self.projection_refused("the store could not rebuild its projection: " + self.store.last_error());
             }
-            if revision > basis.watermark || basis.pending_watermark > 0 {
-                let target = self.j.read(revision - 1).digest;
-                if len(target) == 0 || target != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + target + "`", basis); }
-                if !self.store.begin_projection(basis, revision, target) { return self.projection_refused("the store refused to begin the projection at " + to_string(revision), basis); }
-                let pending = self.store.projection_basis();
-                if !pending.ok || pending.watermark != basis.watermark || pending.head != basis.head || pending.pending_watermark != revision || pending.pending_head != target { return self.projection_refused("the store's pending basis is not the one just begun", basis); }
-                basis = pending;
-            }
+            return self.project_once(bounded, true);
         }
         self.store.forget_error();
         let receipts = GraphReceipts { source: self.receipts };
         let mut r = if bounded { apply_record(self.store, self.j, receipts) } else { apply_record(self.store, self.j, self.receipts) };
         if len(receipts.error) > 0 { r.error = receipts.error; }
-        // An incomplete event leaves the pending target intact, even when
-        // earlier complete events advanced the live watermark. A retry may
-        // continue only after the exact pending suffix is proven above.
-        if basis.ok && len(r.error) == 0 {
-            if r.watermark != self.j.revision() { r.error = "knowledge_projection_unavailable"; }
-            else if basis.pending_watermark > 0 && !self.store.checkpoint_projection(basis, r.watermark, self.j.head()) { r.error = "knowledge_projection_unavailable"; }
-        }
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;
         return r;

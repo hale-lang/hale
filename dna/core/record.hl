@@ -667,6 +667,9 @@ locus GitRecord {
         return if len(out) == 0 { "" } else { out + "\n" };
     }
     fn precedes(a: String, b: String) -> Bool { return self.git_ok("merge-base\n--is-ancestor\n" + a + "\n" + b); }
+    // Whether this clone holds commit `id` at all: a head another clone
+    // stamped may be one this clone has not received yet (GH #1026).
+    fn holds(id: String) -> Bool { return len(id) > 0 && self.git_ok("cat-file\n-e\n" + id + "^{commit}"); }
     fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
         let h = self.head(chain);
         if !h.ok { return Appended { error: "io: " + h.why }; }
