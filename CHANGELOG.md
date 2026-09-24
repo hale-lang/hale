@@ -16,10 +16,11 @@ behavior.
   broker grew without bound. When that arena's 64 MiB cap was
   reached, the runtime silently stopped calling the adapter's `send`.
   The `bytes` a `send` receives now live for the call; a `send` that
-  keeps them keeps a copy. A 500k-publish run stays flat. Not yet
-  for a `send` that parks on an `async_io` pool while other publishes
-  overlap it on the same thread: the per-thread scratch is reclaimed
-  only when the last overlapping use ends, so it grows meanwhile.
+  keeps them keeps a copy. A 500k-publish run stays flat, and so does
+  a `send` that parks on an `async_io` pool while other publishes
+  overlap it: each `send` gets an arena of its own, taken from the
+  chunk pool and freed when the call returns
+  (`LOTUS_BUS_CALL_ARENA_STATS=1` reports what they held).
 
 ### Keyed topics keep their key across an adapter (GH #1041)
 

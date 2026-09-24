@@ -1632,16 +1632,13 @@ Transport surface:
   `send` and its receive loop, with every write on its own thread
   (GH #1032).
   The `bytes` a `send` call receives are valid for that call: the
-  runtime builds them in a per-thread bus scratch it reclaims when
-  the outermost bus use on the thread returns, so publishing
-  through an adapter holds no memory per message (GH #1038) — as
-  long as `send` does not park. A `send` that parks (a `sleep` or a
-  `recv` on an `async_io` pool) while other publishes on the same
-  thread overlap it keeps the scratch from being reclaimed until the
-  last overlapping use ends, and the scratch grows by one payload
-  per message meanwhile, without a cap. A `send` body that keeps the
-  bytes — stores them in a field, publishes them onward — keeps a
-  copy, as it would any stored value.
+  runtime builds them in an arena of the call's own, freed when
+  `send` returns, so publishing through an adapter holds memory only
+  for the sends in flight — none per message, whether `send` returns
+  at once or parks (a `sleep` or a `recv` on an `async_io` pool)
+  while other publishes overlap it (GH #1038). A `send` body that
+  keeps the bytes — stores them in a field, publishes them onward —
+  keeps a copy, as it would any stored value.
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name
@@ -2270,13 +2267,13 @@ both sides of a socket; before this it received nothing over a
 binding. An adapter's inbound delivery
 (`std::bus::__local_dispatch(subject, bytes)`) carries wire bytes
 and no key, so for a keyed subject the runtime decodes the bytes
-once — through the binding's `codec(...)` when it has one — into a
-per-thread scratch region, derives the key, and delivers keyed:
+once — through the binding's `codec(...)` when it has one — into an
+arena of the delivery's own, derives the key, and delivers keyed:
 matching `where key ==` subscribers and unfiltered ones hear it,
 non-matching ones do not, and each subscriber still gets its own
-decoded copy (GH #1041). The scratch region holds no memory between
-deliveries and reuses pooled chunks, so deriving the key costs no
-heap allocation in steady state. An unkeyed subject takes the
+decoded copy (GH #1041). That arena is freed when the delivery
+returns and draws its memory from the thread's chunk pool, so
+deriving the key costs no heap allocation in steady state. An unkeyed subject takes the
 unkeyed wire path unchanged.
 
 **`where key == EXPR` — what EXPR can be.**
