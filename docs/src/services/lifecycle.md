@@ -411,11 +411,36 @@ locus first drains all of its children (and theirs, recursively),
 waits for them, then drains itself, then dissolves. You never
 write a manual teardown walk.
 
-This is what makes Ctrl-C trivial: SIGINT calls `drain()` on the
-program's root, the whole tree winds down in dependency order,
-in-flight work finishes, resources release, the process exits
-cleanly. "Press Ctrl-C and it shuts down properly" is the
-default, not something you wire up.
+This is what makes Ctrl-C trivial: SIGINT (or SIGTERM) drains the
+whole program. Every locus's `self.draining` turns true, a
+`sleep` returns early, and a `run()` that loops on the flag ends —
+then the tree dissolves in dependency order, leaves first, and the
+process exits 0:
+
+```hale
+locus Poller {
+    run() {
+        while !self.draining {
+            // ... one unit of work ...
+            std::time::sleep(100ms);
+        }
+        // flush what the peer has not acknowledged yet
+    }
+    dissolve() { /* release the socket */ }
+}
+```
+
+A long-lived loop — a broker connection, a websocket client, a
+pinned receive loop — writes its condition as `!self.draining`, and
+that is all it takes to shut down properly. A `run()` that never
+checks the flag cannot be stopped this way; the runtime gives the
+drain five seconds (`LOTUS_DRAIN_GRACE_MS`) and then ends the process
+with the signal's usual status, and a second Ctrl-C ends it at once.
+
+A program's life is the life of its `run()`s, not just `main`'s:
+if `main`'s `run()` returns while a child's loop is still going, the
+process keeps running until that loop ends — which is how a server
+stays up — and SIGTERM is how you end it.
 
 The lifecycle is the skeleton of every long-running Hale program.
 Next, the thing those programs use to talk to each other: [The

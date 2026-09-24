@@ -61,6 +61,24 @@ behavior.
 - **Fixed:** `violate` left its method without the `return`
   epilogue, leaking the method's per-call scratch (and skipping the
   dissolve of loci it had `let`-bound) on every violation.
+### SIGINT / SIGTERM drain the program (GH #1039)
+
+- **The whole-process drain ships.** The spec's drain cascade was
+  never wired: the runtime caught neither signal, so a `while
+  !self.draining` loop never saw a drain and every program died with
+  143. Now, in a program that reads `self.draining`, the first SIGINT
+  or SIGTERM makes `self.draining` true for every locus, returns
+  `sleep`s and timed `async_io` receives early, lets each watching
+  `run()` end and dissolve leaves-first, and exits 0. A drain that has
+  not finished within 5 s (`LOTUS_DRAIN_GRACE_MS`) exits `128 +
+  signal`, as does a second signal. A program that never reads the
+  flag keeps the default action.
+- **`main`'s `run()` ending does not end the program** while a child's
+  `run()` still loops; the spec now says so, and SIGTERM is how such a
+  program is stopped.
+- **`hale test` exports `HALE_BIN`** (its own path, unless already
+  set) to each test, so a test that builds a program builds it with
+  the same toolchain.
 
 ### Operating practices, seeded beside the design (GH #994)
 

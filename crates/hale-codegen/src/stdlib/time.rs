@@ -707,6 +707,41 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 "sleep.more",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1039: a sleep returns early once the process drains, at
+        // the next slice boundary (<= 100 ms), so a `while
+        // !self.draining { ...; sleep(..) }` loop reaches its check.
+        // (An async_io sleep parks instead; the pool's expiry sweep
+        // resumes it on the drain.)
+        let more = if self.is_wasm {
+            more
+        } else {
+            let flag = self
+                .module
+                .get_global("lotus_process_draining_flag")
+                .expect("lotus_process_draining_flag declared");
+            let draining = self
+                .builder
+                .build_load(i64_t, flag.as_pointer_value(), "sleep.draining")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if let Some(inst) = draining.into_int_value().as_instruction() {
+                inst.set_alignment(8)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                inst.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            let calm = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    draining.into_int_value(),
+                    zero64,
+                    "sleep.calm",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_and(more, calm, "sleep.more.calm")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
         self.builder
             .build_conditional_branch(more, chunk_bb, done_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

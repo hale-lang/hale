@@ -219,6 +219,33 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_load(i64_t, dr_ptr, "draining.raw")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_int_value();
+        // GH #1039: a locus is also draining once the process is —
+        // the SIGINT / SIGTERM drain raises one runtime flag rather
+        // than walking every locus. A plain monotonic load, so a hot
+        // handler's `if !self.draining` stays a load, not a call.
+        // wasm has no signals and no such flag.
+        let raw = if self.is_wasm {
+            raw
+        } else {
+            self.reads_draining = true;
+            let flag = self
+                .module
+                .get_global("lotus_process_draining_flag")
+                .expect("lotus_process_draining_flag declared");
+            let proc_raw = self
+                .builder
+                .build_load(i64_t, flag.as_pointer_value(), "draining.process")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if let Some(inst) = proc_raw.into_int_value().as_instruction() {
+                inst.set_alignment(8)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                inst.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            self.builder
+                .build_or(raw, proc_raw.into_int_value(), "draining.any")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
         let zero = i64_t.const_int(0, false);
         let as_bool = self
             .builder

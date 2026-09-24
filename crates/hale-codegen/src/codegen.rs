@@ -1585,6 +1585,7 @@ pub fn build_executable_with_options(
             .map(|(segs, mangled)| (segs.clone(), mangled.clone()))
             .collect(),
         key_extractors: BTreeMap::new(),
+        reads_draining: false,
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
@@ -4593,6 +4594,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// payload to derive the routing key a listen binding never
     /// received — the same (key_lo, key_hi) the publish site computes.
     key_extractors: BTreeMap<String, inkwell::values::FunctionValue<'ctx>>,
+    /// GH #1039: set when any body lowers a `draining` read. The main
+    /// prelude installs the SIGINT / SIGTERM drain only for such a
+    /// program — one that cannot observe the drain keeps the default
+    /// signal action. Read at the END of `lower_program` (bodies may
+    /// lower after the prelude), through `lotus.reads_draining`.
+    pub(crate) reads_draining: bool,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -10657,6 +10664,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // GH #1039: SIGINT / SIGTERM begin the whole-process drain
+            // — for a program that reads `draining` anywhere. Which
+            // is known only once every body has lowered, so the
+            // argument is a private global whose initializer the end
+            // of `lower_program` writes.
+            {
+                let i64_t = self.context.i64_type();
+                let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
+                reads.set_linkage(inkwell::module::Linkage::Private);
+                reads.set_initializer(&i64_t.const_zero());
+                let observes = self
+                    .builder
+                    .build_load(i64_t, reads.as_pointer_value(), "drain.observes")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let install = self
+                    .module
+                    .get_function("lotus_drain_signals_install")
+                    .expect("lotus_drain_signals_install declared");
+                self.builder
+                    .build_call(install, &[observes.into()], "drain.install")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             let load_cfg_fn = self
                 .module
                 .get_function("lotus_bus_load_config")
@@ -10806,6 +10835,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
+        // GH #1039: every body has lowered — tell the prelude's drain
+        // install whether anything reads `draining`.
+        if let Some(reads) = self.module.get_global("lotus.reads_draining") {
+            let i64_t = self.context.i64_type();
+            reads.set_initializer(&i64_t.const_int(self.reads_draining as u64, false));
+        }
         Ok(())
     }
 

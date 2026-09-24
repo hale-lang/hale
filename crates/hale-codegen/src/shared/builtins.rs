@@ -2245,6 +2245,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // GH #1039: the whole-process drain. `self.draining` loads
+        // the runtime's exported flag; the main prelude installs the
+        // SIGINT / SIGTERM handling when the program reads it.
+        // declare void @lotus_drain_signals_install(i64 observes_drain)
+        let drain_install_ty = void_t.fn_type(&[i64_t.into()], false);
+        self.module.add_function(
+            "lotus_drain_signals_install",
+            drain_install_ty,
+            None,
+        );
+        // @lotus_process_draining_flag = external global i64
+        self.module
+            .add_global(i64_t, None, "lotus_process_draining_flag");
+
         // F.36 Slice 3 (2026-05-28): codec-binding registration.
         // declare void @lotus_bus_register_codec(ptr subject, ptr self,
         //   ptr encode_fn, ptr decode_fn)

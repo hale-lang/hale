@@ -7255,7 +7255,17 @@ fn run_one_test_file(f: &Path) -> TestOutcome {
     let (passed, message) = match compile_test_binary(f) {
         Err(diag) => (false, Some(diag)),
         Ok(bin) => {
-            let output = std::process::Command::new(&bin).output();
+            let mut cmd = std::process::Command::new(&bin);
+            // A test that builds a program (a child it signals, a
+            // tool it drives) builds it with THIS toolchain, not
+            // whichever `hale` PATH finds first; a caller's own
+            // HALE_BIN wins (GH #1039).
+            if std::env::var_os("HALE_BIN").is_none() {
+                if let Ok(me) = std::env::current_exe() {
+                    cmd.env("HALE_BIN", me);
+                }
+            }
+            let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
             match output {
                 Ok(out) => {

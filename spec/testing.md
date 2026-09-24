@@ -205,7 +205,11 @@ the same order; the exit status is the same. A test's stdout and
 stderr are captured with its own run, so one test's output never
 lands under another's line. The runner changes no process-wide
 state: every test binary starts in the cwd and with the environment
-`hale test` was started with. A test that shares a fixed resource
+`hale test` was started with — plus `HALE_BIN`, the path of the
+`hale` running the tests, when the caller did not set it, so a test
+that builds a program of its own (a child it signals, a tool it
+drives) builds it with the same toolchain (2026-09-24, GH #1039). A
+test that shares a fixed resource
 with another test — a port, a path, a record — is a test that races
 under the default; a fixture takes its port and scratch directory
 per run (2026-09-22, GH #1009; before it the files ran one after
