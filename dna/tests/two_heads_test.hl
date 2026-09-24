@@ -70,13 +70,16 @@ fn ledger_holding(app: String, head_dsn: String, needles: String, secs: Int) -> 
     let mut rows = "";
     while std::time::now() <= deadline {
         rows = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nrows").stdout;
+        // the asks' own rows: the organism's `intent.offered` names the text
+        // too, and can land before the spine admits the request
+        let asks = row_with_all(rows, "\"kind\": \"intent.requested\"");
         let mut all = true;
         let mut rest = needles + "\n";
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let n = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            if len(n) > 0 && !std::str::contains(rows, n) { all = false; }
+            if len(n) > 0 && !std::str::contains(asks, n) { all = false; }
         }
         if all { return rows; }
         std::time::sleep(200ms);
