@@ -27,7 +27,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     // offline: the Journal answers, and says the organism is not running
     let (ok, out) = hale(&["dna", "status"], &app);
     assert!(ok, "{out}");
-    assert!(out.contains("not running") && out.contains("chain verified") && out.contains("9 pending of 9") && out.contains("needs board"), "{out}");
+    assert!(out.contains("not running") && out.contains("chain verified") && out.contains("15 pending of 15") && out.contains("needs board"), "{out}");
     // GH #726: and which DNA source the toolchain it ran carries —
     // `vendor/dna` is that source, not the working tree's
     assert!(
@@ -97,7 +97,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
     assert!(settled, "review (maintainer): {out2}");
-    assert!(ok3 && out3.contains("running (membrane bound)") && out3.contains("8 pending of 9") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
+    assert!(ok3 && out3.contains("running (membrane bound)") && out3.contains("14 pending of 15") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
     assert!(ok4, "{out4}");
     let st: serde_json::Value = serde_json::from_str(&out4).expect("status --json is JSON");
     assert_eq!(st["journal"]["chain"], "verified");

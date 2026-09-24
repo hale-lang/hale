@@ -125,14 +125,14 @@ In another terminal:
 ```text
 $ hale dna status
 organism:   running (membrane bound)
-journal:    23 event(s), chain verified at 5f0c2e9a41d7
+journal:    35 event(s), chain verified at 5f0c2e9a41d7
 expression: attached Chat (shape 3c9b9327e480d349) · current shape 3c9b9327e480d349 · build 812f3c9bd9e4
 intents:    0 offered, 0 refused
 tasks:      none
-reviews:    9 pending of 9
+reviews:    15 pending of 15
   purpose [pending] needs board — ratify the declared purpose?
   k:79c636063701 [pending] needs board — ratify the design practice `design/principles`: …
-  … (eight, one per practice of the design)
+  … (fourteen: eight practices of the design, six operating practices)
 mutations:  0 (none applies before a human's verdict on the exact candidate)
 ```
 
@@ -155,8 +155,10 @@ Eight more Reviews wait beside it: the **design**, the toolchain's
 practices about how an organization like this one works — how it
 grows, when a position is justified, what the signals mean. Each is
 its own Review, because a Review pins one thing and settles with one
-answer; `hale dna review` lists them under one heading, and you can
-decide them one by one or all at once:
+answer; `hale dna review` lists them under one heading per family —
+`design`, how the organization is shaped, and `operating`, how the
+organism runs — and you can decide them one by one or a family at
+once:
 
 ```text
 $ hale dna review design approve --as riley

@@ -26,13 +26,32 @@ login named in `dna.github.board`. Its queue:
 
 ```text
 $ hale dna board
-board: 9 review(s) need your verdict
+board: 15 review(s) need your verdict
   purpose  ratify the declared purpose?
   k:79c636063701  ratify the design practice `design/principles`: Minimal structure: add a…
   … (the eight practices of the design, one Review each)
+  k:638e61e51c84  ratify the operating practice `operating/row-first`: every live signal…
+  … (the six operating practices, one Review each)
 leader: 1 review(s) inside the grant, being decided
 decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one
 ```
+
+The toolchain seeds two families of practice, and the Board decides
+each practice on its own. The design says how an organization is
+shaped. The operating practices say how the organism runs: what the
+Leader plans within, and what a reviewer cites.
+
+- `operating/one-store-per-step`: a step writes one store, by its one
+  writer; no distributed transaction anywhere.
+- `operating/row-first`: every live signal is a record row before it
+  is sent, consumed once by its id.
+- `operating/readings-never-act`: a reading from the senses never
+  acts; what matters becomes a pressure or concern row.
+- `operating/legs-hold-nothing`: a leg holds nothing between tasks.
+- `operating/deploy-settles-on-pulse`: a deploy settles on the heart's
+  own first event, or rolls back as a new step.
+- `operating/the-forge-decides`: what merges is decided at the forge,
+  by people, and comes back as one verdict row.
 
 **The Leader** holds a grant the Board wrote into `main.hl`:
 

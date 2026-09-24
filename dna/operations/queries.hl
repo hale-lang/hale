@@ -15,7 +15,7 @@ type ReviewRow {
     has_reasoned: Bool = false;
     mutation_id: String = "";
     is_mutation: Bool = false;
-    group: String = ""; // "design" for the toolchain's seeded practices (GH #596 C): listed together, decided one by one
+    group: String = ""; // "design" or "operating" for the toolchain's seeded practices (GH #596 C, #994): listed together by family, decided one by one
     change_class: String = "";
     seed: String = "";
     disposition: String = "";

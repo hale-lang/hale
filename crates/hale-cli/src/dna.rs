@@ -882,9 +882,12 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     } else {
         let n = seed_journal(&app.root, &app, &art, &raw, &purpose_digest)?;
         out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
-        // GH #596 C: the design, as proposals — one Review per practice
-        let (d, _, _) = design_upgrade(&app.root)?;
-        out.push(format!("seeded  design ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)"));
+        // GH #596 C, #994: the design and the operating practices, as
+        // proposals — one Review per practice, listed by family
+        for (family, practices) in SEEDED {
+            let (d, _, _) = design_upgrade(&app.root, practices)?;
+            out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
+        }
     }
     // 8. .gitignore hygiene
     let gi = app.root.join(".gitignore");
@@ -1006,12 +1009,14 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("note    {}/law.hl groups dna::KnowledgeClient; it is dna::MemoryKnowledge now", ORG_SEED));
     }
     if record_exists(&root)? {
-        let (proposed, superseded, waiting) = design_upgrade(&root)?;
-        if proposed > 0 {
-            out.push(format!("design  {proposed} practice(s) proposed ({superseded} superseding an earlier version); the Board decides each: `hale dna review`"));
-        }
-        if waiting > 0 {
-            out.push(format!("design  {waiting} practice(s) changed but wait: an earlier replacement is still before the Board (decide it, then `upgrade` again)"));
+        for (family, practices) in SEEDED {
+            let (proposed, superseded, waiting) = design_upgrade(&root, practices)?;
+            if proposed > 0 {
+                out.push(format!("{family}  {proposed} practice(s) proposed ({superseded} superseding an earlier version); the Board decides each: `hale dna review`"));
+            }
+            if waiting > 0 {
+                out.push(format!("{family}  {waiting} practice(s) changed but wait: an earlier replacement is still before the Board (decide it, then `upgrade` again)"));
+            }
         }
     }
     // GH #985: with the owner's DSN given, memory's schema moves to this
@@ -1932,17 +1937,18 @@ fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
 }
 
-/// The toolchain's design, proposed where the record does not hold its
-/// current text (all of it at `init`; what changed at `upgrade`): the
+/// One seeded family, proposed where the record does not hold its current
+/// text (all of it at `init`; what changed, or a family the record has
+/// never seen, at `upgrade`): the
 /// practices handed to the host as a file, the host deciding against
 /// the record. Returns (proposed, of which superseding, waiting on a
 /// pending Review).
-fn design_upgrade(root: &Path) -> Result<(usize, usize, usize), String> {
+fn design_upgrade(root: &Path, family: &[SeededPractice]) -> Result<(usize, usize, usize), String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
     let path = dna_dir.join(format!("design.{}.jsonl", std::process::id()));
     let mut text = String::new();
-    for p in DESIGN {
+    for p in family {
         text.push_str(&serde_json::json!({"name": p.name, "text": design_text(p)}).to_string());
         text.push('\n');
     }
@@ -2017,9 +2023,10 @@ fn charter() -> String {{
     )
 }
 
-/// One seeded practice of the design: a stable name across versions of
-/// the toolchain, and the text the Board ratifies or declines.
-struct DesignPractice {
+/// One seeded practice (a `design/*` or `operating/*` family): a stable
+/// name across versions of the toolchain, and the text the Board
+/// ratifies or declines.
+struct SeededPractice {
     name: &'static str,
     text: &'static str,
 }
@@ -2027,23 +2034,40 @@ struct DesignPractice {
 /// The design: how a DNA organization works, as practices bound to
 /// `org` — brained's structural knowledge adapted to DNA. Proposed at
 /// `init`, one Board Review each; never ratified by the toolchain.
-const DESIGN: &[DesignPractice] = &[
-    DesignPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it." },
-    DesignPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history." },
-    DesignPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes." },
-    DesignPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect." },
-    DesignPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean." },
-    DesignPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored." },
-    DesignPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity." },
-    DesignPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic." },
+const DESIGN: &[SeededPractice] = &[
+    SeededPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it." },
+    SeededPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history." },
+    SeededPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes." },
+    SeededPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect." },
+    SeededPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean." },
+    SeededPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored." },
+    SeededPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity." },
+    SeededPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic." },
 ];
 
+/// The operating practices (GH #994): how the organism runs, which is what
+/// a leader plans within and a reviewer cites — the design says how an
+/// organization is shaped. Seeded beside the design, one Board Review
+/// each, superseded on `upgrade` the same way; never ratified by the
+/// toolchain.
+const OPERATING: &[SeededPractice] = &[
+    SeededPractice { name: "operating/one-store-per-step", text: "a workflow step writes to exactly one store, by that store's one writer, and the next step reads what the previous one made durable. The record numbers the steps. A step whose subject moved is refused and asked again on the new subject; nothing is half-written. There is no distributed transaction anywhere, and a plan that needs one is wrong." },
+    SeededPractice { name: "operating/row-first", text: "every live signal is a record row before it is sent. An event names a row by id, is delivered at least once, and is consumed idempotently by that id. A message never admits anything. An event from outside (the heart) is a signal, not a fact: it becomes a row before anything acts on it." },
+    SeededPractice { name: "operating/readings-never-act", text: "a reading from the senses never acts. It is kept for a window; what matters crosses into the record as a pressure or concern row, and that row is what a workflow answers to. The organism never believes the heart is healthy without the heart's own pulse." },
+    SeededPractice { name: "operating/legs-hold-nothing", text: "a leg holds nothing between tasks. The hat is read per task, the credential fetched per task, the result settled per task. A leg that remembers is a bug, and a leg that cannot settle within its lease is a violation its owner records." },
+    SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record." },
+    SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism." },
+];
+
+/// Every seeded family, by the name the Board lists it under.
+const SEEDED: &[(&str, &[SeededPractice])] = &[("design", DESIGN), ("operating", OPERATING)];
+
 /// A practice's text as this toolchain states it. `HALE_DNA_DESIGN_SUFFIX`
-/// appends to every practice, for fixtures only: it is how a test makes
+/// appends to every practice of every family, for fixtures only: it is how a test makes
 /// "a later toolchain whose text changed" out of the one binary it has,
 /// so that `upgrade`'s supersession is exercised against real record
 /// history rather than described.
-fn design_text(p: &DesignPractice) -> String {
+fn design_text(p: &SeededPractice) -> String {
     match std::env::var("HALE_DNA_DESIGN_SUFFIX") {
         Ok(s) if !s.is_empty() => format!("{}{s}", p.text),
         _ => p.text.to_string(),

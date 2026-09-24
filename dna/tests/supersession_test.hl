@@ -4,7 +4,8 @@
 // first approved retires it, and ratifying the second would leave the
 // first in force beside it, never retired. The second is refused in
 // the record with what retired its predecessor, and a replacement of
-// the version that IS active goes through.
+// the version that IS active goes through. The operating family (GH
+// #994) follows the same rule, independently of the design.
 
 import "../core" as dna;
 
@@ -74,6 +75,16 @@ main locus App {
         self.approve(e2);
         std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 3, "E' ratified");
         std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, d, "and D retired: one version in force");
+        // GH #994: the operating family supersedes the same way, and its
+        // retirements are its own — the design practice stays in force
+        let o1 = self.dna.propose_knowledge(dna::Idea { id: "o1", kind: "practice", name: "operating/row-first", text: "every live signal is a record row before it is sent", author: "org" }, "org");
+        self.approve(o1);
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 4, "O1 ratified");
+        let o2 = self.dna.propose_knowledge(dna::Idea { id: "o2", kind: "practice", name: "operating/row-first", text: "every live signal is a record row before it is sent, and consumed once by its id", author: "org", supersedes: o1 }, "org");
+        self.approve(o2);
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 5, "O2 ratified");
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.retired"), 3, "one more retirement");
+        std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, o1, "and it was O1, not the design's E'");
         dna::scratch_done(repo);
     }
 }

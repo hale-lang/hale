@@ -2628,9 +2628,10 @@ The live half is memory's, projected from the record by the spine
   and the ids — what is handed over, never the revision, which varies
   between runs and would make a tape unable to answer the same request
   twice) waits, bounded at 20 s (`PACKAGE_WAIT_SECS`), for the
-  projection to reach the record's head, and otherwise refuses: `memory's
-  projection is at row <n> of the record's <m>; the spine applies it on
-  its tick`. The organization's knowledge package is read from memory
+  projection to pass the record's last row that changes a package (an
+  idea ratified or retired, a binding made or undone), and otherwise
+  refuses: `memory's projection is at row <n>, before the record's
+  knowledge row <m>; the spine applies it on its tick`. The organization's knowledge package is read from memory
   under the spine role. The API reads the graph under the head's role
   (**The API**, below).
 - **The design, as proposals (GH #596 C).** `init` seeds the
@@ -2665,6 +2666,19 @@ The live half is memory's, projected from the record by the spine
   what is active now. The projection
   retires an idea by marking it not accepted: it leaves every package
   and stays readable by digest.
+- **The operating practices, as proposals (GH #994).** Beside the
+  design, `init` seeds a second family, `operating/<slug>`: how the
+  organism runs, which is what a leader plans within and a reviewer
+  cites, where the design says how an organization is shaped — one
+  store per step, row first, readings never act, legs hold nothing,
+  deploy settles on pulse, the forge decides. Each is one paragraph,
+  a rule a person applies. The family is seeded, listed (grouped
+  `operating`; `hale dna review operating approve|reject`), decided and
+  superseded exactly as the design, and `upgrade` seeds it into an
+  organization whose record never held it. Its receipts carry
+  provenance `design`, which marks a toolchain-seeded practice of
+  either family; `HALE_DNA_DESIGN_SUFFIX` (fixtures only) appends to
+  every practice of both.
 - **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
   function returning text like `purpose`: the leader's brief, saying
   that it is the organism's architect — it proposes, the Board
