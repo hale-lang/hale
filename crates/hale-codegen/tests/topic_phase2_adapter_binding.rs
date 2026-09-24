@@ -315,3 +315,182 @@ fn codec_on_adapter_binding_encodes_published_value() {
         stdout
     );
 }
+
+/// GH #1034: build `consumer_src` against one imported library seed
+/// (`import "../lib" as lib;`), replicating the CLI's flow: mangle the
+/// library, merge it, and collapse the consumer's qualified paths
+/// through the per-build rename table (`apply_qualified_path_renames`,
+/// which is where a joined `alias::Name` binding ident resolves).
+fn build_with_lib(
+    name: &str,
+    lib_src: &str,
+    consumer_src: &str,
+) -> Result<std::path::PathBuf, hale_codegen::CodegenError> {
+    use hale_codegen::mangle;
+    let alias = "lib";
+    let mut lib_prog = hale_syntax::parse_source(lib_src).expect("parse lib");
+    let seed_renames = {
+        let stems: Vec<(String, &hale_syntax::ast::Program)> =
+            vec![("wire".to_string(), &lib_prog)];
+        mangle::build_seed_renames(&stems, alias)
+    };
+    let renames: Vec<(Vec<String>, String)> = seed_renames
+        .iter()
+        .map(|(n, m)| (vec![alias.to_string(), n.clone()], m.clone()))
+        .collect();
+    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
+    let mut consumer =
+        hale_syntax::parse_source(consumer_src).expect("parse consumer");
+    consumer.imports.clear();
+    consumer.items.extend(lib_prog.items);
+    mangle::apply_qualified_path_renames(&mut consumer, &renames);
+    let bin = harness::unique_bin(&format!(
+        "hale_adapter_binding_{}_{}",
+        name,
+        std::process::id()
+    ));
+    hale_codegen::build_executable_with_imports(&consumer, &bin, &renames)?;
+    Ok(bin)
+}
+
+fn run_bin(bin: &std::path::Path) -> (String, std::process::ExitStatus) {
+    let out = Command::new(bin).output().expect("run");
+    let _ = std::fs::remove_file(bin);
+    (String::from_utf8_lossy(&out.stdout).to_string(), out.status)
+}
+
+const TAP_ADAPTER: &str = r#"
+    locus Tap {
+        params { label: String = "noname"; }
+        fn send(subject: String, bytes: Bytes) {
+            println("tap[" + self.label + "] subject=" + subject);
+        }
+    }
+"#;
+
+#[test]
+fn adapter_named_through_an_import_alias_binds_like_a_local_one() {
+    // GH #1034: `bindings { T: lib::Tap { ... }; }` was a parse error
+    // ("unknown transport constructor `lib`"), so a library could not
+    // ship the adapter its topics are built around. The qualified
+    // binding must behave exactly as the same adapter declared in the
+    // program's own seed.
+    let lib_src = format!(
+        "type Tick {{ n: Int = 0; }}\n{TAP_ADAPTER}"
+    );
+    let consumer = |adapter: &str| {
+        format!(
+            r#"
+            import "../lib" as lib;
+            topic Beat {{ payload: lib::Tick; subject: "beat"; }}
+
+            locus Producer {{
+                bus {{ publish Beat; }}
+                birth() {{
+                    Beat <- lib::Tick {{ n: 1 }};
+                    Beat <- lib::Tick {{ n: 2 }};
+                }}
+            }}
+
+            main locus App {{
+                bindings {{ Beat: {adapter} {{ label: "T" }}; }}
+            }}
+
+            fn main() {{
+                App {{ }};
+                Producer {{ }};
+            }}
+            "#
+        )
+    };
+    let qualified = build_with_lib("alias_adapter", &lib_src, &consumer("lib::Tap"))
+        .expect("build with the adapter named through the alias");
+    let (q_stdout, q_status) = run_bin(&qualified);
+    assert!(q_status.success(), "non-zero: {:?}; stdout: {:?}", q_status, q_stdout);
+
+    let local_src = format!("{}\n{TAP_ADAPTER}", consumer("Tap"));
+    let local = build_with_lib("local_adapter", "type Tick { n: Int = 0; }", &local_src)
+        .expect("build with the adapter declared locally");
+    let (l_stdout, l_status) = run_bin(&local);
+    assert!(l_status.success(), "non-zero: {:?}; stdout: {:?}", l_status, l_stdout);
+
+    assert_eq!(
+        q_stdout.lines().filter(|l| *l == "tap[T] subject=beat").count(),
+        2,
+        "the aliased adapter's send must fire per publish; stdout: {:?}",
+        q_stdout
+    );
+    assert_eq!(q_stdout, l_stdout, "aliased and local adapters must agree");
+}
+
+#[test]
+fn adapter_and_codec_named_through_an_import_alias_run() {
+    // GH #1034, the codec clause: `codec(lib::JsonCodec { })` was a
+    // parse error ("expected {, got ColonColon"). The issue's whole
+    // shape — a library that ships both the adapter and the codec its
+    // topic is built around, bound through the import alias — must
+    // run: every publish reaches the library's adapter as the bytes
+    // the library's codec encoded, and a relay back through
+    // `__local_dispatch` decodes through the same codec.
+    let lib_src = r#"
+        type Tick { n: Int = 0; }
+        type EncErr { kind: String = ""; }
+        type DecErr { kind: String = ""; }
+        locus JsonCodec {
+            fn encode(v: Tick) -> Bytes fallible(EncErr) {
+                return std::bytes::from_string("{\"n\":" + to_string(v.n) + "}");
+            }
+            fn decode(b: Bytes) -> Tick fallible(DecErr) {
+                return Tick { n: std::json::find_int_field(std::str::from_bytes(b), "n") };
+            }
+        }
+        locus Relay {
+            fn send(subject: String, bytes: Bytes) {
+                println("wire " + std::str::from_bytes(bytes));
+                std::bus::__local_dispatch(subject, bytes);
+            }
+        }
+    "#;
+    let consumer = r#"
+        import "../lib" as lib;
+        topic Beat { payload: lib::Tick; subject: "beat"; }
+
+        locus Listener {
+            bus { subscribe Beat as on_beat; }
+            fn on_beat(t: lib::Tick) { println("heard " + to_string(t.n)); }
+        }
+
+        locus Producer {
+            bus { publish Beat; }
+            birth() {
+                Beat <- lib::Tick { n: 1 };
+                Beat <- lib::Tick { n: 2 };
+            }
+        }
+
+        main locus App {
+            bindings { Beat: lib::Relay { } codec(lib::JsonCodec { }); }
+        }
+
+        fn main() {
+            App { };
+            Listener { };
+            Producer { };
+        }
+    "#;
+    let bin = build_with_lib("alias_codec", lib_src, consumer)
+        .expect("build with the adapter and codec named through the alias");
+    let (stdout, status) = run_bin(&bin);
+    assert!(status.success(), "non-zero: {:?}; stdout: {:?}", status, stdout);
+    let wire: Vec<&str> = stdout.lines().filter(|l| l.starts_with("wire ")).collect();
+    assert_eq!(
+        wire,
+        vec![r#"wire {"n":1}"#, r#"wire {"n":2}"#],
+        "the library's adapter receives the library's codec's bytes; stdout: {:?}",
+        stdout
+    );
+    // Local publish + codec-decoded relay for each tick.
+    let heard = |n: &str| stdout.lines().filter(|l| *l == n).count();
+    assert_eq!(heard("heard 1"), 2, "stdout: {:?}", stdout);
+    assert_eq!(heard("heard 2"), 2, "stdout: {:?}", stdout);
+}

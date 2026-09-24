@@ -3702,15 +3702,7 @@ impl Parser {
             // against publish/subscribe ends compares like with
             // like. Codegen resolves the joined name to the mangled
             // decl exactly as it does for qualified bus subjects.
-            let mut topic = self.expect_ident("topic name")?;
-            while matches!(self.peek(), TokenKind::ColonColon) {
-                self.bump();
-                let seg = self.expect_ident("topic name")?;
-                topic = Ident {
-                    name: format!("{}::{}", topic.name, seg.name),
-                    span: topic.span.merge(seg.span),
-                };
-            }
+            let topic = self.expect_joined_path("topic name")?;
             self.expect(TokenKind::Colon, ":")?;
             let transport = self.parse_transport_spec()?;
             // F.36 Slice 2: optional codec(L { ... }) clause
@@ -3733,6 +3725,23 @@ impl Parser {
         })
     }
 
+    /// A name in `bindings { }` that may be QUALIFIED through an
+    /// import alias — `alias::Name`. Kept as one `Ident` whose name
+    /// is the path joined by `::` (GH #527 B6); the cross-seed
+    /// rename pass collapses it to the mangled declaration.
+    fn expect_joined_path(&mut self, ctx: &str) -> Result<Ident, Diag> {
+        let mut id = self.expect_ident(ctx)?;
+        while matches!(self.peek(), TokenKind::ColonColon) {
+            self.bump();
+            let seg = self.expect_ident(ctx)?;
+            id = Ident {
+                name: format!("{}::{}", id.name, seg.name),
+                span: id.span.merge(seg.span),
+            };
+        }
+        Ok(id)
+    }
+
     /// F.36 Slice 2: `codec(LocusName { init1: val1, ... })` —
     /// pluggable codec instance on the binding. `codec` is a
     /// contextual ident keyword recognized only in binding-entry
@@ -3745,7 +3754,9 @@ impl Parser {
         };
         self.bump(); // consume `codec`
         self.expect(TokenKind::LParen, "(")?;
-        let locus = self.expect_ident("codec locus name")?;
+        // GH #1034: a codec a library ships is named through the
+        // import alias, `codec(lib::JsonCodec { })`.
+        let locus = self.expect_joined_path("codec locus name")?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut inits = Vec::new();
         if !self.at(&TokenKind::RBrace) {
@@ -4411,10 +4422,23 @@ impl Parser {
             }
         };
         self.bump();
+        // GH #1034: an adapter a library ships is named through the
+        // import alias, `alias::Adapter { ... }` — joined into one
+        // name exactly as a qualified binding topic is (GH #527 B6).
+        // The case rule below reads the LAST segment.
+        let mut head_name = head_name;
+        let mut head_span = head_tok.span;
+        while matches!(self.peek(), TokenKind::ColonColon) {
+            self.bump();
+            let seg = self.expect_ident("adapter locus name")?;
+            head_name = format!("{}::{}", head_name, seg.name);
+            head_span = head_span.merge(seg.span);
+        }
+        let last_seg = head_name.rsplit("::").next().unwrap_or(&head_name);
         // Wave B: a capitalized head is an adapter locus literal.
         // unix is the only lowercase keyword; everything else
         // capitalized routes to the Adapter branch.
-        if head_name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+        if last_seg.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
             let lb = self.expect(TokenKind::LBrace, "{")?;
             let mut inits = Vec::new();
             if !self.at(&TokenKind::RBrace) {
@@ -4431,10 +4455,10 @@ impl Parser {
             return Ok(TransportSpec::Adapter {
                 locus: Ident {
                     name: head_name,
-                    span: head_tok.span,
+                    span: head_span,
                 },
                 inits,
-                span: head_tok.span.merge(close.span),
+                span: head_span.merge(close.span),
             });
         }
         match head_name.as_str() {
@@ -9363,6 +9387,61 @@ main locus App {
             .map(|sc| sc.kind)
             .collect();
         assert_eq!(cs, vec![BindingConstraint::CrossMachine]);
+    }
+
+    #[test]
+    fn parse_binding_adapter_and_codec_through_an_import_alias() {
+        // GH #1034: a library ships its adapter and codec, and the
+        // importer names both through the alias. Each keeps the
+        // joined-path `Ident` shape a qualified topic has (#527 B6).
+        let src = r#"
+import "../nats" as nats;
+main locus App {
+    bindings {
+        nats::Evt: nats::NatsAdapter { url: "nats://x" } codec(nats::Json { }) where cross_machine;
+    }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let bb = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => l.members.iter().find_map(|m| match m {
+                    LocusMember::Bindings(b) => Some(b),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("bindings block");
+        let entry = &bb.entries[0];
+        assert_eq!(entry.topic.name, "nats::Evt");
+        match &entry.transport {
+            TransportSpec::Adapter { locus, inits, .. } => {
+                assert_eq!(locus.name, "nats::NatsAdapter");
+                assert_eq!(inits.len(), 1);
+            }
+            other => panic!("expected an adapter transport, got {other:?}"),
+        }
+        assert_eq!(entry.codec.as_ref().expect("codec").locus.name, "nats::Json");
+        assert_eq!(entry.constraints.len(), 1);
+    }
+
+    #[test]
+    fn parse_binding_lowercase_qualified_head_is_not_an_adapter() {
+        // The case rule reads the LAST segment: `nats::connect(...)`
+        // is neither an adapter literal nor a transport constructor.
+        let src = r#"
+main locus App {
+    bindings { Evt: nats::connect { }; }
+}
+"#;
+        let err = parse_str(src).expect_err("expected parse error");
+        assert!(
+            err.iter().any(|d| d.message.contains("unknown transport constructor `nats::connect`")),
+            "got: {:?}",
+            err
+        );
     }
 
     #[test]

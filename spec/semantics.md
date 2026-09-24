@@ -1600,6 +1600,11 @@ Transport surface:
   timeouts, point-to-point role for p2p shapes). The grammar
   distinguishes substrate vs adapter by the head's case
   (lowercase keyword `unix` vs capitalized locus name).
+  An adapter declared by an imported library is named through
+  the import alias, `alias::Adapter { ... }`, and binds exactly
+  as one declared in the program's own seed; the case rule reads
+  the last segment. The same holds for a `codec(alias::Codec {
+  ... })` clause (GH #1034).
   Inbound dispatch from an adapter into the local handler set is
   handled by `std::bus::__local_dispatch(subject, bytes)` (m105):
   it reconstructs the payload against the subject's registered
