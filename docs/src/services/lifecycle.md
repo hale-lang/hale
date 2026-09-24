@@ -432,15 +432,22 @@ locus Poller {
 
 A long-lived loop — a broker connection, a websocket client, a
 pinned receive loop — writes its condition as `!self.draining`, and
-that is all it takes to shut down properly. A `run()` that never
-checks the flag cannot be stopped this way; the runtime gives the
-drain five seconds (`LOTUS_DRAIN_GRACE_MS`) and then ends the process
-with the signal's usual status, and a second Ctrl-C ends it at once.
+that is all it takes to shut down properly. Only a wait that was
+already running when the signal came is cut short; a `sleep` in your
+`drain()` or `dissolve()` that paces a final flush gets its full
+time. A `run()` that never checks the flag cannot be stopped this
+way; the runtime gives the drain five seconds (`LOTUS_DRAIN_GRACE_MS`)
+and then lets the signal end the process as it normally would, and a
+second Ctrl-C ends it at once. Under `hale run` the same holds:
+`hale` waits for the drain instead of dying first, and passes a
+SIGTERM sent to it on to the program.
 
 A program's life is the life of its `run()`s, not just `main`'s:
-if `main`'s `run()` returns while a child's loop is still going, the
-process keeps running until that loop ends — which is how a server
-stays up — and SIGTERM is how you end it.
+if `main`'s `run()` returns while a pinned (or cooperative) child's
+loop is still going, the process keeps running until that loop ends
+— which is how a server stays up — and SIGTERM is how you end it. A
+child on an `async_io` pool is different: when `main`'s `run()` ends,
+its pool shuts down and a `run()` parked there is abandoned.
 
 The lifecycle is the skeleton of every long-running Hale program.
 Next, the thing those programs use to talk to each other: [The

@@ -3551,13 +3551,15 @@ SIGINT or SIGTERM:
 
 1. The runtime raises the process drain. From then on every
    locus's `self.draining` reads `true`, on every thread.
-2. Timed waits return early so a loop reaches its check: a
-   `std::time::sleep` returns at its next 100 ms slice (at once,
-   on an `async_io` pool), and a deadline-bounded park on an
-   `async_io` pool — a `recv` with a timeout — reports its
-   timeout. A receive blocked in the kernel on a pinned or
-   classic thread returns at its own timeout, not earlier; an
-   untimed wait (a plain `accept`) is not interrupted.
+2. Timed waits **already in progress** return early so a loop
+   reaches its check: such a `std::time::sleep` returns at its next
+   100 ms slice (at once, on an `async_io` pool), and a
+   deadline-bounded park on an `async_io` pool — a `recv` with a
+   timeout — reports its timeout. A wait begun after the drain — a
+   `drain()` or `dissolve()` body pacing a flush — runs its full
+   length. A receive blocked in the kernel on a pinned or classic
+   thread returns at its own timeout, not earlier; an untimed wait
+   (a plain `accept`) is not interrupted.
 3. Each `run()` that watches `self.draining` returns; one that
    does not keeps running.
 4. Leaves dissolve first, each parent after its children, the
@@ -3568,10 +3570,12 @@ SIGINT or SIGTERM:
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
-prints one line naming the signal and exits with `128 + signal` —
-the status the signal's default action gives — so a `run()` that
+prints one line naming the signal, restores the signal's default
+action and re-raises it — the process dies BY the signal, as it
+would with no runtime at all (a waiting parent sees it killed by
+that signal; a shell reports `128 + signal`) — so a `run()` that
 never reads `self.draining` cannot keep a stopped program alive. A
-**second** SIGINT / SIGTERM exits the same way at once.
+**second** SIGINT / SIGTERM ends the process the same way at once.
 
 The handling is installed only in a program that reads
 `draining` somewhere. A program that cannot observe a drain keeps
@@ -3582,14 +3586,24 @@ disposition. (GH #1039: before 2026-09-24 the runtime caught
 neither signal, so every program ended at the signal and a
 `while !self.draining` loop never saw a drain.)
 
-**When `main`'s `run()` ends first.** The program's end is the end
-of every `run()`, not of `main`'s: a `main` locus whose `run()`
-returns while a child's `run()` still loops — a pinned receive loop,
-a server — keeps the process alive until that `run()` returns, as a
-server whose `main` has no `run()` at all stays up. Ending such a
+**When `main`'s `run()` ends first.** A `main` locus whose `run()`
+returns while a child's `run()` still loops keeps the process alive
+until that `run()` returns — when the child is pinned or on a
+classic cooperative pool (`main`'s own included): a pinned receive
+loop, a server whose `main` has no `run()` at all. Ending such a
 program is what SIGINT / SIGTERM are for; the drain reaches the
 child the same way whether `main`'s `run()` is still running or has
-returned.
+returned. An **`async_io`** child is the exception: its `run()`
+parked on a timer or an fd when `main`'s `run()` ends does not keep
+the process alive — the pool shuts down, the parked coroutine is
+abandoned (`runtime.md` § the wakeable park) without seeing a drain,
+and the child dissolves with the rest of the tree.
+
+**Under `hale run`.** `hale run` stands aside for the program's
+drain: it ignores SIGINT (a terminal's Ctrl-C reaches the program
+through the process group) and forwards a SIGTERM sent to its own
+pid, then reports how the program ended (`projects.md` § "What `hale
+run` starts, `hale run` ends").
 
 ## Closure-failure cascade
 

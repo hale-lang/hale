@@ -15,7 +15,8 @@
 // otherwise stays in until it is stopped. The fixture builds it with
 // the toolchain running the test (`HALE_BIN`, which `hale test`
 // exports), waits for main's `run()` to end, sends SIGTERM, and
-// waits — bounded — for the exit.
+// waits — bounded — for the exit. Then the same through `hale run`,
+// signalling `hale` rather than the program.
 
 fn child_source() -> String {
     return "locus Loop {\n"
@@ -50,10 +51,11 @@ locus Proc {
         return self.child.pid > 0;
     }
 
-    // Collect stdout until `needle` shows up, for at most ~5s.
+    // Collect stdout until `needle` shows up, for at most ~20s (a
+    // `hale run` child compiles first).
     fn wait_for(needle: String) -> Bool {
         let mut i = 0;
-        while i < 250 {
+        while i < 1000 {
             self.out = self.out + (std::process::read_stdout(self.child) or "");
             if std::str::contains(self.out, needle) {
                 return true;
@@ -69,10 +71,10 @@ locus Proc {
     }
 
     // The exit code once the child has exited (-1 = killed by a
-    // signal), or -2 if it is still running after ~5s.
+    // signal), or -2 if it is still running after ~10s.
     fn exit_code() -> Int {
         let mut i = 0;
-        while i < 250 {
+        while i < 500 {
             let code = std::process::try_wait(self.child) or - 3;
             if code != -2 {
                 self.out = self.out + (std::process::read_stdout(self.child) or "");
@@ -108,6 +110,19 @@ fn main() {
         "the pinned loop saw self.draining: " + p.out);
     std::test::assert(std::str::contains(p.out, "child dissolve"),
         "the pinned child dissolved: " + p.out);
+
+    // `hale run` stands aside: a SIGTERM aimed at `hale`'s own pid is
+    // forwarded to the program, which drains, and `hale` reports the
+    // program's clean exit rather than dying first.
+    let r = Proc { };
+    std::test::assert(r.start(hale + "\nrun\n" + src), "hale run started");
+    std::test::assert(r.wait_for("app run ends"),
+        "under hale run, main's run() ended while the pinned loop runs: " + r.out);
+    r.term();
+    let run_code = r.exit_code();
+    std::test::assert_eq_int(run_code, 0, "hale run forwards SIGTERM and reports the drain: " + r.out);
+    std::test::assert(std::str::contains(r.out, "child dissolve"),
+        "under hale run, the pinned child dissolved: " + r.out);
 
     std::io::fs::unlink(src) or discard;
     std::io::fs::unlink(bin) or discard;

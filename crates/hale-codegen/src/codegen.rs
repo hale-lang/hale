@@ -34455,6 +34455,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// GH #1039: a monotonic load of the runtime's exported
+    /// `lotus_process_draining_flag` (non-zero once SIGINT / SIGTERM
+    /// began the whole-process drain). A plain load, not a call, so a
+    /// `self.draining` read in a hot handler stays one instruction.
+    /// Native targets only — wasm has no signals and no such flag.
+    pub(crate) fn emit_process_draining_load(
+        &mut self,
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let flag = self
+            .module
+            .get_global("lotus_process_draining_flag")
+            .expect("lotus_process_draining_flag declared");
+        let v = self
+            .builder
+            .build_load(i64_t, flag.as_pointer_value(), name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        if let Some(inst) = v.as_instruction() {
+            inst.set_alignment(8)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            inst.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(v)
+    }
+
     /// Bus-arena reclaim (2026-05-21): open a per-method-call
     /// scratch subregion of `self.__arena` and stash it in a fn-
     /// local alloca. Sets `current_method_scratch` so subsequent

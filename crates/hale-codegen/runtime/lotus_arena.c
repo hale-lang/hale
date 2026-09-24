@@ -7675,6 +7675,11 @@ typedef struct lotus_coro {
      * sentinel only on GENUINE deadline expiry. */
     int64_t           park_deadline_ns;
     int               park_timed_out;
+    /* GH #1039: 1 when this timed park began before the process
+     * drain did. The drain expires only such parks — a wait already
+     * in progress — never one a `drain()` / `dissolve()` body starts
+     * afterwards to pace a flush. */
+    int               park_pre_drain;
     /* Handler invocation parameters captured at coro creation. The
      * thunk reads them after swapcontext and tail-calls the handler. */
     void             *handler;
@@ -8518,6 +8523,7 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->done        = 0;
     c->park_deadline_ns = 0;
     c->park_timed_out   = 0;
+    c->park_pre_drain   = 0;
     c->handler     = cell->handler;
     c->self_ptr    = cell->self_ptr;
     /* Payload ownership is taken only once this slot is certain to run
@@ -8640,6 +8646,7 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     c->parked_fd        = fd;
     c->park_deadline_ns = deadline_ns;
     c->park_timed_out   = 0;
+    c->park_pre_drain   = !lotus_process_draining();
     /* Link onto parked head — single-threaded access (only the
      * worker touches this list), no lock needed. */
     c->next = p->parked_head;
@@ -8692,6 +8699,7 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     c->parked_fd        = -1;
     c->park_deadline_ns = lotus_now_mono_ns() + ns;
     c->park_timed_out   = 0;
+    c->park_pre_drain   = !lotus_process_draining();
     c->next = p->parked_head;
     p->parked_head = c;
     /* Same caller-arena snapshot discipline as the fd park: the
@@ -9142,17 +9150,23 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * sub-ms remainder doesn't busy-spin at timeout 0. */
         if (timeout_ms != 0) {
             int64_t min_deadline = 0;
+            int drain_due = 0;
+            int draining_now = lotus_process_draining();
             for (lotus_coro_t *dc = p->parked_head; dc; dc = dc->next) {
                 if (dc->park_deadline_ns > 0
                     && (min_deadline == 0
                         || dc->park_deadline_ns < min_deadline)) {
                     min_deadline = dc->park_deadline_ns;
                 }
+                if (draining_now && dc->park_deadline_ns > 0
+                    && dc->park_pre_drain) {
+                    drain_due = 1;
+                }
             }
-            /* GH #1039: once the process drains, every timed park is
-             * due — don't sleep toward a deadline the sweep below
+            /* GH #1039: a timed park that began before the drain is
+             * due now — don't sleep toward a deadline the sweep below
              * will treat as passed. */
-            if (min_deadline > 0 && lotus_process_draining()) {
+            if (drain_due) {
                 timeout_ms = 0;
             } else if (min_deadline > 0) {
                 int64_t rem = min_deadline - lotus_now_mono_ns();
@@ -9227,17 +9241,20 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * re-parked (mutating the list) before yielding back. */
         for (;;) {
             int64_t now = lotus_now_mono_ns();
-            /* GH #1039: a drain expires every TIMED park at once — a
-             * `sleep` returns and a deadline-bounded recv reports its
-             * timeout, so a `while !self.draining` loop gets to its
-             * check. An untimed park (a plain accept) stays parked. */
+            /* GH #1039: the drain expires every TIMED park that was
+             * already in progress when it began — a `sleep` returns
+             * and a deadline-bounded recv reports its timeout, so a
+             * `while !self.draining` loop gets to its check. A park
+             * begun after the drain (a flush's pacing) runs its full
+             * length; an untimed park (a plain accept) stays parked. */
             int draining = lotus_process_draining();
             lotus_coro_t *expired = NULL;
             lotus_coro_t **epp = &p->parked_head;
             while (*epp) {
                 lotus_coro_t *ec = *epp;
                 if (ec->park_deadline_ns > 0
-                    && (draining || now >= ec->park_deadline_ns)) {
+                    && ((draining && ec->park_pre_drain)
+                        || now >= ec->park_deadline_ns)) {
                     *epp = ec->next;
                     expired = ec;
                     break;
@@ -9344,9 +9361,10 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
  * out their epoll timeout), then waits out the drain's grace period.
  * A program that ends inside it exits the ordinary way, 0. One that
  * does not — a `run()` that never reads `self.draining` — is ended
- * by the watcher with the status the signal's default action gives
- * (128 + signal), so SIGTERM still stops every program. A second
- * signal ends the process at once, the same way.
+ * by the watcher through the signal's own default action (restored,
+ * then re-raised — the process dies BY the signal, so SIGTERM still
+ * stops every program and its parent sees why). A second signal ends
+ * the process at once, the same way.
  *
  * Signals are caught, not blocked: a blocked mask is inherited
  * across fork/exec, so every subprocess the program spawned would
@@ -9360,8 +9378,27 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
 static int g_drain_pipe[2] = {-1, -1};
 static volatile sig_atomic_t g_drain_signal = 0;
 
+/* End the process the way `sig`'s default action would, so a waiting
+ * parent sees it killed BY the signal (a shell reports 128 + sig),
+ * not an exit that merely spells the number. Async-signal-safe: a
+ * handler calls it for a second signal. Inside the handler `sig` is
+ * blocked, so the re-raise is delivered — and kills — on return. The
+ * watcher follows it with an _exit in case the default action somehow
+ * did not end the process. */
+static void lotus_drain_die_by(int sig) {
+    struct sigaction dfl;
+    memset(&dfl, 0, sizeof(dfl));
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    sigaction(sig, &dfl, NULL);
+    raise(sig);
+}
+
 static void lotus_drain_on_signal(int sig) {
-    if (g_drain_signal) _exit(128 + sig);
+    if (g_drain_signal) {
+        lotus_drain_die_by(sig);
+        return;
+    }
     g_drain_signal = sig;
     int saved = errno;
     char one = 1;
@@ -9398,8 +9435,10 @@ static void *lotus_drain_watcher(void *arg) {
     dprintf(2,
             "lotus: the drain begun by signal %d did not finish within "
             "%lld ms (a run() that never reads self.draining?); "
-            "exiting (LOTUS_DRAIN_GRACE_MS sets the grace)\n",
+            "ending as the signal's default action would "
+            "(LOTUS_DRAIN_GRACE_MS sets the grace)\n",
             (int)g_drain_signal, (long long)grace_ms);
+    lotus_drain_die_by((int)g_drain_signal);
     _exit(128 + (int)g_drain_signal);
     return NULL;
 }

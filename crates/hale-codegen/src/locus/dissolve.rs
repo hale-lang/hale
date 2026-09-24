@@ -228,22 +228,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             raw
         } else {
             self.reads_draining = true;
-            let flag = self
-                .module
-                .get_global("lotus_process_draining_flag")
-                .expect("lotus_process_draining_flag declared");
-            let proc_raw = self
-                .builder
-                .build_load(i64_t, flag.as_pointer_value(), "draining.process")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            if let Some(inst) = proc_raw.into_int_value().as_instruction() {
-                inst.set_alignment(8)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                inst.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
+            let proc_raw = self.emit_process_draining_load("draining.process")?;
             self.builder
-                .build_or(raw, proc_raw.into_int_value(), "draining.any")
+                .build_or(raw, proc_raw, "draining.any")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
         };
         let zero = i64_t.const_int(0, false);
