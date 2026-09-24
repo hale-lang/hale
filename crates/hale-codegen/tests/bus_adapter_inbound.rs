@@ -303,3 +303,74 @@ fn codec_round_trips_through_a_loopback_adapter() {
         stdout
     );
 }
+
+#[test]
+fn keyed_codec_delivery_reaches_only_the_matching_subscriber() {
+    // GH #1041: `__local_dispatch` hands the runtime wire bytes with
+    // no key, so a keyed topic's adapter delivery dispatched unkeyed
+    // and every `where key == self.id` subscriber skipped it. The key
+    // now comes from the payload the codec decoded. A pinned child
+    // injects — the thread an adapter's receive loop runs on — one
+    // matching and one non-matching key: the matching subscriber
+    // hears one, the other none, and an unfiltered subscriber (an
+    // audit sink) both.
+    let src = format!(
+        "{JSON_CODEC}{}",
+        r#"
+        topic InTopic { payload: Msg; subject: "codec.json.keyed"; keyed_by who; }
+
+        locus Sink { fn send(subject: String, bytes: Bytes) { } }
+
+        locus Rev {
+            params { id: String = ""; got: Int = 0; tag: Int = 0; }
+            bus { subscribe InTopic as on_in where key == self.id; }
+            fn on_in(m: Msg) {
+                self.got = self.got + 1;
+                self.tag = m.tag;
+            }
+        }
+
+        locus Audit {
+            params { got: Int = 0; }
+            bus { subscribe InTopic as on_in; }
+            fn on_in(m: Msg) { self.got = self.got + 1; }
+        }
+
+        locus Pump {
+            run() {
+                std::bus::__local_dispatch("codec.json.keyed", std::bytes::from_string("{\"tag\":7,\"who\":\"purpose\"}"));
+                std::bus::__local_dispatch("codec.json.keyed", std::bytes::from_string("{\"tag\":8,\"who\":\"nobody\"}"));
+            }
+        }
+
+        main locus App {
+            params {
+                r: Rev = Rev { id: "purpose" };
+                o: Rev = Rev { id: "other" };
+                a: Audit = Audit { };
+                p: Pump = Pump { };
+            }
+            placement { p: pinned; }
+            bindings { InTopic: Sink { } codec(JsonCodec { }); }
+            run() {
+                let mut i = 0;
+                while self.a.got < 2 && i < 500 {
+                    std::time::sleep(10ms);
+                    i = i + 1;
+                }
+                println("purpose=" + to_string(self.r.got) + " tag=" + to_string(self.r.tag)
+                    + " other=" + to_string(self.o.got) + " audit=" + to_string(self.a.got));
+            }
+        }
+
+        fn main() { App { }; }
+    "#
+    );
+    let (stdout, status) = build_and_run("keyed_codec", &src);
+    assert!(status.success(), "non-zero: {:?}; stdout: {:?}", status, stdout);
+    assert!(
+        stdout.lines().any(|l| l == "purpose=1 tag=7 other=0 audit=2"),
+        "the key must come from the decoded payload; stdout: {:?}",
+        stdout
+    );
+}

@@ -38,7 +38,10 @@ A listen binding serves any number of connected publishers at once,
 and a `keyed_by` topic keeps its routing across the socket: the
 receiving side derives the key from the payload, so a
 `subscribe T as h where key == self.k` behind a binding hears
-exactly what it would hear in-process.
+exactly what it would hear in-process. The same holds for bytes an
+adapter hands to `std::bus::__local_dispatch`: they carry no key,
+so the runtime decodes them once — through the binding's codec,
+when it has one — and routes by the key the payload holds.
 
 `bindings { }` is legal only on a `main` locus. The publisher's
 `MatchReady <- info;` and the subscriber's `subscribe MatchReady

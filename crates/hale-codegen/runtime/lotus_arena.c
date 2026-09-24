@@ -15799,10 +15799,11 @@ static lotus_key_extract_fn lotus_bus_find_key_extractor(const char *subject) {
     return NULL;
 }
 
-/* Every inbound path (unix serve loop, boot-window flush, UDP
- * reader, adapter inbound) lands here with STRUCT bytes: derive
- * the key when the subject is keyed, dispatch keyed; else the
- * unkeyed local fanout as before. */
+/* Every inbound path that holds STRUCT bytes (unix serve loop,
+ * boot-window flush, UDP reader) lands here: derive the key when
+ * the subject is keyed, dispatch keyed; else the unkeyed local
+ * fanout as before. Adapter inbound holds WIRE bytes and derives
+ * its key in lotus_bus_dispatch_wire_inbound (GH #1041). */
 static void lotus_bus_local_dispatch_inbound(lotus_bus_queue_t *queue,
                                              const char *subject,
                                              const void *struct_payload,
@@ -22831,6 +22832,81 @@ int lotus_math_is_nan(double f) {
 }
 
 
+/* GH #1041: the key of a keyed topic arriving through an adapter.
+ *
+ * `__local_dispatch` hands the runtime WIRE bytes, and
+ * lotus_bus_dispatch_wire deserializes them per subscriber into
+ * each subscriber's own arena — there is no one decoded payload to
+ * take the key from, so this entry dispatched every adapter
+ * delivery unkeyed and the keyed fanout skipped each `where key ==`
+ * subscriber (the DNA F.12 comment at
+ * lotus_bus_local_dispatch_inbound already listed "adapter
+ * inbound" among the keyed paths; it never reached there). For a
+ * keyed subject the key is now derived from ONE decode into a
+ * per-thread scratch arena, then the delivery takes the keyed
+ * fanout, which still deserializes into each matching
+ * subscriber's own arena.
+ *
+ * The scratch arena holds no chunk between deliveries: its chunks
+ * go back to the thread's chunk pool as soon as the keyed fanout
+ * returns (a String key's key_hi points into them until then), and
+ * the next delivery takes them from the pool again — so after the
+ * first delivery, key extraction allocates nothing on the heap.
+ * Only the arena struct outlives a delivery; a pthread-key
+ * destructor frees it when the thread exits (a pinned adapter's
+ * receive loop is not the main thread). Keeping the arena empty
+ * between uses is what makes that destructor order-independent of
+ * the chunk pool's own: it never has a chunk to release. */
+static pthread_key_t  g_bus_key_scratch_key;
+static pthread_once_t g_bus_key_scratch_once = PTHREAD_ONCE_INIT;
+static __thread lotus_arena_t *g_bus_key_scratch = NULL;
+
+static void lotus_bus_key_scratch_dtor(void *a) {
+    lotus_arena_destroy((lotus_arena_t *)a);
+}
+
+static void lotus_bus_key_scratch_key_init(void) {
+    (void)pthread_key_create(&g_bus_key_scratch_key,
+                             lotus_bus_key_scratch_dtor);
+}
+
+static lotus_arena_t *lotus_bus_key_scratch(void) {
+    if (g_bus_key_scratch) return g_bus_key_scratch;
+    /* alloc_struct, not lotus_arena_create: a transient scratch is
+     * not a residency target (LOTUS_ARENA_RESIDENCY would report it
+     * live at exit on the main thread, whose TLS never unwinds). */
+    lotus_arena_t *a = lotus_arena_alloc_struct();
+    if (!a) return NULL;
+    pthread_once(&g_bus_key_scratch_once, lotus_bus_key_scratch_key_init);
+    (void)pthread_setspecific(g_bus_key_scratch_key, a);
+    g_bus_key_scratch = a;
+    return a;
+}
+
+/* Return every chunk to the pool. A deserializer only bump-
+ * allocates; if one ever left arena state beyond chunks (a retire
+ * list, a sub-region slot), the arena is destroyed instead and the
+ * next delivery makes a fresh one. */
+static void lotus_bus_key_scratch_clear(lotus_arena_t *a) {
+    if (!a) return;
+    if (a->retire_pending || a->retire_shells || a->retire_free ||
+        a->retire_free_small || a->child_struct_free ||
+        a->next_slot != 0) {
+        (void)pthread_setspecific(g_bus_key_scratch_key, NULL);
+        g_bus_key_scratch = NULL;
+        lotus_arena_destroy(a);
+        return;
+    }
+    lotus_arena_chunk_t *c = a->head;
+    while (c) {
+        lotus_arena_chunk_t *next = c->next;
+        lotus_arena_release_chunk(c);
+        c = next;
+    }
+    a->head = NULL;
+    a->chunk_byte_total = 0;
+}
+
 /* iris handoff-6: marked adapter-inbound entry — see the forward
  * declaration's comment near lotus_bus_dispatch_wire. */
 void lotus_bus_dispatch_wire_inbound(const char *subject,
@@ -22867,6 +22943,32 @@ void lotus_bus_dispatch_wire_inbound(const char *subject,
                                       (uint64_t)sz);
     }
     if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
-    lotus_bus_dispatch_wire(subject, b, sz);
+    /* GH #1041: a keyed subject routes by the key its decoded
+     * payload carries (see lotus_bus_key_scratch above). */
+    lotus_key_extract_fn kx =
+        subject ? lotus_bus_find_key_extractor(subject) : NULL;
+    lotus_deserialize_fn de =
+        kx ? lotus_bus_find_deserializer(subject) : NULL;
+    lotus_arena_t *scratch = de ? lotus_bus_key_scratch() : NULL;
+    if (scratch && sz > 0) {
+        char *struct_buf = g_tls_bus_struct_buf;
+        lotus_arena_t *prev_tls = lotus_current_caller_arena;
+        lotus_current_caller_arena = scratch;
+        ssize_t n = de(b, sz, struct_buf, LOTUS_PAYLOAD_MAX);
+        lotus_current_caller_arena = prev_tls;
+        if (n > 0) {
+            uint64_t lo = 0, hi = 0;
+            kx(struct_buf, &lo, &hi);
+            lotus_bus_dispatch_wire_keyed(subject, b, sz, lo, hi);
+        } else if (lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] inbound dropped: subject=\"%s\" keyed, but "
+                    "deserialize returned %zd (wire_size=%zu)\n",
+                    subject, n, sz);
+        }
+        lotus_bus_key_scratch_clear(scratch);
+    } else {
+        lotus_bus_dispatch_wire(subject, b, sz);
+    }
     if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
 }

@@ -8,6 +8,17 @@ behavior.
 
 ## Unreleased
 
+### Keyed topics keep their key across an adapter (GH #1041)
+
+- **Fixed:** bytes an adapter handed to `std::bus::__local_dispatch`
+  for a `keyed_by` topic were dispatched unkeyed, so every `subscribe
+  T as h where key == self.id` subscriber skipped them; a local
+  publish of the same value was delivered. The runtime now decodes an
+  adapter delivery of a keyed topic once (through the binding's codec
+  when it has one) to take its key, and routes it like a keyed
+  publish. The key costs no heap allocation in steady state; unkeyed
+  topics are unchanged.
+
 ### A codec on an adapter binding works (GH #1040)
 
 - **Fixed:** `bindings { T: MyAdapter { } codec(MyCodec { }); }`
