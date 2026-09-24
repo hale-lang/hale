@@ -164,7 +164,7 @@ locus Fixture {
     fn spawn() {
         let binary = std::env::var("HALE_API_BIN");
         std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
-        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
+        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.

@@ -1,13 +1,18 @@
-// Actual Git receipts, native projection and service handler. Test doubles only
-// inject concurrent source changes after the real store has captured its page.
+// Actual Git receipts, native projection and the API's graph handler. Test
+// doubles only inject concurrent source changes after the real store has
+// captured its page.
+//
+// GH #985: the knowledge service is gone. What its read did in one process is
+// two roles now: the spine projects the record into memory on its tick
+// (`ops::MemoryProjection`, as the record's spine role), and the head reads
+// (`api::graph_read`, as the record's head role). `GraphService` is the two of
+// them over one fixture record, the way the host and the API run them.
 import "../../core" as dna;
-import "../../knowledge" as know;
-import "../../knowledge/service" as svc;
+import "../../operations" as ops;
+import "../../api" as api;
 import "../../api/tests/fixture" as fixture;
 
-const READ_KEY: String = "local-graph-test-key-at-least-32-bytes";
-
-fn request_json(r: svc::GraphRequest) -> String {
+fn request_json(r: api::GraphRequest) -> String {
     let b = std::json::Builder { };
     b.begin_object(); b.string_field("record_id", r.record_id); b.string_field("record_head", r.record_head);
     b.string_field("record_revision", r.record_revision); b.string_field("reader", r.reader); b.string_field("kind", r.kind);
@@ -16,16 +21,30 @@ fn request_json(r: svc::GraphRequest) -> String {
     return b.result();
 }
 
+// A graph that supports no enumeration: the handler fails closed.
+locus NoGraphStore {
+    params { }
+    fn projection_basis() -> dna::GraphProjection { return dna::GraphProjection { }; }
+    fn begin_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
+    fn checkpoint_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return false; }
+    fn graph_generation() -> Int { return -1; }
+    fn read_graph(query: dna::GraphQuery, policy: dna::KnowledgeReadPolicy, sink: dna::GraphSink) -> dna::GraphPage {
+        return dna::GraphPage { error: "knowledge_unsupported" };
+    }
+}
+
+// The head reads through `reader`; the concurrent change is written as the
+// spine (`writer`, `ledger`) or into the Record.
 locus RacingGraph {
-    params { store: know::Mem; record: dna::GitJournal; ledger: know::MemLedger; mode: String; }
-    fn projection_basis() -> know::GraphProjection { return self.store.projection_basis(); }
-    fn begin_projection(previous: know::GraphProjection, watermark: Int, head: String) -> Bool { return self.store.begin_projection(previous, watermark, head); }
-    fn checkpoint_projection(previous: know::GraphProjection, watermark: Int, head: String) -> Bool { return self.store.checkpoint_projection(previous, watermark, head); }
-    fn graph_generation() -> Int { return self.store.graph_generation(); }
-    fn read_graph(q: know::GraphQuery, policy: know::KnowledgeReadPolicy, sink: know::GraphSink) -> know::GraphPage {
-        let page = self.store.read_graph(q, policy, sink);
+    params { reader: dna::Pq; writer: dna::Pq; record: dna::GitJournal; ledger: dna::PqLedger; mode: String; }
+    fn projection_basis() -> dna::GraphProjection { return self.reader.projection_basis(); }
+    fn begin_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return self.reader.begin_projection(previous, watermark, head); }
+    fn checkpoint_projection(previous: dna::GraphProjection, watermark: Int, head: String) -> Bool { return self.reader.checkpoint_projection(previous, watermark, head); }
+    fn graph_generation() -> Int { return self.reader.graph_generation(); }
+    fn read_graph(q: dna::GraphQuery, policy: dna::KnowledgeReadPolicy, sink: dna::GraphSink) -> dna::GraphPage {
+        let page = self.reader.read_graph(q, policy, sink);
         if self.mode == "generation" {
-            let wrote = self.store.upsert(dna::Idea { id: dna::digest_of("concurrent graph row"), text: "must retry" }, 0);
+            let wrote = self.writer.upsert(dna::Idea { id: dna::digest_of("concurrent graph row"), text: "must retry" }, 0);
             std::test::assert(wrote, "concurrent graph fixture write");
         } else if self.mode == "record" {
             let wrote = self.record.append(self.record.revision(), "fixture.changed", "org", "concurrent Record write");
@@ -38,22 +57,78 @@ locus RacingGraph {
     }
 }
 
+// The spine's tick, then the head's read, as LocalKnowledge reads: the request
+// parsed first, then the record and the store, scoped to the record's genesis.
+locus GraphService {
+    params {
+        root: String = "";
+        projector: ops::MemoryProjection = ops::MemoryProjection { dsn_env: "" };
+        reader: dna::Pq = dna::Pq { };
+        ledger: dna::PqLedger = dna::PqLedger { };
+        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/graph-service", author: "api" };
+    }
+    fn open_reader() -> Bool {
+        self.j = dna::GitJournal { repo: self.root, author: "api" };
+        let moved = self.j.refresh();
+        self.reader.scope(self.j.genesis());
+        self.ledger.scope(self.j.genesis());
+        return self.reader.reopen() && self.ledger.open();
+    }
+    fn handle(body: String) -> std::http::Response {
+        let applied = self.projector.apply();
+        let http = api::GraphHttp { };
+        let q = http.request(body);
+        if !q.ok { return http.error(400, "invalid_query"); }
+        if !self.open_reader() { return http.error(503, "knowledge_unavailable"); }
+        let r = api::graph_read(q, self.reader, self.reader, self.j, self.ledger);
+        self.reader.close();
+        return r;
+    }
+    fn close() { self.projector.store.close(); self.reader.close(); self.ledger.conn.close(); }
+}
+
+// Both roles over one fixture record, from the DSNs its migration handed back.
+// The projector's record and receipts are built on the fixture's root: a
+// GitJournal or GitReceipts reads the repository it was born with, and
+// `root` alone reaches only their `repo` fields, after that birth.
+fn graph_service(root: String, spine: dna::Dsn, head: dna::Dsn) -> GraphService {
+    return GraphService {
+        root: root,
+        projector: ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine) }, j: dna::GitJournal { repo: root, author: "spine" }, receipts: dna::GitReceipts { repo: root } },
+        reader: dna::Pq { conn: dna::pq_conn(head) },
+        ledger: dna::PqLedger { conn: dna::pq_conn(head) }
+    };
+}
+
 locus GraphCases {
-    params { f: fixture::Fixture; json: fixture::Json = fixture::Json { }; http: svc::GraphHttp = svc::GraphHttp { }; }
-    fn query() -> svc::GraphRequest {
+    params { f: fixture::Fixture; owner: String = ""; json: fixture::Json = fixture::Json { }; http: api::GraphHttp = api::GraphHttp { }; }
+    fn query() -> api::GraphRequest {
         let moved = self.f.journal.refresh();
         // The interrupted-projection case rewinds its owned Record to model
         // a fence the Record no longer shows. A journal that already holds
         // rows refuses a shorter read (GH #748) and keeps the longer head,
         // so the request names what a reader opened now would see.
         let fresh = dna::GitJournal { repo: self.f.root };
-        return svc::GraphRequest { ok: true, record_id: self.f.identity, record_head: fresh.head(), record_revision: to_string(fresh.revision()), reader: "alice" };
+        return api::GraphRequest { ok: true, record_id: self.f.identity, record_head: fresh.head(), record_revision: to_string(fresh.revision()), reader: "alice" };
     }
-    fn raw(service: svc::Service, body: String, key: String) -> std::http::Response {
-        return service.handle(std::http::Request { method: "POST", path: "/graph/read", headers: "Authorization: Bearer " + key, body: body });
+    // The fixture record's memory: its schema applied by the owner, the
+    // spine's DSN handed back (the head's is `head()`).
+    fn spine() -> dna::Dsn {
+        let spine = dna::migrated(self.owner, self.f.identity);
+        std::test::assert(spine.ok, "memory migrates for the fixture record: " + spine.why);
+        return spine;
     }
-    fn read(service: svc::Service, q: svc::GraphRequest, status: Int) -> String {
-        let response = self.raw(service, request_json(q), READ_KEY);
+    fn head() -> dna::Dsn {
+        let head = dna::migrated_head(self.owner, self.f.identity);
+        std::test::assert(head.ok, "the head's DSN for the fixture record: " + head.why);
+        return head;
+    }
+    fn unmigrate() { std::test::assert_eq_str(dna::unmigrate(self.owner, self.f.identity), "", "the fixture record's schema and roles dropped"); }
+    fn raw(service: GraphService, body: String) -> std::http::Response {
+        return service.handle(body);
+    }
+    fn read(service: GraphService, q: api::GraphRequest, status: Int) -> String {
+        let response = self.raw(service, request_json(q));
         std::test::assert_eq_int(response.status, status, response.body);
         std::test::assert(std::str::contains(response.headers, "no-store"), "graph response is never cached");
         let schema = if status != 200 { "ErrorResponse" } else if q.kind == "nodes" { "KnowledgeNodesResponse" } else if q.kind == "edges" { "KnowledgeEdgesResponse" } else { "KnowledgeBindingsResponse" };
@@ -68,7 +143,7 @@ locus GraphCases {
         return id;
     }
     fn large_cached() {
-        // This is a real Service.handle read over a prebuilt native projection.
+        // This is a real graph read over a prebuilt native projection.
         // Cold receipt decoding still uses the legacy stdlib and is a separate
         // prerequisite; do not accidentally exercise it to prepare this case.
         let bytes = std::bytes::BytesBuilder { };
@@ -79,9 +154,9 @@ locus GraphCases {
         let id = "sha256:" + self.f.receipts.store(document);
         self.f.append("knowledge.ratified", id, "{\"class\":\"goal\"}");
         let q = self.query();
-        let store = know::Mem { };
-        store.scope(q.record_id);
-        std::test::assert(store.open(), "large cached store open");
+        let spine = self.spine(); let head = self.head();
+        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: q.record_id };
+        std::test::assert(store.open(), "large cached store open: " + store.last_error());
         let prior = store.projection_basis();
         std::test::assert(store.begin_projection(prior, self.f.journal.revision(), q.record_head), "large cached projection begins");
         let pending = store.projection_basis();
@@ -89,8 +164,8 @@ locus GraphCases {
         std::test::assert(store.bind(dna::KnowledgeBinding { idea: id, target: "org", author: "org", class: "goal" }), "large cached native binding");
         std::test::assert(store.set_watermark(self.f.journal.revision()), "large cached live watermark");
         std::test::assert(store.checkpoint_projection(pending, self.f.journal.revision(), q.record_head), "large cached projection checkpoint");
-        let service = svc::Service { root: self.f.root, store: store, graph: store, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
-        let response = self.raw(service, request_json(q), READ_KEY);
+        let service = graph_service(self.f.root, spine, head);
+        let response = self.raw(service, request_json(q));
         std::test::assert_eq_int(response.status, 200, "600k cached node read succeeds");
         std::test::assert(len(response.body) > 600000 && len(response.body) < 1048576, "large graph remains within the public wire budget");
         std::test::assert(self.http.syntax.valid(response.body), "large response is strict JSON");
@@ -99,34 +174,40 @@ locus GraphCases {
         std::test::assert_eq_int(len(decoded), 600000, "large node retains every byte");
         std::test::assert_eq_str(decoded, text, "large node text round trips");
         std::test::assert_eq_int(self.json.integer(self.json.page(response.body), "returned"), 1, "large cached page count");
-        let policy = know::KnowledgeVisibility { record: self.f.journal, syntax: self.http.syntax };
+        let policy = ops::KnowledgeVisibility { record: self.f.journal, syntax: self.http.syntax };
         let captured = policy.load();
         std::test::assert(captured.available, "quote regression visibility");
-        let items = svc::GraphItems { policy: policy };
+        let items = api::GraphItems { policy: policy };
         let special = "quote\" slash\\ control\x01\x08\x0c\n\r\t café 🧭";
         let quoted = items.quote(special);
         let legacy = std::json::Builder { };
         std::test::assert_eq_str(quoted, legacy.quote(special), "graph quotes preserve existing wire bytes");
         std::test::assert(self.http.syntax.valid(quoted), "escaped Unicode/control text is strict JSON");
         std::test::assert_eq_str(self.http.syntax.decode(quoted), special, "escaped graph strings round trip");
+        store.close(); service.close(); self.unmigrate();
     }
     fn interrupted_projection() {
-        let store = know::Mem { }; let ledger = know::MemLedger { };
-        let service = svc::Service { root: self.f.root, store: store, graph: store, ledger: ledger, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        let spine = self.spine(); let head = self.head();
+        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.f.identity };
+        std::test::assert(store.open(), "the fixture's own store opens: " + store.last_error());
+        let service = graph_service(self.f.root, spine, head);
         self.read(service, self.query(), 200);
         let clean = store.projection_basis();
         let id = self.seed("canonical completed text", "org", "knowledge.ratified", "");
         let target = self.query();
         std::test::assert(store.begin_projection(clean, self.f.journal.revision(), target.record_head), "fence the exact application target before writes");
         // Model an interruption after the real first mutation, before bind and
-        // watermark. The dirty row persists across Service reconstruction.
+        // watermark. The dirty row persists across the projector's restart;
+        // the interrupted projector's connection is gone with it.
         std::test::assert(store.upsert(dna::Idea { id: id, kind: "practice", text: "partial uncommitted projection", author: "org", provenance: "ratified", accepted: true, revision: clean.watermark }, clean.watermark), "first event mutation persisted");
         std::test::assert_eq_int(store.watermark(), clean.watermark, "failed event never advances live watermark");
+        store.close();
         std::test::assert(self.f.journal.record.move_chain("journal", clean.head, target.record_head), "rewind owned Record to stamped prefix");
-        let restarted = svc::Service { root: self.f.root, store: store, graph: store, ledger: ledger, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        let restarted = graph_service(self.f.root, spine, head);
         let refused = self.read(restarted, self.query(), 503);
         self.json.eq(self.json.raw(refused, "error"), "code", "knowledge_projection_unavailable");
         std::test::assert(!std::str::contains(refused, "partial uncommitted projection"), "dirty orphan row never leaves the service");
+        std::test::assert(store.reopen(), "the fixture's store reopens: " + store.last_error());
         let still_pending = store.projection_basis();
         std::test::assert_eq_str(still_pending.pending_head, target.record_head, "refusal preserves recovery fence");
         std::test::assert(self.f.journal.record.move_chain("journal", target.record_head, clean.head), "restore exact interrupted Record target");
@@ -136,13 +217,16 @@ locus GraphCases {
         std::test::assert_eq_int(completed.pending_watermark, 0, "successful exact replay clears pending watermark");
         std::test::assert_eq_str(completed.pending_head, "", "successful exact replay clears pending head");
         std::test::assert_eq_str(completed.head, target.record_head, "successful exact replay stamps the intended head");
+        store.close(); service.close(); restarted.close(); self.unmigrate();
     }
     // A reconcile re-appends the local rows on top of the remote's head:
     // same rows, new digests, one remote row among them (GH #603). The
     // projection stamped before it must not refuse forever; it rebuilds.
     fn chain_rebuilt() {
-        let store = know::Mem { }; let ledger = know::MemLedger { };
-        let service = svc::Service { root: self.f.root, store: store, graph: store, ledger: ledger, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        let spine = self.spine(); let head = self.head();
+        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.f.identity };
+        std::test::assert(store.open(), "the fixture's own store opens: " + store.last_error());
+        let service = graph_service(self.f.root, spine, head);
         let earlier = self.seed("an earlier practice", "org", "knowledge.ratified", "");
         let id = self.seed("a practice the reconcile keeps", "org", "knowledge.ratified", "");
         let first = self.read(service, self.query(), 200);
@@ -174,19 +258,16 @@ locus GraphCases {
         std::test::assert_eq_str(rebuilt.head, chain, "the projection is stamped at the rebuilt head");
         std::test::assert_eq_int(rebuilt.watermark, n + 1, "and past every row of the rebuilt chain");
         std::test::assert_eq_int(rebuilt.pending_watermark, 0, "with nothing pending");
+        store.close(); service.close(); self.unmigrate();
     }
-    fn syntax_and_auth() {
-        let unopened = know::Mem { };
-        let absent = svc::Service { root: "/no-such-graph-root", store: unopened, graph: unopened, read_key: READ_KEY, j: dna::GitJournal { repo: "/no-such-graph-root" } };
-        let bad = self.raw(absent, "not JSON", "wrong-key");
-        std::test::assert_eq_int(bad.status, 401, "authentication precedes parsing/source/store");
-        std::test::assert(!absent.opened && unopened.record() == "", "unauthenticated request never opens a store");
-        std::test::assert_eq_int(self.raw(absent, "{}", READ_KEY).status, 400, "invalid request precedes source read");
-        std::test::assert(!absent.opened, "invalid request never opens a store");
-        let weak = svc::Service { read_key: "short", j: dna::GitJournal { repo: "/no-such-graph-root" } };
-        std::test::assert_eq_int(self.raw(weak, "{}", "short").status, 401, "weak configured credential never authenticates");
-        let get = absent.handle(std::http::Request { method: "GET", path: "/graph/read", headers: "Authorization: Bearer " + READ_KEY });
-        std::test::assert_eq_int(get.status, 405, "POST only");
+    fn syntax() {
+        // The head reads memory in-process (GH #985): no bearer to check. An
+        // invalid request is refused before the Record or the store is read —
+        // this child holds no head DSN, so a read that got that far would be
+        // unavailable, not invalid.
+        let absent = api::LocalKnowledge { root: "/no-such-graph-root" };
+        let invalid = absent.read(api::KnowledgeRequest { source: api::Source { }, reader: "", kind: "nodes", query: api::KnowledgeQuery { } });
+        std::test::assert(invalid.transport_ok && invalid.status == 400, "invalid request precedes source read: " + to_string(invalid.status));
         let valid = request_json(self.query());
         std::test::assert(self.http.request(valid).ok, "canonical request accepted");
         let duplicate = valid[0..(len(valid) - 1)] + ",\"reader\":\"mallory\"}";
@@ -194,28 +275,35 @@ locus GraphCases {
         std::test::assert(!self.http.request(std::str::replace(valid, "\"reader\"", "\"r\\u0065ader\"")).ok, "escaped key rejected");
         std::test::assert(!self.http.request(valid[0..(len(valid) - 1)] + ",\"actor\":\"mallory\"}").ok, "unknown key rejected");
         std::test::assert(!self.http.request(std::str::replace(valid, "\"limit\": 25", "\"limit\": 25.0")).ok, "integer JSON token required");
-        let mut invalid = self.query(); invalid.record_revision = "01";
-        std::test::assert(!self.http.request(request_json(invalid)).ok, "revision canonical");
-        invalid = self.query(); invalid.reader = "alice\nother";
-        std::test::assert(!self.http.request(request_json(invalid)).ok, "reader cannot contain controls");
-        invalid = self.query(); invalid.limit = 101;
-        std::test::assert(!self.http.request(request_json(invalid)).ok, "limit bounded");
-        invalid = self.query(); invalid.cursor = "7b7d";
-        std::test::assert(!self.http.request(request_json(invalid)).ok, "cursor requires snapshot");
-        invalid = self.query(); invalid.snapshot = dna::digest_of("view"); invalid.cursor = "gg";
-        std::test::assert(!self.http.request(request_json(invalid)).ok, "invalid hex cursor rejected");
+        std::test::assert(!self.http.request("{}").ok, "an empty request is invalid");
+        let mut invalid_q = self.query(); invalid_q.record_revision = "01";
+        std::test::assert(!self.http.request(request_json(invalid_q)).ok, "revision canonical");
+        invalid_q = self.query(); invalid_q.reader = "alice\nother";
+        std::test::assert(!self.http.request(request_json(invalid_q)).ok, "reader cannot contain controls");
+        invalid_q = self.query(); invalid_q.limit = 101;
+        std::test::assert(!self.http.request(request_json(invalid_q)).ok, "limit bounded");
+        invalid_q = self.query(); invalid_q.cursor = "7b7d";
+        std::test::assert(!self.http.request(request_json(invalid_q)).ok, "cursor requires snapshot");
+        invalid_q = self.query(); invalid_q.snapshot = dna::digest_of("view"); invalid_q.cursor = "gg";
+        std::test::assert(!self.http.request(request_json(invalid_q)).ok, "invalid hex cursor rejected");
         let mut unicode = self.query(); unicode.reader = "équipe 🧭";
         std::test::assert_eq_str(self.http.request(request_json(unicode)).reader, unicode.reader, "Unicode reader preserved");
     }
     fn exercise() {
-        self.syntax_and_auth();
+        self.syntax();
         let secret = self.seed("SECRET-BODY", "org/secret", "knowledge.ratified", "");
         let a = self.seed("A <literal>\nsecond line", "org/finance", "knowledge.ratified", secret);
         let b = self.seed("B parent", "org", "knowledge.ratified", "");
         let c = self.seed("C proposal", "org/other", "knowledge.proposed", b);
         self.f.append("receipt.classified", secret, "{\"class\":\"confidential\"}");
-        let store = know::Mem { }; let ledger = know::MemLedger { };
-        let service = svc::Service { root: self.f.root, store: store, graph: store, ledger: ledger, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        let spine = self.spine(); let head = self.head();
+        // the fixture's own hands on memory, as the spine: direct graph
+        // writes and the Ledger's adoption
+        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.f.identity };
+        std::test::assert(store.open(), "the fixture's own store opens: " + store.last_error());
+        let ledger = dna::PqLedger { conn: dna::pq_conn(spine), record_id: self.f.identity };
+        std::test::assert(ledger.open(), "the fixture's own Ledger opens: " + ledger.last_error());
+        let service = graph_service(self.f.root, spine, head);
         let before = self.f.refs();
         let mut q = self.query(); q.limit = 2;
         let first = self.read(service, q, 200);
@@ -286,16 +374,19 @@ locus GraphCases {
         q = self.query(); q.record_id = "different-record"; self.read(service, q, 503);
         q = self.query(); q.record_revision = "999"; self.read(service, q, 409);
 
-        // A fresh service over the real same Record must rebuild its projection.
-        let restarted_store = know::Mem { };
-        let restarted = svc::Service { root: self.f.root, store: restarted_store, graph: restarted_store, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        // A fresh projector over the real same Record must rebuild its
+        // projection: the record's schema is the same one, emptied first.
+        std::test::assert(store.rebuild(), "the projection is emptied for a fresh projector");
+        let restarted = graph_service(self.f.root, spine, head);
         let rebuilt = self.read(restarted, self.query(), 200);
         std::test::assert_eq_int(self.json.count(rebuilt), 3, "restart derives visible nodes from canonical receipts");
-        let legacy_store = know::Mem { };
-        legacy_store.scope(self.f.identity);
-        std::test::assert(legacy_store.set_watermark(self.f.journal.revision()), "legacy count-only projection");
-        let legacy = svc::Service { root: self.f.root, store: legacy_store, graph: legacy_store, read_key: READ_KEY, j: dna::GitJournal { repo: self.f.root }, receipts: self.f.receipts };
+        restarted.close();
+        std::test::assert(store.rebuild() && store.set_watermark(self.f.journal.revision()), "legacy count-only projection");
+        let legacy = graph_service(self.f.root, spine, head);
         self.read(legacy, self.query(), 503);
+        legacy.close();
+        std::test::assert(store.rebuild(), "the legacy projection is emptied again");
+        std::test::assert_eq_str(service.projector.apply().error, "", "and the record projected back into it");
 
         let exact = store.idea(a);
         let mut large = exact.idea; large.revision = 9007199254740993;
@@ -304,11 +395,13 @@ locus GraphCases {
         let integers = self.read(service, q, 200);
         self.json.eq(self.json.first(integers), "revision", "9007199254740993");
         self.json.eq(self.json.first(integers), "ratified_seq", "9223372036854775807");
-        let generation_race = RacingGraph { store: store, record: service.j, ledger: ledger, mode: "generation" };
-        let raced = svc::graph_read(self.query(), store, generation_race, service.j, ledger);
+        std::test::assert(service.open_reader(), "the head's reader opens");
+        let generation_race = RacingGraph { reader: service.reader, writer: store, record: service.j, ledger: ledger, mode: "generation" };
+        let raced = api::graph_read(self.query(), service.reader, generation_race, service.j, service.ledger);
         std::test::assert_eq_int(raced.status, 409, "graph generation fence rejects a mixed read");
-        let record_race = RacingGraph { store: store, record: service.j, ledger: ledger, mode: "record" };
-        std::test::assert_eq_int(svc::graph_read(self.query(), store, record_race, service.j, ledger).status, 409, "Record fence rejects a mixed read");
+        std::test::assert(service.open_reader(), "the head's reader opens");
+        let record_race = RacingGraph { reader: service.reader, writer: store, record: service.j, ledger: ledger, mode: "record" };
+        std::test::assert_eq_int(api::graph_read(self.query(), service.reader, record_race, service.j, service.ledger).status, 409, "Record fence rejects a mixed read");
 
         // The Ledger has an independently moving visibility head.
         let refreshed = self.f.journal.refresh();
@@ -325,16 +418,20 @@ locus GraphCases {
         q.snapshot = self.json.string(self.json.page(adopted), "snapshot");
         self.read(service, q, 409);
         q.snapshot = ""; self.read(service, q, 404);
-        let ledger_race = RacingGraph { store: store, record: service.j, ledger: ledger, mode: "ledger" };
-        std::test::assert_eq_int(svc::graph_read(self.query(), store, ledger_race, service.j, ledger).status, 409, "Ledger fence rejects a mixed read");
+        std::test::assert(service.open_reader(), "the head's reader opens");
+        let ledger_race = RacingGraph { reader: service.reader, writer: store, record: service.j, ledger: ledger, mode: "ledger" };
+        std::test::assert_eq_int(api::graph_read(self.query(), service.reader, ledger_race, service.j, service.ledger).status, 409, "Ledger fence rejects a mixed read");
         self.f.append("person.retired", "alice", "{}");
         self.read(service, self.query(), 403);
-        let orphan = svc::NoGraphStore { };
+        let orphan = NoGraphStore { };
         q = self.query(); q.reader = "bob";
-        std::test::assert_eq_int(svc::graph_read(q, store, orphan, service.j, ledger).status, 503, "no enumeration implementation fails closed");
+        std::test::assert(service.open_reader(), "the head's reader opens");
+        std::test::assert_eq_int(api::graph_read(q, service.reader, orphan, service.j, service.ledger).status, 503, "no enumeration implementation fails closed");
 
         // An oversized canonical object is refused from its pinned Git size
-        // before projection transports, parses or embeds its body.
+        // before a bounded projection transports, parses or embeds its body.
+        // (A read no longer projects: the head reads what the spine's tick
+        // applied, so the bounded projection is asked for here directly.)
         let bytes = std::bytes::BytesBuilder { };
         let mut i = 0;
         while i < 8193 { bytes.append_str("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"); i = i + 1; }
@@ -346,9 +443,9 @@ locus GraphCases {
         std::test::assert(len(large_body) > 8388608, "regression crosses real projection byte budget");
         let oversized = "sha256:" + self.f.receipts.store(large_body);
         self.f.append("knowledge.proposed", oversized, "{}");
-        q = self.query(); q.reader = "bob";
-        let refusal = self.read(service, q, 503);
-        self.json.eq(self.json.raw(refusal, "error"), "code", "knowledge_read_limit");
+        let moved = service.projector.j.refresh();
+        let bounded = service.projector.project(true);
+        std::test::assert_eq_str(bounded.error, "knowledge_read_limit", "a bounded projection refuses the oversized receipt");
         std::test::assert(!store.idea(oversized).present, "oversized object was never projected");
         let record_limit = dna::MemJournal { };
         record_limit.rows.push(dna::Event { body: large_body });
@@ -357,39 +454,42 @@ locus GraphCases {
         self.f.git("tag\n-a\ngraph-size-trap\n" + blob + "\n-m\nA small tag must not stand in for its large receipt blob");
         let tag = self.f.git("rev-parse\nrefs/tags/graph-size-trap");
         self.f.git("update-ref\nrefs/dna/receipts/" + oversized[7..len(oversized)] + "\n" + tag);
-        let tagged = svc::GraphReceipts { source: self.f.receipts, remaining: 4096 };
+        let tagged = ops::GraphReceipts { source: self.f.receipts, remaining: 4096 };
         std::test::assert(tagged.read(oversized[7..len(oversized)]) == "" && tagged.error == "knowledge_projection_unavailable", "receipt must be a direct blob, never a size-checked tag over another object");
 
         let refs = self.f.refs();
-        let limited = svc::GraphReceipts { source: self.f.receipts, remaining: 1 };
+        let limited = ops::GraphReceipts { source: self.f.receipts, remaining: 1 };
         std::test::assert(limited.read(a[7..len(a)]) == "" && limited.error == "knowledge_read_limit", "receipt metadata rejects before body read");
         std::test::assert(limited.store("never write") == "" && !limited.erase(a), "projection receipt adapter cannot mutate authority");
         std::test::assert_eq_str(self.f.refs(), refs, "bounded receipt adapter leaves all refs unchanged");
+        store.close(); ledger.conn.close(); service.close(); self.unmigrate();
     }
 }
 
 // Run only in the explicit child branch of knowledge_store_test App.run.
 // The parent owns the temporary directory and cleans it even on assertion exit.
-fn run_cases() {
+fn run_cases(owner: String) {
     std::test::assert(std::env::var("HALE_GRAPH_SERVICE_TEST_CLEAN") == "1", "graph service cases require the isolated child");
-    std::test::assert(!std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && !std::env::var_exists("GIT_DIR") && !std::env::var_exists("GIT_CONFIG_COUNT"), "graph child cannot inherit private database or Git overrides");
+    std::test::assert(!std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE") && !std::env::var_exists("HALE_DNA_MEMORY_DSN_HEAD") && !std::env::var_exists("GIT_DIR") && !std::env::var_exists("GIT_CONFIG_COUNT"), "graph child cannot inherit private database or Git overrides");
     let root = std::env::var("HALE_GRAPH_SERVICE_TEST_ROOT");
     std::test::assert(std::str::starts_with(root, "/tmp/hale-graph-service.") && len(root) > 24, "owned graph-service temporary directory");
     let f = fixture::Fixture { root: root, port: 1 };
-    let cases = GraphCases { f: f };
+    let cases = GraphCases { f: f, owner: owner };
     cases.exercise();
     let large = fixture::Fixture { root: root + "/large-cached", port: 1 };
-    let large_cases = GraphCases { f: large };
+    let large_cases = GraphCases { f: large, owner: owner };
     large_cases.large_cached();
     let interrupted = fixture::Fixture { root: root + "/interrupted-projection", port: 1 };
-    let interrupted_cases = GraphCases { f: interrupted };
+    let interrupted_cases = GraphCases { f: interrupted, owner: owner };
     interrupted_cases.interrupted_projection();
     let rebuilt = fixture::Fixture { root: root + "/chain-rebuilt", port: 1 };
-    let rebuilt_cases = GraphCases { f: rebuilt };
+    let rebuilt_cases = GraphCases { f: rebuilt, owner: owner };
     rebuilt_cases.chain_rebuilt();
 }
 
-fn run_isolated() {
+// The child keeps the owner's DSN (it migrates its fixture records) and loses
+// every role's: a role's DSN names one record, and the child makes its own.
+fn run_isolated(owner: String) {
     let supplied = std::env::var("HALE_API_CONTRACT_ROOT");
     let source = std::env::var("HALE_DNA_SOURCE");
     let contract_root = if len(supplied) > 0 { supplied } else if len(source) > 0 { source + "/dna/api/contract/v1" } else { "dna/api/contract/v1" };
@@ -397,9 +497,9 @@ fn run_isolated() {
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-graph-service.XXXXXX");
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let root = dna::trim_nl(made.stdout);
-    let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_KNOWLEDGE_READ_KEY\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_DNA_OIDC_SECRET\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_GRAPH_SERVICE_TEST_CLEAN=1\nHALE_GRAPH_SERVICE_TEST_ROOT=" + root + "\nHALE_API_CONTRACT_ROOT=" + contract_root + "\n" + std::env::arg_or(0, "") + "\n--graph-service-cases");
+    let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_DNA_OIDC_SECRET\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_MEMORY_DSN_OWNER=" + owner + "\nHALE_GRAPH_SERVICE_TEST_CLEAN=1\nHALE_GRAPH_SERVICE_TEST_ROOT=" + root + "\nHALE_API_CONTRACT_ROOT=" + contract_root + "\n" + std::env::arg_or(0, "") + "\n--graph-service-cases");
     let removed = dna::run_tool("rm\n-rf\n" + root);
     std::test::assert_eq_int(removed.code, 0, "graph service fixture cleanup");
-    std::test::assert_eq_int(clean.code, 0, "isolated graph service cases: " + clean.stderr);
+    std::test::assert_eq_int(clean.code, 0, "isolated graph service cases: " + clean.stderr + clean.stdout);
     std::test::assert_eq_str(clean.stdout, "", "graph service fixture stdout must be silent");
 }

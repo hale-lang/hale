@@ -1,12 +1,12 @@
 import { test as base, expect } from '@playwright/test';
 import { mkdtemp, readFile, rm, mkdir, copyFile, writeFile, rename } from 'node:fs/promises';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isolatedEnvironment, boundedNative } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner } from './environment.mjs';
 
 const execute = promisify(execFile);
 const executeNative = (command, args, options, limits) => {
@@ -24,6 +24,37 @@ async function availablePort() {
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
   return port;
+}
+// A TCP relay between the API and memory's Postgres. It is how a test makes
+// memory stop answering the API and answer again on the same address — the
+// API's head DSN names the relay, never the database directly.
+async function memoryRelay(host, port) {
+  const sockets = new Set();
+  let server, address = 0;
+  const open = async () => {
+    server = net.createServer(client => {
+      const upstream = net.connect(port, host);
+      const end = () => { client.destroy(); upstream.destroy(); sockets.delete(client); sockets.delete(upstream); };
+      for (const socket of [client, upstream]) { sockets.add(socket); socket.on('error', end); socket.on('close', end); }
+      client.pipe(upstream); upstream.pipe(client);
+    });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(address, '127.0.0.1', resolve); });
+    address = server.address().port;
+  };
+  const close = async () => {
+    if (!server) return;
+    const closed = new Promise(resolve => server.close(resolve));
+    for (const socket of sockets) socket.destroy();
+    sockets.clear(); await closed; server = undefined;
+  };
+  await open();
+  return { port: () => address, open, close };
+}
+// Where the head's DSN points, and the same DSN pointed through a relay.
+function headDsn(text) {
+  const parts = /^(postgres(?:ql)?:\/\/[^@/\s]+@)([^:/@\s]+):([0-9]+)(\/\S*)$/.exec(text);
+  if (!parts) throw new Error('The Knowledge fixture printed no head DSN.');
+  return { host: parts[2], port: Number(parts[3]), through: port => `${parts[1]}127.0.0.1:${port}${parts[4]}` };
 }
 async function stop(child) {
   if (!child?.pid || child.exitCode !== null || child.signalCode) return;
@@ -58,52 +89,44 @@ export const test = base.extend({
     const api = commandAdapter ? process.env.HALE_FACE_COMMAND_BIN : definitions ? process.env.HALE_FACE_CATALOG_BIN : process.env.HALE_API_BIN;
     if (commandAdapter) env.HALE_FACE_SCRIPTED_COMMANDS = '1';
     if (!native || !api) throw new Error('Use npm test: it prepares the native Record writer and API paths.');
+    // Knowledge lives in memory (GH #985). The fixture program migrates the
+    // record with the owner's DSN, projects it the way the spine's tick
+    // does, and prints the head's DSN; the API reads with that alone. The
+    // owner's DSN goes to the fixture program and to nothing else.
+    const owner = knowledge ? memoryOwner() : '';
+    if (knowledge && !owner) throw new Error('Knowledge fixtures read memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the fixture may migrate a record into.');
+    const fixtureEnv = knowledge ? { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner } : env;
     let child;
-    let knowledgeChild;
+    let relay;
+    let seeded = false;
+    let dropped = false;
     let log = '';
-    let knowledgeLog = '';
+    let memoryLog = '';
+    // Leave no schema or role behind, even when this process is exiting.
+    const dropSync = () => {
+      if (!seeded || dropped) return;
+      dropped = true;
+      const bounded = boundedNative(native, [root, 'drop'], { lock: false });
+      try { execFileSync(bounded.command, bounded.args, { env: fixtureEnv, timeout: 15_000, stdio: 'ignore' }); } catch { /* exiting: there is no test left to fail */ }
+    };
     const exitCleanup = () => {
       if (child?.exitCode === null) child.kill('SIGKILL');
-      if (knowledgeChild?.exitCode === null) knowledgeChild.kill('SIGKILL');
+      if (knowledge) dropSync();
     };
     process.once('exit', exitCleanup);
     try {
       if (organization === 'generated') {
         await executeNative(env.HALE_BIN, ['dna', 'new', root], { env, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
       }
-      await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env, timeout: 30_000 });
+      await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
+      seeded = true;
       const data = JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8'));
-      let knowledgeOrigin;
-      const startKnowledge = async () => {
-        if (!knowledge) throw new Error('This test did not request a native Knowledge service.');
-        await stop(knowledgeChild);
-        // Restart retains the origin already configured in the public API.
-        const port = knowledgeOrigin ? Number(new URL(knowledgeOrigin).port) : await availablePort();
-        knowledgeOrigin = `http://127.0.0.1:${port}`;
-        const bounded = boundedNative(native, [root, String(port)], { lock: false });
-        knowledgeChild = spawn(bounded.command, bounded.args, { env, cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
-        let spawnError;
-        knowledgeChild.once('error', error => { spawnError = error; });
-        const capture = chunk => { knowledgeLog = (knowledgeLog + chunk).slice(-262_144); };
-        knowledgeChild.stdout.on('data', capture);
-        knowledgeChild.stderr.on('data', capture);
-        const deadline = Date.now() + 10_000;
-        while (Date.now() < deadline && knowledgeChild.exitCode === null && !spawnError) {
-          try {
-            const response = await fetch(`${knowledgeOrigin}/identity`, { signal: AbortSignal.timeout(500) });
-            const payload = await response.json();
-            if (response.ok && payload.identity === data.application && knowledgeChild.exitCode === null) return;
-          } catch { /* the native projection and listener are still starting */ }
-          await delay(25);
-        }
-        if (spawnError) throw spawnError;
-        throw new Error(`Owned Knowledge service failed readiness.\n${knowledgeLog}`);
-      };
       if (knowledge) {
-        env.HALE_DNA_KNOWLEDGE_DSN = 'memory';
-        env.HALE_DNA_KNOWLEDGE_READ_KEY = 'face-browser-private-read-key-fixture-only';
-        await startKnowledge();
-        env.HALE_DNA_KNOWLEDGE_URL = knowledgeOrigin;
+        const projected = await executeNative(native, [root, 'project'], { env: fixtureEnv, timeout: 30_000 });
+        memoryLog += projected.stderr;
+        const head = headDsn(projected.stdout.trim().split('\n').pop());
+        relay = await memoryRelay(head.host, head.port);
+        env.HALE_DNA_MEMORY_DSN_HEAD = head.through(relay.port());
       }
       const git = async args => (await execute('git', ['-C', root, ...args], { env, timeout: 5_000 })).stdout.trim();
       const orgSource = path.join(root, 'dna/org/main.hl');
@@ -169,9 +192,11 @@ export const test = base.extend({
       const apiPath = `/api/hale/v1/applications/${data.application}`;
       await use({
         ...data, origin, apiPath,
-        mutate: action => executeNative(native, [root, action], { env, timeout: 15_000 }),
-        stopKnowledge: () => stop(knowledgeChild),
-        startKnowledge,
+        // Each mutation projects again, as the spine's next tick would.
+        mutate: action => executeNative(native, [root, action], { env: fixtureEnv, timeout: 15_000 }),
+        // Memory stops answering the API, and answers again on the same DSN.
+        memoryUnreachable: () => { if (!relay) throw new Error('This test did not request Knowledge in memory.'); return relay.close(); },
+        memoryReachable: () => { if (!relay) throw new Error('This test did not request Knowledge in memory.'); return relay.open(); },
         changeCatalog: async mode => {
           if (!definitions || !['original', 'updated', 'unavailable', 'invalid'].includes(mode)) {
             throw new Error('This operation requires a catalog fixture and a declared mode.');
@@ -216,13 +241,20 @@ export const test = base.extend({
       });
     } finally {
       await stop(child);
-      await stop(knowledgeChild);
+      await relay?.close();
+      let dropFailure;
+      if (knowledge && seeded && !dropped) {
+        dropped = true;
+        try { memoryLog += (await executeNative(native, [root, 'drop'], { env: fixtureEnv, timeout: 15_000 })).stderr; }
+        catch (error) { dropFailure = error; memoryLog += String(error.stderr || error.message); }
+      }
       process.removeListener('exit', exitCleanup);
-      if (testInfo.status !== testInfo.expectedStatus) {
+      if (testInfo.status !== testInfo.expectedStatus || dropFailure) {
         await testInfo.attach('api.log', { body: log, contentType: 'text/plain' });
-        if (knowledge) await testInfo.attach('knowledge.log', { body: knowledgeLog, contentType: 'text/plain' });
+        if (knowledge) await testInfo.attach('memory.log', { body: memoryLog, contentType: 'text/plain' });
       }
       await rm(root, { recursive: true, force: true });
+      if (dropFailure) throw new Error(`The Knowledge fixture could not drop its record's memory.\n${memoryLog}`);
     }
   },
 });

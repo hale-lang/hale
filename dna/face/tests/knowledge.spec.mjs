@@ -1,6 +1,6 @@
 import { test, expect, errorBody } from './harness.mjs';
 
-test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge browser integration requires an explicitly supplied native provider fixture (HALE_FACE_KNOWLEDGE_BIN).');
+test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge browser integration requires an explicitly supplied native provider fixture (HALE_FACE_KNOWLEDGE_BIN) and memory (HALE_DNA_MEMORY_DSN_OWNER).');
 test.use({ knowledge: true });
 const detail = page => page.getByRole('region', { name: 'Knowledge item', exact: true });
 const register = page => page.getByRole('region', { name: 'Knowledge register', exact: true });
@@ -14,7 +14,7 @@ const responseFor = (page, kind, predicate = () => true, status = 200) => page.w
 });
 const bodyOf = async response => (await (await response).json()).data;
 
-// Expectations come from the real native-service response for this exact page.
+// Expectations come from the real API's memory read for this exact page.
 // No successful graph payload is supplied by the browser test.
 async function expectMapPage(page, id, edges, collection) {
   const names = new Map(collection.map(item => [item.id, item.name || 'Unnamed knowledge item']));
@@ -268,20 +268,22 @@ test('Knowledge protected and missing identities share 404, and new restrictions
   await expect(page.locator('body')).not.toContainText('supports <stored relationship>');
 });
 
-test('A stopped Knowledge service reports unavailable, clears prior data, and recovers on retry', async ({ page, service }) => {
+// There is no Knowledge service to stop (GH #985): the API reads memory under
+// the head's role. Memory that stops answering the running API is the outage.
+test('Unreachable memory reports unavailable, clears prior data, and recovers on retry', async ({ page, service }) => {
   await page.goto(service.url('knowledge', { id: service.knowledge }));
   await expect(detail(page)).toContainText(service.text);
   await expect(relationshipMap(page)).toBeVisible();
-  await service.stopKnowledge();
+  await service.memoryUnreachable();
   const unavailable = responseFor(page, 'nodes', () => true, 503);
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await unavailable;
+  expect((await (await unavailable).json()).error).toMatchObject({ code: 'knowledge_unavailable', retryable: true });
   await expect(page.getByRole('heading', { name: 'Knowledge unavailable', exact: true })).toBeVisible();
   await expect(relationshipMap(page)).toHaveCount(0);
   await expect(page.locator('#content')).not.toContainText(service.text);
   await expect(page.locator('#content')).not.toContainText(service.name);
   await expect(page.locator('#content')).not.toContainText('No knowledge items');
-  await service.startKnowledge();
+  await service.memoryReachable();
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(detail(page)).toContainText(service.text);
   await expect(relationshipMap(page)).toBeVisible();
@@ -292,7 +294,7 @@ test('Knowledge session expiry clears receipt identities, graph text, relationsh
   await expect(detail(page)).toContainText(service.text);
   await expect(relationshipMap(page)).toBeVisible();
   // Only the authentication error is injected. All successful graph reads
-  // above came through the real API and native service.
+  // above came through the real API from memory.
   await page.route('**/api/hale/v1/**', route => route.fulfill({
     status: 401, contentType: 'application/json', body: JSON.stringify(errorBody('unauthenticated', 'Sign in')),
   }));
@@ -322,7 +324,8 @@ test('Knowledge mobile detail, context and browser history retain focus without 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test.describe('Knowledge without configured private service', () => {
+// No head DSN: the API does not read Knowledge at all (`knowledge_unsupported`).
+test.describe('Knowledge without configured memory', () => {
   test.use({ knowledge: false });
   test('disables unsupported navigation and reports unavailable on a direct link', async ({ page, service }) => {
     await page.goto(service.url('knowledge'));

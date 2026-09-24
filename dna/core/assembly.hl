@@ -298,13 +298,13 @@ locus Dna {
         budget: Budget = Budget { };
         // GH #583 K2: the owner's line to the knowledge service; the
         // package it answers is folded into the objective the editor gets
-        knowledge_client: KnowledgeClient = KnowledgeClient { };
+        knowledge_client: MemoryKnowledge = MemoryKnowledge { };
         // GH #664: who admits which position. One owner unless the genome's
         // owners map says otherwise; then only this owner's positions.
         ownership: Ownership = Ownership { };
         // GH #606: where a protected body goes — the knowledge service, and
         // nowhere else
-        vault: ReceiptVault = ReceiptVault { };
+        vault: MemoryVault = MemoryVault { };
         concern_threshold: Int = 3; // a concern raised this often from one source is proposed as knowledge
         // GH #646 workflow card 07: the definitions an application wrote
         // (card 04), and the limits an admission is expanded under (§3 of
@@ -513,7 +513,7 @@ locus Dna {
         if !protected_class(class) { return "sha256:" + self.verification.receipts.store(text); }
         let kept = if self.vault.ready() { self.vault.keep(text, class, by) } else { "" };
         if kept != digest {
-            let why = if !self.vault.ready() { "no knowledge service to keep protected evidence (HALE_DNA_KNOWLEDGE_URL)" } else if len(kept) == 0 { self.vault.last_error } else { "the service answered another digest" };
+            let why = if !self.vault.ready() { "no memory to keep protected evidence (HALE_DNA_MEMORY_DSN_SPINE; the receipt key is memory's, set at migration)" } else if len(kept) == 0 { self.vault.last_error } else { "memory kept it under another digest" };
             let b = std::json::Builder { };
             b.begin_object();
             b.string_field("class", class);

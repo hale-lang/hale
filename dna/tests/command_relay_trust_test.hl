@@ -5,9 +5,9 @@ import "../core" as dna;
 import "../host" as host;
 
 fn relay_child(root: String) {
-    let p = host::open_projection(root, ".", "");
+    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
     let expired = host::relay_mark("\n", host::fact_key(p, 0), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
-    let state = host::relay_record_membrane(root, ".", "", "test", expired);
+    let state = host::relay_record_membrane(root, ".", "", "test", expired, dna::Memory { repo: root });
     println("relayed=", state.count);
 }
 
@@ -27,7 +27,7 @@ fn check() {
     let trust = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nsigned");
     let signing = dna::run_tool("git\n-C\n" + root + "\nconfig\ngpg.program\n/bin/false");
     std::test::assert_eq_int(trust.code + signing.code, 0, "signed policy with unavailable signing service");
-    let initial = host::relay_record_membrane(root, ".", "", "test", "\n");
+    let initial = host::relay_record_membrane(root, ".", "", "test", "\n", dna::Memory { repo: root });
     std::test::assert_eq_int(initial.count, 0, "first unsigned attempt never reaches membrane");
     let refreshed = journal.refresh();
     std::test::assert_eq_int(journal.revision(), 1, "refusal append really failed");

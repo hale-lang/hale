@@ -49,20 +49,24 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
 - **Receipts** are blobs under `refs/dna/receipts/<sha256>`, by the
   digest of their content: a verification step's output, a diff
   document. Events name receipts by digest; `git cat-file -p` reads
-  one. A customer or confidential body is never one of these: the
-  knowledge service keeps it, encrypted at rest, and the record holds
-  only its digest and its class. `hale dna receipt` lists them; `hale
-  dna receipt disclose <digest> --to <who> --purpose <p>` authorizes a
-  reader; `hale dna receipt show <digest> --purpose <p>` reads one in
-  your name, and the read is a row. Nothing protected travels with
-  `sync`. A body can be redacted under a stated policy: `hale dna
-  receipt redact <digest> --why <why> --policy <policy>` removes it —
-  the ref of a git receipt, the service's copy of a protected one — and
-  the record keeps the digest and a row saying who, why and under what
-  policy. `receipt hold` stops redaction until `receipt release-hold`.
-  Each clone drops a redacted receipt at its next sync; the object
-  lingers until git collects it, and a copy made outside the record
-  cannot be recalled.
+  one. A customer or confidential body is never one of these: memory
+  keeps it, sealed under a key that lives in memory, and the record
+  holds only its digest and its class. With no memory to keep it, the
+  body is withheld (`receipt.withheld`) — the record still has its
+  digest and class, and nothing holds the body. `hale dna receipt`
+  lists them; `hale dna receipt disclose <digest> --to <who>
+  --purpose <p>` authorizes a reader; `hale dna receipt show <digest>
+  --purpose <p>` reads one in your name, and the read is a row.
+  Nothing protected travels with `sync`. A body can be redacted under a stated policy:
+  `hale dna receipt redact <digest> --why <why> --policy <policy>`
+  records who, why and under what policy, and the body goes — a git
+  receipt's ref at once, a protected body when the spine erases it on
+  its next tick — while the record keeps the digest. Memory keeps the
+  digest of what it erased too, so a redacted body is refused if
+  anyone files it again. `receipt hold` stops redaction until `receipt
+  release-hold`. Each clone drops a redacted receipt at its next sync;
+  the object lingers until git collects it, and a copy made outside
+  the record cannot be recalled.
 - **Leases** are blobs under `refs/dna/lease/<key>`, compare-and-
   swapped the same way, with fencing tokens; a stale token is
   refused.
@@ -172,76 +176,94 @@ The record is one of three memories. The Structure is the codebase;
 the record is how the organism changed and was allowed to; the
 **ledger** is what it did today — intents, tasks, decisions, bills,
 money reserved and settled, schedules fired, concerns, effect claims,
-liveness — in the store behind the knowledge service, in the
-organism's own schema. Every row kind has exactly one home
-(`dna::memory_of`), and the organism's routing version is a fact of
-its record, never a build's opinion.
+liveness — in memory, Postgres, in the record's own schema. Every row
+kind has exactly one home (`dna::memory_of`), and the organism's
+routing version is a fact of its record, never a build's opinion.
 
 A new organism starts on routing 0: every row in the record, as
 before. Moving the day's work to the ledger is an explicit, one-way
-step:
+step, and the body carries it out:
 
 ```sh
-hale dna ledger                # routing, service, cutover
-hale dna ledger adopt          # with no body live, under `hale dna dev` or HALE_DNA_KNOWLEDGE_URL
+hale dna ledger                # routing, the memory named here, the cutover
+hale dna ledger adopt          # asks the body to adopt
 hale dna ledger abandon --why "back to one memory"
 ```
 
-Adoption writes `ledger.adopting` to the record first, has the service
-copy every operational row of the record into the ledger keyed by its
-commit (rerun after any interruption; nothing is copied twice), then
-writes `ledger.adopted` naming the checkpoint. From that commit on, an
-operational row is written through the service: the organism's own
-journal routes it there, and a head that knows no service is refused
-with the checkpoint named — never silently written into git. The
+`adopt` appends `ledger.adopting` to the record. The body that holds
+the spine lease (see [Operating](./operating.md#the-spine-lease)), on
+its next tick, copies every operational row of the record into the
+ledger keyed by its commit (rerun after any interruption; nothing is
+copied twice), carries its own body lease into memory at the token it
+holds, and appends `ledger.adopted` naming the checkpoint. From that
+commit on, an operational row never goes into git: the organization
+appends it to the ledger itself, and everyone else asks for it. The
 record keeps every row it ever held; `hale dna history` reads both
-memories as one. Every operational write path now goes through the
-service, so adoption is open and needs no gate; a new organism still
-starts on routing 0 and adopts by that explicit step.
+memories as one.
 
 Once adopted, the leases move too: the mutation leases the gateway
-takes and the body lease `hale dna run` holds are rows of the store,
-swapped by their token through the service, and the fence renews a
-row rather than a ref. A host that lost its lease presents a stale
-token and the store refuses it. Over a shared record (the owners map)
-the body lease is one row per owner, `owner/<owner>`, so two owners'
-bodies run side by side; the lease's token is an epoch the host hands
-its body, every write the body makes carries it, and the service
-refuses `fenced` a write under a lease that was taken over, released
-or expired. A head's write names no lease. If the store becomes unreachable, the
-fence keeps the lease it last proved until just before it expires and
-then stops the organism; `hale dna status` says the ledger is
-unreachable and that nothing is admitted until it answers.
+takes and the body lease `hale dna run` holds are rows of memory's
+lease table, swapped by their token, and the fence renews a row rather
+than a ref. A host that lost its lease presents a stale token and is
+refused. Over a shared record (the owners map) the body lease is one
+row per owner, `owner/<owner>`, so every owner's body runs side by
+side; the lease's token is an epoch the host hands its organization,
+and a write under a lease that was taken over, released or expired is
+refused `fenced`. If memory becomes unreachable, the fence keeps the
+lease it last proved until just before it expires and then stops the
+organism; `hale dna status` says the ledger is unreachable and that
+nothing is admitted until it answers.
 
-### Working away from the service
+### A head's writes are requests
 
-Once adopted, a verb that writes the day's work from your clone goes
-to the organism's service in your name, and the service checks it
-against the record as it is then. If the service cannot be reached,
-the request is kept on your clone instead:
+The ledger has one writer: the spine's role. A head — the CLI in your
+clone, `hale dna ui`, the read API — never writes it. Once adopted, a
+verb that writes the day's work in your name records a **request**
+instead: a `ledger.requested` row in the record, saying what to write,
+in whose name, and the ledger revision the decision was read at. The
+verb tells you so, with the request's digest:
 
 ```text
-$ hale dna receipt file invoice.pdf --as sam
-hale dna: the service cannot be reached; `receipt.filed sha256:…` is queued locally as 3f1c… (.hale/dna/queue; `hale dna queue` lists it, `hale dna queue submit` sends it — admitted only once the service checks it)
-$ hale dna queue
-queue: 1 request(s) waiting for the service (`hale dna queue submit`)
-  3f1c…  receipt.filed sha256:…  as sam  captured 4m ago
+$ hale dna receipt hold sha256:9d0e… --why "audit" --as sam
+hale dna: `receipt.held sha256:9d0e…` is requested of the ledger as 3f1c2a9e0b77 (this organism's operations live there since 232dc8f18dde); the body admits it on its next tick — `hale dna history sha256:9d0e…` shows the outcome
+receipt sha256:9d0e… held (receipt.held, by sam)
 ```
 
-Nothing queued is authoritative: a queued completion is a request to
-complete, a queued spend has reserved nothing. On submission the
-service admits each request in capture order — a person who retired
-meanwhile is refused, a request sent twice lands once — and a refused
-one is kept beside the queue with the reason.
+The spine admits each request once, on its tick, keyed on the
+request's digest, so a request seen twice lands once. It checks the
+request there, in the spine, against the ledger as it stands: a person
+who retired (`person.retired`) is refused, a completion for a task
+handed to someone else is refused, a transfer is accepted only by a
+member of the owner it was offered to, a claim already taken is
+refused, and a decision read at a revision the ledger has since moved
+past is refused as stale. A request memory could not take for any
+other reason stays undecided and is tried again on the next tick. Over a shared record the request must also carry a valid
+signature of its owner's key (see
+[Operating](./operating.md#shared-records-and-owners-keys)). An
+admitted request lands in the ledger in the person's name; a refused
+one is a `ledger.request_refused` row in the record with the reason.
+`hale dna history` and `hale dna status` show which, once the spine
+has run. The spine writes under the spine lease it holds: one that lost
+it lands nothing, and the next holder decides the request.
+
+Because a request is a row of the record, a head needs no memory to
+make one: the record is the pager. A clone with no DSN named requests
+a write at the tail as any other, and `sync` carries the request to the
+body. A write decided at a ledger revision — `task done`, a
+completion — needs that revision read, so without memory its verb
+refuses ("the ledger's revision was not read") and requests nothing;
+with memory it is requested with the revision, and says so with the
+request's digest and that revision. Before
+adoption (routing 0) there is nothing to request — operational rows go
+into the record as they always did. The host's own operational writes
+go the same way, signed as its owner.
+
+`hale dna ledger rows` prints the ledger as memory holds it, one JSON
+object per line, for a head that names memory
+(`HALE_DNA_MEMORY_DSN_HEAD`).
 
 Evidence keeps its treatment across the two memories: a bill's rows
 are the ledger's, its body is where it always was, and a redaction
 after adoption removes a body filed before it. The books export reads
-the ledger through the service beside the record and never runs SQL
-of its own.
-
-A connection to another record can name that record's service instead
-of its git remote (`hale dna connect http://…`): the handoff's envelope
-then goes service to service, once by its id, and a delivery the other
-record lost is made again by `hale dna handoff sync`. The task still
-settles only when the other record's acceptance comes back.
+the ledger with `hale dna ledger rows` beside the record and never runs
+SQL of its own.

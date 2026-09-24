@@ -937,6 +937,7 @@ locus GitJournal {
     // never reached the threshold, and it never became a proposal
     // (GH #748). A stale view is recoverable; an empty one is not.
     @effects(is: { journal_io })
+    @unbounded
     fn load() -> Bool {
         let read = self.record.head(self.chain());
         if !read.ok { self.read_failed("the chain's head could not be read: " + read.why); return false; }
@@ -1031,6 +1032,7 @@ locus GitJournal {
         if self.head_sha == "" { return self.rows.len() == 0; }
         return self.record.count(self.chain()) == self.rows.len();
     }
+    @unbounded
     fn landed(a: Appended, kind: String, entity: String, body: String, line: String) -> AppendResult {
         let seq = self.rows.len();
         self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: self.head(), digest: a.id });
@@ -1050,6 +1052,7 @@ locus GitJournal {
     // organism's own rows (an apply, a restart request) were dropped in
     // silence (GH #603).
     @effects(is: { journal_io })
+    @unbounded
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
@@ -1132,7 +1135,7 @@ locus GitLeases {
     params {
         repo: String = ".";
         record: GitRecord = GitRecord { };
-        service: ServiceLeases = ServiceLeases { url_env: "HALE_DNA_KNOWLEDGE_URL" };
+        service: MemoryLeases = MemoryLeases { };
         head_seen: String = "";
         routing: Int = 0;
         races: Int = 0;

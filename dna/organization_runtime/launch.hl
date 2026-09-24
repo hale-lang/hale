@@ -58,22 +58,22 @@ locus OrganizationLaunchSource {
         let dir = self.directory(a); let raw = std::str::trim(std::io::fs::read_file(dir + "/org.pid") or "");
         return OrganizationProcess { pid: std::str::parse_int(raw) or - 1, dir: dir, name: "org" };
     }
-    fn scope(a: dna::OrganizationLaunchAttempt) -> Bool {
+    fn scope(a: dna::OrganizationLaunchAttempt, leases: dna::MemoryLeases) -> Bool {
         let authority = HostAuthority { root: self.root };
         let codec = dna::OrganizationLaunchCodec { }; let process = identity::Identity { };
         if !codec.valid(a) || a.source_owner != authority.owner() || process.start_ticks(a.host_pid) != a.host_started { return false; }
-        let lease = authority.body_lease();
+        let lease = authority.body_lease(leases);
         return lease.ok && lease.present && lease.holder == a.body_holder && lease.token == a.body_token && lease.expires > std::time::now() + FENCE_MARGIN;
     }
-    fn live(a: dna::OrganizationLaunchAttempt) -> dna::OrganizationLaunchReceipt {
-        if !self.scope(a) { return dna::OrganizationLaunchReceipt { }; }
+    fn live(a: dna::OrganizationLaunchAttempt, leases: dna::MemoryLeases) -> dna::OrganizationLaunchReceipt {
+        if !self.scope(a, leases) { return dna::OrganizationLaunchReceipt { }; }
         let p = self.process(a); if organization_exit_code(p) != -2 { return dna::OrganizationLaunchReceipt { }; }
         let identity = identity::Identity { }; let before = identity.capture(p.pid);
         if len(before.key) == 0 || self.file_digest("/proc/" + p.pid + "/exe") != a.binary_digest
             || self.file_digest(self.directory(a) + "/program") != a.binary_digest
             || self.file_digest(self.directory(a) + "/topology.json") != a.topology_digest { return dna::OrganizationLaunchReceipt { }; }
         let after = identity.capture(p.pid);
-        if after.key != before.key || after.started != before.started || !self.scope(a) { return dna::OrganizationLaunchReceipt { }; }
+        if after.key != before.key || after.started != before.started || !self.scope(a, leases) { return dna::OrganizationLaunchReceipt { }; }
         return dna::OrganizationLaunchReceipt { valid: true, attempt: a, pid: p.pid, process_key: after.key, process_started: after.started };
     }
     fn launched(a: dna::OrganizationLaunchAttempt) -> dna::OrganizationLaunchReceipt {
@@ -96,13 +96,18 @@ locus OrganizationLaunchSource {
 // Caller authorization remains the owning API's responsibility. All identity
 // arguments are checked against native Record evidence before inspecting a PID.
 locus OrganizationRuntime {
-    params { root: String = ""; }
+    params {
+        root: String = "";
+        // the reader's own handle on the leases (GH #985), held for its life
+        memory: dna::Memory = dna::Memory { };
+    }
+    birth() { self.memory.point(self.root, dna::own_dsn_env()); }
     fn current(application_id: String, request_id: String, attempt_id: String) -> dna::OrganizationRuntimeAssociation {
         let source = OrganizationLaunchSource { root: self.root }; let codec = dna::OrganizationLaunchCodec { };
         let e = source.fact("organization.source.launch_requested", attempt_id); let a = codec.decode_attempt(e);
         if !codec.valid(a) || a.application_id != application_id || a.request_id != request_id || a.attempt_id != attempt_id { return dna::OrganizationRuntimeAssociation { }; }
         let basis = source.basis(a.mutation_id); if !source.matches(a, basis) { return dna::OrganizationRuntimeAssociation { }; }
-        let launched = source.launched(a); let live = source.live(a);
+        let launched = source.launched(a); let live = source.live(a, self.memory.leases);
         let pid = std::str::parse_int(std::str::trim(std::io::fs::read_file(self.root + "/.hale/dna/org.pid") or "")) or - 1;
         if !launched.valid || !live.valid || pid != launched.pid || live.pid != launched.pid || live.process_key != launched.process_key
             || live.process_started != launched.process_started { return dna::OrganizationRuntimeAssociation { }; }

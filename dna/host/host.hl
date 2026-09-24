@@ -410,12 +410,12 @@ fn edge_admits_here(root: String, r: dna::KnowledgeEdgeRequest) -> Bool {
 }
 
 @unbounded
-fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String) -> RelayState {
+fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String, memory: dna::Memory) -> RelayState {
     let mut state = RelayState { relayed: relayed };
     // no record, or one that could not be read: nothing to do this pass
     let now = record_head(root);
     if !now.ok || now.absent { return state; }
-    let p = open_projection(root, seed, toolchain);
+    let p = open_projection(root, seed, toolchain, memory);
     let trust = trust_mode(root);
     let mut i = 0;
     while i < p.rows() {
@@ -510,6 +510,7 @@ fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: St
 }
 
 locus Host {
+    birth() { self.memory.point(self.root, dna::own_dsn_env()); }
     params {
         verb: String = "run";
         root: String = ".";
@@ -529,9 +530,20 @@ locus Host {
         app_log: Int = 0;
         app_bin: String = "";
         observer: Proc = Proc { };
-        knowledge: Proc = Proc { }; // GH #583 K1: the knowledge service, under `dev`
-        knowledge_dsn: String = "";
-        knowledge_url: String = ""; // where the organization asks for packages, once the service is up
+        // GH #985: memory, as the spine — the graph projected from the
+        // record, the heads' requests admitted, redactions carried out —
+        // on this body's tick, under the record's spine role
+        graph_projection: ops::MemoryProjection = ops::MemoryProjection { };
+        admission: dna::RequestAdmission = dna::RequestAdmission { };
+        vault: dna::MemoryVault = dna::MemoryVault { };
+        // this process's one handle on the ledger and the leases (GH #985):
+        // opened on first use, held for the host's life, closed with it
+        memory: dna::Memory = dna::Memory { };
+        spine_token: Int = 0; // the spine lease's token while this spine holds it
+        spine_projected: Int = 0; // record rows this spine projected into memory
+        spine_erased: Int = 0; // protected bodies this spine erased
+        memory_on: Bool = false;
+        memory_said: String = "";
         handled: String = "\n";
         relayed: String = "\n";
         app_gone_reported: Bool = false;
@@ -566,16 +578,16 @@ locus Host {
             rest = rest[(sp + 1)..len(rest)];
             if len(name) > 0 && (std::env::var_exists(name) || std::str::contains(file, "\n" + name + "=")) { have = true; }
         }
-        let p = open_projection(self.root, self.seed, self.toolchain);
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let was_missing = len(credential_gap(p)) > 0;
         if !have && !was_missing {
             self.say("no credential for the model: none of " + names + " is set here or in ~/.config/hale-dna/" + body_key(self.root) + ".env (`hale dna secret set <NAME>`); the board says so until one is");
-            let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + "}", "host");
+            let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host");
         }
         if !have && was_missing { self.say("no credential for the model (still): none of " + names + " is set"); }
         if have && was_missing {
             self.say("the model's credential is present now");
-            let r = append_as(self.root, "body.credential_present", "model", "{\"holder\": " + quote(self.holder) + "}", "host");
+            let r = append_as(self.root, "body.credential_present", "model", "{\"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host");
         }
     }
     // GH #617: the lease is asserted before every consequential act
@@ -655,16 +667,17 @@ locus Host {
         dna::kill_marked(dna::body_mark(self.holder, self.lease.token, std::process::pid()));
     }
     fn quit(code: Int) {
+        self.release_spine();
         self.stop_started();
         self.stop_fence();
         std::process::exit(code);
     }
     fn stop_body(code: Int) {
+        self.release_spine();
         self.stop_started();
         self.stop_fence();
         stop_proc(self.org);
         if self.observer.pid > 0 { stop_proc(self.observer); }
-        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
@@ -693,7 +706,7 @@ locus Host {
     // organism must never run under a lease that is not ours).
     fn body_assert(what: String) -> Bool {
         let now = std::time::now();
-        let r = body_lease_read(self.root);
+        let r = body_lease_read(self.root, self.memory);
         if r.ok && (!r.present || r.holder != self.holder || r.token != self.lease.token) {
             self.say("before starting " + what + ": the body lease is no longer mine (" + (if len(r.holder) > 0 && r.holder != self.holder { "held by " + r.holder } else { "released" }) + "); nothing is started");
             return false;
@@ -740,10 +753,6 @@ locus Host {
         // a child starts, so the fence finds them even once that child is gone
         if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + dna::body_mark(self.holder, self.lease.token, std::process::pid()); }
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
-        // GH #583 K2: the organization's line to the knowledge service —
-        // the one this host started, or the one the operator named
-        let url = if len(self.knowledge_url) > 0 { self.knowledge_url } else if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { std::env::var("HALE_DNA_KNOWLEDGE_URL") } else { "" };
-        if len(url) > 0 { e = e + "\nHALE_DNA_KNOWLEDGE_URL=" + url; }
         // GH #664: which owner this body is, over a shared record
         let me = owner_here(self.root);
         if len(me) > 0 { e = e + "\nHALE_DNA_OWNER=" + me; }
@@ -753,39 +762,110 @@ locus Host {
         if len(self.holder) > 0 && body_in_store(self.root) { e = e + "\nHALE_DNA_LEASE=" + store_lease_key(self.root) + "\nHALE_DNA_LEASE_TOKEN=" + to_string(self.lease.token); }
         return e;
     }
-    // ---- the knowledge graph's environment (GH #583 K1) ----------------
-    // `dev` applies memory's schema before the host starts (GH #985): the
-    // driver runs `memory-migrate` with the owner's DSN, from
-    // HALE_DNA_KNOWLEDGE_DSN or dna/compose.yaml brought up, and hands the
-    // host only the record's spine DSN. The host checks the schema version
-    // on it and runs the knowledge service as the spine. Without it the
-    // host says so and runs without a knowledge service.
-    fn start_knowledge() {
-        let bin = std::env::var("HALE_DNA_KNOWLEDGE_BIN");
-        if len(bin) == 0 { return; }
-        let memory = std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") == "memory";
-        let spine = if std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE") { std::env::var("HALE_DNA_MEMORY_DSN_SPINE") } else { "" };
-        if len(spine) == 0 && !memory {
-            self.say("no HALE_DNA_MEMORY_DSN_SPINE: the knowledge service is not running (`hale dna dev` applies memory's schema from HALE_DNA_KNOWLEDGE_DSN or dna/compose.yaml and hands the host the spine's DSN)");
+    // ---- memory, as the spine (GH #985) ----------------------------------
+    // `dev` applies memory's schema before the host starts: the driver runs
+    // `memory-migrate` with the owner's DSN and hands the host only the
+    // record's spine DSN, which the organization inherits. The host refuses
+    // a memory at another schema version, naming both; without a DSN it
+    // says so and runs with no memory (nothing is projected or admitted).
+    fn start_memory() {
+        if !dna::dsn_set(dna::SPINE_DSN_ENV) {
+            self.say("no memory: " + dna::SPINE_DSN_ENV + " is not set (`hale dna dev` applies memory's schema from HALE_DNA_MEMORY_DSN_OWNER or dna/compose.yaml and hands the host the spine's DSN); nothing is projected or admitted");
             return;
         }
-        let dsn = if len(spine) > 0 { spine } else { "memory" };
-        if len(spine) > 0 {
-            let fence = memory_fence_for(spine, self.root);
-            if len(fence) > 0 { self.say("the knowledge service is not started: " + fence); return; }
+        let fence = memory_fence_for(std::env::var(dna::SPINE_DSN_ENV), self.root);
+        if len(fence) > 0 { self.say("memory: " + fence); self.quit(2); }
+        self.graph_projection.root = self.root;
+        self.graph_projection.j.repo = self.root;
+        self.graph_projection.j.record.repo = self.root;
+        self.graph_projection.receipts.repo = self.root;
+        self.admission.root = self.root;
+        self.admission.j.repo = self.root;
+        self.admission.j.record.repo = self.root;
+        self.admission.ledger.repo = self.root;
+        self.admission.carry_cell = BODY_LEASE;
+        self.admission.carry_key = store_lease_key(self.root);
+        self.vault.repo = self.root;
+        self.vault.j.repo = self.root;
+        self.vault.j.record.repo = self.root;
+        self.memory_on = true;
+        self.say("memory: the graph, the ledger and protected evidence under the record's spine role");
+    }
+    // One pass of the spine's memory work: the record applied into the
+    // graph, the heads' requests admitted (and an adoption carried out),
+    // the redactions the record holds erased. What failed is said once,
+    // when it changes, and tried again next tick.
+    // Whether this spine holds the spine lease for this tick: renewed at its
+    // token while held, taken when free. A spine without it reads and
+    // forwards; it neither projects, admits nor erases.
+    fn spine_held() -> Bool {
+        let now = std::time::now();
+        let leases = self.memory.leases;
+        if self.spine_token > 0 {
+            if leases.put(SPINE_LEASE, dna::Lease { key: SPINE_LEASE, holder: self.holder, token: self.spine_token, expires: now + SPINE_TTL, present: true }, self.spine_token) { return true; }
+            let now_held = leases.current(SPINE_LEASE);
+            self.spine_row("spine.lost", self.spine_token, if !leases.reachable { "memory did not answer" } else if now_held.present && now_held.holder != self.holder { "taken by " + now_held.holder } else { "expired" });
+            self.spine_token = 0;
+            return false;
         }
-        self.knowledge_dsn = dsn;
-        std::io::fs::unlink(self.dna_dir + "/knowledge.log") or discard;
-        let port = if std::env::var_exists("HALE_DNA_KNOWLEDGE_PORT") { std::env::var("HALE_DNA_KNOWLEDGE_PORT") } else { "8791" };
-        let env = if len(spine) > 0 { "\nHALE_DNA_MEMORY_DSN_SPINE=" + spine } else { "\nHALE_DNA_KNOWLEDGE_DSN=memory" };
-        self.knowledge = start(self.dna_dir, "knowledge", self.root, self.child_envs("", "") + env, bin + "\n" + self.root + "\n" + port);
-        if self.knowledge.pid <= 0 { self.say("cannot start the knowledge service"); return; }
-        self.knowledge_url = "http://127.0.0.1:" + port;
-        let kw = write_text(self.dna_dir + "/knowledge.pid", to_string(self.knowledge.pid)) or false;
-        let kd = write_text(self.dna_dir + "/knowledge.dsn", dsn) or false;
-        // GH #606: where the CLI reaches the keeper of protected evidence
-        let ku = write_text(self.dna_dir + "/knowledge.url", self.knowledge_url) or false;
-        self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres, as the record's spine role" }));
+        let l = leases.acquire(SPINE_LEASE, self.holder, now, SPINE_TTL);
+        if !l.present { return false; }
+        self.spine_token = l.token;
+        self.spine_row("spine.taken", l.token, "");
+        self.say("spine: this body projects memory and admits requests (the spine lease, token " + to_string(l.token) + ")");
+        return true;
+    }
+    // A change of the spine lease, as a row of the record naming the holder
+    // and its owner, so the record shows which spine projected what.
+    fn spine_row(kind: String, token: Int, why: String) {
+        let body = "{\"holder\": " + quote(self.holder) + ", \"token\": " + to_string(token) + (if len(why) > 0 { ", \"why\": " + quote(why) } else { "" }) + owner_json(self.root) + "}";
+        let ok = append_as(self.root, kind, SPINE_LEASE, body, "host");
+    }
+    fn release_spine() {
+        if self.spine_token <= 0 { return; }
+        let gave = self.memory.leases.complete(SPINE_LEASE, self.spine_token, std::time::now());
+        self.spine_row("spine.lost", self.spine_token, "released");
+        self.spine_token = 0;
+    }
+    // What this spine has done on its ticks, beside the status: whether it
+    // holds the spine lease, and the rows it projected, the requests it
+    // decided and the bodies it erased while it did (GH #985).
+    fn write_spine(held: Bool) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("holder", self.holder);
+        b.bool_field("held", held);
+        b.int_field("token", self.spine_token);
+        b.int_field("projected", self.spine_projected);
+        b.int_field("decided", self.admission.admitted + self.admission.refused);
+        b.int_field("erased", self.spine_erased);
+        b.end_object();
+        let tmp = self.dna_dir + "/spine.json.tmp";
+        let w = write_text(tmp, b.result()) or false;
+        if w { std::io::fs::rename(tmp, self.dna_dir + "/spine.json") or discard; }
+    }
+    fn memory_tick() {
+        if !self.memory_on { return; }
+        let held = self.spine_held();
+        if !held { self.write_spine(false); return; }
+        // what it admits is fenced by the lease it holds: a spine that lost
+        // it mid-tick lands nothing more
+        self.admission.ledger.lease = SPINE_LEASE;
+        self.admission.ledger.token = self.spine_token;
+        let applied = self.graph_projection.apply();
+        let admitted = self.admission.tick();
+        let erased = self.vault.complete_redactions();
+        if applied.rows > 0 { self.spine_projected = self.spine_projected + applied.rows; }
+        if erased > 0 { self.spine_erased = self.spine_erased + erased; }
+        self.write_spine(true);
+        let mut why = "";
+        if len(applied.error) > 0 { why = "projection: " + applied.error; }
+        if admitted < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "admission: " + self.admission.last_error; }
+        if erased < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "redaction: " + self.vault.last_error; }
+        if why != self.memory_said {
+            if len(why) > 0 { self.say("memory: " + why); } else if len(self.memory_said) > 0 { self.say("memory: answering again"); }
+            self.memory_said = why;
+        }
     }
     fn remove_sockets() {
         std::io::fs::unlink(self.dna_dir + "/" + VERDICT_SOCK) or discard;
@@ -810,7 +890,7 @@ locus Host {
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let p = open_projection(self.root, self.seed, self.toolchain);
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let tmp = self.status_path + ".tmp";
         let w = write_text(tmp, p.json()) or false;
         if w { std::io::fs::rename(tmp, self.status_path) or discard; }
@@ -828,7 +908,7 @@ locus Host {
     // appended from any clone is relayed onto the organism's sockets,
     // once.
     fn relay_record_membrane() -> Int {
-        let state = relay_record_membrane(self.root, self.seed, self.toolchain, self.verb, self.relayed);
+        let state = relay_record_membrane(self.root, self.seed, self.toolchain, self.verb, self.relayed, self.memory);
         self.relayed = state.relayed;
         if len(state.error) > 0 { self.say("membrane relay failed: " + state.error); }
         return state.count;
@@ -860,7 +940,7 @@ locus Host {
     fn observation_landed(mutation_id: String, outcome: String, secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let p = open_projection(self.root, self.seed, self.toolchain);
+            let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
             let mut i = 0;
             while i < p.rows() {
                 let e = p.row(i);
@@ -916,7 +996,7 @@ locus Host {
     // owned process. This method is never called for an existing claim.
     fn start_organization_launch(prepared: OrganizationLaunchPreparation) -> Bool {
         let a = prepared.attempt; let codec = dna::OrganizationLaunchCodec { }; let source = org_runtime::OrganizationLaunchSource { root: self.root };
-        if !prepared.valid || !prepared.fresh || !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a) { return false; }
+        if !prepared.valid || !prepared.fresh || !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a, self.memory.leases) { return false; }
         let requested = source.fact("organization.source.launch_requested", a.attempt_id);
         let basis = source.basis(a.mutation_id);
         let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
@@ -935,14 +1015,14 @@ locus Host {
     }
     fn note_organization_exit(a: dna::OrganizationLaunchAttempt) -> Bool {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let codec = dna::OrganizationLaunchCodec { };
-        if !source.scope(a) || a.host_pid != std::process::pid() { return false; }
+        if !source.scope(a, self.memory.leases) || a.host_pid != std::process::pid() { return false; }
         let read = source.process(a); let proc = Proc { pid: read.pid, dir: read.dir, name: read.name }; let code = exit_code(proc);
         if proc.pid < 1 || code < 0 { return false; }
         return organization_launch_write(self.root, "organization.source.launch_exited", a.attempt_id, codec.exit_body(a, proc.pid, code)).ok;
     }
     fn recover_organization_launch(id: String) -> dna::OrganizationLaunchReceipt {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let basis = source.basis(id); let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
-        if !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a) || !self.body_assert("the same prepared organization attempt") { return dna::OrganizationLaunchReceipt { }; }
+        if !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a, self.memory.leases) || !self.body_assert("the same prepared organization attempt") { return dna::OrganizationLaunchReceipt { }; }
         let read = source.process(a); let proc = Proc { pid: read.pid, dir: read.dir, name: read.name }; let exited = exit_code(proc);
         if proc.pid > 0 && exited >= 0 {
             let saved = organization_launch_write(self.root, "organization.source.launch_exited", a.attempt_id, codec.exit_body(a, proc.pid, exited));
@@ -951,7 +1031,7 @@ locus Host {
         if proc.pid <= 0 { return dna::OrganizationLaunchReceipt { }; }
         self.org = proc;
         if !self.wait_membrane(20) { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
-        let live = source.live(a); if !live.valid { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
+        let live = source.live(a, self.memory.leases); if !live.valid { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
         let existing = source.launched(a);
         if existing.valid {
             return if existing.pid == live.pid && existing.process_key == live.process_key && existing.process_started == live.process_started { existing } else { dna::OrganizationLaunchReceipt { } };
@@ -966,7 +1046,7 @@ locus Host {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
         let rollback = OrganizationRollbackCodec { }; let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
         let exited = source.exited(a); let failure = source.fact("organization.source.launch_exited", a.attempt_id);
-        if !basis.ok || !codec.valid(a) || !exited.valid || code != exited.code || !source.scope(a) || a.host_pid != std::process::pid()
+        if !basis.ok || !codec.valid(a) || !exited.valid || code != exited.code || !source.scope(a, self.memory.leases) || a.host_pid != std::process::pid()
             || !self.body_assert("the prepared organization rollback") { return false; }
         if rollback.answered(source, basis, a) { return true; }
         let id = a.mutation_id;
@@ -1006,7 +1086,7 @@ locus Host {
         }
         let claim = rollback.launch_claim(source, basis, a); if !claim.valid { return false; }
         if fresh {
-            if !source.scope(a) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
+            if !source.scope(a, self.memory.leases) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
                 || source.file_digest(dir + "/rollback.topology") != claim.topology_digest { return false; }
             stop_proc(self.org); self.remove_sockets(); if !self.body_assert("the original organization") { return false; }
             self.org = start(dir, "rollback", self.root, self.child_envs(id, "rollback " + claim.binary_digest), dir + "/rollback.program"); self.org_log = 0;
@@ -1018,7 +1098,7 @@ locus Host {
         let process = identity::Identity { }; let before = process.capture(self.org.pid);
         if len(before.key) == 0 || source.file_digest("/proc/" + self.org.pid + "/exe") != claim.binary_digest
             || source.file_digest(dir + "/rollback.program") != claim.binary_digest || source.file_digest(dir + "/rollback.topology") != claim.topology_digest
-            || !guard.current(basis.request).ok || !source.scope(a) { return false; }
+            || !guard.current(basis.request).ok || !source.scope(a, self.memory.leases) { return false; }
         let after = process.capture(self.org.pid); if before.key != after.key || before.started != after.started { return false; }
         let pid = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
         let artifact = dna::run_tool("cp\n" + dir + "/rollback.topology\n" + self.dna_dir + "/org.topology"); if !pid || artifact.code != 0 { return false; }
@@ -1038,11 +1118,11 @@ locus Host {
         }
         let previous = source.observed(launched);
         if previous.valid {
-            if previous.outcome == "healthy" { self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy"); return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain), basis.handoff); }
+            if previous.outcome == "healthy" { self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy"); return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain, self.memory), basis.handoff); }
             let exited = source.exited(prepared.attempt);
             return if exited.valid { self.rollback_organization_launch(basis, exited.code) } else { false };
         }
-        let first = source.live(launched.attempt);
+        let first = source.live(launched.attempt, self.memory.leases);
         if !first.valid || first.process_key != launched.process_key { return false; }
         let began = std::time::now(); let end = began + launched.attempt.observation_seconds; let mut code = -2;
         while std::time::now() < end && code == -2 {
@@ -1056,13 +1136,13 @@ locus Host {
                 codec.observation_body(launched, "crashed", began, std::time::now()));
             return if saved.ok { self.rollback_organization_launch(basis, code) } else { false };
         }
-        let after = source.live(launched.attempt);
+        let after = source.live(launched.attempt, self.memory.leases);
         if !after.valid || after.pid != launched.pid || after.process_key != launched.process_key || after.process_started != launched.process_started { return false; }
         let saved = organization_launch_write(self.root, "organization.source.launch_observed", launched.attempt.attempt_id,
             codec.observation_body(launched, "healthy", began, std::time::now()));
         if !saved.ok { return false; }
         self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy");
-        return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain), basis.handoff);
+        return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain, self.memory), basis.handoff);
     }
     fn restart_org(id: String, rollback: Bool) -> Bool {
         let org_seed = self.root + "/" + ORG_SEED;
@@ -1088,9 +1168,9 @@ locus Host {
         let mut all_up_at = -1;
         let mut shape = "";
         while true {
-            let s = sync_record(self.root);
+            let s = sync_record(self.root, self.memory);
             self.write_status();
-            let p = open_projection(self.root, self.seed, self.toolchain);
+            let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
             let mut missing = "";
             let mut rest = touched + " ";
             while len(rest) > 0 {
@@ -1125,7 +1205,7 @@ locus Host {
         let rev = second_word(body);
         let seed_named = seed_named_in(body);
         self.say(id + " requests a restart (" + body + "); deploying to the fleet `" + self.fleet + "`");
-        let d = fleet_deploy(self.root, self.fleet, self.plan, rev, seed_named, id, if rollback { "rollback" } else { "apply" });
+        let d = fleet_deploy(self.root, self.fleet, self.plan, rev, seed_named, id, if rollback { "rollback" } else { "apply" }, self.memory);
         if !d.ok {
             self.say(id + ": the fleet does not deploy: " + d.error);
             if !rollback { self.observed(id, "build_failed", "", "fleet: " + d.error); }
@@ -1187,7 +1267,7 @@ locus Host {
         while std::time::now() < end && crashed == -2 {
             crashed = exit_code(self.app);
             self.app_log = drain_log(self.app, self.app_log);
-            let s = sync_record(self.root);
+            let s = sync_record(self.root, self.memory);
             self.write_status();
             std::time::sleep(250ms);
         }
@@ -1212,7 +1292,7 @@ locus Host {
         while std::time::now() < end && crashed == -2 {
             crashed = exit_code(self.org);
             self.org_log = drain_log(self.org, self.org_log);
-            let s = sync_record(self.root);
+            let s = sync_record(self.root, self.memory);
             self.write_status();
             std::time::sleep(250ms);
         }
@@ -1225,7 +1305,7 @@ locus Host {
         // nobody is left to decide: the host accounts for it, resets the
         // genome to the base and restarts the old organization
         self.say(id + ": the organization exited (" + to_string(crashed) + ") inside the window; rolling back");
-        let base = base_of(open_projection(self.root, self.seed, self.toolchain), id);
+        let base = base_of(open_projection(self.root, self.seed, self.toolchain, self.memory), id);
         let c = append_as(self.root, "expression.crashed", id, "organization exited " + to_string(crashed) + " in the observation window", "");
         if genome_reset(self.root, base) {
             let r = append_as(self.root, "mutation.rolled_back", id, base + " by host after the organization crashed", "");
@@ -1248,22 +1328,23 @@ locus Host {
                 self.app_gone_reported = true;
             }
         }
-        let s = sync_record(self.root);
+        let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
+        self.memory_tick();
         if forge_kind(self.root) != "none" {
-            let g = github_sync(self.root, self.seed);
+            let g = github_sync(self.root, self.seed, self.memory);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }
         // the sync above may have blocked past the lease's life: prove it
         // again before relaying anything onto the membrane
         if !self.body_alive() { self.stop_body(3); }
         let n = self.relay_record_membrane();
-        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root); }
+        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root, self.memory); }
         self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let p = open_projection(self.root, self.seed, self.toolchain);
+        let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let req = pending_restart(p, self.handled);
         if req.seq < 0 { return; }
         if prepared_source_restart(p, req) {
@@ -1290,26 +1371,25 @@ locus Host {
         //    time; nothing is built or run under a lease that is not ours
         self.holder = body_holder(self.root);
         let now0 = std::time::now();
-        let l = body_acquire(self.root, self.holder, now0, false);
+        let l = body_acquire(self.root, self.holder, now0, false, self.memory);
         if !l.ok { self.say("the record's remote cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove"); std::process::exit(3); }
         if !l.present || l.holder != self.holder {
             self.say("a body for this record is live on " + l.holder + " (ticked " + ago(now0 - (l.expires - BODY_TTL)) + ", lease expires in " + to_string(l.expires - now0) + "s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone");
             std::process::exit(3);
         }
         self.lease = l;
-        let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"}", "host");
+        let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"" + owner_json(self.root) + "}", "host");
         self.say("body lease taken as " + self.holder + " (token " + to_string(l.token) + ")");
         self.start_fence();
         self.check_credentials();
         // 1. the expression identity: a fresh artifact of the application
         let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
         if len(cut) > 0 { self.say(cut); self.quit(1); }
-        // 2. dev: the knowledge service first, so the organization's
-        //    environment names it (GH #583 K2)
-        if self.verb == "dev" { self.start_knowledge(); }
+        // 2. memory, before the organization that reads and writes it (GH #985)
+        self.start_memory();
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
-        let incoming = open_projection(self.root, self.seed, self.toolchain);
+        let incoming = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let prepared_restart = pending_restart(incoming, self.handled);
         let prepared_startup = prepared_restart.seq >= 0 && prepared_source_restart(incoming, prepared_restart);
         if prepared_startup {
@@ -1323,7 +1403,6 @@ locus Host {
             std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
             std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
             if !self.body_assert("the organization") {
-                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
                 self.quit(3);
             }
             self.org = start(self.dna_dir, "org", self.root, self.child_envs("", ""), org_bin);
@@ -1342,7 +1421,6 @@ locus Host {
             self.app_bin = bin;
             if !self.body_assert("the expression") {
                 stop_proc(self.org);
-                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
                 self.quit(3);
             }
             self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
@@ -1363,16 +1441,16 @@ locus Host {
             code = exit_code(self.org);
             if code == -2 {
                 self.tick();
-                std::time::sleep(1s);
+                std::time::sleep(HOST_TICK);
             } else {
                 // A proven failed prepared child may still need its exact
                 // rollback acknowledgment. Keep this host/lease alive to
                 // reconcile that one handoff; never replace an unknown claim.
-                let waiting = open_projection(self.root, self.seed, self.toolchain);
+                let waiting = open_projection(self.root, self.seed, self.toolchain, self.memory);
                 let handoff_fact = pending_restart(waiting, self.handled);
                 if handoff_fact.seq >= 0 && prepared_source_restart(waiting, handoff_fact) {
                     if !self.body_alive() { self.stop_body(3); }
-                    self.tick(); code = -2; std::time::sleep(1s);
+                    self.tick(); code = -2; std::time::sleep(HOST_TICK);
                 }
             }
         }
@@ -1382,15 +1460,15 @@ locus Host {
         self.stop_started();
         self.org_log = drain_log(self.org, self.org_log);
         if self.observer.pid > 0 { stop_proc(self.observer); }
-        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.write_status();
         self.stop_fence();
-        if body_release(self.root, self.lease) {
-            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"}", "host");
-            let s3 = sync_record(self.root);
+        self.release_spine();
+        if body_release(self.root, self.lease, self.memory) {
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host");
+            let s3 = sync_record(self.root, self.memory);
         }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
         if self.exit_code != 0 { self.quit(self.exit_code); }
@@ -1415,7 +1493,7 @@ fn count_words(s: String) -> Int {
 // the same clone). Every status line it writes starts with its host's pid.
 // Bounded by the life of the body it fences.
 @unbounded
-fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
+fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int, memory: dna::Memory) {
     let dir = ".hale/dna";
     let mut lease = BodyLease { present: true, holder: holder, token: token, expires: expires };
     let mark = dna::body_mark(holder, token, host_pid);
@@ -1426,7 +1504,7 @@ fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
         let d = write_text(dir + "/body.deadline", to_string(lease.expires - FENCE_MARGIN)) or false;
         if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, mark, "orphaned: the host is gone"); return; }
         if now - renewed >= BODY_TTL / 3 {
-            let r = body_renew(".", lease, now);
+            let r = body_renew(".", lease, now, memory);
             if r.ok {
                 if !r.present || r.holder != holder { fence_stop(dir, host_pid, mark, "lost " + r.holder); return; }
                 lease = r;
@@ -1462,8 +1540,8 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
     // GH #646 decision 3: an adopted organism starts active work only
     // when its store is reachable — `dev` brings the service up itself;
     // `run` needs to be told where it is
-    if verb == "run" && routing_here(root) > 0 && len(knowledge_url(root)) == 0 {
-        eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no ledger service is known here (HALE_DNA_KNOWLEDGE_URL); a body without its store admits nothing — set the url, or run under `hale dna dev`");
+    if verb == "run" && routing_here(root) > 0 && !dna::dsn_set(dna::SPINE_DSN_ENV) {
+        eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no memory is named here (", dna::SPINE_DSN_ENV, "); a body without its memory admits nothing — set it, or run under `hale dna dev`");
         std::process::exit(2);
     }
     // GH #664: a body over a shared record says which owner it is, and it
@@ -1481,7 +1559,7 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
         // GH #665: the owners' controllers coordinate through the ledger —
         // a lease per owner in the store, an epoch on every write
         if verb == "run" && routing_here(root) == 0 {
-            eprintln("hale dna run: this record is shared (", OWNERS_FILE, ": ", owners_here(root), "), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`, or with HALE_DNA_KNOWLEDGE_URL)");
+            eprintln("hale dna run: this record is shared (", OWNERS_FILE, ": ", owners_here(root), "), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`)");
             std::process::exit(2);
         }
     }

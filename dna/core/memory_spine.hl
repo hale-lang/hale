@@ -1,0 +1,816 @@
+// dna/core/memory_spine.hl — memory as the organism holds it (GH #985).
+//
+// There is no service in front of memory. A part that reads or writes it
+// opens Postgres itself, as a role whose DSN the environment names, and
+// the role's grants are the trust boundary: the spine's role
+// (HALE_DNA_MEMORY_DSN_SPINE) is the one writer of the ledger, the graph
+// and protected evidence; the head's (HALE_DNA_MEMORY_DSN_HEAD) takes and
+// fences a lease and reads. Each handle is scoped to the record it serves
+// by the record's identity, the sha of its first row, read at open.
+
+const SPINE_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_SPINE";
+const HEAD_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_HEAD";
+
+// The role this process was given: the spine's when the body started it
+// with one, otherwise the head's. A process never holds both.
+fn own_dsn_env() -> String { if dsn_set(SPINE_DSN_ENV) { return SPINE_DSN_ENV; } return HEAD_DSN_ENV; }
+
+fn dsn_set(env_name: String) -> Bool { return len(env_name) > 0 && std::env::var_exists(env_name) && len(std::env::var(env_name)) > 0; }
+
+// The identity of the record at `repo`: the scope of its schema.
+fn record_scope(repo: String) -> String {
+    let r = GitRecord { repo: repo };
+    return r.identity();
+}
+
+// ---- the ledger ------------------------------------------------------------
+
+// Why a write under `lease` at `token` is fenced, "" when it holds (GH #665):
+// a controller that lost its lease — taken over, released, expired —
+// writes nothing.
+fn fence_refusal(leases: PqLeaseStore, lease: String, token: Int, now: Int) -> String {
+    let cur = leases.current(lease);
+    if !cur.known || !cur.present { return "fenced: the lease `" + lease + "` is not held; a controller writes only under a lease it holds"; }
+    if cur.token != token { return "fenced: the lease `" + lease + "` is " + cur.holder + "'s at epoch " + to_string(cur.token) + ", not epoch " + to_string(token) + "; a controller that lost its lease writes nothing"; }
+    if cur.expires <= now { return "fenced: the lease `" + lease + "` expired at " + to_string(cur.expires) + " (epoch " + to_string(token) + ") and was not renewed"; }
+    return "";
+}
+
+// The ledger as the spine holds it: a `Journal` over its store, opened as
+// the spine's role on first use. A writer that holds a lease (the body,
+// an owner's controller) carries it and its epoch, from the environment
+// the host set, and a write under a lease it no longer holds lands
+// nothing. Without a DSN nothing is readable and every append fails as
+// `io`: an organism on routing 1 does not start without its memory
+// (#646 decision 3), and the host says so.
+locus MemoryLedger {
+    params {
+        repo: String = ".";
+        dsn_env: String = SPINE_DSN_ENV;
+        store: PqLedger = PqLedger { };
+        leases: PqLeaseStore = PqLeaseStore { };
+        opened: Bool = false;
+        failure: String = "";
+        lease: String = "";
+        token: Int = 0;
+        lease_env: String = "HALE_DNA_LEASE";
+        token_env: String = "HALE_DNA_LEASE_TOKEN";
+    }
+    birth() {
+        if len(self.lease) == 0 && len(self.lease_env) > 0 && std::env::var_exists(self.lease_env) {
+            self.lease = std::env::var(self.lease_env);
+            if len(self.token_env) > 0 && std::env::var_exists(self.token_env) { self.token = std::str::parse_int(std::env::var(self.token_env)) or 0; }
+        }
+    }
+    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    // Opened on first use, not at birth: an organism on routing 0 holds a
+    // ledger and never asks it anything.
+    @unbounded
+    fn ensure_open() -> Bool {
+        if self.opened { return true; }
+        if !self.ready() { self.failure = self.dsn_env + " is not set: no ledger"; return false; }
+        let scope = record_scope(self.repo);
+        self.store.dsn_env = self.dsn_env;
+        self.leases.dsn_env = self.dsn_env;
+        self.store.scope(scope);
+        self.leases.scope(scope);
+        if !self.store.open() { self.failure = "the ledger is not open: " + self.store.last_error(); return false; }
+        if !self.leases.open() { self.failure = "the leases are not open: " + self.leases.last_error(); return false; }
+        self.opened = true;
+        return true;
+    }
+    fn revision() -> Int { if !self.ensure_open() { return 0; } return self.store.revision(); }
+    fn head() -> String { if !self.ensure_open() { return "genesis"; } return self.store.head(); }
+    fn refresh() -> Bool { if !self.ensure_open() { return false; } return self.store.refresh(); }
+    fn read(i: Int) -> Event { if !self.ensure_open() { return Event { }; } return self.store.read(i); }
+    fn verify_chain() -> Bool { if !self.ensure_open() { return false; } return self.store.verify_chain(); }
+    fn author_of(i: Int) -> String { if !self.ensure_open() { return ""; } return self.store.author_of(i); }
+    fn fenced() -> String {
+        if len(self.lease) == 0 { return ""; }
+        return fence_refusal(self.leases, self.lease, self.token, std::time::now());
+    }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        let fence = self.fenced();
+        if len(fence) > 0 { self.failure = fence; return AppendResult { error: "refused", expected: expected, actual: self.store.revision() }; }
+        return self.store.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        let fence = self.fenced();
+        if len(fence) > 0 { self.failure = fence; return AppendResult { error: "refused", expected: expected, actual: self.store.revision() }; }
+        return self.store.append_exact(expected, kind, entity, body);
+    }
+    // An append in `author`'s name: the row lands under it in one insert, so
+    // no reader ever sees an admitted row without its author (GH #985).
+    fn append_as(expected: Int, kind: String, entity: String, body: String, author: String, exact: Bool) -> AppendResult {
+        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        self.store.writer = if len(author) > 0 { author } else { "ledger" };
+        let r = if exact { self.append_exact(expected, kind, entity, body) } else { self.append(expected, kind, entity, body) };
+        self.store.writer = "ledger";
+        return r;
+    }
+    // ---- what the spine's admission and adoption do beside appending
+    fn seen(request_id: String) -> Int { if !self.ensure_open() { return -3; } return self.store.seen(request_id); }
+    fn mark(request_id: String, revision: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.mark(request_id, revision); }
+    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool { if !self.ensure_open() { return false; } return self.store.adopt_row(kind, entity, body, author, record_seq, commit); }
+    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.cutover(checkpoint, copied, routing); }
+    fn checkpoint() -> Cutover { if !self.ensure_open() { return Cutover { }; } return self.store.checkpoint(); }
+    fn abandon() -> Bool { if !self.ensure_open() { return false; } return self.store.abandon(); }
+    // A lease the record held, put into memory as it stands, token and all,
+    // unless memory already holds one under `key`.
+    fn carry_lease(key: String, holder: String, token: Int, expires: Int) -> Bool {
+        if !self.ensure_open() { return false; }
+        if self.leases.current(key).known { return true; }
+        return self.leases.put(key, holder, token, expires, true, 0);
+    }
+    fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
+}
+
+// ---- one process's memory ---------------------------------------------------
+
+// Memory as one process holds it (GH #985): the ledger and the leases,
+// each opened once on first use and closed when the process's handle
+// dissolves. A host builds one for its lifetime and a CLI verb one for its
+// run; everything that reads the ledger or a lease takes this handle and
+// never builds its own, so a long-lived process holds a fixed handful of
+// connections however long it runs.
+locus Memory {
+    params {
+        repo: String = ".";
+        dsn_env: String = SPINE_DSN_ENV;
+        ledger: MemoryLedger = MemoryLedger { };
+        leases: MemoryLeases = MemoryLeases { };
+    }
+    birth() { self.point(self.repo, self.dsn_env); }
+    // For a holder that knows its record only after it is built (the host).
+    fn point(repo: String, dsn_env: String) {
+        self.repo = repo;
+        self.dsn_env = dsn_env;
+        self.ledger.repo = repo;
+        self.ledger.dsn_env = dsn_env;
+        self.leases.repo = repo;
+        self.leases.dsn_env = dsn_env;
+    }
+}
+
+// ---- leases ----------------------------------------------------------------
+
+// Leases in memory, swapped by token: `Coordination` for the gateway,
+// `current`/`put` for the body lease. The head takes and fences a lease
+// under its own role, the spine under its.
+locus MemoryLeases {
+    params {
+        repo: String = ".";
+        dsn_env: String = SPINE_DSN_ENV;
+        store: PqLeaseStore = PqLeaseStore { };
+        opened: Bool = false;
+        last_error: String = "";
+        reachable: Bool = true; // false after the last call could not reach memory
+        races: Int = 0;
+    }
+    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    @unbounded
+    fn ensure_open() -> Bool {
+        if self.opened { return true; }
+        if !self.ready() { self.last_error = self.dsn_env + " is not set: no leases"; return false; }
+        self.store.dsn_env = self.dsn_env;
+        self.store.scope(record_scope(self.repo));
+        if !self.store.open() { self.last_error = "the leases are not open: " + self.store.last_error(); return false; }
+        self.opened = true;
+        return true;
+    }
+    @unbounded
+    fn current(key: String) -> Lease {
+        if !self.ensure_open() { self.reachable = false; return Lease { key: key }; }
+        let s = self.store.current(key);
+        let err = self.store.last_error();
+        self.reachable = s.known || len(err) == 0;
+        if !s.known { return Lease { key: key }; }
+        return Lease { key: key, holder: s.holder, token: s.token, expires: s.expires, present: s.present };
+    }
+    // Land `l` under `key` only if the store's token is `expected` (0 for
+    // none). False when another holder moved it first, or memory cannot be
+    // reached (`reachable` says which).
+    @unbounded
+    fn put(key: String, l: Lease, expected: Int) -> Bool {
+        if !self.ensure_open() { self.reachable = false; return false; }
+        let ok = self.store.put(key, l.holder, l.token, l.expires, l.present, expected);
+        if ok { self.reachable = true; return true; }
+        self.reachable = len(self.store.last_error()) == 0;
+        if self.reachable { self.races = self.races + 1; } else { self.last_error = self.store.last_error(); }
+        return false;
+    }
+    // ---- Coordination, as MemLeases and GitLeases have it
+    @unbounded
+    fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
+        let cur = self.current(key);
+        if !self.reachable { return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false }; }
+        if cur.present && cur.expires > now && cur.holder != holder {
+            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+        }
+        let l = Lease { key: key, holder: holder, token: cur.token + 1, expires: now + ttl, present: true };
+        if !self.put(key, l, cur.token) {
+            let again = self.current(key);
+            return Lease { key: key, holder: again.holder, token: 0, expires: again.expires, present: false };
+        }
+        return l;
+    }
+    @unbounded
+    fn complete(key: String, token: Int, now: Int) -> Bool {
+        let cur = self.current(key);
+        if !cur.present { return false; }
+        if cur.token != token { return false; }
+        return self.put(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false }, cur.token);
+    }
+    @unbounded
+    fn holder_of(key: String) -> String {
+        let cur = self.current(key);
+        if cur.present { return cur.holder; }
+        return "";
+    }
+}
+
+// ---- knowledge -------------------------------------------------------------
+
+fn count_ids(ids: String) -> Int {
+    let mut n = 0;
+    let mut rest = ids + " ";
+    while len(rest) > 1 {
+        let sp = std::str::index_of(rest, " ");
+        if sp > 0 { n = n + 1; }
+        rest = rest[(sp + 1)..len(rest)];
+    }
+    return n;
+}
+
+// What a position's OWNER holds to read a bounded package from memory:
+// never the editor, which the law keeps away from knowledge
+// (`editors_never_learn`). The owner folds the package into the objective
+// it hands down and names the package on the request, so the editor's
+// `model.called` rows carry its digest and bindings. The graph is the
+// spine's projection of the record (the host applies it on its tick);
+// without a DSN the package is empty and says so, and nothing waits on it.
+// How long a package waits for the spine's projection to reach the
+// record's last knowledge row before it refuses.
+const PACKAGE_WAIT_SECS: Int = 20;
+
+// The seq of the record's last row that changes what a package holds —
+// an idea ratified or retired, a binding made or undone (the tail applies
+// the rest, but no package reads it); -1 when there is none.
+@unbounded
+fn last_knowledge_row(repo: String) -> Int {
+    let j = GitJournal { repo: repo };
+    let mut i = j.revision() - 1;
+    while i >= 0 {
+        let e = j.read(i);
+        if e.kind == "knowledge.ratified" || e.kind == "knowledge.retired" || e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" { return e.seq; }
+        i = i - 1;
+    }
+    return -1;
+}
+
+locus MemoryKnowledge {
+    params {
+        repo: String = ".";
+        dsn_env: String = SPINE_DSN_ENV;
+        store: Pq = Pq { };
+        budget: Int = 8;
+        asked: Int = 0;
+        answered: Int = 0;
+        last_error: String = "";
+    }
+    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    // The store scoped to the record as it is now (a record that had no
+    // rows when the store opened, and has some now, moves to its own
+    // schema), and a connection that still answers.
+    @unbounded
+    fn ensure_open() -> Bool {
+        let scope = record_scope(self.repo);
+        self.store.dsn_env = self.dsn_env;
+        if scope != self.store.record() { self.store.scope(scope); }
+        if self.store.healthy() { return true; }
+        if !self.store.reopen() { self.last_error = "the store is not open: " + self.store.last_error(); return false; }
+        return true;
+    }
+    // What the evidence names for a target: the package and the ids it
+    // included, as `bindings_of` renders them.
+    @unbounded
+    fn bindings_for(target: String, query: String) -> String {
+        return bindings_of(self.package_for(target, query));
+    }
+    // The package for a locus path: the ids, the digest and the revision,
+    // and the ideas rendered for an objective. The query — what the work
+    // is about — ranks the bounded set (K3); an empty query is ratification
+    // order. The digest identifies what is handed over — the target and
+    // the ideas — and nothing that varies between runs (GH #583 K4).
+    @unbounded
+    fn package_for(target: String, query: String) -> ContextPackage {
+        if !self.ready() { return ContextPackage { target: target, error: "no memory (" + self.dsn_env + " is not set)" }; }
+        self.asked = self.asked + 1;
+        self.last_error = "";
+        if !self.ensure_open() { return ContextPackage { target: target, error: self.last_error }; }
+        let q = if len(query) > 2000 { query[0..2000] } else { query };
+        // the package answers for the knowledge the record holds now: the
+        // spine projects on its tick, so a row ratified a moment ago may
+        // not be in memory yet — wait for it, bounded, and refuse a stale
+        // package rather than hand one over (the knowledge service
+        // projected on every read; GH #985 moved projection to the spine).
+        // Only the rows that change a package are waited on.
+        let want = last_knowledge_row(self.repo) + 1;
+        let deadline = std::time::now() + PACKAGE_WAIT_SECS;
+        while self.store.watermark() < want && std::time::now() < deadline { std::time::sleep(200ms); }
+        let at = self.store.watermark();
+        if at < want { self.last_error = "memory's projection is at row " + to_string(at) + ", before the record's knowledge row " + to_string(want - 1) + "; the spine applies it on its tick"; return ContextPackage { target: target, error: self.last_error }; }
+        self.store.forget_error();
+        let ids = if len(q) > 0 { self.store.ranked_ids(target, self.budget, embed_text(q)) } else { self.store.context_ids(target, self.budget) };
+        if len(self.store.last_error()) > 0 {
+            self.last_error = "the store cannot answer: " + self.store.last_error();
+            return ContextPackage { target: target, error: self.last_error };
+        }
+        let out = std::str::builder_new();
+        let mut rest = ids + " ";
+        while len(rest) > 1 {
+            let sp = std::str::index_of(rest, " ");
+            let id = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+            if len(id) == 0 { continue; }
+            let s = self.store.idea(id);
+            std::str::builder_append(out, "- " + s.idea.kind + ": " + s.idea.text + " (" + s.idea.author + ")\n");
+        }
+        self.answered = self.answered + 1;
+        return ContextPackage {
+            target: target,
+            revision: self.store.watermark(),
+            digest: digest_of(target + ":" + ids),
+            included: ids,
+            included_n: count_ids(ids),
+            data_class: "internal",
+            text: std::str::builder_finish(out)
+        };
+    }
+}
+
+// ---- protected evidence (GH #606) ------------------------------------------
+
+// Protected bodies as the spine holds them: a customer or confidential
+// body is kept in memory alone, sealed under the receipt key, and the
+// record gets its digest and class. A read names a reader and a purpose,
+// is refused unless a `receipt.disclosed` row names both, and is a row
+// either way. A redaction is recorded in the record before a byte is
+// erased.
+locus MemoryVault {
+    params {
+        repo: String = ".";
+        dsn_env: String = SPINE_DSN_ENV;
+        store: PqProtected = PqProtected { };
+        j: GitJournal = GitJournal { repo: ".", author: "vault" };
+        erased: String = "\n"; // digests erased by this process, one per line
+        opened: Bool = false;
+        last_error: String = "";
+    }
+    birth() { self.j.repo = self.repo; self.j.record.repo = self.repo; }
+    fn ready() -> Bool { return dsn_set(self.dsn_env) && self.store.ready(); }
+    fn ensure_open() -> Bool {
+        let moved = self.j.refresh();
+        let scope = self.j.genesis();
+        if self.opened && scope == self.store.record() { return true; }
+        self.store.use_dsn_env(self.dsn_env);
+        self.store.scope(scope);
+        if !self.store.open() { self.last_error = self.store.last_error(); return false; }
+        self.opened = true;
+        return true;
+    }
+    @unbounded
+    fn has_row(kind: String, entity: String) -> Bool {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == kind && e.entity == entity { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // A `receipt.disclosed` row naming this reader and this purpose.
+    @unbounded
+    fn disclosed(digest: String, reader: String, purpose: String) -> Bool {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "receipt.disclosed" && e.entity == digest && std::json::find_string_field(e.body, "recipient") == reader && std::json::find_string_field(e.body, "purpose") == purpose { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // "who: why" of a hold that stands on `digest` ("" when none).
+    @unbounded
+    fn hold_of(digest: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.entity == digest && e.kind == "receipt.held" { out = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+            if e.entity == digest && e.kind == "receipt.hold_released" { out = ""; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // "by <who> under <policy>: <why>" of a redaction ("" when none).
+    @unbounded
+    fn redaction_of(digest: String) -> String {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.entity == digest && e.kind == "receipt.redacted" { return "by " + std::json::find_string_field(e.body, "by") + " under " + std::json::find_string_field(e.body, "policy") + ": " + std::json::find_string_field(e.body, "why"); }
+            i = i + 1;
+        }
+        return "";
+    }
+    // Keep a protected body; its digest, or "" with `last_error`. A body the
+    // record says was redacted is not kept again: a replay, a retry or a
+    // re-run intake would put erased bytes back behind a record that says
+    // they are gone (#636).
+    @unbounded
+    fn keep(text: String, class: String, by: String) -> String {
+        self.last_error = "";
+        if !protected_class(class) { self.last_error = "class: `" + class + "` is not protected (customer | confidential); a public or internal body is an ordinary git receipt"; return ""; }
+        if len(text) == 0 { self.last_error = "text: nothing to keep"; return ""; }
+        if !dsn_set(self.dsn_env) { self.last_error = "no memory (" + self.dsn_env + " is not set) to keep protected evidence"; return ""; }
+        if !self.store.ready() { self.last_error = self.store.why_not(); return ""; }
+        if !self.ensure_open() { return ""; }
+        let digest = digest_of(text);
+        let redaction = self.redaction_of(digest);
+        if len(redaction) > 0 { self.last_error = digest + " was redacted " + redaction + "; a redacted body is not kept again"; return ""; }
+        if !self.store.put(digest, class, text, std::time::now()) { self.last_error = "the protected store refused: " + self.store.last_error(); return ""; }
+        if !self.has_row("receipt.classified", digest) {
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("class", class);
+            rb.string_field("by", by);
+            rb.string_field("store", self.store.kind());
+            rb.end_object();
+            let x = self.j.append(self.j.revision(), "receipt.classified", digest, rb.result());
+            if !x.ok { self.last_error = "the body of " + digest + " is kept, but the record refused its classification (" + x.error + "); file it again"; return ""; }
+        }
+        return digest;
+    }
+    // Erase a protected body under a redaction; "" when done, else why. The
+    // decision is in the record before a byte is erased, at the revision the
+    // hold was read at: a redaction the record cannot hold erases nothing,
+    // and one recorded before an interrupted erasure is completed.
+    @unbounded
+    fn erase(digest: String, by: String, why: String, policy: String) -> String {
+        if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who (`by`), why and the policy"; }
+        if !self.ensure_open() { return self.last_error; }
+        let hold = self.hold_of(digest);
+        if len(hold) > 0 { return "held: " + hold + "; redaction waits for the hold's release"; }
+        let p = self.store.get(digest);
+        let already = self.has_row("receipt.redacted", digest);
+        let step = protected_erase_step(p.present, if p.present { "" } else { self.store.last_error() }, already);
+        if std::str::starts_with(step, "unread: ") { return "the protected store cannot say whether it keeps " + digest + " (" + step[8..len(step)] + "); nothing was recorded or erased — redact again once it answers"; }
+        if step == "already" { return digest + " is already redacted"; }
+        if !already {
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("by", by);
+            rb.string_field("why", why);
+            rb.string_field("policy", policy);
+            rb.string_field("class", if p.present { p.class } else { "" });
+            rb.string_field("store", if p.present { self.store.kind() } else { "none (the body was not kept here)" });
+            rb.end_object();
+            let x = self.j.append_exact(self.j.revision(), "receipt.redacted", digest, rb.result());
+            if !x.ok { return "the redaction of " + digest + " could not be recorded (" + x.error + "); nothing was erased"; }
+        }
+        if p.present && !self.store.erase(digest) { return "the redaction of " + digest + " is recorded, but the protected store could not erase it: " + self.store.last_error() + "; a read answers redacted already, and redacting again erases it"; }
+        return "";
+    }
+    // Erase every body the record redacted and memory still holds (a head
+    // records the redaction; the spine erases on its tick). The number
+    // erased, or -1 with `last_error` when memory could not be read.
+    @unbounded
+    fn complete_redactions() -> Int {
+        if !self.ensure_open() { return -1; }
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            i = i + 1;
+            if e.kind != "receipt.redacted" { continue; }
+            if std::str::contains(self.erased, "\n" + e.entity + "\n") { continue; }
+            if len(self.hold_of(e.entity)) > 0 { continue; }
+            // erased through memory's function whether a body is kept or not:
+            // the digest is kept, so a body redacted before it was ever filed
+            // is refused if a head files it later
+            let p = self.store.get(e.entity);
+            if !self.store.erase(e.entity) { self.last_error = self.store.last_error(); return -1; }
+            self.erased = self.erased + e.entity + "\n";
+            if p.present { n = n + 1; }
+        }
+        return n;
+    }
+    // A read in a reader's name, for a purpose: refused unless disclosed,
+    // and a row either way — a read the record cannot hold is not answered,
+    // and no byte of the body leaves.
+    @unbounded
+    fn read(digest: String, reader: String, purpose: String) -> VaultRead {
+        if len(reader) == 0 || len(purpose) == 0 { return VaultRead { refused: "a read names a reader and a purpose" }; }
+        if !dsn_set(self.dsn_env) { return VaultRead { refused: "no memory (" + self.dsn_env + " is not set)" }; }
+        if !self.ensure_open() { return VaultRead { refused: self.last_error }; }
+        let redaction = self.redaction_of(digest);
+        if len(redaction) > 0 { return VaultRead { refused: digest + " was redacted: " + redaction + "; the record keeps its digest, not its body" }; }
+        if !self.store.ready() { return VaultRead { refused: self.store.why_not() }; }
+        let p = self.store.get(digest);
+        if !p.present {
+            let err = self.store.last_error();
+            return VaultRead { refused: if len(err) > 0 { "the protected store cannot read " + digest + ": " + err } else { "no protected body for " + digest } };
+        }
+        let rb = std::json::Builder { };
+        rb.begin_object();
+        rb.string_field("by", reader);
+        rb.string_field("purpose", purpose);
+        rb.string_field("class", p.class);
+        rb.end_object();
+        if !self.disclosed(digest, reader, purpose) {
+            let x = self.j.append(self.j.revision(), "receipt.read_refused", digest, rb.result());
+            return VaultRead { refused: "not disclosed to " + reader + " for " + purpose + ": `hale dna receipt disclose " + digest + " --to " + reader + " --purpose " + purpose + "` authorizes it" };
+        }
+        let x = self.j.append(self.j.revision(), "receipt.read", digest, rb.result());
+        if !x.ok { return VaultRead { refused: "the read of " + digest + " could not be recorded (" + x.error + "); nothing was disclosed" }; }
+        return VaultRead { present: true, class: p.class, text: p.text };
+    }
+}
+
+// ---- a head's writes, as requests (GH #985) ---------------------------------
+//
+// A head does not write the ledger. A write in a person's name — a task
+// done, a completion, a handoff accepted — is a `ledger.requested` row in
+// the record, and the head reports it requested, with that row's digest.
+// The spine admits it on its tick: the owner's key, the person's standing,
+// the task's assignee, the claims and the revision a decision was read at
+// are checked here, in the spine, and the row lands in the ledger in the
+// person's name, keyed on the request row's digest so a request is
+// admitted once however often it is seen. A refusal is a
+// `ledger.request_refused` row in the record, with the reason. The
+// record is the pager; `hale dna history` and `status` show the outcome
+// once the spine has run.
+//
+// Over a shared record the owners' keys (HALE_DNA_OWNER_KEYS, `<owner>=
+// <key> …`) never enter the record: a head signs its request with its
+// owner's key (HMAC-SHA256 over the request), and the spine checks the
+// signature against the key it holds for that owner.
+
+fn request_material(kind: String, entity: String, body: String, author: String, expected: Int, owner: String, nonce: String) -> String {
+    return kind + "\n" + entity + "\n" + body + "\n" + author + "\n" + to_string(expected) + "\n" + owner + "\n" + nonce;
+}
+
+fn request_mac(key: String, material: String) -> String {
+    return hex(std::crypto::hmac_sha256(std::bytes::from_string(key), std::bytes::from_string(material)));
+}
+
+// The key `owners` (`<owner>=<key> …`) holds for `owner`, "" for none.
+fn owner_key_in(owners: String, owner: String) -> String {
+    let mut i = 0;
+    while len(nth_word(owners, i)) > 0 {
+        let entry = nth_word(owners, i);
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 && entry[0..eq] == owner { return entry[(eq + 1)..len(entry)]; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// A request's body: what to write and in whose name, the revision a
+// decision was read at (-1 for the tail), and — from a head of an owner
+// of a shared record — the owner and the request's signature.
+fn request_body(kind: String, entity: String, body: String, author: String, expected: Int, owner: String, key: String, nonce: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.string_field("as", author);
+    b.int_field("expected", expected);
+    b.string_field("nonce", nonce);
+    if len(owner) > 0 && len(key) > 0 {
+        b.string_field("head_owner", owner);
+        b.string_field("head_mac", request_mac(key, request_material(kind, entity, body, author, expected, owner, nonce)));
+    }
+    b.end_object();
+    return b.result();
+}
+
+// The spine's admission of the record's requests, its adoption of the
+// ledger and its abandonment, on the body's tick.
+locus RequestAdmission {
+    params {
+        root: String = ".";
+        ledger: MemoryLedger = MemoryLedger { };
+        j: GitJournal = GitJournal { repo: ".", author: "spine" };
+        // The record's cell for this spine's own body lease and its key in
+        // memory: adoption carries it across, so the body that adopts does
+        // not find its lease gone once leases are read from memory.
+        carry_cell: String = "";
+        carry_key: String = "";
+        admitted: Int = 0;
+        refused: Int = 0;
+        last_error: String = "";
+    }
+    birth() {
+        self.j.repo = self.root;
+        self.j.record.repo = self.root;
+        self.ledger.repo = self.root;
+    }
+    // GH #669: why a request in `author`'s name from a head of `owner` is
+    // not admitted over a shared record, "" when it is.
+    fn head_refusal(author: String, owner: String, mac: String, material: String) -> String {
+        let keys = std::env::var("HALE_DNA_OWNER_KEYS");
+        if len(owner) == 0 || len(mac) == 0 { return "this record is shared: a request in " + author + "'s name comes from a head that names its owner and signs with that owner's key (git config dna.owner, dna.owner.key)"; }
+        let key = owner_key_in(keys, owner);
+        if len(key) == 0 || request_mac(key, material) != mac { return "this request is not signed with a key of " + owner + "'s"; }
+        // the organism's own writes: a body is its owner's (its lease is
+        // `owner/<owner>`), so `host` acts under whichever owner's key signs
+        // it, and the row names that owner in its body (GH #985)
+        if author == "host" { return ""; }
+        let owners = Ownership { path: self.root + "/dna/org/owners", me_env: "" };
+        let theirs = owners.owner_of_person(author);
+        if theirs != owner { return author + " is " + (if len(theirs) > 0 { theirs + "'s" } else { "no owner's" }) + " member; " + owner + "'s head cannot act in their name"; }
+        return "";
+    }
+    // Why a request in `author`'s name is not admitted: a retired person
+    // (the record's `person.retired` row), a completion for a task handed
+    // to someone else, a transfer accepted outside the owner it is offered
+    // to. "" when it is admitted. (GH #646 stage 3, #652; #667)
+    @unbounded
+    fn admission_refusal(kind: String, entity: String, author: String) -> String {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "person.retired" && e.entity == author { return author + " retired from this organism (person.retired at row " + to_string(e.seq) + "); nothing is admitted in their name"; }
+            i = i + 1;
+        }
+        if kind == "task.transfer_accepted" {
+            let mut to = "";
+            let mut k = 0;
+            while k < self.ledger.revision() {
+                let e = self.ledger.read(k);
+                if e.entity == entity && e.kind == "task.transfer_requested" { to = std::json::find_string_field(e.body, "to"); }
+                if e.entity == entity && e.kind == "task.transfer_accepted" { to = ""; }
+                k = k + 1;
+            }
+            if len(to) == 0 { return "task " + entity + " is not offered to an owner of this record; nothing to accept"; }
+            let owners = Ownership { path: self.root + "/dna/org/owners", me_env: "" };
+            let theirs = owners.owner_of_person(author);
+            if theirs != to { return "task " + entity + " is offered to " + to + "; " + author + " is " + (if len(theirs) > 0 { theirs + "'s" } else { "no owner's" }) + " member, and only " + to + "'s accepts"; }
+        }
+        if kind == "task.done" || kind == "task.failed" || kind == "completion.linked" || kind == "completion.excepted" {
+            let mut assignee = "";
+            let mut k = 0;
+            while k < self.ledger.revision() {
+                let e = self.ledger.read(k);
+                if e.entity == entity && (e.kind == "task.handed" || e.kind == "task.reassigned") {
+                    let to = if e.kind == "task.reassigned" { std::json::find_string_field(e.body, "to") } else { std::json::find_string_field(e.body, "assignee") };
+                    if len(to) > 0 { assignee = to; }
+                }
+                k = k + 1;
+            }
+            if len(assignee) > 0 && assignee != author { return "task " + entity + " is handed to " + assignee + ", not to " + author + "; a completion is admitted in the assignee's name"; }
+        }
+        return "";
+    }
+    fn refuse(request: Event, why: String) -> Bool {
+        let rb = std::json::Builder { };
+        rb.begin_object();
+        rb.string_field("kind", std::json::find_string_field(request.body, "kind"));
+        rb.string_field("entity", std::json::find_string_field(request.body, "entity"));
+        rb.string_field("as", std::json::find_string_field(request.body, "as"));
+        rb.string_field("why", why);
+        rb.end_object();
+        let x = self.j.append(self.j.revision(), "ledger.request_refused", request.digest, rb.result());
+        if !x.ok { self.last_error = "the refusal of request " + request.digest + " could not be recorded (" + x.error + ")"; return false; }
+        if !self.ledger.mark(request.digest, -1) { self.last_error = "request " + request.digest + " is refused in the record, but the ledger could not mark it: " + self.ledger.last_error(); return false; }
+        self.refused = self.refused + 1;
+        return true;
+    }
+    // One request row: admitted, refused, or left for the next tick when
+    // memory could not be reached. False only when it could not be.
+    fn admit(request: Event) -> Bool {
+        let seen = self.ledger.seen(request.digest);
+        if seen == -3 { self.last_error = self.ledger.last_error(); return false; }
+        if seen != -2 { return true; }
+        let b = request.body;
+        let kind = std::json::find_string_field(b, "kind");
+        let entity = std::json::find_string_field(b, "entity");
+        let text = std::json::find_string_field(b, "body");
+        let author = std::json::find_string_field(b, "as");
+        let expected = std::json::find_int_field(b, "expected");
+        if memory_of(kind) != "ledger" { return self.refuse(request, "`" + kind + "` is a row of the record, not the ledger: it is appended to the record and synced"); }
+        if std::env::var_exists("HALE_DNA_OWNER_KEYS") && len(author) > 0 {
+            let owner = std::json::find_string_field(b, "head_owner");
+            let material = request_material(kind, entity, text, author, expected, owner, std::json::find_string_field(b, "nonce"));
+            let head = self.head_refusal(author, owner, std::json::find_string_field(b, "head_mac"), material);
+            if len(head) > 0 { return self.refuse(request, head); }
+        }
+        if len(author) > 0 {
+            let why = self.admission_refusal(kind, entity, author);
+            if len(why) > 0 { return self.refuse(request, why); }
+        }
+        let r = if expected >= 0 { self.ledger.append_as(expected, kind, entity, text, author, true) } else { self.ledger.append_as(self.ledger.revision(), kind, entity, text, author, false) };
+        if !r.ok {
+            if r.error == "stale_revision" { return self.refuse(request, "stale_revision: the ledger moved past revision " + to_string(expected) + ", where the decision was read"); }
+            // GH #666: a claim kind's entity is taken — the first claim holds
+            if r.error == "claimed" { return self.refuse(request, "claimed: `" + kind + " " + entity + "` is already claimed"); }
+            self.last_error = "the ledger refused request " + request.digest + ": " + self.ledger.last_error();
+            return false;
+        }
+        if !self.ledger.mark(request.digest, r.revision) { self.last_error = "request " + request.digest + " landed at " + to_string(r.revision) + ", but the ledger could not mark it: " + self.ledger.last_error(); return false; }
+        self.admitted = self.admitted + 1;
+        return true;
+    }
+    // Adopt the ledger when the record asks and has not had it: every
+    // operational row of the record, in order, keyed by its commit (rerun
+    // after any interruption, nothing copied twice), the cutover, and
+    // `ledger.adopted` naming the checkpoint (GH #646 stage 1, #650).
+    @unbounded
+    fn adopt(intent: Event) -> Bool {
+        let head = intent.digest;
+        let mut copied = 0;
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.seq > intent.seq { break; }
+            if memory_of(e.kind) == "ledger" {
+                if !self.ledger.adopt_row(e.kind, e.entity, e.body, self.j.author_of(i), e.seq, e.digest) { self.last_error = "the ledger could not take row " + to_string(e.seq) + ": " + self.ledger.last_error(); return false; }
+                copied = copied + 1;
+            }
+            i = i + 1;
+        }
+        if !self.ledger.cutover(head, copied, ROUTING_VERSION) { self.last_error = "the ledger could not record the cutover: " + self.ledger.last_error(); return false; }
+        // before `ledger.adopted` moves leases to memory: the body lease
+        // this spine holds goes with them, at its token
+        if len(self.carry_cell) > 0 && len(self.carry_key) > 0 {
+            let cell = GitRecord { repo: self.root }.cell(self.carry_cell);
+            let held = GitLeases { repo: self.root }.parse(self.carry_key, if cell.present { cell.text } else { "" });
+            if held.present && !self.ledger.carry_lease(self.carry_key, held.holder, held.token, held.expires) { self.last_error = "the ledger could not take the body lease across: " + self.ledger.last_error(); return false; }
+        }
+        let c = std::json::Builder { };
+        c.begin_object();
+        c.int_field("routing", ROUTING_VERSION);
+        c.string_field("checkpoint", head);
+        c.int_field("rows", copied);
+        c.string_field("by", std::json::find_string_field(intent.body, "by"));
+        c.end_object();
+        let x = self.j.append(self.j.revision(), "ledger.adopted", "ledger", c.result());
+        if !x.ok { self.last_error = "the rows are copied, but the record refused `ledger.adopted` (" + x.error + "); the next tick records it"; return false; }
+        return true;
+    }
+    fn abandon(intent: Event) -> Bool {
+        if !self.ledger.abandon() { self.last_error = "the ledger could not be abandoned: " + self.ledger.last_error(); return false; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", std::json::find_string_field(intent.body, "by"));
+        b.string_field("why", std::json::find_string_field(intent.body, "why"));
+        b.end_object();
+        let x = self.j.append(self.j.revision(), "ledger.abandoned", "ledger", b.result());
+        if !x.ok { self.last_error = "the ledger is emptied, but the record refused `ledger.abandoned` (" + x.error + ")"; return false; }
+        return true;
+    }
+    // One pass: an adoption or abandonment the record asks for and has not
+    // had, then every request not yet seen. The requests handled, or -1
+    // with `last_error` when memory could not be reached.
+    @unbounded
+    fn tick() -> Int {
+        if !self.ledger.ready() { return 0; }
+        let moved = self.j.refresh();
+        // the organism appends to the ledger on its own connection: what this
+        // spine checks a request against is the ledger as it stands now
+        if routing_of(self.j) > 0 {
+            let lmoved = self.ledger.refresh();
+            if len(self.ledger.last_error()) > 0 { self.last_error = "the ledger could not be read: " + self.ledger.last_error(); return -1; }
+        }
+        // the last adoption step asked for, and whether it was carried out
+        let mut pending = Event { seq: -1 };
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "ledger.adopting" || e.kind == "ledger.abandoning" { pending = e; }
+            if (e.kind == "ledger.adopted" || e.kind == "ledger.abandoned") && pending.seq >= 0 { pending = Event { seq: -1 }; }
+            i = i + 1;
+        }
+        if pending.seq >= 0 {
+            let done = if pending.kind == "ledger.adopting" { self.adopt(pending) } else { self.abandon(pending) };
+            if !done { return -1; }
+            let again = self.j.refresh();
+        }
+        if routing_of(self.j) == 0 { return 0; }
+        let mut n = 0;
+        let mut k = 0;
+        while k < self.j.revision() {
+            let e = self.j.read(k);
+            k = k + 1;
+            if e.kind != "ledger.requested" { continue; }
+            if !self.admit(e) { return -1; }
+            n = n + 1;
+        }
+        return n;
+    }
+}

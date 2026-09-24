@@ -1,8 +1,13 @@
 // Existing browser -> public API -> native Record command -> real Knowledge
-// projection. Only lost transport / unavailable read transport are injected;
-// command receipts and successful graph responses are always native.
+// projection in memory. Only lost transport / unavailable read transport are
+// injected; command receipts and successful graph responses are always native.
+//
+// The spine projects an admitted command into memory on its tick (GH #985);
+// the harness runs that tick after each admission, before the browser sees
+// the reply. A test's own route on the commands path hands a POST on with
+// `fallback()`, or ticks itself when it answers the POST with `fulfill`.
 import { test as base, expect } from '@playwright/test';
-import { startKnowledgeService } from './native-knowledge-harness.mjs';
+import { startKnowledgeService, knowledgeEnvironmentPresent } from './native-knowledge-harness.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
@@ -17,12 +22,18 @@ const test = base.extend({
       expect(service.processes().filter(process => process.live)).toEqual([]);
     }
   },
-  page: async ({ page }, use) => {
+  page: async ({ page, service }, use) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/dna/knowledge/commands', async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      const response = await route.fetch();
+      await service.tick();
+      await route.fulfill({ response });
+    });
     await use(page); expect(errors, 'No unhandled face error').toEqual([]);
   },
 });
-test.skip(!['API', 'SERVICE', 'SEED'].every(name => process.env[`HALE_KNOWLEDGE_${name}_BIN`]?.startsWith('/')), 'Supply explicit native Knowledge API/service/seed binaries.');
+test.skip(!knowledgeEnvironmentPresent(), 'Supply explicit native Knowledge API and seed binaries (HALE_KNOWLEDGE_API_BIN, HALE_KNOWLEDGE_SEED_BIN) and memory (HALE_DNA_MEMORY_DSN_OWNER).');
 test.setTimeout(75_000);
 
 const map = page => page.getByRole('region', { name: 'Knowledge relationship map', exact: true });
@@ -66,7 +77,7 @@ test('native Knowledge: exact directed link is recorded once and observed throug
   await page.route('**/dna/knowledge/commands', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     savedBeforePost = await metadata(page);
-    await route.continue();
+    await route.fallback();
   });
   const graphReads = [];
   page.on('request', request => {
@@ -93,7 +104,7 @@ test('native Knowledge: exact directed link is recorded once and observed throug
   await recovery(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-observed.png') });
 });
 
-test('native Knowledge: lost POST reply and service restart recover by GET only after browser reload', async ({ page, service }, testInfo) => {
+test('native Knowledge: lost POST reply and API restart recover by GET only after browser reload', async ({ page, service }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const posts = trackPosts(page); await prepare(page, service);
   let delivered;
@@ -234,7 +245,7 @@ test('native Knowledge unlink: absence requires every native relationship page a
   let committed = false, failedContinuation = false;
   await page.route('**/dna/knowledge/commands', async route => {
     if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); committed = response.status() === 202; await route.fulfill({ response });
+    const response = await route.fetch(); committed = response.status() === 202; await service.tick(); await route.fulfill({ response });
   });
   await page.route('**/dna/knowledge/edges?*', route => {
     if (committed && new URL(route.request().url()).searchParams.has('cursor')) {
@@ -291,7 +302,7 @@ test('native Knowledge: unavailable graph readback preserves admission and later
   let committed = false;
   await page.route('**/dna/knowledge/commands', async route => {
     if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); committed = response.status() === 202; await route.fulfill({ response });
+    const response = await route.fetch(); committed = response.status() === 202; await service.tick(); await route.fulfill({ response });
   });
   await page.route('**/dna/knowledge/nodes?*', route => committed ? route.fulfill({ status: 503, json: { api_version: 'hale.v1', error: { code: 'knowledge_unavailable', message: 'Read transport unavailable', retryable: true } } }) : route.continue());
   const sent = await send(page, service); expect(sent.status).toBe(202);

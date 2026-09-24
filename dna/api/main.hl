@@ -558,10 +558,12 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     }
     let mode = dna::trim_nl(configured.stdout);
     let command_origin = "http://127.0.0.1:" + to_string(port);
-    let knowledge = ConfiguredKnowledge { url: std::env::var("HALE_DNA_KNOWLEDGE_URL"), read_key: std::env::var("HALE_DNA_KNOWLEDGE_READ_KEY") };
-    let knowledge_commands = ConfiguredKnowledgeCommands { url: std::env::var("HALE_DNA_KNOWLEDGE_URL"), command_key: std::env::var("HALE_DNA_KNOWLEDGE_COMMAND_KEY"), read_key: std::env::var("HALE_DNA_KNOWLEDGE_READ_KEY") };
+    // GH #985: the graph read from memory under the head's role, and
+    // Knowledge commands admitted into the record here
+    let knowledge = LocalKnowledge { root: root };
+    let knowledge_commands = LocalKnowledgeCommands { root: root };
     let organization_candidates = OrganizationCandidateWire { authority: authority };
-    let command_label = if commands.supported("dna.practice.propose", "1") || commands.supported("dna.review.verdict", "1") { "composed command provider" } else if knowledge_commands.supported() { "configured Knowledge command provider" } else { "no writes" };
+    let command_label = if commands.supported("dna.practice.propose", "1") || commands.supported("dna.review.verdict", "1") { "composed command provider" } else if knowledge_commands.supported() { "Knowledge commands in-process" } else { "no writes" };
     if mode == "oidc" {
         let issuer = record.setting("oidc.issuer");
         let client = record.setting("oidc.client");

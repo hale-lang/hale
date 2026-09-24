@@ -37,7 +37,9 @@ locus Node {
         expressed_seq: Int = -1;
         started_total: Int = 0;
         concerns_relayed: Int = 0; // concerns heard from instances and put into the record (GH #583 K4)
+        memory: dna::Memory = dna::Memory { }; // this process's one handle (GH #985)
     }
+    birth() { self.memory.point(self.root, dna::own_dsn_env()); }
     fn index_of(id: String) -> Int {
         let mut i = 0;
         while i < self.instances.len() {
@@ -135,7 +137,7 @@ locus Node {
         self.expressed_seq = deploy.seq;
         self.started_total = self.started_total + started;
         self.say("fleet.deploy #" + to_string(deploy.seq) + " expressed (" + to_string(started) + " instance(s) started)");
-        let s = sync_record(self.root);
+        let s = sync_record(self.root, self.memory);
         return true;
     }
     // What exited since the last tick.
@@ -165,7 +167,7 @@ locus Node {
             }
             i = i + 1;
         }
-        if gone { let s = sync_record(self.root); }
+        if gone { let s = sync_record(self.root, self.memory); }
     }
     // GH #583 K4: an instance on this node raised a concern (its own
     // declaration of the wire fact, routed here by LOTUS_BUS_CONFIG);
@@ -186,18 +188,18 @@ locus Node {
         b.end_object();
         if !append_as(self.root, "concern.requested", c.source, b.result(), self.author) { self.say("the record refused the concern from " + c.source); return; }
         self.concerns_relayed = self.concerns_relayed + 1;
-        let s = sync_record(self.root);
+        let s = sync_record(self.root, self.memory);
         self.say("concern from " + c.source + " (`" + c.what + "`) put into the record" + (if s.ok { "" } else { "; sync: " + s.summary }));
     }
     @unbounded
     fn tick() {
-        let s = sync_record(self.root);
+        let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
         self.reap();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
-        let p = open_projection(self.root, ".", "");
+        let p = open_projection(self.root, ".", "", self.memory);
         let mut i = p.rows() - 1;
         let mut deploy = dna::Event { seq: -1 };
         while i >= 0 && deploy.seq < 0 {

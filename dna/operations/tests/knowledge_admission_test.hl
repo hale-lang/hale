@@ -3,12 +3,24 @@
 // The browser, HTTP transport and application policy have separate gates.
 import ".." as ops;
 import "../../core" as dna;
-import "../../knowledge" as know;
 
 const MISSING: String = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const RELATION: String = "supports \"équipe 🧭\" <literal> \\";
 
 type Endpoints { left: String = ""; right: String = ""; }
+
+// The projected edges, as the graph reads them (GH #985: memory is
+// Postgres; storage order is not its property, the set is).
+locus AdmittedEdgeCapture {
+    params { tuples: String = ""; }
+    fn node(row: dna::Stored) -> Bool { return true; }
+    fn binding(row: dna::KnowledgeBinding) -> Bool { return true; }
+    @unbounded
+    fn edge(row: dna::KnowledgeEdge) -> Bool { self.tuples = self.tuples + row.from + "\t" + row.to + "\t" + row.rel + "\n"; return true; }
+}
+locus AdmittedEdgesVisible { params { } fn visible(id: String) -> Bool { return true; } }
+
+fn memory_owner() -> String { return if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" }; }
 
 locus EdgeAuthority {
     params { writes: Bool = true; reads: Bool = true; mode: String = "direct"; }
@@ -115,13 +127,19 @@ locus KnowledgeAdmissionCases {
         let read_only = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { writes: false } };
         std::test::assert(read_only.lookup(context, command.request_id).ok, "recovery grant may survive lost write grant");
 
-        let journal = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let graph = know::Mem { };
-        let applied = know::apply_record(graph, journal, receipts);
+        let journal = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+        let gid = "kadmission" + to_string(std::process::pid()) + "a";
+        let gdsn = dna::migrated(memory_owner(), gid); std::test::assert(gdsn.ok, "memory migrates: " + gdsn.why);
+        let graph = dna::Pq { conn: dna::pq_conn(gdsn), record_id: gid };
+        std::test::assert(graph.open(), "the graph's memory opens: " + graph.last_error());
+        let applied = ops::apply_record(graph, journal, receipts);
         std::test::assert_eq_str(applied.error, "", "admitted effect replays into fresh native graph");
         std::test::assert_eq_int(graph.count("edges"), 1, "fresh graph contains exactly the admitted edge");
-        let edge = graph.edges.get(0) or dna::KnowledgeEdge { };
-        std::test::assert(edge.from == endpoints.left && edge.to == endpoints.right && edge.rel == RELATION, "native replay preserves direction and literal label");
+        let capture = AdmittedEdgeCapture { };
+        let page = graph.read_graph(dna::GraphQuery { kind: "edges", id: endpoints.left, limit: 25 }, AdmittedEdgesVisible { }, capture);
+        std::test::assert(page.ok && capture.tuples == endpoints.left + "\t" + endpoints.right + "\t" + RELATION + "\n", "native replay preserves direction and literal label: " + capture.tuples);
         std::test::assert_eq_int(graph.watermark(), journal.revision(), "graph checkpoint reaches admitted Record head");
+        graph.close(); std::test::assert_eq_str(dna::unmigrate(memory_owner(), gid), "", "the graph's record dropped");
 
         self.append(journal, "receipt.withheld", endpoints.right, "{}");
         let protected = fresh.lookup(context, command.request_id);
@@ -196,8 +214,12 @@ locus KnowledgeAdmissionCases {
         std::test::assert_eq_str(direct.submit(context, changed).code, "request_conflict", "policy mode changes do not split the shared request namespace");
         let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { writes: false } };
         std::test::assert(fresh.lookup(context, c.request_id).receipt.reviewed, "restart with direct recovery and writes removed retains reviewed variant");
-        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let graph = know::Mem { };
-        let before_review = know::apply_record(graph, j, receipts);
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+        let gid = "kadmission" + to_string(std::process::pid()) + "b";
+        let gdsn = dna::migrated(memory_owner(), gid); std::test::assert(gdsn.ok, "memory migrates: " + gdsn.why);
+        let graph = dna::Pq { conn: dna::pq_conn(gdsn), record_id: gid };
+        std::test::assert(graph.open(), "the graph's memory opens: " + graph.last_error());
+        let before_review = ops::apply_record(graph, j, receipts);
         std::test::assert(before_review.error == "" && graph.count("edges") == 1, "pending request cannot project a second direct relationship");
         let direct_facts = ops::StrictKnowledgeDirectEdgeFacts { };
         let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: direct_facts };
@@ -213,8 +235,9 @@ locus KnowledgeAdmissionCases {
         std::test::assert(applied, "actual independent native Review creates the relationship consequence");
         let finished = fresh.lookup(context, c.request_id);
         std::test::assert(finished.ok && finished.receipt.reviewed && finished.receipt.relationship.review_outcome == "approve" && finished.receipt.relationship.effect_state == "linked", "provider projects the exact committed native consequence");
-        let replayed = know::apply_record(graph, j, receipts);
+        let replayed = ops::apply_record(graph, j, receipts);
         std::test::assert(replayed.error == "" && graph.count("edges") == 2, "reviewed effect and earlier direct relationship replay together");
+        graph.close(); std::test::assert_eq_str(dna::unmigrate(memory_owner(), gid), "", "the graph's record dropped");
         self.append(j, "receipt.withheld", endpoints.right, "{}");
         let hidden = fresh.lookup(context, c.request_id);
         std::test::assert(hidden.ok && hidden.receipt.reviewed && !hidden.receipt.details_visible && hidden.receipt.edge_id == "" && hidden.receipt.relationship.candidate_digest == "" && hidden.receipt.relationship.review_id == "" && hidden.receipt.relationship.proposal_state == "unknown", "protected endpoint keeps reviewed discriminator but clears relationship details");
@@ -282,9 +305,14 @@ locus KnowledgeAdmissionCases {
         let removed = provider.submit(context, command);
         std::test::assert(removed.ok && removed.receipt.operation == "dna.knowledge.edge.unlink", "lost removal reply resolves exact persisted operation");
         std::test::assert_eq_int(record.appends, 2, "removal lost reply adds only one effect");
-        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let graph = know::Mem { };
-        let applied = know::apply_record(graph, j, receipts);
-        std::test::assert(applied.error == "" && graph.count("edges") == 0, "fresh graph replays ordered link and removal");
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+        let gid = "kadmission" + to_string(std::process::pid()) + "c";
+        let gdsn = dna::migrated(memory_owner(), gid); std::test::assert(gdsn.ok, "memory migrates: " + gdsn.why);
+        let graph = dna::Pq { conn: dna::pq_conn(gdsn), record_id: gid };
+        std::test::assert(graph.open(), "the graph's memory opens: " + graph.last_error());
+        let applied = ops::apply_record(graph, j, receipts);
+        std::test::assert(applied.error == "" && graph.count("edges") == 0, "fresh graph replays ordered link and removal: " + applied.error + " edges=" + to_string(graph.count("edges")));
+        graph.close(); std::test::assert_eq_str(dna::unmigrate(memory_owner(), gid), "", "the graph's record dropped");
         let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { writes: false } };
         let restored = fresh.lookup(context, command.request_id);
         std::test::assert(restored.ok && restored.receipt.event_id == removed.receipt.event_id && restored.receipt.operation == "dna.knowledge.edge.unlink", "restart and lost write grant preserve authorized original removal lookup");
@@ -324,5 +352,11 @@ locus KnowledgeAdmissionCases {
     }
 }
 
-main locus App { run() { let cases = KnowledgeAdmissionCases { }; cases.check(); } }
+main locus App {
+    run() {
+        if len(memory_owner()) == 0 { eprintln("knowledge_admission_test: no HALE_DNA_MEMORY_DSN_OWNER; the replays are into memory, so nothing was exercised"); return; }
+        let cases = KnowledgeAdmissionCases { };
+        cases.check();
+    }
+}
 fn main() { App { }; }

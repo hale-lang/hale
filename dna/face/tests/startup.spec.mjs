@@ -126,10 +126,10 @@ test('An existing native API starts separately and one face stopping leaves the 
   expect(first.child.exitCode).toBeNull(); expect(await project.state()).toEqual(before);
 });
 
-test('Startup refuses incomplete service wiring without exposing credentials or changing the project', async ({ project }) => {
+test('Startup refuses malformed memory wiring without exposing credentials or changing the project', async ({ project }) => {
   const before = await project.state(), credential = 'private-startup-test-credential-do-not-log';
   let failure;
-  try { await execute(launcher, [project.root, '--api', process.env.HALE_API_BIN], { env: { ...project.env, HALE_DNA_KNOWLEDGE_READ_KEY: credential }, timeout: 5000 }); } catch (error) { failure = error; }
-  expect(failure?.code).toBe(2); expect(failure.stderr).toContain('require both');
+  try { await execute(launcher, [project.root, '--api', process.env.HALE_API_BIN], { env: { ...project.env, HALE_DNA_MEMORY_DSN_HEAD: credential }, timeout: 5000 }); } catch (error) { failure = error; }
+  expect(failure?.code).toBe(2); expect(failure.stderr).toContain('HALE_DNA_MEMORY_DSN_HEAD to be a postgres:// DSN');
   expect(failure.stdout + failure.stderr).not.toContain(credential); expect(await project.state()).toEqual(before);
 });

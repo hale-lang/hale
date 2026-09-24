@@ -1,6 +1,6 @@
 // dna/tests/ledger_test.hl — the Ledger's contract (GH #646 stage 1,
-// #650), in memory always and in Postgres when HALE_DNA_KNOWLEDGE_DSN
-// names one (CI's service container; dev's compose).
+// #650), in Postgres when HALE_DNA_MEMORY_DSN_OWNER names one (CI's
+// service container; dev's compose).
 //
 // A Ledger is a Journal: compare-and-append at the tail, an exact append
 // refused when the tail moved, a sha256 chain that verifies. A claim
@@ -10,10 +10,9 @@
 // cutover names the checkpoint; abandon empties it.
 
 import "../core" as dna;
-import "../knowledge" as know;
 import "./ledger_read_health" as read_health_cases;
 
-fn ledger_contract(l: know::Ledger, label: String) {
+fn ledger_contract(l: dna::Ledger, label: String) {
     std::test::assert(l.open(), label + ": opens: " + l.last_error());
     std::test::assert_eq_int(l.revision(), 0, label + ": empty");
     std::test::assert_eq_str(l.head(), "genesis", label + ": no head");
@@ -50,7 +49,7 @@ fn ledger_contract(l: know::Ledger, label: String) {
 // A lease store swaps by token: a put lands only against the token the
 // store holds (0 for none); the body lease and the mutation leases stand
 // on that alone (GH #646 stage 2).
-fn lease_contract(ls: know::LeaseStore, label: String) {
+fn lease_contract(ls: dna::LeaseStore, label: String) {
     std::test::assert(ls.open(), label + ": opens: " + ls.last_error());
     let none = ls.current("body");
     std::test::assert(!none.known && none.token == 0, label + ": an absent lease is unknown, token 0");
@@ -71,29 +70,23 @@ fn lease_contract(ls: know::LeaseStore, label: String) {
 }
 
 main locus App {
-    params { pg: know::PqLedger = know::PqLedger { }; pgl: know::PqLeaseStore = know::PqLeaseStore { }; }
+    params { pg: dna::PqLedger = dna::PqLedger { }; pgl: dna::PqLeaseStore = dna::PqLeaseStore { }; }
     run() {
         read_health_cases::run_cases();
-        let mem = know::MemLedger { };
-        ledger_contract(mem, "memory");
-        let ml = know::MemLeaseStore { };
-        lease_contract(ml, "memory leases");
-        if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") != "memory" {
+        if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") && len(std::env::var("HALE_DNA_MEMORY_DSN_OWNER")) > 0 {
             // the owner's DSN applies the schema; the stores open as the
             // record's spine role (GH #985)
-            let owner = std::env::var("HALE_DNA_KNOWLEDGE_DSN");
-            let dsn = know::parse_dsn(owner);
-            std::test::assert(dsn.ok, "the DSN parses: " + dsn.why);
+            let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
             let record = "ledgerfixture" + to_string(std::process::pid());
-            let spine = know::migrated(owner, record);
+            let spine = dna::migrated(owner, record);
             std::test::assert(spine.ok, "the schema is applied: " + spine.why);
-            self.pg = know::PqLedger { conn: know::pq_conn(spine), record_id: record };
+            self.pg = dna::PqLedger { conn: dna::pq_conn(spine), record_id: record };
             ledger_contract(self.pg, "pq");
             // a second connection sees the same ledger, and the store keeps
             // the claim across connections
             let one = self.pg.append(0, "task.born", "t2", "");
             std::test::assert(one.ok, "pq: a row for the other connection to see");
-            let other = know::PqLedger { conn: know::pq_conn(spine), record_id: record };
+            let other = dna::PqLedger { conn: dna::pq_conn(spine), record_id: record };
             std::test::assert(other.open(), "pq: a second connection opens: " + other.last_error());
             std::test::assert_eq_int(other.revision(), 1, "pq: it reads the row");
             let claim = other.append(1, "task.born", "t2", "");
@@ -106,7 +99,7 @@ main locus App {
             std::test::assert_eq_int(self.pg.revision(), 2, "pq: and this side now sees what moved it");
             let again = self.pg.append(2, "grant.reserved", "op1", "10");
             std::test::assert(again.ok, "pq: an ordinary append retries at the tail");
-            self.pgl = know::PqLeaseStore { conn: know::pq_conn(spine), record_id: record };
+            self.pgl = dna::PqLeaseStore { conn: dna::pq_conn(spine), record_id: record };
             lease_contract(self.pgl, "pq leases");
             // the database drops a store's connection (a restart, a failover,
             // an idle timeout): the next statement dials again once and the
@@ -127,14 +120,9 @@ main locus App {
             self.pg.conn.close();
             self.pgl.conn.close();
             other.conn.close();
-            let admin = know::pq_conn(dsn);
-            let st = admin.open();
-            std::test::assert(st.ok, "the owner connects: " + st.err.detail);
-            let drop = admin.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE; DROP ROLE IF EXISTS " + know::spine_role(record));
-            std::test::assert(drop.ok, "this run's schema and role dropped: " + drop.err.detail);
-            admin.close();
+            std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
         } else {
-            eprintln("ledger_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");
+            eprintln("ledger_test: no HALE_DNA_MEMORY_DSN_OWNER; the ledger was not exercised here");
         }
     }
 }

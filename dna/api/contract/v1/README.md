@@ -66,7 +66,7 @@ first slice does not claim complete receipt visibility after Ledger adoption;
 it withholds content whose current restrictions cannot be checked from Record,
 including after Ledger abandonment, which does not restore those restrictions.
 Derived Review questions are subject to the same restriction. It never reads
-the private protected-body store or returns raw review reasoning/diff blobs.
+protected evidence in memory or returns raw review reasoning/diff blobs.
 For an ordinary non-knowledge Review, `text_status=not_applicable` indicates
 that no practice receipt governs the question declared directly in Record;
 `text_available=false` then refers to the absent practice receipt, not the
@@ -176,9 +176,10 @@ These profiles implement `dna.knowledge.edge.link@1` and
 relationship between exact visible, ratified, unretired Knowledge receipt
 identities. Unlink records removal of that exact directed tuple and can clean
 relationships involving a retired endpoint when both endpoints remain visible.
-Node and binding changes use separate reviewed profiles below. The
-[owning service contract](../../../knowledge/service/COMMANDS.md)
-describes native authority, Record admission and projection.
+Node and binding changes use separate reviewed profiles below. The API admits
+these commands in its own process under an explicit authority policy; the
+[API README](../../README.md#knowledge-commands) describes that policy, and
+the [DNA spec](../../../../spec/dna.md) Record admission and projection.
 
 The application routes are:
 
@@ -263,14 +264,16 @@ Unicode. Endpoints are `sha256:` plus 64 lowercase hex digits. Stale subject,
 request conflict or principal change returns 409; policy denial 403; absent
 receipt 404; unsupported, unavailable, busy, invalid history or uncertain outcome 503.
 
-The API uses the configured Knowledge service URL and a separate command key
-that differs from its read key. Private capability, submit and lookup are POSTs
-with trusted context and typed results. Private capability accepts an optional
-operation alongside context; link retains the original context-only body and
-unlink explicitly names its operation. Private fallback errors use a 200 transport
-envelope because the current native HTTP client discards 5xx bodies; the public API
-maps the typed error to its actual 503 status. Private credential rejection 401
-becomes public 503, distinct from an authenticated actor's policy denial 403.
+The API admits commands in its own process, under the authority policy
+`HALE_DNA_KNOWLEDGE_COMMAND_POLICY` names, read once at startup; there is no
+Knowledge service, URL or command key. Private capability, submit and lookup
+keep their encoded requests with trusted context and typed results, handled
+in-process. Private capability accepts an optional operation alongside context;
+link retains the original context-only body and unlink explicitly names its
+operation. Private fallback errors use a 200 envelope so that typed codes such as
+Review-required and uncertain outcome survive; the public API maps the typed
+error to its actual 503 status, distinct from an authenticated actor's policy
+denial 403.
 
 ## Optional practice replacement command profile
 
@@ -420,7 +423,7 @@ request identity and exact Record-head precondition. Propose arguments are
 `{kind,name,text,author,target,rationale}` and the envelope target is
 `{application_id,kind:"dna.knowledge.collection",id:arguments.target}`.
 Revise adds `arguments.supersedes` and targets that exact node digest. Retire
-accepts only `{id,rationale}` and targets that exact node; the owning service
+accepts only `{id,rationale}` and targets that exact node; the command admission
 derives its retirement proposal from the canonical predecessor. Propose/revise
 kinds are `idea`, `concept`, `practice` and `task_concept`; callers cannot supply
 kind `retirement`. New proposal/revision names are nonempty, at most 256 UTF-8

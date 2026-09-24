@@ -18,10 +18,12 @@ npm test
 ```
 
 The runner compiles only the Record writer in owned temporary storage; it does
-not rebuild the API, composed catalog head, private Knowledge service or scripted
+not rebuild the API, composed catalog head, Knowledge fixture or scripted
 command adapter.
 Compiler and API binary paths can point elsewhere. Git configuration and
-plumbing overrides, database URLs and model credentials are isolated. Each test
+plumbing overrides, memory's DSNs and model credentials are isolated: the
+owner's DSN reaches only the Knowledge fixture, and an API receives only the
+head's DSN a harness gives it. Each test
 owns its Record, dynamic listener and API child; failure teardown stops the child
 and removes scratch storage. Tests have no automatic retries.
 On Linux, `prlimit` bounds compiler processes to 2 GiB address space and native
@@ -108,12 +110,19 @@ the repository root:
 HALE_FACE_CATALOG_BIN="/absolute/path/to/catalog-provider" \
   npm --prefix dna/face test -- definitions.spec.mjs
 HALE_FACE_KNOWLEDGE_BIN="/absolute/path/to/knowledge-provider" \
+HALE_DNA_MEMORY_DSN_OWNER="postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable" \
   npm --prefix dna/face test -- knowledge.spec.mjs
 ```
 
+Knowledge lives in memory (GH #985): the lane needs a Postgres with pgvector and
+pgcrypto available, and `HALE_DNA_MEMORY_DSN_OWNER` naming a role that may
+create a record's schema and roles there. A Knowledge binary supplied without it
+fails setup. The CI `face (browser)` job builds the fixture from
+`dna/api/tests/knowledge` and runs this lane against a Postgres service container.
+
 Supply both provider variables and omit the final spec argument to include both
 integrations in the full browser run. This is an API/browser integration gate;
-the launcher does not run upstream engine or PostgreSQL suites. Skipped cases
+the launcher does not run upstream engine or memory-store suites. Skipped cases
 and contract fixtures do not count as live integration success.
 
 ## Definition authoring
@@ -200,40 +209,43 @@ are specified by [definitions.spec.mjs](definitions.spec.mjs). Tests cover stale
 catalog snapshots, unsupported/unavailable/invalid states, session loss, exact
 cross-links, mobile focus, history and literal rendering of source text.
 
-The Knowledge fixture has three command forms:
+The Knowledge fixture has four command forms. All but `seed` need
+`HALE_DNA_MEMORY_DSN_OWNER` in their environment:
 
 - `KNOWLEDGE_BIN ROOT seed COUNT` creates canonical Git receipts and events
-  and `ROOT/fixture.json`, preparing the service's native relationship fixture.
-  The manifest supplies
+  and `ROOT/fixture.json`. The manifest supplies
   `application`, `knowledge`, `predecessor`, `proposed`, `hidden`, `name`, `text`,
   `target` and `neighbors` (objects with an `id`). Exact fixture expectations are
   in [knowledge.spec.mjs](knowledge.spec.mjs).
-- `KNOWLEDGE_BIN ROOT PORT` serves private Knowledge reads on loopback.
-  `/identity` must return JSON with `identity` equal to the manifest's
-  `application`. Restarting this command against the same root and port must
-  recover the current native data.
+- `KNOWLEDGE_BIN ROOT project` migrates the Record into memory with the owner's
+  DSN, projects it under the spine's role the way the spine's tick does, stores
+  the native relationship fixture, and prints the head's DSN on stdout (also
+  written to `ROOT/memory.head`). Running it again projects again.
 - `KNOWLEDGE_BIN ROOT ACTION` applies native mutations for `advance`, `protect`,
-  `protect-predecessor` and `redact`.
+  `protect-predecessor` and `redact`, each projected again as the spine's next
+  tick would.
+- `KNOWLEDGE_BIN ROOT drop` removes the Record's schema and both of its roles.
 
-The harness sets `HALE_DNA_KNOWLEDGE_DSN=memory` and a disposable fixture-only
-`HALE_DNA_KNOWLEDGE_READ_KEY`. It passes the private origin through
-`HALE_DNA_KNOWLEDGE_URL` to `HALE_API_BIN`, which must support the corresponding
-authenticated private graph-read protocol and public Knowledge contract. The
-public API still receives `ROOT PORT WEBROOT`. Thus both supplied binaries must
-be mutually compatible; setting the environment variable alone does not
-establish an available provider.
+There is no Knowledge service. The harness runs `seed`, then `project`, and
+starts `HALE_API_BIN` with `ROOT PORT WEBROOT` and the printed head's DSN as
+`HALE_DNA_MEMORY_DSN_HEAD`, never the owner's or the spine's. The DSN names a
+loopback relay the harness owns in front of the database, so a case can make
+memory stop answering the running API and answer again. Teardown stops the
+API, closes the relay and runs `drop`, also when the case failed; a Node process
+exiting early runs `drop` synchronously. A failed `drop` fails the case.
 
 Knowledge cases require real canonical receipts, lifecycle events, projected
 nodes/bindings and native stored relationships. No successful graph response is
 mocked. Tests cover 33-item cursor paging, 32 stored relationships,
 target relevance, missing/protected equivalence, removal of a newly protected
-predecessor and its relationships, Record snapshot changes, actual service
-stop/restart, literal text and mobile inspection. The relationship map is checked
+predecessor and its relationships, Record snapshot changes, memory that stops
+answering the running API (`knowledge_unavailable`) and answers again, a missing
+head DSN (`knowledge_unsupported`), literal text and mobile inspection. The relationship map is checked
 against the actual returned edge page for directions, labels and endpoint
 identities. Its navigation retains context, snapshot and list cursor, and its
 mobile keyboard order follows the focused item and connected items. Names come
 only from the current collection; the map triggers no additional graph reads.
-Only the 401 browser-clearing case injects an error. PostgreSQL,
+Only the 401 browser-clearing case injects an error. Memory-store,
 projection-lineage failures and concurrent
 Record/Ledger/store mutations remain upstream verification responsibilities.
 Earlier local native results are historical evidence for those implementations,
@@ -353,33 +365,43 @@ publication, service admission, authority or durable command outcomes.
 ## Native Knowledge relationship acceptance
 
 `native-knowledge-browser.spec.mjs` drives the existing relationship map and
-editor against the public API and real native Knowledge command service. Supply
-three prebuilt, absolute binary paths and run from `dna/face`:
+editor against the public API, which admits Knowledge commands into the Record
+in-process and reads the graph from memory as the head. Supply two prebuilt,
+absolute binary paths and memory, and run from `dna/face`:
 
 ```sh
 HALE_KNOWLEDGE_API_BIN=/absolute/path/to/knowledge-api \
-HALE_KNOWLEDGE_SERVICE_BIN=/absolute/path/to/knowledge-service \
 HALE_KNOWLEDGE_SEED_BIN=/absolute/path/to/knowledge-seed \
+HALE_DNA_MEMORY_DSN_OWNER="postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable" \
 node node_modules/@playwright/test/cli.js test \
   --config tests/playwright.config.mjs native-knowledge-browser.spec.mjs
 ```
 
-The respective sources are `dna/api`, `dna/knowledge/service`, and
-`dna/api/tests/knowledge`. These tests never build native code or install a
-browser. Without all three explicit paths they skip visibly. The seed binary
-creates only prior canonical subjects; it never authors a command outcome.
+The respective sources are `dna/api` and `dna/api/tests/knowledge`. These tests
+never build native code or install a browser. Without both explicit paths they
+skip visibly; with them and no owner's DSN, setup fails. The seed binary creates
+only prior canonical subjects; it never authors a command outcome.
 `native-knowledge-harness.mjs` owns a fresh Git Record, an explicit application
-and principal policy, separate private read/write keys, and bounded local service
-process groups. Cleanup stops every owned process, including restarted services.
+and principal policy (`HALE_DNA_KNOWLEDGE_COMMAND_POLICY`, the API's only
+Knowledge configuration besides the head's DSN), and a bounded API process
+group. Cleanup stops every owned process and drops the Record's memory.
+
+The spine projects an admitted command into memory on its tick; a graph read
+before that answers `knowledge_projection_unavailable`. This composition has no
+spine, so the harness stands in for its tick: it runs the seed binary's
+`project` after every admission — a Node-side `post`, and a browser POST, which
+a page route holds until the projection is done — and before every API start.
+A case's own route on the commands path hands a POST on with `fallback()`, or
+calls `service.tick()` itself before it fulfills the POST.
 
 Eleven cases cover a directed Unicode relationship recorded once and observed
 through a fresh graph read; an actual admitted POST whose reply is discarded,
-followed by API/service restart and GET-only browser reload recovery; stale
+followed by API restart and GET-only browser reload recovery; stale
 Record-head refusal; unavailable graph readback and subsequent visibility
 restriction; and Review-required authority with no direct fallback. The browser
 saves only scoped recovery metadata before POST. Successful command responses
 and graph reads are native. The loss/outage cases inject only transport failures.
-Restart opens an empty in-memory graph and reconstructs it from the same Record.
+Restart starts a fresh API over the same memory, projected from the same Record.
 
 The removal cases select one exact stored relationship and preserve its reverse,
 other labels and endpoint items. They cover a lost removal reply followed by
@@ -410,9 +432,10 @@ Practice administration reuses the same native node and binding profiles.
 applicability, revision and retirement sequence with independent Reviews, exact
 provenance and retained history. `native-practice-lifecycle-browser.spec.mjs`
 starts from the Practices UI and exercises those entry points through real
-native services. Both use the five matching binary environment variables below;
+native services. Both use the matching binary environment variables below;
 run the HTTP script with Node or pass the browser spec to Playwright. These small
-flows do not establish sustained or multi-page Knowledge-service stability.
+flows do not establish sustained or multi-page Knowledge stability. Like the
+node gate below, they are not ported to memory yet.
 
 `practice-context-editor.spec.mjs` separately checks the contextual editor's
 action families, exact source text, canonical scope, ordinary Knowledge behavior
@@ -426,26 +449,35 @@ successful command execution belongs to the separate native browser proof.
 `native-knowledge-node-browser.spec.mjs` exercises ordinary Knowledge creation,
 revision and retirement through their actual proposals, canonical Reviews and
 native activation. It composes `native-knowledge-node-harness.mjs` with the
-existing Body/relay/membrane owner. Supply matching prebuilt binaries and run
-from `dna/face`:
+existing Body/relay/membrane owner. Supply matching prebuilt binaries and
+memory, and run from `dna/face`:
 
 ```sh
 HALE_NATIVE_COMMAND_API=/absolute/path/to/composed-review-api \
 HALE_NATIVE_COMMAND_BODY=/absolute/path/to/body \
 HALE_NATIVE_COMMAND_RELAY=/absolute/path/to/relay \
 HALE_NATIVE_COMMAND_MEMBRANE=/absolute/path/to/membrane \
-HALE_KNOWLEDGE_SERVICE_BIN=/absolute/path/to/knowledge-service \
+HALE_DNA_MEMORY_DSN_OWNER="postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable" \
 node node_modules/@playwright/test/cli.js test \
   --config tests/playwright.config.mjs native-knowledge-node-browser.spec.mjs
 ```
 
-The composed API is built from `dna/api/practice_review`; all five binaries must
+**Not ported to memory (GH #985).** There is no Knowledge service to start
+beside the Body any more. The API takes the node policy as
+`HALE_DNA_KNOWLEDGE_COMMAND_POLICY` and would read the graph as the head, but
+the acceptance Body (`dna/api/practice_review/tests/body`) does not project the
+Record into memory on its tick, and the harness has no way to migrate and drop
+the Record the Body creates. Until the Body is a spine, startup fails with that
+reason rather than serve graph reads that never catch up. This applies to every
+lane built on `native-knowledge-node-harness.mjs`: the node, binding and
+edge-review gates and the Practice lifecycle.
+
+The composed API is built from `dna/api/practice_review`; all binaries must
 come from the same implementation. The fixture creates an explicit node policy
 with separate propose/revise/retire Review grants and exact author/target scope.
-The private Knowledge service uses the same Record as the actual Body, with
-separate private read/write keys. Every dependent native process joins the
-existing bounded owner and is stopped or restarted with it. No seed binary,
-authored command outcome, or successful response overlay is used.
+Every dependent native process joins the existing bounded owner and is stopped
+or restarted with it. No seed binary, authored command outcome, or successful
+response overlay is used.
 
 The browser creates a non-Practice `idea`, inspects its canonical candidate in
 the existing Review screen, approves it, follows revision and retirement, and
@@ -493,7 +525,7 @@ restarts the full service composition after each six completed bindings and
 once before reading the complete history and removing a binding. Its intended
 acceptance is restart projection and paginated observation, not sustained
 service operation. This larger real binding case remains blocked: preserved
-runs exposed a private Knowledge service SIGSEGV after 22 completed bindings
+runs exposed a private Knowledge service (since removed, GH #985) SIGSEGV after 22 completed bindings
 at a 210-row Record, both without and with those setup restarts. The smaller
 successful cases do not establish the blocked pagination acceptance.
 
@@ -623,7 +655,7 @@ screenshots accompany retained process, binary and Record evidence.
 The reusable `startService(options)` fixture owns bounded native process groups
 and exposes `stop()` for cleanup. A local preview can supply `prepareProject`
 before Body startup, a composed API binary, and explicit startup environment for
-Organization validation and private Knowledge reads. Browser cases omit those
+Organization validation and Knowledge (the head's DSN and the command policy). Browser cases omit those
 sample-preparation hooks: their initial Practice and every tested outcome are
 produced by the real Body. The Record-only, fixed-authority deployment limits
 remain the same as the native service acceptance above.

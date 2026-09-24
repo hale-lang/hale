@@ -201,7 +201,7 @@ locus KnowledgeCommandCases {
         let private_error = self.call("POST", "", body, HEADERS, 503, "commands_unavailable");
         std::test::assert(!std::str::contains(private_error, "PRIVATE-CANARY"), "unknown private error sanitized");
         let private_auth = wire.response(context, parsed.command, parsed.command.request_id, api::KnowledgeUpstream { transport_ok: true, status: 401, body: good }, true);
-        std::test::assert_eq_int(private_auth.status, 503, "private service credential rejection is not an actor permission denial");
+        std::test::assert_eq_int(private_auth.status, 503, "an upstream 401 is not an actor permission denial");
         let absent = api::NoKnowledgeCommands { };
         let missing = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, absent, ORIGIN);
         std::test::assert_eq_str(common.raw(common.raw(missing.body, "data"), "available"), "false", "default provider cannot advertise writes");
@@ -209,14 +209,6 @@ locus KnowledgeCommandCases {
         let no_origin = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, self.host, "");
         std::test::assert_eq_str(common.raw(common.raw(no_origin.body, "data"), "authorized"), "false", "no configured origin cannot enable writes");
         std::test::assert(!wire.writable(context, self.host, ""), "no command origin keeps global capability read-only");
-        let config = api::ConfiguredKnowledgeCommands { url: "http://127.0.0.1:1" };
-        std::test::assert(!config.supported(), "read URL never grants command support without separate key");
-        let invalid = api::ConfiguredKnowledgeCommands { url: "http://127.0.0.1:1", command_key: "short" };
-        std::test::assert(invalid.supported() && !invalid.configured(), "invalid command credential unavailable");
-        let shared = api::ConfiguredKnowledgeCommands { url: "http://127.0.0.1:1", command_key: self.repeated(32, 120), read_key: self.repeated(32, 120) };
-        std::test::assert(!shared.configured(), "read credential must not also authorize commands");
-        let separate = api::ConfiguredKnowledgeCommands { url: "http://127.0.0.1:1", command_key: self.repeated(32, 120), read_key: self.repeated(32, 121) };
-        std::test::assert(separate.configured(), "separate valid service credential accepted");
         self.unlink_cases();
         self.node_cases();
         self.binding_cases();

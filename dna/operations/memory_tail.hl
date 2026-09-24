@@ -1,6 +1,8 @@
-// dna/knowledge/tail.hl — the record applied into the store (GH #583 K1).
+// dna/operations/memory_tail.hl — the record applied into memory (GH #583
+// K1). It lives in operations, not the core, and runs on the host's tick
+// under the spine lease (GH #985).
 //
-// The service is a CONSUMER of the record: it reads `knowledge.*` rows
+// The projection is a CONSUMER of the record: it reads `knowledge.*` rows
 // from the store's watermark on, resolves each ratified digest to its
 // receipt (the canonical document), and upserts by digest. Git is the
 // sole authority: nothing in the store becomes ratified except from a
@@ -8,9 +10,7 @@
 // the watermark and converges. The proposed and declined tiers are
 // kept too, so the graph shows what was asked and what was refused.
 
-import "../operations" as ops;
-
-type Applied {
+type ProjectionApplied {
     rows: Int = 0; // rows walked
     ratified: Int = 0;
     proposed: Int = 0;
@@ -38,8 +38,8 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
 // Apply every knowledge row from the watermark to the record's end.
 // Bounded by the record.
 @unbounded
-fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> Applied {
-    let mut out = Applied { watermark: store.watermark() };
+fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> ProjectionApplied {
+    let mut out = ProjectionApplied { watermark: store.watermark() };
     let n = j.revision();
     let mut i = out.watermark;
     while i < n {
@@ -124,7 +124,7 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
             // applying, and replay the same tuple if a crash lost the watermark.
             // Receipt restrictions remain the graph reader's policy; projecting
             // an edge never independently makes either endpoint visible.
-            let codec = ops::KnowledgeCommandCodec { };
+            let codec = KnowledgeCommandCodec { };
             let fact = codec.decode_fact(e);
             if !fact.valid || fact.context.application_id != j.read(0).digest {
                 out.error = "invalid knowledge edge fact (row " + to_string(i) + ")";
@@ -140,7 +140,7 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
             }
         }
         if e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" {
-            let codec = dna::KnowledgeBindingCodec { }; let outer = ops::KnowledgeBindingCommandCodec { };
+            let codec = dna::KnowledgeBindingCodec { }; let outer = KnowledgeBindingCommandCodec { };
             let effect = codec.effect_of(j, e); let r = effect.request;
             let incoming = codec.fact(j, "knowledge.binding.requested", r.request_id, e.seq);
             let admitted = outer.decode_fact(incoming);
@@ -160,7 +160,7 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
             if !applied { out.error = "knowledge binding projection failed (row " + to_string(i) + ")"; return out; }
         }
         if e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked" {
-            let codec = dna::KnowledgeEdgeCodec { }; let outer = ops::KnowledgeEdgeCommandCodec { }; let direct = ops::StrictKnowledgeDirectEdgeFacts { };
+            let codec = dna::KnowledgeEdgeCodec { }; let outer = KnowledgeEdgeCommandCodec { }; let direct = StrictKnowledgeDirectEdgeFacts { };
             let effect = codec.effect_of(j, e); let r = effect.request;
             let incoming = codec.fact(j, "knowledge.edge.requested", r.request_id, e.seq);
             let admitted = outer.decode_fact(incoming);
@@ -238,7 +238,7 @@ fn knowledge_receipt_id(id: String) -> String {
 locus KnowledgeVisibility {
     params {
         record: dna::Journal = dna::MemJournal { };
-        ledger: Ledger = MemLedger { };
+        ledger: dna::LedgerView = dna::PqLedger { };
         syntax: KnowledgePolicySyntax = NoKnowledgePolicySyntax { };
         restrictions: KnowledgeRestrictions = KnowledgeRestrictions { };
         basis: KnowledgeVisibilityBasis = KnowledgeVisibilityBasis { };
@@ -287,7 +287,7 @@ locus KnowledgeVisibility {
             if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
             if !self.inspect(e) { return self.refuse(self.basis.error); }
             if e.kind == "ledger.abandoned" {
-                // Abandonment destroys old Ledger restrictions; switching back
+                // Abandonment destroys old dna::Ledger restrictions; switching back
                 // to Record does not establish their absence.
                 return self.refuse("knowledge_visibility_unavailable");
             }
@@ -352,5 +352,170 @@ locus KnowledgeVisibility {
             }
         }
         return true;
+    }
+}
+
+// ---- the projection, as the spine runs it (GH #985) -----------------------
+//
+// The graph is the spine's projection of the record: the host that runs the
+// body applies the record into it on its tick, as the record's spine role
+// (HALE_DNA_MEMORY_DSN_SPINE), so the projection advances without anyone
+// asking. It lives here, beside the command codecs it decodes admitted facts
+// with, rather than in the core those codecs are written against.
+locus MemoryProjection {
+    params {
+        root: String = ".";
+        dsn_env: String = dna::SPINE_DSN_ENV;
+        store: dna::Pq = dna::Pq { };
+        j: dna::GitJournal = dna::GitJournal { repo: ".", author: "spine" };
+        receipts: dna::GitReceipts = dna::GitReceipts { repo: "." };
+        applied: Int = 0;
+        last_error: String = "";
+        opened: Bool = false;
+    }
+    birth() {
+        self.j.repo = self.root;
+        self.j.record.repo = self.root;
+        self.receipts.repo = self.root;
+        self.store.dsn_env = self.dsn_env;
+    }
+    fn ready() -> Bool { return dna::dsn_set(self.dsn_env); }
+    // Opened on the first request, not at birth: a database that is
+    // down or slow to answer must not hold the HTTP surface closed —
+    // the surface is where an operator reads that it is down. Kept
+    // open once it opens, and retried while it will not, so a database
+    // that comes up late needs no restart.
+    fn ensure_open() -> Bool {
+        // An open that succeeded once is not a connection that still
+        // answers. A database restart, or anything else that drops the
+        // session, left this true forever: the summary said `open`, the
+        // record tail failed, and `/context` answered 200 with an empty
+        // package and a normal-looking digest until someone restarted
+        // the service by hand (the review's second round, finding 4).
+        // The connection is asked on each request, and a dead one is
+        // re-established here rather than reported as knowledge.
+        // The store is scoped by the record's identity, its first
+        // commit (GH #613): a record that had no rows when the store
+        // opened, and has some now, moves to its own schema here.
+        let scope = self.j.genesis();
+        if self.opened && scope != self.store.record() {
+            eprintln("hale dna: memory: the record has its first row; the store is scoped to record ", scope);
+            self.opened = false;
+        }
+        if self.opened && self.store.healthy() { return true; }
+        if self.opened { eprintln("hale dna: memory: the store's connection is gone (", self.store.last_error(), "); dialling again"); }
+        self.opened = false;
+        self.store.scope(scope);
+        if self.store.reopen() {
+            self.opened = true;
+            self.last_error = "";
+            return true;
+        }
+        self.last_error = "the store is not open: " + self.store.last_error();
+        return false;
+    }
+    // Tail the record: fetch is the host's job; this reads what the
+    // repository has now (another process — the organization, a CLI —
+    // may have moved the ref since the last read).
+    fn apply() -> ProjectionApplied {
+        // read the record before opening the store: the scope is the
+        // record's identity as loaded, and what is applied is the same
+        // loaded record
+        let moved = self.j.refresh();
+        return self.project(false);
+    }
+    // A failed event can have written a node before its binding or watermark.
+    // Persist the intended Record suffix BEFORE any projection write. Until
+    // that entire suffix is complete, its pending fence survives errors and
+    // process restart. Reconciliation cannot turn partial effects into a clean
+    // projection merely by returning the Record to the old stamped prefix.
+    fn projection_refused(why: String, basis: dna::GraphProjection) -> ProjectionApplied {
+        self.last_error = "the Knowledge projection has no verified prefix and pending suffix of this Record; restore its source or rebuild its projection";
+        // Which check refused, on stderr: the fixtures dump it, and an
+        // operator reading the service log sees the numbers, not a riddle.
+        eprintln("hale dna: memory: projection refused: ", why, " (stamped ", to_string(basis.watermark), " head ", basis.head, ", live ", to_string(basis.live_watermark), ", pending ", to_string(basis.pending_watermark), " head ", basis.pending_head, ", record ", to_string(self.j.revision()), ")");
+        return ProjectionApplied { error: "knowledge_projection_unavailable" };
+    }
+    // The record's rows are identified by content and place among equals,
+    // never by commit: a reconcile re-appends local rows on top of the
+    // remote's and every one of them gets a new digest (GH #603). A
+    // projection stamped by digest is then behind a chain it cannot prove,
+    // and the graph is derived, so the honest move is to rebuild it from
+    // row 0 rather than refuse every read until an operator does.
+    fn chain_replaced(bounded: Bool, why: String, basis: dna::GraphProjection) -> ProjectionApplied {
+        eprintln("hale dna: memory: ", why, " (stamped ", to_string(basis.watermark), " head ", basis.head, ", live ", to_string(basis.live_watermark), ", pending ", to_string(basis.pending_watermark), " head ", basis.pending_head, ", record ", to_string(self.j.revision()), ")");
+        if !self.store.rebuild() { return self.projection_refused("the store could not rebuild its projection: " + self.store.last_error(), basis); }
+        return self.project(bounded);
+    }
+    fn project(bounded: Bool) -> ProjectionApplied {
+        if !self.ensure_open() { return ProjectionApplied { error: self.last_error }; }
+        let mut basis = self.store.projection_basis();
+        if !basis.ok && bounded { return ProjectionApplied { error: "knowledge_projection_unavailable" }; }
+        if basis.ok {
+            let mark = basis.live_watermark;
+            let revision = self.j.revision();
+            let prefix = if basis.watermark > 0 && basis.watermark <= revision { self.j.read(basis.watermark - 1).digest } else { "" };
+            if basis.watermark > 0 && basis.watermark <= revision && len(prefix) > 0 && basis.head != prefix { return self.chain_replaced(bounded, "the row at the stamp is not the one stamped (`" + prefix + "` now, head `" + self.j.head() + "`): the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0", basis); }
+            if basis.watermark < 0 || basis.watermark > revision || mark < basis.watermark || mark > revision || basis.head != prefix || (basis.watermark > 0 && len(prefix) == 0) { return self.projection_refused("the stamped prefix does not match the record: prefix digest `" + prefix + "`", basis); }
+            if basis.pending_watermark == 0 {
+                // A legacy count-only projection has no provenance to repair
+                // by guessing. Only an exactly stamped clean prefix can begin.
+                if len(basis.pending_head) > 0 || mark != basis.watermark { return self.projection_refused("live progress without a pending target", basis); }
+            } else {
+                if basis.pending_watermark <= basis.watermark || basis.pending_watermark > revision || mark > basis.pending_watermark || len(basis.pending_head) == 0 { return self.projection_refused("the pending target is not ahead of the stamp and within the record", basis); }
+                if self.j.read(basis.pending_watermark - 1).digest != basis.pending_head { return self.chain_replaced(bounded, "the row at the pending target is not the one begun: the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0", basis); }
+            }
+            if revision > basis.watermark || basis.pending_watermark > 0 {
+                let target = self.j.read(revision - 1).digest;
+                if len(target) == 0 || target != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + target + "`", basis); }
+                if !self.store.begin_projection(basis, revision, target) { return self.projection_refused("the store refused to begin the projection at " + to_string(revision), basis); }
+                let pending = self.store.projection_basis();
+                if !pending.ok || pending.watermark != basis.watermark || pending.head != basis.head || pending.pending_watermark != revision || pending.pending_head != target { return self.projection_refused("the store's pending basis is not the one just begun", basis); }
+                basis = pending;
+            }
+        }
+        self.store.forget_error();
+        let receipts = GraphReceipts { source: self.receipts };
+        let mut r = if bounded { apply_record(self.store, self.j, receipts) } else { apply_record(self.store, self.j, self.receipts) };
+        if len(receipts.error) > 0 { r.error = receipts.error; }
+        // An incomplete event leaves the pending target intact, even when
+        // earlier complete events advanced the live watermark. A retry may
+        // continue only after the exact pending suffix is proven above.
+        if basis.ok && len(r.error) == 0 {
+            if r.watermark != self.j.revision() { r.error = "knowledge_projection_unavailable"; }
+            else if basis.pending_watermark > 0 && !self.store.checkpoint_projection(basis, r.watermark, self.j.head()) { r.error = "knowledge_projection_unavailable"; }
+        }
+        self.applied = self.applied + r.ratified + r.proposed + r.declined;
+        self.last_error = r.error;
+        return r;
+    }
+}
+
+// Projection reads pin each receipt ref to a blob and inspect its size before
+// transporting its body. A read must not trigger unlimited catch-up work before
+// the graph query's own row/byte bounds can run. This adapter never writes.
+locus GraphReceipts {
+    params { source: dna::GitReceipts; remaining: Int = 8388608; error: String = ""; }
+    fn kind() -> String { return "git"; }
+    fn store(text: String) -> String { self.error = "knowledge_projection_unavailable"; return ""; }
+    fn erase(digest: String) -> Bool { self.error = "knowledge_projection_unavailable"; return false; }
+    fn read(digest: String) -> String {
+        if len(self.error) > 0 { return ""; }
+        if len(digest) != 64 || !dna::digest_well_formed("sha256:" + digest) { self.error = "knowledge_projection_unavailable"; return ""; }
+        let record = self.source.record;
+        let object = record.git_out("rev-parse\n-q\n--verify\n" + record.ref_of("receipts/" + digest));
+        if len(object) == 0 { return ""; }
+        // cat-file with an expected type can peel a tag. Size and body must
+        // refer to the exact same blob, never a small tag over a large body.
+        let kind = record.git("cat-file\n-t\n" + object);
+        if kind.code != 0 || dna::trim_nl(kind.stdout) != "blob" { self.error = "knowledge_projection_unavailable"; return ""; }
+        let sized = record.git("cat-file\n-s\n" + object);
+        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or - 1;
+        if sized.code != 0 || size < 0 { self.error = "knowledge_projection_unavailable"; return ""; }
+        if size > self.remaining { self.error = "knowledge_read_limit"; return ""; }
+        let body = record.git("cat-file\nblob\n" + object);
+        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + digest { self.error = "knowledge_projection_unavailable"; return ""; }
+        self.remaining = self.remaining - size;
+        return body.stdout;
     }
 }

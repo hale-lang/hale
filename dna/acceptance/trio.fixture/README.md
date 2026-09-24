@@ -11,3 +11,15 @@ recorded addition of the fulfilment leader. Only that deterministic scaffold
 delta and the resulting request identities changed. No fresh model call was
 made; the assessment answer is unchanged, and both entries' token and cost
 fields remain historical usage from the original recording.
+
+GH #985 moved memory into the core, which changed two lines of the
+generated organization: its `main.hl` no longer names a ledger or a
+knowledge client, and its law's `knowledge` group names
+`dna::MemoryKnowledge`. The organization-growth edit's recorded output
+(`f4c54ee848de…`, was `ea6311e87bce…`) carries that same template delta
+and nothing else; the plans (`72800cd31bce…`, `22daa9954a05…`), the
+review (`510760d5bef1…`) and the growth assessment (`deb0c457bcdb…`)
+were re-keyed for the changed context alone. Each old context digest was
+checked by reproducing it from the new context with the old template
+line or the original recorded edit put back. No fresh model call was
+made; every answer is unchanged.

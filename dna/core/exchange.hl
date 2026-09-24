@@ -16,9 +16,8 @@
 // - settlement only on the receiver's acceptance — the origin's task
 //   settles when the receiver's `handoff.accepted` envelope reaches it
 //   through the same exchange, never when a delivery call returned.
-// `GitExchange` (mailboxes as refs in a private peer cache) and
-// `ServiceExchange` (the peer's service) live in the host; `MemExchange`
-// is the fixtures'.
+// `GitExchange` (mailboxes as refs in a private peer cache) lives in the
+// host; `MemExchange` is the fixtures'.
 
 type Envelope {
     kind: String = ""; // "handoff.received" | "handoff.accepted"

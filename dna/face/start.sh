@@ -28,8 +28,12 @@ purpose and are re-adopted by the next head.
   --help            Show this help.
 
 Existing service configuration is inherited:
-  HALE_DNA_KNOWLEDGE_URL       Private state-service origin.
-  HALE_DNA_KNOWLEDGE_READ_KEY  Private graph-read credential shared with it.
+  HALE_DNA_MEMORY_DSN_HEAD     Memory under the record's head role, as
+                               `hale dna memory migrate` prints it. The API
+                               reads Knowledge with it; without it Knowledge
+                               is unsupported.
+  HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_MEMORY_DSN_SPINE
+                               Reach a body the head starts, never the API.
   HALE_DNA_HEAD_STATE          The head's state directory
                                (default: ${XDG_STATE_HOME:-~/.local/state}/hale/dna/head).
 The head is trusted-local; a project configured for OIDC is refused at attach.
@@ -83,8 +87,9 @@ fi
 for asset in index.html app.js application.js definition-draft.js organization-draft.js knowledge-draft.js task-administration.js projects.js task-create.js styles.css; do
   [[ -r "$face/web/$asset" && -s "$face/web/$asset" ]] || fail "missing browser asset: $asset"
 done
-if [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" || -n "${HALE_DNA_KNOWLEDGE_READ_KEY:-}" ]]; then
-  [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" && -n "${HALE_DNA_KNOWLEDGE_READ_KEY:-}" ]] || fail 'Knowledge reads require both HALE_DNA_KNOWLEDGE_URL and HALE_DNA_KNOWLEDGE_READ_KEY'
+# The DSN carries the head role's password: refuse it without echoing it.
+if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" && ! "$HALE_DNA_MEMORY_DSN_HEAD" =~ ^postgres(ql)?://[^@/[:space:]]+@[^/[:space:]]+/[^[:space:]]+$ ]]; then
+  fail 'Knowledge reads require HALE_DNA_MEMORY_DSN_HEAD to be a postgres:// DSN for the head role'
 fi
 
 build_dir=
@@ -136,7 +141,7 @@ if [[ -z "$head" ]]; then head=$(build_seed dna/api/project_service project_serv
 
 printf 'face: starting http://127.0.0.1:%s/\n' "$port"
 if [[ -n "$project" ]]; then printf 'face: project %s\n' "$project"; else printf 'face: no project attached; open the Projects workspace\n'; fi
-if [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" ]]; then printf 'face: configured Knowledge service (credential stays on the server)\n'; fi
+if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" ]]; then printf 'face: Knowledge reads memory as the head (the DSN stays on the server)\n'; fi
 printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
 env -u LOTUS_OBS "$head" "$port" "$face/web" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!

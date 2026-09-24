@@ -1,8 +1,15 @@
 // Browser acceptance composition: real Git receipts and Record projection,
 // with native stored relationships. No public/private graph response is mocked.
+//
+// The knowledge service is gone (GH #985): the API reads memory under the
+// head's role. `project` migrates the record into memory with the owner's DSN
+// (HALE_DNA_MEMORY_DSN_OWNER), projects it under the spine's role the way the
+// spine's tick does, stores the relationships, and prints the head's DSN,
+// which the API is started with as HALE_DNA_MEMORY_DSN_HEAD. A mutation
+// projects again, standing in for the spine's next tick. `drop` removes the
+// record's schema and roles; the harness runs it when the fixture ends.
 import "../../../core" as dna;
-import "../../../knowledge" as know;
-import "../../../knowledge/service" as service;
+import "../../../operations" as ops;
 import "../fixture" as fixtures;
 
 @unbounded
@@ -40,6 +47,24 @@ fn seed(root: String, count: Int) {
     f.root = "";
 }
 
+// The spine's DSN `project` left beside the record ("" when it has not run).
+fn spine_file(root: String) -> String { return root + "/memory.spine"; }
+
+// One tick of the spine's projection over the record as it stands.
+fn tick(root: String, spine: dna::Dsn) {
+    let j = dna::GitJournal { repo: root, author: "spine" };
+    let tail = ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: j.genesis() }, j: j, receipts: dna::GitReceipts { repo: root } };
+    let applied = tail.apply();
+    tail.store.close();
+    std::test::assert(len(applied.error) == 0, "native knowledge fixture projection: " + applied.error);
+}
+
+fn owner() -> String {
+    let dsn = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    std::test::assert(len(dsn) > 0, "the Knowledge fixture needs memory: set HALE_DNA_MEMORY_DSN_OWNER");
+    return dsn;
+}
+
 fn mutate(root: String, action: String) {
     let j = dna::GitJournal { repo: root };
     let document = std::io::fs::read_file(root + "/fixture.json") or "";
@@ -52,22 +77,26 @@ fn mutate(root: String, action: String) {
         j.append(j.revision(), "browser.fixture", "refresh", "another writer advanced the Record")
     };
     std::test::assert(result.ok, "knowledge fixture mutation: " + result.error);
+    let spine = dna::trim_nl(std::io::fs::read_file(spine_file(root)) or "");
+    if len(spine) > 0 { tick(root, dna::parse_dsn(spine)); }
 }
 
 @unbounded
-fn serve(root: String, port: Int) {
-    let store = know::Mem { };
-    let head = service::Service {
-        root: root, store: store, graph: store,
-        protected: know::MemProtected { }, ledger: know::MemLedger { }, leases: know::MemLeaseStore { },
-        j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root }
-    };
-    let applied = head.apply();
-    std::test::assert(len(applied.error) == 0, "native knowledge fixture projection: " + applied.error);
+fn project(root: String) {
+    let j = dna::GitJournal { repo: root };
+    let id = j.genesis();
+    std::test::assert(len(id) > 0, "a seeded record to project");
+    let spine = dna::migrated(owner(), id);
+    std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);
+    let head = dna::migrated_head(owner(), id);
+    std::test::assert(head.ok, "the head's role for the record: " + head.why);
+    tick(root, spine);
     let document = std::io::fs::read_file(root + "/fixture.json") or "";
     let current = std::json::find_string_field(document, "knowledge");
     let predecessor = std::json::find_string_field(document, "predecessor");
     let hidden = std::json::find_string_field(document, "hidden");
+    let store = dna::Pq { conn: dna::pq_conn(spine), record_id: id };
+    std::test::assert(store.open(), "the spine opens the record's memory: " + store.last_error());
     std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: predecessor, rel: "supports <stored relationship>" }), "native outgoing edge");
     std::test::assert(store.link(dna::KnowledgeEdge { from: predecessor, to: current, rel: "informs" }), "native incoming edge");
     std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: hidden, rel: "protected-endpoint relationship" }), "native protected edge");
@@ -78,7 +107,20 @@ fn serve(root: String, port: Int) {
         std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: id, rel: "related" }), "native fixture edge");
         it = std::json::array_next(it);
     }
-    service::Knowledge { root: root, port: port, dsn: "memory", srv: std::http::Server { port: port, handler: head } };
+    store.close();
+    std::io::fs::write_file(spine_file(root), dna::dsn_text(spine)) or discard;
+    std::io::fs::write_file(root + "/memory.head", dna::dsn_text(head)) or discard;
+    println(dna::dsn_text(head));
+}
+
+// The record's schema and both of its roles, gone again.
+fn drop(root: String) {
+    let j = dna::GitJournal { repo: root };
+    let id = j.genesis();
+    std::test::assert(len(id) > 0, "a seeded record to drop");
+    std::test::assert_eq_str(dna::unmigrate(owner(), id), "", "the record's memory is dropped");
+    std::io::fs::unlink(spine_file(root)) or discard;
+    std::io::fs::unlink(root + "/memory.head") or discard;
 }
 
 fn main() {
@@ -87,5 +129,7 @@ fn main() {
     std::test::assert(std::str::starts_with(root, "/tmp/hale-face-browser."), "owned browser fixture root");
     if action == "seed" { seed(root, std::str::parse_int(std::env::arg_or(3, "3")) or 3); }
     else if action == "advance" || action == "protect" || action == "protect-predecessor" || action == "redact" { mutate(root, action); }
-    else { serve(root, std::str::parse_int(action) or 0); }
+    else if action == "project" { project(root); }
+    else if action == "drop" { drop(root); }
+    else { std::test::assert(false, "unknown action `" + action + "`: seed | project | advance | protect | protect-predecessor | redact | drop"); }
 }

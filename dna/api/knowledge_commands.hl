@@ -1,5 +1,5 @@
 // Authenticated Knowledge command adaptation. Native Record admission and
-// policy stay in the owning service; a receipt never claims graph projection.
+// policy stay with the command handler; a receipt never claims graph projection.
 import "../core" as dna;
 import "../operations" as ops;
 
@@ -28,49 +28,6 @@ locus NoKnowledgeCommands {
     fn capability_for(context: CommandContext, operation: String) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
     fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
     fn lookup(context: CommandContext, request_id: String) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
-}
-
-locus ConfiguredKnowledgeCommands {
-    params { url: String = ""; command_key: String = ""; read_key: String = ""; }
-    fn supported() -> Bool { return len(self.url) > 0 && len(self.command_key) > 0; }
-    fn configured() -> Bool {
-        if self.command_key == self.read_key { return false; }
-        let shape = ConfiguredKnowledge { url: self.url, read_key: self.command_key };
-        return shape.configured();
-    }
-    fn send(kind: String, body: String) -> KnowledgeUpstream {
-        if !self.configured() || len(body) == 0 || len(body) > 98304 { return KnowledgeUpstream { }; }
-        let base = if std::str::ends_with(self.url, "/") { self.url[0..(len(self.url) - 1)] } else { self.url };
-        let url = std::http::parse_url(base + "/graph/commands/" + kind) or std::http::Url { host: "" };
-        if len(url.host) == 0 { return KnowledgeUpstream { }; }
-        // No replay of a possibly committed POST. The current native Client's
-        // timeout_ms is not enforced; this does not claim a transport deadline.
-        let client = std::http::Client { max_retries: 0, max_body: 65536 };
-        let bytes = std::bytes::BytesBuilder { }; bytes.append_str(body);
-        let response = client.request(std::http::ClientRequest {
-            method: "POST", url: url,
-            headers: "Authorization: Bearer " + self.command_key + "\r\nContent-Type: application/json",
-            body: bytes.snapshot()
-        }) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
-        let text = std::str::from_bytes(response.body);
-        if len(text) != len(response.body) { return KnowledgeUpstream { }; }
-        return KnowledgeUpstream { transport_ok: response.status > 0, status: response.status, body: text };
-    }
-    fn capability(context: CommandContext) -> KnowledgeUpstream {
-        return self.capability_for(context, "dna.knowledge.edge.link");
-    }
-    fn capability_for(context: CommandContext, operation: String) -> KnowledgeUpstream {
-        let wire = KnowledgeCommandWire { };
-        return self.send("capability", wire.private_request(context, "capability", ops::KnowledgeCommand { operation: operation }, ""));
-    }
-    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> KnowledgeUpstream {
-        let wire = KnowledgeCommandWire { };
-        return self.send("submit", wire.private_request(context, "submit", command, ""));
-    }
-    fn lookup(context: CommandContext, request_id: String) -> KnowledgeUpstream {
-        let wire = KnowledgeCommandWire { };
-        return self.send("lookup", wire.private_request(context, "lookup", ops::KnowledgeCommand { }, request_id));
-    }
 }
 
 locus KnowledgeCommandWire {
@@ -142,7 +99,7 @@ locus KnowledgeCommandWire {
         let http = Http { };
         if code == "command_history_invalid" { return http.error(503, code, "the Knowledge command history cannot establish a safe receipt", false); }
         if code == "command_outcome_unknown" { return http.error(503, code, "the Knowledge command outcome is uncertain; retain its request identity and use lookup", true); }
-        if code == "command_busy" { return http.error(503, code, "the Knowledge command service is busy; retain its request identity and use lookup", true); }
+        if code == "command_busy" { return http.error(503, code, "Knowledge commands are busy; retain the request identity and use lookup", true); }
         let common = CommandWire { };
         return common.error(code);
     }
@@ -347,7 +304,7 @@ locus KnowledgeCommandWire {
         if fields.text(upstream.body, "code") != "" || application_id != context.source.identity || !bound.bounded(head, 256, true, false) || revision < 1 { return self.error("commands_unavailable"); }
         let receipt = self.receipt(body);
         if !self.receipt_valid(context, command, request_id, receipt, revision, submitting) { return self.error("commands_unavailable"); }
-        // Preserve the owning service's post-operation capture, not a new local
+        // Preserve the command handler's post-operation capture, not a new local
         // read that might attach an unrelated Record head to this receipt.
         let source = Source { ok: true, identity: application_id, head: head, revision: revision, name: context.source.name, code: "", error: "" };
         let http = Http { }; let mut response = http.success(source, self.receipt_json(receipt));

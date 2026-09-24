@@ -1,19 +1,14 @@
-// dna/knowledge/protected.hl — protected evidence (GH #606).
+// dna/core/memory_protected.hl — protected evidence (GH #606).
 //
 // A customer or confidential body never enters the record: not a git
-// receipt, so `sync` cannot carry it to a clone. The knowledge service
-// is its only keeper, in the record's own schema (GH #613), and every
-// read of it is an act the record names. `PqProtected` keeps each body
-// encrypted at rest with pgcrypto's OpenPGP symmetric cipher (AES-256)
-// under a key read from the environment into this sealed locus; the
-// key reaches the database session as a query parameter and nowhere
-// else, so an operator must not log statements with their parameters.
-// `MemProtected` keeps bodies for the life of the process only — no
-// disk, so nothing is at rest — for a service run with `memory`.
-
-import "../core" as dna;
-import "../pond/db" as db;
-import "../pond/pq" as pq;
+// receipt, so `sync` cannot carry it to a clone. Memory is its only
+// keeper, in the record's own schema (GH #613), and every read of it is
+// an act the record names. Each body is encrypted at rest with
+// pgcrypto's OpenPGP symmetric cipher (AES-256) under a key memory holds
+// (GH #985): `PqProtected` files, reads and erases through memory's own
+// functions (receipt_file, receipt_read, receipt_erase), so no client
+// ever holds the key. A dump of the database carries the key and the
+// ciphertext together; treat it as the evidence itself (GH #989).
 
 type Protected {
     present: Bool = false;
@@ -45,74 +40,44 @@ type ProtectedRow {
     stored_at: Int = 0;
 }
 
-@form(vec)
-locus ProtectedRows { capacity { heap rows of ProtectedRow; } }
-
-locus MemProtected {
-    params {
-        rows: ProtectedRows = ProtectedRows { };
-        record_id: String = "";
-    }
-    fn kind() -> String { return "memory (for the life of the process; nothing at rest)"; }
-    fn ready() -> Bool { return true; }
-    fn why_not() -> String { return ""; }
-    fn scope(record: String) { self.record_id = record; }
-    @unbounded
-    fn put(digest: String, class: String, text: String, at: Int) -> Bool {
-        if self.get(digest).present { return true; }
-        self.rows.push(ProtectedRow { digest: digest, class: class, text: text, stored_at: at });
-        return true;
-    }
-    @unbounded
-    fn get(digest: String) -> Protected {
-        let mut i = 0;
-        while i < self.rows.len() {
-            let r = self.rows.get(i) or ProtectedRow { };
-            if r.digest == digest { return Protected { present: true, class: r.class, text: r.text, stored_at: r.stored_at }; }
-            i = i + 1;
-        }
-        return Protected { };
-    }
-    fn last_error() -> String { return ""; }
-    @unbounded
-    fn erase(digest: String) -> Bool {
-        let mut i = 0;
-        while i < self.rows.len() {
-            let r = self.rows.get(i) or ProtectedRow { };
-            if r.digest == digest { self.rows.set(i, ProtectedRow { }) or discard; }
-            i = i + 1;
-        }
-        return !self.get(digest).present;
-    }
-}
-
 @sealed locus PqProtected {
     params {
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
-        env_var: String = "HALE_DNA_RECEIPT_KEY";
-        key: String = "";
+        // GH #985: the environment variable naming this store's DSN, read
+        // at open; "" when the connection was built from a DSN in hand
+        dsn_env: String = "";
         record_id: String = "";
         opened: Bool = false;
         error: String = "";
     }
-    birth() {
-        if len(self.key) == 0 && len(self.env_var) > 0 && std::env::var_exists(self.env_var) { self.key = std::env::var(self.env_var); }
-    }
+    // a store holds one connection, and gives it back when it goes (GH #985)
+    dissolve() { self.conn.close(); }
     fn kind() -> String { return "postgres (pgcrypto, AES-256)"; }
-    // A short key is no key: sixteen characters at least.
-    fn ready() -> Bool { return len(self.key) >= 16; }
-    fn why_not() -> String {
-        if self.ready() { return ""; }
-        return "no receipt key: " + self.env_var + " is not set, or is shorter than sixteen characters (`hale dna secret set " + self.env_var + "` puts one where the service runs)";
+    // The record this store is scoped to, and the environment variable its
+    // DSN is read from at open (GH #985): set through the store, which is
+    // sealed.
+    fn record() -> String { return self.record_id; }
+    fn use_dsn_env(env_name: String) {
+        if env_name == self.dsn_env { return; }
+        self.dsn_env = env_name;
+        self.opened = false;
     }
+    // The key is memory's, not this process's (GH #985): a store is ready
+    // when it knows where memory is; one that holds no key says so when a
+    // body is filed or read.
+    fn ready() -> Bool { return len(self.dsn_env) > 0 || len(self.conn.user) > 0; }
+    fn why_not() -> String { return "no memory named (HALE_DNA_MEMORY_DSN_SPINE / HALE_DNA_MEMORY_DSN_HEAD)"; }
     fn scope(record: String) {
         if record == self.record_id { return; }
         self.record_id = record;
         self.opened = false;
     }
     fn last_error() -> String { return self.error; }
+    @unbounded
     fn open() -> Bool {
         if self.opened { return true; }
+        let dialled = dial_from_env(self.conn, self.dsn_env);
+        if len(dialled) > 0 { self.error = dialled; return false; }
         let st = self.conn.open();
         if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
         // the schema (and pgcrypto) are the owner's to create (GH #985):
@@ -142,14 +107,14 @@ locus MemProtected {
         a.add(digest);
         a.add(class);
         a.add(text);
-        a.add(self.key);
         a.add(to_string(at));
-        let r = self.conn.exec_params("INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES ($1, $2, armor(pgp_sym_encrypt($3, $4, 'cipher-algo=aes256')), $5::bigint) ON CONFLICT (digest) DO NOTHING", a);
+        // sealed inside memory, under a key this process never holds
+        let r = self.conn.exec_params("SELECT receipt_file($1, $2, $3, $4::bigint)", a);
         if r.ok { return true; }
         // the connection may be gone (a restart, a failover, an idle
         // timeout): dial again once and try again (#637)
         if self.redial() {
-            let again = self.conn.exec_params("INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES ($1, $2, armor(pgp_sym_encrypt($3, $4, 'cipher-algo=aes256')), $5::bigint) ON CONFLICT (digest) DO NOTHING", a);
+            let again = self.conn.exec_params("SELECT receipt_file($1, $2, $3, $4::bigint)", a);
             if again.ok { self.error = ""; return true; }
             self.error = "put: " + again.err.kind + " " + again.err.detail;
             return false;
@@ -157,14 +122,18 @@ locus MemProtected {
         self.error = "put: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
         return false;
     }
+    @unbounded
     fn erase(digest: String) -> Bool {
         if !self.open() { return false; }
         let a = db::Args { };
         a.add(digest);
-        let r = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
+        a.add(to_string(std::time::now()));
+        // through memory's own function: the body goes, and its digest is
+        // kept so that filing it again is refused (GH #985)
+        let r = self.conn.exec_params("SELECT receipt_erase($1, $2::bigint)", a);
         if r.ok { return true; }
         if self.redial() {
-            let again = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
+            let again = self.conn.exec_params("SELECT receipt_erase($1, $2::bigint)", a);
             if again.ok { self.error = ""; return true; }
             self.error = "erase: " + again.err.kind + " " + again.err.detail;
             return false;
@@ -174,6 +143,7 @@ locus MemProtected {
     }
     // Read as JSON built by the server: a body is an ordinary paragraph,
     // and the driver's tab-separated rows cannot carry one.
+    @unbounded
     fn get(digest: String) -> Protected {
         // the error is this read's, not one left by an earlier call: an
         // absent body with no error is absent
@@ -182,18 +152,20 @@ locus MemProtected {
         if !self.open() { return Protected { }; }
         let a = db::Args { };
         a.add(digest);
-        a.add(self.key);
-        let mut rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT class, pgp_sym_decrypt(dearmor(body), $2) AS text, stored_at FROM protected_receipts WHERE digest = $1) t", a);
+        // opened inside memory; the process never holds the key
+        let mut rows = self.conn.query_params("SELECT receipt_read($1)", a);
         if !rows.ok {
             let first = "get: " + rows.err.kind + " " + rows.err.detail;
             if !self.redial() { self.error = first + "; dialling again: " + self.error; return Protected { }; }
-            rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT class, pgp_sym_decrypt(dearmor(body), $2) AS text, stored_at FROM protected_receipts WHERE digest = $1) t", a);
+            rows = self.conn.query_params("SELECT receipt_read($1)", a);
             if !rows.ok { self.error = "get: " + rows.err.kind + " " + rows.err.detail; return Protected { }; }
             self.error = "";
         }
         if rows.n == 0 { return Protected { }; }
         let nl = std::str::index_of(rows.csv, "\n");
         let row = if nl < 0 { rows.csv } else { rows.csv[0..nl] };
+        // no such body: the function answers null
+        if len(trim_nl(row)) == 0 { return Protected { }; }
         return Protected {
             present: true,
             class: std::json::find_string_field(row, "class"),

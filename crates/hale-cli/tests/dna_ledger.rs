@@ -11,8 +11,6 @@
 mod reap;
 #[path = "support/trace.rs"]
 mod trace;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -28,27 +26,70 @@ fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
-fn http(port: u16, req: &str) -> String {
-    let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(15)));
-    let _ = s.write_all(req.as_bytes());
-    let mut out = String::new();
-    let _ = s.read_to_string(&mut out);
-    out
-}
-
-fn body(resp: &str) -> String {
-    resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
-}
-
 fn record(app: &Path) -> Vec<serde_json::Value> {
     let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+/// Memory's owner for these organisms (CI's service container).
+fn owner_dsn() -> Option<String> {
+    std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok().filter(|d| !d.is_empty())
+}
+
+/// A role's DSN for `app`'s record (`HALE_DNA_MEMORY_DSN_SPINE=` or
+/// `…_HEAD=`), from the owner's migration (GH #985).
+fn memory_dsn(app: &Path, line: &str) -> String {
+    let (ok, out) = hale(&["dna", "memory", "migrate"], app, &[]);
+    assert!(ok, "memory migrates: {out}");
+    out.lines().find_map(|l| l.strip_prefix(line)).unwrap_or_else(|| panic!("no {line} in {out}")).to_string()
+}
+
+/// The spine: a body run on the spine's role; its stderr in `<name>.stderr`.
+fn spine(app: &Path, d: &Path, spine_dsn: &str, name: &str) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "run", ".", "--no-iris"])
+        .current_dir(app)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("HALE_DNA_MEMORY_DSN_SPINE", spine_dsn)
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(d.join(format!("{name}.stderr"))).unwrap())
+        .spawn()
+        .expect("hale dna run")
+}
+
+/// The host, then everything it started.
+fn stop_host(app: &Path, host: &mut std::process::Child) {
+    for f in ["org.pid", "app.pid"] {
+        if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+            let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+        }
+    }
+    let _ = host.kill();
+    let _ = host.wait();
+}
+
+/// The ledger's rows as a head reads them, once `pred` holds or two
+/// minutes pass.
+fn ledger_until(app: &Path, env: &[(&str, &str)], pred: impl Fn(&str) -> bool) -> String {
+    let dl = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let (_, rows) = hale(&["dna", "ledger", "rows"], app, env);
+        if pred(&rows) || std::time::Instant::now() > dl {
+            return rows;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// This record's schema and roles, gone again.
+fn unmigrate(app: &Path, owner: &str) {
+    let out = Command::new("git").args(["rev-list", "--max-parents=0", "refs/dna/journal"]).current_dir(app).output().unwrap();
+    let sch = format!("dna_{}", String::from_utf8_lossy(&out.stdout).trim().to_lowercase());
+    let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
+    let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
 }
 
 #[test]
@@ -69,17 +110,16 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     Command::new("git").args(["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()]).current_dir(&d).output().unwrap();
     Command::new("git").args(["remote", "add", "origin", &bare.to_string_lossy()]).current_dir(&app).output().unwrap();
     Command::new("git").args(["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"]).current_dir(&app).output().unwrap();
-    // the organism's template reads both memories
+    // the organism opens memory itself (GH #985): its template names no
+    // ledger and no knowledge client
     let main = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
-    assert!(main.contains("dna::RoutedJournal") && main.contains("dna::ServiceLedger"), "the organism is wired for two memories:\n{main}");
+    assert!(main.contains("dna::RoutedJournal") && !main.contains("ServiceLedger") && !main.contains("KnowledgeClient"), "the organism reads the record and memory, wired by the core:\n{main}");
 
-    // routing 0: the record alone, and adoption is closed until stage 3
+    // routing 0: the record alone
     let (ok, st) = hale(&["dna", "ledger"], &app, &[]);
-    assert!(ok && st.contains("routing:    0") && st.contains("none known here"), "{st}");
+    assert!(ok && st.contains("routing:    0") && st.contains("none named here"), "{st}");
     let (ok, status) = hale(&["dna", "status"], &app, &[]);
     assert!(ok && status.contains("memory:     the record alone (routing 0)"), "{status}");
-    let (ok, closed) = hale(&["dna", "ledger", "adopt"], &app, &[]);
-    assert!(!ok && closed.contains("no ledger service is known here"), "adoption needs a service to adopt into: {closed}");
     // an operational row before adoption lands in the record (a receipt
     // filed from a clone needs no organism beside it)
     std::fs::write(app.join("first.txt"), "the first invoice").unwrap();
@@ -87,143 +127,88 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     assert!(ok, "{out}");
     let before = record(&app);
     assert!(before.iter().any(|r| r["kind"] == "receipt.filed"), "the receipt row is in the record");
-    let rows_before = before.len();
 
-    // the service, in memory here, with no organism beside it
-    let kport = free_port();
-    let mut service = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "knowledge", ".", "--port", &kport.to_string()])
-        .current_dir(&app)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .env("HALE_DNA_DISCOVER", "off")
-        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
-        .spawn()
-        .expect("hale dna knowledge");
-    let up = trace::wait_until("dna knowledge: the service answered", Duration::from_secs(120), Duration::from_millis(200), || {
-        body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\": 0")
-    });
-    let stop = |service: &mut std::process::Child| {
-        let _ = service.kill();
-        let _ = service.wait();
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_ledger: no HALE_DNA_MEMORY_DSN_OWNER; the ledger is memory's, so adoption was not exercised");
+        return;
     };
-    if !up {
-        stop(&mut service);
-        panic!("the service did not come up:\n{}", std::fs::read_to_string(d.join("service.stderr")).unwrap_or_default());
-    }
-    let url = format!("http://127.0.0.1:{kport}");
-    let service_env: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &url)];
+    let _ = owner;
+    let spine_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_SPINE=");
+    let head_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
+    let head: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head_dsn.as_str())];
 
-    // a row of the record is not the ledger's to take
-    let refused = body(&http(kport, "POST /ledger/append HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 63\r\n\r\n{\"expected\": 0, \"kind\": \"review.verdict\", \"entity\": \"x\", \"body\": \"\"}"));
-    assert!(refused.contains("is a row of the record, not the ledger"), "{refused}");
-
-    // adoption, opened for the fixture
-    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url), ("HALE_DNA_ADOPT_UNGATED", "1")]);
-    assert!(ok && adopted.contains("ledger adopted at") && adopted.contains("operational row(s) copied"), "{adopted}");
+    // adoption: a head asks, the spine (the body, under the spine's role)
+    // carries it out on its tick
+    let mut host = spine(&app, &d, &spine_dsn, "run");
+    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, head);
+    assert!(ok && adopted.contains("ledger adoption requested"), "{adopted}");
+    let landed = trace::wait_until("the spine adopted the ledger", Duration::from_secs(180), Duration::from_millis(300), || record(&app).iter().any(|r| r["kind"] == "ledger.adopted"));
+    assert!(landed, "the spine adopts on its tick:\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
     let after = record(&app);
     let adopting = after.iter().position(|r| r["kind"] == "ledger.adopting").expect("ledger.adopting");
     let adopted_at = after.iter().position(|r| r["kind"] == "ledger.adopted").expect("ledger.adopted");
     assert!(adopting < adopted_at, "the intent is in the record before the checkpoint");
     let cp = after[adopted_at]["body"].as_str().unwrap();
     assert!(cp.contains("\"routing\": 1") && cp.contains("\"checkpoint\": \"") && cp.contains("\"rows\": "), "{cp}");
-    assert_eq!(after.len(), rows_before + 2, "the record gained the two adoption rows and lost nothing");
-    let head = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(head.contains("\"adopted\": true") && head.contains("\"routing\": 1"), "{head}");
-    let copied = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    assert!(before.iter().zip(after.iter()).all(|(a, b)| a == b), "the record lost nothing it had");
+    let copied = ledger_until(&app, head, |r| r.contains("\"kind\": \"receipt.filed\""));
     assert!(copied.contains("\"kind\": \"receipt.filed\"") && copied.contains("\"author\": \"sam\""), "the operational rows were copied with their authors:\n{copied}");
     assert!(!copied.contains("\"kind\": \"review.requested\""), "the record's own rows were not:\n{copied}");
-    let (ok, st) = hale(&["dna", "ledger"], &app, service_env);
+    let (ok, st) = hale(&["dna", "ledger"], &app, head);
     assert!(ok && st.contains("routing:    1") && st.contains("cutover at"), "{st}");
-    let (ok, again) = hale(&["dna", "ledger", "adopt"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url), ("HALE_DNA_ADOPT_UNGATED", "1")]);
+    let (ok, again) = hale(&["dna", "ledger", "adopt"], &app, head);
     assert!(!ok && again.contains("already on routing 1"), "{again}");
 
-    // after cutover: an operational row goes through the service …
+    // after cutover: an operational row is a request in the record, admitted
+    // into the ledger by the spine
     std::fs::write(app.join("second.txt"), "the second invoice").unwrap();
-    let (ok, out) = hale(&["dna", "receipt", "file", "second.txt", "--as", "sam"], &app, service_env);
+    let (ok, out) = hale(&["dna", "receipt", "file", "second.txt", "--as", "sam"], &app, head);
     assert!(ok, "{out}");
-    let now = record(&app);
-    assert_eq!(now.len(), after.len(), "the record did not take the operational row");
-    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(rows.contains("second.txt"), "the ledger did:\n{rows}");
-    // … and a head with no service is refused, the checkpoint named, nothing written
+    let rows = ledger_until(&app, head, |r| r.contains("second.txt"));
+    assert!(rows.contains("second.txt"), "the ledger took it:\n{rows}");
+    assert!(!record(&app).iter().any(|r| r["kind"] == "receipt.filed" && r["body"].as_str().unwrap_or("").contains("second.txt")), "the record holds its request, not the row");
+    // a head with no memory named still requests: the record is the pager
     std::fs::write(app.join("third.txt"), "the third invoice").unwrap();
-    let (ok, refused) = hale(&["dna", "receipt", "file", "third.txt", "--as", "sam"], &app, &[]);
-    assert!(!ok && refused.contains("is a row of the ledger") && refused.contains("no service is known here") && refused.contains("nothing was written"), "{refused}");
-    assert_eq!(record(&app).len(), after.len(), "the record still did not take it");
+    let (ok, out) = hale(&["dna", "receipt", "file", "third.txt", "--as", "sam"], &app, &[]);
+    assert!(ok && out.contains("requested"), "{out}");
+    let rows = ledger_until(&app, head, |r| r.contains("third.txt"));
+    assert!(rows.contains("third.txt"), "and the spine admits it:\n{rows}");
     // an evolutionary row still goes to the record
-    let (ok, out) = hale(&["dna", "practice", "propose", "billing/late", "--text", "Chase an invoice at seven days.", "--as", "riley"], &app, service_env);
+    let (ok, out) = hale(&["dna", "practice", "propose", "billing/late", "--text", "Chase an invoice at seven days.", "--as", "riley"], &app, head);
     assert!(ok, "{out}");
     assert!(record(&app).iter().any(|r| r["kind"] == "practice.requested" || r["kind"] == "practice.proposed"), "the practice is in the record");
     // history reads one history across both memories
-    let (ok, hist) = hale(&["dna", "history"], &app, service_env);
+    let (ok, hist) = hale(&["dna", "history"], &app, head);
     assert!(ok && hist.contains("first.txt") && hist.contains("second.txt") && hist.contains("ledger.adopted"), "one history:\n{hist}");
-    // a body without its store admits nothing
-    let (ok, norun) = hale(&["dna", "run", ".", "--no-iris"], &app, &[("HALE_DNA_KNOWLEDGE_URL", "")]);
-    assert!(!ok && norun.contains("no ledger service is known here"), "{norun}");
 
-    // stage 2: the body lease is a row of the store. No body has run: the
-    // store knows no lease; a body takes it there, the fence renews it
-    // there, and a head reads it there
-    let (ok, nobody) = hale(&["dna", "body"], &app, service_env);
-    assert!(ok && nobody.contains("none (no body has run this record"), "{nobody}");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "run", ".", "--no-iris"])
-        .current_dir(&app)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .env("HALE_DNA_DISCOVER", "off")
-        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_URL", &url)
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(d.join("run.stderr")).unwrap())
-        .spawn()
-        .expect("hale dna run");
-    let mut lease = String::new();
-    trace::wait_until("the body took its lease in the store", Duration::from_secs(120), Duration::from_millis(300), || {
-        lease = body(&http(kport, "GET /ledger/lease?key=body HTTP/1.0\r\nHost: x\r\n\r\n"));
-        if lease.contains("\"present\": true") {
-            return true;
-        }
-        if let Ok(Some(st)) = host.try_wait() {
-            panic!("hale dna run exited early: {st}\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
-        }
-        false
-    });
-    assert!(lease.contains("\"present\": true") && lease.contains("\"token\": 1"), "the body took its lease in the store:\n{lease}\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
-    let (ok, live) = hale(&["dna", "body"], &app, service_env);
-    assert!(ok && live.contains("live on "), "a head reads the lease from the store: {live}");
-    let git_lease = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/lease/body"]).current_dir(&app).output().unwrap();
-    assert!(!git_lease.status.success(), "no git lease ref was written on routing 1");
-    // the second body is refused by the store's lease
-    let (ok, second) = hale(&["dna", "run", ".", "--no-iris"], &app, service_env);
+    // stage 2: the body lease is a row of memory (the adoption carried the
+    // running body's lease there): a head reads it, a second body is refused
+    let (ok, live) = hale(&["dna", "body"], &app, head);
+    assert!(ok && live.contains("live on "), "a head reads the lease from memory: {live}");
+    let (ok, second) = hale(&["dna", "run", ".", "--no-iris"], &app, &[("HALE_DNA_MEMORY_DSN_SPINE", spine_dsn.as_str())]);
     assert!(!ok && second.contains("lease"), "a second body is refused: {second}");
-    let stop_host = |host: &mut std::process::Child| {
-        for f in ["org.pid", "app.pid"] {
-            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
-                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
-            }
-        }
-        let _ = host.kill();
-        let _ = host.wait();
-    };
-    stop_host(&mut host);
-    std::thread::sleep(Duration::from_millis(500));
-    // the body is gone; its lease stands until forced, in the store
-    let (ok, forced) = hale(&["dna", "body", "claim", "--force", "--as", "riley"], &app, service_env);
+    // a body without its memory admits nothing
+    let (ok, norun) = hale(&["dna", "run", ".", "--no-iris"], &app, &[]);
+    assert!(!ok && norun.contains("a body without its memory admits nothing"), "{norun}");
+    stop_host(&app, &mut host);
+    // the body is gone; its lease stands until forced, in memory
+    let (ok, forced) = hale(&["dna", "body", "claim", "--force", "--as", "riley"], &app, head);
     assert!(ok && (forced.contains("body.claimed") || forced.contains("released")), "{forced}");
-    let after_force = body(&http(kport, "GET /ledger/lease?key=body HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(after_force.contains("\"present\": false"), "the forced claim released the lease in the store:\n{after_force}");
+    let (ok, gone) = hale(&["dna", "body"], &app, head);
+    assert!(ok && gone.contains("released"), "the forced claim released the lease in memory: {gone}");
 
-    // abandon: back to the record alone; the record's rows were never removed
-    let (ok, ab) = hale(&["dna", "ledger", "abandon", "--why", "the fixture is done", "--as", "riley"], &app, service_env);
-    assert!(ok && ab.contains("ledger abandoned by riley"), "{ab}");
-    let (ok, st) = hale(&["dna", "ledger"], &app, service_env);
+    // abandon: asked of the spine; back to the record alone, the record's
+    // rows never removed
+    let mut host = spine(&app, &d, &spine_dsn, "run2");
+    let (ok, ab) = hale(&["dna", "ledger", "abandon", "--why", "the fixture is done", "--as", "riley"], &app, head);
+    assert!(ok && ab.contains("requested"), "{ab}");
+    let done = trace::wait_until("the spine abandoned the ledger", Duration::from_secs(180), Duration::from_millis(300), || record(&app).iter().any(|r| r["kind"] == "ledger.abandoned"));
+    stop_host(&app, &mut host);
+    assert!(done, "the spine abandons on its tick:\n{}", std::fs::read_to_string(d.join("run2.stderr")).unwrap_or_default());
+    let (ok, st) = hale(&["dna", "ledger"], &app, head);
     assert!(ok && st.contains("routing:    0"), "{st}");
-    let last = record(&app);
-    assert!(last.iter().any(|r| r["kind"] == "ledger.abandoned") && last.iter().any(|r| r["kind"] == "receipt.filed"), "abandoned, and the pre-adoption rows are still there");
-    stop(&mut service);
+    assert!(record(&app).iter().any(|r| r["kind"] == "receipt.filed"), "the pre-adoption rows are still there");
+    unmigrate(&app, &owner_dsn().unwrap());
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -305,48 +290,42 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     let (ok, status_before) = hale(&["dna", "status", "--json"], &app, &[]);
     assert!(ok, "{status_before}");
 
-    let kport = free_port();
-    let mut service = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "knowledge", ".", "--port", &kport.to_string()])
-        .current_dir(&app)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .env("HALE_DNA_DISCOVER", "off")
-        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
-        .spawn()
-        .expect("hale dna knowledge");
-    let up = trace::wait_until("dna knowledge: the service answered", Duration::from_secs(120), Duration::from_millis(200), || {
-        body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"")
-    });
-    assert!(up, "the service did not come up:\n{}", std::fs::read_to_string(d.join("service.stderr")).unwrap_or_default());
-    let url = format!("http://127.0.0.1:{kport}");
-    let env: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &url), ("HALE_DNA_ADOPT_UNGATED", "1")];
-
-    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, env);
+    let Some(owner) = owner_dsn() else {
+        eprintln!("dna_ledger: no HALE_DNA_MEMORY_DSN_OWNER; the ledger is memory's, so adoption was not exercised");
+        return;
+    };
+    let spine_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_SPINE=");
+    let head_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
+    let head: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head_dsn.as_str())];
+    let mut host = spine(&app, &d, &spine_dsn, "run");
+    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, head);
     assert!(ok, "{adopted}");
+    let landed = trace::wait_until("the spine adopted the ledger", Duration::from_secs(180), Duration::from_millis(300), || record(&app).iter().any(|r| r["kind"] == "ledger.adopted"));
+    assert!(landed, "the spine adopts on its tick:\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
     // the copy: exactly the operational rows, in order, with their authors
-    let copied = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    let copied_kinds: Vec<String> = copied.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| format!("{} {}", v["kind"].as_str().unwrap_or(""), v["entity"].as_str().unwrap_or(""))).collect();
+    // (beside them, the running body's own rows: it is the spine that adopts)
+    let copied = ledger_until(&app, head, |r| r.contains("schedule.declared"));
+    let copied_kinds: Vec<String> = copied.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| format!("{} {}", v["kind"].as_str().unwrap_or(""), v["entity"].as_str().unwrap_or(""))).filter(|k| !k.starts_with("body.")).collect();
     let expected: Vec<String> = ["intent.requested i-1", "intent.offered i-1", "task.born t-1", "task.planned t-1", "task.handed t-1", "grant.reserved op-1", "receipt.filed sha256:bbbb", "receipt.redacted sha256:bbbb", "handoff.published handoff:h-1", "schedule.declared weekly-close", &format!("receipt.filed {old_digest}")].iter().map(|s| s.to_string()).collect();
     assert_eq!(copied_kinds, expected, "the operational rows, in order:\n{copied}");
     assert!(copied.contains("\"author\": \"sam\""), "with their authors:\n{copied}");
-    // the record kept every row it had, plus the two adoption rows
+    // the record kept every row it had; what it gained is the running
+    // body's own (its claim, its credential check, its recovery pass over the
+    // unfinished intent) and the adoption's
     let now = record(&app);
     let now_kinds: Vec<String> = now.iter().map(|r| format!("{} {}", r["kind"].as_str().unwrap_or(""), r["entity"].as_str().unwrap_or(""))).collect();
     assert_eq!(&now_kinds[..before_kinds.len()], &before_kinds[..], "the record's rows are untouched");
-    assert_eq!(now_kinds.len(), before_kinds.len() + 2);
+    assert!(now_kinds[before_kinds.len()..].iter().all(|k| k.starts_with("body.") || k.starts_with("spine.") || k.starts_with("ledger.adopt") || k.starts_with("intent.unrecovered")), "and it gained only the body's and the adoption's rows: {:?}", &now_kinds[before_kinds.len()..]);
 
     // the projections after: the same, across two memories
-    let (ok, history_after) = hale(&["dna", "history"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
+    let (ok, history_after) = hale(&["dna", "history"], &app, head);
     assert!(ok, "{history_after}");
     // a row's position differs once two memories are read as one (the
     // ledger's rows follow the record's); what is compared is every row
     // without its position
     let strip = |s: &str| -> Vec<String> {
         s.lines()
-            .filter(|l| l.contains(" ") && !l.contains("ledger.adopt") && !l.contains("event(s)"))
+            .filter(|l| l.contains(" ") && !l.contains("ledger.adopt") && !l.contains("event(s)") && !l.contains("body.") && !l.contains("spine.") && !l.contains("intent.unrecovered"))
             .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit()).trim().to_string())
             .collect()
     };
@@ -355,9 +334,9 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     hb.sort();
     ha.sort();
     assert_eq!(hb, ha, "history reads the same rows before and after adoption\nbefore:\n{history_before}\nafter:\n{history_after}");
-    let (ok, task_after) = hale(&["dna", "history", "t-1"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
+    let (ok, task_after) = hale(&["dna", "history", "t-1"], &app, head);
     assert!(ok && task_after.contains("task.handed") && task_after.contains("task.born") && task_after.contains("sam"), "the handed task keeps its id, its assignee and its bound practice:\n{task_after}");
-    let (ok, status_after) = hale(&["dna", "status", "--json"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
+    let (ok, status_after) = hale(&["dna", "status", "--json"], &app, head);
     assert!(ok, "{status_after}");
     let sb: serde_json::Value = serde_json::from_str(status_before.lines().find(|l| l.starts_with('{')).unwrap_or("{}")).unwrap_or_default();
     let sa: serde_json::Value = serde_json::from_str(status_after.lines().find(|l| l.starts_with('{')).unwrap_or("{}")).unwrap_or_default();
@@ -382,112 +361,22 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
         }
     }
     // stage 4: redacted evidence keeps its treatment across the two
-    // memories — a redaction after adoption is a ledger row, and the body
-    // filed before adoption is still a blob of the record: it goes
-    let (ok, redacted) = hale(&["dna", "receipt", "redact", &old_digest, "--why", "wrong customer", "--policy", "gdpr", "--as", "riley"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
-    assert!(ok && redacted.contains("redacted"), "{redacted}");
-    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(rows.contains(&format!("\"kind\": \"receipt.redacted\", \"entity\": \"{old_digest}\"")), "the redaction is a row of the ledger:\n{rows}");
-    let gone = Command::new("git").args(["rev-parse", "-q", "--verify", &format!("refs/dna/receipts/{old_hex}")]).current_dir(&app).output().unwrap();
-    assert!(!gone.status.success(), "and the body filed before adoption is gone from the record");
-    let (ok, hist) = hale(&["dna", "history", &old_digest], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
+    // memories — a redaction after adoption is a ledger row (asked of the
+    // spine), and the body filed before adoption is still a blob of the
+    // record: it goes on the next sync after the spine admits it
+    let (ok, redacted) = hale(&["dna", "receipt", "redact", &old_digest, "--why", "wrong customer", "--policy", "gdpr", "--as", "riley"], &app, head);
+    assert!(ok, "{redacted}");
+    let redaction = format!("\"kind\": \"receipt.redacted\", \"entity\": \"{old_digest}\"");
+    let rows = ledger_until(&app, head, |r| r.contains(&redaction));
+    assert!(rows.contains(&redaction), "the redaction is a row of the ledger:\n{rows}");
+    let gone = trace::wait_until("the redacted body left the record", Duration::from_secs(120), Duration::from_millis(300), || {
+        let _ = hale(&["dna", "sync"], &app, head);
+        !Command::new("git").args(["rev-parse", "-q", "--verify", &format!("refs/dna/receipts/{old_hex}")]).current_dir(&app).output().unwrap().status.success()
+    });
+    assert!(gone, "and the body filed before adoption is gone from the record");
+    let (ok, hist) = hale(&["dna", "history", &old_digest], &app, head);
     assert!(ok && hist.contains("receipt.filed") && hist.contains("receipt.redacted"), "the evidence's history spans both memories:\n{hist}");
-    let _ = service.kill();
-    let _ = service.wait();
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-/// Stage 3 (#652): a head that cannot reach the service keeps its
-/// requests, and the service admits each on submission against the
-/// record as it is then — a retired person's request is refused, a
-/// request submitted twice lands once, a completion in the wrong name
-/// is refused — and nothing on the head is ever authoritative.
-#[test]
-fn a_head_queues_while_the_service_is_unreachable_and_the_service_revalidates_on_submission() {
-    let _t = trace::test("dna_ledger::queues");
-    let d = std::env::temp_dir().join(format!("hale_dna_queue_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "queued"], &d, &[]);
-    assert!(ok, "{out}");
-    let app: PathBuf = d.join("queued");
-    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
-    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
-    // a task handed to sam, before adoption, so the completion rule has something to check
-    plumb(&app, "task.born", "t-1", "{\"objective\": \"chase the invoice\"}", "dna");
-    plumb(&app, "task.handed", "t-1", "{\"work\": \"chase the invoice\", \"assignee\": \"sam\", \"by\": \"dna\"}", "dna");
-    let kport = free_port();
-    let url = format!("http://127.0.0.1:{kport}");
-    let start = |d: &Path, app: &Path| -> std::process::Child {
-        Command::new(env!("CARGO_BIN_EXE_hale"))
-            .args(["dna", "knowledge", ".", "--port", &kport.to_string()])
-            .current_dir(app)
-            .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-            .env("HALE_DNA_DISCOVER", "off")
-            .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-            .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
-            .spawn()
-            .expect("hale dna knowledge")
-    };
-    let wait_up = || {
-        trace::wait_until("dna knowledge: the service answered", Duration::from_secs(120), Duration::from_millis(200), || {
-            body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"")
-        })
-    };
-    let mut service = start(&d, &app);
-    assert!(wait_up(), "the service did not come up");
-    let env: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &url)];
-    // adoption is open now: no gate to lift
-    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, env);
-    assert!(ok, "{adopted}");
-    // a completion in the wrong name is refused by the service, not written
-    std::fs::write(app.join("proof.txt"), "the invoice was paid").unwrap();
-    let (ok, wrong) = hale(&["dna", "task", "done", "t-1", "--as", "riley", "--note", "paid"], &app, env);
-    assert!(!ok && wrong.contains("handed to sam, not to riley"), "{wrong}");
-    // the service goes away; requests are queued, shown as queued, nothing written
-    let _ = service.kill();
-    let _ = service.wait();
-    let (ok, q1) = hale(&["dna", "receipt", "file", "proof.txt", "--as", "sam"], &app, env);
-    assert!(ok && q1.contains("queued locally"), "{q1}");
-    std::fs::write(app.join("more.txt"), "another bill").unwrap();
-    let (ok, q2) = hale(&["dna", "receipt", "file", "more.txt", "--as", "riley"], &app, env);
-    assert!(ok && q2.contains("queued locally"), "{q2}");
-    let (ok, listed) = hale(&["dna", "queue"], &app, env);
-    assert!(ok && listed.contains("2 request(s) waiting") && listed.contains("as sam") && listed.contains("as riley"), "{listed}");
-    let (ok, stuck) = hale(&["dna", "queue", "submit"], &app, env);
-    assert!(ok && stuck.contains("unreachable") && stuck.contains("stay queued"), "{stuck}");
-    // meanwhile sam retires; the record has it before the service is back
-    plumb(&app, "person.retired", "sam", "{\"by\": \"riley\", \"to\": \"riley\", \"transferred\": 0}", "riley");
-    let mut service = start(&d, &app);
-    assert!(wait_up(), "the service did not come back");
-    let (ok, sent) = hale(&["dna", "queue", "submit"], &app, env);
-    assert!(ok && sent.contains("REFUSED") && sent.contains("sam retired from this organism") && sent.contains("admitted (row"), "{sent}");
-    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert!(rows.contains("more.txt") && !rows.contains("proof.txt"), "riley's row landed, sam's did not:\n{rows}");
-    assert!(rows.contains("\"author\": \"riley\""), "in riley's name:\n{rows}");
-    let refused_kept = std::fs::read_dir(app.join(".hale/dna/queue")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".refused")).count();
-    assert_eq!(refused_kept, 1, "the refused request is kept for the person");
-    let (ok, empty) = hale(&["dna", "queue"], &app, env);
-    assert!(ok && empty.contains("nothing queued"), "{empty}");
-    // the same request offered again (the queue file restored) lands once
-    let kept: Vec<_> = std::fs::read_dir(app.join(".hale/dna/queue")).unwrap().flatten().collect();
-    let refused = kept.iter().find(|e| e.file_name().to_string_lossy().ends_with(".refused")).unwrap().path();
-    let text = std::fs::read_to_string(&refused).unwrap();
-    let first = text.lines().next().unwrap().to_string();
-    let again = app.join(".hale/dna/queue/9999-again.json");
-    std::fs::write(&again, first.replace("\"as\": \"sam\"", "\"as\": \"riley\"")).unwrap();
-    let (ok, dup) = hale(&["dna", "queue", "submit"], &app, env);
-    assert!(ok && dup.contains("REFUSED") && dup.contains("refused when it was first submitted"), "a request id the service refused stays refused, whoever resubmits it: {dup}");
-    let before = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n"));
-    std::fs::write(app.join("third.txt"), "a third bill").unwrap();
-    let (ok, out) = hale(&["dna", "receipt", "file", "third.txt", "--as", "riley"], &app, env);
-    assert!(ok, "{out}");
-    let after = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n"));
-    assert_ne!(before, after, "a live request lands directly");
-    let _ = service.kill();
-    let _ = service.wait();
+    stop_host(&app, &mut host);
+    unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }

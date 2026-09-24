@@ -1,10 +1,15 @@
+// Memory's three DSNs never reach a spawned process by inheritance (GH
+// #985). The owner's goes only to a fixture program that migrates or drops
+// a record (`memoryOwner`, below), the head's only to an API a harness
+// starts, and the spine's to nothing a browser fixture starts.
+export const MEMORY_DSNS = ['HALE_DNA_MEMORY_DSN_OWNER', 'HALE_DNA_MEMORY_DSN_SPINE', 'HALE_DNA_MEMORY_DSN_HEAD'];
+
 export function isolatedEnvironment() {
   const env = { ...process.env };
   for (const key of [
     'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_NAMESPACE', 'GIT_WORK_TREE',
     'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-    'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'HALE_DNA_KNOWLEDGE_DSN',
-    'HALE_DNA_KNOWLEDGE_URL', 'HALE_DNA_KNOWLEDGE_READ_KEY', 'HALE_DNA_KNOWLEDGE_COMMAND_KEY',
+    'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', ...MEMORY_DSNS,
     'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_DNA_EVIDENCE_KEY', 'HALE_DNA_OIDC_SECRET',
     'HALE_DNA_OWNER', 'HALE_DNA_LEASE', 'HALE_DNA_LEASE_TOKEN', 'HALE_DNA_TAPE', 'HALE_DNA_ONESHOT',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LOTUS_OBS', 'HALE_DNA_ORG_DRAFTS',
@@ -14,6 +19,10 @@ export function isolatedEnvironment() {
     GIT_TERMINAL_PROMPT: '0', HALE_DNA_DISCOVER: 'off',
   });
 }
+
+// The owner's DSN the Knowledge fixtures migrate a record with, from the
+// runner's own environment; "" when memory is not configured.
+export const memoryOwner = () => process.env.HALE_DNA_MEMORY_DSN_OWNER || '';
 
 // A native allocation regression must fail its own process, not exhaust the
 // desktop/CI host before a wall-clock timeout fires. These are per-process

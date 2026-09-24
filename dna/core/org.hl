@@ -72,7 +72,7 @@ locus Leader {
         charter: String = "";
         purpose: String = "";
         law_path: String = "dna/org/law.hl";
-        knowledge: KnowledgeClient = KnowledgeClient { };
+        knowledge: MemoryKnowledge = MemoryKnowledge { };
         last_package: String = ""; // the package digest the last decision read ("" = none)
         last_brief: String = ""; // the brief the last decision was given, above the diffs
         org: String = "org"; // keys the optimize exchange with this organism's substrate (GH #596 O)

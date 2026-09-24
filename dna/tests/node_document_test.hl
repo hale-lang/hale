@@ -1,7 +1,8 @@
 // A real Body/Review creates the receipt and ratification. The graph must
 // preserve their exact text, including native JSON's escaped control bytes.
-import "../../core" as dna;
-import ".." as know;
+// Memory is Postgres (GH #985): each store is a migrated record of its own.
+import "../core" as dna;
+import "../operations" as ops;
 
 fn exact_text() -> String {
     let b = std::bytes::BytesBuilder { };
@@ -17,7 +18,7 @@ fn exact_text() -> String {
 
 main locus App {
     bus { publish dna::ReviewVerdict; }
-    fn matches(store: know::Mem, digest: String, text: String, accepted: Bool) {
+    fn matches(store: dna::Pq, digest: String, text: String, accepted: Bool) {
         let item = store.idea(digest);
         std::test::assert(item.present, "actual native candidate appears in the graph");
         std::test::assert_eq_str(item.idea.id, digest, "graph retains exact content-addressed identity");
@@ -25,7 +26,7 @@ main locus App {
         std::test::assert_eq_str(item.idea.name, "concept/équipe 🧭", "native node name remains exact");
         std::test::assert(item.idea.accepted == accepted, "graph distinguishes proposal from native ratification");
     }
-    fn check() {
+    fn check(owner: String) {
         let repo = "/tmp/dna-node-document-" + to_string(std::process::pid());
         std::io::fs::mkdir(repo) or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
@@ -44,8 +45,11 @@ main locus App {
         body.on_knowledge_node_requested(request);
         let digest = request.candidate_digest;
         std::test::assert_eq_str(body.governance_event("knowledge.node.proposed", request.request_id).body, codec.proposed(request), "real Body acknowledges exact candidate");
-        let store = know::Mem { };
-        let proposed = know::apply_record(store, j, receipts);
+        let id = "nodedocument" + to_string(std::process::pid());
+        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
+        std::test::assert(store.open(), "the store opens: " + store.last_error());
+        let proposed = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(proposed.error, "", "actual native proposal projects");
         self.matches(store, digest, text, false);
         dna::ReviewVerdict <- dna::Verdict {
@@ -55,20 +59,30 @@ main locus App {
         let mut ticks = 0;
         while !body.knowledge_ratified(digest) && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
         std::test::assert(body.knowledge_ratified(digest), "real Review ratified the exact native candidate");
-        let ratified = know::apply_record(store, j, receipts);
+        let ratified = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(ratified.error, "", "native ratification projects");
         self.matches(store, digest, text, true);
         let document = receipts.read(digest[7..len(digest)]);
         std::test::assert_eq_str(dna::digest_of(document), digest, "graph projection never rewrites receipt identity");
         std::test::assert_eq_str(dna::native_json_string(document, "text"), text, "retained receipt and graph agree byte-for-byte");
         let fresh_record = dna::GitJournal { repo: repo };
-        let rebuilt = know::Mem { };
-        let replay = know::apply_record(rebuilt, fresh_record, receipts);
+        let rebuilt_id = id + "rebuilt";
+        let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
+        let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };
+        std::test::assert(rebuilt.open(), "the fresh store opens: " + rebuilt.last_error());
+        let replay = ops::apply_record(rebuilt, fresh_record, receipts);
         std::test::assert_eq_str(replay.error, "", "fresh graph rebuild from real Record succeeds");
         std::test::assert_eq_int(replay.watermark, fresh_record.revision(), "fresh graph reaches complete ratification evidence");
         self.matches(rebuilt, digest, text, true);
+        store.close(); rebuilt.close();
+        std::test::assert_eq_str(dna::unmigrate(owner, id), "", "record's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, rebuilt_id), "", "rebuilt record's schema and roles dropped");
         let removed = dna::run_tool("rm\n-rf\n" + repo);
     }
-    run() { self.check(); }
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) > 0 { self.check(owner); }
+        else { eprintln("node_document_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); }
+    }
 }
 fn main() { App { }; }

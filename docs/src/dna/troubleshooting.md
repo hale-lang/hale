@@ -109,33 +109,79 @@ refs/dna/journal` finds the old head; `hale dna sync` from a clone
 that has it restores the rest.
 
 **`THE LEDGER IS UNREACHABLE (…)`** on `status`'s `memory:` line.
-The store behind the knowledge service is not answering. What you
+Memory — the Postgres behind the ledger — is not answering. What you
 read here — `status`, the board, `history` — is the last projection
-this body built, and **nothing is admitted until the service
-answers**; every operational write is refused with the store named.
-The organism does not stop the instant the store goes: the fence
-keeps the lease it last proved and stops the body at the margin
-before that lease expires, so a short outage costs nothing.
-Requests made from a clone are not lost either — each is kept under
-`.hale/dna/queue/` and sent by `hale dna queue submit` when the
-service is back. Start the service (`hale dna dev`, or the body's
-unit) or point `HALE_DNA_KNOWLEDGE_URL` at the right one.
+this body built, and **nothing is admitted until memory answers**.
+The organism does not stop the instant memory goes: the fence keeps
+the lease it last proved and stops the body at the margin before
+that lease expires, so a short outage costs nothing. Requests made
+from a clone are not lost either: each is a `ledger.requested` row in
+the record, and the spine admits it once memory is back.
 
-**`ledger.adopting` in the history with no `ledger.adopted`.** An
-adoption was interrupted — the service went away between the intent
-and the checkpoint. Nothing is broken and nothing is lost. Run `hale
-dna ledger adopt` again: it resumes the copy, and because every row
-is keyed by its commit nothing is copied twice. Or run `hale dna
-ledger abandon --why <why>`, which empties what was copied and
-leaves the organism on the record alone. Either way the record keeps
-every operational row it ever held.
+**`no memory: HALE_DNA_MEMORY_DSN_SPINE is not set`** from the host.
+It runs with no memory: nothing is projected into the graph, no
+request is admitted, and a context package is empty and says so.
+Under `hale dna dev`, bring memory up (`docker compose` on `PATH`,
+or `HALE_DNA_MEMORY_DSN_OWNER`); under `hale dna run`, set the spine's
+DSN, which `hale dna memory migrate` prints. On a record that has
+adopted the ledger, `hale dna run` refuses to start at all without
+it — a body without its memory admits nothing.
 
-**`… is a row of the ledger: this organism's operations have lived
-there since <checkpoint>`**. A verb tried to write an operational
-row from a clone that knows no service. After the cutover those rows
-are never written into git — that is what the checkpoint is for — so
-nothing was written. Set `HALE_DNA_KNOWLEDGE_URL` to the organism's
-service, or work under `hale dna dev`, and run the verb again.
+**`memory schema dna_… is at version N; this toolchain needs version
+M`** (or `has no schema version`). The host refuses to start on
+memory another toolchain migrated, or none did. Run `hale dna memory
+migrate` with the owner's DSN in `HALE_DNA_MEMORY_DSN_OWNER`. A
+migration refuses a schema a newer toolchain wrote; upgrade the
+toolchain instead.
+
+**`memory's projection is at row N of the record's M; the spine
+applies it on its tick`**. A context package waited 20 seconds for
+the graph to catch up with the record and refused rather than hand
+over a stale one. Is a body running with memory, and does one of them
+hold the spine lease? `.hale/dna/spine.json` on each body says
+whether it holds it and what it has projected; `spine.taken` and
+`spine.lost` in `hale dna history spine` say who held it when.
+
+**`ledger.request_refused` in the history.** The spine refused a
+request a head made. Its body says why — a retired person, a task
+handed to someone else, a transfer accepted outside the owner it
+was offered to, a claim already taken (`claimed`), a decision read at
+a ledger revision that has since moved (`stale_revision`), a record
+kind asked of the ledger, or over a shared record a request not
+signed with its owner's key. Read it, decide again, and run the verb
+again: a refusal is final for that request.
+
+**A request that stays requested.** The spine admits requests on its
+tick, so a `ledger.requested` row with neither an admitted row nor a
+refusal after it means no spine is running on this record, or it
+cannot reach memory. `sync`, then look at the body (`hale dna body`,
+`.hale/dna/spine.json` there).
+
+**`ledger.adopting` in the history with no `ledger.adopted`.** The
+adoption was asked for and not yet carried out — no body holding the
+spine lease has run since, or memory went away mid-copy. Nothing is
+broken and nothing is lost: the spine picks it up on its next tick,
+and because every row is keyed by its commit nothing is copied twice.
+Or run `hale dna ledger abandon --why <why>`, which empties what was
+copied and leaves the organism on the record alone. Either way the
+record keeps every operational row it ever held.
+
+**`no receipt key: memory keeps no protected evidence until …`**. A
+customer or confidential body was filed, or read, with no receipt key
+in memory. Run `hale dna memory migrate` with `HALE_DNA_RECEIPT_KEY`
+(sixteen characters at least) in the owner's environment. A
+different key from the one memory already holds is refused: bodies
+sealed under the first would no longer open.
+
+**`… was redacted; a redacted body is not kept again`** (or `… not
+filed again`). A body the record redacted is refused when anyone
+files it again, in git or in memory — memory keeps the digest of
+every body it erased.
+
+**`receipt.withheld`** where you expected `receipt.classified`. A
+protected body was produced where no memory was named, so nothing
+could keep it. The record holds its digest and class, and no body
+exists anywhere; produce the evidence again where memory is.
 
 **`the record diverged, and local event <commit> (… by <author>) was
 signed with <key>, not this clone's`** from `sync`. Under `dna.trust
@@ -154,11 +200,11 @@ answer.
 **Where things are.** `refs/dna/journal` (the record),
 `refs/dna/receipts/<sha256>` (receipts), `refs/dna/lease/*`,
 `refs/dna/revisions/<rev>` (what nodes fetch); `.hale/dna/` (sockets,
-sandboxes, scratch, `status.json`, and `queue/` — the requests
-captured here while the service was away); `.hale/node/<name>/` on a
-node (pid files, artifacts). Once the organism has adopted the
-ledger, the day's work is not under any of these: it is in the store
-behind the knowledge service, and `hale dna ledger` says which.
+sandboxes, scratch, `status.json`, `spine.json`); `.hale/node/<name>/`
+on a node (pid files, artifacts). Once the organism has adopted the
+ledger, the day's work is not under any of these: it is in memory,
+the record's own schema in Postgres, and `hale dna ledger` says where
+things stand.
 
 **Starting over.** Delete the refs and the record is gone; `git log`
 keeps every change it applied:

@@ -1,4 +1,4 @@
-// dna/knowledge/schema.hl — memory's schema, applied by its owner
+// dna/core/memory_schema.hl — memory's schema, applied by its owner
 // (GH #985).
 //
 // Every store used to create its own tables on every open and every
@@ -16,8 +16,10 @@ const MEMORY_SCHEMA_VERSION: Int = 1;
 type Migrated {
     ok: Bool = false;
     why: String = "";
-    // the spine's DSN: the owner's host and database, the spine's role
+    // the spine's and the head's DSNs: the owner's host and database, each
+    // role's name and credentials
     spine_dsn: String = "";
+    head_dsn: String = "";
 }
 
 // A record's roles are its own: one role granted on every record's schema
@@ -27,6 +29,13 @@ fn spine_role(record_id: String) -> String {
     let base = schema_for(record_id);
     let cut = if len(base) > 57 { base[0..57] } else { base };
     return cut + "_spine";
+}
+
+// The head's role: take or fence a lease, read (GH #985).
+fn head_role(record_id: String) -> String {
+    let base = schema_for(record_id);
+    let cut = if len(base) > 58 { base[0..58] } else { base };
+    return cut + "_head";
 }
 
 // Placeholder-local credentials until the vault holds them (GH #989).
@@ -60,9 +69,41 @@ fn ledger_ddl() -> String {
         + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claims ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'spend.reserved', 'task.born');"
         + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
-        + "CREATE TABLE IF NOT EXISTS ledger_mailboxes (n bigserial PRIMARY KEY, sender text NOT NULL, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, at timestamptz NOT NULL DEFAULT now(), UNIQUE (sender, kind, entity));"
+        + "DROP TABLE IF EXISTS ledger_mailboxes;"
         + "CREATE TABLE IF NOT EXISTS ledger_leases (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, expires bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now());"
-        + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);";
+        + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS protected_redactions (digest text PRIMARY KEY, erased_at bigint NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS memory_keys (name text PRIMARY KEY, value text NOT NULL);";
+}
+
+// Protected evidence is sealed, opened and erased inside memory (GH #985):
+// the receipt key lives in `memory_keys`, which no role but the owner
+// reads, and these three functions run as the owner — they are the whole
+// surface of `protected_receipts`. A role that may EXECUTE them files and
+// reads a body without ever holding the key; filing refuses a class that
+// is not protected, a digest that is not the body's, and a digest memory
+// erased under a redaction (`protected_redactions` keeps it, so a replay
+// cannot put erased bytes back).
+fn receipt_functions(sch: String) -> String {
+    let fix = "hale dna memory migrate with HALE_DNA_RECEIPT_KEY";
+    return "CREATE OR REPLACE FUNCTION " + sch + ".receipt_file(p_digest text, p_class text, p_body text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ DECLARE k text; BEGIN "
+        + "IF p_class NOT IN ('customer', 'confidential') THEN RAISE EXCEPTION 'class % is not protected (customer | confidential)', p_class; END IF; "
+        + "IF p_digest <> 'sha256:' || encode(digest(p_body, 'sha256'), 'hex') THEN RAISE EXCEPTION 'the digest is not the body''s'; END IF; "
+        + "IF EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) THEN RAISE EXCEPTION '% was redacted; a redacted body is not kept again', p_digest; END IF; "
+        + "SELECT value INTO k FROM memory_keys WHERE name = 'receipt'; "
+        + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
+        + "INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES (p_digest, p_class, armor(pgp_sym_encrypt(p_body, k, 'cipher-algo=aes256')), p_at) ON CONFLICT (digest) DO NOTHING; "
+        + "RETURN true; END $f$;"
+        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_read(p_digest text) RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ DECLARE k text; r json; BEGIN "
+        + "SELECT value INTO k FROM memory_keys WHERE name = 'receipt'; "
+        + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
+        + "SELECT row_to_json(t) INTO r FROM (SELECT class, pgp_sym_decrypt(dearmor(body), k) AS text, stored_at FROM protected_receipts WHERE digest = p_digest) t; "
+        + "RETURN r; END $f$;"
+        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_erase(p_digest text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ BEGIN "
+        + "DELETE FROM protected_receipts WHERE digest = p_digest; "
+        + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
+        + "RETURN true; END $f$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC";
 }
 
 // Match the public bytewise tuple order with database indexes, so
@@ -99,13 +140,46 @@ fn role_sql(role: String) -> String {
 }
 
 // What the spine may do in its record's schema: read and write every
-// table, empty the projection's (a rebuild), and fire the triggers. No
-// DDL: the owner's.
+// table, empty the projection's (a rebuild), fire the triggers, and file,
+// read and erase protected evidence — through the three functions only,
+// never the table or the key. No DDL: the owner's.
 fn spine_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
         + "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA " + sch + " TO " + role + ";"
+        + "REVOKE ALL ON " + sch + ".memory_keys FROM " + role + ";"
+        + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM " + role + ";"
         + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
+}
+
+// What a head may do (GH #985): take or fence a lease, read the ledger and
+// the graph, and file and read protected evidence through the functions.
+// It writes nothing else; a head's write is a request in the record.
+fn head_grants(sch: String, role: String) -> String {
+    return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
+        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".ledger_leases, "
+        + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals TO " + role + ";"
+        + "GRANT INSERT, UPDATE ON " + sch + ".ledger_leases TO " + role + ";"
+        + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text) TO " + role;
+}
+
+// The receipt key memory seals protected evidence under, from the owner's
+// environment (HALE_DNA_RECEIPT_KEY) at migration: written once, and a
+// different key later is refused — bodies sealed under the first would no
+// longer open. "" when it stands (or there is none to write), else why.
+fn receipt_key_step(c: pq::PgConn) -> String {
+    let given = if std::env::var_exists("HALE_DNA_RECEIPT_KEY") { std::env::var("HALE_DNA_RECEIPT_KEY") } else { "" };
+    if len(given) == 0 { return ""; }
+    if len(given) < 16 { return "HALE_DNA_RECEIPT_KEY: a short key is no key (sixteen characters at least)"; }
+    let held = c.query_one("SELECT value FROM memory_keys WHERE name = 'receipt'");
+    if held.ok && held.data != given { return "memory already seals protected evidence under another receipt key; bodies sealed under it would no longer open, so it is not replaced"; }
+    if held.ok { return ""; }
+    if held.err.kind != "no_row" { return "receipt key: " + held.err.kind + " " + held.err.detail; }
+    let a = db::Args { };
+    a.add(given);
+    let put = c.exec_params("INSERT INTO memory_keys (name, value) VALUES ('receipt', $1)", a);
+    if !put.ok { return "receipt key: " + put.err.kind + " " + put.err.detail; }
+    return "";
 }
 
 // Apply memory's schema for one record with the owner's DSN, in one
@@ -121,7 +195,7 @@ fn migrate(owner: Dsn, record_id: String) -> Migrated {
     let why = migrate_on(c, record_id);
     c.close();
     if len(why) > 0 { return Migrated { why: why }; }
-    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))) };
+    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))) };
 }
 
 @unbounded
@@ -136,7 +210,7 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     // to drop it (GH #613).
     let legacy = c.query_one("SELECT (to_regclass('public.knowledge_meta') IS NOT NULL)::text");
     if !legacy.ok { return "scope: " + legacy.err.kind + " " + legacy.err.detail; }
-    if dna::trim_nl(legacy.data) == "true" {
+    if trim_nl(legacy.data) == "true" {
         return "scope: this database holds a knowledge store in `public` from before stores were scoped by record; it is not migrated. Drop its tables (knowledge_meta, knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals) or the database, and the projection rebuilds from the record";
     }
     let sch = schema_for(record_id);
@@ -144,9 +218,9 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     if !begun.ok { return abort(c, "scope (schema " + sch + ")", begun.err); }
     let have = c.query_one("SELECT value FROM memory_meta WHERE key = 'schema_version'");
     if !have.ok && have.err.kind != "no_row" { return abort(c, "schema version", have.err); }
-    if have.ok && (std::str::parse_int(dna::trim_nl(have.data)) or 0) > MEMORY_SCHEMA_VERSION {
+    if have.ok && (std::str::parse_int(trim_nl(have.data)) or 0) > MEMORY_SCHEMA_VERSION {
         let rb = c.exec("ROLLBACK");
-        return "memory schema " + sch + " is at version " + dna::trim_nl(have.data) + ", newer than this toolchain's " + to_string(MEMORY_SCHEMA_VERSION) + "; it is not migrated back";
+        return "memory schema " + sch + " is at version " + trim_nl(have.data) + ", newer than this toolchain's " + to_string(MEMORY_SCHEMA_VERSION) + "; it is not migrated back";
     }
     let tables = c.exec(knowledge_ddl() + ledger_ddl());
     if !tables.ok { return abort(c, "migrate", tables.err); }
@@ -156,9 +230,9 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     if len(record_id) > 0 {
         let named = c.query_one("SELECT value FROM knowledge_meta WHERE key = 'record'");
         if !named.ok && named.err.kind != "no_row" { return abort(c, "scope", named.err); }
-        if named.ok && dna::trim_nl(named.data) != record_id {
+        if named.ok && trim_nl(named.data) != record_id {
             let rb = c.exec("ROLLBACK");
-            return "scope: schema " + sch + " belongs to record " + dna::trim_nl(named.data) + ", not " + record_id + "; it is not migrated";
+            return "scope: schema " + sch + " belongs to record " + trim_nl(named.data) + ", not " + record_id + "; it is not migrated";
         }
         if !named.ok {
             let a = db::Args { };
@@ -173,11 +247,20 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     if !protocol.ok { return abort(c, "projection protocol migration", protocol.err); }
     let tracked = c.exec(graph_generation_ddl(sch));
     if !tracked.ok { return abort(c, "graph migration", tracked.err); }
+    let sealed = c.exec(receipt_functions(sch));
+    if !sealed.ok { return abort(c, "receipt functions", sealed.err); }
+    let key = receipt_key_step(c);
+    if len(key) > 0 { let rb = c.exec("ROLLBACK"); return key; }
     let role = spine_role(record_id);
     let made = c.exec(role_sql(role));
     if !made.ok { return abort(c, "role " + role, made.err); }
     let granted = c.exec(spine_grants(sch, role));
     if !granted.ok { return abort(c, "grants to " + role, granted.err); }
+    let head = head_role(record_id);
+    let head_made = c.exec(role_sql(head));
+    if !head_made.ok { return abort(c, "role " + head, head_made.err); }
+    let head_granted = c.exec(head_grants(sch, head));
+    if !head_granted.ok { return abort(c, "grants to " + head, head_granted.err); }
     let versioned = c.exec("INSERT INTO memory_meta (key, value) VALUES ('schema_version', '" + to_string(MEMORY_SCHEMA_VERSION) + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; COMMIT");
     if !versioned.ok { return abort(c, "schema version", versioned.err); }
     return "";
@@ -192,13 +275,13 @@ fn abort(c: pq::PgConn, what: String, e: db::DbError) -> String {
 // toolchain requires; otherwise why the store refuses it, naming both
 // versions and the command that fixes it.
 fn memory_fence(c: pq::PgConn, sch: String) -> String {
-    let fix = "run `hale dna memory migrate` with the owner's DSN in HALE_DNA_KNOWLEDGE_DSN";
+    let fix = "run `hale dna memory migrate` with the owner's DSN in HALE_DNA_MEMORY_DSN_OWNER";
     let v = c.query_one("SELECT value FROM " + sch + ".memory_meta WHERE key = 'schema_version'");
     if !v.ok {
         if v.err.kind == "no_row" { return "memory schema " + sch + " has no schema version (this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "); " + fix; }
         return "memory schema " + sch + " is not migrated for this toolchain (version " + to_string(MEMORY_SCHEMA_VERSION) + "): " + v.err.kind + " " + v.err.detail + "; " + fix;
     }
-    let have = dna::trim_nl(v.data);
+    let have = trim_nl(v.data);
     if have != to_string(MEMORY_SCHEMA_VERSION) {
         return "memory schema " + sch + " is at version " + have + "; this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "; " + fix;
     }
@@ -208,8 +291,50 @@ fn memory_fence(c: pq::PgConn, sch: String) -> String {
 // The fixtures' step: apply the schema with the owner's DSN and hand back
 // the spine's, which is what a store opens with. Not ok, with `why`, when
 // the schema could not be applied.
+// (the spine's; `migrated_head` hands back the head's)
 fn migrated(owner: String, record_id: String) -> Dsn {
     let m = migrate(parse_dsn(owner), record_id);
     if !m.ok { return Dsn { why: m.why }; }
     return parse_dsn(m.spine_dsn);
+}
+
+// A connection filled from the DSN an environment variable names (GH #985):
+// the spine's handles read HALE_DNA_MEMORY_DSN_SPINE, the head's
+// HALE_DNA_MEMORY_DSN_HEAD, each at open. "" when there is nothing to fill
+// (no variable named) or it was filled; otherwise why it could not be.
+fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
+    if len(env_name) == 0 { return ""; }
+    if !std::env::var_exists(env_name) || len(std::env::var(env_name)) == 0 { return env_name + " is not set: no memory to open"; }
+    let d = parse_dsn(std::env::var(env_name));
+    if !d.ok { return env_name + ": " + d.why; }
+    c.host = d.host;
+    c.port = d.port;
+    c.user = d.user;
+    c.password = d.password;
+    c.database = d.database;
+    c.sslmode = d.sslmode;
+    return "";
+}
+
+// As `migrated`, the head's DSN.
+fn migrated_head(owner: String, record_id: String) -> Dsn {
+    let m = migrate(parse_dsn(owner), record_id);
+    if !m.ok { return Dsn { why: m.why }; }
+    return parse_dsn(m.head_dsn);
+}
+
+// A fixture's record, gone again: its schema and both of its roles, with
+// the owner's DSN. Roles belong to the server, not the database, so a
+// slice dropping its database leaves them behind. "" when nothing is
+// left, else why.
+fn unmigrate(owner: String, record_id: String) -> String {
+    let d = parse_dsn(owner);
+    if !d.ok { return "the owner DSN: " + d.why; }
+    let c = pq_conn(d);
+    let st = c.open();
+    if !st.ok { return "open: " + st.err.kind + " " + st.err.detail; }
+    let dropped = c.exec("DROP SCHEMA IF EXISTS " + schema_for(record_id) + " CASCADE; DROP ROLE IF EXISTS " + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id));
+    c.close();
+    if !dropped.ok { return dropped.err.kind + " " + dropped.err.detail; }
+    return "";
 }

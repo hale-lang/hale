@@ -55,11 +55,15 @@ provider composition:
 keeps Definitions and durable commands unavailable until a real application
 provider supplies them; the launcher never substitutes a sample catalog.
 
-Existing private Knowledge wiring is inherited through
-`HALE_DNA_KNOWLEDGE_URL` and `HALE_DNA_KNOWLEDGE_READ_KEY`. Set the same graph-read
-credential on the state service and API; it stays out of the browser and launch
-output. Set both values together. Neither service URL nor key establishes that
-the service is reachable or up to date; its read responses remain authoritative.
+Knowledge is read from memory (GH #985): the API reads the graph under the
+record's head role, through `HALE_DNA_MEMORY_DSN_HEAD` as `hale dna memory
+migrate` prints it, and nothing else. The DSN stays out of the browser and the
+launch output; a value that is not a `postgres://` DSN is refused at startup.
+The owner's and the spine's DSNs reach a body the head starts, never the API.
+The spine projects the record into memory on its tick; until it has projected
+the record's head, a Knowledge read answers `knowledge_projection_unavailable`
+rather than an older graph, and memory that does not answer is
+`knowledge_unavailable`. Without a head DSN, Knowledge is unsupported.
 The launcher runs the compiler/API without `LOTUS_OBS`; observation belongs
 to the application.
 
@@ -456,7 +460,8 @@ an allocation regression cannot exhaust the browser test host.
 
 The browser launcher builds only its baseline Record fixture. Definitions and
 Knowledge integration require explicit compatible provider binaries; their cases
-are visibly skipped otherwise. These optional gates exercise the browser and
+are visibly skipped otherwise. Knowledge also needs a Postgres the fixture may
+migrate a record into (`HALE_DNA_MEMORY_DSN_OWNER`); CI supplies both. These optional gates exercise the browser and
 API contract, not the upstream execution or persistence suites. See
 [browser test setup](tests/README.md) for the executable fixture interfaces and
 commands. Provider binaries may come from upstream or a separately prepared
@@ -563,8 +568,10 @@ artifact is not a native command, receipt or accepted proposal. Its
 `source_checked` flag means only that the browser rechecked visible service
 reads; `submitted` remains false. Impact shows the loaded pages and explicitly
 names missing run/Definition/Practice dependencies. The current native reference
-composition uses local fixed-policy Record authority and a memory graph; this
-does not establish routed, hosted, PostgreSQL or sustained-service acceptance.
+composition uses local fixed-policy Record authority and a graph in memory
+(Postgres, read as the head), projected after each admission by a stand-in for
+the spine's tick; this does not establish routed, hosted or sustained-spine
+acceptance.
 
 ### Shared organizational context
 

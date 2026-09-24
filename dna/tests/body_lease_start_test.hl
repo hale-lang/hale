@@ -108,7 +108,7 @@ main locus App {
         let failing = scratch + "/failhale";
         std::io::fs::write_file(failing, "#!/bin/sh\nif [ \"$1\" = build ] && [ \"$2\" = \"" + a + "\" ]; then echo the application does not build >&2; exit 1; fi\nexec \"" + toolchain() + "\" \"$@\"\n") or discard;
         let fx = dna::run_tool("chmod\n+x\n" + failing);
-        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" HALE_DNA_KNOWLEDGE_DSN=memory nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$5\" \"$4\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + failing + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$5\" \"$4\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + failing + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
         let mut dev_ended = false;
         tries = 0;
         while !dev_ended && tries < 360 {

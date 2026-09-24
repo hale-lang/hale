@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { isolatedEnvironment, boundedNative } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner } from './environment.mjs';
 
 const face = fileURLToPath(new URL('../', import.meta.url));
 const repo = path.resolve(face, '../..');
@@ -41,6 +41,8 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => active?.kil
 try {
   await validateProvider(catalog, 'HALE_FACE_CATALOG_BIN', 'Definitions');
   await validateProvider(knowledge, 'HALE_FACE_KNOWLEDGE_BIN', 'Knowledge');
+  // Knowledge lives in memory (GH #985): the fixture migrates its record there.
+  if (knowledge && !memoryOwner()) throw new Error('HALE_FACE_KNOWLEDGE_BIN needs memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the fixture may migrate into.');
   await validateProvider(commands, 'HALE_FACE_COMMAND_BIN', 'Scripted command adapter');
   await validateProvider(workflows, 'HALE_FACE_WORKFLOWS_BIN', 'Recorded workflows');
   await access(hale);
@@ -57,6 +59,8 @@ try {
     HALE_BIN: hale, HALE_API_BIN: api, HALE_FACE_RECORD_BIN: path.join(scratch, 'record'),
     ...(catalog ? { HALE_FACE_CATALOG_BIN: catalog } : {}),
     ...(knowledge ? { HALE_FACE_KNOWLEDGE_BIN: knowledge } : {}),
+    // Only the harness reads it, and hands it to the Knowledge fixture alone.
+    ...(memoryOwner() ? { HALE_DNA_MEMORY_DSN_OWNER: memoryOwner() } : {}),
     ...(workflows ? { HALE_FACE_WORKFLOWS_BIN: workflows } : {}),
     ...(commands ? { HALE_FACE_COMMAND_BIN: commands } : {}),
     HALE_API_CONTRACT_ROOT: path.join(repo, 'dna/api/contract/v1'),

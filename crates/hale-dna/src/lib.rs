@@ -68,6 +68,12 @@ pub const FILES: &[EmbeddedFile] = core![
     "knowledge_binding",
     "knowledge_edge_review",
     "knowledge_node_request",
+    "memory_embed",
+    "memory_ledger",
+    "memory_protected",
+    "memory_schema",
+    "memory_spine",
+    "memory_store",
     "models",
     "native_json",
     "org",
@@ -167,6 +173,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/knowledge_node_command.hl",
     "dna/operations/knowledge_node_projection.hl",
     "dna/operations/knowledge_policy.hl",
+    "dna/operations/memory_tail.hl",
     "dna/operations/organization.hl",
     "dna/operations/organization_admission.hl",
     "dna/operations/organization_application.hl",
@@ -199,38 +206,25 @@ pub const ORGANIZATION_FILES: &[EmbeddedFile] = at![
     "dna/organization_source/publication_guard.hl",
 ];
 
-/// The knowledge graph as a service (GH #583 K1): the store library
-/// (`dna/knowledge`: the `KnowledgeStore` interface, `Mem`, `Pq`, the
-/// record's tail), the service program (`dna/knowledge/service`), and
-/// pond's Postgres driver pinned beside them (`dna/pond/{db,pq}`).
-pub const KNOWLEDGE_FILES: &[EmbeddedFile] = at![
-    "dna/knowledge/embed.hl",
-    "dna/knowledge/store.hl",
-    "dna/knowledge/protected.hl",
-    "dna/knowledge/schema.hl",
-    "dna/knowledge/tail.hl",
-    "dna/knowledge/ledger.hl",
-    "dna/knowledge/service/commands.hl",
-    "dna/knowledge/service/graph.hl",
-    "dna/knowledge/service/main.hl",
-    "dna/pond/db/args.hl",
-    "dna/pond/db/db.hl",
-    "dna/pond/db/types.hl",
-    "dna/pond/pq/pool.hl",
-    "dna/pond/pq/pq.hl",
-    "dna/pond/pq/scram.hl",
-    "dna/pond/pq/stream.hl",
-    "dna/pond/pq/wire.hl",
+/// pond's Postgres driver (`dna/core/pond/{db,pq}`), which the core imports
+/// to open memory as a role (GH #985); vendored under `vendor/dna/pond`.
+pub const POND_FILES: &[EmbeddedFile] = at![
+    "dna/core/pond/db/args.hl",
+    "dna/core/pond/db/db.hl",
+    "dna/core/pond/db/types.hl",
+    "dna/core/pond/pq/pool.hl",
+    "dna/core/pond/pq/pq.hl",
+    "dna/core/pond/pq/scram.hl",
+    "dna/core/pond/pq/stream.hl",
+    "dna/core/pond/pq/wire.hl",
 ];
-pub const KNOWLEDGE_SEED: &str = "dna/knowledge/service";
-pub const KNOWLEDGE_BIN: &str = "dna/knowledge/service/service";
 
 /// Every embedded file as a `(path, content)` pair: the core, the
-/// host, the membrane client, the surface and the knowledge set —
+/// host, the membrane client, the surface and pond's driver —
 /// the whole of what `EMBEDDED_DIGEST` names.
 pub fn embedded_pairs() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(KNOWLEDGE_FILES) {
+    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES) {
         out.push((f.path.to_string(), f.content.to_string()));
     }
     for f in [&MEMBRANE_CLIENT, &UI_MAIN, &UI_HTML] {
@@ -290,9 +284,9 @@ mod tests {
         let mut org_embedded: Vec<String> = ORGANIZATION_FILES.iter().map(|f| f.path.to_string()).collect();
         org_embedded.sort();
         assert_eq!(org_embedded, org_on_disk, "a dna/organization_runtime or dna/organization_source file was added or removed without updating hale-dna");
-        // the knowledge set: every .hl under dna/knowledge and dna/pond
+        // pond's driver: every .hl under dna/core/pond/{db,pq}
         let mut know_on_disk: Vec<String> = Vec::new();
-        for d in ["dna/knowledge", "dna/knowledge/service", "dna/pond/db", "dna/pond/pq"] {
+        for d in ["dna/core/pond/db", "dna/core/pond/pq"] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d);
             for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
                 let n = e.file_name().to_string_lossy().to_string();
@@ -302,9 +296,9 @@ mod tests {
             }
         }
         know_on_disk.sort();
-        let mut know_embedded: Vec<String> = KNOWLEDGE_FILES.iter().map(|f| f.path.to_string()).collect();
+        let mut know_embedded: Vec<String> = POND_FILES.iter().map(|f| f.path.to_string()).collect();
         know_embedded.sort();
-        assert_eq!(know_embedded, know_on_disk, "a dna/knowledge or dna/pond file was added or removed without updating hale-dna");
+        assert_eq!(know_embedded, know_on_disk, "a dna/core/pond file was added or removed without updating hale-dna");
     }
 
     /// GH #726: the build's snapshot is coherent. `build.rs` digested

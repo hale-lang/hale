@@ -125,82 +125,171 @@ observation that rolls back. No host is asked; the organization
 expresses through the command in its own handler and the record
 says `expression.deployed`.
 
+## Memory
+
+Memory is Postgres: the ledger, the knowledge graph and protected
+evidence, each record in a schema of its own, `dna_<identity>`, where
+the identity is the sha of the record's first commit. Nothing stands
+in front of it — a process that reads or writes memory opens Postgres
+itself, as a role, and the role's grants are the trust boundary.
+
+Three DSNs, three jobs:
+
+| Variable | Who holds it | What it may do |
+|---|---|---|
+| `HALE_DNA_MEMORY_DSN_OWNER` | `hale dna memory migrate`, `hale dna dev`, `hale dna upgrade`, and a provisioned body's env file (whose `hale dna dev` migrates) | apply the schema, and nothing else |
+| `HALE_DNA_MEMORY_DSN_SPINE` | the host that runs the organism, and the organization it starts | read and write the record's tables, through the functions for protected evidence; no DDL |
+| `HALE_DNA_MEMORY_DSN_HEAD` | a head: the CLI, `hale dna ui`, the read API | read; take or fence a lease; file and read protected evidence through the functions |
+
+Apply the schema with the owner's DSN, and the command prints the
+other two:
+
+```text
+$ HALE_DNA_MEMORY_DSN_OWNER=postgres://dna:dna@db.internal:5432/dna hale dna memory migrate
+HALE_DNA_MEMORY_DSN_SPINE=postgres://dna_9f3c…_spine:dna_9f3c…_spine@db.internal:5432/dna?sslmode=prefer
+HALE_DNA_MEMORY_DSN_HEAD=postgres://dna_9f3c…_head:dna_9f3c…_head@db.internal:5432/dna?sslmode=prefer
+```
+
+The two roles, `dna_<identity>_spine` and `dna_<identity>_head`,
+belong to the record: a role granted on every record's schema would
+read every other record's evidence on the same server. Until the
+vault holds their credentials (#989) each role's password is a
+placeholder equal to its name, so keep the database where only the
+people and machines you trust can reach it.
+
+The migration is one transaction and can be run again at any time.
+It writes a schema version (version 1), and every store checks it when
+it opens: a host whose memory is at another version refuses to start,
+naming both versions and `hale dna memory migrate`, and a migration
+refuses a schema a newer toolchain wrote.
+
+`hale dna dev` migrates first — with `HALE_DNA_MEMORY_DSN_OWNER`, or
+the database `dna/compose.yaml` brings up — and hands the host only
+the spine's DSN; the owner's and the head's are taken out of its
+environment. `hale dna run` migrates nothing: give it
+`HALE_DNA_MEMORY_DSN_SPINE`, and it strips any owner's or head's DSN
+before the host sees them. Without the spine's DSN the host says so
+and runs with no memory — nothing is projected or admitted — and on
+a record that has adopted the ledger, `run` refuses to start at all.
+
+Each process holds one handle on memory, opened on first use and
+closed when the process ends; a store closes its connection when it
+dissolves. However long a host runs, it holds a fixed handful of
+connections.
+
+### The spine lease
+
+On every tick — once a second — the host renews a lease in memory's
+lease table, `spine`, which lives 30 seconds. Whichever host holds it
+is *the spine*: it projects the record into the graph, admits the
+heads' requests, and erases the evidence the record says was redacted.
+A host without it reads and forwards, and does none of those. On a
+shared record every owner runs a body (each under its own lease,
+`owner/<owner>`), and the spine lease picks one of them: whichever
+took it first.
+
+Taking and losing it are rows of the record naming the holder, its
+token and its owner — `spine.taken`, and `spine.lost` with why:
+`released` (the host stopped), `expired`, `taken by <holder>`, or
+`memory did not answer`. Each host also writes what it has done as the
+spine to `.hale/dna/spine.json`:
+
+```json
+{"holder": "you@build-1:/srv/chat", "held": true, "token": 3, "projected": 58, "decided": 4, "erased": 0}
+```
+
+`projected` is record rows applied to the graph, `decided` the
+requests admitted or refused, `erased` the protected bodies removed.
+
+### Protected evidence and its key
+
+A customer or confidential body is sealed inside memory under the
+receipt key. Give it at migration: `HALE_DNA_RECEIPT_KEY` in the
+owner's environment, sixteen characters at least. It is written once
+into the owner-only table `memory_keys`; a different key later is
+refused, because bodies sealed under the first would no longer open.
+No process that runs ever holds it. Three functions, run as the owner,
+are the whole surface of the sealed table: `receipt_file` and
+`receipt_read`, which heads and the spine may call, and
+`receipt_erase`, the spine's alone, which deletes a body and keeps its
+digest, so a body that was redacted is refused if anyone files it
+again. The spine's role reaches `memory_keys`, `protected_receipts`
+and `protected_redactions` only through those functions; the head's
+may select from the ledger, the graph and the meta tables, and writes
+no table directly but the leases.
+
+**A dump of the database is as sensitive as the evidence.** It carries
+the key (`memory_keys`) and the ciphertext together. Protect and
+retain dumps as you would the bodies themselves; #989 revisits where
+the key is held.
+
 ## The two memories, in operation
 
 An organism that has adopted the ledger runs on two memories at
-once — the record in git, the day's work in the store behind the
-knowledge service — and one verb family is how you see and move
-between them. [The record](./record.md) says what lives where; this
-is what you type.
+once — the record in git, the day's work in memory — and one verb
+family is how you see and move between them. [The record](./record.md)
+says what lives where; this is what you type.
 
 ```sh
-hale dna ledger                 # routing, the service, the cutover
-hale dna ledger adopt           # the one-way move of the day's work into the store
+hale dna ledger                 # routing, the memory named here, the cutover
+hale dna ledger rows            # the ledger, one JSON object per line
+hale dna ledger adopt           # ask the body to move the day's work into memory
 hale dna ledger abandon --why "back to one memory"
 ```
 
 `hale dna ledger` on its own says which routing this record is on,
-which service is known here, and what the ledger holds:
+whether memory is named here, and what the ledger holds:
 
 ```text
 routing:    1 (the day's work in the ledger, adopted at 232dc8f18dde)
-service:    http://127.0.0.1:7788
+memory:     named here (HALE_DNA_MEMORY_DSN_HEAD)
 ledger:     413 row(s), cutover at 232dc8f18dde
 ```
 
-`adopt` wants three things and names the one that is missing: **no
-body live** (`hale dna body` says who holds the lease; stop it
-first), **the record synced**, and **a service to copy the rows
-into** — `hale dna dev` brings one up, or `HALE_DNA_KNOWLEDGE_URL`
-points at the one the body runs. It appends `ledger.adopting`, has
-the service copy every operational row of the record keyed by its
-commit, and appends `ledger.adopted` naming the checkpoint;
-interrupted anywhere, it is rerun rather than repaired by hand.
-`abandon --why …` empties the ledger and puts the organism back on
-the record alone — the record's own rows are never removed from git,
-so nothing is lost either way.
+`adopt` and `abandon` are requests, like every write a head makes.
+`adopt` syncs the record and appends `ledger.adopting`; the body that
+holds the spine lease, on its next tick, copies every operational row
+of the record into the ledger keyed by its commit, carries its own
+body lease into memory at its token, and appends `ledger.adopted`
+naming the checkpoint. Interrupted anywhere, it is rerun rather than
+repaired by hand. `abandon --why …` appends `ledger.abandoning`; the
+spine empties the ledger and appends `ledger.abandoned`, and the
+organism is on the record alone again — the record's own rows are
+never removed from git, so nothing is lost either way.
 
 `hale dna status` carries a `memory:` line on every organism,
 adopted or not:
 
 ```text
 memory:     the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger
-memory:     record + ledger (routing 1, adopted at 232dc8f18dde; operations and leases live in the store behind the service)
+memory:     record + ledger (routing 1, adopted at 232dc8f18dde; operations and leases live in memory)
 ```
 
-and when the store stops answering, that same line says so: `THE
+and when memory stops answering, that same line says so: `THE
 LEDGER IS UNREACHABLE (…): what is read here is the last projection,
 and nothing is admitted until it answers`.
 
-### Away from the service
+### Shared records and owners' keys
 
-A clone that cannot reach the service keeps its requests rather than
-writing anything:
+Over a record several owners share, a head's request in a person's
+name is signed with its owner's key: the head names its owner and
+holds the key in its clone (`git config dna.owner`, `dna.owner.key`),
+and signs each request (HMAC-SHA256). The spine holds every owner's
+key in `HALE_DNA_OWNER_KEYS` (`<owner>=<key> …`), set out of band;
+the keys never enter the record. The spine admits a request only when
+it is signed with a key of the owner that person is a member of. A
+host is a principal too: it signs its own requests as its owner, and
+the spine admits a request by `host` under any owner's valid
+signature. Its `body.*` rows carry `"owner"`, so the record still says
+whose body it was.
 
-```sh
-hale dna queue                  # what is waiting here
-hale dna queue submit           # send it, in capture order
-```
+### Connections
 
-Every verb that reaches the service drains the queue first, so this
-is usually something you read rather than something you run. The
-service revalidates each request against the record as it is then:
-nothing queued is authoritative, a request sent twice lands once,
-and a refused one is kept beside the queue with the reason.
-
-### A connection to another record's service
-
-```sh
-hale dna connect http://ops.example.com:7788 --name partner \
-  --as supplier --purpose "parts we order" --classes internal
-```
-
-A connection whose url is a service exchanges handoffs service to
-service: the envelope is delivered once by its id, `hale dna handoff
-sync` delivers again whatever the peer does not hold, and the Task
-settles only when the peer's acceptance comes back. A connection
-whose url is a record's remote exchanges through mailbox refs, as
-before. `hale dna connect` says which one a connection uses.
+`hale dna connect` exchanges handoffs with another record through
+that record's git remote only: this record's mailbox there,
+`refs/dna/exchange/<sender>`, and its identity, `refs/dna/identity`.
+A service url (`http://…`, `https://…`) is refused. [The
+record](./record.md) walks through a handoff.
 
 ## What is not here yet
 
