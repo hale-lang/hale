@@ -572,8 +572,9 @@ crates/hale-codegen/tests/fixtures/examples/70-cell-single-owner/main.hl 8e3820e
 crates/hale-codegen/tests/fixtures/examples/71-conditional-instantiation/main.hl 9f1caf04d8143011
 crates/hale-codegen/tests/fixtures/examples/72-teardown-publish-delivery/main.hl a60656ee536ed5b6
 crates/hale-codegen/tests/fixtures/examples/73-bounded-bus/main.hl f1b5037e9ab0a747
-crates/hale-codegen/tests/fixtures/examples/74-collapsed-child-adapter-hop/main.hl 7b56379455469dcc
 crates/hale-codegen/tests/fixtures/examples/74-effect-contracts/main.hl 48dfa96aea975339
+crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl 7b56379455469dcc
+crates/hale-codegen/tests/fixtures/examples/76-collapsed-child-drain/main.hl 7c3431d9c61c8c80
 crates/hale-codegen/tests/fixtures/examples/85-bindings-unix/main.hl c610fbb420c5d496
 crates/hale-codegen/tests/fixtures/examples/86-formatting/main.hl f2c1228edb650960
 crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl 16381b7a9428a375

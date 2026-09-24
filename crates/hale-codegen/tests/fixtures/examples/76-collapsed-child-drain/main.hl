@@ -1,17 +1,14 @@
-// GH #1036: a child that collapses inside a handler reached through
-// a bound adapter, and owns a `@form(vec)` child of its own.
+// GH #1036, the drain half: the child of 75-collapsed-child-adapter-hop
+// with a `drain()` of its own that reads its state.
 //
-// `Fwd.send` publishes `Q`, so `Child.on_q` runs from the queue
-// drain inside the adapter's send; `violate fuse` there sets the
-// child's drain latch and its `__hwrap_*` wrapper reclaims it on the
-// spot — its `Ints` vec and its arena go with it. App's exit cascade
-// then reached `c` again: it tested the child's arena-destroy latch
-// only at the child's own arena destroy, AFTER descending into the
-// child's fields, so it ran `lotus_vec_destroy` on the `Ints` that
-// lived in the freed arena (heap-use-after-free under ASan, a SIGSEGV
-// or silent corruption otherwise). The cascade now tests the latch
-// before the per-child body. And `violate` returned without the
-// method epilogue, leaking the handler's method scratch.
+// The child collapses inside a handler reached through a bound
+// adapter's `send`, and its `__hwrap_*` wrapper reclaims it on the
+// spot — `drain()` runs then, once, and the child's arena goes with
+// it. App's exit cascade drains its children before dissolving them,
+// and that walk reached `c` again without testing the child's
+// arena-destroy latch: it ran `drain()` a second time, reading
+// `self.why` out of the freed arena (heap-use-after-free under ASan).
+// Both halves of the cascade now step over a reclaimed child.
 //
 // This is a corpus fixture: it must run CLEAN — exit 0, terminate,
 // and pass ASan/LSan — under corpus_oracle.
@@ -30,6 +27,7 @@ locus Child {
     bus { subscribe Q as on_q; }
     closure fuse { captures: why; epoch inline; }
     fn on_q(w: Wire) { self.why = "got " + w.subject; violate fuse; }
+    drain() { println("child drain " + self.why); }
 }
 main locus App {
     params { c: Child = Child { }; seen: String = ""; }

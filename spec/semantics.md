@@ -636,12 +636,13 @@ the resident-subscriber analogue of the connection child that
 sets the same latch and is reclaimed the same way.
 
 A child reclaimed this way may still be named by its owner — a
-param field (`c: Child = Child { }`) keeps its handle. The owner's
-teardown cascade tests the child's arena-destroy latch (`__arena`,
-slot 0 of a struct that lives in the owner's arena) **before** the
-per-child body, and steps over a child already reclaimed: its
-`dissolve()` does not run twice, and its own children, which lived
-in its freed arena, are not visited again (GH #1036).
+param field (`c: Child = Child { }`) keeps its handle. Both halves of
+the owner's teardown cascade — the drain walk and the dissolve walk —
+test the child's arena-destroy latch (`__arena`, slot 0 of a struct
+that lives in the owner's arena) **before** the per-child body, and
+step over a child already reclaimed: its `drain()` and `dissolve()`
+do not run twice, and its own children, which lived in its freed
+arena, are not visited again (GH #1036).
 
 ### `release(c)` and flow children
 

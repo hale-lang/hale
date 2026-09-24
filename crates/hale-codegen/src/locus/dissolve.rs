@@ -85,6 +85,14 @@ pub(crate) trait LocusDissolve<'ctx> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError>;
+    fn emit_reclaimed_child_skip(
+        &mut self,
+        inner_info: &LocusInfo<'ctx>,
+        inner_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        fname: &str,
+        tag: &str,
+    ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError>;
     fn emit_birth_check(
         &mut self,
         bc: &BirthCheckDecl,
@@ -434,73 +442,11 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .into_pointer_value();
-            // GH #1036: a child that was already reclaimed — a
-            // handler that violated its closure, reclaimed by its
-            // `__hwrap_*` wrapper, or a `terminate` — tore down its
-            // own fields, closures and arena and left its
-            // arena-destroy latch (`__arena`, slot 0) null. Its
-            // struct lives in THIS locus's arena, so the latch is
-            // still readable here; everything below it is not
-            // (inner's param children lived in inner's arena, now
-            // freed). Test the latch BEFORE the per-child body:
-            // testing it only at inner's own arena destroy, as
-            // before, descended into the freed grandchildren first
-            // and ran inner's `dissolve()` a second time.
-            let func = self
-                .builder
-                .get_insert_block()
-                .and_then(|b| b.get_parent())
-                .ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "cascade dissolve outside a function".to_string(),
-                    )
-                })?;
-            let nonnull_bb = self.context.append_basic_block(
-                func,
-                &format!("{}.{}.cascade.nonnull", locus_name, fname),
-            );
-            let live_bb = self.context.append_basic_block(
-                func,
-                &format!("{}.{}.cascade.live", locus_name, fname),
-            );
-            let skip_bb = self.context.append_basic_block(
-                func,
-                &format!("{}.{}.cascade.reclaimed", locus_name, fname),
-            );
-            let is_null = self
-                .builder
-                .build_is_null(inner_ptr, &format!("{}.{}.cascade.null", locus_name, fname))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_conditional_branch(is_null, skip_bb, nonnull_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(nonnull_bb);
-            let latch_ptr = self
-                .builder
-                .build_struct_gep(
-                    inner_info.struct_ty,
-                    inner_ptr,
-                    0,
-                    &format!("{}.{}.cascade.latch.ptr", locus_name, fname),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let latch = self
-                .builder
-                .build_load(
-                    ptr_t,
-                    latch_ptr,
-                    &format!("{}.{}.cascade.latch", locus_name, fname),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
-            let reclaimed = self
-                .builder
-                .build_is_null(latch, &format!("{}.{}.cascade.done", locus_name, fname))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_conditional_branch(reclaimed, skip_bb, live_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(live_bb);
+            // GH #1036: step over a child that was already reclaimed
+            // (see `emit_reclaimed_child_skip`).
+            let skip_bb = self.emit_reclaimed_child_skip(
+                &inner_info, inner_ptr, locus_name, &fname, "cascade",
+            )?;
             // __dissolve_closures → dissolve → arena_destroy. The
             // drain step ran earlier via `emit_locus_field_drains`
             // (depth-first before outer's drain) so this teardown
@@ -849,6 +795,71 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// GH #1036: branch past a child's whole per-child cascade body
+    /// when it was already reclaimed. A handler that violated its
+    /// closure (reclaimed by its `__hwrap_*` wrapper) or a
+    /// `terminate` tore down the child's fields, closures and arena
+    /// and left its arena-destroy latch (`__arena`, slot 0) null. Its
+    /// struct lives in the OWNER's arena, so the latch is still
+    /// readable from the owner's cascade; everything below it is not
+    /// (the child's own children lived in its freed arena). Testing
+    /// the latch only at the child's own arena destroy, as the
+    /// dissolve walk used to, descended into the freed grandchildren
+    /// first and re-ran the child's `drain()` / `dissolve()`.
+    ///
+    /// Emits `null ptr or null latch -> skip`, leaves the builder in
+    /// the live block, and returns the skip block: the caller emits
+    /// the per-child body, branches to it, and continues there.
+    fn emit_reclaimed_child_skip(
+        &mut self,
+        inner_info: &LocusInfo<'ctx>,
+        inner_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        fname: &str,
+        tag: &str,
+    ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| {
+                CodegenError::Unsupported(
+                    "cascade outside a function".to_string(),
+                )
+            })?;
+        let name = |what: &str| format!("{}.{}.{}.{}", locus_name, fname, tag, what);
+        let nonnull_bb = self.context.append_basic_block(func, &name("nonnull"));
+        let live_bb = self.context.append_basic_block(func, &name("live"));
+        let skip_bb = self.context.append_basic_block(func, &name("reclaimed"));
+        let is_null = self
+            .builder
+            .build_is_null(inner_ptr, &name("null"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(is_null, skip_bb, nonnull_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(nonnull_bb);
+        let latch_ptr = self
+            .builder
+            .build_struct_gep(inner_info.struct_ty, inner_ptr, 0, &name("latch.ptr"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let latch = self
+            .builder
+            .build_load(ptr_t, latch_ptr, &name("latch"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let reclaimed = self
+            .builder
+            .build_is_null(latch, &name("done"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(reclaimed, skip_bb, live_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(live_bb);
+        Ok(skip_bb)
+    }
+
     /// Phase-2 (3) drain cascade. Per spec/runtime.md: "drain()
     /// cascades depth-first; children first, then self." Walks
     /// LocusRef-typed param fields in declaration order and calls
@@ -947,6 +958,12 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .into_pointer_value();
+            // GH #1036: the drain half steps over a reclaimed child as
+            // the dissolve half does — its `drain()` already ran, and
+            // its fields lived in its freed arena.
+            let skip_bb = self.emit_reclaimed_child_skip(
+                &inner_info, inner_ptr, locus_name, &fname, "drain",
+            )?;
             if descend {
                 self.locus_cascade_path.push(locus_name.to_string());
                 let deeper = self.emit_locus_field_drains(
@@ -966,6 +983,10 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            self.builder
+                .build_unconditional_branch(skip_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(skip_bb);
             if let Some(after_bb) = after_bb {
                 self.builder
                     .build_unconditional_branch(after_bb)
