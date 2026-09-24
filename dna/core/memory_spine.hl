@@ -252,8 +252,23 @@ fn count_ids(ids: String) -> Int {
 // spine's projection of the record (the host applies it on its tick);
 // without a DSN the package is empty and says so, and nothing waits on it.
 // How long a package waits for the spine's projection to reach the
-// record's head before it refuses.
+// record's last knowledge row before it refuses.
 const PACKAGE_WAIT_SECS: Int = 20;
+
+// The seq of the record's last row that changes what a package holds —
+// an idea ratified or retired, a binding made or undone (the tail applies
+// the rest, but no package reads it); -1 when there is none.
+@unbounded
+fn last_knowledge_row(repo: String) -> Int {
+    let j = GitJournal { repo: repo };
+    let mut i = j.revision() - 1;
+    while i >= 0 {
+        let e = j.read(i);
+        if e.kind == "knowledge.ratified" || e.kind == "knowledge.retired" || e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" { return e.seq; }
+        i = i - 1;
+    }
+    return -1;
+}
 
 locus MemoryKnowledge {
     params {
@@ -296,16 +311,17 @@ locus MemoryKnowledge {
         self.last_error = "";
         if !self.ensure_open() { return ContextPackage { target: target, error: self.last_error }; }
         let q = if len(query) > 2000 { query[0..2000] } else { query };
-        // the package answers for the record as it stands now: the spine
-        // projects on its tick, so a row ratified a moment ago may not be
-        // in memory yet — wait for it, bounded, and refuse a stale package
-        // rather than hand one over (the knowledge service projected on
-        // every read; GH #985 moved projection to the spine)
-        let want = GitJournal { repo: self.repo }.revision();
+        // the package answers for the knowledge the record holds now: the
+        // spine projects on its tick, so a row ratified a moment ago may
+        // not be in memory yet — wait for it, bounded, and refuse a stale
+        // package rather than hand one over (the knowledge service
+        // projected on every read; GH #985 moved projection to the spine).
+        // Only the rows that change a package are waited on.
+        let want = last_knowledge_row(self.repo) + 1;
         let deadline = std::time::now() + PACKAGE_WAIT_SECS;
         while self.store.watermark() < want && std::time::now() < deadline { std::time::sleep(200ms); }
         let at = self.store.watermark();
-        if at < want { self.last_error = "memory's projection is at row " + to_string(at) + " of the record's " + to_string(want) + "; the spine applies it on its tick"; return ContextPackage { target: target, error: self.last_error }; }
+        if at < want { self.last_error = "memory's projection is at row " + to_string(at) + ", before the record's knowledge row " + to_string(want - 1) + "; the spine applies it on its tick"; return ContextPackage { target: target, error: self.last_error }; }
         self.store.forget_error();
         let ids = if len(q) > 0 { self.store.ranked_ids(target, self.budget, embed_text(q)) } else { self.store.context_ids(target, self.budget) };
         if len(self.store.last_error()) > 0 {
