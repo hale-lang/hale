@@ -172,3 +172,134 @@ fn payload_preserved_through_serialize_dispatch_roundtrip() {
         }
     }
 }
+
+/// GH #1040: the JSON codec both codec tests below bind. Wire bytes
+/// are plain JSON, so a relayed or injected payload proves the codec
+/// (not the m70 wire format) ran on each side.
+const JSON_CODEC: &str = r#"
+    type Msg { tag: Int = 0; who: String = ""; }
+    type EncErr { kind: String = ""; }
+    type DecErr { kind: String = ""; }
+
+    locus JsonCodec {
+        fn encode(v: Msg) -> Bytes fallible(EncErr) {
+            return std::bytes::from_string("{\"tag\":" + to_string(v.tag) + ",\"who\":\"" + v.who + "\"}");
+        }
+        fn decode(b: Bytes) -> Msg fallible(DecErr) {
+            let t = std::str::from_bytes(b);
+            return Msg { tag: std::json::find_int_field(t, "tag"), who: std::json::find_string_field(t, "who") };
+        }
+    }
+"#;
+
+#[test]
+fn codec_decodes_local_dispatch_from_a_pinned_thread() {
+    // GH #1040: `__local_dispatch` from a pinned thread — the only
+    // thread an adapter's receive loop has — segfaulted in the
+    // codec's `decode`: the adapter binding never built the codec,
+    // so the decode thunk ran with a null `self`. The subscriber
+    // must hear the JSON the pinned child injected.
+    let src = format!(
+        "{JSON_CODEC}{}",
+        r#"
+        topic InTopic { payload: Msg; subject: "codec.json.in"; }
+
+        locus Sink { fn send(subject: String, bytes: Bytes) { } }
+
+        locus Rev {
+            params { got: Int = 0; who: String = ""; }
+            bus { subscribe InTopic as on_in; }
+            fn on_in(m: Msg) {
+                self.got = self.got + m.tag;
+                self.who = m.who;
+            }
+        }
+
+        locus Pump {
+            run() {
+                std::bus::__local_dispatch("codec.json.in", std::bytes::from_string("{\"tag\":7,\"who\":\"purpose\"}"));
+            }
+        }
+
+        main locus App {
+            params { r: Rev = Rev { }; p: Pump = Pump { }; }
+            placement { p: pinned; }
+            bindings { InTopic: Sink { } codec(JsonCodec { }); }
+            run() {
+                let mut i = 0;
+                while self.r.got == 0 && i < 500 {
+                    std::time::sleep(10ms);
+                    i = i + 1;
+                }
+                println("got=" + to_string(self.r.got) + " who=" + self.r.who);
+            }
+        }
+
+        fn main() { App { }; }
+    "#
+    );
+    let (stdout, status) = build_and_run("codec_pinned_decode", &src);
+    assert!(status.success(), "non-zero: {:?}; stdout: {:?}", status, stdout);
+    assert!(
+        stdout.lines().any(|l| l == "got=7 who=purpose"),
+        "the pinned dispatch must decode through the codec; stdout: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn codec_round_trips_through_a_loopback_adapter() {
+    // GH #1040, both halves at once: publish → codec encode → the
+    // adapter's `send` → `__local_dispatch` → codec decode → the
+    // subscriber. The relayed copy carries the fields the codec's
+    // JSON carried; the local-publish copy arrives as well.
+    let src = format!(
+        "{JSON_CODEC}{}",
+        r#"
+        topic Evt { payload: Msg; subject: "codec.json.evt"; }
+
+        locus Loopback {
+            fn send(subject: String, bytes: Bytes) {
+                println("wire " + std::str::from_bytes(bytes));
+                std::bus::__local_dispatch(subject, bytes);
+            }
+        }
+
+        locus Receiver {
+            bus { subscribe Evt as on_evt; }
+            fn on_evt(m: Msg) { println("rcv tag=" + to_string(m.tag) + " who=" + m.who); }
+        }
+
+        locus Producer {
+            bus { publish Evt; }
+            birth() { Evt <- Msg { tag: 12345, who: "ana" }; }
+        }
+
+        main locus App {
+            bindings { Evt: Loopback { } codec(JsonCodec { }); }
+        }
+
+        fn main() {
+            App { };
+            Receiver { };
+            Producer { };
+        }
+    "#
+    );
+    let (stdout, status) = build_and_run("codec_roundtrip", &src);
+    assert!(status.success(), "non-zero: {:?}; stdout: {:?}", status, stdout);
+    assert!(
+        stdout.lines().any(|l| l == r#"wire {"tag":12345,"who":"ana"}"#),
+        "the adapter must carry the codec's JSON; stdout: {:?}",
+        stdout
+    );
+    let rcv = stdout
+        .lines()
+        .filter(|l| *l == "rcv tag=12345 who=ana")
+        .count();
+    assert_eq!(
+        rcv, 2,
+        "local publish + codec-decoded relay; stdout: {:?}",
+        stdout
+    );
+}

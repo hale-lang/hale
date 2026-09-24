@@ -258,3 +258,60 @@ fn build_rejects_locus_missing_send_method() {
         msg
     );
 }
+
+#[test]
+fn codec_on_adapter_binding_encodes_published_value() {
+    // GH #1040: a `codec(...)` on an adapter binding segfaulted in
+    // `encode` on the first publish. The prelude built the codec
+    // only for `unix(...)` bindings, so an adapter binding's thunk
+    // called `encode` with a null `self`. The adapter's `send` must
+    // receive exactly the bytes the codec's `encode` produced.
+    let src = r#"
+        type Msg { tag: Int = 0; who: String = ""; }
+        type EncErr { kind: String = ""; }
+        type DecErr { kind: String = ""; }
+        topic MsgTopic { payload: Msg; subject: "codec.json.msgs"; }
+
+        locus JsonCodec {
+            fn encode(v: Msg) -> Bytes fallible(EncErr) {
+                return std::bytes::from_string("{\"tag\":" + to_string(v.tag) + ",\"who\":\"" + v.who + "\"}");
+            }
+            fn decode(b: Bytes) -> Msg fallible(DecErr) {
+                let t = std::str::from_bytes(b);
+                return Msg { tag: std::json::find_int_field(t, "tag"), who: std::json::find_string_field(t, "who") };
+            }
+        }
+
+        locus Sink {
+            fn send(subject: String, bytes: Bytes) {
+                println("send " + subject + " " + std::str::from_bytes(bytes));
+            }
+        }
+
+        main locus App {
+            bus { publish MsgTopic; }
+            bindings {
+                MsgTopic: Sink { } codec(JsonCodec { });
+            }
+            run() {
+                MsgTopic <- Msg { tag: 42, who: "ana" };
+                MsgTopic <- Msg { tag: 7, who: "bo" };
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("codec_encode", src);
+    assert!(status.success(), "non-zero: {:?}; stdout: {:?}", status, stdout);
+    let sends: Vec<&str> =
+        stdout.lines().filter(|l| l.starts_with("send ")).collect();
+    assert_eq!(
+        sends,
+        vec![
+            r#"send codec.json.msgs {"tag":42,"who":"ana"}"#,
+            r#"send codec.json.msgs {"tag":7,"who":"bo"}"#,
+        ],
+        "the adapter must receive the codec's bytes; stdout: {:?}",
+        stdout
+    );
+}
