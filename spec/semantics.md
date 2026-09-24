@@ -1631,6 +1631,12 @@ Transport surface:
   optimization") — so one locus can own a socket and be both its
   `send` and its receive loop, with every write on its own thread
   (GH #1032).
+  The `bytes` a `send` call receives are valid for that call: the
+  runtime builds them in a per-thread bus scratch it reclaims when
+  the outermost bus use on the thread returns, so publishing
+  through an adapter holds no memory per message (GH #1038). A
+  `send` body that keeps them — stores them in a field, publishes
+  them onward — keeps a copy, as it would any stored value.
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name

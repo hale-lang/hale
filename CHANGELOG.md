@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+### Publishing through an adapter no longer leaks (GH #1038)
+
+- **Fixed:** every publish of a topic bound to an adapter kept a copy
+  of its wire payload (about 47 bytes for a small struct) in the
+  program-lifetime payload arena, so a program bridging a bus to a
+  broker grew without bound. When that arena's 64 MiB cap was
+  reached, the runtime silently stopped calling the adapter's `send`.
+  The `bytes` a `send` receives now live for the call; a `send` that
+  keeps them keeps a copy. A 500k-publish run stays flat.
+
 ### Keyed topics keep their key across an adapter (GH #1041)
 
 - **Fixed:** bytes an adapter handed to `std::bus::__local_dispatch`

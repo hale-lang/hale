@@ -980,6 +980,21 @@ pointers in the enqueued struct_buf now alias the subscriber's
 own arena, bounded by the subscriber's lifecycle — no
 program-lifetime deposit, no eventual OOM.
 
+**Adapter `send` bytes are transient (GH #1038).** The outbound
+half had the deposit this paragraph removed from the inbound one:
+`lotus_bus_remote_fanout` built each adapter `send`'s `bytes` in
+`g_bus_payload_arena`, one copy of the wire payload per publish,
+kept until the arena's cap made the copy fail — after which
+`send` was silently no longer called. The copy now lives in a
+per-thread bus scratch arena (`lotus_bus_scratch_enter` /
+`_exit`), cleared when the outermost use on the thread exits —
+uses nest (a `send` that publishes, a loopback relay) and
+cooperative coroutines interleave on one thread, so it is a depth
+count, not a rewind. Between uses the scratch holds no chunk: its
+chunks return to the thread's chunk pool, so steady-state publish
+through an adapter allocates nothing. Adapter inbound's key
+derivation (GH #1041) decodes into the same scratch.
+
 Cost: deserialize is invoked once per matching subscriber rather
 than once total. Acceptable for typical fan-out (1–3 subs per
 subject); high-fan-out subjects pay a real bill that could be

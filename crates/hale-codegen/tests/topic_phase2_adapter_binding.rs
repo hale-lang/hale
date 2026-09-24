@@ -494,3 +494,181 @@ fn adapter_and_codec_named_through_an_import_alias_run() {
     assert_eq!(heard("heard 1"), 2, "stdout: {:?}", stdout);
     assert_eq!(heard("heard 2"), 2, "stdout: {:?}", stdout);
 }
+
+/// GH #1038: the payload arena's resident bytes, from each
+/// `std::process::dump_arena_residency()` in `stderr`, in order. An
+/// arena not yet created reads as 0 — a program whose publishes no
+/// longer touch it may never create it.
+fn payload_arena_bytes_per_dump(stderr: &str) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut current: Option<u64> = None;
+    for line in stderr.lines() {
+        if line.starts_with("[arena_residency dump]") {
+            if let Some(b) = current.take() {
+                out.push(b);
+            }
+            current = Some(0);
+        } else if line.contains("label=g_bus_payload_arena") {
+            let bytes = line
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("bytes="))
+                .and_then(|v| v.parse::<u64>().ok())
+                .expect("a residency row carries bytes=N");
+            current = Some(bytes);
+        }
+    }
+    out.extend(current);
+    out
+}
+
+#[test]
+fn adapter_publish_leaves_the_payload_arena_flat() {
+    // GH #1038: every publish through an adapter copied the wire
+    // bytes into the program-lifetime payload arena for `send`'s
+    // `bytes`, and nothing reclaimed them — ~47 bytes per publish,
+    // until the arena's cap made the copy fail and the runtime
+    // stopped calling `send` at all. The bytes now live for the call.
+    let src = r#"
+        type Note { n: Int = 0; text: String = ""; }
+        topic Out { payload: Note; subject: "out"; }
+
+        locus Sink {
+            fn send(subject: String, bytes: Bytes) { }
+        }
+
+        main locus App {
+            bindings { Out: Sink { }; }
+            bus { publish Out; }
+            @unbounded
+            run() {
+                Out <- Note { n: 0, text: "fixed payload text" };
+                let _a = std::process::dump_arena_residency();
+                let mut i = 1;
+                while i < 20000 {
+                    Out <- Note { n: i, text: "fixed payload text" };
+                    i = i + 1;
+                }
+                let _b = std::process::dump_arena_residency();
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!(
+        "hale_adapter_binding_payload_flat_{}",
+        std::process::id()
+    ));
+    build_executable(&program, &bin).expect("build");
+    let out = Command::new(&bin)
+        .env("LOTUS_ARENA_RESIDENCY", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero: {:?}; stderr: {stderr}", out.status);
+    let dumps = payload_arena_bytes_per_dump(&stderr);
+    // The two in-program dumps, then the one at exit.
+    assert!(dumps.len() >= 2, "expected two residency dumps; stderr: {stderr}");
+    assert_eq!(
+        dumps[0], dumps[1],
+        "the payload arena grew between 1 and 20000 adapter publishes; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn adapter_send_bytes_are_kept_by_copy_and_survive_a_nested_use() {
+    // GH #1038: `send`'s `bytes` lives in a per-thread bus scratch
+    // for the call. A `send` that stores it keeps a copy (the next
+    // call reads the previous message intact), and a `send` that
+    // re-enters the bus — here, relaying through `__local_dispatch`
+    // on a keyed topic, which decodes into the same scratch — does
+    // not lose its own bytes when the inner use ends. Under ASan with
+    // chunk pooling off, a scratch cleared too early is a
+    // use-after-free, not a quiet stale read.
+    let src = r#"
+        type Msg { tag: Int = 0; who: String = ""; }
+        type EncErr { kind: String = ""; }
+        type DecErr { kind: String = ""; }
+        topic Evt { payload: Msg; subject: "keep.evt"; keyed_by who; }
+
+        locus JsonCodec {
+            fn encode(v: Msg) -> Bytes fallible(EncErr) {
+                return std::bytes::from_string("{\"tag\":" + to_string(v.tag) + ",\"who\":\"" + v.who + "\"}");
+            }
+            fn decode(b: Bytes) -> Msg fallible(DecErr) {
+                let t = std::str::from_bytes(b);
+                return Msg { tag: std::json::find_int_field(t, "tag"), who: std::json::find_string_field(t, "who") };
+            }
+        }
+
+        locus Keep {
+            params { last: Bytes = std::bytes::from_string("none"); }
+            fn send(subject: String, bytes: Bytes) {
+                println("prev=" + std::str::from_bytes(self.last) + " now=" + std::str::from_bytes(bytes));
+                self.last = bytes;
+                std::bus::__local_dispatch(subject, bytes);
+                println("after=" + std::str::from_bytes(bytes) + " kept=" + std::str::from_bytes(self.last));
+            }
+        }
+
+        locus Rev {
+            params { id: String = ""; }
+            bus { subscribe Evt as on_evt where key == self.id; }
+            fn on_evt(m: Msg) { println("rcv " + m.who + " " + to_string(m.tag)); }
+        }
+
+        main locus App {
+            params { r: Rev = Rev { id: "ana" }; }
+            bus { publish Evt; }
+            bindings { Evt: Keep { } codec(JsonCodec { }); }
+            run() {
+                Evt <- Msg { tag: 1, who: "ana" };
+                Evt <- Msg { tag: 2, who: "ana" };
+                Evt <- Msg { tag: 3, who: "bo" };
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!(
+        "hale_adapter_binding_send_scratch_{}",
+        std::process::id()
+    ));
+    harness::build_asan(&program, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "non-zero: {:?}; stdout: {stdout}; stderr: {stderr}",
+        out.status
+    );
+    let sends: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.starts_with("prev=") || l.starts_with("after="))
+        .collect();
+    assert_eq!(
+        sends,
+        vec![
+            r#"prev=none now={"tag":1,"who":"ana"}"#,
+            r#"after={"tag":1,"who":"ana"} kept={"tag":1,"who":"ana"}"#,
+            r#"prev={"tag":1,"who":"ana"} now={"tag":2,"who":"ana"}"#,
+            r#"after={"tag":2,"who":"ana"} kept={"tag":2,"who":"ana"}"#,
+            r#"prev={"tag":2,"who":"ana"} now={"tag":3,"who":"bo"}"#,
+            r#"after={"tag":3,"who":"bo"} kept={"tag":3,"who":"bo"}"#,
+        ],
+        "stdout: {stdout}"
+    );
+    // Local publish + keyed relay for each `ana` message; `bo` has no
+    // subscriber.
+    let rcv = |l: &str| stdout.lines().filter(|x| *x == l).count();
+    assert_eq!(rcv("rcv ana 1"), 2, "stdout: {stdout}");
+    assert_eq!(rcv("rcv ana 2"), 2, "stdout: {stdout}");
+    assert!(!stdout.contains("rcv bo"), "stdout: {stdout}");
+}
