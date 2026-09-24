@@ -374,3 +374,72 @@ fn keyed_codec_delivery_reaches_only_the_matching_subscriber() {
         stdout
     );
 }
+
+#[test]
+fn adapter_subscription_runs_on_the_adapters_own_thread() {
+    // GH #1032: a bound adapter is pinned (F.31) — its `run()` has a
+    // thread of its own — but a topic it both publishes (from `send`)
+    // and subscribes was rewritten by the closed-world intra-locus
+    // optimization into a direct call. `send` runs on the PUBLISHER's
+    // thread, so the handler ran there, inline in the publish: an
+    // adapter could not use the bus to bring `send`'s work onto its
+    // own thread, and its socket had two writers. The handler must run
+    // on the adapter's `run()` thread, and the publisher must not wait
+    // for it.
+    let src = r#"
+        @ffi("c") fn pthread_self() -> Int;
+
+        type Tick { n: Int; }
+        topic Beat { payload: Tick; subject: "beat"; }
+        type Outbound { data: Bytes; }
+        topic Out { payload: Outbound; subject: "probe.out"; }
+
+        locus Probe {
+            params { run_tid: Int = 0; handled: Int = 0; }
+            bus { publish Out; subscribe Out as on_out; }
+            run() {
+                self.run_tid = pthread_self();
+                let mut i = 0;
+                while self.handled == 0 && i < 300 {
+                    std::time::sleep(10ms);
+                    i = i + 1;
+                }
+            }
+            fn send(subject: String, bytes: Bytes) {
+                Out <- Outbound { data: bytes };
+            }
+            fn on_out(o: Outbound) {
+                let same = pthread_self() == self.run_tid;
+                println("handler on adapter thread: " + to_string(same));
+                std::time::sleep(300ms);
+                self.handled = self.handled + 1;
+            }
+        }
+
+        main locus App {
+            bindings { Beat: Probe { }; }
+            bus { publish Beat; }
+            run() {
+                std::time::sleep(100ms);
+                let t0 = std::time::monotonic_ns();
+                Beat <- Tick { n: 7 };
+                let took_ms = (std::time::monotonic_ns() - t0) / 1000000;
+                println("publish waited for handler: " + to_string(took_ms >= 250));
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("adapter_sub_thread", src);
+    assert!(status.success(), "non-zero: {:?}; stdout: {:?}", status, stdout);
+    assert!(
+        stdout.lines().any(|l| l == "handler on adapter thread: true"),
+        "the adapter's subscription must run on its run() thread; stdout: {:?}",
+        stdout
+    );
+    assert!(
+        stdout.lines().any(|l| l == "publish waited for handler: false"),
+        "the publisher must not run the adapter's handler inline; stdout: {:?}",
+        stdout
+    );
+}

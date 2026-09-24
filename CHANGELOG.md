@@ -28,6 +28,16 @@ behavior.
   binding both directions called the codec with a null `self`. The
   codec is now built before the adapter starts; F.36 always said a
   codec applies to any binding.
+### An adapter's subscriptions run on its own thread (GH #1032)
+
+- **Fixed:** a bound adapter that publishes, from `send`, onto a topic
+  it subscribes to had that handler run inline on the publisher's
+  thread: the closed-world optimization rewrote the publish into a
+  direct call, and `send` runs on the publisher's thread. An adapter's
+  publishes now always take the bus, so the handler runs on the
+  adapter's own (pinned) thread at its `run()`'s next yield, and the
+  publisher does not wait for it. One locus can now own a socket and
+  be both its `send` and its receive loop.
 
 ### Operating practices, seeded beside the design (GH #994)
 

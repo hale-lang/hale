@@ -75,6 +75,24 @@ The substrate stays neutral on protocol semantics — reliability,
 ordering, retries, backpressure all live in the adapter body,
 where they belong.
 
+An adapter is pinned: its `run()` — the receive loop — has a thread
+of its own, and every topic it subscribes to is delivered there.
+`send` is called on the publisher's thread, so an adapter that wants
+every socket write on its own thread has `send` publish the message
+onto a topic it subscribes to itself, and writes it from that
+handler:
+
+```hale,fragment
+locus BrokerAdapter {
+    bus { publish Outgoing; subscribe Outgoing as on_outgoing; }
+    fn send(subject: String, bytes: Bytes) {
+        Outgoing <- Frame { subject: subject, data: bytes };
+    }
+    fn on_outgoing(f: Frame) { /* write to the socket */ }
+    run() { while !self.draining { /* read the socket */ } }
+}
+```
+
 ## What each binding promises
 
 A send succeeding means the broker accepted the message — and
