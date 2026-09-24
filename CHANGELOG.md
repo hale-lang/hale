@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+### A codec on an adapter binding works (GH #1040)
+
+- **Fixed:** `bindings { T: MyAdapter { } codec(MyCodec { }); }`
+  segfaulted in the codec's `encode` on the first publish, and in
+  `decode` when `std::bus::__local_dispatch` ran on a pinned thread.
+  Only a `unix(...)` binding ever built its codec, so on an adapter
+  binding both directions called the codec with a null `self`. The
+  codec is now built before the adapter starts; F.36 always said a
+  codec applies to any binding.
+
 ### Operating practices, seeded beside the design (GH #994)
 
 - **`hale dna new` seeds a second practice family, `operating/*`**:

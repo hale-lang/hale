@@ -197,6 +197,17 @@ bindings {
 }
 ```
 
+A codec rides any binding, including an adapter's: the adapter's
+`send` receives the codec's bytes, and bytes it hands to
+`std::bus::__local_dispatch` — from its own pinned receive loop —
+are decoded by the same codec before any subscriber sees them.
+
+```hale,fragment
+bindings {
+    Tick: BrokerAdapter { url: "broker://localhost" } codec(TickJsonCodec { });
+}
+```
+
 The codec is structurally typed against the topic's payload
 (`encode` takes the payload type, `decode` returns it) and must
 be *pure* — no hidden state — because it runs on transport

@@ -11391,12 +11391,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         continue;
                     }
                     TransportSpec::Adapter { locus, inits, .. } => {
+                        // GH #1040: a codec on an adapter binding.
+                        // The codec is built BEFORE the adapter: the
+                        // adapter is pinned, so its `run()` recv loop
+                        // starts at instantiation and may decode
+                        // through the thunk at once — the thunk's
+                        // codec_self global has to be stored first.
+                        // The runtime attach waits for the adapter's
+                        // remote entry to exist.
+                        let codec_self = match &entry.codec {
+                            Some(codec) => Some(self.emit_codec_binding_instance(
+                                &subject,
+                                &entry.topic.name,
+                                &codec.locus,
+                                &codec.inits,
+                            )?),
+                            None => None,
+                        };
                         self.emit_adapter_binding_register(
                             &subject,
                             &entry.topic.name,
                             locus,
                             inits,
                         )?;
+                        if let (Some(codec), Some(codec_self)) =
+                            (&entry.codec, codec_self)
+                        {
+                            self.emit_codec_runtime_attach(
+                                &subject,
+                                &entry.topic.name,
+                                &codec.locus,
+                                codec_self,
+                            )?;
+                        }
                         continue;
                     }
                     TransportSpec::ShmRing {
@@ -12135,6 +12162,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus: &Ident,
         inits: &[StructInit],
     ) -> Result<(), CodegenError> {
+        let codec_self =
+            self.emit_codec_binding_instance(subject, topic_name, locus, inits)?;
+        self.emit_codec_runtime_attach(subject, topic_name, locus, codec_self)
+    }
+
+    /// The first half of `emit_codec_binding_register`: build the
+    /// codec instance, give it its program-lifetime owner, and store
+    /// it into the thunks' per-subject `codec_self` global. Split
+    /// out for GH #1040 — an adapter binding has to run this before
+    /// the adapter starts, and the runtime attach after it.
+    fn emit_codec_binding_instance(
+        &mut self,
+        subject: &str,
+        topic_name: &str,
+        locus: &Ident,
+        inits: &[StructInit],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
         let locus_path = QualifiedName {
             segments: vec![locus.clone()],
             span: locus.span,
@@ -12196,6 +12240,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // Slice 3b: populate the per-subject codec_self global so
+        // the thunks (synthesized pre-Pass-C in
+        // `synthesize_codec_thunks_for_main_bindings`) can load
+        // the instance from it.
+        let thunks = self
+            .codec_thunks
+            .get(subject)
+            .copied()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "codec binding for `{}`: thunks not synthesized (pre-Pass-C \
+                 pass missed this binding)",
+                topic_name
+            )))?;
+        self.builder
+            .build_store(
+                thunks.codec_self_global,
+                self_val.into_pointer_value(),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(codec_self_ptr)
+    }
+
+    /// The second half of `emit_codec_binding_register`: attach the
+    /// codec to the binding's `lotus_bus_remote_entry_t`, which must
+    /// already be registered.
+    fn emit_codec_runtime_attach(
+        &mut self,
+        subject: &str,
+        topic_name: &str,
+        locus: &Ident,
+        codec_self: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
         // Resolve encode / decode method ptrs. Typecheck has
         // already verified both exist with the right signatures
         // and are pure (F.36 Slice 2).
@@ -12249,7 +12325,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 register_fn,
                 &[
                     subj_ptr.into(),
-                    self_val.into_pointer_value().into(),
+                    codec_self.into(),
                     encode_fn_ptr.into(),
                     decode_fn_ptr.into(),
                 ],
@@ -12257,25 +12333,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // Slice 3b: populate the per-subject codec_self global so
-        // the thunks (synthesized pre-Pass-C in
-        // `synthesize_codec_thunks_for_main_bindings`) can load
-        // the instance from it.
-        let thunks = self
-            .codec_thunks
-            .get(subject)
-            .copied()
-            .ok_or_else(|| CodegenError::Unsupported(format!(
-                "codec binding for `{}`: thunks not synthesized (pre-Pass-C \
-                 pass missed this binding)",
-                topic_name
-            )))?;
-        self.builder
-            .build_store(
-                thunks.codec_self_global,
-                self_val.into_pointer_value(),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
