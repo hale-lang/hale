@@ -876,3 +876,68 @@ fn string_key_is_captured_by_value_at_registration() {
         stdout
     );
 }
+
+/// GH #1041: a keyed topic keeps its key across an adapter. The
+/// adapter relays each publish back in through `__local_dispatch`,
+/// which carries wire bytes and no key; the runtime derives the key
+/// from the decoded payload, so each `where key == self.my_id`
+/// subscriber hears its own key twice (the local publish and the
+/// relay) and never the other one. Before the fix the relayed copy
+/// dispatched unkeyed and every filtered subscriber skipped it.
+#[test]
+fn int_keyed_topic_keeps_its_key_across_an_adapter() {
+    let src = r#"
+        type Ev { id: Int; payload: Int; }
+        topic K {
+            payload: Ev;
+            subject: "k.adapter";
+            keyed_by id;
+        }
+        locus Loopback {
+            fn send(subject: String, bytes: Bytes) {
+                std::bus::__local_dispatch(subject, bytes);
+            }
+        }
+        locus Sub {
+            params { my_id: Int = 0; tag: String = "?"; }
+            bus { subscribe K as on_k where key == self.my_id; }
+            fn on_k(e: Ev) {
+                println("sub.", self.tag, " got id=", e.id,
+                        " payload=", e.payload);
+            }
+        }
+        main locus App {
+            params {
+                a: Sub = Sub { my_id: 1, tag: "a" };
+                b: Sub = Sub { my_id: 2, tag: "b" };
+            }
+            bus { publish K; }
+            bindings { K: Loopback { }; }
+            run() {
+                K <- Ev { id: 1, payload: 100 };
+                K <- Ev { id: 2, payload: 200 };
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let bin = build("int_key_across_adapter", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let count = |line: &str| stdout.lines().filter(|l| *l == line).count();
+    assert_eq!(
+        count("sub.a got id=1 payload=100"),
+        2,
+        "a hears key 1 locally and through the adapter; stdout: {stdout:?}"
+    );
+    assert_eq!(
+        count("sub.b got id=2 payload=200"),
+        2,
+        "b hears key 2 locally and through the adapter; stdout: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("sub.a got id=2") && !stdout.contains("sub.b got id=1"),
+        "a subscriber heard another key; stdout: {stdout:?}"
+    );
+}

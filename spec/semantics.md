@@ -2224,7 +2224,17 @@ the deserialized payload, and every inbound path (unix serve loop,
 boot-window flush, UDP reader, adapter inbound) dispatches keyed.
 A `where key == …` subscription therefore means the same thing on
 both sides of a socket; before this it received nothing over a
-binding.
+binding. An adapter's inbound delivery
+(`std::bus::__local_dispatch(subject, bytes)`) carries wire bytes
+and no key, so for a keyed subject the runtime decodes the bytes
+once — through the binding's `codec(...)` when it has one — into a
+per-thread scratch region, derives the key, and delivers keyed:
+matching `where key ==` subscribers and unfiltered ones hear it,
+non-matching ones do not, and each subscriber still gets its own
+decoded copy (GH #1041). The scratch region holds no memory between
+deliveries and reuses pooled chunks, so deriving the key costs no
+heap allocation in steady state. An unkeyed subject takes the
+unkeyed wire path unchanged.
 
 **`where key == EXPR` — what EXPR can be.**
 
