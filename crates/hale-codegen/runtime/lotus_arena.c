@@ -9407,7 +9407,11 @@ static void *lotus_drain_watcher(void *arg) {
 void lotus_drain_signals_install(int64_t observes_drain) {
     if (!observes_drain) return;
     if (g_drain_pipe[0] >= 0) return;
-    if (pipe2(g_drain_pipe, O_CLOEXEC) != 0) return;
+    /* pipe + FD_CLOEXEC, not pipe2: macOS has no pipe2. A spawned
+     * subprocess must not inherit the drain pipe. */
+    if (pipe(g_drain_pipe) != 0) return;
+    (void)fcntl(g_drain_pipe[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(g_drain_pipe[1], F_SETFD, FD_CLOEXEC);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
