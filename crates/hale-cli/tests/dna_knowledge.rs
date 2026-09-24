@@ -153,14 +153,15 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         let _ = host.kill();
         let _ = host.wait();
     };
-    // the eight seeded design practices are ideas too (GH #596 C), plus
-    // this proposal; wait for the membrane as well
+    // the eight seeded design practices and the six operating ones are
+    // ideas too (GH #596 C, #994), plus this proposal; wait for the
+    // membrane as well
     let membrane = app.join(".hale/dna/hale-dna.review.verdict.sock");
     let tailed = trace::wait_until("dna dev: the spine projected the record and the membrane bound", Duration::from_secs(180), Duration::from_millis(500), || {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "9" && membrane.exists()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "15" && membrane.exists()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();

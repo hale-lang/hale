@@ -90,7 +90,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
 
     // 2. rendered offline: the pending list, then the Review itself
     let (ok, list) = hale(&["dna", "review"], &app);
-    assert!(ok && list.contains("10 pending review(s) of 10") && list.contains("m1 needs leader") && list.contains("docs · candidate"), "{list}");
+    assert!(ok && list.contains("16 pending review(s) of 16") && list.contains("m1 needs leader") && list.contains("docs · candidate"), "{list}");
     let (ok, view) = hale(&["dna", "review", "m1"], &app);
     assert!(ok, "{view}");
     for needle in [
@@ -180,7 +180,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     assert!(ok1 && out1.contains("refused the verdict: digest mismatch"), "wrong digest:\n{out1}");
     assert!(ok2 && out2.contains("review m1 settled: approve by riley"), "settle:\n{out2}");
     // approval applies (D5): the mutation is past `reviewed` by the time the status is read
-    assert!(ok3 && out3.contains("9 pending of 10") && (out3.contains("m1 [applied]") || out3.contains("m1 [retained]")), "status:\n{out3}");
+    assert!(ok3 && out3.contains("15 pending of 16") && (out3.contains("m1 [applied]") || out3.contains("m1 [retained]")), "status:\n{out3}");
     assert!(ok4 && out4.contains("evidence.check") && out4.contains("review.requested") && out4.contains("review.settled") && out4.contains("mutation.candidate") && out4.contains("mutation.applied"), "history:\n{out4}");
     let _ = std::fs::remove_dir_all(&d);
 }

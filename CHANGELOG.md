@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+### Operating practices, seeded beside the design (GH #994)
+
+- **`hale dna new` seeds a second practice family, `operating/*`**:
+  six paragraphs on how the organism runs (one store per step, row
+  first, readings never act, legs hold nothing, deploy settles on
+  pulse, the forge decides), one Board Review each, listed under
+  `operating` and decided with `hale dna review operating
+  approve|reject`. `upgrade` seeds the family into an existing
+  organization and supersedes a changed text as it does the design's.
+
 ### tcp::Stream and http::Server no longer publish per-op log events
 
 - **Removed:** `std::io::tcp::Stream`'s and `std::http::Server`'s

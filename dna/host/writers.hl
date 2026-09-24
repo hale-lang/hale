@@ -900,7 +900,7 @@ fn practice_command_verb(root: String, seed: String, sub: String, name: String, 
 }
 
 fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
-    if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && id != "design" {
+    if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && !seeded_group(id) {
         let cli = GovernanceCli { root: root };
         let selected = cli.review_profile(id);
         if !selected.ok { return fail("cannot determine native Review profile: " + selected.error); }
@@ -924,24 +924,25 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
-    // GH #596 C: `design` names every pending seeded practice; each is
-    // decided by its own verdict, in turn — a convenience over the
-    // individual Reviews, never a batch object in the record
-    if id == "design" {
+    // GH #596 C, #994: `design` or `operating` names every pending seeded
+    // practice of that family; each is decided by its own verdict, in
+    // turn — a convenience over the individual Reviews, never a batch
+    // object in the record
+    if seeded_group(id) {
         let ids = p.review_ids();
         let n = list_len(ids);
         let mut out = "";
         let mut i = 0;
         while i < n {
             let r = p.review_of(nth(ids, i));
-            if r.state == "pending" && r.group == "design" {
+            if r.state == "pending" && r.group == id {
                 let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", no_wait, memory);
                 if !one.ok { return one; }
                 out = out + one.text;
             }
             i = i + 1;
         }
-        if len(out) == 0 { return fail("no pending design Review"); }
+        if len(out) == 0 { return fail("no pending " + id + " Review"); }
         return answer(out);
     }
     let r = p.review_of(id);

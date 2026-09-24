@@ -61,7 +61,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let (ok, out) = hale_in(&["dna", "sync"], &b);
     assert!(ok && out.contains("pulled the record"), "{out}");
     let (ok, st) = hale_in(&["dna", "status"], &b);
-    assert!(ok && st.contains("23 event(s), chain verified") && st.contains("not running"), "{st}");
+    assert!(ok && st.contains("35 event(s), chain verified") && st.contains("not running"), "{st}");
 
     // the organism runs in A
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))

@@ -314,32 +314,44 @@ fn review_list(p: Projection) -> Answer {
     let n = list_len(ids);
     let mut out = to_string(p.pending_reviews()) + " pending review(s) of " + to_string(n) + "\n";
     let mut i = 0;
-    let mut design = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        if r.state == "pending" && r.group != "design" {
+        if r.state == "pending" && !seeded_group(r.group) {
             out = out + "  " + r.id + " needs " + r.required_authority + " — " + r.question + "\n";
             if r.is_mutation {
                 out = out + "      " + r.change_class + " · candidate " + short(r.candidate_commit) + " · evidence " + r.evidence + " · disposition " + r.disposition + "\n";
             }
         }
-        if r.state == "pending" && r.group == "design" { design = design + 1; }
         i = i + 1;
     }
-    // GH #596 C: the toolchain's seeded design, one Review per practice
-    // (a Review pins one digest and settles with one outcome), listed
-    // under one heading so the Board can read them as a set
-    if design > 0 {
-        out = out + "  design — " + to_string(design) + " seeded practice(s), each its own Review:\n";
-        i = 0;
-        while i < n {
-            let r = p.review_of(nth(ids, i));
-            if r.state == "pending" && r.group == "design" { out = out + "      " + r.id + " — " + r.question + "\n"; }
-            i = i + 1;
-        }
-        out = out + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review design approve|reject`\n";
-    }
+    // GH #596 C, #994: the toolchain's seeded families, one Review per
+    // practice (a Review pins one digest and settles with one outcome),
+    // each listed under its own heading so the Board can read it as a set
+    out = out + seeded_listing(p, ids, "design") + seeded_listing(p, ids, "operating");
     return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
+}
+
+// Whether a Review's group is a seeded family (GH #596 C, #994).
+fn seeded_group(group: String) -> Bool { return group == "design" || group == "operating"; }
+
+// The pending Reviews of one seeded family, under its heading ("" when none).
+@unbounded
+fn seeded_listing(p: Projection, ids: String, family: String) -> String {
+    let n = list_len(ids);
+    let mut count = 0;
+    let mut lines = "";
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.state == "pending" && r.group == family {
+            count = count + 1;
+            lines = lines + "      " + r.id + " — " + r.question + "\n";
+        }
+        i = i + 1;
+    }
+    if count == 0 { return ""; }
+    return "  " + family + " — " + to_string(count) + " seeded practice(s), each its own Review:\n" + lines
+        + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review " + family + " approve|reject`\n";
 }
 
 fn pending_ids(p: Projection) -> String {

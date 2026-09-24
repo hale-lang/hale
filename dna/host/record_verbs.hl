@@ -231,9 +231,16 @@ fn design_document(name: String, text: String, toolchain: String, supersedes: St
     return "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
+// A seeded practice's family: the part of its name before the slash
+// (`design`, `operating` — GH #994), which is the group it is listed under.
+fn seeded_family(name: String) -> String {
+    let slash = std::str::index_of(name, "/");
+    return if slash > 0 { name[0..slash] } else { "design" };
+}
+
 // Propose one practice: its receipt, a `knowledge.proposed` row and a
-// Review of its own, grouped `design` for the listing. The review id,
-// "" when the record refused.
+// Review of its own, grouped by its family for the listing. The review
+// id, "" when the record refused.
 fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String) -> String {
     let raw = rec(root).keep(design_document(name, text, toolchain, supersedes));
     if len(raw) == 0 { return ""; }
@@ -253,7 +260,7 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     b.end_object();
     if !append_as(root, "knowledge.proposed", digest, b.result(), "") { return ""; }
     let first = if len(text) > 72 { text[0..72] + "…" } else { text };
-    let question = "ratify the design practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
+    let question = "ratify the " + seeded_family(name) + " practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
     let q = std::json::Builder { };
     q.begin_object();
     q.string_field("question", question);
@@ -264,7 +271,7 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     q.string_field("kind", "practice");
     q.string_field("target", "org");
     q.string_field("class", "initiative");
-    q.string_field("group", "design");
+    q.string_field("group", seeded_family(name));
     q.string_field("name", name);
     q.end_object();
     if !append_as(root, "review.requested", "review:" + review_id, q.result(), "") { return ""; }
