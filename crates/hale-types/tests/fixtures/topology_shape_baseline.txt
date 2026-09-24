@@ -263,6 +263,7 @@ crates/hale-codegen/tests/build_hello.rs#9 865d341109268295
 crates/hale-codegen/tests/bus_adapter_inbound.rs#0 0b3d9b28030c5c27
 crates/hale-codegen/tests/bus_adapter_inbound.rs#1 16d244b746eb7fb0
 crates/hale-codegen/tests/bus_adapter_inbound.rs#2 a4411d60f75a7cfa
+crates/hale-codegen/tests/bus_adapter_inbound.rs#7 b8051a04936a73d8
 crates/hale-codegen/tests/bus_array_payload.rs#0 8af14bde4afdcc42
 crates/hale-codegen/tests/bus_array_payload.rs#1 805330998deab5b5
 crates/hale-codegen/tests/bus_array_payload.rs#2 7527b091ccf56c4d

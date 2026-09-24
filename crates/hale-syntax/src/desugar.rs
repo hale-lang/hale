@@ -945,6 +945,22 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
         })
         .collect();
 
+    // GH #1032: a locus named as a bus ADAPTER in a `bindings { }`
+    // entry is pinned by construction (F.31) — its `run()` and the
+    // handlers its subscriptions deliver run on its own thread — but
+    // the runtime calls its `send` from the PUBLISHER's thread. A
+    // publish inside such a locus may therefore execute off its
+    // thread, and the direct-call rewrite would run the handler
+    // right there, inline in the foreign publish: an adapter that
+    // forwards `send` onto a topic it subscribes to (to keep every
+    // socket write on its own thread) had that handler run on the
+    // publisher's thread. An adapter never publishes through a
+    // rewrite; its publishes take the bus, which posts to its
+    // mailbox. (The `placement { }` carve-out below covers an
+    // off-thread SUBSCRIBER; an adapter is the off-thread
+    // PUBLISHER, and is placed by its binding, not by `placement`.)
+    let adapter_loci = collect_adapter_loci(&program.items);
+
     // Identify topic → rewrite recipe for each eligible topic.
     let mut eligible: BTreeMap<String, EligibleRewrite> = BTreeMap::new();
     for (topic, pub_loci) in &pubs {
@@ -958,6 +974,9 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
             continue;
         }
         let pub_locus = pub_loci[0].clone();
+        if adapter_loci.contains(&pub_locus) {
+            continue;
+        }
         let sub_pairs = match subs.get(topic) {
             Some(s) => s,
             None => continue,
@@ -1325,6 +1344,33 @@ fn intra_rewrite_expr(
 /// gathering: which topics are bound (any binding entry), which
 /// loci publish each topic, and which loci subscribe each topic
 /// (with the handler ident).
+/// GH #1032: the locus types named as a bus adapter on the right-hand
+/// side of any `bindings { }` entry (`Topic: SomeAdapter { … }`).
+fn collect_adapter_loci(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    fn walk(items: &[TopDecl], out: &mut std::collections::BTreeSet<String>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Bindings(bb) = m {
+                            for entry in &bb.entries {
+                                if let TransportSpec::Adapter { locus, .. } = &entry.transport {
+                                    out.insert(locus.name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    walk(items, &mut out);
+    out
+}
+
 fn collect_bindings(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     fn walk(items: &[TopDecl], out: &mut std::collections::BTreeSet<String>) {

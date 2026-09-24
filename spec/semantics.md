@@ -1605,6 +1605,17 @@ Transport surface:
   it reconstructs the payload against the subject's registered
   deserialize fn and fans into local subscribers via
   `lotus_bus_dispatch_wire`.
+  **Placement.** A bound adapter is pinned by construction (F.31):
+  its `run()` gets a thread of its own, and every subscription the
+  adapter declares is delivered on that thread, at its `run()`'s
+  next yield (a `sleep`, a park) or after `run()` returns. `send` is
+  the exception: the runtime calls it on the PUBLISHER's thread. A
+  publish from inside `send` onto a topic the adapter itself
+  subscribes therefore goes through the bus to the adapter's thread
+  — never the closed-world direct call (§ "Closed-world topology
+  optimization") — so one locus can own a socket and be both its
+  `send` and its receive loop, with every write on its own thread
+  (GH #1032).
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name
@@ -2122,6 +2133,12 @@ Out of scope for v1 (fall through to bus dispatch unchanged):
   mechanism that doesn't exist in v1.
 - A parent with multiple direct fields of the subscriber type
   (ambiguous receiver).
+- **Bus adapters (GH #1032).** A locus named as an adapter in a
+  `bindings { }` entry is never the publisher of a rewrite: the
+  runtime calls its `send` on the publisher's thread, so a publish
+  inside it may execute off the adapter's own thread, and a direct
+  call would run the handler there. Its publishes take the bus,
+  which posts to the adapter's mailbox.
 - **Off-thread subscribers (F.31 placement).** When the
   subscriber is a main-locus field placed on a cooperative pool
   other than `main`, or on a pinned thread, the direct call would
