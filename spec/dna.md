@@ -113,7 +113,11 @@ the spine, in order:
    assignee's;
 6. the append: exactly at `expected` when one was given, refused as
    `stale_revision` when the Ledger moved past it, and refused as
-   `claimed` when a claim kind's entity is already taken.
+   `claimed` when a claim kind's entity is already taken. A
+   `task.transfer_accepted` lands at the tail whatever its `expected`
+   (GH #1052): check 4 has just read the transfer it accepts against
+   the Ledger as it stands, so the revision its head read at would
+   only refuse it for an unrelated row admitted first.
 
 An admitted row lands in the person's name, in the same insert, so no
 reader sees it without its author. The spine appends under the spine

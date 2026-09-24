@@ -146,10 +146,12 @@ whether it holds it and what it has projected; `spine.taken` and
 request a head made. Its body says why — a retired person, a task
 handed to someone else, a transfer accepted outside the owner it
 was offered to, a claim already taken (`claimed`), a decision read at
-a ledger revision that has since moved (`stale_revision`), a record
-kind asked of the ledger, or over a shared record a request not
-signed with its owner's key. Read it, decide again, and run the verb
-again: a refusal is final for that request.
+a ledger revision that has since moved (`stale_revision`; a
+transfer's acceptance is not refused for this — the spine checks the
+transfer itself when it admits it), a record kind asked of the ledger,
+or over a shared record a request not signed with its owner's key.
+Read it, decide again, and run the verb again: a refusal is final for
+that request.
 
 **A request that stays requested.** The spine admits requests on its
 tick, so a `ledger.requested` row with neither an admitted row nor a

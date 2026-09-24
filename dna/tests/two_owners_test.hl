@@ -94,6 +94,28 @@ fn wait_row(app: String, head_dsn: String, needle: String, tries: Int) -> String
     return "";
 }
 
+// North's hand-off of `tid`, or why it cannot come (GH #1052): the
+// spine's refusal of the acceptance, which lands in the record. A refused
+// acceptance is nothing to wait out; its reason is the failure.
+fn handed_or_refused(app: String, head_dsn: String, tid: String, tries: Int) -> String {
+    let limit = tries * dna::wait_scale();
+    let mut n = 0;
+    while n < limit {
+        let row = row_with(ledger(app, head_dsn), "\"kind\": \"task.handed\"");
+        if len(row) > 0 { return row; }
+        let j = dna::GitJournal { repo: app };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "ledger.request_refused" && std::json::find_string_field(e.body, "kind") == "task.transfer_accepted" && std::json::find_string_field(e.body, "entity") == tid { return "refused by the spine: " + std::json::find_string_field(e.body, "why"); }
+            i = i + 1;
+        }
+        std::time::sleep(500ms);
+        n = n + 1;
+    }
+    return "neither handed nor refused within the deadline";
+}
+
 // The body of a row of `app`'s record of `kind` whose body carries
 // `needle`, once there is one ("" when none within the bound).
 @unbounded
@@ -312,7 +334,7 @@ main locus App {
         std::test::assert(not_theirs.code != 0 && std::str::contains(not_theirs.stdout + not_theirs.stderr, "only north's accepts"), "acme's member cannot accept for north: " + not_theirs.stdout + not_theirs.stderr);
         let accepted = as_head(other, head_dsn, toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nbob\n--note\nwe take it");
         std::test::assert(accepted.code == 0 && std::str::contains(accepted.stdout, "accepted for north by bob"), "north's member accepts: " + accepted.stdout + accepted.stderr);
-        let handed = wait_row(app, head_dsn, "\"kind\": \"task.handed\"", POLLS);
+        let handed = handed_or_refused(app, head_dsn, tid, POLLS);
         std::test::assert(std::json::find_string_field(row_body(handed), "transferred_from") == "acme" && std::json::find_string_field(row_body(handed), "assignee") == "bob" && std::json::find_string_field(row_body(handed), "by") == "north" && std::json::find_string_field(row_body(handed), "accepted_by") == "bob", "north's body hands it to bob in its own name: " + handed);
         // ---- two bodies, one spine (GH #985): while acme's spine holds the
         // spine lease, north's reads and forwards — it neither projects nor
