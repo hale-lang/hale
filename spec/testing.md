@@ -388,7 +388,10 @@ max-line-length enforcement):
   lines (a leading `&&`/`.`, a trailing binary operator on the
   previous line) get one extra level.
 - **Spacing** — canonical pair rules: binary operators spaced,
-  unary `-`/`!` tight to their operand, `.`/`::`/`..` tight,
+  unary `-`/`!` tight to their operand (a `-`/`+` is unary where
+  no operand ends before it; a reserved word right after `.` is a
+  field name and ends one, so `err.closure + " "` stays binary —
+  GH #1064), `.`/`::`/`..` tight,
   nothing inside `(` `)` `[` `]`, literal braces spaced
   (`Rec { key: 1 }`, `{ }`), `:` tight-left (except the spaced
   `locus X : serves P` conformance colon, per this spec's own

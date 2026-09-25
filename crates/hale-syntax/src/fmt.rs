@@ -339,6 +339,25 @@ struct SpaceCx<'a> {
 }
 
 impl<'a> SpaceCx<'a> {
+    /// Does the token at `i` end an operand? `ends_operand` answers by
+    /// kind; a keyword is the one kind whose answer depends on its
+    /// neighbour. After `.` a reserved word is a FIELD name —
+    /// `err.closure`, `x.epoch`, `self.tier` — and ends the operand like
+    /// any identifier, so a `+` / `-` after it is binary (GH #1064: it
+    /// read as unary and `err.closure + " "` became `err.closure +" "`).
+    /// The keywords come from the lexer's own table (`keyword_lexeme`,
+    /// kept in step with `keywords::HARD_KEYWORDS`), so a keyword added
+    /// later is covered without a list here.
+    fn ends_operand_at(&self, i: usize) -> bool {
+        let kind = &self.tokens[i].kind;
+        if ends_operand(kind) {
+            return true;
+        }
+        kind.keyword_lexeme().is_some()
+            && i > 0
+            && matches!(self.tokens[i - 1].kind, TokenKind::Dot)
+    }
+
     fn space_between(&self, pi: usize, ni: usize) -> bool {
         use TokenKind::*;
         let p = &self.tokens[pi].kind;
@@ -400,7 +419,7 @@ impl<'a> SpaceCx<'a> {
         // `-`/`+` (`a - -1`), spaced after commas/keywords/`=`
         // (`= -1`, `(a, -1)`). Its tightness to its own operand is
         // the NEXT pair's decision (the p-is-unary arm below).
-        if matches!(n, Minus | Plus | Bang | Tilde) && !ends_operand(p) {
+        if matches!(n, Minus | Plus | Bang | Tilde) && !self.ends_operand_at(pi) {
             if matches!(p, Bang | Tilde) {
                 return false;
             }
@@ -410,7 +429,7 @@ impl<'a> SpaceCx<'a> {
                 // legally lexes anyway); p binary → space.
                 let p_binary = pi
                     .checked_sub(1)
-                    .map(|i| ends_operand(&self.tokens[i].kind))
+                    .map(|i| self.ends_operand_at(i))
                     .unwrap_or(false);
                 return p_binary;
             }
@@ -422,13 +441,8 @@ impl<'a> SpaceCx<'a> {
         }
         if matches!(p, Minus | Plus) {
             // Unary if the token before p can't end an operand.
-            let before = if pi == 0 {
-                None
-            } else {
-                Some(&self.tokens[pi - 1].kind)
-            };
-            let unary = match before {
-                Some(b) => !ends_operand(b),
+            let unary = match pi.checked_sub(1) {
+                Some(b) => !self.ends_operand_at(b),
                 None => true,
             };
             if unary {
@@ -702,6 +716,19 @@ mod tests {
         assert!(out.contains("return -1;"), "{}", out);
         let out2 = fmt("fn g(a: Int) -> Int {\n    return a - -1;\n}\n");
         assert!(out2.contains("a - -1"), "{}", out2);
+    }
+
+    #[test]
+    fn binary_op_after_a_keyword_named_field_stays_spaced() {
+        // GH #1064: after `.` a reserved word is a field name, so the
+        // operator after it is binary, not unary.
+        let out = fmt("fn f(err: ClosureViolation) -> String {\n    return err.closure + \" \";\n}\n");
+        assert!(out.contains("err.closure + \" \""), "{}", out);
+        let out = fmt("fn g(x: T) -> Int {\n    return x.epoch - 1 + x.tier + x.run;\n}\n");
+        assert!(out.contains("x.epoch - 1 + x.tier + x.run"), "{}", out);
+        // a keyword NOT after `.` still starts an operand: `return -1`
+        let out = fmt("fn h() -> Int {\n    return -1;\n}\n");
+        assert!(out.contains("return -1;"), "{}", out);
     }
 
     #[test]

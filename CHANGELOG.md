@@ -21,6 +21,14 @@ behavior.
   `connection_refused` as final. The read dials once and answers
   `knowledge_unavailable` in about a millisecond, with the reason on the
   API's stderr.
+### `hale fmt` keeps the space after `+`/`-` that follows a keyword-named field (GH #1064)
+
+- **Fixed:** `hale fmt` took a `+` or `-` after a field whose name is a
+  reserved word (`err.closure`, `x.epoch`, `self.tier`) for a unary
+  operator, and wrote `err.closure + " "` as `err.closure +" "`. Since
+  `hale fmt --check` is a CI gate, code had to be committed in the
+  mangled spelling. After `.`, a keyword now ends an operand like any
+  identifier. The keywords come from the lexer's own table.
 
 ### An adapter beside an env route no longer corrupts that route's bytes (GH #1058)
 

@@ -42,7 +42,7 @@ main locus App {
     }
     placement { p: pinned; }
     on_failure(c: Boom, err: ClosureViolation) {
-        self.seen = self.seen + self.prefix + " " + c.name + ":" + err.closure +";";
+        self.seen = self.seen + self.prefix + " " + c.name + ":" + err.closure + ";";
         self.count = self.count + 1;
     }
     birth() { self.at_birth = self.seen; }
