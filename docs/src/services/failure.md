@@ -88,7 +88,8 @@ during that setup, and a pinned child's thread starts during it.
 The runtime holds that failure and delivers it once every param
 has its value, just before the parent's `birth()`. So the handler
 can read any param, and what it writes is not overwritten by a
-later default. The exception is a failure from a birth-epoch
+later default. The failing child stays alive until then, even if
+its `run()` has already ended. The exception is a failure from a birth-epoch
 closure. It is delivered at once, so that `restart(c)` can re-run
 the child's birth before the child runs. A handler for one should
 touch only the params declared before that child.

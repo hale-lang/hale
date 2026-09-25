@@ -8591,6 +8591,83 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
             self.builder.position_at_end(do_bb);
+            // A child whose failure its parent is still holding (the
+            // parent's params are not settled — spec/semantics.md §
+            // "on_failure(c, err)") must outlive the handler that reads
+            // it. A cooperative child's run() returns right after its
+            // `violate`, and the run wrapper reclaims it at once; the
+            // runtime then runs this reclaim after the handler instead.
+            // One monotonic load when nothing is held.
+            {
+                let held_g = self
+                    .module
+                    .get_global("lotus_held_failure_count")
+                    .expect("lotus_held_failure_count declared");
+                let held = self
+                    .builder
+                    .build_load(
+                        i64_t,
+                        held_g.as_pointer_value(),
+                        &format!("{}.reclaim.held", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                if let Some(inst) = held.as_instruction() {
+                    inst.set_alignment(8)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    inst.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                let any_held = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        held,
+                        i64_t.const_zero(),
+                        &format!("{}.reclaim.any_held", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let ask_bb =
+                    self.context.append_basic_block(reclaim, "reclaim.ask_held");
+                let spine_bb =
+                    self.context.append_basic_block(reclaim, "reclaim.spine");
+                self.builder
+                    .build_conditional_branch(any_held, ask_bb, spine_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(ask_bb);
+                let defer_fn = self
+                    .module
+                    .get_function("lotus_failure_defer_reclaim")
+                    .expect("lotus_failure_defer_reclaim declared");
+                let deferred = self
+                    .builder
+                    .build_call(
+                        defer_fn,
+                        &[
+                            self_arg.into(),
+                            reclaim.as_global_value().as_pointer_value().into(),
+                        ],
+                        &format!("{}.reclaim.defer", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_failure_defer_reclaim returns i64")
+                    .into_int_value();
+                let is_deferred = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        deferred,
+                        i64_t.const_zero(),
+                        &format!("{}.reclaim.deferred", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_conditional_branch(is_deferred, ret_bb, spine_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(spine_bb);
+            }
             let prev_fn = self.current_fn.take();
             let prev_self = self.current_self.take();
             self.current_fn = Some(reclaim);

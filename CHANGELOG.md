@@ -20,6 +20,10 @@ behavior.
   held and delivered once every param is set, before the parent's
   `birth()`. A birth-epoch closure's failure is still delivered at
   once, so that `restart(c)` can re-run the child's birth.
+- A child whose failure is held is reclaimed only after its handler has
+  run. A cooperative child's `run()` returns right after its `violate`
+  and used to be reclaimed on the spot, so the held handler read `c`
+  out of a freed arena.
 
 ### A child passed into its parent's literal is supervised by it (GH #1035)
 

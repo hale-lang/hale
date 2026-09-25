@@ -1848,7 +1848,16 @@ typedef struct {
     lotus_failure_fn fn;
     void *child;
     void *err;
+    /* The child's own teardown, when it asked to be reclaimed while
+     * this failure was held (lotus_failure_defer_reclaim): run right
+     * after the handler, which reads the child. */
+    void (*reclaim)(void *child);
 } lotus_held_failure_t;
+
+/* How many failures are held right now. Exported, not static: every
+ * `__reclaim_<L>` loads it (one monotonic load) and only calls
+ * lotus_failure_defer_reclaim when it is non-zero. */
+int64_t lotus_held_failure_count = 0;
 
 static pthread_mutex_t g_params_open_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_params_open_count = 0;
@@ -1908,10 +1917,31 @@ int64_t lotus_failure_hold(void *parent, void *fn, void *child,
     }
     if (err_size > 0) memcpy(copy, err, (size_t)err_size);
     g_held_failures[g_held_len++] = (lotus_held_failure_t){
-        parent, (lotus_failure_fn)fn, child, copy,
+        parent, (lotus_failure_fn)fn, child, copy, NULL,
     };
+    __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_params_open_lock);
     return 1;
+}
+
+/* A child whose failure is held must outlive its handler: the handler
+ * reads it. A cooperative child's run() returns at once after a
+ * `violate`, with `__drain_requested` set, and its run wrapper reclaims
+ * it on the spot — before the parent settles and delivers. So
+ * `__reclaim_<L>` asks here first: 1 = a failure of this child is
+ * held, and the reclaim now runs right after the last such handler;
+ * 0 = reclaim now. */
+int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
+    pthread_mutex_lock(&g_params_open_lock);
+    for (size_t i = g_held_len; i-- > 0;) {
+        if (g_held_failures[i].child == child) {
+            g_held_failures[i].reclaim = (void (*)(void *))reclaim;
+            pthread_mutex_unlock(&g_params_open_lock);
+            return 1;
+        }
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+    return 0;
 }
 
 void lotus_params_settle(void *parent) {
@@ -1945,11 +1975,13 @@ void lotus_params_settle(void *parent) {
                 g_held_failures[keep++] = g_held_failures[i];
         }
         g_held_len = keep;
+        __atomic_sub_fetch(&lotus_held_failure_count, (int64_t)n, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&g_params_open_lock);
     for (size_t i = 0; i < n; i++) {
         mine[i].fn(mine[i].parent, mine[i].child, mine[i].err);
         free(mine[i].err);
+        if (mine[i].reclaim) mine[i].reclaim(mine[i].child);
     }
     free(mine);
 }

@@ -724,6 +724,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_failure_hold", hold_ty, None);
+        // ...and a child's reclaim asks whether one of its failures is
+        // held (only when the exported count says any is), so the
+        // teardown runs after the handler that reads the child.
+        let defer_ty = self
+            .context
+            .i64_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_failure_defer_reclaim", defer_ty, None);
+        self.module.add_global(
+            self.context.i64_type(),
+            None,
+            "lotus_held_failure_count",
+        );
         // GH #1033: the Bytes companion, same signature.
         self.module.add_function(
             "lotus_bytes_field_replace_fixup",
