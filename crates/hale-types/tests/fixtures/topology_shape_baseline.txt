@@ -700,6 +700,7 @@ crates/hale-codegen/tests/form_vec_inline.rs#6 990eaaa5add6876f
 crates/hale-codegen/tests/form_vec_inline.rs#7 463defff09df0495
 crates/hale-codegen/tests/form_vec_inline.rs#8 990eaaa5add6876f
 crates/hale-codegen/tests/form_vec_inline.rs#9 463defff09df0495
+crates/hale-codegen/tests/form_vec_pop_retire.rs#3 92bd6d1b437ea98f
 crates/hale-codegen/tests/form_vec_set_retire.rs#0 eed0368917c5b3bd
 crates/hale-codegen/tests/form_vec_set_retire.rs#1 b38ff49f3fa1491f
 crates/hale-codegen/tests/framework_elision.rs#0 4bafd0e8a20a97ac
