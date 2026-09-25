@@ -1828,6 +1828,132 @@ static inline int lotus_process_draining(void) {
     return __atomic_load_n(&lotus_process_draining_flag, __ATOMIC_ACQUIRE) != 0;
 }
 
+/* A locus's on_failure never runs before its params are settled
+ * (spec/semantics.md § "on_failure(c, err)"). A child can fail while
+ * its parent is still setting params: a cooperative child's run()
+ * executes inline during that loop (§ "Birth order is load-bearing"),
+ * and a pinned child's thread starts in it. Delivered then, the
+ * handler wrote fields a later default was about to store over, and
+ * read ones not stored yet.
+ *
+ * A parent that declares on_failure opens itself before its params
+ * loop and settles after it. A failure routed to an open parent is
+ * held — the violation copied, since it lives in the failing child's
+ * scratch — and delivered in arrival order when the parent settles,
+ * on the settling thread, before the parent's birth(). The open count
+ * keeps the no-parent-open case to one load. */
+typedef void (*lotus_failure_fn)(void *parent, void *child, void *err);
+typedef struct {
+    void *parent;
+    lotus_failure_fn fn;
+    void *child;
+    void *err;
+} lotus_held_failure_t;
+
+static pthread_mutex_t g_params_open_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t g_params_open_count = 0;
+static void **g_params_open = NULL;
+static size_t g_params_open_len = 0, g_params_open_cap = 0;
+static lotus_held_failure_t *g_held_failures = NULL;
+static size_t g_held_len = 0, g_held_cap = 0;
+
+void lotus_params_open(void *parent) {
+    pthread_mutex_lock(&g_params_open_lock);
+    if (g_params_open_len == g_params_open_cap) {
+        size_t cap = g_params_open_cap ? g_params_open_cap * 2 : 8;
+        void **grown = realloc(g_params_open, cap * sizeof *grown);
+        if (!grown) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            fprintf(stderr, "lotus: out of memory opening params\n");
+            abort();
+        }
+        g_params_open = grown;
+        g_params_open_cap = cap;
+    }
+    g_params_open[g_params_open_len++] = parent;
+    __atomic_add_fetch(&g_params_open_count, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* 1 = held (the caller skips the handler call), 0 = deliver now. */
+int64_t lotus_failure_hold(void *parent, void *fn, void *child,
+                           const void *err, int64_t err_size) {
+    if (__atomic_load_n(&g_params_open_count, __ATOMIC_ACQUIRE) == 0)
+        return 0;
+    pthread_mutex_lock(&g_params_open_lock);
+    int open = 0;
+    for (size_t i = 0; i < g_params_open_len; i++) {
+        if (g_params_open[i] == parent) { open = 1; break; }
+    }
+    if (!open) {
+        pthread_mutex_unlock(&g_params_open_lock);
+        return 0;
+    }
+    if (g_held_len == g_held_cap) {
+        size_t cap = g_held_cap ? g_held_cap * 2 : 8;
+        lotus_held_failure_t *grown = realloc(g_held_failures, cap * sizeof *grown);
+        if (!grown) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            fprintf(stderr, "lotus: out of memory holding a failure\n");
+            abort();
+        }
+        g_held_failures = grown;
+        g_held_cap = cap;
+    }
+    void *copy = malloc(err_size > 0 ? (size_t)err_size : 1);
+    if (!copy) {
+        pthread_mutex_unlock(&g_params_open_lock);
+        fprintf(stderr, "lotus: out of memory holding a failure\n");
+        abort();
+    }
+    if (err_size > 0) memcpy(copy, err, (size_t)err_size);
+    g_held_failures[g_held_len++] = (lotus_held_failure_t){
+        parent, (lotus_failure_fn)fn, child, copy,
+    };
+    pthread_mutex_unlock(&g_params_open_lock);
+    return 1;
+}
+
+void lotus_params_settle(void *parent) {
+    pthread_mutex_lock(&g_params_open_lock);
+    for (size_t i = g_params_open_len; i-- > 0;) {
+        if (g_params_open[i] == parent) {
+            g_params_open[i] = g_params_open[--g_params_open_len];
+            __atomic_sub_fetch(&g_params_open_count, 1, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    /* Take this parent's held failures, in arrival order, and close
+     * the gap they leave. Delivered outside the lock: a handler may
+     * build a locus that opens and settles in turn. */
+    size_t n = 0;
+    for (size_t i = 0; i < g_held_len; i++)
+        if (g_held_failures[i].parent == parent) n++;
+    lotus_held_failure_t *mine = NULL;
+    if (n) {
+        mine = malloc(n * sizeof *mine);
+        if (!mine) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            fprintf(stderr, "lotus: out of memory settling params\n");
+            abort();
+        }
+        size_t k = 0, keep = 0;
+        for (size_t i = 0; i < g_held_len; i++) {
+            if (g_held_failures[i].parent == parent)
+                mine[k++] = g_held_failures[i];
+            else
+                g_held_failures[keep++] = g_held_failures[i];
+        }
+        g_held_len = keep;
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+    for (size_t i = 0; i < n; i++) {
+        mine[i].fn(mine[i].parent, mine[i].child, mine[i].err);
+        free(mine[i].err);
+    }
+    free(mine);
+}
+
 /* Growable accept'd-children tracker (2026-05-29). Replaces the
  * old fixed `__children[16]` inline struct array, whose
  * unchecked accept-time append silently corrupted adjacent

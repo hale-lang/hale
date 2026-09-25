@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### `on_failure` waits for its locus's params (GH #1035, cooperative half)
+
+- **Fixed:** a child that failed while its parent was still setting
+  params had the parent's `on_failure` run right then. A cooperative
+  child runs its whole `run()` in that loop, and a pinned child's
+  thread starts in it. The handler read params not yet stored (a
+  `String` param read that way crashed the process) and wrote ones a
+  later default then stored over, so a supervisor recording the failure
+  in a field declared after the child saw nothing. The failure is now
+  held and delivered once every param is set, before the parent's
+  `birth()`. A birth-epoch closure's failure is still delivered at
+  once, so that `restart(c)` can re-run the child's birth.
+
 ### A child passed into its parent's literal is supervised by it (GH #1035)
 
 - **Fixed:** a child locus written in its parent's literal at the call

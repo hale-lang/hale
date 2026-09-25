@@ -704,6 +704,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             str_field_fixup_ty,
             None,
         );
+        // An on_failure handler never runs before its locus's params
+        // are settled: open/settle bracket a handler-bearing locus's
+        // params loop, and every routed failure asks hold first.
+        let ptr_arg_void = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_params_open", ptr_arg_void, None);
+        self.module
+            .add_function("lotus_params_settle", ptr_arg_void, None);
+        let hold_ty = self.context.i64_type().fn_type(
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        );
+        self.module
+            .add_function("lotus_failure_hold", hold_ty, None);
         // GH #1033: the Bytes companion, same signature.
         self.module.add_function(
             "lotus_bytes_field_replace_fixup",

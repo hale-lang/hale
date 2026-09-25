@@ -315,12 +315,6 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .expect("__closures runs with current_self set")
             .struct_ty;
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let void_t = self.context.void_type();
-        let handler_callee_ty = void_t.fn_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
-            false,
-        );
 
         // m40: birth-epoch closures snapshot the pre-call value of
         // __restart_count so we can detect whether the parent's
@@ -358,18 +352,19 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
                 None
             };
 
-        self.builder
-            .build_indirect_call(
-                handler_callee_ty,
-                on_failure_or_null,
-                &[
-                    parent_self_or_null.into(),
-                    child_self.into(),
-                    viol_ptr.into(),
-                ],
-                "on_failure.call",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_on_failure_call(
+            on_failure_or_null,
+            parent_self_or_null,
+            child_self,
+            viol_ptr,
+            // Held unless the child cannot wait: a dissolve-epoch
+            // failure (its region goes right after) or a birth-epoch
+            // one, whose `restart(c)` must re-run birth before the
+            // child runs — the rerun check below reads the count the
+            // handler bumps, so the handler has to run now.
+            !matches!(epoch, EpochSpec::Dissolve | EpochSpec::Birth),
+            "on_failure.call",
+        )?;
 
         if let Some(pre) = pre_count {
             // Post-handler restart check.

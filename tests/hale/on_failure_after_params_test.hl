@@ -1,0 +1,56 @@
+// A locus's on_failure never runs before its params are settled.
+//
+// spec/semantics.md § "on_failure(c, err)". A child can fail while its
+// parent is still setting params: a cooperative child's run() executes
+// inline in that loop (§ "Birth order is load-bearing") and a pinned
+// child's thread starts in it. The handler used to run right then, so
+// it read params not stored yet and wrote ones a later default then
+// stored over — the downstream handoff's `seen` came back empty
+// whichever way the child was spelled (GH #1035's cooperative half).
+// The failure is now held and delivered once the last param is set,
+// before the parent's birth().
+//
+// `Boom` fails on its first tick. Both children are declared ahead of
+// the params the handler reads and writes; `Slow` keeps the parent's
+// params loop open long after the pinned child has failed.
+
+locus Boom {
+    params { name: String = ""; why: String = ""; }
+    closure fuse { captures: why; epoch inline; }
+    fn check() { self.why = "lit"; violate fuse; }
+    @unbounded
+    run() {
+        std::time::sleep(1ms);
+        self.check();
+    }
+}
+
+locus Slow {
+    params { n: Int = 0; }
+    run() { std::time::sleep(200ms); }
+}
+
+main locus App {
+    params {
+        c: Boom = Boom { name: "c" };
+        p: Boom = Boom { name: "p" };
+        slow: Slow = Slow { };
+        prefix: String = "got";
+        seen: String = "";
+        count: Int = 0;
+        at_birth: String = "";
+    }
+    placement { p: pinned; }
+    on_failure(c: Boom, err: ClosureViolation) {
+        self.seen = self.seen + self.prefix + " " + c.name + ":" + err.closure +";";
+        self.count = self.count + 1;
+    }
+    birth() { self.at_birth = self.seen; }
+    run() {
+        std::test::assert_eq_int(self.count, 2, "both failures were delivered, once each");
+        std::test::assert_eq_str(self.seen, "got c:fuse;got p:fuse;", "delivered after the params were set, in arrival order");
+        std::test::assert_eq_str(self.at_birth, self.seen, "delivered before birth()");
+    }
+}
+
+fn main() { App { }; }
