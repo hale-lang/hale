@@ -714,7 +714,15 @@ locus RequestAdmission {
             let why = self.admission_refusal(kind, entity, author);
             if len(why) > 0 { return self.refuse(request, why); }
         }
-        let r = if expected >= 0 { self.ledger.append_as(expected, kind, entity, text, author, true) } else { self.ledger.append_as(self.ledger.revision(), kind, entity, text, author, false) };
+        // GH #1052: an acceptance lands at the ledger's tail. It names the
+        // transfer it accepts, and `admission_refusal` has just checked that
+        // transfer against the ledger as it stands — still offered, to the
+        // acceptor's owner, not yet accepted; the revision its head read it
+        // at adds only a race with unrelated rows admitted first (a body's
+        // claim, a relayed intent), which refused it while the head had
+        // already said it was accepted.
+        let exact = expected >= 0 && kind != "task.transfer_accepted";
+        let r = if exact { self.ledger.append_as(expected, kind, entity, text, author, true) } else { self.ledger.append_as(self.ledger.revision(), kind, entity, text, author, false) };
         if !r.ok {
             if r.error == "stale_revision" { return self.refuse(request, "stale_revision: the ledger moved past revision " + to_string(expected) + ", where the decision was read"); }
             // GH #666: a claim kind's entity is taken — the first claim holds
