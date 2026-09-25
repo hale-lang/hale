@@ -500,6 +500,19 @@ head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","activ
   `outcome.record = {head_before, head_after, rows}`.
 - `GET /api/hale/v1/head/logs?run=<command_id>|child=api|body[&offset=N]` —
   64 KiB pages of a run's or a child's log.
+- `GET /api/hale/v1/head/events` (GH #986) — a `text/event-stream` the head
+  writes `event: changed` to: `data: rows` when a row landed in the active
+  project's organism, `data: head` when the head's own state moved (a receipt
+  journaled, a run or a child started or ended, the API child answering). An
+  event carries nothing to render; the face reads the API again. A comment
+  line every 15 s keeps a quiet stream open; at most 16 streams, one more is
+  503 `busy`. The rows come from the nerves: every node publishes
+  `head.row.landed` for each row its view gains, and the head subscribes to the
+  active project's organization — and every owner's — as the head's user, on
+  `HALE_DNA_NATS_URL_HEAD`, else on the server of `HALE_DNA_NATS_URL_OWNER`
+  (which it hands a body it starts), else on the project's compose `nerves`
+  while `hale dna dev` has it up; with none, only the head's own state is
+  pushed.
 
 Operations (all version 1): `dna.project.create` / `init` (600 s runs of
 `hale dna new` / `init`, then an attach), `attach` / `detach` / `forget`
@@ -531,8 +544,8 @@ principal) and `to`, followed by the command fields the other operations carry
 (`command_format: dna.task-create-command/1`, `command_id`, `command_payload`,
 `command_fingerprint`, `command_authority`, `command_authority_basis`,
 `command_record_head`). It carries no `via` and no `intent_id`: this head
-publishes nothing on the membrane, and the relay splices the id in before the
-last brace when it publishes.
+publishes nothing on the nerves, and a node's relay splices the id in before
+the last brace when it publishes.
 
 Every [native command head](practice_review/README.md) supports it; there is no
 policy grant. The authority is the authenticated principal, as with the CLI,

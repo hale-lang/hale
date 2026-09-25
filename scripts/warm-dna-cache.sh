@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Warm the DNA toolchain cache for one hale binary before a test job runs:
-# the host and the membrane client (built by the first host verb) and the
-# observer (fuse-hl). Every DNA fixture pays for these builds inside its
-# own deadline otherwise, beside the partition's other organisms, and on a
-# loaded runner that is where "the membrane did not come up" comes from. The CLI tests keep their own cache directory
+# the host (built by the first host verb) and the observer (fuse-hl).
+# Every DNA fixture pays for these builds inside its own deadline
+# otherwise, beside the partition's other organisms, and on a loaded
+# runner that is where an organism that never comes up comes from. The
+# CLI tests keep their own cache directory
 # (temp_dir()/hale-tests-iris-cache); it is pointed at the same build.
 #
 # HALE_WARM_SKIP_IRIS=1 skips the observer build: the face jobs' fixtures
@@ -22,4 +23,4 @@ if [[ "${HALE_WARM_SKIP_IRIS:-}" != 1 ]]; then "$hale" iris --build-only >/dev/n
 tests_cache=${TMPDIR:-/tmp}/hale-tests-iris-cache
 mkdir -p "$tests_cache"
 if [[ ! -e "$tests_cache/hale" ]]; then ln -s "$cache/hale" "$tests_cache/hale"; fi
-echo "warm: host, membrane and ${HALE_WARM_SKIP_IRIS:+no }observer built under $cache; $tests_cache/hale points at it"
+echo "warm: host and ${HALE_WARM_SKIP_IRIS:+no }observer built under $cache; $tests_cache/hale points at it"

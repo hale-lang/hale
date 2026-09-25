@@ -245,9 +245,11 @@ A submission reserves its identity first: one `localStorage` slot,
 operation, target}`, taken under a Web Lock before the POST and cleared once
 the receipt is terminal. A reload restores it as a GET lookup, never a POST.
 The receipt lifecycle `queued → recorded → admitted|refused → running →
-succeeded|failed|outcome_unknown` renders as stages with an inspector; a
-non-terminal receipt is looked up every two seconds, and the head is re-read
-every two seconds while its API child is starting. `data-observation` on the
+succeeded|failed|outcome_unknown` renders as stages with an inspector. The
+workspace does not poll: it holds the head's event stream
+(`GET /api/hale/v1/head/events`, GH #986) while visible, and on each `changed`
+event, and on each (re)connect, looks a non-terminal receipt up again and
+re-reads the head while its API child is starting. `data-observation` on the
 request region becomes `observed` only after a fresh read of the head (and of
 the attached project) shows the effect: a fresh active project, a moved Record
 head, a running child, a stored secret name, a listed connection. An

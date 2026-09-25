@@ -139,11 +139,35 @@ locus Startup {
     }
 }
 
+// The running head (GH #986): the server, off the main pool, and the
+// watcher that pushes to the face, pinned, sharing the open streams. A
+// SIGTERM drains the head: the watcher stops, this returns, and the io
+// pool's shutdown ends the server's accept, so the head ends at once
+// rather than at the drain's grace. It must be the program's own `main
+// locus` — built as the seed, not imported (an imported one's placement
+// is inert, and the server would hold the main thread).
+main locus HeadMain {
+    params {
+        slots: PushSlots;
+        srv: std::http::Server;
+        watch: NervesWatch;
+    }
+    placement { srv: cooperative(pool = io); watch: pinned; }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+    }
+}
+
 // The F.3 rule: the loaded assets reach the server literal through a
 // parameter, never from a `let` in the same scope. The banner is the
 // server's ready signal, printed once the listener is bound.
 fn serve(cfg: HeadConfig, web: api::WebAssets, banner: String) {
-    std::http::Server { host: "127.0.0.1", port: cfg.port, ready_signal: banner, handler: Head { cfg: cfg, web: web } };
+    let slots = PushSlots { };
+    HeadMain {
+        slots: slots,
+        srv: std::http::Server { host: "127.0.0.1", port: cfg.port, ready_signal: banner, handler: Head { cfg: cfg, web: web, slots: slots } },
+        watch: NervesWatch { cfg: cfg, slots: slots }
+    };
 }
 
 fn main() {

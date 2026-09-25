@@ -297,8 +297,8 @@ one per family of subjects:
 | Variable | Who holds it | What it may do |
 |---|---|---|
 | `HALE_DNA_NATS_URL_OWNER` | `hale dna nerves migrate`, `hale dna dev` | create or update the stream, and nothing else |
-| `HALE_DNA_NATS_URL_SPINE` | the host that runs the organism, and the organization it starts | publish and read the organization's own facts (`<org>.dna.>`) |
-| `HALE_DNA_NATS_URL_HEAD` | a head | subscribe; publish nothing |
+| `HALE_DNA_NATS_URL_SPINE` | the host that runs the organism, and the organization it starts | publish and read the organization's own facts (`<org>.dna.>`); tell the heads what landed (`<org>.head.>`) |
+| `HALE_DNA_NATS_URL_HEAD` | a head (the face's) | subscribe; publish nothing |
 | `HALE_DNA_NATS_URL_APP` | an application (#987) | publish on its own subjects (`<org>.app.<app>.>`) |
 
 Create the stream with the owner's URL, and the command prints the
@@ -340,6 +340,25 @@ writes `nerves.lost`, stops, and exits 75 for its unit to start it
 again, and the new node relays every request still unanswered, because
 the row, not the publish, is the fact. Without the spine's URL the host
 says so and runs, and the organization hears nothing the record asks.
+
+SIGTERM drains a node: it stops its organization, gives the body lease
+back and exits 0. `hale dna run` and `dev` give it 30 seconds for that
+(`LOTUS_DRAIN_GRACE_MS`, in milliseconds; set it yourself to choose
+another); past the grace the runtime ends it the way SIGTERM would.
+
+The node also tells the heads every row it lands, on
+`<org>.head.row.landed` (outside `<org>.dna.>`, so no organization
+reads it). The face's head listens for the project it has active and
+tells the browser to read again: the Projects workspace holds the
+head's event stream instead of polling. The head subscribes on
+`HALE_DNA_NATS_URL_HEAD` when you give it one; otherwise on the server
+of `HALE_DNA_NATS_URL_OWNER`, as the head's user, when you started it
+with that to hand a body it starts; otherwise on the project's compose
+`nerves` while `hale dna dev` has it up. With none, the face still
+hears the head's own receipts and children, and not the organism's
+rows. A project initialized before this has a `dna/nats.conf` whose
+spine may not publish `<org>.head.>`; `hale dna upgrade` says what to
+add.
 
 A fleet node is the one exception: its instances hand their concerns
 to it on a Unix socket of its own (`.hale/node/concern.raised.sock`),

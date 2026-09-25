@@ -156,6 +156,25 @@ locus ContractFiles {
         if path == "/api/hale/v1/head/logs" && (!std::str::contains(seen, " run ") || !std::str::contains(seen, " child ") || !std::str::contains(seen, " offset ")) { return ValidationResult { error: "OpenAPI: the logs read declares run, child and offset" }; }
         return ValidationResult { ok: true };
     }
+    // The head's event stream (GH #986): a read with no query and no body
+    // whose 200 is `text/event-stream` alone; its refusals are errors.
+    fn event_stream(operation: String, schema: String) -> ValidationResult {
+        let rules = ContractSchema { document: schema };
+        let responses = std::json::find_field_raw(operation, "responses");
+        if len(std::json::find_field_raw(operation, "parameters")) > 0 || len(std::json::find_field_raw(operation, "requestBody")) > 0 { return ValidationResult { error: "OpenAPI: the head's event stream takes no query and no body" }; }
+        let ok = std::json::find_field_raw(std::json::find_field_raw(responses, "200"), "content");
+        if len(std::json::find_field_raw(ok, "text/event-stream")) == 0 || len(std::json::find_field_raw(ok, "application/json")) > 0 { return ValidationResult { error: "OpenAPI: the head's event stream answers text/event-stream" }; }
+        let mut entries = std::json::object_first(responses);
+        while !entries.done {
+            let status = std::json::obj_key_string(entries, responses);
+            if status != "200" {
+                let media = std::json::find_field_raw(std::json::find_field_raw(std::json::obj_value_raw(entries, responses), "content"), "application/json");
+                if std::json::find_string_field(std::json::find_field_raw(media, "schema"), "$ref") != "./schema.json#/$defs/ErrorResponse" || len(rules.definition("ErrorResponse")) == 0 { return ValidationResult { error: "OpenAPI: the head's event stream refuses with ErrorResponse at " + status }; }
+            }
+            entries = std::json::object_next(entries, responses);
+        }
+        return ValidationResult { ok: true };
+    }
     fn openapi(spec: String, schema: String) -> ValidationResult {
         let syntax = JsonSyntax { };
         if !syntax.valid(spec) { return ValidationResult { error: "OpenAPI: invalid JSON" }; }
@@ -170,12 +189,13 @@ locus ContractFiles {
             let knowledge_command = path == "/api/hale/v1/applications/{application_id}/dna/knowledge/commands";
             let knowledge_capability = path == "/api/hale/v1/applications/{application_id}/dna/knowledge/commands/capability";
             let head_command = path == "/api/hale/v1/head/commands";
+            let head_events = path == "/api/hale/v1/head/events";
             let head_read = path == "/api/hale/v1/head" || path == "/api/hale/v1/head/projects" || path == "/api/hale/v1/head/logs";
             let command = knowledge_command || head_command || path == "/api/hale/v1/applications/{application_id}/commands";
             let ownership_draft = path == "/api/hale/v1/applications/{application_id}/dna/organization/ownership/draft";
             let organization_draft = ownership_draft || path == "/api/hale/v1/applications/{application_id}/dna/organization/draft";
             let draft = path == "/api/hale/v1/applications/{application_id}/dna/definitions/draft";
-            let response_name = if knowledge_command { "KnowledgeCommandResponse" } else if head_command { "HeadCommandResponse" } else if path == "/api/hale/v1/head" { "HeadResponse" } else if path == "/api/hale/v1/head/projects" { "HeadProjectsResponse" } else if path == "/api/hale/v1/head/logs" { "HeadLogResponse" } else if knowledge_capability { "KnowledgeCommandCapabilityResponse" } else if ownership_draft { "OwnershipDraftResponse" } else if organization_draft { "OrganizationDraftResponse" } else if draft { "DefinitionDraftResponse" } else if command { "CommandResponse" } else if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews/candidate" { "ReviewCandidateResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-status" { "OrganizationSourceStatusResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-impact" { "OrganizationSourceImpactResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization" { "OrganizationResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/tasks" { "TasksResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/people" { "PersonResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/workflows" { "WorkflowsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/definitions" { "DefinitionsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/nodes" { "KnowledgeNodesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/edges" { "KnowledgeEdgesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/bindings" { "KnowledgeBindingsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/dependents" { "KnowledgeBindingsResponse" } else { "" };
+            let response_name = if head_events { "text/event-stream" } else if knowledge_command { "KnowledgeCommandResponse" } else if head_command { "HeadCommandResponse" } else if path == "/api/hale/v1/head" { "HeadResponse" } else if path == "/api/hale/v1/head/projects" { "HeadProjectsResponse" } else if path == "/api/hale/v1/head/logs" { "HeadLogResponse" } else if knowledge_capability { "KnowledgeCommandCapabilityResponse" } else if ownership_draft { "OwnershipDraftResponse" } else if organization_draft { "OrganizationDraftResponse" } else if draft { "DefinitionDraftResponse" } else if command { "CommandResponse" } else if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews/candidate" { "ReviewCandidateResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-status" { "OrganizationSourceStatusResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-impact" { "OrganizationSourceImpactResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization" { "OrganizationResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/tasks" { "TasksResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/people" { "PersonResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/workflows" { "WorkflowsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/definitions" { "DefinitionsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/nodes" { "KnowledgeNodesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/edges" { "KnowledgeEdgesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/bindings" { "KnowledgeBindingsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/dependents" { "KnowledgeBindingsResponse" } else { "" };
             if len(response_name) == 0 { return ValidationResult { error: "OpenAPI: unexpected route " + path }; }
             count = count + 1;
             let route = std::json::obj_value_raw(routes, paths);
@@ -202,6 +222,12 @@ locus ContractFiles {
                 continue;
             }
             let operation = std::json::find_field_raw(route, "get");
+            if head_events {
+                let stream = self.event_stream(operation, schema);
+                if !stream.ok { return stream; }
+                routes = std::json::object_next(routes, paths);
+                continue;
+            }
             let assignee = self.assignee_parameter(operation, response_name == "TasksResponse");
             if !assignee.ok { return assignee; }
             let read = self.responses(operation, schema, response_name, path + " GET", false);
@@ -230,7 +256,7 @@ locus ContractFiles {
             }
             routes = std::json::object_next(routes, paths);
         }
-        if count != 26 { return ValidationResult { error: "OpenAPI: expected seventeen read paths, two command submit/recovery paths, three draft preparation paths and four head paths" }; }
+        if count != 27 { return ValidationResult { error: "OpenAPI: expected seventeen read paths, two command submit/recovery paths, three draft preparation paths and five head paths" }; }
         return ValidationResult { ok: true };
     }
     fn fixtures(fixtures: String, schema: String) -> ValidationResult {

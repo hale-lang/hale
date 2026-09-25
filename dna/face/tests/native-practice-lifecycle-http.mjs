@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
 
-assert(bindingEnvironmentPresent(), 'Supply matching API, Body, relay, membrane and Knowledge service binaries.');
+assert(bindingEnvironmentPresent(), 'Supply matching API, Body, relay and Knowledge service binaries.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
 assert(path.isAbsolute(parent)); await mkdir(parent, { recursive: true });
 const evidence = await mkdtemp(path.join(parent, 'native-practice-lifecycle-'));

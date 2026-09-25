@@ -109,6 +109,21 @@ fn steal(c: nats::NatsClient, org: String) -> String {
     return m.subject + " " + dna::hex(m.data);
 }
 
+// Whether the node tells the heads, within `secs`, a row whose payload
+// carries `text`: the subjects it told meanwhile, and `+` once it has.
+@unbounded
+fn landed(c: nats::NatsClient, text: String, secs: Int) -> String {
+    let mut told = "";
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if c.read_msg(250ms) {
+            told = told + c.last.subject + " ";
+            if std::str::contains(dna::hex(c.last.data), dna::hex(std::bytes::from_string(text))) { return told + "+"; }
+        }
+    }
+    return told;
+}
+
 // Whether a message `steal` took carries `text` in its payload.
 fn carries(taken: String, text: String) -> Bool { return std::str::contains(taken, dna::hex(std::bytes::from_string(text))); }
 
@@ -156,11 +171,22 @@ main locus App {
         std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);
         std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + listening(c, org));
 
+        // the heads hear every row the node's view gains (GH #986), on
+        // their own family: a head's user subscribes, as the face's head does
+        let heads = nats::NatsClient { url: line_value(nerves.stdout, "HALE_DNA_NATS_URL_HEAD"), name: "nerves-loss-head", timeout: 2s };
+        std::test::assert(heads.open(), "a head reaches the nerves: " + heads.last_error);
+        let sid = heads.sub_to(org + ".head.row.landed", "") or - 1;
+        std::test::assert(sid > 0, "a head subscribes to the rows landing: " + heads.last_error);
+        heads.flush() or discard;
+
         // an intent in the record, from this clone, as a person asks
         let before = relays(a);
         let asked = in_dir(a, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--as\nriley\nreconcile the day");
         let intent = word_after(asked.stdout, "intent ");
         std::test::assert(asked.code == 0 && std::str::starts_with(intent, "i"), "the intent is in the record: " + asked.stdout + asked.stderr);
+        let told = landed(heads, intent, 30);
+        std::test::assert(std::str::ends_with(told, "+"), "the node tells the heads the intent's row landed: " + told + (std::io::fs::read_file(a + "/host.log") or ""));
+        heads.close();
 
         // the host relays it, and the relay is lost: the fixture reads it
         // off the organization's consumer and acknowledges it

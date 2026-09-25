@@ -1,0 +1,168 @@
+// dna/api/project_service/tests/head_push_test.hl — the head's push to
+// the face (GH #986), over a real NATS server.
+//
+// A browser holds `GET /api/hale/v1/head/events` open. A row the organism
+// lands reaches it as a `changed` event naming `rows` — the node's
+// RowLanded, on the organization's subject and on an owner's — and the
+// head's own state moving (a command journaled) as one naming `head`.
+// The head finds the server itself: handed the owner's URL for a body it
+// starts, it subscribes there as the head's user. A stream past the
+// sixteen the head holds is refused busy, and a SIGTERM drains the head
+// with every stream open instead of waiting out the drain's grace.
+//
+// Needs HALE_DNA_NATS_URL_OWNER (a JetStream server; the CI jobs start
+// one) and the head fixture's binaries; without the server nothing here
+// is exercised. Silent on stdout: a passing fixture prints nothing.
+
+import "./fixture" as fixture;
+import "../../../core" as dna;
+import "../../../core/pond/realtime/nats" as nats;
+
+const EVENTS: String = "/api/hale/v1/head/events";
+
+// One open event stream, read into `seen`.
+locus EventStream {
+    params { port: Int = 0; fd: Int = -1; seen: String = ""; }
+    dissolve() { if self.fd >= 0 { std::io::tcp::close_fd(self.fd); } }
+    // Opens the stream: the status line and headers the head answered.
+    @unbounded
+    fn open() -> String {
+        self.fd = std::io::tcp::connect("127.0.0.1", self.port) or - 1;
+        std::test::assert(self.fd >= 0, "connected to the head");
+        std::io::tcp::set_recv_timeout(self.fd, 250ms) or discard;
+        let st = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        st.send("GET " + EVENTS + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n") or discard;
+        let deadline = std::time::now() + dna::wait_secs(10);
+        while std::time::now() <= deadline && !std::str::contains(self.seen, "\r\n\r\n") {
+            self.seen = self.seen + (st.recv(4096) or "");
+        }
+        let at = std::str::index_of(self.seen, "\r\n\r\n");
+        let head = if at < 0 { self.seen } else { self.seen[0..at] };
+        self.seen = if at < 0 { "" } else { self.seen[(at + 4)..len(self.seen)] };
+        return head;
+    }
+    // Whether an event naming `what` arrives within `secs`, reading what
+    // came since the last call; `poke` runs before each read.
+    @unbounded
+    fn heard(what: String, secs: Int, poke: Poker) -> Bool {
+        let st = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if std::str::contains(self.seen, "event: changed\ndata: " + what + "\n\n") {
+                self.seen = "";
+                return true;
+            }
+            poke.poke();
+            self.seen = self.seen + (st.recv(4096) or "");
+        }
+        return false;
+    }
+}
+
+// The streams opened past the first, kept open until the fixture ends.
+locus Held {
+    params { port: Int = 0; fds: String = ""; }
+    @unbounded
+    dissolve() {
+        let mut rest = self.fds;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            std::io::tcp::close_fd(std::str::parse_int(rest[0..nl]) or - 1);
+            rest = rest[(nl + 1)..len(rest)];
+        }
+    }
+    // Opens one more stream and keeps it: what the head answered.
+    @unbounded
+    fn one_more() -> String {
+        let s = EventStream { port: self.port };
+        let h = s.open();
+        if !std::str::starts_with(h, "HTTP/1.1 200") {
+            // a refusal: its body, to the end of the JSON
+            let st = std::io::tcp::Stream { conn_fd: s.fd, owns_fd: false };
+            let deadline = std::time::now() + dna::wait_secs(5);
+            while std::time::now() <= deadline && !std::str::ends_with(s.seen, "}") { s.seen = s.seen + (st.recv(4096) or ""); }
+        }
+        self.fds = self.fds + to_string(s.fd) + "\n";
+        s.fd = -1;
+        return h + s.seen;
+    }
+}
+
+// What a wait publishes before each read: a RowLanded on `subject`
+// (nothing when ""). The head subscribes within a second of the project
+// becoming active, so the fact is said again until it is heard.
+locus Poker {
+    params { client: nats::NatsClient = nats::NatsClient { name: "head-push-test", timeout: 2s }; subject: String = ""; }
+    dissolve() { self.client.close(); }
+    fn poke() {
+        if len(self.subject) == 0 { return; }
+        self.client.pub_msg(self.subject, "", std::bytes::from_string("{}")) or discard;
+        self.client.flush() or discard;
+    }
+}
+
+fn main() {
+    if !std::env::var_exists(dna::NATS_OWNER_URL_ENV) {
+        eprintln("head_push_test: not exercised (" + dna::NATS_OWNER_URL_ENV + " is not set)");
+        return;
+    }
+    let root = dna::scratch_root("head-push");
+    let f = fixture::HeadFixture { root: root };
+    f.start();
+    let attached = f.submit(fixture::command("push-attach", "dna.project.attach", "", "{\"root\":\"" + f.project + "\"}"), 200);
+    f.json.eq(attached, "state", "succeeded");
+    let org = dna::schema_for(f.identity);
+
+    let s = EventStream { port: f.port };
+    let head = s.open();
+    std::test::assert(std::str::starts_with(head, "HTTP/1.1 200"), "the stream is opened: " + head);
+    std::test::assert(std::str::contains(head, "Content-Type: text/event-stream"), "as an event stream: " + head);
+
+    // ---- rows: the organization's, then an owner's
+    let p = Poker { subject: org + ".head.row.landed" };
+    p.client.url = std::env::var(dna::NATS_OWNER_URL_ENV);
+    std::test::assert(p.client.open(), "the test reaches the nerves: " + p.client.last_error);
+    std::test::assert(s.heard("rows", 30, p), "a row the organization lands is pushed: " + s.seen + f.log());
+    p.subject = org + ".north.head.row.landed";
+    std::test::assert(s.heard("rows", 10, p), "so is one an owner's organization lands: " + s.seen);
+    // another organization's rows are not this project's
+    p.subject = "dna_other.head.row.landed";
+    std::test::assert(!s.heard("rows", 3, p), "another organization's row is not pushed: " + s.seen);
+
+    // ---- the head's own state: a command journaled
+    p.subject = "";
+    let refused = f.submit(fixture::command("push-refused", "dna.project.attach", "", "{\"root\":\"" + f.root + "/home\"}"), 200);
+    f.json.eq(refused, "state", "refused");
+    std::test::assert(s.heard("head", 10, p), "a receipt the head journals is pushed: " + s.seen);
+
+    // ---- sixteen streams at most
+    let others = Held { port: f.port };
+    let mut held = 1;
+    let mut busy = "";
+    let mut i = 0;
+    while i < 16 {
+        let h = others.one_more();
+        if std::str::starts_with(h, "HTTP/1.1 200") { held = held + 1; } else { busy = h; }
+        i = i + 1;
+    }
+    std::test::assert_eq_int(held, 16, "the head holds sixteen streams");
+    std::test::assert(std::str::starts_with(busy, "HTTP/1.1 503") && std::str::contains(busy, "busy"), "the seventeenth is refused busy: " + busy);
+
+    // ---- SIGTERM with every stream open: drained, not killed at the grace
+    // (reaped here: `kill -0` answers for a zombie child too)
+    let t0 = std::time::monotonic_ns();
+    let sent = dna::run_tool("kill\n-TERM\n" + to_string(f.head.pid));
+    let mut state = -2;
+    let deadline = std::time::now() + dna::wait_secs(15);
+    while state == -2 && std::time::now() <= deadline {
+        state = std::process::try_wait(f.head) or - 1;
+        if state == -2 { std::time::sleep(20ms); }
+    }
+    let took_ms = (std::time::monotonic_ns() - t0) / 1000000;
+    std::test::assert_eq_int(state, 0, "the drained head exits 0: " + f.log());
+    std::test::assert(took_ms < 3000, "the head drains at once with streams open (" + to_string(took_ms) + " ms): " + f.log());
+    std::test::assert(!std::str::contains(f.log(), "did not finish within"), "the drain finished: " + f.log());
+    f.head.pid = -1;
+    f.stop();
+    dna::scratch_done(root);
+}

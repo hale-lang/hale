@@ -443,8 +443,8 @@ jobs:
 
       # The toolchain cache the warm step fills: `~/.cache/hale` (nothing
       # here sets XDG_CACHE_HOME), which holds `iris/<hash>/` (the embedded
-      # DNA and iris sources materialized, with the host, the membrane
-      # client, the observer and the knowledge service built beside them)
+      # DNA and iris sources materialized, with the host, the observer and
+      # the knowledge service built beside them)
       # and the runtime object cache, `runtime/`. Everything in it is built
       # from what the compiler binary embeds, so the compiler id and the
       # host cover its inputs: the checkout's dna/ and iris/ are not read
@@ -469,9 +469,9 @@ jobs:
           key: dna-toolchain-${{ steps.compiler.outputs.toolchain }}
 
       - name: Warm the DNA toolchain cache
-        # The first host verb of this binary builds the host and the membrane
-        # client into the cache: paid once here, not inside a test's own
-        # deadline beside the partition's other organisms on a loaded runner.
+        # The first host verb of this binary builds the host into the
+        # cache: paid once here, not inside a test's own deadline beside
+        # the partition's other organisms on a loaded runner.
         env:
           HALE_DNA_DISCOVER: "off"
         run: scripts/warm-dna-cache.sh ./target/release/hale
@@ -639,9 +639,9 @@ jobs:
       - *toolchain-restore
 
       - name: Warm the DNA toolchain cache
-        # The first host verb of this binary builds the host and the membrane
-        # client into the cache: paid once here, not inside a test's own
-        # deadline beside seven other organisms on a loaded runner.
+        # The first host verb of this binary builds the host into the
+        # cache: paid once here, not inside a test's own deadline beside
+        # seven other organisms on a loaded runner.
         env:
           HALE_DNA_DISCOVER: "off"
         run: scripts/warm-dna-cache.sh ./target/release/hale

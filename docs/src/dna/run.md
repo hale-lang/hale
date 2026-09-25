@@ -290,6 +290,11 @@ on your next request — so closing the browser or restarting the
 head interrupts nothing, and a verb that talks to a remote (a sync,
 a publish, a probe) reports `outcome_unknown` with its log when it
 passes its deadline, never a failure it cannot prove.
+The browser does not poll the head: the head tells it when to look
+again, over an event stream (`GET /api/hale/v1/head/events`, GH #986),
+when a receipt is journaled, a run or a child starts or ends, or the
+organism lands a row — which a node tells it over the nerves
+([Operating](./operating.md#the-nerves)).
 
 The head keeps its files under
 `${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-~/.local/state}/hale/dna/head}`:

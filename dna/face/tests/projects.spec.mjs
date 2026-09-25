@@ -88,6 +88,10 @@ const test = base.extend({
         if (id && id !== APP) return error(404, 'project_not_found', 'unknown project');
         return send(200, envelope(s, { items: s.registered || s.active ? [project(s, Boolean(id))] : [] }));
       }
+      // the head's push (GH #986): one `changed`, then the stream ends and
+      // the browser reconnects after `retry` — a head whose state moves
+      // all the time, which is what following a receipt needs of it
+      if (url.pathname === '/api/hale/v1/head/events') { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('retry: 100\n\nevent: changed\ndata: 1\n\n'); return; }
       if (url.pathname === '/api/hale/v1/head/logs') return send(200, envelope(s, { name: url.searchParams.get('run') ? 'run ' + url.searchParams.get('run') : 'child ' + url.searchParams.get('child'), offset: Number(url.searchParams.get('offset') || 0), next_offset: 46, text: 'hale dna sync: no remote: the record is local\n', complete: true }));
       if (url.pathname === '/api/hale/v1/head/commands') {
         if (req.method === 'POST') {

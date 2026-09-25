@@ -33,6 +33,30 @@ behavior.
   down twice, once by its run wrapper and again by the statement's own
   teardown, which ran `dissolve()` on the freed arena. The statement's
   teardown now steps over a child already reclaimed.
+### DNA: the head pushes to the face (GH #986)
+
+- **New:** the face's head serves `GET /api/hale/v1/head/events`, a
+  `text/event-stream` of `changed` events — `data: rows` when the
+  active project's organism landed a row, `data: head` when a receipt
+  was journaled, a run or a child started or ended, or the API child
+  began answering. The Projects workspace reads again on each one and
+  no longer polls; the application view still does until #987. At
+  most 16 streams; one more is 503 `busy`.
+- **New:** a node tells the heads every row its view gains, on
+  `<org>.head.row.landed` (outside `<org>.dna.>`: no organization pulls
+  it). The head subscribes as the head's user, on
+  `HALE_DNA_NATS_URL_HEAD`, else on the owner's server, else on the
+  project's compose `nerves`. `dna/nats.conf` lets the spine publish
+  `<org>.head.>`; `hale dna upgrade` says what an older one lacks.
+- **Documented:** `hale dna nerves drop [dir]` deletes an
+  organization's stream with the owner's URL, beside dropping memory's
+  schema. `hale dna run` and `dev` give the node a 30 s drain grace on
+  SIGTERM (`LOTUS_DRAIN_GRACE_MS`, unless set); a drained node exits 0.
+- **Changed:** the head is its program's `main locus` (its server and
+  its watcher), and a SIGTERM drains it at once. `dna/face/start.sh`
+  builds each seed directory as the program, from a copy of the
+  checkout's sources, rather than through a one-line seed importing it
+  — where a `main locus`'s placement is inert.
 
 ### `restart` restarts a child that failed in `run()` (GH #1066)
 

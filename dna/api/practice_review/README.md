@@ -7,7 +7,7 @@ typed API values and preserves the service's exact Record evidence.
 The frozen policy implementation is shared in `dna/operations/governance_policy.hl`.
 
 The supported deployment is one local Record with a DNA body and host built
-from this same source revision, including the updated command-bearing membrane.
+from this same source revision, including the host that relays its commands.
 An older body cannot supply command-specific decisions or recovery. The host
 consumes admitted governance facts through the normal native
 path. A recorded command does not prove that the body has progressed it. Run the

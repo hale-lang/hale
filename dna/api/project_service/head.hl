@@ -443,6 +443,7 @@ locus Head {
     params {
         cfg: HeadConfig = HeadConfig { };
         web: api::WebAssets = api::WebAssets { };
+        slots: PushSlots; // the face's open event streams (push.hl, GH #986)
         // the API child pid the head last saw answer, and the one it last saw refuse a connection
         api_ready_pid: Int = -1;
         api_failed_pid: Int = -1;
@@ -763,6 +764,17 @@ locus Head {
             if path == HEAD_PREFIX { return self.head_read(raw_query); }
             if path == HEAD_PREFIX + "/projects" { return self.projects_read(raw_query); }
             return self.logs_read(raw_query);
+        }
+        // GH #986: the push — the stream is handed over to the watcher,
+        // which writes `changed` whenever the active project's rows move
+        if path == HEAD_PREFIX + "/events" {
+            if req.method != "GET" { return self.error(405, "method_not_allowed", "the event stream is a read", false); }
+            let slot = claim_push_slot(self.slots, req.conn_fd);
+            if slot < 0 { return self.error(503, "busy", "every event stream is held; the face reads again when the person acts", true); }
+            // the head writes the response head itself, before the slot is
+            // ready: an event is never written ahead of it
+            open_push_stream(self.slots, slot, req.conn_fd);
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
         }
         if path == HEAD_PREFIX + "/commands" {
             if req.method == "POST" { return self.submit(req); }

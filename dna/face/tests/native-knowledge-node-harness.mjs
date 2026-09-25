@@ -1,4 +1,4 @@
-// Real Body/relay/membrane + Review API on one Git Record, with Knowledge in
+// Real Body/relay + Review API on one Git Record, with Knowledge in
 // memory. Every proposal, Review and activation is native.
 //
 // There is no Knowledge service (GH #985). The API admits Knowledge commands

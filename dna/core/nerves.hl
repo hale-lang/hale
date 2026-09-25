@@ -18,6 +18,9 @@
 //                                 (`dna.intent.offered`) under the org
 //   <org>.app.<app>.<subject>     what an application says, under its
 //                                 own name (#987 gives it its events)
+//   <org>.head.<event>            what a node tells the heads: a row
+//                                 landed (`head.row.landed`), outside
+//                                 `dna.` so no organization pulls it
 //
 // The connection takes the token off what arrives and puts it on what
 // leaves (`subject_prefix`), so a topic keeps its declared subject.
@@ -32,8 +35,8 @@
 // in dna/nats.conf until the vault, #989):
 //   owner  creates the stream (`hale dna nerves migrate`); held by no
 //          process that runs the organism
-//   spine  publishes and reads <org>.dna.>: the node's host and the
-//          organization
+//   spine  publishes and reads <org>.dna.>, and publishes <org>.head.>:
+//          the node's host and the organization
 //   head   subscribes, publishes nothing (the face's push)
 //   app    publishes on <org>.app.<app>.> (#987)
 

@@ -11,7 +11,7 @@ const test = base.extend({
   },
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
-test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay, membrane and Knowledge service binaries.');
+test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
 test.setTimeout(120_000);
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const receipt = page => page.getByRole('region', { name: 'Knowledge binding request', exact: true });

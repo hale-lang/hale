@@ -14,7 +14,7 @@ const test = base.extend({
   },
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
-test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay, membrane and Knowledge service.');
+test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service.');
 test.setTimeout(90_000);
 const editor = page => page.getByRole('region', { name: 'Practice change editor', exact: true });
 const receipt = page => page.getByRole('region', { name: /^Knowledge (change|binding) request$/ });

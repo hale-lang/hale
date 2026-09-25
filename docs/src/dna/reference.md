@@ -125,11 +125,16 @@ the stream (`nerves migrate`, `dev`); `HALE_DNA_NATS_URL_SPINE` and
 `HALE_DNA_NATS_ORG`, the URL and the organization's token the host that
 runs the organism is handed and the organization inherits;
 `HALE_DNA_NATS_URL_HEAD` and `HALE_DNA_NATS_URL_APP`, a head's and an
-application's. The host hands its organization
-its body lease as `HALE_DNA_LEASE` / `HALE_DNA_LEASE_TOKEN` once the
-ledger is adopted.
+application's (the face's head, without its own, subscribes as the head
+on the owner's server or the project's compose `nerves`). The host
+hands its organization its body lease as `HALE_DNA_LEASE` /
+`HALE_DNA_LEASE_TOKEN` once the ledger is adopted.
+`LOTUS_DRAIN_GRACE_MS` is how long a node has to drain on SIGTERM —
+stop its organization, give its lease back — before the runtime ends
+it; `hale dna run` and `dev` set 30000 unless it is already set.
 
-The head (`dna/face/start.sh`) reads `HALE_BIN` (the
+The head (`dna/face/start.sh`) serves `GET /api/hale/v1/head/events`,
+the event stream the face reads again on, and reads `HALE_BIN` (the
 compiler every operation execs, absolute), `HALE_DNA_HEAD_STATE`
 (its state directory, default
 `${XDG_STATE_HOME:-~/.local/state}/hale/dna/head`: registry, receipt

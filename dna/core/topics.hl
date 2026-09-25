@@ -249,6 +249,15 @@ fn pressure_what(body: String) -> String {
 type Concern { source: String = ""; what: String = ""; severity: Int = 0; request: String = ""; }
 topic ConcernRaised { payload: Concern; subject: "dna.concern.raised"; }
 
+// GH #986: a row a node's view of the organism gained — the record's or
+// the ledger's, `seq` its place in the merged order — told on the nerves
+// once, by that node. A head (the face's) hears that something changed
+// and reads again: this is never a second data path, the record is. Its
+// subject is a head's family, `head.`, not `dna.`: no organization's
+// durable consumer pulls it.
+type LandedRow { seq: Int = 0; kind: String = ""; entity: String = ""; }
+topic RowLanded { payload: LandedRow; subject: "head.row.landed"; }
+
 // What a concern row carries, written as one object rather than as prose
 // with a marker appended (GH #689, second review). A concern's text is
 // whatever a worker wrote, and text that looks like metadata must not be
