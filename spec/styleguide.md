@@ -1065,10 +1065,13 @@ absent thing means fighting the design, not waiting on it.
 
 Write the workaround knowing it's a placeholder.
 
-- **Bytes / nested-compound fields of a replaced struct don't
-  retire** (String leaves do, since v0.11.3). Until then:
-  genuinely-churning Bytes fields in a reused `BytesBuilder`;
-  nested compound fields in their own locus or flattened.
+- **Nested-compound fields of a replaced struct don't retire**,
+  nor Bytes fields of a replaced `@form(hashmap)` cell. (String
+  leaves do since v0.11.3; Bytes fields of a self-field struct store
+  and of a vec element do since GH #1033 / #1037.) Until then:
+  a genuinely-churning Bytes field of a map cell in a reused
+  `BytesBuilder`; nested compound fields in their own locus or
+  flattened.
 - **`striped` / `lockfree` `@form` maps don't retire** replaced
   cells — a churned String-bearing cell on those modes still
   accumulates. (`sync = serialized` retires since 2026-08-03:

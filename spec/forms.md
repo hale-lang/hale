@@ -424,12 +424,14 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > **Replaced-element reclamation (iris handoff P1, 2026-07-27).**
 > Vec elements are pointer-storage: each `set` deep-copies the new
 > value into the form owner's arena. The REPLACED element (and its
-> non-surviving String fields, with aliasing dedup — the hashmap
-> retire-cell discipline) now retires onto the arena's reuse
+> non-surviving String and Bytes fields, with aliasing dedup — the
+> hashmap retire-cell discipline) now retires onto the arena's reuse
 > freelist immediately, and the deep-copy allocation consults that
 > freelist — steady-state `set` churn ping-pongs between reused
 > blocks instead of growing the arena (~33 B/set and a
-> progressively slower containment walk, pre-fix).
+> progressively slower containment walk, pre-fix). Bytes fields
+> since GH #1037: before it a struct's replaced Bytes stayed (~47 B
+> a set).
 >
 > **The vec owns its elements (GH #577).** `get` returns the
 > CALLER's copy of a heap-bearing element (a String, Bytes, a
@@ -461,6 +463,16 @@ fn pop() -> T fallible(IndexError)
 
 Removes and returns the last element. If `len() == 0`, fails
 with `IndexError { kind: "empty", index: 0, len: 0 }`.
+
+Like `get`, `pop` returns the CALLER's copy of a heap-bearing
+element, allocated in the caller's current arena; the element the
+vec held — its block and its String and Bytes fields — is then
+freed onto the arena's reuse freelist, as a replaced element is on
+`set` (GH #1037). A vec used as a queue (push, then pop once
+handled) therefore holds its arena flat. (Before this, `pop` handed
+back the slot's own pointer and freed nothing: ~40 B a cycle for a
+bare String cell, ~62 B for a struct carrying one, for as long as
+the owner lived.)
 
 `pop` does not free the underlying buffer — capacity does not
 shrink. Buffer release happens at locus dissolution.

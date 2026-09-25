@@ -5301,13 +5301,18 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
 }
 
 /* GH iris-handoff P1: retire everything a REPLACED pointer-storage
- * form element owned — its top-level String fields (surviving
- * pointers excluded, intra-call aliasing deduped: the hashmap
- * retire-cell discipline) and then the element block itself.
+ * form element owned — its top-level String and Bytes fields
+ * (surviving pointers excluded, intra-call aliasing deduped: the
+ * hashmap retire-cell discipline) and then the element block itself.
+ * GH #1037: also a POPPED element, against the owned copy pop hands
+ * back, and Bytes fields — the descriptor tags a Bytes field's
+ * offset with LOTUS_RETIRE_OFF_BYTES and frees it at 8 + len (it used
+ * to list String fields only, so a replaced struct's Bytes stayed).
  * `size` sentinels: -1 = old_blob is a NUL-terminated String
  * (strlen+1); -2 = old_blob is a Bytes blob (8 + len); >= 0 =
  * struct block of that many bytes. All guards live here so the
  * publish-site IR is two loads + one call. */
+#define LOTUS_RETIRE_OFF_BYTES ((int32_t)1 << 30)
 void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
                                 void *new_blob, int64_t size,
                                 const int32_t *str_offs,
@@ -5318,7 +5323,8 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     const char *old_v = (const char *)old_blob;
     const char *new_v = (const char *)new_blob;
     for (int64_t i = 0; i < n_offs; i++) {
-        int32_t off = str_offs[i];
+        int32_t off = str_offs[i] & ~LOTUS_RETIRE_OFF_BYTES;
+        int is_bytes = (str_offs[i] & LOTUS_RETIRE_OFF_BYTES) != 0;
         char *oldp;
         memcpy(&oldp, old_v + off, sizeof(char *));
         if (!oldp) continue;
@@ -5330,12 +5336,16 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
         int dup = 0;
         for (int64_t j = 0; j < i; j++) {
             char *pj;
-            memcpy(&pj, old_v + str_offs[j], sizeof(char *));
+            memcpy(&pj, old_v + (str_offs[j] & ~LOTUS_RETIRE_OFF_BYTES),
+                   sizeof(char *));
             if (pj == oldp) { dup = 1; break; }
         }
         if (dup) continue;
         if (!lotus_arena_contains_ptr(a, oldp)) continue;
-        lotus_arena_free_block_now(a, oldp, strlen(oldp) + 1);
+        size_t fsize = is_bytes
+            ? (size_t)lotus_bytes_len(oldp) + sizeof(int64_t)
+            : strlen(oldp) + 1;
+        lotus_arena_free_block_now(a, oldp, fsize);
     }
     size_t block_size;
     if (size == -1) {
@@ -5386,17 +5396,29 @@ void lotus_arena_flush_retired(void *arena_ptr) {
     lotus_retire_unlock(a);
 }
 
-/* Bounded first-fit pop for the allocator (mirrors the
- * child-struct recycler's probe discipline). Returns NULL on miss.
+/* Bounded best-fit pop for the allocator (the child-struct
+ * recycler's probe bound: 8 blocks). Returns NULL on miss.
  * `align`: the freelist mixes align-1 String blocks with align-8
  * Bytes blocks (2026-07-18 Bytes-grow retire); a candidate only
  * matches if its ADDRESS satisfies the request's alignment — a
  * String request (align 1) can reuse either kind, a Bytes request
- * (align 8) skips the odd-addressed String blocks. */
+ * (align 8) skips the odd-addressed String blocks.
+ *
+ * GH #1037: BEST fit within the probe window, not first fit. An
+ * element freeing a 41-byte String and a 48-byte Bytes together left
+ * both on the list; the next element's String request took the
+ * first block in its window — the Bytes one — and its Bytes request
+ * then found only the 41-byte block, too small, and allocated
+ * afresh: one block stranded per cycle, which is how `pop` of a
+ * struct carrying a String and a Bytes still grew after it freed
+ * both. The smallest fitting block (an exact size ends the probe)
+ * leaves the larger, aligned one for the request that needs it. */
 static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size,
                                    size_t align) {
     void *cur = a->retire_free;
     void *prev_blob = NULL;
+    void *best = NULL, *best_prev = NULL, *best_next = NULL;
+    size_t best_size = 0;
     int probes = 0;
     while (cur && probes < 8) {
         char *b = (char *)cur;
@@ -5405,19 +5427,25 @@ static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size,
         memcpy(&bsize, b, sizeof(size_t));
         memcpy(&next, b + 8, sizeof(void *));
         if (bsize >= size && bsize <= size + (size >> 2) + 16 &&
-            ((uintptr_t)b & (align - 1)) == 0) {
-            if (prev_blob) {
-                memcpy((char *)prev_blob + 8, &next, sizeof(void *));
-            } else {
-                a->retire_free = next;
-            }
-            return b;
+            ((uintptr_t)b & (align - 1)) == 0 &&
+            (!best || bsize < best_size)) {
+            best = b;
+            best_prev = prev_blob;
+            best_next = next;
+            best_size = bsize;
+            if (bsize == size) break;
         }
         prev_blob = cur;
         cur = next;
         probes++;
     }
-    return NULL;
+    if (!best) return NULL;
+    if (best_prev) {
+        memcpy((char *)best_prev + 8, &best_next, sizeof(void *));
+    } else {
+        a->retire_free = best_next;
+    }
+    return best;
 }
 
 /* Bounded first-fit pop for the OUT-OF-BAND small-block freelist

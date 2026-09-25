@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### `@form(vec)` frees what `pop` and `set` take out (GH #1037)
+
+- **Fixed:** `pop()` returned the slot's own pointer and freed nothing,
+  so a vec used as a queue grew by one payload per message for as long
+  as its owner lived (~40 B a cycle for a `String` cell, ~62 B for a
+  struct carrying one). `pop` now returns the caller's own copy, as `get`
+  does, and frees the element the vec held.
+- **Fixed:** `set` over a struct cell freed the old element's `String`
+  fields but not its `Bytes` ones (~47 B a set). Both are freed now.
+- The arena's reuse freelist is best-fit within its probe window: first
+  fit stranded a block per cycle when an element freed a `String` and a
+  `Bytes` of close sizes.
+
 ### A self field whose length changes no longer leaks (GH #1033)
 
 - **Fixed:** a `String` or `Bytes` self field alternating between a heap

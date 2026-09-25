@@ -123,6 +123,111 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.emit_owned_store_copy_ptr(loaded, elem_ty, dest)
     }
 
+    /// Free a vec element the vec no longer holds — the one `set`
+    /// replaces (iris handoff P1, 2026-07-27) or the one `pop` removes
+    /// (GH #1037). Pointer-storage elements (structs / String / Bytes)
+    /// each own an arena block, plus a block per String / Bytes field
+    /// of a struct; scalar-repr elements (Int / Float / Bool / enum
+    /// tag) store inline and have nothing to free. `slot` is the
+    /// element's slot, read here before the caller overwrites it or
+    /// shrinks past it; `new_val` is what replaces it (for `pop`, the
+    /// caller's owned copy) — a block or field it still points at
+    /// survives. All guards (NULL, old == new, containment, field
+    /// survival, intra-element aliasing) live in the C helper.
+    ///
+    /// The descriptor lists the struct's heap fields by offset, a
+    /// Bytes field tagged with `LOTUS_RETIRE_OFF_BYTES` (bit 30) so it
+    /// is freed at its length-prefixed size rather than by strlen.
+    /// GH #1037: it used to list String fields only, so `set` over a
+    /// struct carrying Bytes kept the old Bytes (~47 B a set).
+    fn emit_vec_retire(
+        &mut self,
+        locus_name: &str,
+        elem_ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+        slot: PointerValue<'ctx>,
+        new_val: BasicValueEnum<'ctx>,
+        tag: &str,
+    ) -> Result<(), CodegenError> {
+        const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let (size_sentinel, offs): (i64, Vec<u32>) = match elem_ty {
+            CodegenTy::String => (-1, Vec::new()),
+            CodegenTy::Bytes => (-2, Vec::new()),
+            CodegenTy::TypeRef(tn) => match self.user_types.get(tn) {
+                Some(ti) => {
+                    let sz = self.target_data.get_abi_size(&ti.struct_ty) as i64;
+                    let mut offs = Vec::new();
+                    for fname in &ti.field_order {
+                        let Some((idx, fty)) = ti.fields.get(fname) else { continue };
+                        let kind = match fty {
+                            CodegenTy::String => 0,
+                            CodegenTy::Bytes => LOTUS_RETIRE_OFF_BYTES,
+                            _ => continue,
+                        };
+                        if let Some(o) =
+                            self.target_data.offset_of_element(&ti.struct_ty, *idx)
+                        {
+                            offs.push(o as u32 | kind);
+                        }
+                    }
+                    (sz, offs)
+                }
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let old_ptr = self
+            .builder
+            .build_load(ptr_t, slot, &format!("{}.vec.{}.old", locus_name, tag))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let (desc_ptr, n_offs) = if offs.is_empty() {
+            (ptr_t.const_null(), 0i64)
+        } else {
+            let gname = match elem_ty {
+                CodegenTy::TypeRef(tn) => format!("__vec_retire_desc.{}", tn),
+                _ => unreachable!("only a struct element has field offsets"),
+            };
+            let g = match self.module.get_global(&gname) {
+                Some(g) => g,
+                None => {
+                    let vals: Vec<_> = offs
+                        .iter()
+                        .map(|o| i32_t.const_int(*o as u64, false))
+                        .collect();
+                    let arr = i32_t.const_array(&vals);
+                    let g = self.module.add_global(arr.get_type(), None, &gname);
+                    g.set_initializer(&arr);
+                    g.set_constant(true);
+                    g.set_linkage(inkwell::module::Linkage::Internal);
+                    g
+                }
+            };
+            (g.as_pointer_value(), offs.len() as i64)
+        };
+        let retire_fn = self
+            .module
+            .get_function("lotus_form_retire_replaced")
+            .expect("lotus_form_retire_replaced declared");
+        self.builder
+            .build_call(
+                retire_fn,
+                &[
+                    dest_arena.into(),
+                    old_ptr.into(),
+                    new_val.into(),
+                    i64_t.const_int(size_sentinel as u64, true).into(),
+                    desc_ptr.into(),
+                    i64_t.const_int(n_offs as u64, false).into(),
+                ],
+                &format!("{}.vec.{}.retire", locus_name, tag),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     /// v1.x-FORM-2 PR6 (PR5 finale): inline-lower a synthesized
     /// @form(vec) fallible method (get, pop) as-if it were a
     /// fallible-ABI call. The C runtime returns 1=OK / 0=err;
@@ -624,106 +729,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // on the in-bounds path. Scalar-repr elements
                 // (Int/Float/Bool/enum-tag) store inline — nothing
                 // to retire.
-                let retire_spec: Option<(i64, Vec<u32>)> = match &elem_ty {
-                    CodegenTy::String => Some((-1, Vec::new())),
-                    CodegenTy::Bytes => Some((-2, Vec::new())),
-                    CodegenTy::TypeRef(tn) => {
-                        self.user_types.get(tn).map(|ti| {
-                            let sz = self
-                                .target_data
-                                .get_abi_size(&ti.struct_ty)
-                                as i64;
-                            let mut offs = Vec::new();
-                            for fname in &ti.field_order {
-                                if let Some((idx, fty)) =
-                                    ti.fields.get(fname)
-                                {
-                                    if matches!(fty, CodegenTy::String) {
-                                        if let Some(o) = self
-                                            .target_data
-                                            .offset_of_element(
-                                                &ti.struct_ty,
-                                                *idx,
-                                            )
-                                        {
-                                            offs.push(o as u32);
-                                        }
-                                    }
-                                }
-                            }
-                            (sz, offs)
-                        })
-                    }
-                    _ => None,
-                };
-                if let Some((size_sentinel, offs)) = retire_spec {
-                    let old_ptr = self
-                        .builder
-                        .build_load(
-                            ptr_t,
-                            elem_ptr,
-                            &format!("{}.vec.set.old", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let (desc_ptr, n_offs) = if offs.is_empty() {
-                        (ptr_t.const_null(), 0i64)
-                    } else {
-                        let gname = format!(
-                            "__vec_retire_desc.{}",
-                            match &elem_ty {
-                                CodegenTy::TypeRef(tn) => tn.clone(),
-                                _ => unreachable!(),
-                            }
-                        );
-                        let g = match self.module.get_global(&gname) {
-                            Some(g) => g,
-                            None => {
-                                let vals: Vec<_> = offs
-                                    .iter()
-                                    .map(|o| {
-                                        i32_t.const_int(*o as u64, false)
-                                    })
-                                    .collect();
-                                let arr = i32_t.const_array(&vals);
-                                let g = self.module.add_global(
-                                    arr.get_type(),
-                                    None,
-                                    &gname,
-                                );
-                                g.set_initializer(&arr);
-                                g.set_constant(true);
-                                g.set_linkage(
-                                    inkwell::module::Linkage::Internal,
-                                );
-                                g
-                            }
-                        };
-                        (g.as_pointer_value(), offs.len() as i64)
-                    };
-                    let retire_fn = self
-                        .module
-                        .get_function("lotus_form_retire_replaced")
-                        .expect("lotus_form_retire_replaced declared");
-                    self.builder
-                        .build_call(
-                            retire_fn,
-                            &[
-                                dest_arena.into(),
-                                old_ptr.into(),
-                                val.into(),
-                                i64_t
-                                    .const_int(
-                                        size_sentinel as u64,
-                                        true,
-                                    )
-                                    .into(),
-                                desc_ptr.into(),
-                                i64_t.const_int(n_offs as u64, false).into(),
-                            ],
-                            &format!("{}.vec.set.retire", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                self.emit_vec_retire(
+                    locus_name, &elem_ty, dest_arena, elem_ptr, val, "set",
+                )?;
                 self.builder
                     .build_store(elem_ptr, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -878,9 +886,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("{}.vec.pop.elem", locus_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // GH #1037: the popped element leaves the vec, so its
+                // blocks must too. Hand the caller an OWNED copy (the
+                // clone-on-read `get` makes, GH #577), then free the
+                // vec's element against it — a block the copy still
+                // points at (none, unless no copy was made) survives.
+                // Before this, pop returned the slot's own pointer and
+                // freed nothing: a vec used as a queue grew by one
+                // payload per message for the locus's lifetime.
+                let owned = self.emit_vec_get_owned(popped, &elem_ty, locus_name)?;
+                if matches!(
+                    elem_ty,
+                    CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
+                ) {
+                    let arena_field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            locus_self_ptr,
+                            info.arena_field_idx,
+                            &format!("{}.__arena.for_pop.ptr", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let vec_arena = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            arena_field_ptr,
+                            &format!("{}.__arena.for_pop", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    self.emit_vec_retire(
+                        locus_name, &elem_ty, vec_arena, elem_ptr, owned, "pop",
+                    )?;
+                }
                 self.builder
-                    .build_store(out_val_slot_opt.unwrap(), popped)
+                    .build_store(out_val_slot_opt.unwrap(), owned)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // The copy may have added blocks; the phi below takes
+                // this edge from wherever the builder now stands.
+                let do_end = self
+                    .builder
+                    .get_insert_block()
+                    .expect("builder positioned in vec.pop");
                 self.builder
                     .build_unconditional_branch(cont_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -899,7 +948,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_phi(i32_t, &format!("{}.vec.pop.cret", locus_name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 cret_phi.add_incoming(&[
-                    (&one_i32, do_bb),
+                    (&one_i32, do_end),
                     (&zero_i32, empty_bb),
                 ]);
                 let c_ret = cret_phi.as_basic_value().into_int_value();

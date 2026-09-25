@@ -1412,7 +1412,11 @@ reclaim on a real-world long-running workload:
      (a static empty value). The retire freelist mixes align-1
      String blocks and align-8 Bytes blocks; pops are
      alignment-aware (a String request reuses either kind, a
-     Bytes request only 8-aligned blocks).
+     Bytes request only 8-aligned blocks) and best-fit within their
+     8-block probe window (GH #1037): first fit let a String
+     request take a Bytes-sized aligned block and left the Bytes
+     request only a smaller one, stranding a block per cycle when
+     an element freed one of each.
 
      Single-owner rule (2026-07-17): on every path that stores
      a replacement pointer, an incoming pointer that is already

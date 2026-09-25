@@ -43,6 +43,21 @@ fn build(name: &str, src: &str) -> PathBuf {
 
 #[test]
 fn set_churn_is_flat_and_fast() {
+    // Skipped on an AddressSanitizer build (`LOTUS_ASAN`, read the
+    // same way `build_executable` reads it). The assertion is an RSS
+    // budget, and ASan holds every freed block in its quarantine
+    // instead of handing it back, with chunk pooling off besides
+    // (GH #816): a correct build still grows ~149 MB over this churn,
+    // pre-fix and post-fix alike. The ASan corpus job covers this
+    // path's memory safety; this test measures reclamation, which only
+    // a normal build can show.
+    let asan = std::env::var("LOTUS_ASAN")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false);
+    if asan {
+        eprintln!("set_churn_is_flat_and_fast: skipped under LOTUS_ASAN (RSS budget vs ASan quarantine)");
+        return;
+    }
     let src = r#"
         type Ent { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; }
 

@@ -38,6 +38,11 @@ Three things are happening:
   ```hale,fragment
   let x = names.get(99) or "(missing)";
   ```
+- **What you take out is yours.** `get` and `pop` hand back your own
+  copy of an element that carries a `String` or `Bytes`; `pop` and
+  `set` free the element the vec held. A vec used as a queue — push,
+  then pop once handled — stays the same size for as long as the
+  locus lives.
 
 Iterate with `for` over the items:
 
