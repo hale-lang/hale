@@ -52,7 +52,7 @@ main locus App {
         if c.name == "p" {
             self.pinned_got = 1;
         } else {
-            self.got = self.got + c.name + ":" + err.closure +" ";
+            self.got = self.got + c.name + ":" + err.closure + " ";
         }
     }
     run() {
