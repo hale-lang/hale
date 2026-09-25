@@ -25,6 +25,18 @@ behavior.
   resolved the alias only in call position. The path now lowers to the
   library's fn, the same fn pointer a same-seed fn gives.
 
+### DNA: two projects created alike are two records (GH #1068)
+
+- **Fixed:** a record's identity is the sha of its journal's first
+  commit, and memory's schema and roles and the nerves' subjects,
+  stream and consumer derive from it. Two projects created by one
+  author from one scaffold in the same second had byte-identical first
+  commits, so one identity: one organization to memory and the nerves,
+  each answering the other's facts. A chain's first commit now carries
+  a `Record-Nonce:` trailer of 16 random bytes; a record that cannot
+  draw them writes no first row. Records made before keep their
+  identity.
+
 ### A refused TCP connect fails at once (GH #1030)
 
 - **Changed:** `std::io::tcp::connect` (and `std::io::tls::connect`)
