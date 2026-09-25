@@ -231,6 +231,14 @@ test('Projects: an attached head renders every operation form; secrets name a so
 
 test('Projects: an attach reserves the identity before the POST, follows the receipt and reports the attached project only after a fresh read', async ({ page, host }) => {
   await mount(page, host, { lookupsUntilSettled: 2 });
+  // What the browser had saved when its POST left, read while the POST is
+  // held: the reservation comes first, or a lost response has no identity
+  // to look up.
+  let reservedAtPost = null;
+  await page.route('**/api/hale/v1/head/commands', async route => {
+    if (route.request().method() === 'POST' && reservedAtPost === null) reservedAtPost = await saved(page);
+    await route.continue();
+  });
   const attach = form(page, 'Attach project');
   await attach.getByLabel(/Project root/).fill('/home/operator/dna/demo');
   const posted = page.waitForRequest(r => r.method() === 'POST' && new URL(r.url()).pathname === '/api/hale/v1/head/commands');
@@ -245,13 +253,22 @@ test('Projects: an attach reserves the identity before the POST, follows the rec
   // only once it has read the body. Wait on the head's own record.
   await expect.poll(() => host.state().posts.length).toBe(1);
   expect(host.state().posts[0].headers['x-hale-command']).toBe('1');
-  await expect(request(page)).toHaveAttribute('data-state', 'running');
-  await expect(request(page)).toHaveAttribute('data-observation', 'pending');
+  expect(reservedAtPost).toHaveLength(1);
+  expect(reservedAtPost[0].value).toEqual({ version: 1, request_id: body.request_id, operation: 'dna.project.attach', target: { kind: 'dna.head', id: 'local' } });
+  // The receipt is followed to its end. Whether the browser ever shows it
+  // running depends on how soon the head's push makes it look again, so a
+  // transient state is not asserted; the end and what follows it are.
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
   await expect(request(page)).toHaveAttribute('data-observation', 'observed');
   expect(host.state().gets.filter(id => id === body.request_id).length).toBeGreaterThanOrEqual(2);
   expect(host.state().posts).toHaveLength(1);
   expect(await page.evaluate(() => window.attached)).toEqual([APP]);
+  // Reported only after a fresh read: the scripted head settles the attach
+  // on the second lookup, and a read of the head follows that lookup.
+  const log = host.state().requests;
+  const lookups = log.flatMap((r, i) => r.method === 'GET' && r.path === '/api/hale/v1/head/commands?request_id=' + encodeURIComponent(body.request_id) ? [i] : []);
+  expect(lookups.length).toBeGreaterThanOrEqual(2);
+  expect(log.slice(lookups[1] + 1).some(r => r.method === 'GET' && r.path === '/api/hale/v1/head')).toBe(true);
   await expect(workspace(page)).toContainText('Attached to demo');
   expect(await saved(page)).toEqual([]);
   await expect(request(page).getByRole('button', { name: 'Dismiss', exact: true })).toBeVisible();
@@ -358,15 +375,22 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   expect(host.state().posts).toHaveLength(0);
 
   // The head records the POST; only its response is lost on the way back.
-  await page.route('**/api/hale/v1/head/commands', async route => { if (route.request().method() === 'POST') { await route.fetch(); await route.abort('failed'); } else await route.continue(); });
+  // The uncertain moment in between is not asserted: the head's push makes
+  // the browser look the identity up at once, so it may never be seen.
+  let reservedAtPost = null;
+  await page.route('**/api/hale/v1/head/commands', async route => { if (route.request().method() === 'POST') { reservedAtPost = await saved(page); await route.fetch(); await route.abort('failed'); } else await route.continue(); });
   await form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true }).click();
-  await expect(request(page)).toContainText('Delivery may have occurred');
-  expect(await saved(page)).toHaveLength(1);
+  await expect.poll(() => host.state().posts.length).toBe(1);
   await page.unroute('**/api/hale/v1/head/commands');
+  const lost = host.state().posts[0].body.request_id;
+  expect(reservedAtPost).toHaveLength(1);
+  expect(reservedAtPost[0].value.request_id).toBe(lost);
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
   await expect(request(page)).toHaveAttribute('data-observation', 'observed');
+  // learned by looking the saved identity up, never by posting again
   expect(host.state().posts).toHaveLength(1);
-  expect(host.state().gets.at(-1)).toBe(host.state().posts[0].body.request_id);
+  expect(host.state().gets).toContain(lost);
+  expect(host.state().gets.at(-1)).toBe(lost);
   expect(await saved(page)).toEqual([]);
 });
 
