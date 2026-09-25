@@ -27,12 +27,21 @@ fn alive(pid: String) -> Bool {
 // Carries `mark` in its environment. Returns "<session leader> <tool>".
 fn orphan_in_session(mark: String, dir: String) -> String {
     let tool = dir + "/tool";
-    std::io::fs::write_file(tool, "#!/bin/sh\necho $$ > \"$1\"\nwhile :; do sleep 1; done\n") or discard;
+    // One process for the whole run: `exec sleep`, not a `sleep 1` loop.
+    // A loop forks a new `sleep` every second, and one forked after the
+    // fixture listed the session outlived the kill and was still in the
+    // session when the fixture looked (GH #1062, the CI flake).
+    std::io::fs::write_file(tool, "#!/bin/sh\necho $$ > \"$1\"\nexec sleep 100000\n") or discard;
     let x = dna::run_tool("chmod\n+x\n" + tool);
-    // the leader records itself, starts the tool in a group of its own
-    // (`set -m`), and exits: the tool is reparented at once. Every stream
-    // is its own, so nothing holds the pipe this call reads.
-    let inner = "exec </dev/null >/dev/null 2>&1; echo $$ > \"$1\"; set -m; env HALE_DNA_BODY=\"$3\" \"$4\" \"$2\" & exit 0";
+    // the leader records itself, starts the tool in a group of its own,
+    // and exits: the tool is reparented at once. Every stream is its own,
+    // so nothing holds the pipe this call reads. The group is made with
+    // perl's setpgrp (the tool `in_new_session` already falls back to),
+    // not the shell's `set -m`: job control in a non-interactive shell is
+    // the shell's choice, and dash without a terminal declines it ("can't
+    // access tty; job control turned off"), leaving the tool in its
+    // leader's group (GH #1062, the machines it could not run on).
+    let inner = "exec </dev/null >/dev/null 2>&1; echo $$ > \"$1\"; env HALE_DNA_BODY=\"$3\" perl -e 'setpgrp(0, 0) or die \"setpgrp: $!\\n\"; exec @ARGV or die \"exec: $!\\n\"' \"$4\" \"$2\" & exit 0";
     let started = dna::run_tool(dna::in_new_session("sh\n-c\n" + inner + "\nsh\n" + dir + "/leader.pid\n" + dir + "/orphan.pid\n" + mark + "\n" + tool));
     let mut tries = 0;
     while tries < 200 {
@@ -49,6 +58,17 @@ fn field(s: String, n: Int) -> String {
     let sp = std::str::index_of(s, " ");
     if sp < 0 { return if n == 0 { s } else { "" }; }
     return if n == 0 { s[0..sp] } else { s[(sp + 1)..len(s)] };
+}
+
+// The session `leader` began, empty within a bounded wait: a process
+// killed a moment ago can still be listed until it is reaped.
+fn session_empties(leader: String) -> Bool {
+    let mut tries = 0;
+    while len(dna::session_members(leader)) > 0 && tries < 100 {
+        std::time::sleep(50ms);
+        tries = tries + 1;
+    }
+    return len(dna::session_members(leader)) == 0;
 }
 
 fn stopped(pid: String) -> Bool {
@@ -82,7 +102,7 @@ main locus App {
         let orphan = field(got, 1);
         std::test::assert(alive(orphan), "the tool runs: " + got);
         std::test::assert(dna::trim_nl(dna::run_tool("ps\n-o\nppid=\n-p\n" + orphan).stdout) != leader, "and is its dead leader's child no longer");
-        std::test::assert(dna::trim_nl(dna::run_tool("ps\n-o\npgid=\n-p\n" + orphan).stdout) != leader, "and leads a process group of its own");
+        std::test::assert(dna::trim_nl(dna::run_tool("ps\n-o\npgid=\n-p\n" + orphan).stdout) != leader, "and leads a process group of its own (the fixture gives it one with perl's setpgrp: is perl on PATH?)");
 
         // the session: found on every platform, and stopped by it
         let members = dna::session_members(leader);
@@ -100,9 +120,9 @@ main locus App {
             std::test::assert_eq_str(dna::marked(""), "", "no mark finds nothing");
         }
 
-        let k = dna::run_tool("kill\n-KILL\n" + members);
+        let k = dna::run_tool("kill\n-KILL\n" + dna::session_members(leader));
         std::test::assert(stopped(orphan), "and is stopped by its session");
-        std::test::assert_eq_str(dna::session_members(leader), "", "nothing of that session is left");
+        std::test::assert(session_empties(leader), "nothing of that session is left: [" + dna::session_members(leader) + "]");
 
         dna::scratch_done(scratch);
     }
