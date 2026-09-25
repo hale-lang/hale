@@ -64,6 +64,23 @@ locus Bank {
 }
 ```
 
+The parent is the locus that holds the child in a field. It
+does not matter whether the child's literal is the field's
+default or is written in the parent's literal where the parent
+is built — the usual way to configure a child from `main()`:
+
+```hale
+fn main() {
+    App { conn: Conn { url: std::env::var("URL") } };
+}
+```
+
+`Conn` fails to `App`'s `on_failure` either way. What does not
+carry supervision is a child built somewhere else and handed
+over by name — `let c = Conn { … }; App { conn: c };` — since it
+was built before `App` existed; it keeps the route of the place
+that built it. Write the literal in the parent's.
+
 The recovery primitives:
 
 - **absorb** — just return; the failure is noted and contained.

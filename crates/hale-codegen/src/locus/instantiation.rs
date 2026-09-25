@@ -101,7 +101,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         self.locus_instantiation_path.push(state);
+        // GH #1035: the inner lowering takes `field_holder` and sets
+        // `supervising_parent` for itself; both belong to the frame
+        // that called us once it returns, on every exit path.
+        let saved_holder = self.field_holder.clone();
+        let saved_supervisor = self.supervising_parent.clone();
         let out = self.lower_locus_instantiation_inner(locus_name, inits, scope);
+        self.field_holder = saved_holder;
+        self.supervising_parent = saved_supervisor;
         self.locus_instantiation_path.pop();
         out
     }
@@ -125,6 +132,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // which has no source expression for a table row to key on
         // and so states its owner at the site instead.
         let owner_site = std::mem::take(&mut self.owner_site);
+        let own_site_id = match owner_site {
+            Some(crate::ownership::Site::Expr(id)) => Some(id),
+            _ => None,
+        };
         //
         // GH #921 A3, commit 7: F.39's rule, and no longer a shadow
         // assertion. Every locus-producing expression is given an
@@ -183,6 +194,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 },
             };
+        // GH #1035: a literal whose value a field of the literal
+        // around it owns — `App { b: Boom { } }`, a placement entry's
+        // instance, every branch of an `or` or `if` that field names —
+        // is supervised by that literal's locus. Anything else (a
+        // default's child, an argument, a binding) resolves as
+        // before: the method body or params-init loop it sits in.
+        let holder = self.field_holder.take();
+        self.supervising_parent = match (&site_owner, holder) {
+            (
+                crate::ownership::Owner::Field { owner, .. },
+                Some((Some(lit), cx)),
+            ) if *owner == lit => Some((locus_name.to_string(), cx)),
+            (crate::ownership::Owner::Placement(_), Some((_, cx))) => {
+                Some((locus_name.to_string(), cx))
+            }
+            _ => None,
+        };
         // GH #253: high-water mark of the enclosing deferred-
         // dissolve frame. Every entry pushed past this point
         // during THIS call is a (transitive) child of this
@@ -2517,7 +2545,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // arms, a composite's elements, all of which it
                     // decided separately — IS the bit.
                     let owned = self.owner_table.field_owns(expr);
-                    let r = self.lower_expr(expr, scope)?;
+                    // GH #1035: the literal this override builds is
+                    // THIS locus's child, though the rest of the
+                    // expression reads the caller's context.
+                    self.field_holder =
+                        inner_pis.clone().map(|cx| (own_site_id, cx));
+                    let r = self.lower_expr(expr, scope);
+                    self.field_holder = None;
+                    let r = r?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;

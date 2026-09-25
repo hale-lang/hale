@@ -1627,6 +1627,8 @@ pub fn build_executable_with_options(
         numa_node_for_next_locus_instantiation: None,
         main_placement_replicas: BTreeMap::new(),
         params_init_self: None,
+        field_holder: None,
+        supervising_parent: None,
         in_params_default: false,
         params_init_initialized: None,
         cooperative_pool_for_next_locus_instantiation: None,
@@ -5002,6 +5004,23 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_locus_instantiation` calls preserve their own
     /// prior value via the save/restore in the loop's setup.
     pub(crate) params_init_self: Option<SelfCx<'ctx>>,
+    /// GH #1035: the locus whose literal is being built while one of
+    /// its call-site field overrides is lowered — `App { b: Boom { } }`
+    /// sets it to `App` for the `Boom { }` — with that literal's own
+    /// expression id. Set only around override lowering and taken by
+    /// the next `lower_locus_instantiation`, so it never reaches a
+    /// literal nested deeper than the field's own value.
+    pub(crate) field_holder:
+        Option<(Option<crate::ownership::ExprId>, SelfCx<'ctx>)>,
+    /// GH #1035: the supervising parent of the instantiation being
+    /// lowered, when that is the literal whose field it initialises
+    /// (from `field_holder`, confirmed against the owner table). An
+    /// override is lowered in the CALLER's context (F.4), so without
+    /// this `resolve_failure_route` answered with the caller — `fn
+    /// main`, no handler — and a child passed into its parent's
+    /// literal was unsupervised. Keyed by the child's locus name;
+    /// saved and restored around every instantiation.
+    pub(crate) supervising_parent: Option<(String, SelfCx<'ctx>)>,
     /// downstream handoff 2026-07-14 (finding 4): true while lowering a
     /// params-DEFAULT expression (the text written inside the
     /// instantiated locus's own `params { }` block), false for

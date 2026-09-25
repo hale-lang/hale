@@ -1,0 +1,85 @@
+// GH #1035 — a child written into its parent's literal is supervised
+// by that parent.
+//
+// spec/semantics.md § "Failure-traversal flow": a child's failure goes
+// to its parent's `on_failure`, and the parent of a locus literal is
+// the locus whose field it initialises — as a param default, or
+// written in the parent's literal at the call site. The second
+// spelling was unsupervised: an override is lowered in the CALLER's
+// context (so `self.x` in it reads the caller), and the failure route
+// was resolved there too. From `fn main` that is no handler at all, and
+// the violation killed the process with "no parent handler"; from a
+// method body it was the method's locus, not the literal's.
+//
+// Each `Boom` violates its closure on its tenth tick and the handler
+// that catches it records its name. The cooperative children's `run()`
+// executes during `App`'s params-init, so the counters are declared
+// ahead of them (a later default would overwrite the handler's write —
+// a separate question from routing).
+
+locus Boom {
+    params { name: String = ""; why: String = ""; }
+    closure fuse { captures: why; epoch inline; }
+    fn check() { self.why = "lit"; violate fuse; }
+    @unbounded
+    run() {
+        let mut i = 0;
+        while i < 20 {
+            std::time::sleep(5ms);
+            if i == 10 { self.check(); }
+            i = i + 1;
+        }
+    }
+}
+
+// Supervises the Boom written into ITS literal, one level down.
+locus Wrap {
+    params { got: String = ""; b: Boom = Boom { }; }
+    on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + c.name + ":" + err.closure; }
+}
+
+main locus App {
+    params {
+        pinned_got: Int = 0;
+        got: String = "";
+        p: Boom = Boom { };
+        c: Boom = Boom { };
+        branch: Boom = Boom { };
+        w: Wrap = Wrap { };
+    }
+    placement { p: pinned; }
+    on_failure(c: Boom, err: ClosureViolation) {
+        if c.name == "p" {
+            self.pinned_got = 1;
+        } else {
+            self.got = self.got + c.name + ":" + err.closure +" ";
+        }
+    }
+    run() {
+        // The pinned child fails on its own thread.
+        let mut i = 0;
+        while self.pinned_got == 0 && i < 400 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert_eq_int(self.pinned_got, 1, "the pinned child passed in from fn main reached App");
+        std::test::assert_eq_str(self.got, "c:fuse branch:fuse ", "the cooperative and branch children reached App");
+        std::test::assert_eq_str(self.w.got, "n:fuse", "the child in Wrap's literal reached Wrap, not App");
+
+        // Built in a method body: the literal's locus supervises its
+        // child, not the method's.
+        let h = Wrap { b: Boom { name: "h" } };
+        std::test::assert_eq_str(h.got, "h:fuse", "the child in a literal built in run() reached that literal");
+        std::test::assert_eq_str(self.got, "c:fuse branch:fuse ", "App did not take the Wrap child's failure");
+    }
+}
+
+fn main() {
+    let which = std::env::var("HALE_1035_UNSET");
+    App {
+        p: Boom { name: "p" },
+        c: Boom { name: "c" },
+        branch: if which == "" { Boom { name: "branch" } } else { Boom { name: "other" } },
+        w: Wrap { b: Boom { name: "n" } },
+    };
+}
