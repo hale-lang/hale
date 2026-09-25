@@ -312,12 +312,12 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     assert_eq!(copied_kinds, expected, "the operational rows, in order:\n{copied}");
     assert!(copied.contains("\"author\": \"sam\""), "with their authors:\n{copied}");
     // the record kept every row it had; what it gained is the running
-    // body's own (its claim, its credential check, its recovery pass over the
-    // unfinished intent) and the adoption's
+    // body's own (its claim, its credential check, the genome it runs, its
+    // recovery pass over the unfinished intent) and the adoption's
     let now = record(&app);
     let now_kinds: Vec<String> = now.iter().map(|r| format!("{} {}", r["kind"].as_str().unwrap_or(""), r["entity"].as_str().unwrap_or(""))).collect();
     assert_eq!(&now_kinds[..before_kinds.len()], &before_kinds[..], "the record's rows are untouched");
-    assert!(now_kinds[before_kinds.len()..].iter().all(|k| k.starts_with("body.") || k.starts_with("ledger.adopt") || k.starts_with("intent.unrecovered")), "and it gained only the body's and the adoption's rows: {:?}", &now_kinds[before_kinds.len()..]);
+    assert!(now_kinds[before_kinds.len()..].iter().all(|k| k.starts_with("body.") || k.starts_with("node.") || k.starts_with("ledger.adopt") || k.starts_with("intent.unrecovered")), "and it gained only the body's and the adoption's rows: {:?}", &now_kinds[before_kinds.len()..]);
 
     // the projections after: the same, across two memories
     let (ok, history_after) = hale(&["dna", "history"], &app, head);
@@ -327,7 +327,7 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     // without its position
     let strip = |s: &str| -> Vec<String> {
         s.lines()
-            .filter(|l| l.contains(" ") && !l.contains("ledger.adopt") && !l.contains("event(s)") && !l.contains("body.") && !l.contains("intent.unrecovered"))
+            .filter(|l| l.contains(" ") && !l.contains("ledger.adopt") && !l.contains("event(s)") && !l.contains("body.") && !l.contains("node.") && !l.contains("intent.unrecovered"))
             .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit()).trim().to_string())
             .collect()
     };
