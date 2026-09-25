@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
 
-assert(bindingEnvironmentPresent(), 'Supply matching native API, Body, relay, membrane and Knowledge service binaries.');
+assert(bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
 assert(path.isAbsolute(parent)); await mkdir(parent, { recursive: true });
 const evidence = await mkdtemp(path.join(parent, 'native-binding-http-'));

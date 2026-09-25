@@ -1030,7 +1030,8 @@ repository:
   organization's token — the one memory names its schema with
   (`dna_<record id>`): `<org>.dna.<family>.<event>`
   (`dna_4f….dna.intent.offered`); an application's own events will be
-  `<org>.app.<app>.<event>` (#987). The connection puts the token on
+  `<org>.app.<app>.<event>` (#987), and what a node tells the heads is
+  `<org>.head.<event>` (**Rows landing**). The connection puts the token on
   what leaves and takes it off what arrives, so a topic keeps its
   declared subject.
 - **One stream per organization**, `DNA_<ID>` over `<org>.>`, on disk,
@@ -1052,7 +1053,8 @@ repository:
 - **Credentials, one per family**, each a URL with its user: `owner`
   creates the stream and is held by no process that runs the organism;
   `spine` publishes and reads `<org>.dna.>` and an owner's
-  `<org>.<owner>.dna.>` (the host and the organization); `head`
+  `<org>.<owner>.dna.>` (the host and the organization), and publishes
+  `<org>.head.>` and an owner's `<org>.<owner>.head.>`; `head`
   subscribes and publishes nothing; `app`
   publishes on `<org>.app.>` (#987). `hale dna nerves migrate [dir]`
   creates or updates the stream with the owner's URL
@@ -1065,9 +1067,10 @@ repository:
   from it. `hale dna nerves drop [dir]` deletes the stream, and
   everything it held, with the owner's URL — beside dropping memory's
   schema, when an organization is torn down. `dna/nats.conf`, which
-  `init` writes, is that server's
-  configuration: the users and their permissions, with placeholder
-  passwords until the vault (#989).
+  `init` writes, is that server's configuration: the users and their
+  permissions, with placeholder passwords until the vault (#989).
+  `upgrade` writes it when it is missing, and says so when an older
+  one's spine may not publish `<org>.head.>`.
 - **Liveness.** At start the host waits, as it waited for sockets, for
   the organization to read its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
@@ -1092,13 +1095,22 @@ repository:
   collapse, and the host that supervises it ends with it. The row first
   is what makes a loss recoverable: the next node relays every request
   still unanswered.
+- **Rows landing.** For every row its view of the organism gains, a
+  node publishes `head.row.landed` (`RowLanded`: the row's `seq`,
+  `kind` and `entity`; under an owner's prefix over a shared record),
+  at most 256 on one tick; its first look only takes its place. It is
+  the heads' family, outside `dna.`, so no organization's durable
+  pulls it; the stream keeps it like everything under `<org>.`, and
+  the head's push is what it is for.
 - **Stopping.** A node is its program's `main locus`, and SIGTERM
   drains it (GH #1039): its supervision reads `draining`, stops the
   organization (which drains the same way), gives the lease back and
   ends. `hale dna run` and `dev` give the node a 30 s grace for it
-  (`LOTUS_DRAIN_GRACE_MS`, unless the environment already sets one). The core imports no NATS, because a program holding pond's
-  connection drains on SIGTERM: a head or an API that imports the core
-  keeps the default action.
+  (`LOTUS_DRAIN_GRACE_MS`, unless the environment already sets one).
+  The core imports no NATS, because a program holding pond's
+  connection drains on SIGTERM: an API that imports the core keeps the
+  default action. The head holds its own connection and drains: its
+  watcher stops and the server stops accepting, at once.
 - **The fleet node's concerns stay local.** A node's instances are the
   application, which declares no bindings, and an environment route
   reaches Unix sockets only; `hale node` keeps the one
@@ -3333,6 +3345,26 @@ retry and conflicts on a changed one. A run that passes its deadline
 is `outcome_unknown` when the verb reaches beyond this machine, never
 `failed`; the head appends nothing to any record itself. It is
 trusted-local and refuses an `oidc` project.
+
+The head tells the browser when to read again, and the browser does
+not poll it (GH #986). `GET /api/hale/v1/head/events` is a
+`text/event-stream` the head writes `event: changed` to — `data: rows`
+when a row landed in the active project's organism, `data: head` when
+the head's own state moved: a receipt journaled, a run or a child
+started or ended, the API child answering. An event carries nothing to
+render; the face reads the API, the one source of truth, again, and
+once more on every reconnect. A comment line every 15 s keeps a quiet
+stream open and finds one whose browser left; a write that does not
+complete within a second closes its stream. At most 16 streams are
+held; one more is refused 503 `busy`. The rows come from the nerves
+(**Rows landing**): the head subscribes to the active project's
+organization and every owner's, as the head's user, on
+`HALE_DNA_NATS_URL_HEAD`, else on the server of
+`HALE_DNA_NATS_URL_OWNER` (which it hands a body it starts), else on
+the project's compose `nerves` service while `hale dna dev` has it up
+(asked for, never brought up; asked again every 5 s). With none, only
+the head's own state is pushed. The application view still reads on a
+timer until #987 gives an application its events.
 
 **The API** (`dna/api`, source-built; the head starts one per project)
 is a head of memory. It reads the Knowledge graph in its own process

@@ -9,7 +9,6 @@
   const PROFILE = "dna.head.v1";
   const STORAGE = "face.projects-recovery.v1:";
   const FETCH_TIMEOUT_MS = 35000;
-  const POLL_MS = 2000;
   const MAX_REQUEST_BYTES = 32768;
   const STATES = ["recorded", "admitted", "refused", "running", "succeeded", "failed", "outcome_unknown"];
   const TERMINAL = new Set(["refused", "succeeded", "failed", "outcome_unknown"]);
@@ -179,7 +178,7 @@
   let current = null;
   function mount(host, { head = null, principal = null, onHead = () => {}, onAttached = () => {}, onInvalidate = () => {} } = {}) {
     current?.destroy();
-    let disposed = false, version = 0, timer = null, refreshing = false;
+    let disposed = false, version = 0, events = null, refreshing = false;
     let state = head ? { principal: head.principal, data: head.data } : null, whom = principal || head?.principal || null;
     let projects = [], detail = null, unavailable = "", logs = { name: "", text: "", next_offset: 0, complete: true, error: "" };
     let request = null, formsKey = "", stage = "";
@@ -328,21 +327,27 @@
         default: return Boolean(project) && recordMoved();
       }
     }
-    // Non-terminal receipts and a starting API child are followed every two
-    // seconds; an unconfirmed submission is looked up a bounded number of
-    // times, then waits for an explicit check. Nothing here resubmits.
-    function schedule() {
-      if (timer) { clearTimeout(timer); timer = null; }
+    // The head pushes `changed` on its event stream when its receipts, its
+    // API child or the project's rows move (GH #986): a non-terminal receipt
+    // and a starting API child are read again on each push, and once on
+    // every (re)connect, so nothing missed while the stream was down stays
+    // missed. An unconfirmed submission is looked up a bounded number of
+    // times, then waits for an explicit check. Nothing here resubmits, and
+    // nothing polls.
+    function follow() {
       if (disposed || document.hidden) return;
       const following = request?.phase === "following" || (request?.phase === "uncertain" && !request.receipt && (request.polls || 0) < 15);
       const starting = state?.data.state === "attached" && state.data.active.api.state === "starting";
-      if (!following && !starting) return;
-      timer = setTimeout(() => {
-        timer = null; if (disposed) return;
-        if (following) { request.polls = (request.polls || 0) + 1; void lookup(); }
-        if (starting) void readHead().then(() => { if (!disposed) { render(); schedule(); } }).catch(() => { if (!disposed) schedule(); });
-      }, POLL_MS);
+      if (following) { request.polls = (request.polls || 0) + 1; void lookup(); }
+      if (starting) void readHead().then(() => { if (!disposed) render(); }).catch(() => {});
     }
+    function schedule() {
+      if (disposed || document.hidden || events) return;
+      events = new EventSource(HEAD + "/events");
+      events.addEventListener("changed", follow);
+      events.addEventListener("open", follow);
+    }
+    function closeEvents() { if (events) { events.close(); events = null; } }
     async function submit(form, values, submitter) {
       if (disposed || !state || request || refreshing) return;
       const op = operation(form.operation);
@@ -672,11 +677,11 @@
         if (!logs.complete) logPanel.append(button("Load more", () => readLog(logs.query, logs.next_offset)));
       }
     }
-    const visibility = () => { if (document.hidden) { if (timer) { clearTimeout(timer); timer = null; } } else schedule(); };
+    const visibility = () => { if (document.hidden) closeEvents(); else schedule(); };
     document.addEventListener("visibilitychange", visibility);
     render();
     void refresh();
-    const controllerObject = { destroy() { if (disposed) return; disposed = true; version += 1; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", visibility); host.replaceChildren(); if (current === controllerObject) current = null; } };
+    const controllerObject = { destroy() { if (disposed) return; disposed = true; version += 1; closeEvents(); document.removeEventListener("visibilitychange", visibility); host.replaceChildren(); if (current === controllerObject) current = null; } };
     current = controllerObject;
     return controllerObject;
   }

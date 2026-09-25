@@ -212,8 +212,9 @@ The `hale` binary carries source that only a rebuild refreshes:
 - **stdlib**: `crates/hale-stdlib/hl/*.hl`; a new file joins
   `AP_SOURCE` and `PATH_RENAMES` in `crates/hale-stdlib/src/lib.rs`.
 - **DNA**: `crates/hale-dna/src/lib.rs` embeds the dirs listed in
-  `EMBEDDED_DIRS` (`src/digest.rs`: `dna/core`, `host`, `membrane`,
-  `operations`, `organization_*`, `ui`). `build.rs` digests the
+  `EMBEDDED_DIRS` (`src/digest.rs`: `dna/core` with its vendored
+  pond `db`, `pq` and `realtime/nats`, `host`, `operations`,
+  `organization_*`, `ui`). `build.rs` digests the
   on-disk tree into `EMBEDDED_DIGEST` and a unit test holds it equal
   to the compiled-in set, so a new file is listed in `lib.rs` too.
   Organism fixtures and `hale dna` verbs run the **embedded** copy:

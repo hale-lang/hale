@@ -34,6 +34,13 @@ Existing service configuration is inherited:
                                is unsupported.
   HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_MEMORY_DSN_SPINE
                                Reach a body the head starts, never the API.
+  HALE_DNA_NATS_URL_OWNER      The nerves' server a body the head starts runs
+                               on. The head subscribes there, as the head's
+                               user, to the rows the organism lands and tells
+                               the browser; without it, on the project's
+                               compose `nerves` while `hale dna dev` has it up.
+  HALE_DNA_NATS_URL_HEAD       The head's own URL (subscribe only), as
+                               `hale dna nerves migrate` prints it; wins over both.
   HALE_DNA_HEAD_STATE          The head's state directory
                                (default: ${XDG_STATE_HOME:-~/.local/state}/hale/dna/head).
 The head is trusted-local; a project configured for OIDC is refused at attach.
@@ -117,16 +124,23 @@ hale=$(command -v -- "$hale")
 valid_path "$hale" || fail 'compiler paths cannot contain newlines'
 export HALE_BIN=$hale
 
-# Builds one seed of this checkout into the temporary build directory, the
-# way the API was built here before: a one-line seed importing the checkout.
+# Builds one seed of this checkout into the temporary build directory, as
+# CI builds it: the seed directory itself is the program. The checkout's
+# Hale sources the seeds import (dna/, and the host's iris/process_identity)
+# are copied there once, so the build writes nothing into the checkout.
+# Not a one-line seed importing the checkout: an imported `main locus` is
+# inert (its placement is the entry's to declare), and the head's server
+# and watcher would run one after the other on the main thread.
 build_seed() {
   local seed=$1 name=$2
-  local import_path=${checkout//\\/\\\\}; import_path=${import_path//\"/\\\"}
-  printf 'import "%s/%s" as host;\nfn main() { host::main(); }\n' "$import_path" "$seed" > "$build_dir/$name.hl"
+  if [[ ! -d "$build_dir/src/dna" ]]; then
+    mkdir -p -- "$build_dir/src"
+    (cd -- "$checkout" && find dna iris/process_identity -name '*.hl' -print0 | tar --null -T - -cf -) | tar -xf - -C "$build_dir/src" || fail 'cannot copy the checkout'\''s Hale sources'
+  fi
   printf 'face: building %s from this checkout…\n' "$seed" >&2
   # Observation belongs to the application. Do not attach the compiler or the head.
-  env -u LOTUS_OBS "$hale" build "$build_dir/$name.hl"
-  printf '%s\n' "$build_dir/$name"
+  env -u LOTUS_OBS "$hale" build "$build_dir/src/$seed" >&2 || fail "cannot build $seed"
+  printf '%s\n' "$build_dir/src/$seed/$name"
 }
 absolute_executable() {
   valid_path "$1" || fail "$2 paths cannot contain newlines"

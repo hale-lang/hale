@@ -188,6 +188,8 @@ fn relay_mark(list: String, key: String, now: Int) -> String {
 // (the organism admits an intent once by id; a duplicate verdict is refused
 // as already settled).
 const RELAY_AGAIN_AFTER: Int = 30;
+// How many landed rows a node tells in one pass (the rest the next).
+const ANNOUNCE_AT_ONCE: Int = 256;
 // How long a pull lives on the stream: pond's NatsConn pulls with a one
 // second expiry (its `pull`), and a little more for the server to drop it.
 const NERVES_PULL_LIFE_MS: Int = 1250;
@@ -431,6 +433,7 @@ locus NodeRelay {
         relayed: String = "\n";
         error: String = ""; // the last relay's failure, "" when it had none
         relayed_count: Int = 0; // what the last relay published
+        announced: Int = -1; // the rows of the view already told (-1: not yet looked)
     }
     bus {
         publish dna::IntentOffered;
@@ -442,6 +445,27 @@ locus NodeRelay {
         publish dna::KnowledgeNodeRequested;
         publish dna::KnowledgeBindingRequested;
         publish dna::KnowledgeEdgeRequested;
+        publish dna::RowLanded;
+    }
+    // Every row this node's view gained since it last looked, onto the
+    // nerves as a RowLanded (GH #986): what a head waits on to read
+    // again. The rows this view held when the node started are its past,
+    // never told; at most ANNOUNCE_AT_ONCE a pass, the rest the next.
+    // How many were told.
+    @unbounded
+    fn announce(memory: dna::Memory) -> Int {
+        if !self.live { return 0; }
+        let p = open_projection(self.root, self.seed, self.toolchain, memory);
+        let rows = p.rows();
+        if self.announced < 0 { self.announced = rows; return 0; }
+        let mut n = 0;
+        while self.announced < rows && n < ANNOUNCE_AT_ONCE {
+            let e = p.row(self.announced);
+            dna::RowLanded <- dna::LandedRow { seq: self.announced, kind: e.kind, entity: e.entity };
+            self.announced = self.announced + 1;
+            n = n + 1;
+        }
+        return n;
     }
     // One fact onto the nerves, on the topic the organization subscribes:
     // the row the record holds, as the organization's own declaration of
@@ -705,6 +729,7 @@ main locus Host {
         dna::KnowledgeNodeRequested: nats::NatsAdapter { };
         dna::KnowledgeBindingRequested: nats::NatsAdapter { };
         dna::KnowledgeEdgeRequested: nats::NatsAdapter { };
+        dna::RowLanded: nats::NatsAdapter { };
     }
     // A publish the stream did not acknowledge within the connection's
     // window collapses it here: a `nerves.lost` row says why, and the node
@@ -1591,6 +1616,9 @@ main locus Host {
         // the sync above may have blocked past the lease's life: prove it
         // again before answering anything
         if !self.body_alive() { self.stop_body(3); }
+        // what the view gained — this tick's rows, the sync's and memory's
+        // — onto the nerves for the heads
+        let told = self.relay.announce(self.memory);
         self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);

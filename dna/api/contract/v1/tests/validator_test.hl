@@ -341,6 +341,13 @@ locus Cases {
         let no_origin = self.field(command, "post", self.field(post, "parameters", "[{\"name\":\"X-Hale-Command\",\"in\":\"header\",\"required\":true,\"schema\":{\"type\":\"string\",\"const\":\"1\"}}]"));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, no_origin)), self.schema).ok, "head command submission requires Origin");
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, "/api/hale/v1/head/logs", "")), self.schema).ok, "the head path count is pinned");
+        let events_path = "/api/hale/v1/head/events";
+        let events = std::json::find_field_raw(paths, events_path);
+        let events_get = std::json::find_field_raw(events, "get");
+        let as_json = self.field(events_get, "responses", "{\"200\":{\"description\":\"x\",\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/HeadResponse\"}}}}}");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, events_path, self.field(events, "get", as_json))), self.schema).ok, "the head's event stream is not a JSON read");
+        let with_query = self.field(events_get, "parameters", "[{\"name\":\"since\",\"in\":\"query\",\"required\":false,\"schema\":{\"type\":\"string\"}}]");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, events_path, self.field(events, "get", with_query))), self.schema).ok, "the head's event stream takes no query");
         let body = std::json::find_field_raw(post, "requestBody");
         let get_body = self.field(command, "get", self.field(get, "requestBody", body));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, get_body)), self.schema).ok, "head recovery is a read without a command body");

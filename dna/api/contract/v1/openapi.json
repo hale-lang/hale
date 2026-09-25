@@ -3750,6 +3750,45 @@
           }
         }
       }
+    },
+    "/api/hale/v1/head/events": {
+      "get": {
+        "operationId": "streamHeadEvents",
+        "summary": "Hold a stream of the head's change events",
+        "description": "A `text/event-stream` the head writes to until the browser goes away: `event: changed` with `data: rows` when a row landed in the active project's organism (the node's `head.row.landed` on the nerves) and `data: head` when the head's own state moved (a receipt journaled, a run or a child started or ended, the API child answering). An event carries nothing to render: the face reads the API again. A comment line every 15 s keeps a quiet stream open. At most 16 streams at once; one more is refused `busy`.",
+        "responses": {
+          "200": {
+            "description": "The event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

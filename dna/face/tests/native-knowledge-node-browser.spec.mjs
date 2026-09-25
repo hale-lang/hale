@@ -15,7 +15,7 @@ const test = base.extend({
     await use(page); expect(errors).toEqual([]);
   },
 });
-test.skip(!nodeEnvironmentPresent(), 'Supply matching native Review API, Body, relay, membrane and Knowledge service binaries.');
+test.skip(!nodeEnvironmentPresent(), 'Supply matching native Review API, Body, relay and Knowledge service binaries.');
 test.setTimeout(90_000);
 
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });

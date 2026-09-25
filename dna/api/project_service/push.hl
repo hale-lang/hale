@@ -1,0 +1,242 @@
+// dna/api/project_service/push.hl — the head's push to the face (GH #986).
+//
+// The face reads the head's API; the head tells it when to read again,
+// writing one `changed` event to every browser holding
+// `GET /api/hale/v1/head/events` open (a text/event-stream the head's
+// server hands over to it) when any of three things moved:
+//
+//   rows      a node publishes a RowLanded on the nerves for every row its
+//             view of the organism gains; the head subscribes to the
+//             active project's as the head's user, which may subscribe
+//             and publish nothing: on HALE_DNA_NATS_URL_HEAD when one is
+//             handed to it, else on the server it hands a body it starts
+//             (HALE_DNA_NATS_URL_OWNER), else on the project's compose
+//             `nerves` service while `hale dna dev` has it up
+//   receipts  the head's own command journal, and the runs and children
+//             whose exits settle it: what the face follows after it
+//             submits a command. The head settles a receipt when it is
+//             read, so the push is what makes the face read
+//   the API   its API child, from starting to answering
+//
+// The event carries nothing to render — its data names what moved,
+// `rows` or `head` — and the face reads the API again, which stays the
+// one source of truth. With no nerves to reach the rows are not pushed,
+// and the rest is.
+
+import "../../core" as dna;
+import "../../core/pond/realtime/nats" as nats;
+
+// How many browsers the head pushes to at once.
+const PUSH_SLOTS: Int = 16;
+// A comment line this often keeps a quiet stream from being closed by a
+// proxy in between, and finds the streams whose browser went away.
+const PUSH_BEAT_SECS: Int = 15;
+// How long the watcher waits before asking again for nerves it could not
+// reach (compose's may not be up yet).
+const NERVES_RETRY_SECS: Int = 5;
+
+// A stream's socket, or -1 when the slot is free; `ready` once the head
+// wrote its response head, so no event is written ahead of it.
+type PushSlot { key: String = ""; fd: Int = -1; ready: Bool = false; }
+type Followed { root: String = ""; org: String = ""; }
+
+// The streams, shared by the server (which hands a stream over) and the
+// watcher (which writes to them), each on its own thread: serialized.
+@form(hashmap, sync = serialized)
+locus PushSlots { capacity { pool entries of PushSlot indexed_by key; } }
+
+// A free slot held for a stream's socket, not ready yet; -1 when all are
+// held.
+fn claim_push_slot(slots: PushSlots, fd: Int) -> Int {
+    let mut slot = 0;
+    while slot < PUSH_SLOTS {
+        let e = slots.get(to_string(slot)) or PushSlot { key: to_string(slot), fd: -1 };
+        if e.fd < 0 {
+            slots.set(PushSlot { key: to_string(slot), fd: fd });
+            return slot;
+        }
+        slot = slot + 1;
+    }
+    return -1;
+}
+
+// Opens the stream on `fd`, in the slot held for it: the response head,
+// then the slot is ready for events. A browser that stops reading makes
+// a write fail within a second rather than hold the watcher. A stream
+// whose head could not be written frees its slot.
+fn open_push_stream(slots: PushSlots, slot: Int, fd: Int) {
+    std::io::tcp::set_recv_timeout(fd, 0ms) or discard;
+    std::io::tcp::set_send_timeout(fd, 1s) or discard;
+    let st = std::io::tcp::Stream { conn_fd: fd, owns_fd: false };
+    let mut sent = true;
+    st.send("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n") or { sent = false; };
+    if !sent {
+        slots.set(PushSlot { key: to_string(slot), fd: -1 });
+        std::io::tcp::close_fd(fd);
+        return;
+    }
+    slots.set(PushSlot { key: to_string(slot), fd: fd, ready: true });
+}
+
+// The watcher: follows the active project, holds the subscription to its
+// rows, and writes each push.
+locus NervesWatch {
+    params {
+        cfg: HeadConfig = HeadConfig { };
+        slots: PushSlots;
+        head_url: String = ""; // HALE_DNA_NATS_URL_HEAD
+        owner_url: String = ""; // HALE_DNA_NATS_URL_OWNER: its server, not its user
+        client: nats::NatsClient = nats::NatsClient { name: "dna-head", timeout: 2s };
+        org: String = ""; // the active project's token ("" none)
+        followed_at: Int = 0;
+        retry_at: Int = 0; // when an unreachable server is asked for again
+        beat_at: Int = 0;
+        pushed: Int = 0;
+        head_seen: String = ""; // the head's own state, as last fingerprinted
+        head_at: Int = 0; // when (monotonic ns)
+        api_ready_pid: Int = -1; // the API child last seen answering
+    }
+    birth() {
+        self.head_url = if std::env::var_exists(dna::NATS_HEAD_URL_ENV) { std::env::var(dna::NATS_HEAD_URL_ENV) } else { "" };
+        self.owner_url = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+    }
+    // Write `frame` to every stream; a stream that will not take it is
+    // closed and its slot freed.
+    @unbounded
+    fn send_all(frame: String) {
+        let mut i = 0;
+        while i < PUSH_SLOTS {
+            let e = self.slots.get(to_string(i)) or PushSlot { key: to_string(i), fd: -1 };
+            if e.fd >= 0 && e.ready {
+                let st = std::io::tcp::Stream { conn_fd: e.fd, owns_fd: false };
+                st.send(frame) or self.drop_slot(i, e.fd);
+            }
+            i = i + 1;
+        }
+    }
+    fn drop_slot(slot: Int, fd: Int) {
+        self.slots.set(PushSlot { key: to_string(slot), fd: -1 });
+        std::io::tcp::close_fd(fd);
+    }
+    // The active project: its root and its organization's token, as the
+    // nerves name it (both "" when no project is active).
+    fn active() -> Followed {
+        let reg = Registry { state_dir: self.cfg.state_dir };
+        let a = reg.active();
+        if !a.ok || len(a.root) == 0 { return Followed { }; }
+        let id = dna::GitRecord { repo: a.root }.identity();
+        return Followed { root: a.root, org: if len(id) == 0 { "" } else { dna::schema_for(id) } };
+    }
+    // The server the head subscribes on for the project at `root`, as the
+    // head's user; "" when there is none to reach. Compose's is asked for,
+    // never brought up: that is `hale dna dev`'s.
+    fn nerves_url(root: String) -> String {
+        if len(self.head_url) > 0 { return self.head_url; }
+        if len(self.owner_url) > 0 { return dna::nerves_role_url(self.owner_url, "head"); }
+        let compose = root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return ""; }
+        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
+        let hp = dna::trim_nl(port.stdout);
+        let colon = std::str::index_of(hp, ":");
+        if port.code != 0 || colon < 0 { return ""; }
+        return dna::nerves_role_url("nats://127.0.0.1:" + hp[(colon + 1)..len(hp)], "head");
+    }
+    // Subscribe to the active project's rows — the organization's and
+    // every owner's — when it changed, or when the connection went.
+    fn follow() {
+        let now = std::time::now();
+        let p = self.active();
+        if p.org == self.org && (len(p.org) == 0 || self.client.connected) { return; }
+        if p.org == self.org && now < self.retry_at { return; }
+        self.client.close();
+        self.org = "";
+        if len(p.org) == 0 { return; }
+        self.retry_at = now + NERVES_RETRY_SECS;
+        self.client.url = self.nerves_url(p.root);
+        if len(self.client.url) == 0 || !self.client.open() { self.org = p.org; return; }
+        let a = self.client.sub_to(p.org + ".head.row.landed", "") or - 1;
+        let b = self.client.sub_to(p.org + ".*.head.row.landed", "") or - 1;
+        if a < 0 || b < 0 { self.client.close(); }
+        self.org = p.org;
+    }
+    // The head's own state, as a fingerprint that moves whenever a
+    // receipt, a run or a child does: the journal's size, every run's and
+    // child's state files, and whether the API child answers.
+    @unbounded
+    fn head_state() -> String {
+        let mut f = to_string(std::io::fs::file_size(self.cfg.state_dir + "/" + RECEIPTS_FILE) or - 1);
+        f = f + self.dir_state(self.cfg.state_dir + "/children");
+        let runs = self.cfg.state_dir + "/runs";
+        let n = std::io::fs::list_dir_count(runs) or 0;
+        let mut i = 0;
+        while i < n {
+            let one = std::io::fs::list_dir_at(runs, i) or "";
+            f = f + "|" + one + (if std::io::fs::file_exists(runs + "/" + one + "/run.exit") { ":x" } else { "" });
+            i = i + 1;
+        }
+        return f + "|api:" + to_string(self.api_answering());
+    }
+    // `dir`'s files, each with its size.
+    @unbounded
+    fn dir_state(dir: String) -> String {
+        let mut f = "";
+        let n = std::io::fs::list_dir_count(dir) or 0;
+        let mut i = 0;
+        while i < n {
+            let name = std::io::fs::list_dir_at(dir, i) or "";
+            f = f + "|" + name + "=" + to_string(std::io::fs::file_size(dir + "/" + name) or - 1);
+            i = i + 1;
+        }
+        return f;
+    }
+    // The API child's pid when it answers for the active project, else -1:
+    // asked of it only until it first answers.
+    fn api_answering() -> Int {
+        let pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(self.cfg.state_dir + "/children/api.pid") or "")) or - 1;
+        if pid <= 0 { return -1; }
+        if pid == self.api_ready_pid { return pid; }
+        let reg = Registry { state_dir: self.cfg.state_dir };
+        let a = reg.active();
+        if !a.ok { return -1; }
+        if api_ready(self.cfg.api_port, a.application_id) { self.api_ready_pid = pid; return pid; }
+        return -1;
+    }
+    @unbounded
+    run() {
+        while !self.draining {
+            let now = std::time::now();
+            if now - self.followed_at >= 1 {
+                self.followed_at = now;
+                self.follow();
+            }
+            if self.client.connected {
+                // everything that landed while this read waited is one push
+                if self.client.read_msg(250ms) {
+                    while self.client.read_msg(0ms) { }
+                    self.pushed = self.pushed + 1;
+                    self.send_all("event: changed\ndata: rows\n\n");
+                }
+            } else {
+                std::time::sleep(250ms);
+            }
+            // the head's own state, twice a second
+            let mono = std::time::monotonic_ns();
+            if mono - self.head_at >= 500000000 {
+                self.head_at = mono;
+                let h = self.head_state();
+                if h != self.head_seen {
+                    if len(self.head_seen) > 0 {
+                        self.pushed = self.pushed + 1;
+                        self.send_all("event: changed\ndata: head\n\n");
+                    }
+                    self.head_seen = h;
+                }
+            }
+            if now - self.beat_at >= PUSH_BEAT_SECS {
+                self.beat_at = now;
+                self.send_all(": beat\n\n");
+            }
+        }
+        self.client.close();
+    }
+}

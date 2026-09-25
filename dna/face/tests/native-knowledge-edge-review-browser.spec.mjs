@@ -8,7 +8,7 @@ const test = base.extend({
   },
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
-test.skip(!edgeReviewEnvironmentPresent(), 'Supply matching API, Body, relay, membrane and Knowledge service binaries.');
+test.skip(!edgeReviewEnvironmentPresent(), 'Supply matching API, Body, relay and Knowledge service binaries.');
 test.setTimeout(90_000);
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const map = page => page.getByRole('region', { name: 'Knowledge relationship map', exact: true });

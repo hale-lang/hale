@@ -1081,6 +1081,13 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&nats, nats_conf()).map_err(|e| format!("write {}: {e}", nats.display()))?;
         out.push(format!("created {}", nats.display()));
     }
+    let nats_text = fs::read_to_string(&nats).unwrap_or_default();
+    if nats_text.contains("user: spine") && !nats_text.contains("*.head.>") {
+        out.push(
+            "note    dna/nats.conf does not let the spine publish `<org>.head.>`: a node tells the face's head every row it lands there (GH #986), and a refused publish collapses its connection. Add \"*.head.>\", \"*.*.head.>\" to the spine user's `publish` list, as `hale dna init` writes it"
+                .to_string(),
+        );
+    }
     let compose_text = fs::read_to_string(root.join("dna/compose.yaml")).unwrap_or_default();
     if !compose_text.is_empty() && !compose_text.contains("nerves:") {
         let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
@@ -1235,9 +1242,10 @@ authorization {
     # `<org>.<owner>.dna.>`). `*` stands for the organization's token: this
     # server carries one organization, and a spine user may publish into
     # any organization's subjects on it. One user per organization, each
-    # allowed only its own token, is #989's, with the vault.
+    # allowed only its own token, is #989's, with the vault. A node also
+    # tells the heads every row it lands (`<org>.head.row.landed`).
     { user: spine, password: "dna-spine-dev",
-      permissions: { publish: ["*.dna.>", "*.*.dna.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
+      permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
     # an application: publishes on its own subjects, reads nothing of DNA's (#987)
     { user: app, password: "dna-app-dev",
       permissions: { publish: ["*.app.*.>"], subscribe: ["_INBOX.>"] } }
