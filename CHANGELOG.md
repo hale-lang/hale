@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### An adapter beside an env route no longer corrupts that route's bytes (GH #1058)
+
+- **Fixed:** a topic bound to an adapter and also routed over
+  `LOTUS_BUS_CONFIG` (`unix://… : connect`) sent the wrong bytes on the
+  env route when the adapter's `send` republished them onto a topic of
+  its own (the NATS adapter's shape). Every publish on the thread
+  serializes into one per-thread buffer, and `send` runs in the middle
+  of the fanout, so the routes after it sent the adapter's record
+  instead. The receiver decoded the same wrong value for every message.
+  The fanout now works from its own copy of the bytes whenever an
+  adapter shares the subject with another route. An adapter alone pays
+  nothing extra.
+
 ### `restart_in_place` keeps the params the child was built with
 
 - **Fixed:** `restart_in_place(c)` reset every param to its *declared*

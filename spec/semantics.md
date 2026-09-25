@@ -1714,6 +1714,11 @@ Transport surface:
   while other publishes overlap it (GH #1038). A `send` body that
   keeps the bytes — stores them in a field, publishes them onward —
   keeps a copy, as it would any stored value.
+  Whatever `send` does, every other route of the same subject —
+  an env-routed `unix://` or `udp://` connect (`LOTUS_BUS_CONFIG`)
+  — sends the bytes the program published:
+  a `send` that publishes, or parks while another publish runs on
+  its thread, cannot change what the routes after it see (GH #1058).
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name

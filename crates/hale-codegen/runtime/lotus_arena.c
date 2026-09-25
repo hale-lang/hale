@@ -17974,6 +17974,10 @@ static void lotus_bus_call_arena_close(lotus_arena_t *a) {
     lotus_bus_call_arena_note(0, held);
 }
 
+static void lotus_bus_remote_fanout_entries(const char *subject,
+                                            const void *payload,
+                                            size_t payload_size);
+
 /* Forward-declared at the top of the bus router section so
  * lotus_bus_dispatch can fan out to remote subscribers without
  * caring about table layout. */
@@ -17981,6 +17985,41 @@ void lotus_bus_remote_fanout(const char *subject,
                              const void *payload,
                              size_t payload_size) {
     if (!subject) return;
+    /* GH #1058: `payload` is the publisher thread's TLS wire buffer
+     * (g_tls_bus_wire_buf), which stays valid only while nothing runs
+     * between its encode and its last read. An adapter entry breaks
+     * that: its `send` is user code, run in the middle of this loop,
+     * and a `send` that publishes (pond's NatsAdapter puts the bytes
+     * on its own outbound topic) encodes into the same buffer, while
+     * one that parks lets another coro on this worker do it. The
+     * entries after it then sent those bytes instead — an env-routed
+     * Unix connect route beside an adapter binding delivered the
+     * adapter's `Out` record, decoded as the topic's payload. So when
+     * an adapter shares this subject with another route, the fanout
+     * works from its own copy of the bytes. (An adapter alone needs
+     * none: its `send` gets its own copy in the per-call arena, and
+     * nothing reads the buffer after it.) */
+    size_t routes = 0, adapters = 0;
+    for (size_t i = 0; i < g_bus_remote_count; i++) {
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+        if (!e->subject || strcmp(e->subject, subject) != 0) continue;
+        routes++;
+        if (e->kind == LOTUS_BUS_REMOTE_KIND_ADAPTER) adapters++;
+    }
+    void *owned = NULL;
+    if (adapters > 0 && routes > 1) {
+        owned = malloc(payload_size ? payload_size : 1);
+        if (!owned) return;
+        if (payload_size) memcpy(owned, payload, payload_size);
+        payload = owned;
+    }
+    lotus_bus_remote_fanout_entries(subject, payload, payload_size);
+    free(owned);
+}
+
+static void lotus_bus_remote_fanout_entries(const char *subject,
+                                            const void *payload,
+                                            size_t payload_size) {
     for (size_t i = 0; i < g_bus_remote_count; i++) {
         lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
         if (!e->subject) continue;

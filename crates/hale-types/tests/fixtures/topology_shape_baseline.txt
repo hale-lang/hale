@@ -175,6 +175,7 @@ crates/hale-cli/tests/topology_v2.rs#16 51d8db711fbba4c6
 crates/hale-cli/tests/topology_v2.rs#6 16638d003fd75bff
 crates/hale-cli/tests/verify.rs#0 8b15407796dba7d4
 crates/hale-cli/tests/workspace_check.rs#0 f428caff9d863411
+crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#0 878ce3ead1cfc606
 crates/hale-codegen/tests/alloc_model_rss.rs#0 24127672b40393ac
 crates/hale-codegen/tests/alloc_model_rss.rs#1 277078abb218a919
 crates/hale-codegen/tests/alloc_model_rss.rs#2 42b42d73e707bf3e
