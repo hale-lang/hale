@@ -398,6 +398,10 @@ main locus App {
         let rest = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do cd \"$d\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; done; true\nsh\n" + app + "\n" + other);
         self.leases.conn.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(app, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
         dna::scratch_done(scratch);
     }
 }

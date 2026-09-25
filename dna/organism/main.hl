@@ -38,7 +38,7 @@ main locus Organism {
         reported_settled: Bool = false;
         // 0 = run until killed; otherwise the number of 100ms ticks.
         ticks: Int = 0;
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organism", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() } };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organism", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, jetstream: true };
     }
 
     placement { nerves: pinned; }
@@ -51,7 +51,7 @@ main locus Organism {
     // start it again with a fresh connection (GH #1066).
     on_failure(c: nats::NatsConn, err: ClosureViolation) {
         eprintln("organism: the nerves failed (", c.last_error, ")");
-        std::process::exit(dna::NERVES_RESTART);
+        std::process::exit(dna::NODE_RESTART);
     }
 
     // Report every transition the nerves drive on stdout: what the

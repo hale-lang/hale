@@ -79,3 +79,24 @@ fn nerves_listening(c: nats::NatsClient, org: String, owner: String) -> String {
 // clone's `dna.owner` ("" when the organization is the only owner). Read
 // from the root the CLI hands the host, before `Host` is born.
 fn host_owner() -> String { return owner_here(std::env::arg_or(2, ".")); }
+
+// `nerves-drop`: the organization's stream deleted with the owner's URL,
+// everything it held with it — what a fixture does beside dropping its
+// memory's schema, and an operator tearing an organization down. `dropped
+// <stream>`, `absent <stream>` when there was none, `none: <why>` when
+// there is no server.
+fn nerves_drop_verb(root: String) -> Answer {
+    let org = dna::schema_for(record_identity(root));
+    let owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+    if len(owner) == 0 { return answer("none: no " + dna::NATS_OWNER_URL_ENV + "; the stream is dropped with the owner's URL\n"); }
+    let c = nats::NatsClient { url: owner, name: "dna-owner", timeout: 2s };
+    if !c.open() { return fail("nerves drop: " + c.last_error); }
+    let stream = dna::nerves_stream(org);
+    let gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + stream, "") or "";
+    let why = c.last_error;
+    c.close();
+    if len(gone) > 0 { return answer("dropped " + stream + "\n"); }
+    // err_code 10059: stream not found
+    if std::str::contains(why, "10059") { return answer("absent " + stream + "\n"); }
+    return fail("nerves drop: " + why);
+}

@@ -395,7 +395,7 @@ records `node.started <holder> {sha, by, owner}`. On its tick, every
 again; when the forge's head is neither what it runs nor a sha that did
 not build here, it stops cleanly — the organization and the expression
 drain on SIGTERM, the body lease is given back (`body.released {why:
-"genome"}`) — and exits with `GENOME_RESTART` (75); its unit
+"genome"}`) — and exits with `NODE_RESTART` (75); its unit
 (`Restart=always`) starts it again, and it builds the new genome at
 start. It never replaces itself in place. A forge head that did not build
 here is said once and waited out. Each poll writes
@@ -1062,7 +1062,10 @@ repository:
   before it starts the host and hands the host the spine's URL and the
   token, never the owner's nor the head's; `hale dna run` takes the
   two from its environment and has the owner's and the head's removed
-  from it. `dna/nats.conf`, which `init` writes, is that server's
+  from it. `hale dna nerves drop [dir]` deletes the stream, and
+  everything it held, with the owner's URL — beside dropping memory's
+  schema, when an organization is torn down. `dna/nats.conf`, which
+  `init` writes, is that server's
   configuration: the users and their permissions, with placeholder
   passwords until the vault (#989).
 - **Liveness.** At start the host waits, as it waited for sockets, for
@@ -1081,7 +1084,9 @@ repository:
   never runs again (GH #1066). The host appends `nerves.lost <holder>`
   (`why`, `by`), stops its organization and the expression, gives the
   body lease back (`body.released`, `why: nerves`) and exits
-  `NERVES_RESTART` (75), and its unit (`Restart=always`) starts it
+  `NODE_RESTART` (75, the genome pull's code: one restart code for the
+  organism), and its unit (`Restart=always`, which restarts on any exit)
+  starts it
   again. The organization's program exits 75 on its own connection's
   collapse, and the host that supervises it ends with it. The row first
   is what makes a loss recoverable: the next node relays every request

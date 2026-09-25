@@ -365,6 +365,25 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
+        // GH #986: the stream deleted with the owner's URL, as memory's
+        // schema is dropped
+        Some("nerves") if args.get(1).map(String::as_str) == Some("drop") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match host_run("nerves-drop", &dir, &[]) {
+                Ok(out) if !out.starts_with("none: ") => {
+                    print!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Ok(out) => {
+                    eprintln!("hale dna nerves drop: {}", out.trim().strip_prefix("none: ").unwrap_or(out.trim()));
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna nerves drop: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("run") => {
             let (dir, rest) = project_arg(&args[1..], true);
             if let Err(e) = vendor_if_absent(&dir) {
@@ -600,6 +619,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna nerves migrate [dir]");
     eprintln!("                                    create the organization's NATS JetStream stream with the owner's URL (HALE_DNA_NATS_URL_OWNER,");
     eprintln!("                                    or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)");
+    eprintln!("       hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
@@ -1212,7 +1232,10 @@ authorization {
     # the spine: a node's host publishes the organization's facts, and the
     # organization reads them through its durable consumer (`spine`, or
     # over a shared record an owner's `spine_<owner>`, its facts under
-    # `<org>.<owner>.dna.>`)
+    # `<org>.<owner>.dna.>`). `*` stands for the organization's token: this
+    # server carries one organization, and a spine user may publish into
+    # any organization's subjects on it. One user per organization, each
+    # allowed only its own token, is #989's, with the vault.
     { user: spine, password: "dna-spine-dev",
       permissions: { publish: ["*.dna.>", "*.*.dna.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
     # an application: publishes on its own subjects, reads nothing of DNA's (#987)
@@ -1886,6 +1909,9 @@ main locus Org {{
             subject_prefix: dna::nerves_subject_prefix(),
             stream: dna::nerves_stream_here(),
             consumer: nats::ConsumerSpec {{ durable: dna::nerves_durable(), filter: dna::nerves_filter() }},
+            // what this organization publishes itself (its Leader's
+            // verdicts) is acknowledged by the stream, as the node's is
+            jetstream: true,
             run_for_ms: if std::env::var_exists("HALE_DNA_ONESHOT") {{ 1 }} else {{ 0 }}
         }};
         // The baseline review: ratify purpose.hl. The Board's; it settles
@@ -1920,7 +1946,7 @@ main locus Org {{
     // keeps every request unanswered until an organization answers it.
     on_failure(c: nats::NatsConn, err: ClosureViolation) {{
         eprintln("organization: the nerves failed (", c.last_error, "); stopping for the host to start it again");
-        std::process::exit(dna::NERVES_RESTART);
+        std::process::exit(dna::NODE_RESTART);
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}

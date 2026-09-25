@@ -6,9 +6,9 @@
 // printed, so the page shows exactly what the CLI shows — the Board's
 // queue, the pending Reviews with their three views, the fleet, the
 // history — with or without an organization up. A verdict or an
-// intent from the page goes the way the CLI's does: onto the membrane
-// when one is bound here, into the record otherwise. Nothing here
-// reads the record itself; nothing here decides.
+// intent from the page goes the way the CLI's does: a row in the record,
+// which a node relays onto the nerves (GH #986). Nothing here reads the
+// record itself; nothing here decides.
 //
 // Who acts is the principal source (GH #612, dna/core/principal.hl).
 // Under `local` (the default) the page's `as` field names the reviewer,

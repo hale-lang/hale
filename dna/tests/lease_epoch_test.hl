@@ -217,6 +217,10 @@ main locus App {
         std::test::assert(std::str::contains(fenced_rows, "\"entity\": \"t1\"") && std::str::contains(fenced_rows, "\"entity\": \"t5\"") && !std::str::contains(fenced_rows, "\"entity\": \"t2\"") && !std::str::contains(fenced_rows, "\"entity\": \"t3\"") && !std::str::contains(fenced_rows, "\"entity\": \"t4\"") && !std::str::contains(fenced_rows, "\"entity\": \"t6\""), "exactly the writes under a held lease are rows: " + fenced_rows);
         self.leases.conn.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "the fence's record: schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(app, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
 
         // ---- a head's writes, gated by the store (GH #1026): a shared record,
         // each owner's heads writing as that owner's role
@@ -280,6 +284,10 @@ main locus App {
         std::test::assert_eq_int(count_rows(after, "\"entity\": \"i8\""), 1, "one row for the request written twice: " + after);
         stop_spine(shared, spine);
         std::test::assert_eq_str(dna::unmigrate(owner, srecord), "", "the shared record's schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(shared, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
         dna::scratch_done(scratch);
     }
 }

@@ -52,11 +52,13 @@ const NERVES_MAX_AGE_SECS: Int = 604800;
 // owner's organization, over a shared record: `spine_<owner>`).
 const NERVES_DURABLE: String = "spine";
 
-// The exit code of a part whose connection to the nerves collapsed: it
-// stops and its supervisor starts it again (the host's unit, or for the
-// organization the host). A pinned connection restarted in place does
-// not run again (GH #1066). EX_TEMPFAIL, as the genome pull's.
-const NERVES_RESTART: Int = 75;
+// The exit code of a part of the organism that stops to be started again:
+// a node whose genome moved on the forge (GH #1026), and a node or an
+// organization whose connection to the nerves collapsed — a pinned
+// connection restarted in place does not run again (GH #1066). Its
+// supervisor starts it again: the node's unit (`Restart=always`), or for
+// the organization the node. EX_TEMPFAIL: not a failure, try again.
+const NODE_RESTART: Int = 75;
 
 // Over a shared record every owner runs a body and an organization of
 // its own (GH #664), and each organization answers only for its owner's

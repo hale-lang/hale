@@ -44,12 +44,14 @@ main locus App {
         let task = self.org.last_task;
         std::test::assert(len(task) > 0, "a task is born for it");
 
-        // the stream delivers it again: one intent, one task
+        // the stream delivers it again: one intent, one task. A second,
+        // different intent after it is the barrier — one subscriber's
+        // deliveries are handled in order, so once the second is admitted
+        // the redelivery before it has been handled too
         std::test::assert_eq_int(self.nerves.replay("dna.intent.offered", "dna.intent.offered"), 1, "the fact, delivered again");
-        let settle = std::time::now() + dna::wait_secs(2);
-        while std::time::now() <= settle { std::time::sleep(50ms); }
-        std::test::assert_eq_int(self.org.asked, 1, "a redelivered intent is admitted once");
-        std::test::assert_eq_str(self.org.last_task, task, "and no second task is born");
+        dna::IntentOffered <- dna::IntentOffer { intent_id: "i-nerves-2", outcome: "say goodbye", from: "riley", to: "" };
+        std::test::assert(self.asked(2, 20), "the intent after the redelivery is admitted: asked " + to_string(self.org.asked));
+        std::test::assert_eq_int(self.org.asked, 2, "a redelivered intent is admitted once: two intents, two asks, not three");
 
         // nothing acknowledged: the connection's closure is violated, and
         // its owner hears why

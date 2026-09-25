@@ -19,6 +19,7 @@ hale dna nerves migrate [dir]
                              create the organization's NATS JetStream stream with the owner's URL
                              (HALE_DNA_NATS_URL_OWNER, or dna/compose.yaml) and print its token and
                              each role's URL (HALE_DNA_NATS_ORG=…, HALE_DNA_NATS_URL_SPINE=…, …)
+hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
                              restart the application on an apply, watch the window, report back

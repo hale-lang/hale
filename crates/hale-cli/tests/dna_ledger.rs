@@ -103,12 +103,14 @@ fn ledger_until(app: &Path, env: &[(&str, &str)], pred: impl Fn(&str) -> bool) -
     }
 }
 
-/// This record's schema and roles, gone again.
+/// This record's schema, roles and stream, gone again.
 fn unmigrate(app: &Path, owner: &str) {
     let out = Command::new("git").args(["rev-list", "--max-parents=0", "refs/dna/journal"]).current_dir(app).output().unwrap();
     let sch = format!("dna_{}", String::from_utf8_lossy(&out.stdout).trim().to_lowercase());
     let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
     let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
+    // and its stream on the nerves (GH #986), with the owner's URL
+    let _ = Command::new(env!("CARGO_BIN_EXE_hale")).args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
 }
 
 #[test]

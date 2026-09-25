@@ -217,6 +217,8 @@ fn main() {
     } else if verb == "nerves-migrate" {
         // GH #986: the nerves' stream, created with the owner's URL
         ans = nerves_migrate_verb(root);
+    } else if verb == "nerves-drop" {
+        ans = nerves_drop_verb(root);
     } else if verb == "record-head" {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {

@@ -312,6 +312,10 @@ HALE_DNA_NATS_URL_HEAD=nats://head:…@nats.internal:4222
 HALE_DNA_NATS_URL_APP=nats://app:…@nats.internal:4222
 ```
 
+`hale dna nerves drop` deletes the stream, and everything it held, with
+the owner's URL: do it beside dropping memory's schema when an
+organization is gone for good.
+
 `hale dna dev` does this first — with `HALE_DNA_NATS_URL_OWNER`, or the
 `nerves` service `dna/compose.yaml` brings up — and hands the host the
 spine's URL and the token alone. `hale dna run` creates nothing: give

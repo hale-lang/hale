@@ -87,7 +87,8 @@ locus TaskCreateCommandCodec {
         // order and spelling (std::json::Builder), so the row reads as an ask
         // to the relay and to every intent scan; the command fields follow in
         // the same flat object, and the relay splices `intent_id` before the
-        // last brace. No `via`: this head publishes nothing on the membrane.
+        // last brace. This head publishes nothing: a node relays the row
+        // onto the nerves (GH #986).
         let b = std::json::Builder { }; b.begin_object();
         b.string_field("outcome", c.outcome); b.string_field("from", context.principal_name); b.string_field("to", c.to);
         b.string_field("command_format", "dna.task-create-command/1"); b.string_field("command_id", common.identity(context, c.request_id));

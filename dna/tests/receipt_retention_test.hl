@@ -354,6 +354,10 @@ main locus App {
         stop_spine(app, spine2);
         self.owner_conn.conn.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(app, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
         dna::scratch_done(scratch);
     }
 }

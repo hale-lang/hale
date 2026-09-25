@@ -188,6 +188,9 @@ fn relay_mark(list: String, key: String, now: Int) -> String {
 // (the organism admits an intent once by id; a duplicate verdict is refused
 // as already settled).
 const RELAY_AGAIN_AFTER: Int = 30;
+// How long a pull lives on the stream: pond's NatsConn pulls with a one
+// second expiry (its `pull`), and a little more for the server to drop it.
+const NERVES_PULL_LIFE_MS: Int = 1250;
 // How long a node inside an observation window waits for the organism to
 // record its report before it goes on (the relay does not stop).
 const OBSERVATION_WAIT: Int = 60;
@@ -685,6 +688,9 @@ main locus Host {
         nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "dna-node", subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()), jetstream: true };
         nerves_on: Bool = false;
         relay: NodeRelay = NodeRelay { };
+        // when this node last stopped an organization (monotonic ns; 0
+        // never): its pulls outlive it for a pull's life
+        org_stopped_at: Int = 0;
     }
     placement { nerves: pinned; }
     // Every topic the node publishes, onto the nerves: the record's
@@ -702,7 +708,7 @@ main locus Host {
     }
     // A publish the stream did not acknowledge within the connection's
     // window collapses it here: a `nerves.lost` row says why, and the node
-    // stops cleanly and exits with NERVES_RESTART for its unit to start it
+    // stops cleanly and exits with NODE_RESTART for its unit to start it
     // again — a pinned connection restarted in place never runs again
     // (GH #1066). The row first is what makes the loss recoverable: the
     // next node relays every request still unanswered.
@@ -710,7 +716,7 @@ main locus Host {
         let why = c.last_error;
         self.say("nerves: " + why + "; stopping for the unit to start this node again");
         let ok = append_as(self.root, "nerves.lost", self.holder, "{\"why\": " + quote(why) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host", self.memory);
-        self.stop_to_restart("nerves", dna::NERVES_RESTART);
+        self.stop_to_restart("nerves", dna::NODE_RESTART);
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
     // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
@@ -834,7 +840,7 @@ main locus Host {
     fn stop_body(code: Int) {
         self.stop_started();
         self.stop_fence();
-        stop_proc(self.org);
+        self.stop_org();
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
@@ -1085,7 +1091,7 @@ main locus Host {
     // Stop cleanly, give the lease back naming `why`, and exit with `code`
     // for the supervisor to start this node again.
     fn stop_to_restart(why: String, code: Int) {
-        stop_proc(self.org);
+        self.stop_org();
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.app.pid > 0 { stop_proc(self.app); }
         self.stop_started();
@@ -1098,21 +1104,29 @@ main locus Host {
         let s = sync_record(self.root, self.memory);
         std::process::exit(code);
     }
+    // Stop the organization, noting when: its outstanding pull on the
+    // stream lives on for a pull's life (wait_nerves).
+    fn stop_org() {
+        stop_proc(self.org);
+        self.org_stopped_at = std::time::monotonic_ns();
+    }
     // Whether the organization this host just started comes to read its
     // facts within `secs` (GH #986): its durable consumer on the stream
-    // has a pull outstanding. A pull lives a second, so what the previous
-    // organization left has expired before the first look. Without
-    // nerves there is nothing to read; an organization that is still
-    // running then is all there is to wait for.
+    // has a pull outstanding. A pull the organization this node stopped
+    // left behind counts for nothing until its life is over, so a pull
+    // seen before then is not this organization's. Without nerves there
+    // is nothing to read; an organization still running is all there is.
     fn wait_nerves(secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
-        std::time::sleep(1500ms);
         if !self.nerves_on { return exit_code(self.org) == -2; }
+        let stale_until = if self.org_stopped_at > 0 { self.org_stopped_at + NERVES_PULL_LIFE_MS * 1000000 } else { 0 };
         let c = nats::NatsClient { url: dna::nerves_spine_url(), name: "dna-node-probe", timeout: 2s };
         let mut why = "";
         while true {
             if exit_code(self.org) != -2 { c.close(); return false; }
-            if c.connected || c.open() {
+            if std::time::monotonic_ns() < stale_until {
+                why = "the stopped organization's pull has not expired yet";
+            } else if c.connected || c.open() {
                 why = nerves_listening(c, dna::nerves_org(), owner_here(self.root));
                 if len(why) == 0 { c.close(); return true; }
             } else { why = c.last_error; }
@@ -1234,7 +1248,7 @@ main locus Host {
         let dir = source.directory(a);
         if std::io::fs::file_exists(dir + "/org.pid") || source.file_digest(dir + "/program") != a.binary_digest
             || source.file_digest(dir + "/topology.json") != a.topology_digest { return false; }
-        stop_proc(self.org);
+        self.stop_org();
         if !self.body_assert("the retained prepared organization") { return false; }
         self.org = start(dir, "org", self.root, self.child_envs(a.mutation_id, a.binary_digest) + "\nHALE_DNA_ORGANIZATION_LAUNCH=" + a.attempt_id, dir + "/program");
         self.org_log = 0;
@@ -1317,7 +1331,7 @@ main locus Host {
         if fresh {
             if !source.scope(a, self.memory.leases) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
                 || source.file_digest(dir + "/rollback.topology") != claim.topology_digest { return false; }
-            stop_proc(self.org); if !self.body_assert("the original organization") { return false; }
+            self.stop_org(); if !self.body_assert("the original organization") { return false; }
             self.org = start(dir, "rollback", self.root, self.child_envs(id, "rollback " + claim.binary_digest), dir + "/rollback.program"); self.org_log = 0;
         } else {
             let pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(dir + "/rollback.pid") or "")) or - 1;
@@ -1381,7 +1395,7 @@ main locus Host {
         let bin = self.build_seed(org_seed);
         if len(bin) == 0 { self.say(id + ": the organization does not express"); if !rollback { self.observed(id, "build_failed", "", "build failed"); } return false; }
         let expression = (if rollback { "rollback " } else { "" }) + shape_of(art) + " build " + self.sha12(bin);
-        stop_proc(self.org);
+        self.stop_org();
         if !self.body_assert("the organization again") { self.stop_body(3); }
         self.org = start(self.dna_dir, "org", self.root, self.child_envs(id, expression), bin);
         self.org_log = 0;
@@ -1660,14 +1674,14 @@ main locus Host {
         // 4. dev: the application too, under this host
         if self.verb == "dev" {
             let bin = self.app_ready;
-            if len(bin) == 0 { stop_proc(self.org); self.quit(1); }
+            if len(bin) == 0 { self.stop_org(); self.quit(1); }
             self.app_bin = bin;
             if !self.body_assert("the expression") {
-                stop_proc(self.org);
+                self.stop_org();
                 self.quit(3);
             }
             self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
-            if self.app.pid <= 0 { self.say("cannot start " + bin); stop_proc(self.org); self.quit(1); }
+            if self.app.pid <= 0 { self.say("cannot start " + bin); self.stop_org(); self.quit(1); }
             let aw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
             self.say("expression " + self.app_name() + " (pid " + to_string(self.app.pid) + ") under LOTUS_OBS=1");
         }
@@ -1707,7 +1721,7 @@ main locus Host {
         // told to stop: the organization drains on SIGTERM like this node
         if self.draining {
             self.say("stopping: the organization and what it started go with this node");
-            stop_proc(self.org);
+            self.stop_org();
             code = exit_code(self.org);
         }
         // the organization is gone; what it started goes with it
