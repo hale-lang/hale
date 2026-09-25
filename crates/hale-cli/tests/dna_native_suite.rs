@@ -836,6 +836,7 @@ fn dna_fixture_set_is_complete() {
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
             "extensions_test.hl",
+            "genome_pull_test.hl",
             "grant_layering_test.hl",
             "grant_resources_test.hl",
             "handed_task_test.hl",

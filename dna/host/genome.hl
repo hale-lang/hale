@@ -57,3 +57,44 @@ fn genome_reset(root: String, base: String) -> Bool {
 fn genome_diff(root: String, base: String, candidate: String) -> dna::RunResult {
     return genome(root, "diff\n--stat\n-p\n" + base + "\n" + candidate);
 }
+
+// ---- the genome pull (GH #1026) ---------------------------------------
+//
+// Nodes converge on the genome by pulling: on an interval each fetches the
+// forge's default branch, and a node whose genome moved restarts to take
+// it. These are the pull's git.
+
+// The forge's default branch at `remote`, as its HEAD names it ("" when
+// the remote could not be read).
+fn genome_default_branch(root: String, remote: String) -> String {
+    let r = genome(root, "ls-remote\n--symref\n" + remote + "\nHEAD");
+    if r.code != 0 { return ""; }
+    let at = std::str::index_of(r.stdout, "ref: refs/heads/");
+    if at < 0 { return ""; }
+    let rest = r.stdout[(at + 16)..len(r.stdout)];
+    let tab = std::str::index_of(rest, "\t");
+    return if tab < 0 { dna::trim_nl(rest) } else { rest[0..tab] };
+}
+
+// Fetch the forge's default branch; the commit it is at, "" when it could
+// not be fetched.
+fn genome_fetch_default(root: String, remote: String) -> String {
+    let branch = genome_default_branch(root, remote);
+    if len(branch) == 0 { return ""; }
+    let f = genome(root, "fetch\n-q\n" + remote + "\n" + branch);
+    if f.code != 0 { return ""; }
+    return genome_commit(root, "FETCH_HEAD");
+}
+
+// Move the genome here forward to `target` when it descends from what is
+// checked out: "" when it is there, else why it was not moved (the genome
+// here has commits the forge does not, or the tree would not allow it).
+fn genome_fast_forward(root: String, target: String) -> String {
+    let head = genome_commit(root, "HEAD");
+    if head == target { return ""; }
+    if genome(root, "merge-base\n--is-ancestor\nHEAD\n" + target).code != 0 { return "the genome here (" + head + ") is not an ancestor of the forge's " + target + "; it is not pulled"; }
+    let m = genome(root, "merge\n--ff-only\n-q\n" + target);
+    if m.code == 0 { return ""; }
+    let e = dna::trim_nl(m.stderr);
+    return if len(e) == 0 { "the fast-forward failed" } else { e };
+}

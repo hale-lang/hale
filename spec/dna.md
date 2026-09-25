@@ -380,6 +380,29 @@ cadence's length, and leaves it to expire. A claim a node acts on is a
 shows who took what, and a second node's take after the first one's
 expiry; a claim taken without memory is not recorded.
 
+**The genome pull (GH #1026).** Nodes converge on the genome by
+pulling; there is no push deploy for the organism's own nodes (the
+heart's deploy is another thing). At start a host fetches the forge's
+default branch (the record's remote, its `HEAD`), moves its genome
+forward to it when it descends from what is checked out, and checks and
+builds it — the application's artifact, the organization and, under
+`dev`, the application, each through the build cache. A genome that does
+not check or build is a `node.build_failed <holder> {sha, why, by,
+owner}` row; the node returns its checkout to the last genome that built
+(`.hale/dna/genome.built`), builds that, and serves it. A node that is up
+records `node.started <holder> {sha, by, owner}`. On its tick, every
+`HALE_DNA_GENOME_POLL` seconds (300 by default; 0 never), it fetches
+again; when the forge's head is neither what it runs nor a sha that did
+not build here, it stops cleanly — the organization and the expression
+drain on SIGTERM, the body lease is given back (`body.released {why:
+"genome"}`) — and exits with `GENOME_RESTART` (75); its unit
+(`Restart=always`) starts it again, and it builds the new genome at
+start. It never replaces itself in place. A forge head that did not build
+here is said once and waited out. Each poll writes
+`.hale/dna/genome.json`: `sha`, `failed`, `polls`. `hale dna status`
+carries a `genome:` line: the sha each node runs, from its last
+`node.started`, and a newer one that did not build since.
+
 ## The record
 
 The Journal is a git branch, `refs/dna/journal`, in the governed
@@ -1045,6 +1068,7 @@ record's.
 | `budget.exhausted` | ledger | the window's model allowance is spent |
 | `model.called` | ledger | a model call and its evidence |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
+| `node.started` / `node.build_failed` | record | a node runs a genome, by its sha; a genome did not check or build, and the node stayed on the last that did (`sha`, `why`) |
 | `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
@@ -2279,7 +2303,9 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   and a systemd user unit `hale-dna-<project>-<record>` supervising `hale dna
   dev . --no-iris` — on one server the body is the organization and
   the application under one host — with
-  `Restart=on-failure` so a failure flows up one more level. It stops
+  `Restart=always` (GH #1026): a failure flows up one more level, and
+  a node that exits to take a moved genome is started again on it
+  (**The genome pull**). It stops
   before writing anything when the record has no remote or one local
   to this machine, when ssh cannot reach the host, or when the host
   lacks git, curl, systemd, or (without a DSN) docker compose. It

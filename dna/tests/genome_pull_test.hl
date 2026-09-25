@@ -1,0 +1,163 @@
+// dna/tests/genome_pull_test.hl — nodes converge on the genome by pulling
+// (GH #1026).
+//
+// A node runs under a supervisor that starts it again whenever it exits
+// with the genome-restart code, as the unit `Infrastructure` writes does
+// (`Restart=always`). A genome pushed to the forge's default branch
+// restarts the node within its poll interval (HALE_DNA_GENOME_POLL), and
+// the node records `node.started` with the new sha. A genome that does
+// not build is a `node.build_failed` row, and the node stays on the last
+// genome that built, serving, and does not restart for that sha again;
+// `hale dna status` names both. Memory is Postgres: without the owner's
+// DSN in HALE_DNA_MEMORY_DSN_OWNER nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// The commit a revision names in `repo`.
+fn head_of(repo: String, rev: String) -> String {
+    return dna::trim_nl(dna::run_tool("git\n-C\n" + repo + "\nrev-parse\n" + rev).stdout);
+}
+
+main locus App {
+    params { node: String = ""; }
+    // The `sha` of each of the record's rows of `kind`, in order, one per line.
+    @unbounded
+    fn shas(kind: String) -> String {
+        let j = dna::GitJournal { repo: self.node };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = out + std::json::find_string_field(e.body, "sha") + "\n"; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Whether the record comes to hold a row of `kind` whose sha is `sha`
+    // within `secs`.
+    @unbounded
+    fn recorded(kind: String, sha: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if std::str::contains("\n" + self.shas(kind), "\n" + sha + "\n") { return true; }
+            std::time::sleep(500ms);
+        }
+        return false;
+    }
+    // How many times the node has started, by the record's commits: read
+    // from git directly, so a read racing the node's own append is whole.
+    fn starts() -> Int {
+        let r = dna::run_tool("sh\n-c\ngit -C \"$1\" log --format=%s refs/dna/journal | grep -c '^node.started '\nsh\n" + self.node);
+        return std::str::parse_int(dna::trim_nl(r.stdout)) or - 1;
+    }
+    // Whether the node comes to start again after its last failed build,
+    // within `secs`: the start that fell back to the last genome that built.
+    @unbounded
+    fn fell_back(secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            let r = dna::run_tool("sh\n-c\ngit -C \"$1\" log --format=%s refs/dna/journal | sed '/^node.build_failed /q' | grep -c '^node.started '\nsh\n" + self.node);
+            if (std::str::parse_int(dna::trim_nl(r.stdout)) or 0) > 0 { return true; }
+            std::time::sleep(500ms);
+        }
+        return false;
+    }
+    // The polls the node has made since it last started (-1 unread).
+    fn polls() -> Int {
+        let g = std::io::fs::read_file(self.node + "/.hale/dna/genome.json") or "";
+        return if len(g) == 0 { -1 } else { std::json::find_int_field(g, "polls") };
+    }
+    // Whether the node comes to have made `n` polls within `secs`.
+    @unbounded
+    fn polled_past(n: Int, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if self.polls() >= n { return true; }
+            std::time::sleep(500ms);
+        }
+        return false;
+    }
+    // Whether the node's log comes to say `text` within `secs`.
+    @unbounded
+    fn logged(text: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if std::str::contains(std::io::fs::read_file(self.node + "/.hale/node.log") or "", text) { return true; }
+            std::time::sleep(500ms);
+        }
+        return false;
+    }
+    // A change of the genome, committed in the developer's clone and pushed
+    // to the forge's default branch; the commit.
+    fn push(dev: String, path: String, text: String, message: String) -> String {
+        std::io::fs::write_file(dev + "/" + path, text) or discard;
+        let c = in_dir(dev, "sh\n-c\ngit add -A && git commit -q -m \"$1\" && git push -q origin main\nsh\n" + message);
+        std::test::assert_eq_int(c.code, 0, "pushed: " + c.stdout + c.stderr);
+        return head_of(dev, "HEAD");
+    }
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 { eprintln("genome_pull_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let scratch = dna::scratch_root("genome-pull");
+        dna::reap_on_exit(scratch);
+        let bare = scratch + "/origin.git";
+        let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\npulled");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        self.node = scratch + "/pulled";
+        let c0 = in_dir(self.node, "sh\n-c\ngit config user.name node && git config user.email node@local && git add -A && git commit -q -m 'the organization'");
+        std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stdout + c0.stderr);
+        let a1 = in_dir(self.node, "git\nremote\nadd\norigin\n" + bare);
+        let a2 = in_dir(self.node, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        std::test::assert_eq_int(a2.code, 0, "the genome and the record at the forge: " + a2.stderr);
+        let dev = scratch + "/dev";
+        let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + dev);
+        std::test::assert_eq_int(cl.code, 0, "a developer's clone: " + cl.stderr);
+        let g1 = in_dir(dev, "git\nconfig\nuser.name\ndev");
+        let g2 = in_dir(dev, "git\nconfig\nuser.email\ndev@local");
+        let first = head_of(self.node, "HEAD");
+
+        // ---- the node, under a supervisor that starts it again on the
+        // genome-restart code (75) and stops on anything else
+        let started = in_dir(self.node, "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout 900 sh -c 'while true; do \"$0\" dna dev . --no-iris; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
+        let loop = dna::trim_nl(started.stdout);
+        std::test::assert(len(loop) > 0, "the supervisor started");
+        std::test::assert(self.recorded("node.started", first, 300), "the node records the genome it runs: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+
+        // ---- a genome change on the forge: the node restarts onto it
+        let moved = self.push(dev, "dna/org/NOTE.md", "a note the organization keeps\n", "a change of the genome");
+        std::test::assert(self.recorded("node.started", moved, 300), "a genome pushed to the forge restarts the node onto it, within its interval: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        std::test::assert_eq_str(head_of(self.node, "HEAD"), moved, "the node's genome is the forge's");
+
+        // ---- a genome that does not build: a failure row, and the old sha served
+        let broken = self.push(dev, "dna/org/broken.hl", "fn broken( {\n", "a genome that does not build");
+        std::test::assert(self.recorded("node.build_failed", broken, 300), "the failed build is a row naming its sha: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        std::test::assert(self.fell_back(300) && head_of(self.node, "HEAD") == moved, "it started again after the failure, on the genome that built: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        // it does not restart for the broken sha again: its next poll sees
+        // the forge still there, and says it stays
+        let n = self.starts();
+        let org = std::io::fs::read_file(self.node + "/.hale/dna/org.pid") or "";
+        std::test::assert(self.logged("which did not build here; staying on " + moved[0..12], 120), "the next poll sees the broken head and stays: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        // two more polls pass, and the node is the same process on the same genome
+        let p0 = self.polls();
+        std::test::assert(self.polled_past(p0 + 2, 120), "the node keeps polling: " + (std::io::fs::read_file(self.node + "/.hale/dna/genome.json") or ""));
+        std::test::assert_eq_int(self.starts(), n, "the node does not restart for a genome that did not build");
+        std::test::assert_eq_str(std::io::fs::read_file(self.node + "/.hale/dna/org.pid") or "", org, "its organization is the same process");
+        let status = in_dir(self.node, toolchain() + "\ndna\nstatus");
+        std::test::assert(std::str::contains(status.stdout, "genome:") && std::str::contains(status.stdout, moved[0..12]) && std::str::contains(status.stdout, broken[0..12] + " did not build"), "status names the genome the node runs and the one that did not build: " + status.stdout);
+
+        let stop = dna::run_tool("sh\n-c\nkill \"$1\" 2>/dev/null; pkill -P \"$1\" 2>/dev/null; true\nsh\n" + loop);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

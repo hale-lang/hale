@@ -111,7 +111,8 @@ once, at migration, into memory. `HALE_DNA_OWNER_KEYS` (`<owner>=<key>
 role for, printed as `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>`; an owner's
 heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`. `HALE_DNA_NODE` is the
 name a node's organism claims under, which the host sets to its body's
-holder. The host hands its organization
+holder. `HALE_DNA_GENOME_POLL` is how often, in seconds, a node fetches
+the forge's default branch (300; 0 is never). The host hands its organization
 its body lease as `HALE_DNA_LEASE` / `HALE_DNA_LEASE_TOKEN` once the
 ledger is adopted.
 
@@ -180,6 +181,7 @@ sequence either way — see [The record](./record.md).
 | `review.reasoned` | record | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
 | `org.reviewed` | record | the organization | the organization's own pass over itself, and what it answered |
 | `optimize.refused` | ledger | the organization | that pass did not run: the budget for the window is spent |
+| `node.started` / `node.build_failed` | record | the node's holder | the genome it runs, by `sha` / a genome that did not check or build: its `sha` and `why`, the node staying on the last that did |
 | `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
 | `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
 | `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |

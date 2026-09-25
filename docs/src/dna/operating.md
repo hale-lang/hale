@@ -202,6 +202,33 @@ When the record has a remote, a node projects only what the remote
 holds after that tick's sync — and nothing on a tick whose sync did not
 finish — so memory's stamp is always a commit every clone can receive.
 
+### The genome pull
+
+Nodes take a new genome by pulling it; nothing pushes it to them. Every
+five minutes (`HALE_DNA_GENOME_POLL`, in seconds) a node fetches the
+forge's default branch. When it moved, the node stops cleanly and exits
+with code 75, and its unit — `Restart=always`, as `hale dna body
+provision` writes it — starts it again; at start it moves to the new
+genome and builds it:
+
+```text
+hale dna dev: genome: the forge's default branch is at 9908091716f6 and this node runs 63c447c47fdc; restarting to take it
+…
+hale dna dev: genome 9908091716f6, pulled from the forge every 300s
+```
+
+A genome that does not build does not take a node down: the node
+records `node.build_failed`, goes back to the last genome that built,
+and keeps serving it, and it does not restart for that genome again.
+`hale dna status` says what each node runs:
+
+```text
+genome:     9908091716f6 on you@build-1:/srv/chat (8aa6251345a7 did not build)
+```
+
+Push the fix to the default branch and every node takes it within the
+interval.
+
 ### Claims by id
 
 Every act a node takes that must not be taken twice is claimed in
