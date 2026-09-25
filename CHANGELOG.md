@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+### A deliberate server shutdown is silent again (GH #1081)
+
+- **Fixed:** shutting a `std::http::Server` down on purpose printed
+  `lotus_tcp_accept_one: accept: Invalid argument` on stderr. The
+  shutdown wakes the parked accept, which then fails `EINVAL`, and the
+  guard that kept that wake quiet had been lost in a refactor. The
+  runtime now marks a listen socket it shut down and stays silent for
+  it, and for a worker whose pool is shutting down. An accept failure
+  nobody asked for is still reported.
+
 ### A refused TCP connect fails at once (GH #1030)
 
 - **Changed:** `std::io::tcp::connect` (and `std::io::tls::connect`)

@@ -13634,6 +13634,40 @@ void lotus_io_set_nonblock(int fd) {
     (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+/* GH #1081: listen fds this process shut down on purpose
+ * (`lotus_tcp_shutdown_listen_socket`, the Server's own shutdown). The
+ * accept that wakes on one fails EINVAL (EBADF on some kernels): the
+ * wake that was asked for, not an error to print. A handful of servers
+ * per process; the mark goes when the fd is closed, since fd numbers
+ * are reused. */
+#define LOTUS_SHUT_LISTEN_MAX 64
+static int g_shut_listen_fds[LOTUS_SHUT_LISTEN_MAX];
+static int g_shut_listen_len = 0;
+static pthread_mutex_t g_shut_listen_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void lotus_shut_listen_mark(int fd, int on) {
+    pthread_mutex_lock(&g_shut_listen_lock);
+    for (int i = 0; i < g_shut_listen_len; i++) {
+        if (g_shut_listen_fds[i] == fd) {
+            if (!on) g_shut_listen_fds[i] = g_shut_listen_fds[--g_shut_listen_len];
+            pthread_mutex_unlock(&g_shut_listen_lock);
+            return;
+        }
+    }
+    if (on && g_shut_listen_len < LOTUS_SHUT_LISTEN_MAX)
+        g_shut_listen_fds[g_shut_listen_len++] = fd;
+    pthread_mutex_unlock(&g_shut_listen_lock);
+}
+
+static int lotus_shut_listen_marked(int fd) {
+    int hit = 0;
+    pthread_mutex_lock(&g_shut_listen_lock);
+    for (int i = 0; i < g_shut_listen_len && !hit; i++)
+        hit = (g_shut_listen_fds[i] == fd);
+    pthread_mutex_unlock(&g_shut_listen_lock);
+    return hit;
+}
+
 int lotus_tcp_accept_one(int listen_fd) {
     /* F.35 Slice 3: on async_io pools, accept(2) is non-blocking +
      * park on EAGAIN. Classic blocking accept on every other path. */
@@ -13700,9 +13734,26 @@ int lotus_tcp_accept_one(int listen_fd) {
                 continue;
             }
         }
-        /* Silent on a cancel-wake: park returned -1 because the coro
-         * is unwinding (pool shutdown / parent drain), not an error. */
-            perror("lotus_tcp_accept_one: accept");
+        /* Silent on a requested wake (GH #1081): the listen fd was shut
+         * down on purpose, or this worker's pool is shutting down (a
+         * parked coro unwinding, a poll that saw the fd go). b35a4494
+         * dropped the cancel-pending guard that used to wrap this and
+         * left the perror running on every such exit. Anything else is
+         * a failure nobody asked for, and is reported. */
+        {
+            int err = errno;
+            int requested = lotus_shut_listen_marked(listen_fd);
+            if (!requested && cpool) {
+                pthread_mutex_lock(&cpool->lock);
+                requested = cpool->shutdown;
+                pthread_mutex_unlock(&cpool->lock);
+            }
+            if (!requested) {
+                errno = err;
+                perror("lotus_tcp_accept_one: accept");
+            }
+            errno = err;
+        }
         return -1;
     }
 }
@@ -13814,6 +13865,7 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
 
 int lotus_tcp_close_fd(int fd) {
     if (fd < 0) return 0;
+    lotus_shut_listen_mark(fd, 0);
     return close(fd);
 }
 
@@ -13834,6 +13886,7 @@ int lotus_tcp_close_fd(int fd) {
  */
 int lotus_tcp_shutdown_listen_socket(int fd) {
     if (fd < 0) return 0;
+    lotus_shut_listen_mark(fd, 1);
     return shutdown(fd, SHUT_RDWR);
 }
 
