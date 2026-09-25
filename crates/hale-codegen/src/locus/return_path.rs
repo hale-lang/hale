@@ -1037,13 +1037,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (rawp); after the memcpy, one runtime call per field
         // retires oldp and force-copies a skip-shared same-arena
         // pointer so self-storage slots never alias
-        // (lotus_str_field_replace_fixup). String fields only in
-        // v1, mirroring the hashmap retire descriptor; nested
-        // compound fields keep today's behavior.
+        // (lotus_str_field_replace_fixup). String and — GH #1033 —
+        // Bytes fields (lotus_bytes_field_replace_fixup): a Bytes
+        // field's replaced blob was never retired, so `self.f =
+        // Frame { data: b"", .. }` in a loop grew one blob per write.
+        // Nested compound fields keep today's behavior.
         let mut retire_fields: Vec<(
             PointerValue<'ctx>,
             PointerValue<'ctx>,
             PointerValue<'ctx>,
+            &'static str,
         )> = Vec::new();
         if let CodegenTy::TypeRef(tn) = slot_ty {
             if let Some(tinfo) = self.user_types.get(tn).cloned() {
@@ -1054,9 +1057,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .get(fname)
                         .cloned()
                         .expect("field_order lists declared fields");
-                    if !matches!(fty, CodegenTy::String) {
-                        continue;
-                    }
+                    let fixup_name = match fty {
+                        CodegenTy::String => "lotus_str_field_replace_fixup",
+                        CodegenTy::Bytes => "lotus_bytes_field_replace_fixup",
+                        _ => continue,
+                    };
                     let old_slot = self
                         .builder
                         .build_struct_gep(
@@ -1103,7 +1108,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .into_pointer_value();
                     // old_slot doubles as the destination slot for
                     // the post-memcpy fixup (same GEP).
-                    retire_fields.push((old_slot, oldp, rawp));
+                    retire_fields.push((old_slot, oldp, rawp, fixup_name));
                 }
             }
         }
@@ -1130,11 +1135,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
 
         if !retire_fields.is_empty() {
-            let fixup_fn = self
-                .module
-                .get_function("lotus_str_field_replace_fixup")
-                .expect("lotus_str_field_replace_fixup declared");
-            for (dest_slot, oldp, rawp) in retire_fields {
+            for (dest_slot, oldp, rawp, fixup_name) in retire_fields {
+                let fixup_fn = self
+                    .module
+                    .get_function(fixup_name)
+                    .expect("field replace fixup declared");
                 self.builder
                     .build_call(
                         fixup_fn,

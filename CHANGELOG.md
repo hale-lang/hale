@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### A self field whose length changes no longer leaks (GH #1033)
+
+- **Fixed:** a `String` or `Bytes` self field alternating between a heap
+  value and an empty one (a literal, a zero-length slice, `upper("")`) —
+  or any shorter value — kept one old block per cycle until the locus
+  dissolved, about 32 bytes a cycle for a 5-byte String. A shorter value
+  was written into the old block in place, which lost the block's size,
+  so the next longer write could not reuse it. A block is now written in
+  place only at the same length; at any other length the old one is
+  retired at its true size and recycled.
+- **Fixed:** replacing a whole struct-typed self field (`self.f = Frame {
+  … }`) retired the struct's old String fields but not its Bytes ones —
+  8 bytes a write even for an empty payload. Both are retired now.
+
 ### Publishing through an adapter no longer leaks (GH #1038)
 
 - **Fixed:** every publish of a topic bound to an adapter kept a copy

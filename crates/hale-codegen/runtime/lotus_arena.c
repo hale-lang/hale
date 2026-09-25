@@ -11543,6 +11543,14 @@ void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
     }
 }
 
+/* GH #1033: the Bytes companion. A compound `self.f = Struct { ... }`
+ * store replaced a Bytes field's blob without retiring it — one blob
+ * per write for as long as the locus lived (8 bytes for an empty
+ * payload). Same cases as the String fixup above; defined after the
+ * Bytes helpers it needs (see the forward declaration). */
+void lotus_bytes_field_replace_fixup(void *arena_ptr, void **slot,
+                                     void *oldp, void *rawp);
+
 /* 2026-05-22 PM: in-place String reassignment for the
  * `self.X = String_value` field-assign hot path. The motivating
  * leak class (a downstream daemon / SymbolBook): every per-delta
@@ -11558,15 +11566,12 @@ void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
  * we ourselves allocated, its buffer is exactly `strlen(old) + 1`
  * bytes (lotus_str_clone / lotus_str_slice / lotus_str_concat /
  * etc. all sit on that invariant — `lotus_arena_alloc(a, n + 1,
- * 1)`). So `strlen(old)` is an upper bound on writable capacity.
- * If the incoming String's length fits, memcpy + NUL-terminate
- * directly onto `old`'s buffer and return `old` unchanged. The
- * slot's pointer stays put; no new arena bytes consumed. When the
- * new String is longer, fall back to lotus_str_clone (a fresh
- * allocation in `a`); the old buffer leaks per the structural
- * arena limitation, but the rate is bounded by how often the
- * field genuinely grows in length rather than the per-update
- * frequency.
+ * 1)`). A new String of the SAME length is memcpy'd onto `old`'s
+ * buffer and `old` returned: the slot's pointer stays put, no new
+ * arena bytes. Any other length retires `old` at its exact size
+ * (Gap A) and stores a fresh block, which the retire freelist
+ * serves at the next activation — see the GH #1033 note in the
+ * body for why a shorter value is no longer written in place.
  *
  * Static-literal skip: writing into a .rodata pointer would
  * segfault. Detect via the same __executable_start / _edata
@@ -11606,24 +11611,36 @@ char *lotus_str_assign_in_place(lotus_arena_t *a, char *old,
         }
         return lotus_str_clone(a, new_s);
     }
-    /* old is an arena-owned NUL-terminated buffer. strlen(old)
-     * is its capacity (sans NUL). */
+    /* old is an arena-owned NUL-terminated buffer, and its block is
+     * exactly strlen(old)+1 bytes: every producer allocates that, and
+     * this function never shrinks a block in place (below). */
     size_t old_len = strlen(old);
     size_t new_len = strlen(new_s);
-    if (new_len <= old_len) {
+    if (new_len == old_len) {
+        /* Same length: overwrite in place; the NUL is already there. */
         memcpy(old, new_s, new_len);
-        old[new_len] = '\0';
         return old;
     }
-    /* New is longer than old's buffer — the slot abandons `old`.
-     * Gap A: retire it (reusable at the activation-boundary flush)
-     * instead of orphaning it in the locus arena for the locus's
-     * lifetime; that was the "old buffer leaks per the structural
-     * arena limitation" case above. Note the recorded size is
-     * strlen(old)+1, which UNDER-reports the physical block after a
-     * prior in-place shrink — safe (the flush never writes past the
-     * recorded size), it only degrades reuse matching. */
+    /* Any other length — the slot abandons `old`. Gap A: retire it
+     * (reusable at the activation-boundary flush) instead of
+     * orphaning it for the locus's lifetime.
+     *
+     * GH #1033: a SHORTER value used to be written in place. That
+     * kept the block but lost its size — strlen is the only record of
+     * it — so the next longer write saw a too-small "capacity",
+     * retired the block under its shrunk size (a 6-byte block filed
+     * as 1 byte, which no request of 6 matches) and allocated afresh:
+     * a field alternating between a heap value and an empty one
+     * leaked one block per cycle. Never shrinking keeps strlen+1 the
+     * block's true size, so every retire here is exact and the next
+     * write of that size reuses it. */
     lotus_arena_retire_str(a, old);
+    if (lotus_str_is_static_literal(new_s)) {
+        return (char *)new_s;         /* a literal needs no block */
+    }
+    if (new_len == 0) {
+        return (char *)"";            /* nor does an empty value */
+    }
     if (lotus_ptr_in_arena(a, new_s)) {
         return lotus_str_copy_owned(a, new_s);
     }
@@ -12167,17 +12184,14 @@ void *lotus_bytes_clone(lotus_arena_t *a, const void *src) {
  * String and Bytes.
  *
  * Bytes layout is `[int64_t len][len bytes payload]`; the buffer's
- * physical size is `sizeof(int64_t) + len`. We use the prefix value
- * as both the logical length AND the available capacity (no
- * separate capacity field in the v0 representation). After an
- * in-place reduce, the prefix is updated to `new_len`; subsequent
- * assigns compare against the (now-smaller) prefix, so a field
- * whose values oscillate up and down across hot-path calls will
- * degrade toward "always clone" as the prefix shrinks. For bounded-
- * variance fields (the typical case — fixed-size frame headers,
- * checksums, etc.) the prefix stays constant and the in-place
- * path holds. Spec callout in spec/memory.md Phase-4 perf follow-
- * on #7.
+ * physical size is `sizeof(int64_t) + len`, so the prefix is the
+ * block's only size record. A payload of the SAME length is written
+ * in place; any other length retires the old block at its exact
+ * size and stores a fresh one (GH #1033: an in-place shrink used to
+ * lower the prefix, so a field oscillating between lengths retired
+ * each block under a too-small size and leaked it). Fixed-size
+ * frame headers, checksums and the like stay on the in-place path.
+ * Spec callout in spec/memory.md Phase-4 perf follow-on #7.
  *
  * Static-literal skip + null-old skip + same-pointer skip mirror
  * lotus_str_assign_in_place's logic. */
@@ -12203,6 +12217,11 @@ static void *lotus_bytes_copy_owned(lotus_arena_t *a, const void *src) {
     return blob;
 }
 
+/* GH #1033: the empty Bytes a field holds after an empty write — a
+ * zero-length blob in .rodata, which lotus_str_is_static_literal
+ * recognises, so no path ever writes into it or retires it. */
+static const int64_t lotus_bytes_static_empty[1] = {0};
+
 void *lotus_bytes_assign_in_place(lotus_arena_t *a, void *old,
                                    const void *new_b) {
     if (!new_b) return NULL;
@@ -12226,12 +12245,12 @@ void *lotus_bytes_assign_in_place(lotus_arena_t *a, void *old,
         }
         return lotus_bytes_clone(a, new_b);
     }
-    int64_t old_cap = lotus_bytes_len(old);
+    int64_t old_len = lotus_bytes_len(old);
     int64_t new_len = lotus_bytes_len(new_b);
     if (new_len < 0) new_len = 0;
-    if (old_cap < 0) old_cap = 0;
-    if (new_len <= old_cap) {
-        *(int64_t *)old = new_len;
+    if (old_len < 0) old_len = 0;
+    if (new_len == old_len) {
+        /* Same length: overwrite the payload in place. */
         if (new_len > 0) {
             memcpy(
                 (char *)old + sizeof(int64_t),
@@ -12240,16 +12259,39 @@ void *lotus_bytes_assign_in_place(lotus_arena_t *a, void *old,
         }
         return old;
     }
-    /* Doesn't fit — the slot abandons `old`. Retire it (2026-07-18)
-     * so the activation-boundary flush recycles it; the recorded
-     * size comes from the (possibly shrunk) len prefix — an honest
-     * lower bound. Same single-owner rule for the replacement
-     * pointer. */
+    /* Any other length — the slot abandons `old`; retire it
+     * (2026-07-18) so the activation-boundary flush recycles it.
+     * GH #1033: a shorter payload used to be written in place,
+     * shrinking the len prefix — the block's only size record — so a
+     * field alternating between a heap payload and an empty one
+     * retired each block under its shrunk size and allocated afresh
+     * every cycle (see lotus_str_assign_in_place). Never shrinking
+     * keeps the prefix the block's true size and every retire
+     * exact. Same single-owner rule for the replacement pointer. */
     lotus_arena_retire_bytes(a, old);
+    if (lotus_str_is_static_literal((const char *)new_b)) {
+        return (void *)new_b;         /* a literal needs no block */
+    }
+    if (new_len == 0) {
+        return (void *)lotus_bytes_static_empty;
+    }
     if (lotus_ptr_in_arena(a, new_b)) {
         return lotus_bytes_copy_owned(a, new_b);
     }
     return lotus_bytes_clone(a, new_b);
+}
+
+void lotus_bytes_field_replace_fixup(void *arena_ptr, void **slot,
+                                     void *oldp, void *rawp) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !slot) return;
+    void *bp = *slot;
+    if (bp == oldp) return;
+    lotus_arena_retire_bytes(a, oldp);
+    if (bp && bp == rawp && lotus_ptr_in_arena(a, bp)) {
+        void *own = lotus_bytes_copy_owned(a, bp);
+        if (own) *slot = own;
+    }
 }
 
 /* ── cell-store single-owner clones (2026-07-18) ─────────────────
