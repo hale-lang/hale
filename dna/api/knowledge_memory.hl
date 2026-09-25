@@ -400,7 +400,13 @@ locus LocalKnowledge {
         // the store follows the record's identity, and a session that no
         // longer answers is dialled again; otherwise the one it holds serves
         self.store.scope(j.genesis());
-        if !self.store.healthy() && !self.store.reopen() { let e = http.error(503, "knowledge_unavailable"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
+        if !self.store.healthy() && !self.store.reopen() {
+            // one dial, answered at once when memory refuses it (GH #1030);
+            // why goes to the operator, not into the response
+            eprintln("hale dna api: knowledge read: memory unavailable: " + self.store.last_error());
+            let e = http.error(503, "knowledge_unavailable");
+            return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body };
+        }
         let r = graph_read(q, self.store, self.store, j, self.memory.ledger);
         return KnowledgeUpstream { transport_ok: true, status: r.status, body: r.body };
     }

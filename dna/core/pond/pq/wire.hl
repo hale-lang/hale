@@ -256,8 +256,12 @@ fn sasl_offers_scram_sha256(body: Bytes, total: Int) -> Bool {
 fn sasl_retryable_kind() -> String { return "io"; }
 
 fn is_fail_fast_kind(kind: String) -> Bool {
+    // "connection_refused": nothing listens on the port, and a redial
+    // 150 ms later will find the same (GH #1030 — eight of them made a
+    // store that is down cost each read over a second).
     return kind == "auth_failed" || kind == "unsupported"
-        || kind == "startup_rejected" || kind == "tls";
+        || kind == "startup_rejected" || kind == "tls"
+        || kind == "connection_refused";
 }
 
 // ===== sslmode / TLS negotiation policy =====

@@ -114,8 +114,10 @@ locus PgConn {
     // postgres 18 on a fresh cold dial at a meaningful rate; a fresh redial
     // almost always succeeds on the next attempt. Bounded retries with a
     // short backoff make open() durable WITHOUT masking a genuinely-down
-    // server: a real refusal fails `connect` fast every attempt and we
-    // still surface the last error after the final try.
+    // server: a refused connect is "connection_refused", which is
+    // fail-fast, so a server that is down answers on the first attempt
+    // (GH #1030 — it used to cost eight dials, each the runtime's own
+    // second of connect retries).
     fn open() -> db::Status {
         // Reject an unknown sslmode up front — before dialing — so a
         // typo fails fast with a clear message instead of being silently
@@ -169,13 +171,17 @@ locus PgConn {
     // __open_once — one dial + StartupMessage + read-to-ReadyForQuery. The
     // retry policy lives in open(); this is the single-attempt body.
     fn __open_once() -> db::Status {
+        // A refused connect is an answer — nothing listens there — and
+        // `connect` reports it at once (GH #1030); it gets its own kind,
+        // which open() does not retry.
+        let mut refused = false;
         let fd = std::io::tcp::connect(self.host, self.port)
-        or __on_connect_fail(err);
+        or { refused = err.kind == "connection_refused"; -1 };
         if fd < 0 {
             return db::Status {
                 ok: false,
-                err: db::DbError { kind: "open_failed", engine_code: 0,
-                    detail: "connect failed to " + self.host },
+                err: db::DbError { kind: if refused { "connection_refused" } else { "open_failed" }, engine_code: 0,
+                    detail: (if refused { "connection refused by " } else { "connect failed to " }) + self.host + ":" + to_string(self.port) },
             };
         }
         self.sock = fd;

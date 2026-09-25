@@ -2837,11 +2837,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .add_function("lotus_tcp_accept_one", tcp_accept_ty, None);
 
         // declare i32 @lotus_tcp_connect(ptr host, i16 port)
-        // socket + connect with retry, returns conn_fd or -1.
+        // socket + one connect attempt, returns conn_fd or -1.
         let tcp_connect_ty =
             i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
         self.module
             .add_function("lotus_tcp_connect", tcp_connect_ty, None);
+        // GH #1030: declare i32 @lotus_tcp_connect_wait(ptr host, i16
+        // port, i64 wait_ns) — retry a refused connect for wait_ns.
+        let tcp_connect_wait_ty = i32_t
+            .fn_type(&[ptr_t.into(), i16_t.into(), self.context.i64_type().into()], false);
+        self.module
+            .add_function("lotus_tcp_connect_wait", tcp_connect_wait_ty, None);
 
         // declare i32 @lotus_tcp_close_fd(i32 fd)
         // close, returns 0 or -1.
