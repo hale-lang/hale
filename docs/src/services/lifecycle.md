@@ -438,7 +438,11 @@ already running when the signal came is cut short; a `sleep` in your
 time. A `run()` that never checks the flag cannot be stopped this
 way; the runtime gives the drain five seconds (`LOTUS_DRAIN_GRACE_MS`)
 and then lets the signal end the process as it normally would, and a
-second Ctrl-C ends it at once. Under `hale run` the same holds:
+second Ctrl-C ends it at once. The drain only happens while something
+live can answer it: if no locus that checks the flag has been built —
+say the only `!self.draining` loop is in a package you import but
+don't use — the signal ends the program at once, with no grace to wait
+out. Under `hale run` the same holds:
 `hale` waits for the drain instead of dying first, and passes a
 SIGTERM sent to it on to the program.
 

@@ -1,0 +1,121 @@
+// GH #1077 — a `draining` read nothing live runs does not make SIGTERM
+// wait out the drain grace.
+//
+// spec/semantics.md § "Drain cascade (whole-process)": the drain is for
+// the loci that can answer it. A `self.draining` read anywhere in the
+// compiled program used to turn it on for the whole program — including
+// a read in an imported package the program never builds (a NATS
+// adapter's receive loop). The program then answered SIGTERM by
+// waiting the full grace, with nothing to drain, before dying. Now a
+// signal that finds no live instance of a locus that reads `draining`
+// takes the signal's default action at once, as a program without the
+// read does.
+//
+// Two programs import a package whose only locus loops on
+// `self.draining`: one never builds it, one builds it and lets it end
+// before the signal. Both run with a 20 s grace; each must die by the
+// signal well inside it. (A live reader still drains to a clean exit:
+// sigterm_drains_pinned_test.hl.)
+
+fn lib_source() -> String {
+    return "locus Conn {\n"
+        + "    @unbounded\n"
+        + "    run() { while !self.draining { std::time::sleep(10ms); } }\n"
+        + "}\n";
+}
+
+fn never_built_source() -> String {
+    return "import \"./lib\" as lib;\n"
+        + "main locus App {\n"
+        + "    @unbounded\n"
+        + "    run() { println(\"up\"); while true { std::time::sleep(50ms); } }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+fn built_and_gone_source() -> String {
+    return "import \"./lib\" as lib;\n"
+        + "locus Once {\n"
+        + "    run() { let mut i = 0; while !self.draining && i < 2 { std::time::sleep(5ms); i = i + 1; } }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    @unbounded\n"
+        + "    run() { Once { }; println(\"up\"); while true { std::time::sleep(50ms); } }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn wait_for(needle: String) -> Bool {
+        let mut i = 0;
+        while i < 1000 {
+            self.out = self.out + (std::process::read_stdout(self.child) or "");
+            if std::str::contains(self.out, needle) {
+                return true;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fn term() {
+        std::process::signal(self.child, 15) or discard;
+    }
+
+    // The exit code once the child has exited (-1 = killed by a
+    // signal), or -2 if it is still running after ~3 s.
+    fn exit_code() -> Int {
+        let mut i = 0;
+        while i < 150 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                return code;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return -2;
+    }
+}
+
+fn check(hale: String, dir: String, name: String, source: String) {
+    let src = dir + "/" + name + ".hl";
+    std::io::fs::write_file(src, source) or discard;
+    let built = std::process::run(hale + "\nbuild\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(built.code, 0, name + " builds: " + built.stderr);
+    let p = Proc { };
+    // exec keeps the pid, so the signal reaches the program itself
+    std::test::assert(p.start("sh\n-c\nLOTUS_DRAIN_GRACE_MS=20000 exec \"$1\"\nsh\n" + dir + "/" + name), name + " started");
+    std::test::assert(p.wait_for("up"), name + " is running: " + p.out);
+    p.term();
+    std::test::assert_eq_int(p.exit_code(), -1, name + " died by SIGTERM at once, not after the 20 s grace");
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let marker = std::io::fs::mktemp("/tmp/hale-1077-", "") or "";
+    std::test::assert(marker != "", "a scratch path");
+    let dir = marker + ".d";
+    std::io::fs::mkdir(dir) or discard;
+    std::io::fs::mkdir(dir + "/lib") or discard;
+    std::io::fs::write_file(dir + "/lib/lib.hl", lib_source()) or discard;
+
+    check(hale, dir, "never_built", never_built_source());
+    check(hale, dir, "built_and_gone", built_and_gone_source());
+
+    let _gone = std::process::run("rm\n-rf\n" + dir + "\n" + marker)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "" };
+}

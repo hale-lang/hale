@@ -3684,7 +3684,17 @@ never reads `self.draining` cannot keep a stopped program alive. A
 The handling is installed only in a program that reads
 `draining` somewhere. A program that cannot observe a drain keeps
 the default action and ends at the signal with `128 + signal`, as
-if the runtime were not there. The signal is caught, never
+if the runtime were not there. **What can answer a drain is a live
+instance** of a locus whose own code reads `draining` (GH #1077):
+the runtime counts each such instance from its instantiation to its
+teardown. A signal that finds none live — the read sits in an
+imported package the program never builds, or every instance that
+could have answered has already ended — takes the signal's default
+action at once, exactly as a program without the read does, instead
+of waiting out the grace with nothing to drain. A `draining` read
+outside any locus body (a free function handed a locus) cannot be
+counted, so a program with one drains, and waits its grace, on
+every signal. The signal is caught, never
 blocked, so a subprocess the program spawns inherits the default
 disposition. (GH #1039: before 2026-09-24 the runtime caught
 neither signal, so every program ended at the signal and a

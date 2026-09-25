@@ -228,6 +228,15 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             raw
         } else {
             self.reads_draining = true;
+            // GH #1077: the locus whose code runs this read is the one
+            // that can answer a drain — the enclosing `self`, whatever
+            // receiver is read.
+            match self.current_self.as_ref().map(|cs| cs.locus_name.clone()) {
+                Some(reader) => {
+                    self.drain_observer_loci.insert(reader);
+                }
+                None => self.drain_read_outside_locus = true,
+            }
             let proc_raw = self.emit_process_draining_load("draining.process")?;
             self.builder
                 .build_or(raw, proc_raw, "draining.any")
@@ -1361,6 +1370,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 .build_conditional_branch(already, after_bb, do_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(do_bb);
+            self.emit_drain_observer_count(locus_name, -1)?;
             self.builder
                 .build_store(arena_field_ptr, ptr_t.const_null())
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1826,6 +1836,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_conditional_branch(arena_is_null, after_bb, do_destroy_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(do_destroy_bb);
+        // GH #1077: past the latch, once per instance — one drain
+        // observer fewer.
+        self.emit_drain_observer_count(locus_name, -1)?;
 
         let is_zero = self
             .builder

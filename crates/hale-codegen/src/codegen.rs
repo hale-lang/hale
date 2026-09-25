@@ -1586,6 +1586,8 @@ pub fn build_executable_with_options(
             .collect(),
         key_extractors: BTreeMap::new(),
         reads_draining: false,
+        drain_observer_loci: BTreeSet::new(),
+        drain_read_outside_locus: false,
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
@@ -4605,6 +4607,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// signal action. Read at the END of `lower_program` (bodies may
     /// lower after the prelude), through `lotus.reads_draining`.
     pub(crate) reads_draining: bool,
+    /// GH #1077: the loci whose own code reads `draining` — the ones
+    /// that can answer a drain. Their live instances are counted at
+    /// run time (`lotus_drain_observer_add`), so a signal that finds
+    /// none of them takes the signal's default action instead of
+    /// waiting out the grace.
+    pub(crate) drain_observer_loci: BTreeSet<String>,
+    /// GH #1077: a `draining` read outside any locus body (a free fn
+    /// handed a locus): its reader cannot be counted, so the drain
+    /// keeps its grace unconditionally.
+    pub(crate) drain_read_outside_locus: bool,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -11067,9 +11079,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_fn = None;
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
+        // GH #1077: the loci that can answer a drain, now every body
+        // has lowered.
+        for name in self.drain_observer_loci.clone() {
+            if let Some(g) = self.module.get_global(&format!("lotus.observes_drain.{name}")) {
+                g.set_initializer(&self.context.i64_type().const_int(1, false));
+            }
+        }
         if let Some(reads) = self.module.get_global("lotus.reads_draining") {
             let i64_t = self.context.i64_type();
-            reads.set_initializer(&i64_t.const_int(self.reads_draining as u64, false));
+            // 0: nothing reads `draining` — keep the default signal
+            // actions. 1: drain, while a counted observer is live
+            // (GH #1077). 2: a read outside any locus — drain always.
+            let mode: u64 = match (self.reads_draining, self.drain_read_outside_locus) {
+                (false, _) => 0,
+                (true, false) => 1,
+                (true, true) => 2,
+            };
+            reads.set_initializer(&i64_t.const_int(mode, false));
         }
         Ok(())
     }
@@ -34703,6 +34730,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         Ok(v)
+    }
+
+    /// GH #1077: count an instance of `locus_name` in (`delta` 1) or
+    /// out (-1) of the live drain observers — behind a private flag
+    /// whose initializer the end of `lower_program` writes, since
+    /// which loci read `draining` is known only once every body has
+    /// lowered. A locus that never reads it folds to nothing.
+    pub(crate) fn emit_drain_observer_count(
+        &mut self,
+        locus_name: &str,
+        delta: i64,
+    ) -> Result<(), CodegenError> {
+        if self.is_wasm {
+            return Ok(());
+        }
+        let i64_t = self.context.i64_type();
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let gname = format!("lotus.observes_drain.{locus_name}");
+        let g = match self.module.get_global(&gname) {
+            Some(g) => g,
+            None => {
+                let g = self.module.add_global(i64_t, None, &gname);
+                g.set_linkage(inkwell::module::Linkage::Private);
+                g.set_initializer(&i64_t.const_zero());
+                g
+            }
+        };
+        let observes = self
+            .builder
+            .build_load(i64_t, g.as_pointer_value(), "drain.observer.flag")
+            .map_err(e)?
+            .into_int_value();
+        let yes = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, observes, i64_t.const_zero(), "drain.observer")
+            .map_err(e)?;
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let do_bb = self.context.append_basic_block(func, "drain.observer.count");
+        let cont_bb = self.context.append_basic_block(func, "drain.observer.cont");
+        self.builder.build_conditional_branch(yes, do_bb, cont_bb).map_err(e)?;
+        self.builder.position_at_end(do_bb);
+        let add = self
+            .module
+            .get_function("lotus_drain_observer_add")
+            .expect("lotus_drain_observer_add declared");
+        self.builder
+            .build_call(add, &[i64_t.const_int(delta as u64, true).into()], "drain.observer.add")
+            .map_err(e)?;
+        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
+        self.builder.position_at_end(cont_bb);
+        Ok(())
     }
 
     /// Bus-arena reclaim (2026-05-21): open a per-method-call

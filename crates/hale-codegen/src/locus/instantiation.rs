@@ -3098,6 +3098,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .const_int(crate::DEFAULT_RESTART_BOUND, false),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1077: one live drain observer more, if this locus's code
+        // reads `draining` (its arena destroy counts it out).
+        self.emit_drain_observer_count(locus_name, 1)?;
         // GH #1069: is this instance held by something that reclaims
         // it later? Everything but a bare statement literal is — a
         // param field, a binding, a returned or expression-position
