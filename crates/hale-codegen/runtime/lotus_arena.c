@@ -1477,6 +1477,19 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_on_node(
     return c;
 }
 
+/* The arena's hot entry points start on a 64-byte boundary. Code added
+ * anywhere earlier in this file shifts them, and a shift that moves one
+ * off a cache-line or fetch-block boundary reads as a 5–15% "regression"
+ * (or win) on the benches that live in them — same instructions, other
+ * address (#1060's fn_call, #1070's locus_instantiation). Pinning the
+ * start keeps layout out of the bench numbers. wasm has no such notion. */
+#if defined(__wasm__)
+#define LOTUS_HOT_ALIGN
+#else
+#define LOTUS_HOT_ALIGN __attribute__((aligned(64)))
+#endif
+
+LOTUS_HOT_ALIGN
 static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
     struct lotus_arena *target, size_t cap)
 {
@@ -1595,6 +1608,7 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
  * it via libc if the pool is full or the chunk isn't default-
  * sized. Called by `lotus_arena_destroy` for every chunk in
  * the dying arena's list. */
+LOTUS_HOT_ALIGN
 static void lotus_arena_release_chunk(lotus_arena_chunk_t *c) {
     if (!c) return;
     lotus_mark_thread_for_pool_dtor();
@@ -1698,6 +1712,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
 
 /* Public ABI ---------------------------------------------------- */
 
+LOTUS_HOT_ALIGN
 lotus_arena_t *lotus_arena_create(void) {
     lotus_arena_t *a = lotus_arena_alloc_struct();
     /* Top-level arenas (no parent) are the long-lived residency
@@ -2214,6 +2229,7 @@ void lotus_child_struct_release(void *owner_self, void *child,
  * slot when this sub-region dies. The free-list keeps the
  * parent's slot space O(peak children alive), not O(total
  * children ever accepted). */
+LOTUS_HOT_ALIGN
 lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
     if (!parent) return lotus_arena_create();
     lotus_arena_t *a = lotus_arena_alloc_struct();
@@ -2266,6 +2282,7 @@ static inline size_t lotus_arena_off_for(
     return (size_t)(aligned - base);
 }
 
+LOTUS_HOT_ALIGN
 static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t align) {
     if (!a) return NULL;
     if (size == 0) size = 1;        /* every alloc gets a unique addr */
@@ -2364,6 +2381,7 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
  * uniform across targets — codegen always passes i64, which matches on
  * 64-bit native (uint64_t == size_t) AND on wasm32 (where size_t is
  * 32-bit but the declared param stays 64-bit). WASM plan. */
+LOTUS_HOT_ALIGN
 void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
     if (a && a->shared_concurrent) {
         pthread_mutex_lock(&a->subregion_lock);
@@ -2386,6 +2404,7 @@ void lotus_arena_mark_shared(void *arena_ptr) {
 
 extern __thread lotus_arena_t *lotus_current_caller_arena;
 
+LOTUS_HOT_ALIGN
 void lotus_arena_destroy(lotus_arena_t *a) {
     if (!a) return;
     /* GH #375: the caller-arena TLS is a set-and-forget channel —
