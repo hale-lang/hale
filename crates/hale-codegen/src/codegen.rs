@@ -19695,6 +19695,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     CodegenError::LlvmEmit(e.to_string())
                                 })?;
                         } else {
+                            self.emit_method_exit_epilogue()?;
                             self.builder
                                 .build_return(None)
                                 .map_err(|e| {
@@ -19748,6 +19749,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     CodegenError::LlvmEmit(e.to_string())
                                 })?;
                         } else {
+                            self.emit_method_exit_epilogue()?;
                             self.builder
                                 .build_return(Some(&undef))
                                 .map_err(|e| {
@@ -23513,33 +23515,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // returns must emit dissolves on every path
                         // while the epilogue's single pop still
                         // balances.
-                        let saved_frame = self
-                            .deferred_dissolves
-                            .last()
-                            .cloned()
-                            .unwrap_or_default();
-                        self.flush_dissolve_frame_kind(false)?;
-                        self.push_dissolve_frame();
-                        if let Some(f) = self.deferred_dissolves.last_mut() {
-                            *f = saved_frame;
-                        }
-                        // Save/restore scratch state so subsequent
-                        // `return` statements in the same method
-                        // body also emit the destroy. Without this,
-                        // a method with N early returns only
-                        // reclaims the scratch on whichever return
-                        // codegen visits first — every other return
-                        // path leaks the subregion (chunks stay in
-                        // pool/malloc). Surfaced 2026-05-22 PM by
-                        // a downstream daemon's dispatch() (8+ returns,
-                        // ~10 MiB/min residency growth that bisected
-                        // to the multi-return path).
-                        let saved_scratch = self.current_method_scratch;
-                        let saved_caller =
-                            self.current_method_caller_arena;
-                        self.close_method_scratch()?;
-                        self.current_method_scratch = saved_scratch;
-                        self.current_method_caller_arena = saved_caller;
+                        self.emit_method_exit_epilogue()?;
                     }
                     self.builder
                         .build_return(None)
@@ -23680,24 +23656,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // deep-copy above already moved the return value
                     // into the caller's arena, so dissolving here
                     // cannot strand it.
-                    let saved_frame = self
-                        .deferred_dissolves
-                        .last()
-                        .cloned()
-                        .unwrap_or_default();
-                    self.flush_dissolve_frame_kind(false)?;
-                    self.push_dissolve_frame();
-                    if let Some(f) = self.deferred_dissolves.last_mut() {
-                        *f = saved_frame;
-                    }
-                    // Multi-return scratch-destroy fix — see
-                    // matching note in the void-return arm above.
-                    let saved_scratch = self.current_method_scratch;
-                    let saved_caller =
-                        self.current_method_caller_arena;
-                    self.close_method_scratch()?;
-                    self.current_method_scratch = saved_scratch;
-                    self.current_method_caller_arena = saved_caller;
+                    self.emit_method_exit_epilogue()?;
                     self.builder
                         .build_return(Some(&copied))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -34422,6 +34381,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fnptr_numeric_ret: &fnptr_numeric_ret,
         };
         fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
+    }
+
+    /// The epilogue every early exit from a locus method body emits
+    /// before its `ret` — a `return` and a `violate` alike: flush
+    /// the method's deferred-dissolve frame, then destroy its
+    /// scratch. Order is load-bearing: a dissolve is a method call
+    /// whose call site publishes the caller-arena TLS, so flushing
+    /// AFTER `close_method_scratch()` would publish a pointer to
+    /// freed scratch (the #375/#381 use-after-free signature).
+    ///
+    /// Both the frame contents and the scratch state are saved and
+    /// restored, so a body with N exits emits the teardown on every
+    /// path while the fall-through epilogue's single pop still
+    /// balances (GH #383; the multi-return scratch leak, 2026-05-22).
+    /// GH #1036: `violate` used to `ret` without it, leaking the
+    /// method scratch of every handler that violated.
+    /// No-op when the method has no scratch (elided, or a free fn).
+    fn emit_method_exit_epilogue(&mut self) -> Result<(), CodegenError> {
+        if self.current_method_scratch.is_none() {
+            return Ok(());
+        }
+        let saved_frame = self
+            .deferred_dissolves
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        self.flush_dissolve_frame_kind(false)?;
+        self.push_dissolve_frame();
+        if let Some(f) = self.deferred_dissolves.last_mut() {
+            *f = saved_frame;
+        }
+        let saved_scratch = self.current_method_scratch;
+        let saved_caller = self.current_method_caller_arena;
+        self.close_method_scratch()?;
+        self.current_method_scratch = saved_scratch;
+        self.current_method_caller_arena = saved_caller;
+        Ok(())
     }
 
     /// Bus-arena reclaim (2026-05-21): open a per-method-call

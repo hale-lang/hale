@@ -1,0 +1,39 @@
+// GH #1036, the drain half: the child of 75-collapsed-child-adapter-hop
+// with a `drain()` of its own that reads its state.
+//
+// The child collapses inside a handler reached through a bound
+// adapter's `send`, and its `__hwrap_*` wrapper reclaims it on the
+// spot — `drain()` runs then, once, and the child's arena goes with
+// it. App's exit cascade drains its children before dissolving them,
+// and that walk reached `c` again without testing the child's
+// arena-destroy latch: it ran `drain()` a second time, reading
+// `self.why` out of the freed arena (heap-use-after-free under ASan).
+// Both halves of the cascade now step over a reclaimed child.
+//
+// This is a corpus fixture: it must run CLEAN — exit 0, terminate,
+// and pass ASan/LSan — under corpus_oracle.
+type Note { n: Int = 0; }
+type Wire { subject: String = ""; data: Bytes = b""; }
+topic Lost { payload: Note; subject: "lost"; }
+topic Q { payload: Wire; subject: "q"; }
+locus Fwd {
+    bus { publish Q; }
+    fn send(subject: String, bytes: Bytes) { Q <- Wire { subject: subject, data: bytes }; }
+}
+@form(vec)
+locus Ints { capacity { heap items of Int; } }
+locus Child {
+    params { why: String = ""; v: Ints = Ints { }; }
+    bus { subscribe Q as on_q; }
+    closure fuse { captures: why; epoch inline; }
+    fn on_q(w: Wire) { self.why = "got " + w.subject; violate fuse; }
+    drain() { println("child drain " + self.why); }
+}
+main locus App {
+    params { c: Child = Child { }; seen: String = ""; }
+    bindings { Lost: Fwd { }; }
+    bus { publish Lost; }
+    on_failure(c: Child, err: ClosureViolation) { self.seen = f"{err.closure} {c.why}"; }
+    run() { Lost <- Note { n: 1 }; std::time::sleep(20ms); println("seen=[" + self.seen + "]"); }
+}
+fn main() { App { }; }

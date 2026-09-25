@@ -46,6 +46,21 @@ behavior.
   B6). Both were parse errors, so every program had to wrap a library's
   adapter in a local one. They now bind exactly as a locally declared
   adapter or codec.
+### A collapsed child is torn down once (GH #1036)
+
+- **Fixed:** a child that violated a closure in a handler and was
+  reclaimed on the spot was visited again by its owner's exit
+  cascade, which descended into the child before testing its
+  arena-destroy latch: its `drain()` ran a second time against its
+  freed arena, and a `@form(vec)` (or any param child) that lived
+  there was destroyed a second time — a use-after-free at exit, a
+  SIGSEGV or silent corruption without ASan. Both the drain and the
+  dissolve walk now test the latch first and step over a reclaimed
+  child. Seen through an adapter's `send`, whose publish
+  routes the delivery through the handler wrapper that reclaims.
+- **Fixed:** `violate` left its method without the `return`
+  epilogue, leaking the method's per-call scratch (and skipping the
+  dissolve of loci it had `let`-bound) on every violation.
 
 ### Operating practices, seeded beside the design (GH #994)
 
