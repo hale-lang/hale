@@ -17,6 +17,13 @@ behavior.
   runtime now marks a listen socket it shut down and stays silent for
   it, and for a worker whose pool is shutting down. An accept failure
   nobody asked for is still reported.
+### An imported fn can be used as a value (GH #1082)
+
+- **Fixed:** an imported seed's free fn used as a value
+  (`apply(lib::add3)`, `let f = lib::add3;`, a record field) passed
+  `hale check` and failed `hale build` with `unresolved path`. Codegen
+  resolved the alias only in call position. The path now lowers to the
+  library's fn, the same fn pointer a same-seed fn gives.
 
 ### A refused TCP connect fails at once (GH #1030)
 

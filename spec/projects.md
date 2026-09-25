@@ -399,6 +399,12 @@ held to its signature. (GH #1028: the path was typed as unknown,
 and a call with an argument too few passed `hale check` to fail in
 `hale build`.)
 
+An imported fn is a value like a local one: `apply(lib::add3)`,
+`let f = lib::add3;` and a record field holding it all carry the
+library's fn, typed as that fn (GH #1082: codegen resolved the path
+only in call position, and a value of it failed `hale build` with
+"unresolved path" after passing `hale check`).
+
 One thing stays permissive, because the declaration genuinely is
 not in the bundle: a check of a single FILE of a multi-file seed,
 where the `import` line may live in a sibling — one file is not a

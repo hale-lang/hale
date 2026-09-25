@@ -1,0 +1,25 @@
+// GH #1082 — an imported seed's free fn can be used as a value.
+//
+// A call through the import alias, `lib::add3(1, 2, 3)`, is renamed to
+// the library's symbol at the call site. A value is not a call, and
+// codegen had no rename for a path in value position except a const:
+// `apply(lib::add3)` passed `hale check` and died in `hale build` with
+// "unresolved path `lib::add3`". It is now the same fn pointer
+// `apply(add3)` makes for a same-seed fn, wherever a value can go.
+import "./imported_fn_value_lib" as lib;
+
+type Op { f: fn (Int, Int, Int) -> Int; }
+
+fn apply(f: fn (Int, Int, Int) -> Int) -> Int { return f(1, 2, 3); }
+fn apply1(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }
+
+fn main() {
+    std::test::assert_eq_int(apply(lib::add3), 6, "passed as an argument");
+    let f = lib::add3;
+    std::test::assert_eq_int(f(2, 3, 4), 9, "bound with let and called");
+    let o = Op { f: lib::add3 };
+    let g = o.f;
+    std::test::assert_eq_int(g(3, 3, 3), 9, "stored in a record field");
+    std::test::assert_eq_int(apply1(lib::twice, 21), 42, "another fn of the same library");
+    std::test::assert_eq_int(lib::add3(1, 1, 1), 3, "the call through the path still works");
+}
