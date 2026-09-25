@@ -88,7 +88,9 @@ refuses it, naming both versions and the command that fixes it.
 
 One Postgres can hold many records. Memory is scoped by the record —
 its identity is the sha of the record's first commit, the same in
-every clone and different for every record — and each record gets its
+every clone and different for every record (that commit carries a
+random `Record-Nonce`, so even two projects scaffolded alike in the
+same second differ) — and each record gets its
 own schema, `dna_<sha>`, and its own roles, so two projects pointed at
 the same database see two graphs, each with its own watermark, and
 neither role can read the other record's. A schema that names a

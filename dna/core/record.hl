@@ -601,6 +601,8 @@ locus MemRecord {
 // process, so two writers in one repository never share one.
 
 const NO_OBJECT: String = "0000000000000000000000000000000000000000";
+// The trailer a chain's first commit carries (GH #1068).
+const RECORD_NONCE: String = "Record-Nonce";
 
 // A fetch that lost a ref's lock to another fetch is tried again this
 // many times in all, waiting FETCH_RETRY longer before each (GH #1072).
@@ -737,8 +739,21 @@ locus GitRecord {
         let tree = trim_nl(wt.stdout);
         let parent = if len(at) > 0 { "-p\n" + at + "\n" } else { "" };
         let signed = if sign { "-S\n" } else { "" };
-        // argv is newline-separated: the note is its own paragraph
-        let message = "-m\n" + row.kind + " " + row.entity + (if len(note) > 0 { "\n-m\n" + note } else { "" });
+        // A record's first commit is its identity (`identity()`), and
+        // everything that names the organization derives from it: memory's
+        // schema and roles, the nerves' subjects, stream and consumer. Its
+        // content comes from the project, which a scaffold makes the same
+        // for two projects created alike in the same second, so it carries
+        // a nonce of its own (GH #1068): two records are never one
+        // organization. A chain's first commit only; never without one.
+        let mut first = "";
+        if len(at) == 0 {
+            let nonce = hex(std::os::getrandom(16) or b"");
+            if len(nonce) < 32 { self.last_error = "no randomness for the record's first commit"; return ""; }
+            first = "\n-m\n" + RECORD_NONCE + ": " + nonce;
+        }
+        // argv is newline-separated: the note and the nonce are paragraphs
+        let message = "-m\n" + row.kind + " " + row.entity + (if len(note) > 0 { "\n-m\n" + note } else { "" }) + first;
         let ct = self.git(identity + "commit-tree\n" + tree + "\n" + parent + signed + message);
         std::io::fs::unlink(tmp) or discard;
         std::io::fs::unlink(idx) or discard;

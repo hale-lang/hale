@@ -2812,7 +2812,12 @@ The live half is memory's, projected from the record by the spine
 - **The record is the scope of its memory.** Memory is opened for one
   record, named by the record's identity — the sha of the journal's
   first commit, the same in every clone of the record and different
-  for every record (`GitJournal.genesis()`; `scope(record)` on the
+  for every record: that first commit carries a `Record-Nonce:` of 16
+  random bytes, so two projects created alike in the same second (same
+  author, same scaffold, same row) are two records, not one
+  organization to memory and the nerves (GH #1068); a record that
+  cannot draw them writes no first row. A record made before keeps its
+  identity (`GitJournal.genesis()`; `scope(record)` on the
   store before `open`, `record()` to read it back). `Pq` keeps one
   Postgres schema per record, `dna_<identity>`, selected for the
   session at `open` (with `public` behind it for the vector type), so

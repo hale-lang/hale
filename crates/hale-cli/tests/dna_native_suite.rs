@@ -880,6 +880,7 @@ fn dna_fixture_set_is_complete() {
             "prompt_receipt_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
+            "record_identity_test.hl",
             "record_test.hl",
             "recorded_model_test.hl",
             "recovery_association_test.hl",

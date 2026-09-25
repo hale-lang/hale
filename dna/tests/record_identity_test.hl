@@ -1,0 +1,53 @@
+// dna/tests/record_identity_test.hl — two projects created alike are two
+// records (GH #1068).
+//
+// A record's identity is the sha of its journal's first commit, and
+// memory's schema and roles and the nerves' subjects, stream and consumer
+// all derive from it. The first commit's content comes from the project,
+// which a scaffold makes the same: created by one author, from one
+// scaffold, in one second, two projects had one identity, and each
+// organization heard and answered the other's facts. The dates are
+// pinned here so the collision would be certain; the first commit's
+// nonce is what keeps the two apart.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `hale dna new app` in `dir`, as one author at one pinned moment.
+fn new_app(dir: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && export GIT_AUTHOR_DATE=2026-09-25T12:00:00Z GIT_COMMITTER_DATE=2026-09-25T12:00:00Z GIT_AUTHOR_NAME=riley GIT_AUTHOR_EMAIL=riley@dna GIT_COMMITTER_NAME=riley GIT_COMMITTER_EMAIL=riley@dna HALE_DNA_DISCOVER=off && exec \"$2\" dna new app\nsh\n" + dir + "\n" + toolchain());
+}
+
+main locus App {
+    run() {
+        let scratch = dna::scratch_root("record-identity");
+        let a = new_app(scratch + "/a");
+        let b = new_app(scratch + "/b");
+        std::test::assert(a.code == 0 && b.code == 0, "two projects, created alike: " + a.stderr + b.stderr);
+        let ja = dna::GitJournal { repo: scratch + "/a/app" };
+        let jb = dna::GitJournal { repo: scratch + "/b/app" };
+        let ia = ja.genesis();
+        let ib = jb.genesis();
+        std::test::assert(len(ia) == 40 && len(ib) == 40, "each has a record: " + ia + " " + ib);
+        std::test::assert(ia != ib, "two records, two identities: " + ia);
+        std::test::assert(dna::schema_for(ia) != dna::schema_for(ib), "so two schemas and two organizations on the nerves");
+        // what makes them two: the first commit's nonce, and nothing else
+        let msg = dna::run_tool("git\n-C\n" + scratch + "/a/app\nlog\n-1\n--format=%B\n" + ia).stdout;
+        std::test::assert(std::str::contains(msg, "Record-Nonce: "), "the first commit carries a nonce: " + msg);
+        let ta = dna::run_tool("git\n-C\n" + scratch + "/a/app\nrev-parse\n" + ia + "^{tree}").stdout;
+        let tb = dna::run_tool("git\n-C\n" + scratch + "/b/app\nrev-parse\n" + ib + "^{tree}").stdout;
+        std::test::assert_eq_str(ta, tb, "the first rows are the same: the nonce alone tells them apart");
+        // only the first: a later row carries none
+        let later = ja.append(ja.revision(), "note.kept", "n1", "");
+        std::test::assert(later.ok, "a second row lands: " + later.error);
+        let head = dna::run_tool("git\n-C\n" + scratch + "/a/app\nlog\n-1\n--format=%B\nrefs/dna/journal").stdout;
+        std::test::assert(!std::str::contains(head, "Record-Nonce"), "and carries no nonce: " + head);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }
