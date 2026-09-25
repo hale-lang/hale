@@ -1,0 +1,4 @@
+// The library half of imported_fn_value_test.hl: an imported seed's
+// free fns, used as values by the test.
+fn add3(a: Int, b: Int, c: Int) -> Int { return a + b + c; }
+fn twice(n: Int) -> Int { return n * 2; }

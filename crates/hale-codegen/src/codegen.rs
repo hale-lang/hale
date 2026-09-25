@@ -24706,6 +24706,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     {
                         return self.lower_expr(&expr, scope);
                     }
+                    // GH #1082: an imported seed's fn used as a VALUE
+                    // (`apply(lib::add3)`). A call through the path is
+                    // renamed at the call site; a value is not, so the
+                    // path is lowered as the mangled name it stands for
+                    // — the same fn pointer `apply(add3)` makes for a
+                    // same-seed fn.
+                    if self.module.get_function(&mangled).is_some() {
+                        let id = Expr::Ident(Ident { name: mangled, span: qn.span });
+                        return self.lower_expr(&id, scope);
+                    }
                 }
                 Err(CodegenError::Unsupported(format!(
                     "unresolved path `{}`",
