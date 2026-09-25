@@ -1397,7 +1397,13 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
     while i < n {
         let r = p.review_of(nth(ids, i));
         let pr = pr_of(p, r.id);
-        if r.state == "settled" && r.is_mutation && len(pr) > 0 && !has_row(p, "github.commented", r.id, "") {
+        // an approval is told, and its genome pushed, once the Mutation is
+        // applied (or failed): the Review settles before the organization
+        // applies it, and a push in between sends the base and is never
+        // made again
+        let approved = std::str::starts_with(r.settled, "approve");
+        let landed = has_row(p, "mutation.applied", r.id, "") || has_row(p, "mutation.failed", r.id, "");
+        if r.state == "settled" && r.is_mutation && len(pr) > 0 && !has_row(p, "github.commented", r.id, "") && (!approved || landed) {
             let ref = std::json::find_string_field(pr, "url");
             let number = to_string(std::json::find_int_field(pr, "number"));
             if std::str::starts_with(r.settled, "approve") && forge.kind() == "github" { let pushed = genome_push_branch(root, remote, branch, branch, false); }

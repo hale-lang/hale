@@ -160,7 +160,7 @@ becomes a `review.verdict` row in the reviewer's login — `board` when
 by login, commit and state, and the Review admits or refuses it
 exactly as above. The settlement goes back as a comment
 (`github.commented`), and an approval pushes the genome so GitHub
-sees the merge. GitHub is a projection of the record and the record
+sees the merge — both once the change is applied. GitHub is a projection of the record and the record
 wins.
 
 ## On the page and in iris

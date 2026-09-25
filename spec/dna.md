@@ -3100,7 +3100,9 @@ The assembly names what fills each role; `hale check` sees the wiring.
   `review.verdict` row in the reviewer's login (authority `board` when
   `dna.github.board` lists the login, else `reviewer`; each review
   once, keyed by login, commit and state), every settlement goes back
-  as a comment (`github.commented`) and an approval pushes the genome.
+  as a comment (`github.commented`) and an approval pushes the genome —
+  both once the Mutation is applied (or has failed), since a Review
+  settles before its Mutation is applied.
   GitHub is a projection of the record and the record wins: a review
   whose head moved is refused here and shows as refused there. **The
   forge is an implementation (GH #648):** `Forge` in the core is the
