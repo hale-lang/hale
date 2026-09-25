@@ -48,11 +48,48 @@ const NATS_ORG_ENV: String = "HALE_DNA_NATS_ORG";
 // How long the stream keeps what it was told.
 const NERVES_MAX_AGE_SECS: Int = 604800;
 
-// The durable consumer the organization reads its facts through.
+// The durable consumer the organization reads its facts through (an
+// owner's organization, over a shared record: `spine_<owner>`).
 const NERVES_DURABLE: String = "spine";
 
-// The subject prefix of an organization's facts.
-fn nerves_prefix(org: String) -> String { return if len(org) == 0 { "" } else { org + "." }; }
+// The exit code of a part whose connection to the nerves collapsed: it
+// stops and its supervisor starts it again (the host's unit, or for the
+// organization the host). A pinned connection restarted in place does
+// not run again (GH #1066). EX_TEMPFAIL, as the genome pull's.
+const NERVES_RESTART: Int = 75;
+
+// Over a shared record every owner runs a body and an organization of
+// its own (GH #664), and each organization answers only for its owner's
+// positions. An owner's facts travel under `<org>.<owner>.` and its
+// organization reads them through a durable of its own, so no
+// organization pulls a fact another owner's host published for its own
+// organization — and refuses it, which the relay would take as the
+// answer. With one owner there is no owner segment.
+const NERVES_OWNER_ENV: String = "HALE_DNA_OWNER";
+
+// An owner's name as a NATS subject token and a durable's name:
+// letters, digits, `-` and `_` kept, anything else `_`.
+@unbounded
+fn nerves_token(s: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let keep = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_";
+        out = out + (if keep { c } else { "_" });
+        i = i + 1;
+    }
+    return out;
+}
+
+// The subject prefix of an owner's facts ("" owner: the organization's).
+fn nerves_prefix_of(org: String, owner: String) -> String {
+    if len(org) == 0 { return ""; }
+    return org + "." + (if len(owner) == 0 { "" } else { nerves_token(owner) + "." });
+}
+
+// The durable an owner's organization reads through.
+fn nerves_durable_of(owner: String) -> String { return if len(owner) == 0 { NERVES_DURABLE } else { NERVES_DURABLE + "_" + nerves_token(owner) }; }
 
 // The organization's stream: its token upper-cased (`dna_<id>` makes
 // `DNA_<ID>`).
@@ -82,22 +119,30 @@ fn env_or_empty(name: String) -> String {
 // organization's token. Both empty when no nerves were handed to it.
 fn nerves_spine_url() -> String { return env_or_empty(NATS_SPINE_URL_ENV); }
 fn nerves_org() -> String { return env_or_empty(NATS_ORG_ENV); }
+fn nerves_owner() -> String { return env_or_empty(NERVES_OWNER_ENV); }
 fn nerves_here() -> Bool { return len(nerves_spine_url()) > 0 && len(nerves_org()) > 0; }
 
-// The organization's side of the nerves: every `dna.` fact of its own,
-// read from the stream through its durable consumer `spine` (the host's
+// The organization's side of the nerves: every `dna.` fact of its
+// owner's, read from the stream through its durable consumer (the host's
 // relays, and anything published while it was down). The consumer's
-// filter; its spec is `nats::ConsumerSpec { durable: NERVES_DURABLE,
-// filter: nerves_filter(org) }`, spelled where the connection is. The
-// core imports no NATS: a locus of pond's connection reads `draining`,
-// and a program that holds one drains on SIGTERM (GH #1039) — which
-// every program importing the core would, the head and the API among
-// them, had the core imported it.
-fn nerves_filter(org: String) -> String { return nerves_prefix(org) + "dna.>"; }
+// filter; its spec is `nats::ConsumerSpec { durable: nerves_durable(),
+// filter: nerves_filter() }`, spelled where the connection is. The core
+// imports no NATS: a locus of pond's connection reads `draining`, and a
+// program that holds one drains on SIGTERM (GH #1039) — which every
+// program importing the core would, the head and the API among them,
+// had the core imported it.
+fn nerves_filter_of(org: String, owner: String) -> String { return nerves_prefix_of(org, owner) + "dna.>"; }
 
-// The JetStream API subject that answers for the organization's durable
-// consumer (whether it has a pull outstanding: `num_waiting`).
-fn nerves_consumer_info_subject(org: String) -> String { return "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + NERVES_DURABLE; }
+// The JetStream API subject that answers for an owner's durable consumer
+// (whether it has a pull outstanding: `num_waiting`).
+fn nerves_info_subject_of(org: String, owner: String) -> String { return "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + nerves_durable_of(owner); }
+
+// The same, for the part of the organism this process is, from its
+// environment: what an organization's connection is spelled with.
+fn nerves_subject_prefix() -> String { return nerves_prefix_of(nerves_org(), nerves_owner()); }
+fn nerves_stream_here() -> String { return nerves_stream(nerves_org()); }
+fn nerves_durable() -> String { return nerves_durable_of(nerves_owner()); }
+fn nerves_filter() -> String { return nerves_filter_of(nerves_org(), nerves_owner()); }
 
 // The stream's configuration.
 fn nerves_stream_config(org: String) -> String {

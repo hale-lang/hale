@@ -981,8 +981,14 @@ repository:
   Task was born answers with that Task and journals nothing — a
   repeated verdict at a settled Review is answered as already settled,
   and a practice, a concern or a pressure request is answered once by
-  its id. The host's own `expression.observed` report is sent again
-  until the organism records it, three times at most. `local`,
+  its id. The host's own observation report is a row too:
+  `observation.requested <mutation>` (`mutation_id`, `outcome`,
+  `model_hash`, `detail`), relayed as `ExpressionObserved` until the
+  organism answers it with `expression.observed`; a node inside its
+  observation window relays while it waits for that answer. A refusal
+  the host writes for an unverified row answers the request it
+  refuses: for a request with an id of its own (a concern's, a
+  pressure signal's) it is one object, `why` and `request`. `local`,
   the default, trusts every writer to the record — the operator's
   profile; `signed` admits a row only when its commit carries a
   signature git verifies (`git verify-commit`; git's keyring or
@@ -1033,11 +1039,21 @@ repository:
   stream. The organization reads through its durable pull consumer
   `spine` (from the stream's start when it is first made, from where it
   left off after that), filtered to `<org>.dna.>`, so a fact published
-  while it was down or restarting reaches it when it is back.
+  while it was down or restarting reaches it when it is back. **Over a
+  shared record each owner is a space of its own:** every owner runs a
+  body and an organization (GH #664), and an owner's host publishes
+  under `<org>.<owner>.` and its organization reads through the durable
+  `spine_<owner>`, filtered to `<org>.<owner>.dna.>` — so no
+  organization pulls a fact another owner's host published, and refuses
+  it, which the relay would take as the answer. The host names its
+  owner from the clone (`dna.owner`) and hands it to the organization
+  (`HALE_DNA_OWNER`); an owner's name in a subject or a durable keeps
+  its letters, digits, `-` and `_`, anything else `_`.
 - **Credentials, one per family**, each a URL with its user: `owner`
   creates the stream and is held by no process that runs the organism;
-  `spine` publishes and reads `<org>.dna.>` (the host and the
-  organization); `head` subscribes and publishes nothing; `app`
+  `spine` publishes and reads `<org>.dna.>` and an owner's
+  `<org>.<owner>.dna.>` (the host and the organization); `head`
+  subscribes and publishes nothing; `app`
   publishes on `<org>.app.>` (#987). `hale dna nerves migrate [dir]`
   creates or updates the stream with the owner's URL
   (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
@@ -1060,10 +1076,23 @@ repository:
 - **A lost connection.** The connection keeps every publish until the
   stream acknowledges it, writes it again after a reconnect, and a
   publish unacknowledged past its window violates the connection's
-  `delivery` closure. The violation collapses it to the host, which
-  appends `nerves.lost <holder>` (`why`, `by`) and restarts it in place.
-  The row first is what makes a loss recoverable: the relay publishes
-  every unanswered request again.
+  `delivery` closure. The violation collapses it to its owner, which
+  does not restart it: a pinned connection restarted from `on_failure`
+  never runs again (GH #1066). The host appends `nerves.lost <holder>`
+  (`why`, `by`), stops its organization and the expression, gives the
+  body lease back (`body.released`, `why: nerves`) and exits
+  `NERVES_RESTART` (75), and its unit (`Restart=always`) starts it
+  again. The organization's program exits 75 on its own connection's
+  collapse, and the host that supervises it ends with it. The row first
+  is what makes a loss recoverable: the next node relays every request
+  still unanswered.
+- **Stopping.** A node is its program's `main locus`, and SIGTERM
+  drains it (GH #1039): its supervision reads `draining`, stops the
+  organization (which drains the same way), gives the lease back and
+  ends. `hale dna run` and `dev` give the node a 30 s grace for it
+  (`LOTUS_DRAIN_GRACE_MS`, unless the environment already sets one). The core imports no NATS, because a program holding pond's
+  connection drains on SIGTERM: a head or an API that imports the core
+  keeps the default action.
 - **The fleet node's concerns stay local.** A node's instances are the
   application, which declares no bindings, and an environment route
   reaches Unix sockets only; `hale node` keeps the one
@@ -1129,7 +1158,8 @@ record's.
 | `model.called` | ledger | a model call and its evidence |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
 | `node.started` / `node.build_failed` | record | a node runs a genome, by its sha; a genome did not check or build, and the node stayed on the last that did (`sha`, `why`) |
-| `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node starts it again in place, and relays every unanswered request again (GH #986) |
+| `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node stops and exits 75 for its unit to start it again, and the next node relays every unanswered request again (GH #986) |
+| `observation.requested` / `observation.refused` | record | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it; refused, unrelayed, when the row is not verified under `signed` trust (GH #986) |
 | `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |

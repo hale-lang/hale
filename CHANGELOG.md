@@ -80,6 +80,35 @@ behavior.
 - **Fixed:** replacing a whole struct-typed self field (`self.f = Frame {
   … }`) retired the struct's old String fields but not its Bytes ones —
   8 bytes a write even for an empty payload. Both are retired now.
+### DNA: the nerves replace the membrane (GH #986)
+
+- **Changed:** the organism's parts carry the record's requests over
+  NATS JetStream (pond's client and bus adapter, vendored with the
+  core), not over Unix sockets. A request is a row first, always:
+  `task create`, a verdict, `concern raise`, `pressure raise` and
+  `practice propose` write their row and never publish. The node that
+  runs the organism (`hale dna run` / `dev`, now its program's `main
+  locus`) publishes every request the record has not answered, first
+  thing on each tick and again every 30 s until the answer is there.
+  One stream per organization, `DNA_<ID>`; over a shared record each
+  owner's facts and its organization's durable consumer are its own.
+- **New:** `hale dna nerves migrate` creates the stream with the
+  owner's URL (`HALE_DNA_NATS_URL_OWNER`, or `dna/compose.yaml`'s new
+  `nerves` service) and prints each role's; `dev` runs it; `run` takes
+  `HALE_DNA_NATS_URL_SPINE` and `HALE_DNA_NATS_ORG`. `init` writes
+  `dna/nats.conf`; `upgrade` says what an older organization needs.
+- **Changed:** `hale dna pressure raise` writes a `pressure.requested`
+  row, answered once by the `pressure.raised` naming it; a
+  `pressure.raised` body is an object now. The host's observation
+  report is an `observation.requested` row the relay publishes.
+- **Changed:** a connection to the nerves that collapses stops its
+  program for its supervisor to start again (`nerves.lost`, exit 75).
+  A node stopped by SIGTERM stops its organization and gives its lease
+  back.
+- **Removed:** `dna/membrane`, `HALE_DNA_MEMBRANE` and every socket
+  under `.hale/dna`. The API's body view says `organism_alive` where it
+  said `membrane_up`. A fleet node's instances still reach it on a
+  local socket until #987.
 
 ### Publishing through an adapter no longer leaks (GH #1038)
 

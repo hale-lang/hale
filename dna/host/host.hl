@@ -188,6 +188,9 @@ fn relay_mark(list: String, key: String, now: Int) -> String {
 // (the organism admits an intent once by id; a duplicate verdict is refused
 // as already settled).
 const RELAY_AGAIN_AFTER: Int = 30;
+// How long a node inside an observation window waits for the organism to
+// record its report before it goes on (the relay does not stop).
+const OBSERVATION_WAIT: Int = 60;
 
 // A source marker selects the strict prepared path even when its evidence is
 // unavailable. Never fall back to an arbitrary live-checkout restart for it.
@@ -541,8 +544,8 @@ locus NodeRelay {
                 let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
                 request.request_id == r.entity && edge_admits_here(self.root, request)
             } else { true };
-            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested");
-            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else { " review.settled review.refused " };
+            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested");
+            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else { " review.settled review.refused " };
             if requested && trust == "signed" && !row_verified(self.root, r.digest) {
                 // Verification gates EVERY attempt. Even when writing the refusal
                 // failed, an expired retry marker must never admit an unsigned row.
@@ -570,8 +573,12 @@ locus NodeRelay {
                             let ok = append_as(self.root, "knowledge.edge.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
                         }
                     } else {
-                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
-                        let ok = append_as(self.root, refused, r.entity, why, "host", memory);
+                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "observation.requested" { "observation.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
+                        // a request with an id of its own (a concern's, a
+                        // pressure signal's) is answered only by a row naming
+                        // that id; the refusal names it, so it answers
+                        let id = std::json::find_string_field(r.body, "request");
+                        let ok = append_as(self.root, refused, r.entity, if len(id) > 0 { dna::concern_refusal_body(why, id) } else { why }, "host", memory);
                     }
                     state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now());
                     eprintln("hale dna ", self.verb, ": refused an unverified ", r.kind, " (", r.entity, ") from the record");
@@ -601,7 +608,7 @@ locus NodeRelay {
                     }
                     if r.kind == "knowledge.binding.requested" { let codec = dna::KnowledgeBindingCodec { }; body = codec.started(codec.decode(r.body)); }
                     if r.kind == "knowledge.edge.requested" { let codec = dna::KnowledgeEdgeCodec { }; body = codec.started(codec.decode(r.body)); }
-                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else { "verdict" }, body);
+                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "observation.requested" { "observed" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else { "verdict" }, body);
                     if len(e) == 0 { state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now()); state.count = state.count + 1; }
                     else { state.error = r.kind + " (" + r.entity + "): " + e; }
                 }
@@ -675,7 +682,7 @@ main locus Host {
         // organization's token `dev` handed this host (HALE_DNA_NATS_URL_SPINE,
         // HALE_DNA_NATS_ORG); every publish is acknowledged by the stream.
         // Declared here, not passed in, so its failure reaches this host.
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "dna-node", subject_prefix: dna::nerves_prefix(dna::nerves_org()), jetstream: true };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "dna-node", subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()), jetstream: true };
         nerves_on: Bool = false;
         relay: NodeRelay = NodeRelay { };
     }
@@ -694,15 +701,16 @@ main locus Host {
         dna::KnowledgeEdgeRequested: nats::NatsAdapter { };
     }
     // A publish the stream did not acknowledge within the connection's
-    // window collapses it here: a `nerves.lost` row says why, and the
-    // connection is started again in place, keeping what it had not
-    // delivered. The row first is what makes the loss recoverable — the
-    // relay publishes every unanswered request again.
+    // window collapses it here: a `nerves.lost` row says why, and the node
+    // stops cleanly and exits with NERVES_RESTART for its unit to start it
+    // again — a pinned connection restarted in place never runs again
+    // (GH #1066). The row first is what makes the loss recoverable: the
+    // next node relays every request still unanswered.
     on_failure(c: nats::NatsConn, err: ClosureViolation) {
         let why = c.last_error;
-        self.say("nerves: " + why + "; connecting again");
+        self.say("nerves: " + why + "; stopping for the unit to start this node again");
         let ok = append_as(self.root, "nerves.lost", self.holder, "{\"why\": " + quote(why) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host", self.memory);
-        restart_in_place (c);
+        self.stop_to_restart("nerves", dna::NERVES_RESTART);
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
     // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
@@ -1073,7 +1081,10 @@ main locus Host {
     // Stop cleanly — the organization and the expression drain on SIGTERM —
     // give the body lease back, and exit for the unit to start this node
     // again on the new genome.
-    fn restart_for_genome() {
+    fn restart_for_genome() { self.stop_to_restart("genome", GENOME_RESTART); }
+    // Stop cleanly, give the lease back naming `why`, and exit with `code`
+    // for the supervisor to start this node again.
+    fn stop_to_restart(why: String, code: Int) {
         stop_proc(self.org);
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.app.pid > 0 { stop_proc(self.app); }
@@ -1082,10 +1093,10 @@ main locus Host {
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.stop_fence();
         if body_release(self.root, self.lease, self.memory) {
-            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\", \"why\": \"genome\"" + owner_json(self.root) + "}", "host", self.memory);
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\", \"why\": " + quote(why) + owner_json(self.root) + "}", "host", self.memory);
         }
         let s = sync_record(self.root, self.memory);
-        std::process::exit(GENOME_RESTART);
+        std::process::exit(code);
     }
     // Whether the organization this host just started comes to read its
     // facts within `secs` (GH #986): its durable consumer on the stream
@@ -1102,7 +1113,7 @@ main locus Host {
         while true {
             if exit_code(self.org) != -2 { c.close(); return false; }
             if c.connected || c.open() {
-                why = nerves_listening(c, dna::nerves_org());
+                why = nerves_listening(c, dna::nerves_org(), owner_here(self.root));
                 if len(why) == 0 { c.close(); return true; }
             } else { why = c.last_error; }
             if std::time::now() > deadline { self.say("nerves: the organization is not reading its facts (" + why + ")"); c.close(); return false; }
@@ -1136,18 +1147,21 @@ main locus Host {
         b.string_field("model_hash", model_hash);
         b.string_field("detail", detail);
         b.end_object();
-        // GH #682: a publish the nerves lose leaves a mutation applied and
-        // never retained; the observation is confirmed by the row the
-        // organism writes on receipt, and sent again until it is, thrice
-        let mut attempts = 0;
-        while attempts < 3 {
-            attempts = attempts + 1;
-            let e = self.relay.publish_fact("observed", b.result());
-            if len(e) > 0 { self.say("could not report on the nerves: " + e); }
-            if self.observation_landed(mutation_id, outcome, 20) { return; }
-            self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; reporting it again");
+        // GH #682, #986: the report is a row first, like every request —
+        // `observation.requested`, which the relay publishes as
+        // ExpressionObserved until the organism answers it with
+        // `expression.observed`. This node is inside its own tick here, so
+        // it relays while it waits for the answer.
+        if !append_as(self.root, "observation.requested", mutation_id, b.result(), "host", self.memory) {
+            self.say("the " + outcome + " observation of " + mutation_id + " was not written into the record");
+            return;
         }
-        self.say("the " + outcome + " observation of " + mutation_id + " was reported three times and the organism recorded none of them");
+        let deadline = std::time::now() + OBSERVATION_WAIT;
+        while std::time::now() <= deadline {
+            let n = self.relay.relay(self.memory);
+            if self.observation_landed(mutation_id, outcome, 1) { return; }
+        }
+        self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; the relay goes on publishing it until it does");
     }
     // Whether `expression.observed <id>` with `outcome` is in the record,
     // waiting up to `secs` for it.
@@ -1667,9 +1681,11 @@ main locus Host {
             let baseline = self.dna_dir + "/baseline.topology";
             self.launch_iris(if std::io::fs::file_exists(baseline) { baseline } else { "" });
         }
-        // 6. supervise: the organization's exit is ours
+        // 6. supervise: the organization's exit is ours — and a SIGTERM to
+        //    this node (its unit stopping it) ends the supervision: the
+        //    runtime drains the program, and this loop is what reads it
         let mut code = -2;
-        while code == -2 {
+        while code == -2 && !self.draining {
             code = exit_code(self.org);
             if code == -2 {
                 self.tick();
@@ -1688,6 +1704,12 @@ main locus Host {
         }
         // the fence stopped it: the lease is not ours to keep
         if !self.body_alive() { self.stop_body(3); }
+        // told to stop: the organization drains on SIGTERM like this node
+        if self.draining {
+            self.say("stopping: the organization and what it started go with this node");
+            stop_proc(self.org);
+            code = exit_code(self.org);
+        }
         // the organization is gone; what it started goes with it
         self.stop_started();
         self.org_log = drain_log(self.org, self.org_log);
@@ -1702,6 +1724,8 @@ main locus Host {
             let s3 = sync_record(self.root, self.memory);
         }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
+        // drained: return, and the runtime ends the process by its signal
+        if self.draining { return; }
         if self.exit_code != 0 { self.quit(self.exit_code); }
         self.quit(if code < 0 { 1 } else { code });
     }

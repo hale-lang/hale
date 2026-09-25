@@ -187,7 +187,23 @@ fn bring_up(tag: &str) -> Fleet {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let mut f = Fleet { d: d.clone(), app: d.join("fleetapp"), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], base: String::new(), cand: String::new() };
-    let (ok, out) = f.hale(&["dna", "new", "fleetapp"], &d);
+    // Each test's record is its own: the two tests make the same project
+    // at the same moment, and a record's identity is its first commit, so
+    // an identical one would name the same organization — its memory's
+    // schema and its stream on the nerves, whose durable consumer the two
+    // organizations would then share, each hearing the other's facts
+    // (GH #986). A committer of the test's own makes the first commit its.
+    let made = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "new", "fleetapp"])
+        .current_dir(&d)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("GIT_COMMITTER_NAME", format!("fleet-{tag}"))
+        .env("GIT_AUTHOR_NAME", format!("fleet-{tag}"))
+        .output()
+        .expect("hale dna new");
+    let (ok, out) = (made.status.success(), format!("{}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr)));
     assert!(ok, "{out}");
     let app = f.app.clone();
     std::fs::write(

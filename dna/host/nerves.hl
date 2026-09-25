@@ -68,9 +68,14 @@ fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
 // has a pull outstanding (a connection that went away leaves none once
 // its pull expires). "" when it is; otherwise why not. The host asks
 // this where it used to look for the membrane's sockets.
-fn nerves_listening(c: nats::NatsClient, org: String) -> String {
-    let info = nats::js_call(c, dna::nerves_consumer_info_subject(org), "") or "";
+fn nerves_listening(c: nats::NatsClient, org: String, owner: String) -> String {
+    let info = nats::js_call(c, dna::nerves_info_subject_of(org, owner), "") or "";
     if len(info) == 0 { return c.last_error; }
     if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
-    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::NERVES_DURABLE;
+    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::nerves_durable_of(owner);
 }
+
+// The owner this host's body is, for the subjects it publishes under: the
+// clone's `dna.owner` ("" when the organization is the only owner). Read
+// from the root the CLI hands the host, before `Host` is born.
+fn host_owner() -> String { return owner_here(std::env::arg_or(2, ".")); }

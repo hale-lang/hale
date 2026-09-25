@@ -22,14 +22,17 @@ server with JetStream; under `run`, set the two variables
 
 **`the organization did not come to read the nerves within 20s`**. The
 organization's connection cannot reach the server, or its user is not
-allowed the consumer `spine` (`dna/nats.conf`). Its log
+allowed its consumer (`spine`, or over a shared record `spine_<owner>`;
+`dna/nats.conf`). Its log
 (`.hale/dna/org.log`) says which. The facts wait in the stream; they
 reach it once it connects.
 
 **`nerves.lost` in the history.** The stream stopped acknowledging the
 host's publishes — the server went away, or no stream takes the
-subject (`hale dna nerves migrate` makes it). The host connects again
-by itself, and every request still unanswered is published again.
+subject (`hale dna nerves migrate` makes it). The host stopped, gave
+its lease back and exited 75; its unit starts it again with a fresh
+connection, and every request still unanswered is published again.
+Under `hale dna dev` there is no unit: start it again yourself.
 
 **`task t1 born … [failed]`**, and `history t1` says
 `credential not present`. The editor's hosted model has no key. Set

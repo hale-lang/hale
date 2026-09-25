@@ -142,6 +142,10 @@ enum NervesPlan {
 /// The nerves' owner (GH #986): used to create the stream, never held by
 /// a process that runs the organism.
 const NATS_OWNER_ENV: &str = "HALE_DNA_NATS_URL_OWNER";
+/// How long a node's drain may take on SIGTERM: its organization's own
+/// drain, then the lease given back through the record's remote.
+const NODE_DRAIN_GRACE_MS: &str = "30000";
+
 /// What a host that runs the organism is never handed: the owners' and
 /// the heads' credentials, for memory and for the nerves.
 const NOT_THE_HOSTS: [&str; 4] = [OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD", NATS_OWNER_ENV, "HALE_DNA_NATS_URL_HEAD"];
@@ -188,6 +192,13 @@ fn host_exec_env(
         let (mut cmd, _) = host_command(verb, dir)?;
         for (k, v) in env {
             cmd.env(k, v);
+        }
+        // GH #986: a node (`run`, `dev`) is its program's `main locus` and
+        // drains on SIGTERM, stopping its organization and giving its lease
+        // back before it ends — more than the runtime's default grace
+        // allows. An operator's own grace wins.
+        if (verb == "run" || verb == "dev") && std::env::var_os("LOTUS_DRAIN_GRACE_MS").is_none() {
+            cmd.env("LOTUS_DRAIN_GRACE_MS", NODE_DRAIN_GRACE_MS);
         }
         for k in unset {
             cmd.env_remove(k);
@@ -1199,9 +1210,11 @@ authorization {
     # creates the organization's stream; held by no process that runs it
     { user: owner, password: "dna-owner-dev" }
     # the spine: a node's host publishes the organization's facts, and the
-    # organization reads them through its durable consumer `spine`
+    # organization reads them through its durable consumer (`spine`, or
+    # over a shared record an owner's `spine_<owner>`, its facts under
+    # `<org>.<owner>.dna.>`)
     { user: spine, password: "dna-spine-dev",
-      permissions: { publish: ["*.dna.>", "$JS.API.CONSUMER.CREATE.*.spine", "$JS.API.CONSUMER.INFO.*.spine", "$JS.API.CONSUMER.MSG.NEXT.*.spine", "$JS.ACK.*.spine.>"], subscribe: ["_INBOX.>"] } }
+      permissions: { publish: ["*.dna.>", "*.*.dna.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
     # an application: publishes on its own subjects, reads nothing of DNA's (#987)
     { user: app, password: "dna-app-dev",
       permissions: { publish: ["*.app.*.>"], subscribe: ["_INBOX.>"] } }
@@ -1870,9 +1883,9 @@ main locus Org {{
         nerves: nats::NatsConn = nats::NatsConn {{
             url: dna::nerves_spine_url(),
             name: "organization",
-            subject_prefix: dna::nerves_prefix(dna::nerves_org()),
-            stream: dna::nerves_stream(dna::nerves_org()),
-            consumer: nats::ConsumerSpec {{ durable: dna::NERVES_DURABLE, filter: dna::nerves_filter(dna::nerves_org()) }},
+            subject_prefix: dna::nerves_subject_prefix(),
+            stream: dna::nerves_stream_here(),
+            consumer: nats::ConsumerSpec {{ durable: dna::nerves_durable(), filter: dna::nerves_filter() }},
             run_for_ms: if std::env::var_exists("HALE_DNA_ONESHOT") {{ 1 }} else {{ 0 }}
         }};
         // The baseline review: ratify purpose.hl. The Board's; it settles
@@ -1901,13 +1914,22 @@ main locus Org {{
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
     }}
+    // The nerves collapsed (a fact the stream would not take): this
+    // organization stops, and the host that supervises it stops too and
+    // is started again by its unit, both connections fresh. The record
+    // keeps every request unanswered until an organization answers it.
+    on_failure(c: nats::NatsConn, err: ClosureViolation) {{
+        eprintln("organization: the nerves failed (", c.last_error, "); stopping for the host to start it again");
+        std::process::exit(dna::NERVES_RESTART);
+    }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
         // GH #596 O: the substrate's cadence — the optimize pass fires
         // every `optimize_every_ms` on the substrate above (0 = never).
         // Queue it with incoming work so a journal refresh completes
-        // before a task handler can read or append its cached view.
-        while true {{ std::time::sleep(100ms); self.core.request_tick(std::time::monotonic_ns() / 1000000); }}
+        // before a task handler can read or append its cached view. A
+        // SIGTERM (the host stopping it) ends it: the runtime drains.
+        while !self.draining {{ std::time::sleep(100ms); self.core.request_tick(std::time::monotonic_ns() / 1000000); }}
     }}
 }}
 

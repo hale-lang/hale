@@ -7,7 +7,7 @@ main locus Org {
         // GH #986: the facts arrive over the nerves, through the
         // organization's durable consumer (`hale dna dev` hands the host,
         // and the host this program, the spine's URL and the token)
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organization", subject_prefix: dna::nerves_prefix(dna::nerves_org()), stream: dna::nerves_stream(dna::nerves_org()), consumer: nats::ConsumerSpec { durable: dna::NERVES_DURABLE, filter: dna::nerves_filter(dna::nerves_org()) } };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organization", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() } };
         core: dna::Dna = dna::Dna {
             journal: dna::GitJournal { repo: "." },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },

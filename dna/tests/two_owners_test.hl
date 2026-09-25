@@ -16,6 +16,28 @@
 // north's, handed by north's body, and closed by the assignee.
 
 import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
+
+// Whether `owner`'s organization comes to read the nerves through a
+// durable of its own (`spine_<owner>`, a pull outstanding) within `secs`
+// (GH #986): each owner's facts are its organization's alone, so neither
+// organization pulls, and refuses, what the other's host published.
+@unbounded
+fn owner_reading(url: String, org: String, owner: String, secs: Int) -> String {
+    let c = nats::NatsClient { url: url, name: "two-owners-probe", timeout: 2s };
+    if !c.open() { return "the nerves: " + c.last_error; }
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    let mut why = "";
+    while std::time::now() <= deadline {
+        // spelled out, not asked of the core: the names are the contract
+        let info = nats::js_call(c, "$JS.API.CONSUMER.INFO." + dna::nerves_stream(org) + ".spine_" + owner, "") or "";
+        if len(info) > 0 && std::json::find_int_field(info, "num_waiting") > 0 && std::json::find_string_field(std::json::find_string_field(info, "config"), "filter_subject") == org + "." + owner + ".dna.>" { c.close(); return ""; }
+        why = if len(info) == 0 { c.last_error } else { info };
+        std::time::sleep(250ms);
+    }
+    c.close();
+    return why;
+}
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -294,6 +316,12 @@ main locus App {
         std::test::assert(la.present && std::str::contains(la.holder, "shared"), "acme's lease is held, by its clone: " + dna::stored_lease_json(la));
         std::test::assert(lb.present && std::str::contains(lb.holder, "north"), "north's lease is held, by its clone: " + dna::stored_lease_json(lb));
         std::test::assert(!self.leases.current("body").present, "no lease is the one body's: " + dna::stored_lease_json(self.leases.current("body")));
+        // each owner's organization reads its own facts, through its own
+        // durable, filtered to its owner's space
+        let acme_reads = owner_reading(nats_spine, nats_org, "acme", 60);
+        std::test::assert_eq_str(acme_reads, "", "acme's organization reads through spine_acme, filtered to acme's facts");
+        let north_reads = owner_reading(nats_spine, nats_org, "north", 60);
+        std::test::assert_eq_str(north_reads, "", "north's organization reads through spine_north, filtered to north's facts");
         // a body's own rows are written as `host` under the spine's role: the
         // row names its writer, so a head writing as `host` is told apart
         let claimed_row = wait_row(app, head_dsn, "\"kind\": \"body.claimed\"", POLLS);

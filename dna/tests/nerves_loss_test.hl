@@ -19,10 +19,10 @@ import "../core/pond/realtime/nats" as nats;
 // a pull outstanding ("" when it has; otherwise why not). The host asks
 // the same of the stream; the core, which imports no NATS, cannot.
 fn listening(c: nats::NatsClient, org: String) -> String {
-    let info = nats::js_call(c, dna::nerves_consumer_info_subject(org), "") or "";
+    let info = nats::js_call(c, dna::nerves_info_subject_of(org, ""), "") or "";
     if len(info) == 0 { return c.last_error; }
     if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
-    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::NERVES_DURABLE;
+    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::nerves_durable_of("");
 }
 
 fn toolchain() -> String {
@@ -102,7 +102,7 @@ fn wait_listening(c: nats::NatsClient, org: String, want: Bool, secs: Int) -> Bo
 // still to read. Its subject and its payload (the bus's encoding, in
 // hex), "" when there was none.
 fn steal(c: nats::NatsClient, org: String) -> String {
-    let m = nats::js_next(c, dna::nerves_stream(org), dna::NERVES_DURABLE, 2000) or nats::NatsMsg { };
+    let m = nats::js_next(c, dna::nerves_stream(org), dna::nerves_durable_of(""), 2000) or nats::NatsMsg { };
     if len(m.reply) == 0 { return ""; }
     nats::js_ack(c, m) or discard;
     c.flush() or discard;

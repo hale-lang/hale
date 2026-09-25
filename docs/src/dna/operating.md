@@ -326,11 +326,15 @@ machines you trust can reach it.
 
 The organization reads through its durable consumer, `spine`, which
 keeps its place across restarts, so a fact published while it was down
-reaches it when it is back. The host waits at start for it to be
-reading, and says so. A publish the stream does not acknowledge in time
-collapses the host's connection. The host writes `nerves.lost`,
-connects again, and relays every request still unanswered, because the
-row, not the publish, is the fact. Without the spine's URL the host
+reaches it when it is back. Over a shared record each owner's host and
+organization have a space of their own on the stream
+(`<org>.<owner>.…`, the durable `spine_<owner>`), so one owner's
+organization never takes another's facts. The host waits at start for
+the organization to be reading, and says so. A publish the stream does
+not acknowledge in time collapses the host's connection: the host
+writes `nerves.lost`, stops, and exits 75 for its unit to start it
+again, and the new node relays every request still unanswered, because
+the row, not the publish, is the fact. Without the spine's URL the host
 says so and runs, and the organization hears nothing the record asks.
 
 A fleet node is the one exception: its instances hand their concerns

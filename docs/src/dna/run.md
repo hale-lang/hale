@@ -201,7 +201,7 @@ the row again every 30 seconds until the answer is in the record:
 | `PressureRaised` | `dna.pressure.raised` | `pressure.requested` (`hale dna pressure raise`, the page) |
 | `PracticeRequested` | `dna.practice.requested` | `practice.requested` (`hale dna practice propose`) |
 | `KnowledgeNodeRequested`, `…BindingRequested`, `…EdgeRequested` | `dna.knowledge.*.requested` | the face's knowledge commands |
-| `ExpressionObserved` | `dna.expression.observed` | the host itself, after an observation window |
+| `ExpressionObserved` | `dna.expression.observed` | `observation.requested` (the host itself, after an observation window) |
 
 On the server every subject is under the organization's token —
 `dna_<id>.dna.intent.offered` — in one stream per organization,
@@ -221,7 +221,10 @@ state. Pressure is counted by source. The nerves are how the outside
 gets *in*; nothing about a decision lives in them. A fact the
 transport loses costs a relay, never the fact: the row is still
 unanswered, and the host publishes it again. When the stream stops
-acknowledging, the host writes `nerves.lost` and connects again.
+acknowledging, the host writes `nerves.lost` and exits for its unit to
+start it again with a fresh connection. Over a shared record every
+owner's facts travel in a space of their own, so each organization
+hears only its owner's.
 
 ## The nodes
 
