@@ -15,6 +15,16 @@
 import "../core" as dna;
 import "../core/pond/realtime/nats" as nats;
 
+// Whether the organization is reading its facts: its durable consumer has
+// a pull outstanding ("" when it has; otherwise why not). The host asks
+// the same of the stream; the core, which imports no NATS, cannot.
+fn listening(c: nats::NatsClient, org: String) -> String {
+    let info = nats::js_call(c, dna::nerves_consumer_info_subject(org), "") or "";
+    if len(info) == 0 { return c.last_error; }
+    if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
+    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::NERVES_DURABLE;
+}
+
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
     return "hale";
@@ -58,7 +68,7 @@ fn log_has(app: String, needle: String) -> Bool {
 fn wait_listening(c: nats::NatsClient, org: String, want: Bool, secs: Int) -> Bool {
     let deadline = std::time::now() + dna::wait_secs(secs);
     while std::time::now() <= deadline {
-        if (len(dna::nerves_listening(c, org)) == 0) == want { return true; }
+        if (len(listening(c, org)) == 0) == want { return true; }
         std::time::sleep(100ms);
     }
     return false;
@@ -184,7 +194,7 @@ main locus App {
         std::test::assert(c.open(), "the fixture reaches the nerves: " + c.last_error);
         let stopped = dna::run_tool("kill\n-STOP\n" + org_pid);
         std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);
-        std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + dna::nerves_listening(c, org));
+        std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + listening(c, org));
         let before = relays(a);
         let w1 = j.append(j.revision(), "concern.requested", "org/repeated/worker", first);
         std::test::assert(w1.ok, "the first concern is in the record: " + w1.error);
@@ -198,7 +208,7 @@ main locus App {
         std::test::assert(std::str::contains(taken, "dna.concern.raised") && carries(taken, "mail backlog behind fulfilment"), "its delivery was lost: " + taken + " " + c.last_error);
         let resumed = dna::run_tool("kill\n-CONT\n" + org_pid);
         std::test::assert_eq_int(resumed.code, 0, "the organization runs again: " + resumed.stderr);
-        std::test::assert(wait_listening(c, org, true, 10), "and reads the nerves again: " + dna::nerves_listening(c, org));
+        std::test::assert(wait_listening(c, org, true, 10), "and reads the nerves again: " + listening(c, org));
         c.close();
         let w2 = j.append(j.revision(), "concern.requested", "org/repeated/worker", second);
         std::test::assert(w2.ok, "a second concern follows it");

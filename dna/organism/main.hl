@@ -38,7 +38,7 @@ main locus Organism {
         reported_settled: Bool = false;
         // 0 = run until killed; otherwise the number of 100ms ticks.
         ticks: Int = 0;
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organism", subject_prefix: dna::nerves_prefix(dna::nerves_org()), stream: dna::nerves_stream(dna::nerves_org()), consumer: dna::nerves_consumer(dna::nerves_org()) };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organism", subject_prefix: dna::nerves_prefix(dna::nerves_org()), stream: dna::nerves_stream(dna::nerves_org()), consumer: nats::ConsumerSpec { durable: dna::NERVES_DURABLE, filter: dna::nerves_filter(dna::nerves_org()) } };
     }
 
     placement { nerves: pinned; }

@@ -37,8 +37,6 @@
 //   head   subscribes, publishes nothing (the face's push)
 //   app    publishes on <org>.app.<app>.> (#987)
 
-import "./pond/realtime/nats" as nats;
-
 const NATS_OWNER_URL_ENV: String = "HALE_DNA_NATS_URL_OWNER";
 const NATS_SPINE_URL_ENV: String = "HALE_DNA_NATS_URL_SPINE";
 const NATS_HEAD_URL_ENV: String = "HALE_DNA_NATS_URL_HEAD";
@@ -87,18 +85,19 @@ fn nerves_org() -> String { return env_or_empty(NATS_ORG_ENV); }
 fn nerves_here() -> Bool { return len(nerves_spine_url()) > 0 && len(nerves_org()) > 0; }
 
 // The organization's side of the nerves: every `dna.` fact of its own,
-// read from the stream through its durable consumer (the host's
-// relays, and anything published while it was down).
-fn nerves_consumer(org: String) -> nats::ConsumerSpec {
-    return nats::ConsumerSpec { durable: NERVES_DURABLE, filter: nerves_prefix(org) + "dna.>", deliver: "all" };
-}
+// read from the stream through its durable consumer `spine` (the host's
+// relays, and anything published while it was down). The consumer's
+// filter; its spec is `nats::ConsumerSpec { durable: NERVES_DURABLE,
+// filter: nerves_filter(org) }`, spelled where the connection is. The
+// core imports no NATS: a locus of pond's connection reads `draining`,
+// and a program that holds one drains on SIGTERM (GH #1039) — which
+// every program importing the core would, the head and the API among
+// them, had the core imported it.
+fn nerves_filter(org: String) -> String { return nerves_prefix(org) + "dna.>"; }
 
-// What `nerves_migrate` did: the stream exists as this toolchain wants it.
-type NervesMigration {
-    ok: Bool = false;
-    why: String = "";
-    stream: String = "";
-}
+// The JetStream API subject that answers for the organization's durable
+// consumer (whether it has a pull outstanding: `num_waiting`).
+fn nerves_consumer_info_subject(org: String) -> String { return "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + NERVES_DURABLE; }
 
 // The stream's configuration.
 fn nerves_stream_config(org: String) -> String {
@@ -113,29 +112,4 @@ fn nerves_stream_config(org: String) -> String {
     b.int_field("max_age", NERVES_MAX_AGE_SECS * 1000000000);
     b.end_object();
     return b.result();
-}
-
-// Create the organization's stream with the owner's connection, or bring
-// an existing one to this configuration. Idempotent.
-fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
-    let stream = nerves_stream(org);
-    let config = nerves_stream_config(org);
-    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
-    if len(made) > 0 { return NervesMigration { ok: true, stream: stream }; }
-    // already there with another configuration (err_code 10058): update it
-    if !std::str::contains(c.last_error, "10058") { return NervesMigration { why: c.last_error, stream: stream }; }
-    let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
-    if len(updated) == 0 { return NervesMigration { why: c.last_error, stream: stream }; }
-    return NervesMigration { ok: true, stream: stream };
-}
-
-// Whether the organization is reading its facts: its durable consumer
-// has a pull outstanding (a connection that went away leaves none once
-// its pull expires). "" when it is; otherwise why not. The host asks
-// this where it used to look for the membrane's sockets.
-fn nerves_listening(c: nats::NatsClient, org: String) -> String {
-    let info = nats::js_call(c, "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + NERVES_DURABLE, "") or "";
-    if len(info) == 0 { return c.last_error; }
-    if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
-    return "no pull outstanding on " + nerves_stream(org) + "." + NERVES_DURABLE;
 }

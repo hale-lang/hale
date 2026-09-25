@@ -45,8 +45,25 @@ fn memory_dsn(app: &Path, line: &str) -> String {
     out.lines().find_map(|l| l.strip_prefix(line)).unwrap_or_else(|| panic!("no {line} in {out}")).to_string()
 }
 
-/// The spine: a body run on the spine's role; its stderr in `<name>.stderr`.
+/// The nerves' owner for these organisms (CI's NATS, GH #986).
+fn nats_owner() -> Option<String> {
+    std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty())
+}
+
+/// The nerves a body runs on: the spine's URL and the organization's
+/// token, from the owner's `nerves migrate` (GH #986) — a request a head
+/// writes reaches the organization only over them.
+fn nerves(app: &Path) -> (String, String) {
+    let (ok, out) = hale(&["dna", "nerves", "migrate"], app, &[]);
+    assert!(ok, "the nerves migrate: {out}");
+    let line = |k: &str| out.lines().find_map(|l| l.strip_prefix(k)).unwrap_or_else(|| panic!("no {k} in {out}")).to_string();
+    (line("HALE_DNA_NATS_URL_SPINE="), line("HALE_DNA_NATS_ORG="))
+}
+
+/// The spine: a body run on the spine's role and the nerves; its stderr in
+/// `<name>.stderr`.
 fn spine(app: &Path, d: &Path, spine_dsn: &str, name: &str) -> std::process::Child {
+    let (url, org) = nerves(app);
     Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
@@ -54,6 +71,8 @@ fn spine(app: &Path, d: &Path, spine_dsn: &str, name: &str) -> std::process::Chi
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_MEMORY_DSN_SPINE", spine_dsn)
+        .env("HALE_DNA_NATS_URL_SPINE", url)
+        .env("HALE_DNA_NATS_ORG", org)
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(d.join(format!("{name}.stderr"))).unwrap())
         .spawn()
@@ -132,6 +151,10 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
         eprintln!("dna_ledger: no HALE_DNA_MEMORY_DSN_OWNER; the ledger is memory's, so adoption was not exercised");
         return;
     };
+    if nats_owner().is_none() {
+        eprintln!("dna_ledger: no HALE_DNA_NATS_URL_OWNER; a request cannot reach the organization, so adoption was not exercised");
+        return;
+    }
     let _ = owner;
     let spine_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_SPINE=");
     let head_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
@@ -296,6 +319,10 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
         eprintln!("dna_ledger: no HALE_DNA_MEMORY_DSN_OWNER; the ledger is memory's, so adoption was not exercised");
         return;
     };
+    if nats_owner().is_none() {
+        eprintln!("dna_ledger: no HALE_DNA_NATS_URL_OWNER; a request cannot reach the organization, so adoption was not exercised");
+        return;
+    }
     let spine_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_SPINE=");
     let head_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
     let head: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head_dsn.as_str())];

@@ -1102,7 +1102,7 @@ main locus Host {
         while true {
             if exit_code(self.org) != -2 { c.close(); return false; }
             if c.connected || c.open() {
-                why = dna::nerves_listening(c, dna::nerves_org());
+                why = nerves_listening(c, dna::nerves_org());
                 if len(why) == 0 { c.close(); return true; }
             } else { why = c.last_error; }
             if std::time::now() > deadline { self.say("nerves: the organization is not reading its facts (" + why + ")"); c.close(); return false; }
@@ -1542,6 +1542,14 @@ main locus Host {
                 self.app_gone_reported = true;
             }
         }
+        // the record's requests onto the nerves first (GH #986): the relay
+        // is what a person waiting on an answer waits for, so it never
+        // waits behind the sync, memory's work or the forge. A row another
+        // clone wrote arrives with the sync below and is relayed on the
+        // next tick; the sync below shares what this relay answers.
+        let n = self.relay.relay(self.memory);
+        if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
+        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); }
         let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
         self.memory_tick(s.ok);
@@ -1551,11 +1559,8 @@ main locus Host {
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }
         // the sync above may have blocked past the lease's life: prove it
-        // again before relaying anything onto the nerves
+        // again before answering anything
         if !self.body_alive() { self.stop_body(3); }
-        let n = self.relay.relay(self.memory);
-        if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
-        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); let s2 = sync_record(self.root, self.memory); }
         self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);

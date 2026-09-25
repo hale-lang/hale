@@ -15,6 +15,16 @@
 import "../core" as dna;
 import "../core/pond/realtime/nats" as nats;
 
+// Whether the organization is reading its facts: its durable consumer has
+// a pull outstanding ("" when it has; otherwise why not). The host asks
+// the same of the stream; the core, which imports no NATS, cannot.
+fn listening(c: nats::NatsClient, org: String) -> String {
+    let info = nats::js_call(c, dna::nerves_consumer_info_subject(org), "") or "";
+    if len(info) == 0 { return c.last_error; }
+    if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
+    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::NERVES_DURABLE;
+}
+
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
     return "hale";
@@ -80,7 +90,7 @@ fn log_has(app: String, needle: String) -> Bool {
 fn wait_listening(c: nats::NatsClient, org: String, want: Bool, secs: Int) -> Bool {
     let deadline = std::time::now() + dna::wait_secs(secs);
     while std::time::now() <= deadline {
-        if (len(dna::nerves_listening(c, org)) == 0) == want { return true; }
+        if (len(listening(c, org)) == 0) == want { return true; }
         std::time::sleep(100ms);
     }
     return false;
@@ -144,7 +154,7 @@ main locus App {
         std::test::assert(c.open(), "the fixture reaches the nerves: " + c.last_error);
         let stopped = dna::run_tool("kill\n-STOP\n" + org_pid);
         std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);
-        std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + dna::nerves_listening(c, org));
+        std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + listening(c, org));
 
         // an intent in the record, from this clone, as a person asks
         let before = relays(a);
@@ -164,7 +174,7 @@ main locus App {
         std::test::assert(std::str::contains(taken, "dna.intent.offered") && carries(taken, intent), "the relay is taken off the organization's consumer: " + taken + " " + c.last_error);
         let resumed = dna::run_tool("kill\n-CONT\n" + org_pid);
         std::test::assert_eq_int(resumed.code, 0, "the organization runs again: " + resumed.stderr);
-        std::test::assert(wait_listening(c, org, true, 10), "and reads the nerves again: " + dna::nerves_listening(c, org));
+        std::test::assert(wait_listening(c, org, true, 10), "and reads the nerves again: " + listening(c, org));
         c.close();
         // the one publish there has been is gone: nothing answers it
         std::test::assert(relays(a) == before + 1 && rows(a, "intent.offered", intent) == 0, "the lost relay is unanswered: " + (std::io::fs::read_file(a + "/host.log") or ""));

@@ -1872,7 +1872,7 @@ main locus Org {{
             name: "organization",
             subject_prefix: dna::nerves_prefix(dna::nerves_org()),
             stream: dna::nerves_stream(dna::nerves_org()),
-            consumer: dna::nerves_consumer(dna::nerves_org()),
+            consumer: nats::ConsumerSpec {{ durable: dna::NERVES_DURABLE, filter: dna::nerves_filter(dna::nerves_org()) }},
             run_for_ms: if std::env::var_exists("HALE_DNA_ONESHOT") {{ 1 }} else {{ 0 }}
         }};
         // The baseline review: ratify purpose.hl. The Board's; it settles

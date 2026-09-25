@@ -33,7 +33,7 @@ main locus Org {
         };
         leader: dna::Leader = dna::Leader { name: "leader", models: …, receipts: dna::GitReceipts { repo: "." }, source: dna::SourceReader { repo: "." } };
         purpose: dna::Review = dna::Review { review_id: "purpose", question: "ratify the declared purpose?", subject_digest: "sha256:…", required_authority: "board", author: "hale dna init" };
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), subject_prefix: dna::nerves_prefix(dna::nerves_org()), stream: dna::nerves_stream(dna::nerves_org()), consumer: dna::nerves_consumer(dna::nerves_org()), … };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), subject_prefix: dna::nerves_prefix(dna::nerves_org()), stream: dna::nerves_stream(dna::nerves_org()), consumer: nats::ConsumerSpec { durable: dna::NERVES_DURABLE, filter: dna::nerves_filter(dna::nerves_org()) }, … };
     }
     claims { adopt Org; }
     placement { nerves: pinned; }

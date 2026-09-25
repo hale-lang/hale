@@ -20,10 +20,10 @@ of the application (`.hale/dna/current.topology`), builds the
 organization and execs it under `LOTUS_OBS=1` from the project root
 with `HALE_BIN` set to the toolchain that started it, waits for it to
 read its facts from [the nerves](#the-nerves), attaches iris to inspect
-it, and then supervises. Each tick it syncs the record, mirrors GitHub
-when configured, relays the record's unanswered requests onto the
-nerves, re-projects `status.json`, and answers the organization's
-restart requests. It holds no Task state; when
+it, and then supervises. Each tick it relays the record's unanswered
+requests onto the nerves (first, so an answer never waits behind the
+rest), syncs the record, mirrors GitHub when configured, re-projects
+`status.json`, and answers the organization's restart requests. It holds no Task state; when
 the organization exits, the host reaps iris and exits with its code.
 
 The host is also a node of memory's **spine**, beside any number of
