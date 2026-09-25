@@ -10,11 +10,11 @@
 //!   hale dna init [app-dir]     attach the DNA to an existing app
 //!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
-//!   hale dna run [project]      build, run under LOTUS_OBS and hold the membrane; iris inspects the process
+//!   hale dna run [project]      build, run under LOTUS_OBS, a node relaying onto the nerves; iris inspects the process
 //!   hale dna status [--json]    the status projection, from the Journal
-//!   hale dna task create <outcome…>  ask for an outcome: a Task, over the membrane or into the record
+//!   hale dna task create <outcome…>  ask for an outcome: a Task, a row a node relays to the organism
 //!   hale dna history [<entity>] walk the Journal by causal links
-//!   hale dna review <id> <verdict> a verdict over the membrane (the Review decides)
+//!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
 //! Layout after `init` (root = the workspace holding hale.toml):
@@ -27,7 +27,7 @@
 //!   .hale/dna/baseline.topology the artifact it was seeded from
 //!   hale.toml                  gains [claims] base = "Project" + [environments.local]
 //!   <app>/main.hl              gains the imports, the `genome` param, `adopt Project`,
-//!                              and the membrane bindings
+//!                              and the nerves' bindings
 //!
 //! Toolchain effects are subprocesses: the artifact is cut by
 //! `hale check --dump-topology` exactly as a user would, never by a
@@ -52,23 +52,16 @@ const BASELINE_REL: &str = ".hale/dna/baseline.topology";
 /// Toolchain-owned like the tree it describes (`/.hale/` is ignored),
 /// so it is never part of the project's own source or its reviews.
 const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
-const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
-const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
-const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
-const PRESSURE_SOCK_REL: &str = ".hale/dna/hale-dna.pressure.raised.sock";
-const CONCERN_SOCK_REL: &str = ".hale/dna/hale-dna.concern.raised.sock";
-const PRACTICE_SOCK_REL: &str = ".hale/dna/hale-dna.practice.requested.sock";
 
 /// GH #566 F8: the host is a Hale program (`dna/host`, embedded beside
 /// the core and built once into the toolchain cache). A verb that is
 /// DNA behaviour — a projection, a relay, supervision — execs it with
 /// the project resolved: `host <verb> <root> <seed> <fleet> <plan> …`,
-/// with the toolchain, the membrane client and the toolchain version
-/// in the environment. This shim resolves the project (the manifest is
-/// the compiler's) and forwards the exit status.
-/// The host's command for a verb: the project resolved, the host and
-/// the membrane client built once into the toolchain cache, the
-/// environment the host expects.
+/// with the toolchain and the toolchain version in the environment.
+/// This shim resolves the project (the manifest is the compiler's) and
+/// forwards the exit status.
+/// The host's command for a verb: the project resolved, the host built
+/// once into the toolchain cache, the environment the host expects.
 fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     let (root, seed) = project(dir)?;
     let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
@@ -78,7 +71,6 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     };
     let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
     let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
-    let membrane = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(&host);
     cmd.arg(verb)
@@ -96,7 +88,6 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         // than run, so the probe of a generated catalog failed
         // outside `run`/`dev` (the review's second round, finding 2).
         .env("HALE_DNA_GENOME", &root)
-        .env("HALE_DNA_MEMBRANE", &membrane)
         .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN);
     Ok((cmd, root))
 }
@@ -139,6 +130,37 @@ fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
     }
     let line = out.trim();
     Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
+}
+
+/// What `nerves-migrate` found (GH #986): the organization's token and
+/// each role's NATS URL once the stream is in place, or no server.
+enum NervesPlan {
+    Roles(Vec<(String, String)>),
+    NoServer(String),
+}
+
+/// The nerves' owner (GH #986): used to create the stream, never held by
+/// a process that runs the organism.
+const NATS_OWNER_ENV: &str = "HALE_DNA_NATS_URL_OWNER";
+/// What a host that runs the organism is never handed: the owners' and
+/// the heads' credentials, for memory and for the nerves.
+const NOT_THE_HOSTS: [&str; 4] = [OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD", NATS_OWNER_ENV, "HALE_DNA_NATS_URL_HEAD"];
+
+/// Create the organization's stream with the owner's NATS URL:
+/// HALE_DNA_NATS_URL_OWNER, or the server dna/compose.yaml brings up. A
+/// short-lived host verb does it, as with memory.
+fn nerves_migrate(dir: &Path) -> Result<NervesPlan, String> {
+    let out = host_run("nerves-migrate", dir, &[])?;
+    let roles: Vec<(String, String)> = out
+        .lines()
+        .filter(|l| l.starts_with("HALE_DNA_NATS_"))
+        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect();
+    if roles.iter().any(|(k, _)| k == "HALE_DNA_NATS_ORG") {
+        return Ok(NervesPlan::Roles(roles));
+    }
+    let line = out.trim();
+    Ok(NervesPlan::NoServer(line.strip_prefix("none: ").unwrap_or(line).to_string()))
 }
 
 fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
@@ -222,8 +244,11 @@ pub fn node(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     // GH #583 K4: the node listens for its instances' concerns on a
-    // socket of its own; an env-configured route, since the host program
-    // declares no binding for it (every other verb runs without one)
+    // socket of its own, an env-configured route. The host program binds
+    // `dna.concern.raised` to the nerves for the relay it publishes as a
+    // node under `run`/`dev` (GH #986); this listen route stands beside
+    // that binding, and it is the one LOTUS_BUS_CONFIG DNA still writes,
+    // until #987 has the application publish onto the nerves itself
     let clone = repo.canonicalize().unwrap_or(repo.clone());
     let node_dir = clone.join(".hale/node");
     if let Err(e) = fs::create_dir_all(&node_dir) {
@@ -309,15 +334,36 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
+        // GH #986: the nerves' stream, created with the owner's URL
+        Some("nerves") if args.get(1).map(String::as_str) == Some("migrate") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match nerves_migrate(&dir) {
+                Ok(NervesPlan::Roles(roles)) => {
+                    for (k, v) in roles {
+                        println!("{k}={v}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Ok(NervesPlan::NoServer(why)) => {
+                    eprintln!("hale dna nerves migrate: {why}");
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna nerves migrate: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("run") => {
             let (dir, rest) = project_arg(&args[1..], true);
             if let Err(e) = vendor_if_absent(&dir) {
                 eprintln!("hale dna run: {e}");
                 return ExitCode::from(2);
             }
-            // GH #985: the host runs on the spine's DSN alone; an owner's
-            // DSN in this environment does not reach it
-            host_exec_env("run", &dir, &rest, &[], &[OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD"])
+            // GH #985, #986: the host runs on the spine's DSN and the
+            // spine's NATS URL alone; an owner's or a head's in this
+            // environment does not reach it
+            host_exec_env("run", &dir, &rest, &[], &NOT_THE_HOSTS)
         }
         Some("dev") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -328,23 +374,39 @@ pub fn run(args: &[String]) -> ExitCode {
             // GH #985: memory's schema is applied here, with the owner's
             // DSN, and the host that runs the organism is handed only the
             // spine's: the owner's is taken out of its environment
-            match memory_migrate(&dir) {
-                Ok(MemoryPlan::Roles { spine, .. }) => host_exec_env(
-                    "dev",
-                    &dir,
-                    &rest,
-                    &[("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(&spine))],
-                    &[OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD"],
-                ),
+            let spine = match memory_migrate(&dir) {
+                Ok(MemoryPlan::Roles { spine, .. }) => Some(spine),
                 Ok(MemoryPlan::NoDatabase(why)) => {
                     eprintln!("hale dna dev: {why}");
-                    host_exec_env("dev", &dir, &rest, &[], &[OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD"])
+                    None
                 }
                 Err(e) => {
                     eprintln!("hale dna dev: memory: {e}");
-                    ExitCode::from(2)
+                    return ExitCode::from(2);
                 }
+            };
+            // GH #986: the nerves' stream is created here, with the
+            // owner's URL, and the host is handed the spine's URL and the
+            // organization's token — never the owner's, nor the head's
+            let nerves: Vec<(String, String)> = match nerves_migrate(&dir) {
+                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE").collect(),
+                Ok(NervesPlan::NoServer(why)) => {
+                    eprintln!("hale dna dev: {why}");
+                    Vec::new()
+                }
+                Err(e) => {
+                    eprintln!("hale dna dev: nerves: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let mut env: Vec<(&str, &OsStr)> = Vec::new();
+            if let Some(spine) = &spine {
+                env.push(("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(spine.as_str())));
             }
+            for (k, v) in &nerves {
+                env.push((k.as_str(), OsStr::new(v.as_str())));
+            }
+            host_exec_env("dev", &dir, &rest, &env, &NOT_THE_HOSTS)
         }
         // the plan path a fleet name resolves to in this checkout's manifest
         // (a node asks, at the revision it checked out)
@@ -524,13 +586,17 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna memory migrate [dir]");
     eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)");
     eprintln!("                                    and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)");
+    eprintln!("       hale dna nerves migrate [dir]");
+    eprintln!("                                    create the organization's NATS JetStream stream with the owner's URL (HALE_DNA_NATS_URL_OWNER,");
+    eprintln!("                                    or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
-    eprintln!("                                    build and run the organization (dna/org) and hold its membrane; iris inspects its process");
+    eprintln!("                                    build and run the organization (dna/org), a node of it: relay the record's requests");
+    eprintln!("                                    to it over the nerves (NATS); iris inspects its process");
     eprintln!("       hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]");
     eprintln!("                                    the organization AND the application under one host: rebuild and restart");
     eprintln!("                                    the application on an apply, watch the window, report back");
@@ -569,7 +635,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome: over the membrane here, into the record otherwise; prints the Task born or the refusal");
+    eprintln!("                                    ask for an outcome: a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
@@ -593,7 +659,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna rollback <mutation> express the base a Mutation was applied on, again");
     eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the plan; `hale node <name>` runs a node)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
-    eprintln!("                                    pressure raised and answered; `raise` publishes one signal on the membrane");
+    eprintln!("                                    pressure raised and answered; `raise` writes one signal into the record, which a node relays");
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
     eprintln!("       hale dna ui [project] [--port N]");
@@ -604,7 +670,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna review              the pending Reviews");
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
-    eprintln!("                                    send a verdict over the membrane; the Review decides");
+    eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -865,8 +931,9 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
     if created(&mut out, &app.root.join("dna/compose.yaml"), &compose_yaml(&app.project))? {
-        out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres up and applies memory's schema to it (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE".to_string());
+        out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
     }
+    created(&mut out, &app.root.join("dna/nats.conf"), &nats_conf())?;
     out.push(format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED));
     // 5. the manifest's environments: the application's, and the organization's
     let mtext = fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
@@ -975,7 +1042,30 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&owners, owners_text()).map_err(|e| format!("write {}: {e}", owners.display()))?;
         out.push(format!("created {}", owners.display()));
     }
+    // GH #986: the nerves — a NATS server beside memory's Postgres, with
+    // one user per family of subjects. The config is new and created; the
+    // compose file is the project's, and is told
+    let nats = root.join("dna/nats.conf");
+    if root.join("dna").is_dir() && !nats.is_file() {
+        fs::write(&nats, nats_conf()).map_err(|e| format!("write {}: {e}", nats.display()))?;
+        out.push(format!("created {}", nats.display()));
+    }
+    let compose_text = fs::read_to_string(root.join("dna/compose.yaml")).unwrap_or_default();
+    if !compose_text.is_empty() && !compose_text.contains("nerves:") {
+        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
+        out.push(format!(
+            "note    dna/compose.yaml has no `nerves` service (GH #986); add it and its volume, as `hale dna init` writes them:\n  nerves:\n    image: nats:2\n    command: [\"-c\", \"/etc/nats/nats.conf\"]\n    ports:\n      - \"127.0.0.1:{}:4222\"\n    volumes:\n      - ./nats.conf:/etc/nats/nats.conf:ro\n      - nerves:/data\n  (under volumes:)  nerves:\n    name: hale-dna-{}-nerves",
+            compose_nats_port(&project),
+            compose_name(&project)
+        ));
+    }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+    if main_text.contains("main locus Org") && main_text.contains("unix(") {
+        out.push(format!(
+            "note    {}/main.hl binds its facts to unix sockets; the membrane is gone (GH #986) and they arrive over the nerves. Replace its `bindings` with the ones `hale dna init` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("self.core.tick(") {
         out.push(format!(
             "note    {}/main.hl calls self.core.tick directly; use self.core.request_tick with the same millisecond clock in the live loop so journal refresh and incoming work run on the owner's queue",
@@ -1042,16 +1132,20 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
 /// for `hale dna dev`, a named volume per repository so the graph
 /// outlives the container. Part of the genome, project-owned.
 fn compose_yaml(project: &str) -> String {
-    let name = project.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-").to_lowercase();
+    let name = compose_name(project);
     format!(
-        r#"# dna/compose.yaml — memory's environment for `hale dna dev`
-# (project-owned; generated by `hale dna init`). The organism
+        r#"# dna/compose.yaml — the organism's environment for `hale dna dev`
+# (project-owned; generated by `hale dna init`). Memory: the organism
 # keeps its working memory in this Postgres — the ledger, the graph,
 # protected evidence — and the record (refs/dna/*) holds the decided
-# half. `hale dna dev` runs `docker compose -f dna/compose.yaml up -d`,
-# waits for the database, applies memory's schema as its owner, and
-# hands the organism its own role. Beyond one machine, point
-# HALE_DNA_MEMORY_DSN_OWNER at a Postgres of your own.
+# half. Nerves (GH #986): facts travel between the organism's parts over
+# this NATS JetStream server, one stream per organization, each part
+# with its own user (dna/nats.conf). `hale dna dev` runs `docker compose
+# -f dna/compose.yaml up -d`, applies memory's schema and creates the
+# stream as their owners, and hands the organism its own roles. Beyond
+# one machine, point HALE_DNA_MEMORY_DSN_OWNER at a Postgres of your own
+# and HALE_DNA_NATS_URL_OWNER at a NATS server configured like
+# dna/nats.conf. Both listen on 127.0.0.1 only.
 services:
   knowledge-db:
     image: pgvector/pgvector:pg16
@@ -1063,12 +1157,67 @@ services:
       - "127.0.0.1:{port}:5432"
     volumes:
       - knowledge-db:/var/lib/postgresql/data
+  nerves:
+    image: nats:2
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "127.0.0.1:{nats_port}:4222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
+      - nerves:/data
 volumes:
   knowledge-db:
     name: hale-dna-{name}-knowledge
+  nerves:
+    name: hale-dna-{name}-nerves
 "#,
         port = compose_port(project),
+        nats_port = compose_nats_port(project),
     )
+}
+
+/// The project's name as compose's volumes carry it.
+fn compose_name(project: &str) -> String {
+    project.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-").to_lowercase()
+}
+
+/// `dna/nats.conf`: the nerves' server (GH #986). One user per family of
+/// subjects, each allowed only its own (`dna/core/nerves.hl` names them).
+/// The passwords are placeholders until the vault (#989), as the Postgres
+/// roles' are; the organization's token stands as `*` because this server
+/// carries one organization.
+fn nats_conf() -> String {
+    r#"# dna/nats.conf — the nerves' server for `hale dna dev` (GH #986;
+# project-owned, generated by `hale dna init`). One user per family of
+# subjects, each allowed only its own; `hale dna dev` hands each part of
+# the organism its own. The passwords are PLACEHOLDERS until the vault
+# (#989) — the port is bound to 127.0.0.1 in dna/compose.yaml.
+port: 4222
+jetstream { store_dir: "/data" }
+authorization {
+  users = [
+    # creates the organization's stream; held by no process that runs it
+    { user: owner, password: "dna-owner-dev" }
+    # the spine: a node's host publishes the organization's facts, and the
+    # organization reads them through its durable consumer `spine`
+    { user: spine, password: "dna-spine-dev",
+      permissions: { publish: ["*.dna.>", "$JS.API.CONSUMER.CREATE.*.spine", "$JS.API.CONSUMER.INFO.*.spine", "$JS.API.CONSUMER.MSG.NEXT.*.spine", "$JS.ACK.*.spine.>"], subscribe: ["_INBOX.>"] } }
+    # an application: publishes on its own subjects, reads nothing of DNA's (#987)
+    { user: app, password: "dna-app-dev",
+      permissions: { publish: ["*.app.*.>"], subscribe: ["_INBOX.>"] } }
+    # the head: subscribes, publishes nothing
+    { user: head, password: "dna-head-dev",
+      permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }
+  ]
+}
+"#
+    .to_string()
+}
+
+/// A host port for the project's NATS in 42xx, like `compose_port`.
+fn compose_nats_port(project: &str) -> u16 {
+    let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
+    4200 + (h % 100) as u16
 }
 
 /// A host port for the project's Postgres in 54xx, from the project's
@@ -1524,8 +1673,8 @@ main locus {locus} {{
     run() {{
         Pings <- Ping {{ n: 1 }};
         std::time::sleep(100ms);
-        println("{name}: ", self.echo.seen, " ping(s) echoed; membrane open");
-        // The organism stays up for its membrane (`hale dna run`);
+        println("{name}: ", self.echo.seen, " ping(s) echoed; the bus is open");
+        // The application stays up under `hale dna run`;
         // HALE_DNA_ONESHOT makes a run return after the ping.
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
         while true {{ std::time::sleep(100ms); }}
@@ -1643,6 +1792,7 @@ fn org_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
 // proposes changes to it, verifies them, and expresses them.
 
 import "vendor/dna" as dna;
+import "vendor/dna/pond/realtime/nats" as nats;
 
 main locus Org {{
     params {{
@@ -1711,6 +1861,20 @@ main locus Org {{
             charter: charter(),
             purpose: purpose()
         }};
+        // The nerves (GH #986): the facts that enter this organization —
+        // a verdict, an intent, the host's observation report — travel
+        // over NATS JetStream. This connection reads them through the
+        // organization's durable consumer, as the spine, on its own
+        // thread, and hands each to the bus; `hale dna dev` gives it its
+        // user and the organization's token.
+        nerves: nats::NatsConn = nats::NatsConn {{
+            url: dna::nerves_spine_url(),
+            name: "organization",
+            subject_prefix: dna::nerves_prefix(dna::nerves_org()),
+            stream: dna::nerves_stream(dna::nerves_org()),
+            consumer: dna::nerves_consumer(dna::nerves_org()),
+            run_for_ms: if std::env::var_exists("HALE_DNA_ONESHOT") {{ 1 }} else {{ 0 }}
+        }};
         // The baseline review: ratify purpose.hl. The Board's; it settles
         // only on a verdict naming this exact digest.
         purpose: dna::Review = dna::Review {{
@@ -1722,15 +1886,20 @@ main locus Org {{
         }};
     }}
     claims {{ adopt Org; }}
-    // The membrane: where a verdict, an intent and the host's observation
-    // report enter. `hale dna` and iris publish here; the owning loci decide.
+    placement {{ nerves: pinned; }}
+    // Where a verdict, an intent and the host's observation report enter:
+    // the nerves. A node publishes each once its row is in the record, and
+    // again until the record holds the answer; the owning loci decide.
     bindings {{
-        dna::ReviewVerdict: unix("{verdict}", role: listen);
-        dna::IntentOffered: unix("{intent}", role: listen);
-        dna::ExpressionObserved: unix("{observed}", role: listen);
-        dna::PressureRaised: unix("{pressure}", role: listen);
-        dna::ConcernRaised: unix("{concern}", role: listen);
-        dna::PracticeRequested: unix("{practice}", role: listen);
+        dna::ReviewVerdict: nats::NatsAdapter {{ }};
+        dna::IntentOffered: nats::NatsAdapter {{ }};
+        dna::ExpressionObserved: nats::NatsAdapter {{ }};
+        dna::PressureRaised: nats::NatsAdapter {{ }};
+        dna::ConcernRaised: nats::NatsAdapter {{ }};
+        dna::PracticeRequested: nats::NatsAdapter {{ }};
+        dna::KnowledgeNodeRequested: nats::NatsAdapter {{ }};
+        dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
+        dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
@@ -1745,13 +1914,7 @@ main locus Org {{
 fn main() {{
     Org {{ }};
 }}
-"#,
-        verdict = VERDICT_SOCK_REL,
-        intent = INTENT_SOCK_REL,
-        observed = OBSERVED_SOCK_REL,
-        pressure = PRESSURE_SOCK_REL,
-        concern = CONCERN_SOCK_REL,
-        practice = PRACTICE_SOCK_REL,
+"#
     )
 }
 

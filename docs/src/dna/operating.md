@@ -278,6 +278,67 @@ the key (`memory_keys`) and the ciphertext together. Protect and
 retain dumps as you would the bodies themselves; #989 revisits where
 the key is held.
 
+## The nerves
+
+The organism's parts tell each other what the record asks over **NATS
+JetStream** (GH #986). A request — a task asked for, a verdict, a
+concern, pressure, a practice — is a row first, written by whoever
+asked, from any clone. The node running the organism
+(`hale dna run` or `dev`) publishes every row the record has not
+answered, and again every 30 seconds until the answer is there. The
+organization reads them from its stream. Nothing a person runs
+publishes anything itself.
+
+One server can carry several organizations: each has its own stream,
+`DNA_<ID>`, over the subjects under its token (`dna_<id>.dna.…`, the
+same name memory gives its schema), kept for a week. Four credentials,
+one per family of subjects:
+
+| Variable | Who holds it | What it may do |
+|---|---|---|
+| `HALE_DNA_NATS_URL_OWNER` | `hale dna nerves migrate`, `hale dna dev` | create or update the stream, and nothing else |
+| `HALE_DNA_NATS_URL_SPINE` | the host that runs the organism, and the organization it starts | publish and read the organization's own facts (`<org>.dna.>`) |
+| `HALE_DNA_NATS_URL_HEAD` | a head | subscribe; publish nothing |
+| `HALE_DNA_NATS_URL_APP` | an application (#987) | publish on its own subjects (`<org>.app.<app>.>`) |
+
+Create the stream with the owner's URL, and the command prints the
+organization's token and the others:
+
+```text
+$ HALE_DNA_NATS_URL_OWNER=nats://owner:…@nats.internal:4222 hale dna nerves migrate
+HALE_DNA_NATS_ORG=dna_9f3c…
+HALE_DNA_NATS_URL_SPINE=nats://spine:…@nats.internal:4222
+HALE_DNA_NATS_URL_HEAD=nats://head:…@nats.internal:4222
+HALE_DNA_NATS_URL_APP=nats://app:…@nats.internal:4222
+```
+
+`hale dna dev` does this first — with `HALE_DNA_NATS_URL_OWNER`, or the
+`nerves` service `dna/compose.yaml` brings up — and hands the host the
+spine's URL and the token alone. `hale dna run` creates nothing: give
+it `HALE_DNA_NATS_URL_SPINE` and `HALE_DNA_NATS_ORG`, and it strips an
+owner's or a head's URL before the host sees them. The server needs
+JetStream on (`-js`, or `jetstream {}` in its configuration);
+`dna/nats.conf`, which `init` writes, is the configuration
+`dna/compose.yaml` runs, with each user allowed only its own subjects.
+Until the vault holds their credentials (#989) the passwords are
+placeholders (`dna-<role>-dev`), so keep the server where only the
+machines you trust can reach it.
+
+The organization reads through its durable consumer, `spine`, which
+keeps its place across restarts, so a fact published while it was down
+reaches it when it is back. The host waits at start for it to be
+reading, and says so. A publish the stream does not acknowledge in time
+collapses the host's connection. The host writes `nerves.lost`,
+connects again, and relays every request still unanswered, because the
+row, not the publish, is the fact. Without the spine's URL the host
+says so and runs, and the organization hears nothing the record asks.
+
+A fleet node is the one exception: its instances hand their concerns
+to it on a Unix socket of its own (`.hale/node/concern.raised.sock`),
+because the application declares no bindings yet. The node writes each
+concern into the record, and the host relays it like any other request
+(#987 moves the application onto the nerves).
+
 ## The two memories, in operation
 
 An organism that has adopted the ledger runs on two memories at

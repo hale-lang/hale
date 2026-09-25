@@ -8,8 +8,9 @@
 // proposed to a peer record, put in force by the Board, and a receipt
 // handed across it are projected on the project's detail read; the
 // local body starts as a long-lived child (202), settles `succeeded`
-// once its membrane is up, shows `running` with `membrane_up` in the
-// head's children and blocks a second start, an attach of another
+// once the organization is up, shows `running` with `organism_alive`
+// (kept as the field's name; GH #986) in the head's children and
+// blocks a second start, an attach of another
 // project and a detach; the body stops through its host's own teardown (`body.released`) and the head shows it `exited`. Every
 // response is validated against the contract's head definitions.
 //
@@ -184,7 +185,7 @@ locus S3HeadCases {
         self.f.json.eq(state, "state", "attached");
         let children = self.f.json.raw(state, "children");
         self.f.json.eq(self.f.json.raw(children, "body"), "state", "stopped");
-        self.f.json.is_bool(self.f.json.raw(children, "body"), "membrane_up", false);
+        self.f.json.is_bool(self.f.json.raw(children, "body"), "organism_alive", false);
         self.f.json.eq(self.f.json.raw(children, "body"), "mode", "");
         self.state_of(state, "dna.body.local.start", true, "");
         self.state_of(state, "dna.body.local.stop", false, "body_not_running");
@@ -331,7 +332,7 @@ locus S3HeadCases {
     }
 
     // The local body: a long-lived child, 202, `succeeded` once the
-    // membrane is up; the head's children show it running.
+    // organization is up; the head's children show it running.
     fn body() {
         let submitted = self.submit("s3-body-start", "dna.body.local.start", "{\"mode\":\"run\"}", 202);
         self.f.json.eq(submitted, "state", "running");
@@ -346,13 +347,13 @@ locus S3HeadCases {
         let pid = self.f.json.integer(outcome, "pid");
         std::test::assert(pid > 0 && pid == self.f.child_pid("body") && self.f.child_alive("body"), "the outcome's pid is the live child: " + outcome);
         self.f.json.eq(outcome, "mode", "run");
-        std::test::assert(self.f.json.integer(outcome, "membrane_up_at") > 0, "membrane_up_at: " + outcome);
+        std::test::assert(self.f.json.integer(outcome, "organism_alive_at") > 0, "organism_alive_at: " + outcome);
         std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(outcome, "record"), "rows"), "\"kind\": \"body.claimed\""), "the host's claim as evidence: " + outcome);
         std::test::assert(std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the organization runs under the head's child");
         let state = self.f.head_state();
         let body = self.f.json.raw(self.f.json.raw(state, "children"), "body");
         self.f.json.eq(body, "state", "running");
-        self.f.json.is_bool(body, "membrane_up", true);
+        self.f.json.is_bool(body, "organism_alive", true);
         self.f.json.eq(body, "mode", "run");
         self.f.json.is_int(body, "pid", pid);
         self.f.json.eq(body, "command_id", self.body_id);
@@ -394,7 +395,7 @@ locus S3HeadCases {
         let body = self.f.json.raw(self.f.json.raw(state, "children"), "body");
         self.f.json.eq(body, "state", "exited");
         self.f.json.is_int(body, "exit_code", 143);
-        self.f.json.is_bool(body, "membrane_up", false);
+        self.f.json.is_bool(body, "organism_alive", false);
         self.f.json.eq(body, "mode", "run");
         self.f.json.is_int(body, "pid", pid);
         self.state_of(state, "dna.body.local.start", true, "");

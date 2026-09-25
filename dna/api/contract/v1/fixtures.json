@@ -24192,7 +24192,7 @@
             "pid": -1,
             "since": 0,
             "command_id": "",
-            "membrane_up": false,
+            "organism_alive": false,
             "mode": "",
             "exit_code": -1
           }
@@ -24381,7 +24381,7 @@
             "pid": 4300,
             "since": 1758470400,
             "command_id": "command-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "membrane_up": true,
+            "organism_alive": true,
             "mode": "run",
             "exit_code": -2
           }
@@ -24570,7 +24570,7 @@
               "pid": -1,
               "since": 0,
               "command_id": "",
-              "membrane_up": false,
+              "organism_alive": false,
               "mode": "",
               "exit_code": -1
             },
@@ -24625,7 +24625,7 @@
               "pid": -1,
               "since": 0,
               "command_id": "",
-              "membrane_up": false,
+              "organism_alive": false,
               "mode": "",
               "exit_code": -1
             },
@@ -25181,7 +25181,7 @@
             "pid": -1,
             "since": 0,
             "command_id": "",
-            "membrane_up": false,
+            "organism_alive": false,
             "mode": "",
             "exit_code": -1
           }

@@ -1,26 +1,27 @@
-// dna/organism — the reference organism (GH #527 B6): the DNA
-// assembly behind a MEMBRANE, two typed topics bound on unix sockets
-// in the main locus's `bindings { }`:
+// dna/organism — the reference organism (GH #527 B6, #986): the DNA
+// assembly behind the NERVES, two typed topics bound to pond's NATS
+// adapter in the main locus's `bindings { }`:
 //
 //   dna.review.verdict   a human's verdict on a pending Review
 //   dna.intent.offered   intent entering the organism
 //
-// The membrane client (`dna/membrane`, which `hale dna task create`
-// and `hale dna review` exec) publishes on those sockets; nothing
-// crosses through the observation segment. The owning locus decides:
-// a verdict goes through the Review's own admission (digest pin,
-// authority, independence), an intent through the membrane gate and
-// the engine. The edge is a declared route in the fleet model, so
-// `hale fleet check` sees it.
+// A node (`hale dna run` / `dev`) publishes them once their rows are in
+// the record; they arrive here through the organization's durable
+// consumer on the stream, under the organization's token. Nothing
+// crosses through the observation segment. The owning locus decides: a
+// verdict goes through the Review's own admission (digest pin,
+// authority, independence), an intent through the gate and the engine.
+// The edge is a declared route in the fleet model, so `hale fleet check`
+// sees it.
 //
 //   hale build dna/organism && ./dna/organism/organism
 //
-// The socket paths are literal (a binding is a deployment fact of the
-// source); a host that needs another directory regenerates this seed
-// or routes with LOTUS_BUS_CONFIG. The pending Review `r1` stands in
-// for the first governed workflow (ratify the declared purpose).
+// with HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG naming the nerves
+// (`hale dna nerves migrate` prints both). The pending Review `r1` stands
+// in for the first governed workflow (ratify the declared purpose).
 
 import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
 
 main locus Organism {
     params {
@@ -37,14 +38,16 @@ main locus Organism {
         reported_settled: Bool = false;
         // 0 = run until killed; otherwise the number of 100ms ticks.
         ticks: Int = 0;
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organism", subject_prefix: dna::nerves_prefix(dna::nerves_org()), stream: dna::nerves_stream(dna::nerves_org()), consumer: dna::nerves_consumer(dna::nerves_org()) };
     }
 
+    placement { nerves: pinned; }
     bindings {
-        dna::ReviewVerdict: unix("/tmp/hale-dna.review.verdict.sock", role: listen);
-        dna::IntentOffered: unix("/tmp/hale-dna.intent.offered.sock", role: listen);
+        dna::ReviewVerdict: nats::NatsAdapter { };
+        dna::IntentOffered: nats::NatsAdapter { };
     }
 
-    // Report every membrane-driven transition on stdout: what the
+    // Report every transition the nerves drive on stdout: what the
     // organism DECIDED, in its own words, never what the transport
     // carried.
     fn report() {
@@ -63,7 +66,7 @@ main locus Organism {
     }
 
     run() {
-        println("organism: membrane listening");
+        println("organism: listening on the nerves");
         let mut t = 0;
         while self.ticks == 0 || t < self.ticks {
             std::time::sleep(100ms);

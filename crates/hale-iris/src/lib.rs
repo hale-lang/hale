@@ -45,7 +45,7 @@ pub const FILES: &[EmbeddedFile] = &[
 
 /// Everything the toolchain cache holds: the iris tree, and beside it
 /// the DNA sources `hale dna` builds from the same cache under the
-/// same build lock — the host, the membrane client and the surface,
+/// same build lock — the host and the surface,
 /// with the core, operations and pond's driver they import. Iris itself imports none of the DNA tree.
 pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
     FILES
@@ -53,7 +53,6 @@ pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
         .map(|f| (f.path, f.content))
         .chain(hale_dna::FILES.iter().map(|f| (f.path, f.content)))
         .chain(hale_dna::POND_FILES.iter().map(|f| (f.path, f.content)))
-        .chain(std::iter::once((hale_dna::MEMBRANE_CLIENT.path, hale_dna::MEMBRANE_CLIENT.content)))
         .chain(std::iter::once((hale_dna::UI_MAIN.path, hale_dna::UI_MAIN.content)))
         .chain(std::iter::once((hale_dna::UI_HTML.path, hale_dna::UI_HTML.content)))
         .chain(hale_dna::HOST_FILES.iter().map(|f| (f.path, f.content)))
@@ -175,7 +174,7 @@ mod tests {
             assert!(!content.is_empty(), "{} is empty", path);
             assert!(seen.insert(path), "{} listed twice", path);
         }
-        for seed in [hale_dna::HOST_SEED, hale_dna::MEMBRANE_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED] {
+        for seed in [hale_dna::HOST_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED] {
             let dir = format!("{seed}/");
             assert!(all_files().any(|(p, _)| p.starts_with(&dir)), "hale dna builds {seed} from this cache");
         }

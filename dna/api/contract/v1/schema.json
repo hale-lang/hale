@@ -12063,7 +12063,7 @@
         "command_id": {
           "type": "string"
         },
-        "membrane_up": {
+        "organism_alive": {
           "type": "boolean"
         },
         "mode": {
@@ -12082,7 +12082,7 @@
         "pid",
         "since",
         "command_id",
-        "membrane_up",
+        "organism_alive",
         "mode",
         "exit_code"
       ],

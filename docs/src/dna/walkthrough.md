@@ -27,7 +27,7 @@ against, so they matter twice.
 ```text
 $ hale dna dev . --observe 5
 hale dna dev: organization (pid 1874960) from … under LOTUS_OBS=1
-hale dna dev: membrane bound at …/.hale/dna
+hale dna dev: the organization reads its facts from the nerves (DNA_4F…)
 hale dna dev: expression chat (pid 1874991) under LOTUS_OBS=1
 ```
 
@@ -163,8 +163,8 @@ hale dna dev: m1 observed healthy for 5s as 3c9b9327e480d349
 ```
 
 The host rebuilt, restarted the application with the Mutation's id
-in its environment, and watched the window. Then it reported on the
-membrane, and the organization re-measured the originating pressure
+in its environment, and watched the window. Then it reported over the
+nerves, and the organization re-measured the originating pressure
 against the fitness signals the proposal declared. On a fleet the
 same step is a `fleet.deploy` row, `instance.up` from every touched
 node, and the window over all of them.

@@ -23,8 +23,8 @@
 // before its Works drained), and a drained record is asked for nothing.
 // (The host's answer to an ask — the execution whose admission names
 // that ask, never the next birth — is the host verb's, exercised by the
-// `dna_run` gate and by a probe that drives the membrane client from
-// outside this process.)
+// `dna_run` gate and by the fixtures that ask a running organism from
+// outside this process, such as nerves_loss_test.hl.)
 
 import "../core" as dna;
 

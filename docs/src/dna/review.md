@@ -126,9 +126,9 @@ $ hale dna review m1 approve --as riley --comment "fine"
 review m1 settled: approve by riley
 ```
 
-The verdict is a typed `ReviewVerdict` keyed to this Review — over
-the membrane when the organization is here, as a `review.verdict`
-row in the record otherwise. What the Review checks, in order:
+The verdict is a `review.verdict` row in the record, which the host
+beside the organization relays as a typed `ReviewVerdict` keyed to
+this Review, over the nerves. What the Review checks, in order:
 
 1. **The digest.** The verdict names the candidate the reviewer
    looked at — by default the one the request pinned, or the one

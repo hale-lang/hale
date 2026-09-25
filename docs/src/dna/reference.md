@@ -15,6 +15,10 @@ hale dna memory migrate [dir]
                              apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
                              dna/compose.yaml) and print the record's spine and head DSNs
                              (HALE_DNA_MEMORY_DSN_SPINE=…, HALE_DNA_MEMORY_DSN_HEAD=…)
+hale dna nerves migrate [dir]
+                             create the organization's NATS JetStream stream with the owner's URL
+                             (HALE_DNA_NATS_URL_OWNER, or dna/compose.yaml) and print its token and
+                             each role's URL (HALE_DNA_NATS_ORG=…, HALE_DNA_NATS_URL_SPINE=…, …)
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
                              restart the application on an apply, watch the window, report back
@@ -30,7 +34,7 @@ hale dna ui [project] [--port N]
 hale dna status [project] [--json]
                              the status projection, from the record
 hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>
-                             ask for an outcome, as a Task; over the membrane here, into the record otherwise
+                             ask for an outcome, as a Task: a row in the record, which a node relays to the organism
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (offline)
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]
@@ -74,7 +78,7 @@ hale dna report [project]    file a report from the record since the last one
 hale dna concern raise <source> <what…> [--severity N]
                              a concern from a locus path about the part above it; three become a proposal
 hale dna pressure [raise <source> <what…>]
-                             pressure raised and answered; `raise` publishes one signal
+                             pressure raised and answered; `raise` writes one signal, which a node relays
 hale dna github sync         mirror pending Reviews to pull requests, read reviews back as verdicts
 hale dna fleet [project]     what the fleet expresses: every instance, node, revision, hash, state
 hale dna deploy <revision>   express a genome revision through the fleet's nodes
@@ -93,7 +97,7 @@ restart `HALE_DNA_RESTART_FOR` / `HALE_DNA_EXPRESSION`. A node sets
 after its first cycle (for tests). `HALE_DNA_NO_BUILD_CACHE=1` makes
 the host build the organization's seed — and under `dev` the
 application's — from scratch on every start, instead of reusing the
-binary it built for the same sources ([the host, the membrane, the
+binary it built for the same sources ([the host, the nerves, the
 nodes](./run.md)). `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are what
 `init` looks for when it writes the catalog, and the
 `HostedCredential` sources it names. Git config: `dna.remote` (default
@@ -112,7 +116,15 @@ role for, printed as `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>`; an owner's
 heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`. `HALE_DNA_NODE` is the
 name a node's organism claims under, which the host sets to its body's
 holder. `HALE_DNA_GENOME_POLL` is how often, in seconds, a node fetches
-the forge's default branch (300; 0 is never). The host hands its organization
+the forge's default branch (300; 0 is never).
+
+The nerves ([Operating](./operating.md#the-nerves)):
+`HALE_DNA_NATS_URL_OWNER`, the stream owner's URL, used only to create
+the stream (`nerves migrate`, `dev`); `HALE_DNA_NATS_URL_SPINE` and
+`HALE_DNA_NATS_ORG`, the URL and the organization's token the host that
+runs the organism is handed and the organization inherits;
+`HALE_DNA_NATS_URL_HEAD` and `HALE_DNA_NATS_URL_APP`, a head's and an
+application's. The host hands its organization
 its body lease as `HALE_DNA_LEASE` / `HALE_DNA_LEASE_TOKEN` once the
 ledger is adopted.
 
@@ -182,6 +194,7 @@ sequence either way — see [The record](./record.md).
 | `org.reviewed` | record | the organization | the organization's own pass over itself, and what it answered |
 | `optimize.refused` | ledger | the organization | that pass did not run: the budget for the window is spent |
 | `node.started` / `node.build_failed` | record | the node's holder | the genome it runs, by `sha` / a genome that did not check or build: its `sha` and `why`, the node staying on the last that did |
+| `nerves.lost` | record | the node's holder | its connection to the nerves collapsed (`why`: a publish the stream did not acknowledge in time); it connects again, and the relay publishes every unanswered request again |
 | `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
 | `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
 | `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |
@@ -190,7 +203,7 @@ sequence either way — see [The record](./record.md).
 | `fleet.deploy` | record | `m<n>` or a short revision | plan, revision, seed, the instances touched, reason |
 | `instance.up` / `instance.exited` | ledger | the instance id | node, revision, model hash, build, pid / node, revision, code — authored `node/<name>` |
 | `github.pr` / `github.commented` | record | `m<n>` | the pull request opened / the settlement commented |
-| `pressure.raised` | ledger | a source | `<what> x<n>` |
+| `pressure.requested` / `pressure.raised` | ledger | a source | a signal from a source, with its own `request` id, which a node relays until answered; the answer is one object (`what`, `count`, `request`), written once per request (a row from before #986 is `<what> x<n>`) |
 | `pressure.remeasured` | ledger | `m<n>` | the Task, the declared fitness signals, the outcome |
 | `appendage.proposed` / `appendage.candidate` | record | a source | the organ proposed / the organization mutation that proposes it |
 | `report.filed` | ledger | `r<n>` | the summary since the last report |
@@ -313,13 +326,14 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |
 | `editing.hl` | `WorktreeTools`, `SourceEditor` |
 | `verification.hl` | `HaleVerification`, `assess_structure` |
-| `topics.hl` | the typed topics, including the four membrane topics |
+| `topics.hl` | the typed topics, including the facts that travel on the nerves |
+| `nerves.hl` | the nerves (GH #986): subjects under the organization's token, its stream and durable consumer, the roles' URLs, `nerves_migrate` |
 | `types.hl` | `Intent`, `WorkRequest`, `Grant`, `Magnitude`, `Evidence`, `Disposition`, `Mutation`, `dispose` |
 
 Beside the core, `dna/host` (the host: the projections, the writers,
 `run` / `dev`, the node agent — everything `hale dna` does that is DNA
-behaviour rather than manifest or scaffolding), `dna/membrane` (the
-client it publishes through) and `dna/ui` (the surface) ship in the
+behaviour rather than manifest or scaffolding) and `dna/ui` (the
+surface) ship in the
 toolchain the same way; `hale dna` resolves the project and execs the
 host. The compiler keeps `init` / `new` / `upgrade`, `hale fleet
 check` and the plan schema. The projection of the record into the

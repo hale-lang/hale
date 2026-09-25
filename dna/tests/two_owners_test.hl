@@ -159,25 +159,28 @@ main locus App {
         leases: dna::PqLeaseStore = dna::PqLeaseStore { };
     }
     // The node that adopts the ledger: `hale dna dev` with the owner's DSN
-    // and the owners' keys (dev migrates, a head role per owner, and hands
-    // the host the spine's role), which a shared record not yet on the
-    // ledger needs.
+    // and the owners' keys (dev migrates memory, a head role per owner,
+    // and the nerves' stream, and hands the host the spine's roles), which
+    // a shared record not yet on the ledger needs.
     fn start_dev(dir: String, owner: String) -> String {
         let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
         return dna::trim_nl(started.stdout);
     }
     // A body over the shared record, on the ledger: `hale dna run` with the
-    // spine's DSN.
-    fn start_body(dir: String, spine_dsn: String) -> String {
-        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna run . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine_dsn);
+    // spine's DSN, and the nerves' spine URL and organization (GH #986).
+    fn start_body(dir: String, spine_dsn: String, nats_spine: String, nats_org: String) -> String {
+        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" HALE_DNA_NATS_ORG=\"$4\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna run . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine_dsn + "\n" + nats_spine + "\n" + nats_org);
         return dna::trim_nl(started.stdout);
     }
+    // A body is up once its organization runs: the pid file is written and
+    // the process is alive. What the record asks of it waits in the
+    // nerves' stream until it reads it (GH #986).
     @unbounded
     fn body_up(dir: String, tries: Int) -> Bool {
         let limit = tries * dna::wait_scale();
         let mut n = 0;
         while n < limit {
-            if std::io::fs::file_exists(dir + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(dir + "/.hale/dna/org.pid") { return true; }
+            if alive(dna::trim_nl(std::io::fs::read_file(dir + "/.hale/dna/org.pid") or "")) { return true; }
             std::time::sleep(500ms);
             n = n + 1;
         }
@@ -223,6 +226,13 @@ main locus App {
             dna::scratch_done(scratch);
             return;
         }
+        // the organizations hear what the record asks over the nerves (GH #986)
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(nats_owner) == 0 {
+            eprintln("two_owners_test: not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
+            dna::scratch_done(scratch);
+            return;
+        }
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nshared");
@@ -246,6 +256,10 @@ main locus App {
         let acme_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_ACME");
         let north_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_NORTH");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head_dsn, "postgres") && std::str::starts_with(spine_dsn, "postgres") && std::str::starts_with(acme_dsn, "postgres") && std::str::starts_with(north_dsn, "postgres"), "memory migrated for the record, a head role per owner: " + migrated.stdout + migrated.stderr);
+        let nerves = in_dir(app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        let nats_spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
+        let nats_org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
+        std::test::assert(nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0, "the nerves' stream is in place for the record: " + nerves.stdout + nerves.stderr);
         self.leases = dna::PqLeaseStore { conn: dna::pq_conn(dna::parse_dsn(head_dsn)), record_id: record };
         std::test::assert(self.leases.open(), "a head reads the leases: " + self.leases.last_error());
         // ---- the ledger adopted: a shared record's controllers coordinate
@@ -258,11 +272,11 @@ main locus App {
         std::test::assert(len(wait_record(app, "ledger.adopted", "checkpoint", POLLS)) > 0, "a node adopts the ledger on its tick: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         let k0 = dna::run_tool("kill\n" + pid_0);
         std::test::assert(self.wait_gone(pid_0, POLLS), "the adopting node stops");
-        let rest0 = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + app);
+        let rest0 = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + app);
         let pushed = in_dir(app, toolchain() + "\ndna\nsync");
         std::test::assert_eq_int(pushed.code, 0, "the adopted record is at the remote: " + pushed.stdout + pushed.stderr);
         // ---- acme's body beside clone A, north's beside clone B
-        let pid_a = self.start_body(app, spine_dsn);
+        let pid_a = self.start_body(app, spine_dsn, nats_spine, nats_org);
         std::test::assert(self.body_up(app, BOOT), "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         let other = scratch + "/north";
         let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
@@ -270,10 +284,11 @@ main locus App {
         self.configure(other, "bob", "north", "kb");
         let synced = as_head(other, head_dsn, toolchain() + "\ndna\nsync");
         std::test::assert_eq_int(synced.code, 0, "north's clone has the record: " + synced.stdout + synced.stderr);
-        let pid_b = self.start_body(other, spine_dsn);
+        let pid_b = self.start_body(other, spine_dsn, nats_spine, nats_org);
         std::test::assert(self.body_up(other, BOOT), "north's body came up beside acme's: " + (std::io::fs::read_file(other + "/.hale/body.log") or ""));
-        // a body opens its membrane and takes its lease in its own order:
-        // each lease is waited for, not read the moment the socket is there
+        // a body starts its organization and takes its lease in its own
+        // order: each lease is waited for, not read the moment the
+        // organization runs
         let la = self.wait_lease("owner/acme", true, POLLS);
         let lb = self.wait_lease("owner/north", true, POLLS);
         std::test::assert(la.present && std::str::contains(la.holder, "shared"), "acme's lease is held, by its clone: " + dna::stored_lease_json(la));

@@ -22,8 +22,17 @@ fn answer(text: String) -> Answer {
 // A loaded projection, or the reason there is none.
 // The ledger half is the process's own memory handle (GH #985): a
 // projection never opens memory of its own.
+// The ledger is this process's one handle, open for its life, and answers
+// from what it last read: a row another process wrote since — a head's
+// ask, the organism's answer — is there only once it is asked again. The
+// projection asks it (under routing 1; on routing 0 the ledger is not read
+// at all), so a host's relay and a verb waiting for its answer see the
+// Ledger as it is now (GH #986: no head publishes beside the body any
+// more, so this read is the only way a head's row reaches the organism).
 fn open_projection(root: String, seed: String, toolchain: String, memory: dna::Memory) -> Projection {
-    return Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: memory.ledger } };
+    let p = Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: memory.ledger } };
+    let moved = p.j.refresh();
+    return p;
 }
 
 fn no_record(root: String) -> String {
@@ -46,6 +55,7 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, toolchain, memory);
+    p.live = organism_here(root, memory);
     if json { return answer(p.json() + "\n"); }
     // GH #617: the combination this organism is, detected from its
     // pieces, and who runs it — never a stored label
@@ -600,7 +610,9 @@ fn pressure_list(p: Projection) -> Answer {
     while i >= 0 && taken < 10 {
         let e = p.row(i);
         if e.kind == "pressure.raised" {
-            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + e.entity + "  " + e.body + "\n";
+            let count = std::json::find_int_field(e.body, "count");
+            let said = if count > 0 { dna::pressure_what(e.body) + " x" + to_string(count) } else { e.body };
+            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + e.entity + "  " + said + "\n";
             taken = taken + 1;
         }
         i = i - 1;
@@ -663,8 +675,8 @@ fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
 // `hale dna models`: the catalog (dna/org/models.hl) built beside a
 // one-line main into the project's scratch and run from the root, so
 // its `probe_catalog()` sees the same environment the organization
-// would. The organization itself is not started and its membrane is
-// not touched.
+// would. The organization itself is not started and the nerves are not
+// touched.
 fn models_verb(root: String, hale: String) -> Answer {
     let src = root + "/dna/org/models.hl";
     let catalog = std::io::fs::read_file(src) or "";

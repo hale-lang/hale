@@ -145,12 +145,13 @@ fixtures use. The organism's `GitJournal`, `GitReceipts` and
 records all stand on it — which is what lets the operational memory
 move to a store without the record changing shape.
 
-## The membrane over the record
+## Requests are rows
 
-From a clone with no organization, `hale dna task create` appends
-`intent.requested` and a verdict appends `review.verdict`, each in
-the appender's git identity. The host beside the organization relays
-unanswered rows onto the membrane once — every writer trusted by
+From any clone, `hale dna task create` appends `intent.requested` and
+a verdict appends `review.verdict`, each in the appender's git
+identity; neither publishes anything. The host beside the organization
+relays unanswered rows onto [the nerves](./run.md#the-nerves), and
+again every 30 seconds until they are answered — every writer trusted by
 default (`dna.trust = local`), or only signed commits git verifies
 (`dna.trust = signed`; an unverified row is refused in the record and
 never relayed) — the organization answers
@@ -162,8 +163,8 @@ detail](./review.md).
 
 ## What is not the record
 
-`.hale/dna/` holds only what is scratch: the membrane sockets, the
-status projection `status.json`, one worktree per open Mutation
+`.hale/dna/` holds only what is scratch: the status projection
+`status.json`, one worktree per open Mutation
 under `worktrees/<id>/`, the toolchain's inputs and outputs under
 `scratch/`, and the artifacts of what was attached and what is
 running (`baseline.topology`, `current.topology`,

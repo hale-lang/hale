@@ -172,8 +172,8 @@ locus Node {
     // GH #583 K4: an instance on this node raised a concern (its own
     // declaration of the wire fact, routed here by LOTUS_BUS_CONFIG);
     // the node puts it into the record as `concern.requested`, and the
-    // host beside the organization relays it onto the membrane — the
-    // same way intent and verdicts travel from any clone.
+    // host beside the organization relays it onto the nerves — the same
+    // way intent and verdicts travel from any clone (GH #986).
     bus { subscribe dna::ConcernRaised as on_concern; }
     fn on_concern(c: dna::Concern) {
         let b = std::json::Builder { };
@@ -213,9 +213,15 @@ locus Node {
     }
     // The route an instance gets: this node's concern socket (the shim
     // bound it for the node before the node started), role connect.
-    // Relative, like the membrane's: an instance runs in the clone's
-    // root, and a Unix address has 108 bytes for the whole path
-    // (the shakeout's finding 6).
+    // Relative: an instance runs in the clone's root, and a Unix address
+    // has 108 bytes for the whole path (the shakeout's finding 6).
+    //
+    // This is the one LOTUS_BUS_CONFIG DNA still writes, and it stays on
+    // purpose (GH #986): an instance is the application, which declares
+    // no bindings, and an env route reaches Unix sockets only. The hop is
+    // local — an instance to its own node — and never the nerves; the
+    // node's row is what travels. #987 replaces it, when the application
+    // declares its events and binds them to the nerves itself.
     fn instance_bus_conf() -> String {
         let conf = self.node_dir + "/instance.bus.conf";
         let w = write_text(conf, "dna.concern.raised = unix://.hale/node/concern.raised.sock : connect\n") or false;

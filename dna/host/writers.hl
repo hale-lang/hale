@@ -1,9 +1,8 @@
 // dna/host/writers.hl — the verbs that put a fact into the world
 // (GH #566 F8): an intent, a verdict, a pressure signal, a sync, a
-// deploy row, the GitHub mirror. Each goes the way it always did:
-// onto the membrane when an organization is bound here, into the
-// record otherwise, in the name of whoever asked. Nothing here
-// decides.
+// deploy row, the GitHub mirror. Each is a row in the record, in the
+// name of whoever asked; a node relays it onto the nerves (GH #986).
+// Nothing here publishes, and nothing here decides.
 
 import "../core" as dna;
 import "../operations" as ops;
@@ -47,7 +46,7 @@ fn millis() -> Int {
 }
 
 fn no_organism(root: String) -> String {
-    return "the organism is not running here (no membrane under " + root + "/.hale/dna) and the repository has no remote to reach one through; start it with `hale dna run`";
+    return "the organism is not running here (no body in this clone holds the record's lease) and the repository has no remote to reach one through; start it with `hale dna run`";
 }
 
 // An event after `from` of one of `kinds` (space-separated) naming `entity`.
@@ -585,7 +584,7 @@ fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: St
     let common = ops::GovernanceCommandCodec { }; let codec = ops::PersonRetirementCodec { }; let retirement = ops::PersonRetirement { };
     if !common.context_valid(context) || !common.bounded(who, 256, true, false) || !common.bounded(to, 256, false, false) || to == who { return fail("retire: name an exact person and a distinct successor, when one is supplied"); }
     let grant = ops::GovernanceGrant { allowed: true, authority: "trusted-local-cli", basis: "dna.trusted-local-cli-retirement/1" };
-    let cli = GovernanceCli { root: root }; let request_id = cli.request_id("");
+    let cli = GovernanceCli { root: root, memory: memory }; let request_id = cli.request_id("");
     let native = ops::GovernanceCommands { record: record };
     let mut attempts = 0;
     while attempts < 4 {
@@ -663,7 +662,9 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
 // `hale dna task create`: asking for an outcome is one kind of task (the
 // face exposes the same operation as `dna.task.create`). The row kinds
 // it writes and reads (`intent.requested`, `intent.refused`,
-// `workflow.admitted`) and the membrane kind `intent` keep their names.
+// `workflow.admitted`) and the fact `intent` keep their names. The verb
+// writes the row and never publishes (GH #986): the host beside the
+// organism relays it onto the nerves.
 fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, memory: dna::Memory) -> Answer {
     if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
     let s0 = sync_record(root, memory);
@@ -678,28 +679,22 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     // holds; for another owner's the intent goes into the record, where
     // their controller relays it
     let ours = admits_here(root, to);
-    let local = membrane_up(root) && ours;
+    let local = ours && organism_here(root, memory);
     let b = std::json::Builder { };
     b.begin_object();
-    if local { b.string_field("intent_id", intent_id); }
     b.string_field("outcome", outcome);
     b.string_field("from", who);
     b.string_field("to", to);
-    // GH #682: published by this head as well; the host relays it only if
-    // it stays unanswered
-    if local { b.string_field("via", "membrane"); }
     b.end_object();
     // `--no-wait`: the one notice, on either path, once the row is in the record
     // where the ask's row lands: the record, or the ledger once it is adopted
     let place = if dna::route(routing_here(root), "intent.requested") == "ledger" { "the ledger" } else { "the record" };
     let requested = "intent " + intent_id + " requested in " + place + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
     if local {
-        // GH #682: the durable fact precedes the act, on this path too — the
-        // row lands first, so a publish the membrane loses is relayed by the
-        // host beside the organism, which admits an intent once by its id
+        // GH #682, #986: the row is the fact; the host beside the organism,
+        // in this clone, relays it onto the nerves on its next tick, and the
+        // organism admits an intent once by its id
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
-        let e = publish_on_membrane(root, "intent", b.result());
-        if len(e) > 0 { eprintln("hale dna task create: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
         if no_wait { return answer(requested); }
     } else {
         // no organism here: the intent goes into the record, and the host
@@ -711,7 +706,7 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
         if no_wait { return answer(requested); }
     }
     // the organism's answer, from the record
-    let deadline = std::time::now() + (if local { 10 } else { 60 });
+    let deadline = std::time::now() + (if local { 20 } else { 60 });
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, ".", "", memory);
@@ -730,7 +725,7 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
             }
             i = i + 1;
         }
-        if std::time::now() > deadline { return fail("published intent " + intent_id + ", but the organism journaled no answer in time (record revision " + to_string(q.rows()) + ")"); }
+        if std::time::now() > deadline { return fail("requested intent " + intent_id + ", but the organism journaled no answer in time (record revision " + to_string(q.rows()) + ")"); }
         std::time::sleep(if local { 150ms } else { 1000ms });
     }
     return fail("unreachable");
@@ -754,7 +749,7 @@ type GovernanceCliReview {
 // CLI parsing/presentation only. FixedAuthority and GovernanceCommands are
 // shared with the HTTP head; this adapter never appends or publishes a trigger.
 locus GovernanceCli {
-    params { root: String = "."; }
+    params { root: String = "."; memory: dna::Memory = dna::Memory { }; }
     fn settings(who_flag: String) -> GovernanceCliSettings {
         let actor = std::env::var("USER");
         if len(actor) == 0 || (len(who_flag) > 0 && who_flag != actor) { return GovernanceCliSettings { error: "command_context_changed: --as must match the trusted local USER identity" }; }
@@ -820,7 +815,7 @@ locus GovernanceCli {
         // final answer also repeats the key for scripts capturing stdout.
         eprintln("hale dna command request_id: ", command.request_id);
         let mut result = native.submit(context, command);
-        if no_wait || self.finished(result) || !membrane_up(self.root) { return self.render(result, command.request_id); }
+        if no_wait || self.finished(result) || !organism_here(self.root, self.memory) { return self.render(result, command.request_id); }
         let deadline = std::time::monotonic_ns() + (if command.operation == "dna.practice.propose" { 60000000000 } else { 10000000000 });
         while std::time::monotonic_ns() < deadline {
             std::time::sleep(150ms);
@@ -891,7 +886,7 @@ locus GovernanceCli {
 }
 
 fn practice_command_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String, request_id: String, no_wait: Bool, memory: dna::Memory) -> Answer {
-    let cli = GovernanceCli { root: root };
+    let cli = GovernanceCli { root: root, memory: memory };
     if sub == "lookup" {
         if len(name) > 0 || len(text) > 0 || len(because) > 0 || len(supersedes) > 0 { return fail("practice lookup accepts --request-id and optional matching --as only"); }
         return cli.lookup(request_id, who_flag);
@@ -903,7 +898,7 @@ fn practice_command_verb(root: String, seed: String, sub: String, name: String, 
 
 fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
     if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && !seeded_group(id) {
-        let cli = GovernanceCli { root: root };
+        let cli = GovernanceCli { root: root, memory: memory };
         let selected = cli.review_profile(id);
         if !selected.ok { return fail("cannot determine native Review profile: " + selected.error); }
         if selected.supported {
@@ -921,7 +916,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     if !(verdict == "approve" || verdict == "revise" || verdict == "reject" || verdict == "abstain") {
         return fail("review: verdict `" + verdict + "` is not one of approve | revise | reject | abstain");
     }
-    let local = membrane_up(root);
+    let local = organism_here(root, memory);
     if !local { let s = sync_record(root, memory); }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
@@ -949,7 +944,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     }
     let r = p.review_of(id);
     if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
-    if !local && len(record_remote(root)) == 0 { return fail("the organism is not running here (no membrane) and the repository has no remote to reach one through; start it with `hale dna run`"); }
+    if !local && len(record_remote(root)) == 0 { return fail("the organism is not running here (no body holds this record's lease) and the repository has no remote to reach one through; start it with `hale dna run`"); }
     let reviewer = if len(reviewer_flag) > 0 { reviewer_flag } else { who_am_i() };
     let authority = if len(authority_flag) > 0 { authority_flag } else { "board" };
     // the verdict names the candidate the reviewer LOOKED AT
@@ -963,14 +958,11 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     b.string_field("reviewer", reviewer);
     b.string_field("authority", authority);
     b.string_field("comment", comment);
-    // GH #682: the row first, then the publish; the host relays it only if
-    // it stays unanswered
-    if local { b.string_field("via", "membrane"); }
     b.end_object();
     if local {
+        // GH #682, #986: the row is the fact; the host beside the organism
+        // relays it onto the nerves until the Review answers
         if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }, memory) { return fail("the record refused the append"); }
-        let e = publish_on_membrane(root, "verdict", b.result());
-        if len(e) > 0 { eprintln("hale dna review: ", e, "; the verdict is in the record, and the host beside the organism relays it"); }
     } else {
         // a row in the record, in the reviewer's name; the host beside the
         // organism relays it, and the Review answers in the record
@@ -978,8 +970,8 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }
     }
-    if no_wait { return answer("verdict " + verdict + " on " + id + " by " + reviewer + " sent " + (if local { "over the membrane" } else { "into the record" }) + "; the Review answers in the record\n"); }
-    let deadline = std::time::now() + (if local { 10 } else { 60 });
+    if no_wait { return answer("verdict " + verdict + " on " + id + " by " + reviewer + " written into the record; the Review answers there\n"); }
+    let deadline = std::time::now() + (if local { 20 } else { 60 });
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, seed, "", memory);
@@ -988,7 +980,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
             if e.kind == "review.settled" { return answer("review " + id + " settled: " + e.body + "\n"); }
             return answer("review " + id + " refused the verdict: " + e.body + "\n");
         }
-        if std::time::now() > deadline { return fail("published the verdict, but the organism journaled no answer for `" + id + "` in time"); }
+        if std::time::now() > deadline { return fail("wrote the verdict, but the organism journaled no answer for `" + id + "` in time"); }
         std::time::sleep(if local { 150ms } else { 1000ms });
     }
     return fail("unreachable");
@@ -996,18 +988,27 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
 
 // ---- pressure -------------------------------------------------------
 
-fn pressure_raise(root: String, source: String, what: String) -> Answer {
+// Pressure is a row first (GH #986), like a concern: `pressure.requested`
+// with an id of its own; the host beside the organization relays it onto
+// the nerves until the organization answers with the `pressure.raised`
+// that names it.
+fn pressure_raise(root: String, source: String, what: String, memory: dna::Memory) -> Answer {
     if len(source) == 0 || len(what) == 0 { return fail("pressure raise needs a <source> and what"); }
-    if !membrane_up(root) { return fail("the organization is not running here (no membrane); pressure is a live signal"); }
     let b = std::json::Builder { };
     b.begin_object();
+    b.string_field("request", "r" + hex(millis()));
     b.string_field("source", source);
     b.string_field("what", what);
-    b.int_field("count", 1);
     b.end_object();
-    let e = publish_on_membrane(root, "pressure", b.result());
-    if len(e) > 0 { return fail(e); }
-    return answer("pressure raised on " + source + ": " + what + "\n");
+    if organism_here(root, memory) {
+        if !append_as(root, "pressure.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
+        return answer("pressure raised on " + source + ": " + what + "\n");
+    }
+    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+    if !append_as(root, "pressure.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
+    let s = sync_record(root, memory);
+    if !s.ok { return fail(s.summary); }
+    return answer("pressure on " + source + " requested in the record; the organization hears it there\n");
 }
 
 // A concern (GH #583 K2): a child's signal about the part above it,
@@ -1021,16 +1022,13 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
     b.string_field("source", source);
     b.string_field("what", what);
     b.int_field("severity", severity);
-    if membrane_up(root) {
-        // GH #682: the row first, then the publish
-        b.string_field("via", "membrane");
-        b.end_object();
+    b.end_object();
+    if organism_here(root, memory) {
+        // GH #682, #986: the row is the fact; the host beside the
+        // organization relays it onto the nerves
         if !append_as(root, "concern.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
-        let e = publish_on_membrane(root, "concern", b.result());
-        if len(e) > 0 { eprintln("hale dna concern: ", e, "; the concern is in the record, and the host beside the organization relays it"); }
         return answer("concern raised by " + source + ": " + what + "\n");
     }
-    b.end_object();
     // no organization here: into the record, and the host beside the
     // organization relays it (GH #583 K4)
     if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
@@ -1042,8 +1040,8 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
 
 // ---- practices (GH #602) ---------------------------------------------
 // A person proposes a practice for the whole organization: a named text
-// the Board ratifies. Over the membrane when an organization is bound
-// here, into the record otherwise; the organization records who proposed
+// the Board ratifies. A row in the record, which the host beside the
+// organization relays onto the nerves; the organization records who proposed
 // it and why, and opens the Board's Review. Nothing is in force until the
 // Board approves it. `hale dna practice` lists practices as the record has
 // them.
@@ -1064,15 +1062,13 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
         b.string_field("by", who);
         b.string_field("because", because);
         b.string_field("supersedes", supersedes);
-        if membrane_up(root) {
-            // GH #682: the row first, then the publish; the organization
+        if organism_here(root, memory) {
+            // GH #682, #986: the row is the fact; the host beside the
+            // organization relays it onto the nerves, and the organization
             // answers a request once, however often it is delivered
-            b.string_field("via", "membrane");
             b.end_object();
             let before = open_projection(root, seed, "", memory).rows();
             if !append_as(root, "practice.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
-            let e = publish_on_membrane(root, "practice", b.result());
-            if len(e) > 0 { eprintln("hale dna practice: ", e, "; the proposal is in the record, and the host beside the organization relays it"); }
             // the organization answers from its bus; give a busy one a minute
             let deadline = std::time::now() + 60;
             while std::time::now() <= deadline {
@@ -1085,7 +1081,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
                 }
                 std::time::sleep(150ms);
             }
-            return fail("published the proposal, but the organization journaled no answer for " + request_id + " in time");
+            return fail("requested the proposal, but the organization journaled no answer for " + request_id + " in time");
         }
         b.end_object();
         if len(record_remote(root)) == 0 { return fail(no_organism(root)); }

@@ -92,7 +92,7 @@ then SIGKILL after five seconds) and starts the new one with
 `HALE_DNA_RESTART_FOR=<id>` and `HALE_DNA_EXPRESSION=<shape> build
 <digest>`. The new expression journals `expression.restarted` itself,
 at birth. If the candidate does not build, the host reports
-`build_failed` on the membrane and the organization rolls back.
+`build_failed` over the nerves and the organization rolls back.
 
 ```text
 hale dna dev: m1 requests a restart (apply bf94e503… seed . fitness docs_coverage +)
@@ -120,8 +120,8 @@ organization is rebuilt and restarted, and watched.
 ## The observation window
 
 `--observe <secs>` (default 15) is how long the new expression must
-stay up. At the end the host publishes `ExpressionObserved` on the
-membrane — `healthy` with the shape hash it observed, or what went
+stay up. At the end the host publishes `ExpressionObserved` over the
+nerves — `healthy` with the shape hash it observed, or what went
 wrong — and the organization decides, against the Mutation's state:
 
 - **`healthy`**: `mutation.retained`, the worktree dissolved, and the

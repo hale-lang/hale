@@ -11,9 +11,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment } from './environment.mjs';
 
+// GH #1029: dna/api/practice_review/tests/relay was removed with the
+// membrane (GH #986); nothing builds a relay against the nerves yet, so
+// this harness — which needs one — cannot run.
+assert.fail('The native command relay lane is unported (GH #1029): dna/api/practice_review/tests/relay was removed with the membrane; rebuild it against the node before running this harness.');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const webroot = path.join(repo, 'dna/face/web');
-const required = ['API', 'BODY', 'RELAY', 'MEMBRANE'];
+const required = ['API', 'BODY', 'RELAY'];
 const binaries = Object.fromEntries(required.map(name => {
   const value = process.env[`HALE_NATIVE_COMMAND_${name}`];
   assert(value && path.isAbsolute(value), `HALE_NATIVE_COMMAND_${name} must name an explicit absolute native binary`);
@@ -111,7 +115,7 @@ async function stop(item, kill = false) {
     await Promise.race([item.closed, pause(1500)]);
     if (alive(item)) { signal(item, 'SIGKILL'); await Promise.race([item.closed, pause(1500)]); }
   }
-  // Reap any still-running membrane/Git child in the same owned group.
+  // Reap any still-running Git child in the same owned group.
   signal(item, 'SIGKILL');
   assert(!alive(item), `Owned ${item.name} process did not terminate`);
   owned.delete(item);
@@ -189,7 +193,7 @@ async function startBody() {
   }, value => value?.ready === true);
 }
 async function startRelay() {
-  relay = startNative('relay', binaries.relay, [], { HALE_DNA_MEMBRANE: binaries.membrane });
+  relay = startNative('relay', binaries.relay, []);
   await until('host relay startup', () => relay.output, text => text.includes('native command relay ready'));
 }
 async function startApi(name = 'alice') {

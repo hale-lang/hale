@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -28,7 +28,6 @@ const root = join(evidence, 'project');
 await mkdir(join(root, '.hale', 'dna'), { recursive: true });
 const policyPath = join(evidence, 'authority.json');
 const baseEnv = { ...isolatedEnvironment(), USER: actor, HALE_DNA_COMMAND_POLICY: policyPath };
-delete baseEnv.HALE_DNA_MEMBRANE;
 const children = new Set();
 const checks = [];
 let ordinal = 0;
@@ -119,10 +118,6 @@ try {
   });
   assert.equal(ready.practice_id, ready.bootstrap_digest, 'actual native bootstrap Practice must be active');
   await stop(body);
-  // Remove only this stopped fixture's known sockets: no membrane is running.
-  for (const name of ['hale-dna.practice.requested.sock', 'hale-dna.review.verdict.sock', 'hale-dna.intent.offered.sock']) {
-    await rm(join(root, '.hale', 'dna', name), { force: true });
-  }
   const application = await git('rev-list', '--max-parents=0', 'refs/dna/journal');
   summary.application_id = application;
   const baselineRows = await journal();

@@ -13,15 +13,6 @@ import "../organization_runtime" as org_runtime;
 const RECORD_REF: String = "refs/dna/journal";
 const JOURNAL: String = "journal";
 const REMOTE_JOURNAL: String = "remote/journal";
-const VERDICT_SOCK: String = "hale-dna.review.verdict.sock";
-const INTENT_SOCK: String = "hale-dna.intent.offered.sock";
-const OBSERVED_SOCK: String = "hale-dna.expression.observed.sock";
-const PRESSURE_SOCK: String = "hale-dna.pressure.raised.sock";
-const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
-const PRACTICE_SOCK: String = "hale-dna.practice.requested.sock";
-const KNOWLEDGE_NODE_SOCK: String = "hale-dna.knowledge.node.requested.sock";
-const KNOWLEDGE_BINDING_SOCK: String = "hale-dna.knowledge.binding.requested.sock";
-const KNOWLEDGE_EDGE_SOCK: String = "hale-dna.knowledge.edge.requested.sock";
 const IDENTITY_REF: String = "refs/dna/identity";
 const IDENTITY: String = "identity";
 
@@ -75,11 +66,6 @@ fn ownership_note(root: String, to: String) -> String {
 }
 
 fn row_verified(root: String, sha: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.row_verified(sha); }
-
-fn membrane_up(root: String) -> Bool {
-    let d = root + "/.hale/dna/";
-    return std::io::fs::file_exists(d + VERDICT_SOCK) && std::io::fs::file_exists(d + INTENT_SOCK);
-}
 
 fn short(s: String) -> String {
     if len(s) > 12 { return s[0..12]; }
@@ -542,40 +528,6 @@ fn sync_record_rows(repo: String) -> SyncResult {
     return SyncResult { ok: true, summary: summary };
 }
 
-// The membrane client, exec'd with routes to this project's sockets:
-// one typed fact published, the organization decides.
-//
-// The routes are RELATIVE and the client runs in the project's root.
-// A Unix address is at most 108 bytes, path included, and the
-// organization binds these names relative to the same root — so an
-// absolute route was the only long side: an ordinary project path
-// (a home directory, a checkout, a worktree) pushed the client past
-// the limit and it could not connect to sockets that were there and
-// listening (the shakeout's finding 6).
-fn publish_on_membrane(root: String, kind: String, body: String) -> String {
-    let bin = std::env::var("HALE_DNA_MEMBRANE");
-    if len(bin) == 0 { return "no membrane client (HALE_DNA_MEMBRANE unset)"; }
-    let d = ".hale/dna/";
-    let conf = "/tmp/hale-dna-membrane-" + to_string(std::process::pid()) + ".conf";
-    let text = "dna.review.verdict = unix://" + d + VERDICT_SOCK + " : connect\n"
-        + "dna.intent.offered = unix://" + d + INTENT_SOCK + " : connect\n"
-        + "dna.expression.observed = unix://" + d + OBSERVED_SOCK + " : connect\n"
-        + "dna.pressure.raised = unix://" + d + PRESSURE_SOCK + " : connect\n"
-        + "dna.concern.raised = unix://" + d + CONCERN_SOCK + " : connect\n"
-    // an organization scaffolded before practices has no such socket:
-    // the route is named only for the fact that needs it
-        + (if kind == "practice" { "dna.practice.requested = unix://" + d + PRACTICE_SOCK + " : connect\n" } else { "" })
-        + (if kind == "knowledge-node" { "dna.knowledge.node.requested = unix://" + d + KNOWLEDGE_NODE_SOCK + " : connect\n" } else { "" })
-        + (if kind == "knowledge-binding" { "dna.knowledge.binding.requested = unix://" + d + KNOWLEDGE_BINDING_SOCK + " : connect\n" } else { "" })
-        + (if kind == "knowledge-edge" { "dna.knowledge.edge.requested = unix://" + d + KNOWLEDGE_EDGE_SOCK + " : connect\n" } else { "" });
-    let wrote = write_text(conf, text) or false;
-    if !wrote { return "cannot write " + conf; }
-    let r = dna::run_tool("sh\n-c\ncd \"$1\" && LOTUS_BUS_CONFIG=\"$2\" exec \"$3\" \"$4\" \"$5\"\nsh\n" + root + "\n" + conf + "\n" + bin + "\n" + kind + "\n" + body);
-    std::io::fs::unlink(conf) or discard;
-    if r.code != 0 { return "membrane client failed: " + r.stderr; }
-    return "";
-}
-
 // ---- the body lease (GH #617) ---------------------------------------
 // A record admits one body at a time: the host that runs its organism
 // holds the cell `lease/body` — at the remote when the record has one,
@@ -668,6 +620,15 @@ fn body_lease_write(repo: String, l: BodyLease, expected: String, memory: dna::M
 }
 
 fn body_live(l: BodyLease, now: Int) -> Bool { return l.present && l.expires > now; }
+
+// GH #986: whether the organism runs from this clone — a body here holds
+// the record's lease, live. A one-shot verb asks it to know whether an
+// answer will come without a sync; the host beside the organism relays
+// the verb's row onto the nerves on its next tick.
+fn organism_here(root: String, memory: dna::Memory) -> Bool {
+    let l = body_lease_read(root, memory);
+    return l.ok && body_live(l, std::time::now()) && l.holder == body_holder(root);
+}
 
 // Take the body lease for `holder`, or learn who holds it: a live
 // lease of another holder is refused (present false, holder theirs),

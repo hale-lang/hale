@@ -12,7 +12,7 @@ const KEY = STORAGE + encodeURIComponent(JSON.stringify([PRINCIPAL.mode, PRINCIP
 const OPERATIONS = ['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.detach', 'dna.project.forget', 'dna.project.sync', 'dna.project.publish', 'dna.forge.configure', 'dna.forge.sync', 'dna.body.local.start', 'dna.body.local.stop', 'dna.body.provision', 'dna.body.start', 'dna.body.stop', 'dna.body.logs', 'dna.secret.set', 'dna.secret.rotate', 'dna.models.probe', 'dna.connection.propose', 'dna.connection.close', 'dna.handoff.publish', 'dna.handoff.accept', 'dna.handoff.sync'];
 const HEAD_SCOPED = new Set(['dna.project.create', 'dna.project.init', 'dna.project.attach', 'dna.project.forget']);
 const commandId = requestId => 'command-' + createHash('sha256').update(requestId).digest('hex');
-const child = state => ({ state, pid: state === 'running' ? 4242 : -1, since: state === 'running' ? 1758470400 : 0, command_id: '', membrane_up: state === 'running', mode: state === 'running' ? 'run' : '', exit_code: state === 'exited' ? 3 : -2 });
+const child = state => ({ state, pid: state === 'running' ? 4242 : -1, since: state === 'running' ? 1758470400 : 0, command_id: '', organism_alive: state === 'running', mode: state === 'running' ? 'run' : '', exit_code: state === 'exited' ? 3 : -2 });
 const workspace = page => page.getByRole('region', { name: 'Projects workspace', exact: true });
 const request = page => page.getByRole('region', { name: 'Project request', exact: true });
 const form = (page, title) => page.getByRole('form', { name: title, exact: true });
@@ -45,7 +45,7 @@ function outcomeFor(s, body) {
     case 'dna.secret.set': case 'dna.secret.rotate': return { name: body.arguments.name, where: 'local', source_consumed: body.arguments.source.kind === 'file', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'secret.rotated', entity: body.arguments.name, author: 'riley' }] } };
     case 'dna.body.provision': return body.arguments.dry_run ? { target: body.arguments.target, dry_run: true, preview: '#!/bin/sh\n# provisioning preview for ' + body.arguments.target + '\n' } : { target: body.arguments.target, dry_run: false, text: 'provisioned', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'body.provisioned', entity: body.arguments.target, author: 'riley' }] } };
     case 'dna.connection.propose': return { name: body.arguments.name, text: 'proposed', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'connection.proposed', entity: body.arguments.name, author: 'riley' }] } };
-    case 'dna.body.local.start': return { pid: 4242, mode: body.arguments.mode, membrane_up_at: 1758470401 };
+    case 'dna.body.local.start': return { pid: 4242, mode: body.arguments.mode, organism_alive_at: 1758470401 };
     case 'dna.models.probe': return { table: 'model  latency\nalpha  12ms\n' };
     default: return {};
   }

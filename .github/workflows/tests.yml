@@ -268,6 +268,7 @@ jobs:
           --health-retries 10
     env:
       HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
       # The DNA tests push to bare remotes under /tmp and clone from them
       # moments later. git's automatic gc after a receive detaches and
       # can prune a loose object while the clone is still copying it
@@ -280,6 +281,12 @@ jobs:
       GIT_CONFIG_VALUE_1: "false"
     steps:
       - uses: actions/checkout@v4
+
+      # GH #986: the nerves — NATS with JetStream, beside memory's
+      # Postgres. A step, not a service: a service container cannot be
+      # given the server's `-js` flag.
+      - name: Start NATS (JetStream)
+        run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
       # Fixtures resolve via CARGO_MANIFEST_DIR against this checkout,
       # so build + run happen in-place with no path remap.
@@ -585,6 +592,7 @@ jobs:
           --health-retries 10
     env:
       HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
       GIT_CONFIG_COUNT: "2"
       GIT_CONFIG_KEY_0: gc.auto
       GIT_CONFIG_VALUE_0: "0"
@@ -592,6 +600,12 @@ jobs:
       GIT_CONFIG_VALUE_1: "false"
     steps:
       - uses: actions/checkout@v4
+
+      # GH #986: the nerves — NATS with JetStream, beside memory's
+      # Postgres. A step, not a service: a service container cannot be
+      # given the server's `-js` flag.
+      - name: Start NATS (JetStream)
+        run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -687,8 +701,15 @@ jobs:
     env:
       HALE_DNA_DISCOVER: "off"
       HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v4
+
+      # GH #986: the nerves — NATS with JetStream, beside memory's
+      # Postgres. A step, not a service: a service container cannot be
+      # given the server's `-js` flag.
+      - name: Start NATS (JetStream)
+        run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -809,6 +830,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GH #986: the nerves — NATS with JetStream, beside memory's
+      # Postgres. A step, not a service: a service container cannot be
+      # given the server's `-js` flag.
+      - name: Start NATS (JetStream)
+        run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -924,6 +951,7 @@ jobs:
         # API the head's.
         env:
           HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+          HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell

@@ -2339,6 +2339,9 @@ locus Dna {
     // Pressure is measured, journaled, and — when it persists — answered
     // with a PROPOSAL for an organ, never with one (GH #529 D7 extension
     // 4): growing is a Mutation like any other, asked for and reviewed.
+    // A request is answered once (GH #986): the node relays a
+    // `pressure.requested` row until the `pressure.raised` naming it is in
+    // the record, so a redelivery finds its answer and counts nothing.
     @unbounded
     fn on_pressure(p: Pressure) {
         let mut seen = 1;
@@ -2347,11 +2350,14 @@ locus Dna {
         let mut proposed = false;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "pressure.raised" && e.entity == p.source { seen = seen + 1; }
+            if e.kind == "pressure.raised" && e.entity == p.source {
+                if len(p.request) > 0 && request_named(e.body) == p.request { return; }
+                seen = seen + 1;
+            }
             if e.kind == "appendage.proposed" && e.entity == p.source { proposed = true; }
             i = i + 1;
         }
-        let x = self.journal.append(self.journal.revision(), "pressure.raised", p.source, p.what + " x" + to_string(seen));
+        let x = self.journal.append(self.journal.revision(), "pressure.raised", p.source, pressure_body(p.what, seen, p.request));
         if seen >= self.appendage_threshold && !proposed {
             let y = self.journal.append(self.journal.revision(), "appendage.proposed", p.source,
                 "an organ for `" + p.what + "` is proposed, not created: pressure raised " + to_string(seen) + " times");

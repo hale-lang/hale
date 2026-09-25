@@ -4,10 +4,11 @@
 //
 //   host <verb> <root> <seed> <fleet> <plan> [args…]
 //
-// with HALE_BIN (the toolchain), HALE_DNA_MEMBRANE (the membrane
-// client binary) and HALE_DNA_TOOLCHAIN (its version) in the
-// environment. It prints what the verb answers and exits with its
-// status. It decides nothing.
+// with HALE_BIN (the toolchain) and HALE_DNA_TOOLCHAIN (its version) in
+// the environment. It prints what the verb answers and exits with its
+// status. It decides nothing. A one-shot verb never publishes: it
+// writes its row, and a node — `run` or `dev`, the program's `main
+// locus` (`Host`) — relays it onto the nerves (GH #986).
 
 import "../core" as dna;
 
@@ -137,7 +138,7 @@ fn main() {
         std::process::exit(1);
     }
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
-    if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root, memory); }
+    if (verb == "board" || verb == "review") && !organism_here(root, memory) { let s = sync_record(root, memory); }
     if verb == "fleet" { let s = sync_record(root, memory); }
     if verb == "status" {
         ans = status_verb(root, seed, toolchain, has_flag(a, "--json"), memory);
@@ -178,7 +179,7 @@ fn main() {
     if verb == "verdict" {
         ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"), flag(a, "--request-id"), memory);
     } else if verb == "raise" {
-        ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)));
+        ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)), memory);
     } else if verb == "concern-raise" {
         let sev = flag(a, "--severity");
         ans = concern_raise(root, word(a, 0), join_words(drop_first_word(a.words)), if len(sev) > 0 { std::str::parse_int(sev) or 1 } else { 1 }, memory);
@@ -213,6 +214,9 @@ fn main() {
     } else if verb == "memory-migrate" {
         // GH #985: memory's schema, applied with the owner's DSN
         ans = memory_migrate_verb(root);
+    } else if verb == "nerves-migrate" {
+        // GH #986: the nerves' stream, created with the owner's URL
+        ans = nerves_migrate_verb(root);
     } else if verb == "record-head" {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {

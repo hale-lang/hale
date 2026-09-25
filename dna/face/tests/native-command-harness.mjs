@@ -11,14 +11,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment } from './environment.mjs';
 
-const names = ['API', 'BODY', 'RELAY', 'MEMBRANE'];
+const names = ['API', 'BODY', 'RELAY'];
 export const nativeCommandEnvironmentPresent = () => names.every(name => Boolean(process.env[`HALE_NATIVE_COMMAND_${name}`]));
 const webrootDefault = fileURLToPath(new URL('../web/', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+// GH #1029: dna/api/practice_review/tests/relay was removed with the
+// membrane (GH #986); nothing builds a relay against the nerves yet.
+const RELAY_UNPORTED = 'The native command relay lane is unported (GH #1029): dna/api/practice_review/tests/relay was removed with the membrane; rebuild it against the node before this harness can start a relay.';
 
 /** Caller owns stop(). Keeping the returned service alive supports a preview. */
 export async function startService(options = {}) {
   assert.equal(process.platform, 'linux', 'Native command fixtures require Linux process groups and resource limits.');
+  assert.fail(RELAY_UNPORTED);
   const binaries = Object.fromEntries(names.map(name => {
     const value = options.binaries?.[name.toLowerCase()] || process.env[`HALE_NATIVE_COMMAND_${name}`];
     assert(value && path.isAbsolute(value), `Supply an absolute HALE_NATIVE_COMMAND_${name} binary`);
@@ -98,7 +102,7 @@ export async function startService(options = {}) {
       await Promise.race([item.closed, delay(1500)]);
       if (alive(item)) { signal(item, 'SIGKILL'); await Promise.race([item.closed, delay(1500)]); }
     }
-    signal(item, 'SIGKILL'); // Includes a membrane child surviving its leader.
+    signal(item, 'SIGKILL'); // Belt and braces: any child surviving its leader.
     assert(!alive(item), `${item.name} did not terminate`);
     owned.delete(item);
   }
@@ -150,7 +154,7 @@ export async function startService(options = {}) {
   }
   async function startRelay() {
     assert(!alive(relay), 'Stop the current relay before starting another');
-    relay = launch('relay', binaries.relay, [], { HALE_DNA_MEMBRANE: binaries.membrane });
+    relay = launch('relay', binaries.relay, []);
     await wait('relay startup', () => relay.output, text => text.includes('native command relay ready'));
   }
   async function startAPI(actor = currentActor) {

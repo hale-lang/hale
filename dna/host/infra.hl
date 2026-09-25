@@ -125,6 +125,21 @@ locus ReferenceInfrastructure {
         if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the database's port from compose: " + dna::trim_nl(port.stderr) }; }
         return dna::Database { present: true, dsn: "postgres://dna:dna@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
     }
+    // The nerves' server (GH #986), from dna/compose.yaml's `nerves`
+    // service, brought up when it is not: its URL, without a user.
+    fn nerves_server(project: String) -> dna::Database {
+        let compose = self.root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no " + dna::NATS_OWNER_URL_ENV + ": there are no nerves to run on (`hale dna upgrade` writes the compose file)" }; }
+        let have = dna::run_tool("docker\ncompose\nversion");
+        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set " + dna::NATS_OWNER_URL_ENV + " to a NATS server of your own" }; }
+        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nnerves");
+        if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
+        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
+        let hp = dna::trim_nl(port.stdout);
+        let colon = std::str::index_of(hp, ":");
+        if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the nerves' port from compose: " + dna::trim_nl(port.stderr) }; }
+        return dna::Database { present: true, dsn: "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)] };
+    }
     // ---- the supervisor: a systemd user unit
     fn unit_name(name: String) -> String { return "hale-dna-" + name; }
     fn install_unit(name: String, unit: String) -> Bool {

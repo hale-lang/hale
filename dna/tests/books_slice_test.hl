@@ -168,20 +168,32 @@ fn start_dev(app: String) -> String {
     return dna::trim_nl(started.stdout);
 }
 
-fn membrane_up(app: String, secs: Int) -> Bool {
+fn alive(app: String, part: String) -> Bool {
+    let pid = dna::trim_nl(std::io::fs::read_file(app + "/.hale/dna/" + part + ".pid") or "");
+    return len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0;
+}
+
+// The organization and the intake run: their pid files are written and
+// both processes are alive. Nothing else to wait for — what the record
+// asks of the organization waits in the nerves' stream until it reads it
+// (GH #986).
+fn organism_up(app: String, secs: Int) -> Bool {
     let deadline = std::time::now() + dna::wait_secs(secs);
     while std::time::now() <= deadline {
-        if std::io::fs::file_exists(app + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(app + "/.hale/dna/hale-dna.review.verdict.sock") && std::io::fs::file_exists(app + "/.hale/dna/app.pid") { return true; }
+        if alive(app, "org") && alive(app, "app") { return true; }
         std::time::sleep(500ms);
     }
     return false;
 }
 
-// The host, then everything it started; the sockets go with them.
+// The host, then everything it started. The host is waited for, bounded:
+// it is the program's main locus (GH #986), so a SIGTERM drains it, and
+// on its way out it releases the body lease in the record.
 fn stop_dev(app: String, pid: String) {
     let k = dna::run_tool("kill\n" + pid);
-    std::time::sleep(500ms);
-    let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app knowledge; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + app);
+    let deadline = std::time::now() + dna::wait_secs(30);
+    while dna::run_tool("kill\n-0\n" + pid).code == 0 && std::time::now() <= deadline { std::time::sleep(200ms); }
+    let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app knowledge; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + app);
     std::time::sleep(500ms);
 }
 
@@ -255,8 +267,15 @@ main locus App {
         std::test::assert_eq_int(count(offline, "receipt.filed", "", "b1001.bill"), 1, "one filing");
         let removed_offline = dna::run_tool("rm\n-rf\n" + offline + "\n" + scratch + "/offline.git");
 
+        // from here the organization answers what the record asks, over the
+        // nerves (GH #986)
+        if !std::env::var_exists("HALE_DNA_NATS_URL_OWNER") {
+            eprintln("books_slice_test: not exercised past the offline intake (HALE_DNA_NATS_URL_OWNER is not set)");
+            dna::scratch_done(scratch);
+            return;
+        }
         let mut dev = start_dev(app);
-        std::test::assert(membrane_up(app, ADOPT), "the organism and the intake came up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
+        std::test::assert(organism_up(app, ADOPT), "the organism and the intake came up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
 
         // ---- the books practice this organization starts with, ratified by the Board
         let v1_out = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt, or with an exception someone other than the payer authorizes. evidence: required\n--because\nthe books practice this organization starts with\n--as\nriley");
@@ -310,7 +329,7 @@ main locus App {
         // have happened — a fixed sleep guessed at it (GH #795)
         let reviewed_before = count(app, "org.reviewed", "", "");
         dev = start_dev(app);
-        std::test::assert(membrane_up(app, ADOPT), "back up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
+        std::test::assert(organism_up(app, ADOPT), "back up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
         std::test::assert(wait_rows(app, "org.reviewed", "", "", reviewed_before + 1, ADOPT), "the restarted organism replayed the record and took up the cadence the Board set: " + journal(app));
         let status = dna_cli(app, "status");
         std::test::assert(std::str::contains(status, "t1.s0.p [done]") && std::str::contains(status, "— evidence " + r1001), "the offline completion is honoured: " + status);
@@ -331,10 +350,11 @@ main locus App {
         std::test::assert(wait_rows(app, "org.reviewed", "", "concerns raised: 3", 1, PHASE), "prompted by the concerns in the record: " + journal(app));
         std::test::assert(wait_rows(app, "mutation.proposed", "m1", "", 1, PHASE), "the Review has its Mutation in the record: " + journal(app));
         std::test::assert(std::str::contains(body(app, "mutation.proposed", "m1"), "change the intake to request the receipt from the supplier"), "the change names what it is for: " + body(app, "mutation.proposed", "m1"));
-        // the verdict is sent and the Review answers in the record; a fixture
-        // running beside others waits on the record, not on the CLI
+        // the verdict is written into the record and the Review answers
+        // there (the body relays it, GH #986); a fixture running beside
+        // others waits on the record, not on the CLI
         let approved = dna_cli(app, "review\nm1\napprove\n--as\nriley\n--comment\nask the supplier at capture\n--no-wait");
-        std::test::assert(std::str::contains(approved, "verdict approve on m1 by riley sent"), "approved: " + approved);
+        std::test::assert(std::str::contains(approved, "verdict approve on m1 by riley written into the record"), "approved: " + approved);
         std::test::assert(wait_rows(app, "review.settled", "m1", "approve", 1, PHASE), "the Review settled on the approval: " + journal(app));
         std::test::assert(wait_rows(app, "mutation.retained", "m1", "", 1, ADOPT), "adopted: applied, restarted, observed healthy: " + journal(app));
         let genome = wait_genome(app, "books intake 2", PHASE);

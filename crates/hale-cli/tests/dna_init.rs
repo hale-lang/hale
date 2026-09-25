@@ -101,7 +101,7 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     assert_eq!(after, before, "init leaves the application's source exactly as it was");
     assert!(!app.join("dna_constitution.hl").exists(), "no law is written into the application");
     let org = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
-    assert!(org.contains("dna::ReviewVerdict: unix(\".hale/dna/hale-dna.review.verdict.sock\", role: listen)"), "the organization binds the membrane: {org}");
+    assert!(org.contains("dna::ReviewVerdict: nats::NatsAdapter { }"), "the organization binds its facts to the nerves: {org}");
     // GH #596 O: the optimize cadence is milliseconds, so the loop ticks
     // with a millisecond clock — `now()` is seconds and made a 60s
     // cadence an hour's.

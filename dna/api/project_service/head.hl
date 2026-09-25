@@ -353,7 +353,7 @@ fn children_fallback(cfg: HeadConfig, root: String, body: ChildView) -> String {
     b.int_field("pid", body.pid);
     b.int_field("since", body.since);
     b.string_field("command_id", body.command_id);
-    b.bool_field("membrane_up", false);
+    b.bool_field("organism_alive", false);
     b.string_field("mode", "");
     b.int_field("exit_code", body.exit_code);
     b.end_object();

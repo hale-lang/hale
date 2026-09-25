@@ -216,8 +216,31 @@ type RunLife { key: String = ""; what: String = ""; }
 topic RunLives { payload: RunLife; subject: "dna.run.life"; }
 
 // Upward-only signals (child -> supersystem).
-type Pressure { source: String = ""; what: String = ""; count: Int = 0; }
+// GH #986: pressure is a row first, like a concern: `request` is the id
+// of the `pressure.requested` row this came from, which the node relays
+// until the organization's `pressure.raised` names it.
+type Pressure { source: String = ""; what: String = ""; count: Int = 0; request: String = ""; }
 topic PressureRaised { payload: Pressure; subject: "dna.pressure.raised"; }
+
+// What a `pressure.raised` row carries: the signal's words, how often its
+// source has raised pressure, and the request it answers. A row from
+// before GH #986 is `<what> x<n>`, which `pressure_what` still reads.
+fn pressure_body(what: String, count: Int, request: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("what", what);
+    b.int_field("count", count);
+    b.string_field("request", request);
+    b.end_object();
+    return b.result();
+}
+
+fn pressure_what(body: String) -> String {
+    let named = std::json::find_string_field(body, "what");
+    if len(named) > 0 { return named; }
+    let x = std::str::index_of(body, " x");
+    return if x > 0 { body[0..x] } else { body };
+}
 
 // GH #689: `request` is the id of the `concern.requested` row this came
 // from, "" when it was raised live. A concern's entity is its source, so

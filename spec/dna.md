@@ -646,9 +646,9 @@ repository:
 - **A person proposes a practice (GH #602).** `hale dna practice propose
   <name> --text <text> [--because <what prompted it>] [--supersedes
   <digest>] [--as <who>]` carries a `PracticeRequest` (`request_id`,
-  `name`, `text`, `by`, `because`, `supersedes`) onto the membrane topic
-  `dna.practice.requested`, or, with no organization bound here, appends
-  `practice.requested` for the host to relay. The organization proposes
+  `name`, `text`, `by`, `because`, `supersedes`) as a
+  `practice.requested` row, which a node relays onto the topic
+  `dna.practice.requested` (**The nerves**). The organization proposes
   it as knowledge of kind `practice`, author `org`, bound to `org`, with
   the ordinary Board Review `k:<digest>`, and journals
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
@@ -669,10 +669,7 @@ repository:
   unescapes every value it reads.
   `hale dna practice` lists every named practice with its state (in
   force, awaiting the Board, declined, retired), its first line, who
-  proposed it and why, and requests not yet heard. The generated
-  organization binds the topic on `.hale/dna/hale-dna.practice.requested.sock`;
-  the membrane client names that route only when it publishes a
-  practice, so an organization scaffolded earlier keeps working.
+  proposed it and why, and requests not yet heard.
 - **Cross-record handoff (GH #615).** A replica of one record is inside
   the horizon: sync carries all of it, to equally trusted readers. A
   *handoff* crosses a horizon into a separate record, and a connection is
@@ -940,12 +937,20 @@ repository:
   acts in its own name. It speaks plain HTTP: TLS is a reverse proxy in
   front of it. Rows arriving by sync remain admitted under `dna.trust`
   (GH #604 rule 6); a synced row claiming a rank is not a sign-in.
-- **The membrane over the record.** From a clone with no organism,
-  `hale dna task create` appends `intent.requested` (the body: outcome, from,
-  to) and a verdict appends `review.verdict` (the body: the verdict as
-  the socket membrane carries it), each in the appender's git identity;
-  the host beside the organism relays unanswered rows onto the
-  membrane, admitting each under `dna.trust` (GH #604 rule 6). **A
+- **The nerves: the record's requests reach the organism (GH #986).**
+  A request is a row first, always. `hale dna task create` appends
+  `intent.requested` (the body: outcome, from, to), a verdict appends
+  `review.verdict` (the body: the verdict), `concern raise` appends
+  `concern.requested`, `pressure raise` appends `pressure.requested`
+  and `practice propose` appends `practice.requested`, each in the
+  appender's git identity, from any clone. **A one-shot verb never
+  publishes.** A **node** — the host under `hale dna run` or `dev`,
+  which is its program's `main locus` for as long as it runs — relays
+  every request row it holds that the record has not answered onto the
+  nerves on its tick, admitting each under `dna.trust` (GH #604 rule 6),
+  and again every 30 s while it stays unanswered. Beside a live
+  organism a verb waits for the answer in the record; from a clone
+  with none it syncs and says where the answer will be. **A
   request is answered by its own answer** (GH #689): an intent, a
   verdict's review and a practice request have an entity of their own,
   and a concern — whose entity is its source, shared by every concern
@@ -964,24 +969,20 @@ repository:
   raising the same words are two concerns; one id used for a second,
   different concern — other words, or the same words at another severity
   — is refused once, in `concern.refused`, which is that request's answer
-  and carries its id. **A
-  membrane publish is confirmed by its answer in the record, never by
-  the client's exit** (GH #682): the client hands the fact to its
-  binding and exits, and under load the organism may never see it, so
-  a row still unanswered 30s after it was relayed is relayed again.
-  The organism admits an intent once by its id — an intent offered
-  again after its Task was born answers with that Task and journals
-  nothing — and a repeated verdict at a settled Review is answered as
-  already settled. `hale dna task create`, `review`, `concern raise` and
-  `practice propose` beside a live organism write their row first
-  (`intent.requested`, `review.verdict`, `concern.requested`,
-  `practice.requested`, marked `via: membrane`) and then publish, so
-  the durable fact precedes the act on that path too, and a practice
-  request is answered once by its id; a
-  lost publish is relayed by the host once the row has waited unanswered,
-  and a failed publish is a note, not a failure. The host's own
-  `expression.observed` report is sent again until the organism records
-  it, three times at most. `local`,
+  and carries its id. Pressure is answered the same way (GH #986): a
+  `pressure.requested` row carries a `request` id, and the
+  `pressure.raised` answering it is an object — the signal's words,
+  `count` (which time its source has raised pressure) and `request`; a
+  pressure row from before carries `<what> x<n>` and is read as that.
+  **A publish is confirmed by its answer in the record, never by the
+  transport** (GH #682): a row still unanswered 30 s after it was
+  relayed is relayed again, whatever the transport said. The organism
+  admits an intent once by its id — an intent offered again after its
+  Task was born answers with that Task and journals nothing — a
+  repeated verdict at a settled Review is answered as already settled,
+  and a practice, a concern or a pressure request is answered once by
+  its id. The host's own `expression.observed` report is sent again
+  until the organism records it, three times at most. `local`,
   the default, trusts every writer to the record — the operator's
   profile; `signed` admits a row only when its commit carries a
   signature git verifies (`git verify-commit`; git's keyring or
@@ -999,21 +1000,80 @@ repository:
   optimizer — and a head's ask carries the person the head identified.
   A row is answered when a later row of the answering kind names its
   entity. `hale dna task create --no-wait` appends and returns, on either
-  path: beside a live organism once the row is appended and published,
-  from a clone with no organism once the row is appended and synced.
+  path: beside a live organism once the row is appended, from a clone
+  with no organism once the row is appended and synced. "Beside a live
+  organism" is the record's body lease: live, and held by this clone's
+  body.
 
-`.hale/dna/` holds only what is not the record: the membrane sockets,
-the status projection, worktrees, scratch inputs to the toolchain.
-Deleting it loses nothing the record holds.
+**The nerves (GH #986)** are NATS JetStream, through pond's client and
+`std::bus` adapter, vendored under `dna/core/pond/realtime/nats`.
 
-**The socket routes are relative on both sides.** A Unix address holds
-108 bytes, path included, and `.hale/dna/hale-dna.review.verdict.sock`
-already spends 39 of them, so an absolute route puts an ordinary
-project path over the limit. The organization binds these names
-relative to the root it runs in; the membrane client is run with the
-project root as its working directory and given the same relative
-routes, and a node's instances connect to `.hale/node/concern.raised.sock`
-the same way. A project's path therefore has no length rule.
+- **Bindings where the publishes are.** The host binds every DNA fact
+  topic it publishes (`IntentOffered`, `ReviewVerdict`,
+  `ExpressionObserved`, `PressureRaised`, `ConcernRaised`,
+  `PracticeRequested`, `KnowledgeNodeRequested`,
+  `KnowledgeBindingRequested`, `KnowledgeEdgeRequested`) to
+  `nats::NatsAdapter`, and owns the connection, a `nats::NatsConn`
+  placed `pinned`; its relay is a `NodeRelay` child whose publishes go
+  out through those bindings. The generated organization binds the same
+  topics and reads them through its own pinned connection. The payload
+  is the bus's own encoding: both ends are Hale programs declaring the
+  same topic, and nothing converts it. A one-shot verb instantiates no
+  `main locus`, so it binds nothing and connects to nothing.
+- **Subjects** are the topics' declared subjects under the
+  organization's token — the one memory names its schema with
+  (`dna_<record id>`): `<org>.dna.<family>.<event>`
+  (`dna_4f….dna.intent.offered`); an application's own events will be
+  `<org>.app.<app>.<event>` (#987). The connection puts the token on
+  what leaves and takes it off what arrives, so a topic keeps its
+  declared subject.
+- **One stream per organization**, `DNA_<ID>` over `<org>.>`, on disk,
+  kept a week (limits retention: what was said is kept and read from a
+  position, not deleted once read). Every publish is acknowledged by the
+  stream. The organization reads through its durable pull consumer
+  `spine` (from the stream's start when it is first made, from where it
+  left off after that), filtered to `<org>.dna.>`, so a fact published
+  while it was down or restarting reaches it when it is back.
+- **Credentials, one per family**, each a URL with its user: `owner`
+  creates the stream and is held by no process that runs the organism;
+  `spine` publishes and reads `<org>.dna.>` (the host and the
+  organization); `head` subscribes and publishes nothing; `app`
+  publishes on `<org>.app.>` (#987). `hale dna nerves migrate [dir]`
+  creates or updates the stream with the owner's URL
+  (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
+  `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG` and
+  one `HALE_DNA_NATS_URL_<ROLE>` per role; `hale dna dev` runs it
+  before it starts the host and hands the host the spine's URL and the
+  token, never the owner's nor the head's; `hale dna run` takes the
+  two from its environment and has the owner's and the head's removed
+  from it. `dna/nats.conf`, which `init` writes, is that server's
+  configuration: the users and their permissions, with placeholder
+  passwords until the vault (#989).
+- **Liveness.** At start the host waits, as it waited for sockets, for
+  the organization to read its facts: its durable consumer has a pull
+  outstanding. It says so (`the organization reads its facts from the
+  nerves (DNA_<ID>)`) or that it did not within 20 s; the facts wait in
+  the stream either way. A restarted or rolled-back organization is
+  confirmed the same way. Without nerves (`HALE_DNA_NATS_URL_SPINE` or
+  `HALE_DNA_NATS_ORG` unset) the host runs and says the organization
+  hears nothing the record asks.
+- **A lost connection.** The connection keeps every publish until the
+  stream acknowledges it, writes it again after a reconnect, and a
+  publish unacknowledged past its window violates the connection's
+  `delivery` closure. The violation collapses it to the host, which
+  appends `nerves.lost <holder>` (`why`, `by`) and restarts it in place.
+  The row first is what makes a loss recoverable: the relay publishes
+  every unanswered request again.
+- **The fleet node's concerns stay local.** A node's instances are the
+  application, which declares no bindings, and an environment route
+  reaches Unix sockets only; `hale node` keeps the one
+  `LOTUS_BUS_CONFIG` DNA writes, for `dna.concern.raised` from its own
+  instances (**The application side**), and puts each concern into the
+  record, which a node relays like any request. #987 replaces it.
+
+`.hale/dna/` holds only what is not the record: the status projection,
+worktrees, scratch inputs to the toolchain. Deleting it loses nothing
+the record holds.
 
 ## Event kinds
 
@@ -1069,6 +1129,7 @@ record's.
 | `model.called` | ledger | a model call and its evidence |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
 | `node.started` / `node.build_failed` | record | a node runs a genome, by its sha; a genome did not check or build, and the node stayed on the last that did (`sha`, `why`) |
+| `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node starts it again in place, and relays every unanswered request again (GH #986) |
 | `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
@@ -1087,7 +1148,7 @@ record's.
 | `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
 | `concern.proposed` | record | three raises became a proposal — at the raise that crosses the threshold, or at the birth that finds a source over it and unproposed |
-| `pressure.raised` | ledger | a signal from a source, counted |
+| `pressure.requested` / `pressure.raised` | ledger | a signal from a source; the request carries its own `request` id and a node relays it until answered (GH #986); the answer is one object (`what`, `count`, `request`) and is written once per request — a row from before is `<what> x<n>` |
 | `pressure.remeasured` | ledger | the declared fitness signals, measured again after the change |
 | `appendage.proposed` | record | an organ the organization proposes for itself |
 | `expression.restart_requested` | record | the organization asks for a change to be expressed |
@@ -2184,7 +2245,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   attached; `hale dna dev` runs the application under the same host
   too, rebuilds and restarts it on an apply, records
   `expression.restarted` in the host's name, watches the window and
-  reports on the membrane. The host writes `org.pid` and `app.pid`
+  reports on the nerves. The host writes `org.pid` and `app.pid`
   under `.hale/dna`. Under `run` alone a restart request is logged,
   not answered: expressing an application deployed elsewhere is a
   deployment gateway's job.
@@ -2355,9 +2416,9 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   two records whose directories share a name on one machine never share
   a unit or a credential. Everything else a body reads lives in its
   clone: the `dna.*` git configuration (the OIDC member mapping among
-  it), the membrane's sockets under `.hale/dna`, and the knowledge
-  schema, whose ownership is checked against the record (GH #613); the
-  hosted head and the membrane serve the clone they run in.
+  it) and the knowledge schema, whose ownership is checked against the
+  record (GH #613); the hosted head and the node serve the clone they
+  run in.
 
 ## The organization evolves
 
@@ -2385,9 +2446,9 @@ the proposals, the last report. `hale dna report` appends
 since the previous report (proposed, reviewed, applied, retained,
 rolled back, rejected, escalated, pressure, proposals, model calls and
 cost, settlements). `hale dna pressure` lists the pressure raised and
-answered; `hale dna pressure raise <source> <what>` publishes one
-signal on the membrane's fourth topic, `PressureRaised`
-(`dna.pressure.raised`).
+answered; `hale dna pressure raise <source> <what>` appends one
+`pressure.requested` row, which a node relays on `PressureRaised`
+(`dna.pressure.raised`) until the organization answers it.
 
 ## The editing position
 
@@ -2591,7 +2652,7 @@ The organization's models are a catalog in source (GH #583 M1):
   backend: the catalog name, the router-facing slot, the model, and
   the answer — `ok`, elapsed, cost and the first line of the reply;
   `refused: …`; or `not permitted (no credential present)`. The
-  organization is not started, its membrane not touched, and nothing
+  organization is not started, the nerves not touched, and nothing
   is journaled: a probe is nobody's Attempt.
 
 ## Knowledge
@@ -2918,9 +2979,10 @@ The live half is memory's, projected from the record by the spine
   reached the record's head within 20 s, is a package refused with the
   reason (**The spine projects; readers read**).
 - **Concerns (K2).** `ConcernRaised` (`source`, `what`, `severity`) is
-  a child's live signal about the part above it: an application or
-  `hale dna concern raise <source> <what…> [--severity N]` publishes
-  it on the membrane (`hale-dna.concern.raised.sock`), the substrate
+  a child's signal about the part above it: an application's, through
+  its node (K4), or `hale dna concern raise <source> <what…>
+  [--severity N]`'s, each a `concern.requested` row a node relays onto
+  the nerves, and the substrate
   journals `concern.raised <source>` (an object: `what`, `severity`,
   `occurrence`, `request`), and
   when one source has raised it `concern_threshold` times (3) it
@@ -2958,7 +3020,7 @@ The live half is memory's, projected from the record by the spine
   ranks with `<=>` over a `vector(64)` column (the migration creates
   the `vector` extension and says so when the Postgres has none).
 - **The application side (K4).** An application declares the wire
-  fact itself — a type of the membrane's shape (`source`, `what`,
+  fact itself — a type of the nerves' shape (`source`, `what`,
   `severity`) on the subject `dna.concern.raised`, no import of the
   DNA — and publishes it when it observes something about the part
   above it. A node routes that subject for every instance it starts
@@ -2968,15 +3030,16 @@ The live half is memory's, projected from the record by the spine
   route before the node starts; the node subscribes `ConcernRaised`
   with no source binding, and on each one appends `concern.requested
   <source>` (`source`, `what`, `severity`, `node`) to the record in
-  its name and syncs. The host relays `concern.requested` rows onto
-  the membrane like `intent.requested` and `review.verdict`, once
-  each, and the organization journals `concern.raised`. `hale dna
-  concern raise` from a clone with no membrane takes the same road.
+  its name and syncs. A node relays `concern.requested` rows onto the
+  nerves like `intent.requested` and `review.verdict`, and the
+  organization journals `concern.raised`. `hale dna concern raise`
+  takes the same road. This environment route is the one
+  `LOTUS_BUS_CONFIG` DNA writes (**The nerves**; #987 replaces it).
   A route for a subject an instance never publishes is inert.
 - **The learning scenario** is the acceptance (K4), in the fixture:
   the worker on the second node observes its mail backlog and raises
   the concern three times; each travels node → record → host →
-  membrane → `concern.raised`; the third makes a proposal by
+  nerves → `concern.raised`; the third makes a proposal by
   `org/trio/worker` bound to `org/trio` (a concern by the tower
   rule); the Board ratifies the exact digest (`hale dna review k:…
   approve --authority board`); the spine projects it into memory on
@@ -2993,7 +3056,7 @@ The assembly names what fills each role; `hale check` sees the wiring.
 
 - **Record** — `Journal`: `GitJournal` (the branch), `MemJournal` (tests).
 - **Membrane** — where humans see and decide: `Board` /
-  `LocalHumanMembrane` over the unix sockets on one machine; the record
+  `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
   relayed by the host); GitHub, mirrored by the host when `git config
   dna.github` names `owner/repo`: every pending mutation Review becomes
@@ -3094,17 +3157,17 @@ one arrangement of it:
 
 Everything `hale dna` does beside the compiler that is DNA behaviour
 rather than manifest or scaffolding is `dna/host`, a Hale seed
-embedded in the toolchain beside the core, the membrane client and
-the surface, built once into the toolchain cache. `hale dna <verb>`
+embedded in the toolchain beside the core and the surface, built once
+into the toolchain cache. `hale dna <verb>`
 resolves the project from the manifest (the root, the application's
 seed, the fleet and its plan under `[dna]`) and execs the host:
 `host <verb> <root> <seed> <fleet> <plan> …`, with `HALE_BIN` (the
-toolchain), `HALE_DNA_MEMBRANE` (the membrane client's binary) and
-`HALE_DNA_TOOLCHAIN` in the environment. The host owns the
+toolchain) and `HALE_DNA_TOOLCHAIN` in the environment. The host owns the
 projections (`status`, `history`, `review`, `board`, `report`,
 `pressure`, `fleet`), the writers (`task create`, a verdict, `pressure raise`,
 `sync`, `deploy`, `rollback`, `github sync`), the supervision (`run`,
-`dev`) and the node agent (`hale node`). It reads the record through
+`dev`), in which it is its program's `main locus` and binds the nerves,
+and the node agent (`hale node`). It reads the record through
 the core's `GitJournal`, appends in a person's or a node's name with
 the ref compare-and-swapped, and starts every child — the
 organization, the application, iris, an instance — through `sh`,
@@ -3121,8 +3184,8 @@ application's seed too under `dev`; it rebuilds both on a restart. A
 build is a pure function of what it reads, so the host does it **once
 per content fingerprint** and copies the binary thereafter. The cache
 is `$XDG_CACHE_HOME/hale/dna-build` (or `~/.cache/hale/dna-build`), a
-sibling of the toolchain cache the host, the membrane client and the
-surface are themselves built into; it holds the 32 most recently used
+sibling of the toolchain cache the host and the surface are themselves
+built into; it holds the 32 most recently used
 binaries and prunes the rest.
 
 The fingerprint is a SHA-256 over:
@@ -3160,9 +3223,9 @@ does not identify that source — two builds of one version can embed
 different `dna/` source — so the toolchain names it (GH #726):
 `EMBEDDED_DIGEST` is a length-framed SHA-256 over the sorted `(path,
 content)` pairs of every embedded file (`dna/core`, `dna/host`,
-`dna/membrane`, `dna/operations`, `dna/organization_runtime`,
-`dna/organization_source`, `dna/ui`, and pond's driver pinned under
-`dna/core/pond`), computed when the toolchain is built. It is:
+`dna/operations`, `dna/organization_runtime`,
+`dna/organization_source`, `dna/ui`, and pond's driver and NATS client
+pinned under `dna/core/pond`), computed when the toolchain is built. It is:
 
 - the second line of `hale --version` (`embedded dna: <first 16 hex>`;
   the first line stays the version alone, since a provisioning script
@@ -3197,7 +3260,7 @@ rather than shipping a digest that names nothing.
 
 `hale dna ui [project] [--port N]` serves the DNA surface in a browser
 from the record alone: a Hale program (`dna/ui`, embedded in the
-toolchain like the core, the host and the membrane client, built once
+toolchain like the core and the host, built once
 into the toolchain cache) that answers every request by running one
 offline verb of `hale dna` in the project root and returning what it printed
 — the status projection (`/api/status`), the Board's queue
@@ -3206,8 +3269,8 @@ offline verb of `hale dna` in the project root and returning what it printed
 history (`/api/history[/<entity>]`), pressure (`/api/pressure`). A
 verdict (`POST /api/verdict`), a task (`POST /api/task/create`) and a
 pressure signal (`POST /api/pressure`) are the CLI's own verbs sent
-and not waited for: onto the membrane when one is bound here, into
-the record otherwise, in the name the form gives. A path segment
+and not waited for: rows in the record, in the name the form gives,
+which a node relays. A path segment
 reaching the CLI is cleaned of separators and leading dashes, so a
 request cannot name a file or a flag. The surface reads nothing
 itself and decides nothing; with or without an organization up, it

@@ -101,11 +101,11 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         out.structure = out.structure + 1;
     }
     if e.kind == "pressure.raised" || e.kind == "concern.raised" {
-        // A concern is a row of its own (GH #689 review): its words are
-        // a field, not the part of a sentence before " x". Pressure is
-        // still `<what> x<n>`, and so is a concern from before that
-        // rule, which carries no field to read.
-        let named = if e.kind == "concern.raised" { dna::concern_what(e.body) } else { "" };
+        // A concern is a row of its own (GH #689 review), and pressure
+        // since GH #986: its words are a field, not the part of a sentence
+        // before " x". A row from before either rule is `<what> x<n>`,
+        // which carries no field to read.
+        let named = if e.kind == "concern.raised" { dna::concern_what(e.body) } else { dna::pressure_what(e.body) };
         let x = std::str::index_of(e.body, " x");
         let what = if len(named) > 0 { named } else if x > 0 { e.body[0..x] } else { e.body };
         if !store.put_signal(e.kind[0..(len(e.kind) - 7)], e.entity, what, i) { out.error = store.last_error(); return out; }

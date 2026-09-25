@@ -44,7 +44,7 @@ fn start_spine(app: String, owner: String) -> String {
 // The host, then everything it started.
 fn stop_spine(app: String, pid: String) {
     let k = dna::run_tool("kill\n" + pid);
-    let gone = dna::run_tool("sh\n-c\nn=0; while kill -0 \"$1\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; cd \"$2\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + pid + "\n" + app);
+    let gone = dna::run_tool("sh\n-c\nn=0; while kill -0 \"$1\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; cd \"$2\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + pid + "\n" + app);
 }
 
 // Whether the record comes to hold a `kind` row whose body contains

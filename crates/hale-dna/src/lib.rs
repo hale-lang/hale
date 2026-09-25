@@ -76,6 +76,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "memory_store",
     "models",
     "native_json",
+    "nerves",
     "org",
     "organization_launch",
     "organization_source_request",
@@ -100,16 +101,6 @@ pub const FILES: &[EmbeddedFile] = core![
 
 /// The seed path, relative to the materialization root.
 pub const CORE_SEED: &str = "dna/core";
-
-/// The membrane client (`dna/membrane`): publishes one typed fact on
-/// the organism's control topics and exits. `hale dna task create` builds
-/// and execs it from the toolchain cache beside the core it imports.
-pub const MEMBRANE_CLIENT: EmbeddedFile = EmbeddedFile {
-    path: "dna/membrane/main.hl",
-    content: include_str!("../../../dna/membrane/main.hl"),
-};
-pub const MEMBRANE_SEED: &str = "dna/membrane";
-pub const MEMBRANE_BIN: &str = "dna/membrane/membrane";
 
 /// The DNA surface (`dna/ui`, GH #566 F6): an HTTP server over the
 /// offline verbs of `hale dna`, from the record alone. `hale dna ui`
@@ -136,10 +127,10 @@ macro_rules! host {
 
 /// The host (`dna/host`, GH #566 F8): what `hale dna` does beside the
 /// compiler — the projections, the record's sync and appends in a
-/// person's name, the membrane relay, the supervision — as a Hale
+/// person's name, the relay onto the nerves, the supervision — as a Hale
 /// program `hale dna` builds once into the toolchain cache and execs
 /// with the project resolved.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "host", "infra", "main", "memory", "node", "organization_launch", "procs", "projection", "record", "record_verbs", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "procs", "projection", "record", "record_verbs", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 
@@ -207,7 +198,9 @@ pub const ORGANIZATION_FILES: &[EmbeddedFile] = at![
 ];
 
 /// pond's Postgres driver (`dna/core/pond/{db,pq}`), which the core imports
-/// to open memory as a role (GH #985); vendored under `vendor/dna/pond`.
+/// to open memory as a role (GH #985), and pond's NATS client and bus
+/// adapter (`dna/core/pond/realtime/nats`), the nerves (GH #986);
+/// vendored under `vendor/dna/pond`.
 pub const POND_FILES: &[EmbeddedFile] = at![
     "dna/core/pond/db/args.hl",
     "dna/core/pond/db/db.hl",
@@ -217,17 +210,24 @@ pub const POND_FILES: &[EmbeddedFile] = at![
     "dna/core/pond/pq/scram.hl",
     "dna/core/pond/pq/stream.hl",
     "dna/core/pond/pq/wire.hl",
+    "dna/core/pond/realtime/nats/adapter.hl",
+    "dna/core/pond/realtime/nats/client.hl",
+    "dna/core/pond/realtime/nats/fake.hl",
+    "dna/core/pond/realtime/nats/jetstream.hl",
+    "dna/core/pond/realtime/nats/log.hl",
+    "dna/core/pond/realtime/nats/proto.hl",
+    "dna/core/pond/realtime/nats/types.hl",
 ];
 
 /// Every embedded file as a `(path, content)` pair: the core, the
-/// host, the membrane client, the surface and pond's driver —
+/// host, the surface and pond's copies —
 /// the whole of what `EMBEDDED_DIGEST` names.
 pub fn embedded_pairs() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES) {
         out.push((f.path.to_string(), f.content.to_string()));
     }
-    for f in [&MEMBRANE_CLIENT, &UI_MAIN, &UI_HTML] {
+    for f in [&UI_MAIN, &UI_HTML] {
         out.push((f.path.to_string(), f.content.to_string()));
     }
     out
@@ -256,7 +256,6 @@ mod tests {
         for f in FILES {
             assert!(!f.content.is_empty(), "{} is empty", f.path);
         }
-        assert!(MEMBRANE_CLIENT.content.contains("main locus Client"));
         assert!(UI_MAIN.content.contains("std::http::Server") && UI_HTML.content.contains("<title>hale dna</title>"));
         let host_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/host");
         let mut host_on_disk: Vec<String> = std::fs::read_dir(&host_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).collect();
@@ -284,9 +283,9 @@ mod tests {
         let mut org_embedded: Vec<String> = ORGANIZATION_FILES.iter().map(|f| f.path.to_string()).collect();
         org_embedded.sort();
         assert_eq!(org_embedded, org_on_disk, "a dna/organization_runtime or dna/organization_source file was added or removed without updating hale-dna");
-        // pond's driver: every .hl under dna/core/pond/{db,pq}
+        // pond's copies: every .hl under dna/core/pond/{db,pq,realtime/nats}
         let mut know_on_disk: Vec<String> = Vec::new();
-        for d in ["dna/core/pond/db", "dna/core/pond/pq"] {
+        for d in ["dna/core/pond/db", "dna/core/pond/pq", "dna/core/pond/realtime/nats"] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d);
             for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
                 let n = e.file_name().to_string_lossy().to_string();

@@ -60,6 +60,10 @@ fn probe_catalog() -> String {
 
 #[test]
 fn a_persons_job_is_handed_and_reported_done_in_their_name() {
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_task_done: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_task_done_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -76,18 +80,26 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let (ok, out) = hale(&["dna", "task"], &app);
     assert!(!ok && out.contains("hale dna task done <id>"), "{out}");
 
+    let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
+    let log = d.join("run.stderr");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
+    let nerves_up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl && !app.join(".hale/dna/hale-dna.intent.offered.sock").exists() {
+    while Instant::now() < dl && !nerves_up() {
         std::thread::sleep(Duration::from_millis(200));
     }
     let finish = |host: &mut std::process::Child| {

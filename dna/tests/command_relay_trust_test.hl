@@ -1,14 +1,14 @@
-// Actual production relay over a native Record. /bin/true is only a transport
-// probe: invoking it would report a successful relay, without fabricating any
-// domain outcome. Failed signing must never turn a retry into trusted delivery.
+// Actual production relay over a native Record: the host's own `NodeRelay`,
+// live, so a row it relays is handed to the bus (this program binds no
+// topic, so nothing leaves it), without fabricating any domain outcome.
+// Failed signing must never turn a retry into trusted delivery.
 import "../core" as dna;
 import "../host" as host;
 
-fn relay_child(root: String) {
-    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
-    let expired = host::relay_mark("\n", host::fact_key(p, 0), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
-    let state = host::relay_record_membrane(root, ".", "", "test", expired, dna::Memory { repo: root });
-    println("relayed=", state.count);
+// The relay as a node runs it, `relayed` its memory of what it sent when.
+fn relay_once(root: String, relayed: String) -> Int {
+    let relay = host::NodeRelay { root: root, verb: "test", live: true, relayed: relayed };
+    return relay.relay(dna::Memory { repo: root });
 }
 
 fn check() {
@@ -27,22 +27,20 @@ fn check() {
     let trust = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nsigned");
     let signing = dna::run_tool("git\n-C\n" + root + "\nconfig\ngpg.program\n/bin/false");
     std::test::assert_eq_int(trust.code + signing.code, 0, "signed policy with unavailable signing service");
-    let initial = host::relay_record_membrane(root, ".", "", "test", "\n", dna::Memory { repo: root });
-    std::test::assert_eq_int(initial.count, 0, "first unsigned attempt never reaches membrane");
+    std::test::assert_eq_int(relay_once(root, "\n"), 0, "first unsigned attempt never reaches the nerves");
     let refreshed = journal.refresh();
     std::test::assert_eq_int(journal.revision(), 1, "refusal append really failed");
-    let child = dna::run_tool("env\nHALE_DNA_MEMBRANE=/bin/true\n" + std::env::arg_or(0, "") + "\nrelay\n" + root);
-    std::test::assert_eq_int(child.code, 0, "expired retry probe finished");
-    std::test::assert_eq_str(std::str::trim(child.stdout), "relayed=0", "expired retry still refuses the unverified row before transport");
+    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
+    let expired = host::relay_mark("\n", host::fact_key(p, 0), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
+    std::test::assert_eq_int(relay_once(root, expired), 0, "expired retry still refuses the unverified row before transport");
     let fresh = dna::GitJournal { repo: root };
     std::test::assert_eq_int(fresh.revision(), 1, "retry creates no acceptance or unsigned refusal");
     let removed = dna::run_tool("rm\n-rf\n" + root);
 }
 
-main locus App {
-    run() {
-        if std::env::arg_or(1, "") == "relay" { relay_child(std::env::arg_or(2, "")); }
-        else { check(); }
-    }
+// A plain locus: the host this imports is the `main locus` of its own
+// program (GH #986), and a bundle has one.
+locus App {
+    run() { check(); }
 }
 fn main() { App { }; }

@@ -77,7 +77,7 @@
 
 - [What init makes](./dna/attach.md)
 - [The record](./dna/record.md)
-- [The host, the membrane, the nodes](./dna/run.md)
+- [The host, the nerves, the nodes](./dna/run.md)
 - [The twelve steps, with the record](./dna/walkthrough.md)
 - [The workflow](./dna/workflow.md)
 - [The Review in detail](./dna/review.md)

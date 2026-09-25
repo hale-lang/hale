@@ -1,0 +1,43 @@
+// The nerves' stream, created by its owner (GH #986).
+//
+// `hale dna nerves migrate` (and `dev`, before it starts the organism)
+// runs `nerves-migrate`: the owner's NATS URL from HALE_DNA_NATS_URL_OWNER,
+// or from dna/compose.yaml's `nerves` service brought up, creates the
+// organization's stream and prints the organization's token and each
+// role's URL. Like memory's owner, the owner's URL never reaches a
+// process that runs the organism: `dev` hands the host the spine's.
+
+import "../core/pond/realtime/nats" as nats;
+
+// `nerves-migrate`: `HALE_DNA_NATS_ORG=<token>` and one
+// `HALE_DNA_NATS_URL_<ROLE>=<url>` per role when the stream is in place,
+// `none: <why>` when there is no server to put it on.
+fn nerves_migrate_verb(root: String) -> Answer {
+    let org = dna::schema_for(record_identity(root));
+    let mut owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+    if len(owner) == 0 {
+        let infra = ReferenceInfrastructure { root: root };
+        let server = infra.nerves_server(root);
+        if !server.present { return answer("none: " + server.why + "\n"); }
+        owner = dna::nerves_role_url(server.dsn, "owner");
+    }
+    let c = nats::NatsClient { url: owner, name: "dna-owner", timeout: 2s };
+    // a server compose has just started takes a moment to listen
+    let mut tries = 0;
+    let mut open = c.open();
+    while !open && tries < 50 {
+        std::time::sleep(200ms);
+        open = c.open();
+        tries = tries + 1;
+    }
+    if !open { return fail("nerves migrate: " + c.last_error); }
+    if !c.jetstream { c.close(); return fail("nerves migrate: the server does not run JetStream (start it with -js)"); }
+    let m = dna::nerves_migrate(c, org);
+    c.close();
+    if !m.ok { return fail("nerves migrate: " + m.why); }
+    let mut out = dna::NATS_ORG_ENV + "=" + org + "\n";
+    out = out + dna::NATS_SPINE_URL_ENV + "=" + dna::nerves_role_url(owner, "spine") + "\n";
+    out = out + dna::NATS_HEAD_URL_ENV + "=" + dna::nerves_role_url(owner, "head") + "\n";
+    out = out + dna::NATS_APP_URL_ENV + "=" + dna::nerves_role_url(owner, "app") + "\n";
+    return answer(out);
+}

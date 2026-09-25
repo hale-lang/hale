@@ -1,16 +1,16 @@
-// dna/tests/relay_repeated_request_test.hl — each request in the record
-// gets its own relay, even when several share one entity (GH #689).
+// dna/tests/nerves_loss_test.hl — a fact the nerves lose is not a lost
+// intent (GH #682, #986).
 //
-// A concern's entity is its source, so three concerns from one worker are
-// three `concern.requested` rows with one entity. The host relays each row
-// once and treats it as answered when its own answer is journaled; with
-// the answer matched by entity alone, the first `concern.raised` answered
-// every later request and the third concern was never relayed (the trio
-// and knowledge fixtures failed on it under load). Here two concerns from
-// one source go into the record of a running organism; the first one's
-// relay is lost on the nerves (the fixture takes it off the
-// organization's consumer while the organization is stopped, GH #986),
-// and both must become `concern.raised`, each once.
+// A publish onto the nerves is confirmed by the stream, not by the
+// organization: the host hands the fact to JetStream, and whether the
+// organization ever reads it is another matter. Delivery is therefore
+// confirmed by the fact's answer in the record, never by the transport.
+// Here the organization is stopped while an `intent.requested` row lands
+// in the record; the host relays it, and the fixture takes the message
+// off the organization's own durable consumer and acknowledges it, so
+// the organization never sees it. After the relay interval the host
+// relays the intent again because the record still holds no answer, and
+// the organization, running again, admits it once.
 
 import "../core" as dna;
 import "../core/pond/realtime/nats" as nats;
@@ -32,6 +32,28 @@ fn line_value(text: String, name: String) -> String {
     let rest = text[(at + len(name) + 1)..len(text)];
     let nl = std::str::index_of(rest, "\n");
     return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// The word after `marker` in `text`, "" when it is not there.
+fn word_after(text: String, marker: String) -> String {
+    let at = std::str::index_of(text, marker);
+    if at < 0 { return ""; }
+    let rest = text[(at + len(marker))..len(text)];
+    let sp = std::str::index_of(rest, " ");
+    return if sp < 0 { dna::trim_nl(rest) } else { rest[0..sp] };
+}
+
+@unbounded
+fn rows(repo: String, kind: String, needle: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && (std::str::contains(e.entity, needle) || std::str::contains(e.body, needle)) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
 }
 
 // How many times the host said it relayed something onto the nerves.
@@ -80,66 +102,20 @@ fn steal(c: nats::NatsClient, org: String) -> String {
 // Whether a message `steal` took carries `text` in its payload.
 fn carries(taken: String, text: String) -> Bool { return std::str::contains(taken, dna::hex(std::bytes::from_string(text))); }
 
-// How many rows answer this request, by identity: the id is a field of
-// its own in the body, read back whole and compared whole (GH #689
-// review). An answer to `c10` must not count as an answer to `c1`.
-@unbounded
-fn answers(repo: String, request: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
-    let mut n = 0;
-    let mut i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        if e.kind == "concern.raised" && dna::request_named(e.body) == request { n = n + 1; }
-        i = i + 1;
-    }
-    return n;
-}
-
-@unbounded
-fn rows(repo: String, kind: String, needle: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
-    let mut n = 0;
-    let mut i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        if e.kind == kind && (std::str::contains(e.entity, needle) || std::str::contains(e.body, needle)) { n = n + 1; }
-        i = i + 1;
-    }
-    return n;
-}
-
-fn record(app: String) -> String {
-    let j = dna::GitJournal { repo: app };
-    return journal_text(j);
-}
-
-@unbounded
-fn journal_text(j: dna::GitJournal) -> String {
-    let mut out = "";
-    let mut i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        out = out + e.kind + " " + e.entity + " " + e.body + "\n";
-        i = i + 1;
-    }
-    return out;
-}
-
 main locus App {
     run() {
-        let scratch = dna::scratch_root("relayrepeat");
+        let scratch = dna::scratch_root("nervesloss");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
         let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
         if len(nats_owner) == 0 {
-            eprintln("relay_repeated_request_test: not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
+            eprintln("nerves_loss_test: not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
             dna::scratch_done(scratch);
             return;
         }
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nrepeated");
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nlossy");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
-        let a = scratch + "/repeated";
+        let a = scratch + "/lossy";
         let g1 = in_dir(a, "git\nconfig\nuser.name\norganism-host");
         let g2 = in_dir(a, "git\nconfig\nuser.email\nhost@dna");
         let g3 = in_dir(a, "git\nadd\n-A");
@@ -162,68 +138,62 @@ main locus App {
         let org_pid = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/org.pid") or "");
         std::test::assert(len(org_pid) > 0, "the organization's pid is written");
 
-        // Two concerns from one source. The first delivery is lost, the
-        // second is answered. The lost one must still be delivered: its
-        // answer is named by its own id, not by any answer for its source
-        // (GH #689). Each concern says something of its own, so the answers
-        // can be told apart.
-        //
-        // The ids are `c1` and `c10`, one a prefix of the other (the review
-        // of the first fix): matching the id by searching the body for it
-        // lets c10's answer pass for c1's, and c1 — whose delivery was lost
-        // — is then never relayed again.
-        let j = dna::GitJournal { repo: a, author: "edge" };
-        let first = "{\"request\": \"c1\", \"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
-        let second = "{\"request\": \"c10\", \"source\": \"org/repeated/worker\", \"what\": \"the printer is out of paper\", \"severity\": 1}";
-
-        // The first delivery is lost on the nerves: the organization stops
-        // reading (once its outstanding pull has expired, a second, nothing
-        // reaches it), the host relays the concern, and the fixture takes
-        // it off the organization's consumer and acknowledges it.
-        let c = nats::NatsClient { url: spine, name: "relay-repeat-thief", timeout: 2s };
+        // the organization stops reading: once its outstanding pull has
+        // expired (a second), nothing the host publishes reaches it
+        let c = nats::NatsClient { url: spine, name: "nerves-loss-thief", timeout: 2s };
         std::test::assert(c.open(), "the fixture reaches the nerves: " + c.last_error);
         let stopped = dna::run_tool("kill\n-STOP\n" + org_pid);
         std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);
         std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + dna::nerves_listening(c, org));
+
+        // an intent in the record, from this clone, as a person asks
         let before = relays(a);
-        let w1 = j.append(j.revision(), "concern.requested", "org/repeated/worker", first);
-        std::test::assert(w1.ok, "the first concern is in the record: " + w1.error);
+        let asked = in_dir(a, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--as\nriley\nreconcile the day");
+        let intent = word_after(asked.stdout, "intent ");
+        std::test::assert(asked.code == 0 && std::str::starts_with(intent, "i"), "the intent is in the record: " + asked.stdout + asked.stderr);
+
+        // the host relays it, and the relay is lost: the fixture reads it
+        // off the organization's consumer and acknowledges it
         let mut relayed = false;
         let relay_deadline = std::time::now() + dna::wait_secs(30);
         while !relayed && std::time::now() <= relay_deadline {
             if relays(a) > before { relayed = true; } else { std::time::sleep(250ms); }
         }
-        std::test::assert(relayed, "the host relayed the first concern: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(relayed, "the host relayed the intent: " + (std::io::fs::read_file(a + "/host.log") or ""));
         let taken = steal(c, org);
-        std::test::assert(std::str::contains(taken, "dna.concern.raised") && carries(taken, "mail backlog behind fulfilment"), "its delivery was lost: " + taken + " " + c.last_error);
+        std::test::assert(std::str::contains(taken, "dna.intent.offered") && carries(taken, intent), "the relay is taken off the organization's consumer: " + taken + " " + c.last_error);
         let resumed = dna::run_tool("kill\n-CONT\n" + org_pid);
         std::test::assert_eq_int(resumed.code, 0, "the organization runs again: " + resumed.stderr);
         std::test::assert(wait_listening(c, org, true, 10), "and reads the nerves again: " + dna::nerves_listening(c, org));
         c.close();
-        let w2 = j.append(j.revision(), "concern.requested", "org/repeated/worker", second);
-        std::test::assert(w2.ok, "a second concern follows it");
-        let mut answered_second = false;
-        let mut tries = 0;
-        while !answered_second && tries < 240 {
-            answered_second = answers(a, "c10") == 1;
-            if !answered_second { std::time::sleep(500ms); }
-            tries = tries + 1;
-        }
-        std::test::assert(answered_second, "the second concern was raised: " + (std::io::fs::read_file(a + "/host.log") or ""));
-        std::test::assert_eq_int(answers(a, "c1"), 0, "and the lost one is still unanswered, whatever c10's answer looks like");
+        // the one publish there has been is gone: nothing answers it
+        std::test::assert(relays(a) == before + 1 && rows(a, "intent.offered", intent) == 0, "the lost relay is unanswered: " + (std::io::fs::read_file(a + "/host.log") or ""));
 
-        // the host relays an unanswered request again; the answer to the
-        // second must not pass for the first's
-        let mut answered_first = false;
-        tries = 0;
-        while !answered_first && tries < 300 {
-            answered_first = answers(a, "c1") == 1;
-            if !answered_first { std::time::sleep(500ms); }
-            tries = tries + 1;
+        // relayed again (RELAY_AGAIN_AFTER, 30s), admitted — once
+        let mut offered = false;
+        let offer_deadline = std::time::now() + dna::wait_secs(120);
+        while !offered && std::time::now() <= offer_deadline {
+            if rows(a, "intent.offered", intent) > 0 { offered = true; } else { std::time::sleep(500ms); }
         }
-        std::test::assert(answered_first, "the lost concern was delivered again and answered: " + (std::io::fs::read_file(a + "/host.log") or ""));
-        std::test::assert_eq_int(rows(a, "concern.raised", "org/repeated/worker"), 2, "two concerns, two answers, neither doubled");
-        std::test::assert_eq_int(rows(a, "concern.requested", "org/repeated/worker"), 2, "and two requests");
+        std::test::assert(offered, "the host relayed the unanswered intent again and the organism admitted it: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(relays(a) >= before + 2, "on a second relay: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        // card 18: the admission follows the leader's word; it names the
+        // intent as its request, and there is one of it
+        let admission = "\"request\": \"" + intent + "\"";
+        let born_of = intent + ": ";
+        let mut admitted = false;
+        let admit_deadline = std::time::now() + dna::wait_secs(120);
+        while !admitted && std::time::now() <= admit_deadline {
+            if rows(a, "workflow.admitted", admission) > 0 { admitted = true; } else { std::time::sleep(500ms); }
+        }
+        std::test::assert(admitted, "the organism admitted the relayed intent as a workflow: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(rows(a, "intent.offered", intent) == 1 && rows(a, "workflow.admitted", admission) == 1, "admitted once");
+        let mut born = false;
+        let born_deadline = std::time::now() + dna::wait_secs(60);
+        while !born && std::time::now() <= born_deadline {
+            if rows(a, "task.born", born_of) > 0 { born = true; } else { std::time::sleep(500ms); }
+        }
+        std::test::assert_eq_int(rows(a, "task.born", born_of), 1, "one task is born of it, and not again once answered");
 
         let k1 = dna::run_tool("kill\n" + host_pid);
         let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -CONT $(cat .hale/dna/$f.pid) 2>/dev/null && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);

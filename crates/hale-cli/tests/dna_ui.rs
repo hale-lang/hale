@@ -134,7 +134,7 @@ fn the_surface_serves_the_record_and_a_verdict_from_the_form_lands_in_it() {
     assert!(smuggled.contains("no `review.requested` for `-iris`") || smuggled.contains("no `review.requested`"), "{smuggled}");
     // the verdict form: into the record, in the reviewer's name
     let answer = http(port, "POST", "/api/verdict", r#"{"id":"m1","verdict":"reject","as":"riley","comment":"not like this"}"#).unwrap_or_default();
-    assert!(answer.contains("verdict reject on m1 by riley sent into the record"), "{answer}");
+    assert!(answer.contains("verdict reject on m1 by riley written into the record; the Review answers there"), "{answer}");
     let rows = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     let rows = String::from_utf8_lossy(&rows.stdout).to_string();
     let verdict = rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find(|v| v["kind"] == "review.verdict").unwrap_or_else(|| panic!("a verdict row:\n{rows}"));

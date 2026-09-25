@@ -122,6 +122,7 @@ locus Projection {
         root: String = ".";
         seed: String = "."; // the application's seed, relative to the root
         toolchain: String = "";
+        live: Bool = false; // the organism runs from this clone (organism_line)
         // GH #646 stage 1: the record and the Ledger read as one
         j: dna::RoutedJournal = dna::RoutedJournal { };
     }
@@ -355,8 +356,11 @@ locus Projection {
         let head = self.chain_head();
         return "chain verified" + (if len(head) > 0 { " at " + short(head) } else { "" });
     }
+    // GH #986: a body in this clone holds the record's lease (`live`,
+    // set by whoever renders the status: the host, which is that body, or
+    // `status`, which asks the lease).
     fn organism_line() -> String {
-        if membrane_up(self.root) { return "running (membrane bound)"; }
+        if self.live { return "running (this clone's body holds the lease)"; }
         return "not running — reading the Journal";
     }
     fn seed_dir() -> String {

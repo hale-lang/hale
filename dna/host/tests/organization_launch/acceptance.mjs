@@ -15,10 +15,9 @@ const repo = path.resolve(here, '../../../..');
 const evidence = process.env.HALE_HOST_LAUNCH_EVIDENCE;
 const setupBin = process.env.HALE_HOST_LAUNCH_SETUP_BIN;
 const hostBin = process.env.HALE_HOST_LAUNCH_BIN;
-const membraneBin = process.env.HALE_HOST_LAUNCH_MEMBRANE_BIN;
 const observerBin = process.env.HALE_HOST_LAUNCH_OBSERVER_BIN;
 const apiBin = process.env.HALE_HOST_LAUNCH_API_BIN;
-for (const value of [evidence, setupBin, hostBin, membraneBin, observerBin]) assert.ok(value, 'all explicit native artifact paths are required');
+for (const value of [evidence, setupBin, hostBin, observerBin]) assert.ok(value, 'all explicit native artifact paths are required');
 await fs.mkdir(evidence, { recursive: true });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha = data => 'sha256:' + crypto.createHash('sha256').update(data).digest('hex');
@@ -37,18 +36,38 @@ async function poll(action, label, ms = 25000) {
   throw new Error(`${label} timed out; last=${JSON.stringify(value)}`);
 }
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
+// The core's `.hl` files, recursively: it now imports `./pond/...`
+// subdirectories (`nerves.hl` imports `./pond/realtime/nats`,
+// `memory_store.hl` imports `./pond/db`, `./pond/pq`), so a shallow
+// top-level copy leaves the organization's imports unresolved.
+async function copyHlTree(src, dst) {
+  await fs.mkdir(dst, { recursive: true });
+  for (const entry of await fs.readdir(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name); const to = path.join(dst, entry.name);
+    if (entry.isDirectory()) await copyHlTree(from, to);
+    else if (entry.name.endsWith('.hl')) await fs.copyFile(from, to);
+  }
+}
 async function run(mode) {
   assert.ok(['healthy', 'launch-ack', 'claim-reply', 'rollback-ack', 'rollback-launch-ack'].includes(mode), 'bounded known case');
   const root = await fs.mkdtemp(path.join(evidence, `${mode}-`));
   const work = path.join(root, 'project'); const control = path.join(root, 'control'); const runtime = path.join(root, 'runtime');
   await fs.mkdir(path.join(work, 'dna/org'), { recursive: true }); await fs.mkdir(path.join(work, 'app'), { recursive: true });
-  await fs.mkdir(path.join(work, 'vendor/core'), { recursive: true }); await fs.mkdir(control); await fs.mkdir(runtime); await fs.mkdir(path.join(runtime, 'hale'), { mode: 0o700 });
+  await fs.mkdir(control); await fs.mkdir(runtime); await fs.mkdir(path.join(runtime, 'hale'), { mode: 0o700 });
   const baseSource = await fs.readFile(path.join(here, 'org/main.hl'), 'utf8');
   await fs.writeFile(path.join(work, 'dna/org/main.hl'), baseSource);
   await fs.writeFile(path.join(work, 'app/main.hl'), 'main locus App { run() { } }\nfn main() { App { }; }\n');
   await fs.writeFile(path.join(work, '.gitignore'), '/.hale/\n/vendor/\n/dna/org/org\n/app/app\n');
-  for (const name of await fs.readdir(path.join(repo, 'dna/core'))) if (name.endsWith('.hl')) await fs.copyFile(path.join(repo, 'dna/core', name), path.join(work, 'vendor/core', name));
-  const env = { ...process.env, HALE_BIN: process.env.HALE_BIN || '/home/riley/.local/bin/hale', HALE_DNA_MEMBRANE: membraneBin, HALE_DNA_DISCOVER: 'off', XDG_RUNTIME_DIR: runtime, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' };
+  await copyHlTree(path.join(repo, 'dna/core'), path.join(work, 'vendor/core'));
+  // GH #986: no membrane binary or socket transport any more — the
+  // organization reads its facts over the nerves (NATS), whose URLs
+  // travel in HALE_DNA_NATS_URL_SPINE / HALE_DNA_NATS_ORG (already in
+  // `process.env` when the caller set them, e.g. via `hale dna nerves
+  // migrate`); this fixture does not configure them itself, so the
+  // organization runs without nerves and hears nothing the record asks
+  // — fine for what it exercises here (launch/rollback lifecycle and
+  // the host's own process-health observation, not an answered fact).
+  const env = { ...process.env, HALE_BIN: process.env.HALE_BIN || '/home/riley/.local/bin/hale', HALE_DNA_DISCOVER: 'off', XDG_RUNTIME_DIR: runtime, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' };
   for (const key of Object.keys(env)) if (/^(?:GIT_(?:DIR|COMMON_DIR|WORK_TREE|INDEX_FILE|CONFIG_COUNT|CONFIG_PARAMETERS|NAMESPACE)|HALE_DNA_(?:KNOWLEDGE|OWNER|LEASE|BODY|TAPE)|LOTUS_OBS|OPENAI_API_KEY|ANTHROPIC_API_KEY)/.test(key)) delete env[key];
   command('/usr/bin/git', ['init', '-q', '-b', 'main'], work, env);
   command('/usr/bin/git', ['add', '-A'], work, env);

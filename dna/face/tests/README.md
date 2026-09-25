@@ -449,18 +449,11 @@ successful command execution belongs to the separate native browser proof.
 `native-knowledge-node-browser.spec.mjs` exercises ordinary Knowledge creation,
 revision and retirement through their actual proposals, canonical Reviews and
 native activation. It composes `native-knowledge-node-harness.mjs` with the
-existing Body/relay/membrane owner. Supply matching prebuilt binaries and
-memory, and run from `dna/face`:
-
-```sh
-HALE_NATIVE_COMMAND_API=/absolute/path/to/composed-review-api \
-HALE_NATIVE_COMMAND_BODY=/absolute/path/to/body \
-HALE_NATIVE_COMMAND_RELAY=/absolute/path/to/relay \
-HALE_NATIVE_COMMAND_MEMBRANE=/absolute/path/to/membrane \
-HALE_DNA_MEMORY_DSN_OWNER="postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable" \
-node node_modules/@playwright/test/cli.js test \
-  --config tests/playwright.config.mjs native-knowledge-node-browser.spec.mjs
-```
+existing Body/relay owner — **the relay lane is unported (GH #1029):**
+`dna/api/practice_review/tests/relay` was removed with the membrane, and this
+spec cannot run until a relay is rebuilt against the node. `startService`
+(`native-command-harness.mjs`) fails immediately with that message rather than
+asking for a `HALE_NATIVE_COMMAND_RELAY` binary that no longer exists.
 
 **Not ported to memory (GH #985).** There is no Knowledge service to start
 beside the Body any more. The API takes the node policy as
@@ -588,21 +581,21 @@ establish real domain writes, service authority or restart durability.
 ## Native Practice and Review acceptance
 
 `native-commands.mjs` is an opt-in standalone Node harness for the real native
-command API, DNA body, host relay and membrane client. Supply prebuilt binaries;
-the harness never builds native code or joins the default browser lane:
+command API, DNA body and host relay — **unported (GH #1029):**
+`dna/api/practice_review/tests/relay` was removed with the membrane, so this
+harness fails immediately with that message; it needs a relay rebuilt against
+the node before it can run again. The rest of this section describes the shape
+it exercised while the relay stood:
 
 ```sh
 HALE_NATIVE_COMMAND_API=/absolute/path/to/command-api \
 HALE_NATIVE_COMMAND_BODY=/absolute/path/to/body \
-HALE_NATIVE_COMMAND_RELAY=/absolute/path/to/relay \
-HALE_NATIVE_COMMAND_MEMBRANE=/absolute/path/to/membrane \
 HALE_NATIVE_COMMAND_EVIDENCE=/absolute/path/to/evidence \
 node dna/face/tests/native-commands.mjs
 ```
 
-The body and relay sources are `dna/api/practice_review/tests/body/main.hl` and
-`dna/api/practice_review/tests/relay/main.hl`. The API source is
-`dna/api/practice_review/main.hl`; the relay uses the production membrane helper.
+The body source is `dna/api/practice_review/tests/body/main.hl`; the relay's
+source is gone (above). The API source is `dna/api/practice_review/main.hl`.
 Missing binaries fail visibly. The evidence parent is optional and defaults to
 the system temporary directory; each run creates its own Git project and an
 explicit application-bound policy granting local `alice` and `bob` board access.

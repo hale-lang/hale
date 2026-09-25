@@ -108,6 +108,10 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         eprintln!("dna_knowledge: no HALE_DNA_MEMORY_DSN_OWNER; the graph is memory's, so nothing was exercised");
         return;
     };
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_knowledge: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_knowledge_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -155,13 +159,13 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     };
     // the eight seeded design practices and the six operating ones are
     // ideas too (GH #596 C, #994), plus this proposal; wait for the
-    // membrane as well
-    let membrane = app.join(".hale/dna/hale-dna.review.verdict.sock");
-    let tailed = trace::wait_until("dna dev: the spine projected the record and the membrane bound", Duration::from_secs(180), Duration::from_millis(500), || {
+    // nerves as well
+    let nerves_up = || std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default().contains("the organization reads its facts from the nerves");
+    let tailed = trace::wait_until("dna dev: the spine projected the record and the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(500), || {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "15" && membrane.exists()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "15" && nerves_up()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();

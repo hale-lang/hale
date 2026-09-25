@@ -1,0 +1,141 @@
+// dna/core/nerves.hl — the nerves: facts between an organization's
+// parts over NATS JetStream (GH #986).
+//
+// A fact is a row first. The node whose tick lands it in the record
+// publishes it, on the topic the organization subscribes, through the
+// bus adapter its `main locus` binds that topic to (pond's `NatsAdapter`,
+// vendored under `pond/realtime/nats`); the payload is the bus's own
+// encoding, so both ends are Hale programs declaring the same topic. A
+// one-shot verb never publishes: it writes the row, and a node relays
+// it until the record holds its answer (GH #682).
+//
+// Subjects. Everything an organization carries is under its own token,
+// the one memory names its schema with (`schema_for(record id)`), so two
+// organizations share a server without sharing a subject:
+//
+//   <org>.dna.<family>.<event>    what DNA's own parts say: the
+//                                 declared subject of a `dna::` topic
+//                                 (`dna.intent.offered`) under the org
+//   <org>.app.<app>.<subject>     what an application says, under its
+//                                 own name (#987 gives it its events)
+//
+// The connection takes the token off what arrives and puts it on what
+// leaves (`subject_prefix`), so a topic keeps its declared subject.
+//
+// One stream per organization, `DNA_<ID>`, over `<org>.>`: limits
+// retention with a maximum age, so what was said is kept and read from
+// a position, not deleted once one consumer acks it. The organization
+// reads it through its durable consumer `spine`, which keeps its place
+// across restarts.
+//
+// Credentials, one per family, each a URL with its user (placeholders
+// in dna/nats.conf until the vault, #989):
+//   owner  creates the stream (`hale dna nerves migrate`); held by no
+//          process that runs the organism
+//   spine  publishes and reads <org>.dna.>: the node's host and the
+//          organization
+//   head   subscribes, publishes nothing (the face's push)
+//   app    publishes on <org>.app.<app>.> (#987)
+
+import "./pond/realtime/nats" as nats;
+
+const NATS_OWNER_URL_ENV: String = "HALE_DNA_NATS_URL_OWNER";
+const NATS_SPINE_URL_ENV: String = "HALE_DNA_NATS_URL_SPINE";
+const NATS_HEAD_URL_ENV: String = "HALE_DNA_NATS_URL_HEAD";
+const NATS_APP_URL_ENV: String = "HALE_DNA_NATS_URL_APP";
+// The organization's token: `dev` hands it to the host, and the host to
+// the parts it starts.
+const NATS_ORG_ENV: String = "HALE_DNA_NATS_ORG";
+
+// How long the stream keeps what it was told.
+const NERVES_MAX_AGE_SECS: Int = 604800;
+
+// The durable consumer the organization reads its facts through.
+const NERVES_DURABLE: String = "spine";
+
+// The subject prefix of an organization's facts.
+fn nerves_prefix(org: String) -> String { return if len(org) == 0 { "" } else { org + "." }; }
+
+// The organization's stream: its token upper-cased (`dna_<id>` makes
+// `DNA_<ID>`).
+fn nerves_stream(org: String) -> String { return std::str::upper(org); }
+
+// A NATS URL for `role` on the server `base` names (`nats://host:port`),
+// with that role's placeholder password (dna/nats.conf).
+fn nerves_role_url(base: String, role: String) -> String {
+    let sep = std::str::index_of(base, "://");
+    if sep < 0 { return base; }
+    let rest = base[(sep + 3)..len(base)];
+    let at = std::str::index_of(rest, "@");
+    let host = if at < 0 { rest } else { rest[(at + 1)..len(rest)] };
+    return base[0..sep] + "://" + role + ":" + nerves_placeholder_password(role) + "@" + host;
+}
+
+// Until the vault (#989): the password dna/nats.conf gives `role`.
+fn nerves_placeholder_password(role: String) -> String { return "dna-" + role + "-dev"; }
+
+fn env_or_empty(name: String) -> String {
+    if std::env::var_exists(name) { return std::env::var(name); }
+    return "";
+}
+
+// What a part of the organism running as the spine connects with, from
+// its environment: the server with the spine's user, and the
+// organization's token. Both empty when no nerves were handed to it.
+fn nerves_spine_url() -> String { return env_or_empty(NATS_SPINE_URL_ENV); }
+fn nerves_org() -> String { return env_or_empty(NATS_ORG_ENV); }
+fn nerves_here() -> Bool { return len(nerves_spine_url()) > 0 && len(nerves_org()) > 0; }
+
+// The organization's side of the nerves: every `dna.` fact of its own,
+// read from the stream through its durable consumer (the host's
+// relays, and anything published while it was down).
+fn nerves_consumer(org: String) -> nats::ConsumerSpec {
+    return nats::ConsumerSpec { durable: NERVES_DURABLE, filter: nerves_prefix(org) + "dna.>", deliver: "all" };
+}
+
+// What `nerves_migrate` did: the stream exists as this toolchain wants it.
+type NervesMigration {
+    ok: Bool = false;
+    why: String = "";
+    stream: String = "";
+}
+
+// The stream's configuration.
+fn nerves_stream_config(org: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", nerves_stream(org));
+    b.begin_array_field("subjects");
+    b.string_value(org + ".>");
+    b.end_array();
+    b.string_field("storage", "file");
+    b.string_field("retention", "limits");
+    b.int_field("max_age", NERVES_MAX_AGE_SECS * 1000000000);
+    b.end_object();
+    return b.result();
+}
+
+// Create the organization's stream with the owner's connection, or bring
+// an existing one to this configuration. Idempotent.
+fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
+    let stream = nerves_stream(org);
+    let config = nerves_stream_config(org);
+    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
+    if len(made) > 0 { return NervesMigration { ok: true, stream: stream }; }
+    // already there with another configuration (err_code 10058): update it
+    if !std::str::contains(c.last_error, "10058") { return NervesMigration { why: c.last_error, stream: stream }; }
+    let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
+    if len(updated) == 0 { return NervesMigration { why: c.last_error, stream: stream }; }
+    return NervesMigration { ok: true, stream: stream };
+}
+
+// Whether the organization is reading its facts: its durable consumer
+// has a pull outstanding (a connection that went away leaves none once
+// its pull expires). "" when it is; otherwise why not. The host asks
+// this where it used to look for the membrane's sockets.
+fn nerves_listening(c: nats::NatsClient, org: String) -> String {
+    let info = nats::js_call(c, "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + NERVES_DURABLE, "") or "";
+    if len(info) == 0 { return c.last_error; }
+    if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
+    return "no pull outstanding on " + nerves_stream(org) + "." + NERVES_DURABLE;
+}

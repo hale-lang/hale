@@ -25,10 +25,6 @@ import "../../operations" as ops;
 const S3_OPERATIONS: String = " dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync ";
 // The last line a run prints for its outcome (see the file comment).
 const S3_TRAILER: String = "hale-head-outcome: ";
-// The membrane's two sockets (`dna/host/record.hl`): both present, and
-// the organization alive = up.
-const S3_VERDICT_SOCK: String = "hale-dna.review.verdict.sock";
-const S3_INTENT_SOCK: String = "hale-dna.intent.offered.sock";
 const S3_TEXT_MAX: Int = 256;
 const S3_LONG_MAX: Int = 512;
 const S3_SOURCE_MAX: Int = 4096;
@@ -68,13 +64,12 @@ fn s3_child(ctx: HeadContext, name: String) -> Proc { return Proc { pid: s3_pid_
 
 fn s3_org_pid(root: String) -> Int { return s3_pid_in(s3_dna_dir(root) + "/org.pid"); }
 
-// The organism's socket files outlive it (nothing unlinks them when it
-// is stopped), so the membrane is up only while the organization that
-// bound them is alive.
-fn s3_membrane_up(root: String) -> Bool {
-    let d = s3_dna_dir(root) + "/";
-    return std::io::fs::file_exists(d + S3_VERDICT_SOCK) && std::io::fs::file_exists(d + S3_INTENT_SOCK) && s3_pid_alive(s3_org_pid(root));
-}
+// There is no transport to probe any more (GH #986, "the nerves"): a
+// one-shot verb writes its row and waits for the organization's answer
+// in the record, which waits durably in the stream either way. So "up"
+// is all the head can mean by it — the organization's pid, from
+// `.hale/dna/org.pid`, is alive.
+fn s3_organization_up(root: String) -> Bool { return s3_pid_alive(s3_org_pid(root)); }
 
 fn s3_body_alive(ctx: HeadContext) -> Bool { return alive(s3_child(ctx, "body")); }
 
@@ -373,7 +368,7 @@ fn s3_plan(ctx: HeadContext, operation: String, arguments: String) -> Plan {
 }
 
 // `dna.body.local.start`: `git config dna.owner` when given, then the
-// host as a detached child; ready when the membrane's sockets exist.
+// host as a detached child; ready when the organization is up.
 fn s3_plan_body_start(ctx: HeadContext, arguments: String) -> Plan {
     let mode = json_text(arguments, "mode");
     if mode != "run" && mode != "dev" { return s3_invalid("`mode` is run or dev"); }
@@ -670,7 +665,7 @@ fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: Str
         let body = s3_child(ctx, "body");
         b.int_field("pid", body.pid);
         b.string_field("mode", s3_body_mode(ctx));
-        b.int_field("membrane_up_at", if exit_code == 0 && s3_membrane_up(ctx.active_root) { std::time::now() } else { 0 });
+        b.int_field("organism_alive_at", if exit_code == 0 && s3_organization_up(ctx.active_root) { std::time::now() } else { 0 });
     } else if operation == "dna.body.provision" {
         let dry = std::json::find_bool_field(facts, "dry_run");
         b.string_field("target", json_text(facts, "target"));
@@ -694,13 +689,13 @@ fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: Str
     return b.result();
 }
 
-// body: the membrane sockets exist.
+// body: the organization is up.
 fn s3_child_ready(ctx: HeadContext, name: String) -> Bool {
-    if name == "body" { return s3_membrane_up(ctx.active_root); }
+    if name == "body" { return s3_organization_up(ctx.active_root); }
     return false;
 }
 
-// The GET /head "children" object (adds membrane_up, mode, external).
+// The GET /head "children" object (adds organism_alive, mode, external).
 fn s3_children_json(ctx: HeadContext, body: ChildView) -> String {
     let attached = len(ctx.active_id) > 0;
     let external = attached && s3_external(ctx) && !body.alive;
@@ -712,7 +707,7 @@ fn s3_children_json(ctx: HeadContext, body: ChildView) -> String {
     b.int_field("pid", if external { s3_org_pid(ctx.active_root) } else { body.pid });
     b.int_field("since", body.since);
     b.string_field("command_id", body.command_id);
-    b.bool_field("membrane_up", attached && s3_membrane_up(ctx.active_root));
+    b.bool_field("organism_alive", attached && s3_organization_up(ctx.active_root));
     b.string_field("mode", if body.pid > 0 && !external { s3_body_mode(ctx) } else { "" });
     b.int_field("exit_code", body.exit_code);
     b.end_object();
