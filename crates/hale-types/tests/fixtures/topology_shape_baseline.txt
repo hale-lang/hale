@@ -766,6 +766,7 @@ crates/hale-codegen/tests/hale_self_test.rs#4 7ba49c53bd84fd5d
 crates/hale-codegen/tests/hale_self_test.rs#5 6930a3f2bd681ab1
 crates/hale-codegen/tests/hashmap_cell_alias.rs#0 fef2f74fb70d861c
 crates/hale-codegen/tests/hashmap_cell_alias.rs#1 4fb6bc965ab0a493
+crates/hale-codegen/tests/held_failure_outlives_reclaim.rs#0 17ee9d5034e9032c
 crates/hale-codegen/tests/http_request_headers.rs#0 865d341109268295
 crates/hale-codegen/tests/http_request_headers.rs#1 865d341109268295
 crates/hale-codegen/tests/http_request_headers.rs#2 865d341109268295

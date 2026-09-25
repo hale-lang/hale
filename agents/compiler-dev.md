@@ -294,6 +294,11 @@ Corpus oracles:
   recycled chunk cannot hide a use-after-free; set
   `LOTUS_NO_CHUNK_POOL=1` on an ordinary build to chase one.
   `LOTUS_ARENA_RESIDENCY=1` reports arenas live at exit.
+- A sanitizer test that checks a value survives reads it from
+  heap-allocated data (`std::str::upper(..)`, a concatenation), never
+  a literal: a literal lives in static memory, so reading it after its
+  locus's arena is freed is not a use-after-free and ASan says
+  nothing. That is how #1065's test missed the bug #1067 fixed.
 - `ownership_matrix.rs`: 27 positions × 5 types × 7 contexts = 945
   cells, four oracles (dissolve tags, residency, ASan, inline-vs-`let`
   differential); ~90-cell sample by default, `HALE_MATRIX=full` for

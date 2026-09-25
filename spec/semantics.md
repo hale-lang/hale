@@ -1175,7 +1175,10 @@ param is stored, before the parent's `birth()`; several are
 delivered in the order they arrived, on the thread settling the
 parent. So a handler always reads params that hold their values,
 and nothing it writes is overwritten by a default stored after
-it.
+it. The failing child outlives its held failure: a child whose
+`run()` has already ended — a cooperative child's returns right
+after its `violate` — is reclaimed only after its handler has
+run, so the handler's `c` is always a live child.
 
 The rule holds the *handler* back, not the children. The other
 reading — every param settled before any child runs — would undo
