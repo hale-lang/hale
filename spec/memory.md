@@ -986,20 +986,22 @@ half had the deposit this paragraph removed from the inbound one:
 `g_bus_payload_arena`, one copy of the wire payload per publish,
 kept until the arena's cap made the copy fail — after which
 `send` was silently no longer called. The copy now lives in a
-per-thread bus scratch arena (`lotus_bus_scratch_enter` /
-`_exit`), cleared when the outermost use on the thread exits —
-uses nest (a `send` that publishes, a loopback relay) and
-cooperative coroutines interleave on one thread, so it is a depth
-count, not a rewind. Between uses the scratch holds no chunk: its
-chunks return to the thread's chunk pool, so steady-state publish
-through an adapter allocates nothing — while `send` does not park.
-The depth count is per thread, not per call: a `send` that parks on
-an `async_io` pool while other publishes overlap it on that thread
-never lets the count reach zero, and the scratch grows at the full
-per-message rate for as long as the overlap lasts (measured: 10 to
-23 MB over 3000 publishes with a 4 ms sleep inside `send`; flat
-without it). Adapter inbound's key derivation (GH #1041) decodes
-into the same scratch.
+**per-call** arena (`lotus_bus_call_arena_open` / `_close`), freed
+when `send` returns. Uses nest (a `send` that publishes, a loopback
+relay) and cooperative coroutines interleave on one thread; each use
+owning its own arena makes both safe with no bookkeeping. (A first
+cut shared one per-thread scratch behind a depth count, freed only
+when the outermost use ended: a `send` that parks on an `async_io`
+pool while other publishes overlap it never let the count reach
+zero, and the scratch grew at the full per-message rate.) Nothing is
+malloc'd per call: the arena struct is carved from the head of a
+pooled default-size chunk, which is also its first bump space, the
+inline layout recpool's `fixed_cell` uses, and every chunk goes back
+to the thread's chunk pool at close — so memory tracks the sends in
+flight, one chunk each, not the messages. The call arena is not a
+residency target; `LOTUS_BUS_CALL_ARENA_STATS=1` reports what call
+arenas held (opened / live / peak bytes) at exit. Adapter inbound's
+key derivation (GH #1041) decodes into a call arena the same way.
 
 Cost: deserialize is invoked once per matching subscriber rather
 than once total. Acceptable for typical fan-out (1–3 subs per

@@ -672,3 +672,101 @@ fn adapter_send_bytes_are_kept_by_copy_and_survive_a_nested_use() {
     assert_eq!(rcv("rcv ana 2"), 2, "stdout: {stdout}");
     assert!(!stdout.contains("rcv bo"), "stdout: {stdout}");
 }
+
+/// GH #1038 follow-up: parse `[bus call arenas] opened=N live_bytes=L
+/// peak_bytes=P` from a `LOTUS_BUS_CALL_ARENA_STATS=1` run.
+fn call_arena_stats(stderr: &str) -> Option<(u64, u64, u64)> {
+    let line = stderr.lines().find(|l| l.starts_with("[bus call arenas]"))?;
+    let field = |k: &str| -> Option<u64> {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix(k))
+            .and_then(|v| v.parse().ok())
+    };
+    Some((field("opened=")?, field("live_bytes=")?, field("peak_bytes=")?))
+}
+
+#[test]
+fn a_parking_send_under_overlapping_publishes_stays_flat() {
+    // GH #1038 follow-up: `send`'s `bytes` lived in a per-thread
+    // scratch reclaimed only when the OUTERMOST use on the thread
+    // ended. A `send` that parks on an async_io pool while other
+    // publishes on that thread overlap it never let that happen, so
+    // the scratch grew at the full per-message rate, uncapped. Each
+    // `send` now gets its own arena, freed when the call returns: with
+    // a worker publishing a message every millisecond and each `send`
+    // sleeping 4 ms (about five sends parked at any moment), the bytes
+    // held by open call arenas stay a handful of chunks however many
+    // messages go through, and every arena is closed by exit. The
+    // call arena is not a residency target, so this reads the bus's
+    // own counters (`LOTUS_BUS_CALL_ARENA_STATS=1`).
+    let src = r#"
+        type Note { n: Int = 0; text: String = ""; }
+        type Go { n: Int = 0; }
+        topic Out { payload: Note; subject: "out"; }
+        topic Trig { payload: Go; subject: "trig"; }
+
+        locus Sink {
+            fn send(subject: String, bytes: Bytes) { std::time::sleep(4ms); }
+        }
+
+        locus Worker {
+            params { done: Int = 0; }
+            bus { subscribe Trig as on_go; publish Out; }
+            fn on_go(g: Go) {
+                Out <- Note { n: g.n, text: "a fixed payload of some forty bytes...." };
+                self.done = self.done + 1;
+            }
+        }
+
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = io) where async_io; }
+            bindings { Out: Sink { }; }
+            bus { publish Trig; }
+            @unbounded
+            run() {
+                let mut i = 0;
+                while i < 2000 {
+                    Trig <- Go { n: i };
+                    std::time::sleep(1ms);
+                    i = i + 1;
+                }
+                let mut k = 0;
+                while self.w.done < 2000 && k < 1000 {
+                    std::time::sleep(10ms);
+                    k = k + 1;
+                }
+                println("done=" + to_string(self.w.done));
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!(
+        "hale_adapter_binding_call_arena_{}",
+        std::process::id()
+    ));
+    build_executable(&program, &bin).expect("build");
+    let out = Command::new(&bin)
+        .env("LOTUS_BUS_CALL_ARENA_STATS", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero: {:?}; stderr: {stderr}", out.status);
+    assert!(stdout.contains("done=2000"), "stdout: {stdout}");
+    let (opened, live, peak) =
+        call_arena_stats(&stderr).expect("a [bus call arenas] line");
+    assert_eq!(opened, 2000, "one call arena per send; stderr: {stderr}");
+    assert_eq!(live, 0, "every call arena closed by exit; stderr: {stderr}");
+    // A chunk is 64 KiB. The old scratch held one payload per message
+    // for as long as the overlap lasted; a per-call arena holds one
+    // chunk per send in flight.
+    assert!(
+        peak <= 64 * 65536,
+        "call arenas peaked at {peak} bytes for 2000 messages — they \
+         should track the sends in flight, not the messages; stderr: {stderr}"
+    );
+}
