@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+### `restart_in_place` keeps the params the child was built with
+
+- **Fixed:** `restart_in_place(c)` reset every param to its *declared*
+  default, re-evaluating the default expression, on both restart paths
+  (a birth-epoch rerun and a restart after `run()`). A child built as
+  `Worker { tag: "a" }` came back with the declared `tag`. A default
+  that builds a locus (`t: Tries = Tries { }`) built a new one on every
+  restart and orphaned the old one. Params are now settled once, from
+  the literal: the instance keeps a copy of its params as built, and
+  `restart_in_place` restores that copy. A param holding a locus keeps
+  its child.
+
 ### A failed child its owner holds stays readable (GH #1069)
 
 - **Fixed:** a child held in a param field (or a binding) that failed

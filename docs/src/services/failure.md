@@ -101,7 +101,9 @@ The recovery primitives:
   on the same instance. A child whose `run()` failed restarts once
   that `run()` has returned — a pinned child on its own thread.
 - **`restart_in_place(child)`** — the same, after putting every
-  param with a declared default back to that default.
+  param back to the value this instance was built with (what its
+  literal said, or its default as it evaluated then). A child held in
+  a param stays the same child.
 - **`quarantine(child)`** — pause it, preserving state for
   inspection.
 - **`bubble(err)`** — pass it up to *this* locus's parent.
