@@ -20,6 +20,15 @@ behavior.
   The fanout now works from its own copy of the bytes whenever an
   adapter shares the subject with another route. An adapter alone pays
   nothing extra.
+### `hale check` holds a call into an imported seed to its signature (GH #1028)
+
+- **Fixed:** a call to an imported seed's free fn (`lib::add3(1, 2)`)
+  was typed as unknown. Too few or too many arguments, a wrong argument
+  type, and the type of the result all passed `hale check`, and only
+  `hale build` refused the call. It is now checked with the library's
+  signature and gets the same located errors as a same-seed call. A
+  method called on the handle an imported factory returns is checked
+  as well.
 
 ### `restart_in_place` keeps the params the child was built with
 

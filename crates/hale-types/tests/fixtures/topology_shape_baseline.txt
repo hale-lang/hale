@@ -1,5 +1,6 @@
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
 crates/hale-cli/tests/claims_artifact_unknowns.rs#3 0bf63ec1a65dcd45
+crates/hale-cli/tests/cross_seed_arity.rs#0 35ab8ae1973a4a20
 crates/hale-cli/tests/cross_seed_interface_fallible.rs#1 7207e939617cd337
 crates/hale-cli/tests/cross_seed_interface_fallible.rs#2 13664680ea7a097c
 crates/hale-cli/tests/cross_seed_qualified_serves.rs#0 b8c97b016886b822
