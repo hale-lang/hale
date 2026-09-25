@@ -62,8 +62,10 @@ interface Ledger {
     fn abandon() -> Bool;
 }
 
-// The row as it is served: the event plus its author.
-fn row_json(e: Event, author: String) -> String {
+// The row as it is served: the event plus its author, and the role that
+// wrote it (GH #1026) — so a head writing as `host` is told apart from the
+// body writing as `host`.
+fn row_json(e: Event, author: String, writer: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.int_field("seq", e.seq);
@@ -71,6 +73,7 @@ fn row_json(e: Event, author: String) -> String {
     b.string_field("entity", e.entity);
     b.string_field("body", e.body);
     b.string_field("author", author);
+    b.string_field("writer", writer);
     b.string_field("prev", e.prev);
     b.string_field("digest", e.digest);
     b.end_object();
@@ -107,6 +110,7 @@ locus PqLedger {
         error: String = "";
         rows: EventRows = EventRows { };
         authors: Authors = Authors { };
+        writers: Authors = Authors { }; // the role that wrote each row (GH #1026)
         dialling: Bool = false;
     }
     // a store holds one connection, and gives it back when it goes (GH #985)
@@ -191,7 +195,7 @@ locus PqLedger {
     fn load() {
         let a = db::Args { };
         a.add(to_string(self.rows.len()));
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, writer FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
         if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
         let mut rest = rows.csv;
         while len(rest) > 0 {
@@ -210,6 +214,7 @@ locus PqLedger {
                 digest: std::json::find_string_field(line, "digest")
             });
             self.authors.push(std::json::find_string_field(line, "author"));
+            self.writers.push(std::json::find_string_field(line, "writer"));
         }
     }
     fn revision() -> Int { return self.rows.len(); }
@@ -245,6 +250,7 @@ locus PqLedger {
     }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
+    fn writer_of(i: Int) -> String { return self.writers.get(i) or ""; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
     // One insert conditioned on the tail: zero rows means another writer
     // got there first (or a claim is taken: a unique violation).
@@ -262,7 +268,7 @@ locus PqLedger {
         a.add(digest);
         a.add(if record_seq < 0 { "" } else { to_string(record_seq) });
         a.add(commit);
-        let r = self.run_q("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, '') WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING seq", a);
+        let r = self.run_q("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit, writer) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, ''), session_user WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING writer", a);
         if !r.ok {
             if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; } // ledger_rows_claims
             if std::str::contains(r.err.detail, "ledger_rows_commit") { return "duplicate"; }
@@ -272,6 +278,7 @@ locus PqLedger {
         if r.n == 0 { return "stale"; }
         self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: prev, digest: digest });
         self.authors.push(author);
+        self.writers.push(trim_nl(line_one(r.csv)));
         return "";
     }
     // One row through memory's insert function (GH #1026), which is the
@@ -354,6 +361,7 @@ locus PqLedger {
         if !r.ok { return self.fail("abandon", r.err); }
         while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
         while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
+        while self.writers.len() > 0 { let gone = self.writers.pop() or ""; }
         return true;
     }
 }

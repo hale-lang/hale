@@ -353,7 +353,7 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         let mut out = "";
         let mut i = 0;
         while i < n {
-            out = out + dna::row_json(l.read(i), l.store.author_of(i)) + "\n";
+            out = out + dna::row_json(l.read(i), l.store.author_of(i), l.store.writer_of(i)) + "\n";
             i = i + 1;
         }
         return answer(out);

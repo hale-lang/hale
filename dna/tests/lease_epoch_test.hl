@@ -262,6 +262,13 @@ main locus App {
         // a write retried under its request id lands once
         std::test::assert_eq_str(write_as(acme, srecord, "task.planned", "i8", "{}", "alice", "rq-i8"), "", "a write with a request id");
         std::test::assert_eq_str(write_as(acme, srecord, "task.planned", "i8", "{}", "alice", "rq-i8"), "", "the same request again is answered as it landed");
+        // every row names the role that wrote it: a head writing as `host` is
+        // told apart from the body writing as `host` (two_owners_test shows
+        // the body's side)
+        std::test::assert_eq_str(write_as(acme, srecord, "task.planned", "h1", "{}", "host", ""), "", "a head writes as host");
+        let hosted = as_head(shared, acme, toolchain() + "\ndna\nledger\nrows").stdout;
+        let by_head = row_with(hosted, "\"entity\": \"h1\"");
+        std::test::assert(std::str::contains(by_head, "\"author\": \"host\"") && std::str::contains(by_head, "\"writer\": \"" + dna::owner_role(srecord, "acme") + "\""), "a head's row as host names acme's role as its writer: " + by_head);
         // a person the record retires writes nothing more in memory
         let retired = dna::GitJournal { repo: shared, author: "bob" }.append(dna::GitJournal { repo: shared }.revision(), "person.retired", "bob", "{\"successor\": \"\"}");
         std::test::assert(retired.ok, "bob's retirement is a row of the record: " + retired.error);

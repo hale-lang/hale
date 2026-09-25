@@ -279,6 +279,10 @@ main locus App {
         std::test::assert(la.present && std::str::contains(la.holder, "shared"), "acme's lease is held, by its clone: " + dna::stored_lease_json(la));
         std::test::assert(lb.present && std::str::contains(lb.holder, "north"), "north's lease is held, by its clone: " + dna::stored_lease_json(lb));
         std::test::assert(!self.leases.current("body").present, "no lease is the one body's: " + dna::stored_lease_json(self.leases.current("body")));
+        // a body's own rows are written as `host` under the spine's role: the
+        // row names its writer, so a head writing as `host` is told apart
+        let claimed_row = wait_row(app, head_dsn, "\"kind\": \"body.claimed\"", POLLS);
+        std::test::assert(std::str::contains(claimed_row, "\"author\": \"host\"") && std::str::contains(claimed_row, "\"writer\": \"" + dna::spine_role(record) + "\""), "the body's row as host names the spine's role as its writer: " + claimed_row);
         let epoch_a = la.token;
         // ---- acme's body writes under its epoch: an ask for its own position lands
         let asked = as_head(app, acme_dsn, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nchase the late invoice");

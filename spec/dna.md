@@ -77,7 +77,7 @@ memory admits nothing); `dev` applies memory's schema and hands the
 host the spine's DSN. `hale dna ledger [status]` says the routing,
 whether memory is named here, and the Ledger's row count and cutover;
 `hale dna ledger rows` prints the Ledger's rows as JSON lines (`seq`,
-`kind`, `entity`, `body`, `author`, `prev`, `digest`), read under the
+`kind`, `entity`, `body`, `author`, `writer` — the role that wrote it, so a head writing as `host` is told apart from the body — `prev`, `digest`), read under the
 head's role or the spine's.
 
 **Writers write directly; the store is the gate (GH #1026).** A head —
