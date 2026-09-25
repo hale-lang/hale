@@ -13,6 +13,11 @@
 // before the per-child body. And `violate` returned without the
 // method epilogue, leaking the handler's method scratch.
 //
+// GH #1069: `c` is App's param field, so the failed child is no
+// longer reclaimed on the spot — it stops (its subscriptions go) and
+// its memory stays until App's cascade reclaims it, once. The latch
+// test above still guards any child that was reclaimed early.
+//
 // 76-collapsed-child-drain is the same shape with a `drain()`.
 //
 // This is a corpus fixture: it must run CLEAN — exit 0, terminate,

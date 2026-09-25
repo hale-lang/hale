@@ -633,7 +633,8 @@ the dispatch path checks the `__drain_requested` latch after each
 handler and runs the spine on the handler's own worker. This is
 the resident-subscriber analogue of the connection child that
 `terminate`s from its `run()` recv loop. A handler that `violate`s
-sets the same latch and is reclaimed the same way.
+sets the same latch and is reclaimed the same way — unless its owner
+still holds it (below).
 
 A child reclaimed this way may still be named by its owner — a
 param field (`c: Child = Child { }`) keeps its handle. Both halves of
@@ -643,6 +644,22 @@ that lives in the owner's arena) **before** the per-child body, and
 step over a child already reclaimed: its `drain()` and `dissolve()`
 do not run twice, and its own children, which lived in its freed
 arena, are not visited again (GH #1036).
+
+**A failed child its owner holds is kept (GH #1069).** `terminate`
+is a child ending its own life; a failure is not. A child whose
+`run()` or handler failed — a `violate`, a failed `birth_check` —
+and that its supervisor did not restart (it absorbed the failure,
+quarantined the child, or spent `restart(c) for N`) **stops**: its
+`run()` has returned, and on the wrapper paths that would have
+reclaimed it its bus subscriptions are dropped. But while anything
+still holds it — a param field, a binding, a value the enclosing
+expression uses — its memory stays until that owner's teardown,
+where its `drain()` and `dissolve()` run once. The owner's handle
+therefore always names a live child: `self.c.why` after an absorbed
+failure reads what the child last stored. Only a child nothing else
+reclaims tears itself down when it fails: an `accept`'d child (its
+owner's tracker expects it gone) and a bare statement literal (its
+statement's own teardown then steps over it, on the same latch).
 
 ### `release(c)` and flow children
 
@@ -1138,8 +1155,10 @@ StructuralFailure, ClosureViolation, etc.). Receives the
 child handle and the typed error.
 
 The handler may:
-- Return normally (absorb): treat as collapsed; parent
-  forgets about the child.
+- Return normally (absorb): treat as collapsed — the child
+  stops, and a child the parent holds stays readable until the
+  parent's teardown (§ `terminate`, "A failed child its owner holds
+  is kept").
 - Call `restart(c)`: run the child again — `birth()`, then
   `run()` — on the same instance (see § Recovery primitives).
 - Call `restart_in_place(c)`: re-init in place (preserve

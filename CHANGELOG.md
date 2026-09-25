@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### A failed child its owner holds stays readable (GH #1069)
+
+- **Fixed:** a child held in a param field (or a binding) that failed
+  and was absorbed, quarantined, or ran out of `restart(c) for N` was
+  reclaimed by its own run wrapper while the field still pointed at it.
+  The parent's next `self.c.x` read freed memory. The child now stops
+  (on the wrapper paths its subscriptions are dropped) and keeps its
+  memory until its owner's teardown, where its `drain()` and
+  `dissolve()` run once. `terminate` is unchanged.
+- **Fixed:** a bare statement literal whose `run()` failed was torn
+  down twice, once by its run wrapper and again by the statement's own
+  teardown, which ran `dissolve()` on the freed arena. The statement's
+  teardown now steps over a child already reclaimed.
+
 ### `restart` restarts a child that failed in `run()` (GH #1066)
 
 - **Fixed:** `restart(c)` and `restart_in_place(c)` from `on_failure`

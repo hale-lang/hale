@@ -95,6 +95,8 @@ happens as soon as the handler returns.
 The recovery primitives:
 
 - **absorb** — just return; the failure is noted and contained.
+  The child stops, but a child the parent holds in a field (or a
+  binding holds) stays readable until the parent tears it down.
 - **`restart(child)`** — run it again: `birth()`, then `run()`,
   on the same instance. A child whose `run()` failed restarts once
   that `run()` has returned — a pinned child on its own thread.

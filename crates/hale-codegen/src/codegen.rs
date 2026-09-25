@@ -7119,6 +7119,10 @@ pub(crate) struct LocusInfo<'ctx> {
     /// resolves the synthetic Bool field; this codegen LocusInfo
     /// entry carries the layout index for the load).
     pub(crate) drain_requested_field_idx: u32,
+    /// GH #1069: index of the synthetic `__held_by_owner: i64` — 1
+    /// when something other than the instance itself reclaims it
+    /// later (see `LATCH_FAILED`).
+    pub(crate) held_by_owner_field_idx: u32,
     /// v1.x-4b: index of the synthetic `__slot_borrowed_mask:
     /// i64` field. Always present (uniform locus-struct layout).
     /// Bit N (LSB = slot 0 in declaration order) is set iff this
@@ -8954,10 +8958,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("{}.hwrap.set", handler_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // GH #1069: a failed child its owner still holds keeps
+                // its memory until that owner's teardown — it only
+                // stops. Asked only once the latch is up, so a dispatch
+                // that ends nothing stays one load and a branch.
+                let latch_bb = self.context.append_basic_block(wrap, "hwrap.latched");
                 let do_bb = self.context.append_basic_block(wrap, "hwrap.reclaim");
                 let ret_bb = self.context.append_basic_block(wrap, "hwrap.ret");
                 self.builder
-                    .build_conditional_branch(set, do_bb, ret_bb)
+                    .build_conditional_branch(set, latch_bb, ret_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(latch_bb);
+                let kept = self.emit_failed_child_is_kept(&info, self_arg)?;
+                self.emit_stop_kept_child(kept, self_arg)?;
+                self.builder
+                    .build_conditional_branch(kept, ret_bb, do_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(do_bb);
                 let prev_self = self.current_self.replace(SelfCx {
@@ -9508,6 +9523,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             };
+            // GH #1069: a child that failed (and was not restarted)
+            // while an owner still holds it keeps its memory until that
+            // owner's teardown — its field or binding still names it.
+            let kept = self.emit_failed_child_is_kept(&info, self_arg)?;
+            self.emit_stop_kept_child(kept, self_arg)?;
+            let not_kept = self
+                .builder
+                .build_not(kept, &format!("{}.terminate.not_kept", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let terminating = self
+                .builder
+                .build_and(terminating, not_kept, &format!("{}.terminate.reclaims", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let reclaim_bb =
                 self.context.append_basic_block(wrapper, "terminate.reclaim");
             let ret_bb =
@@ -19720,8 +19748,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let i32_t = self.context.i32_type();
                 let ptr_t = self.context.ptr_type(AddressSpace::default());
 
-                // 1. Set __drain_requested = 1.
-                let one = i64_t.const_int(1, false);
+                // 1. Raise __drain_requested — to LATCH_FAILED, which
+                // `terminate`'s 1 is not (GH #1069).
+                let one = i64_t.const_int(crate::LATCH_FAILED, false);
                 let dr_ptr = self
                     .builder
                     .build_struct_gep(

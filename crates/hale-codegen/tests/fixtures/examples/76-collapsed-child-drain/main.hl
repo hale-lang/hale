@@ -10,6 +10,10 @@
 // `self.why` out of the freed arena (heap-use-after-free under ASan).
 // Both halves of the cascade now step over a reclaimed child.
 //
+// GH #1069: a failed child its owner still holds is no longer
+// reclaimed on the spot. It stops, and its `drain()` runs once, from
+// App's cascade — so the line prints after App's `seen=` now.
+//
 // This is a corpus fixture: it must run CLEAN — exit 0, terminate,
 // and pass ASan/LSan — under corpus_oracle.
 type Note { n: Int = 0; }
