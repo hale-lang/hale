@@ -8,11 +8,9 @@
 
 use hale_syntax::ast::{ClosureAssertion, EpochSpec};
 use inkwell::values::PointerValue;
-use inkwell::AddressSpace;
 
 use crate::codegen::{
-    i128_const, AccumulatorCtx, CodegenError, CodegenTy, Cx, DefaultInit,
-    Scope,
+    i128_const, AccumulatorCtx, CodegenError, CodegenTy, Cx, Scope,
 };
 
 pub(crate) trait LocusClosure<'ctx> {
@@ -358,11 +356,11 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             child_self,
             viol_ptr,
             // Held unless the child cannot wait: a dissolve-epoch
-            // failure (its region goes right after) or a birth-epoch
-            // one, whose `restart(c)` must re-run birth before the
-            // child runs — the rerun check below reads the count the
-            // handler bumps, so the handler has to run now.
-            !matches!(epoch, EpochSpec::Dissolve | EpochSpec::Birth),
+            // failure's region goes right after. A held birth-epoch
+            // failure's restart takes effect when its handler returns
+            // (GH #1066): the child waits at its run() gate, and the
+            // rerun check below sees no bump and falls through.
+            !matches!(epoch, EpochSpec::Dissolve),
             "on_failure.call",
         )?;
 
@@ -491,63 +489,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             // locus's own arena (via current_arena_override),
             // matching the instantiation-time discipline.
             self.builder.position_at_end(zero_fields_bb);
-            let arena_slot = self
-                .builder
-                .build_struct_gep(
-                    cs_struct_ty,
-                    child_self,
-                    info.arena_field_idx,
-                    "restart_in_place.arena.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let locus_arena = self
-                .builder
-                .build_load(
-                    self.context.ptr_type(AddressSpace::default()),
-                    arena_slot,
-                    "restart_in_place.arena",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
-            let prev_override = self.current_arena_override;
-            self.current_arena_override = Some(locus_arena);
-            let scope = Scope::default();
-            let defaults_snapshot = info.defaults.clone();
-            for (fname, default) in &defaults_snapshot {
-                let (val, _) = match default {
-                    DefaultInit::Const(pv) => self.const_param(pv),
-                    DefaultInit::Expr(e) => self.lower_expr(e, &scope)?,
-                    DefaultInit::Required => {
-                        // restart_in_place rewinds state to its
-                        // birth() configuration. A required param
-                        // has no resettable default — the user-
-                        // supplied value at instantiation is the
-                        // only state — so we leave the field's
-                        // current value in place. If the user
-                        // wants a different restart-time value,
-                        // they need a real default.
-                        continue;
-                    }
-                };
-                let (slot_idx, _) = info
-                    .fields
-                    .get(fname)
-                    .cloned()
-                    .expect("field declared by declare_locus_struct");
-                let field_slot = self
-                    .builder
-                    .build_struct_gep(
-                        cs_struct_ty,
-                        child_self,
-                        slot_idx,
-                        &format!("restart_in_place.{}.ptr", fname),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_store(field_slot, val)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            self.current_arena_override = prev_override;
+            self.emit_reset_params_to_defaults(&info, cs_struct_ty, child_self)?;
             // Clear the pending flag; otherwise a subsequent
             // restart() (without _in_place) would zero again.
             self.builder

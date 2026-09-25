@@ -3993,52 +3993,94 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            for kind in &["birth", "run"] {
-                if let Some(method) = info.methods.get(*kind) {
-                    let skip = info.empty_lifecycle.contains(*kind);
-                    if !skip {
+            // GH #1066: a pinned locus that can fail runs run() — and
+            // the closures checked after it — in a loop. A handler that
+            // asked for a restart gets it here once run() returns, on
+            // this thread: `__restart_<L>` re-runs birth, and run()
+            // starts again. A failure its parent is still holding (the
+            // parent's params not settled yet) is waited for first, so
+            // the decision is the handler's, not the timing's.
+            let restart = self.restart_fns.get(locus_name).copied();
+            if let Some(birth) = info.methods.get("birth") {
+                if !info.empty_lifecycle.contains("birth") {
+                    self.builder
+                        .build_call(
+                            *birth,
+                            &[thread_self.into()],
+                            &format!("{}.birth.thread_call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            if let Some(method) = info.methods.get("run") {
+                let loop_bb = self
+                    .context
+                    .append_basic_block(thread_main, "pinned.run.loop");
+                self.builder
+                    .build_unconditional_branch(loop_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(loop_bb);
+                let pre = match restart {
+                    Some(_) => Some(self.emit_restart_count(&info, thread_self)?),
+                    None => None,
+                };
+                if !info.empty_lifecycle.contains("run") {
+                    self.builder
+                        .build_call(
+                            *method,
+                            &[thread_self.into()],
+                            &format!("{}.run.thread_call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                // m42: tick fires after run() on the pinned
+                // thread too. Use the wrapper here (it loads
+                // parent fields from the struct) since we're
+                // off the main thread and resolve_failure_route
+                // wouldn't see the right `current_self`.
+                // m43-followup: duration fires here too via
+                // the matching wrapper, closing the v0 limit
+                // where pinned post-run() didn't fire duration.
+                for (wrapper_opt, tag) in [
+                    (info.tick_wrapper_fn, "tick"),
+                    (info.duration_wrapper_fn, "duration"),
+                ] {
+                    if let Some(wrapper) = wrapper_opt {
                         self.builder
                             .build_call(
-                                *method,
+                                wrapper,
                                 &[thread_self.into()],
                                 &format!(
-                                    "{}.{}.thread_call",
-                                    locus_name, kind
+                                    "{}.{}.post_run.thread_call",
+                                    locus_name, tag
                                 ),
                             )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?;
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     }
-                    // m42: tick fires after run() on the pinned
-                    // thread too. Use the wrapper here (it loads
-                    // parent fields from the struct) since we're
-                    // off the main thread and resolve_failure_route
-                    // wouldn't see the right `current_self`.
-                    // m43-followup: duration fires here too via
-                    // the matching wrapper, closing the v0 limit
-                    // where pinned post-run() didn't fire duration.
-                    if *kind == "run" {
-                        for (wrapper_opt, tag) in [
-                            (info.tick_wrapper_fn, "tick"),
-                            (info.duration_wrapper_fn, "duration"),
-                        ] {
-                            if let Some(wrapper) = wrapper_opt {
-                                self.builder
-                                    .build_call(
-                                        wrapper,
-                                        &[thread_self.into()],
-                                        &format!(
-                                            "{}.{}.post_run.thread_call",
-                                            locus_name, tag
-                                        ),
-                                    )
-                                    .map_err(|e| {
-                                        CodegenError::LlvmEmit(e.to_string())
-                                    })?;
-                            }
-                        }
-                    }
+                }
+                if let (Some(rf), Some(pre)) = (restart, pre) {
+                    let now = self.emit_restart_count(&info, thread_self)?;
+                    // No resume fn: the parent is never open on this
+                    // thread, so a held failure is always waited for.
+                    let _ = self.emit_failure_await(thread_self, None, 0, now)?;
+                    let req = self.emit_restart_requested(&info, thread_self, pre)?;
+                    let restart_bb = self
+                        .context
+                        .append_basic_block(thread_main, "pinned.run.restart");
+                    let done_bb = self
+                        .context
+                        .append_basic_block(thread_main, "pinned.run.done");
+                    self.builder
+                        .build_conditional_branch(req, restart_bb, done_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(restart_bb);
+                    self.builder
+                        .build_call(rf.restart, &[thread_self.into()], "pinned.restart")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_unconditional_branch(loop_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(done_bb);
                 }
             }
             // m28b: mailbox loop. Reload the mailbox ptr from the
@@ -4355,6 +4397,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.in_params_default = prev_ipd_bc;
             self.current_self = prev_self;
         }
+        // GH #1066: a failure this child raised during birth that its
+        // parent is still holding (the parent's params are not settled)
+        // is decided before run() starts. On this thread — the one
+        // holding the parent open — nothing can be waited for, so the
+        // runtime resumes the child at settle, right after the handler:
+        // restart it, start it, or leave it quarantined. The run
+        // section below is skipped. Otherwise a restart the handler
+        // already asked for takes effect now, before run().
+        let gate_skip_bb = match self.restart_fns.get(locus_name).copied() {
+            Some(rf) => {
+                let func = self.current_fn.expect("current_fn set");
+                let pre = self.emit_restart_count(&info, self_ptr)?;
+                let a = self.emit_failure_await(self_ptr, Some(rf.resume), 1, pre)?;
+                let resumed_later = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        a,
+                        self.context.i64_type().const_int(2, false),
+                        "gate.resumed_at_settle",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let skip_bb = self.context.append_basic_block(func, "gate.skip");
+                let decide_bb = self.context.append_basic_block(func, "gate.decide");
+                let restart_bb = self.context.append_basic_block(func, "gate.restart");
+                let go_bb = self.context.append_basic_block(func, "gate.go");
+                self.builder
+                    .build_conditional_branch(resumed_later, skip_bb, decide_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(decide_bb);
+                let req = self.emit_restart_requested(&info, self_ptr, pre)?;
+                self.builder
+                    .build_conditional_branch(req, restart_bb, go_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(restart_bb);
+                self.builder
+                    .build_call(rf.restart, &[self_ptr.into()], "gate.restart.call")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(go_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(go_bb);
+                Some(skip_bb)
+            }
+            None => None,
+        };
         // m41: gate run() on __quarantined. If a parent's
         // on_failure called quarantine(self) during the birth-
         // closure check above, the flag is now set and we skip
@@ -4624,6 +4712,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(after_run_bb);
             }
+        }
+        if let Some(skip_bb) = gate_skip_bb {
+            self.builder
+                .build_unconditional_branch(skip_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(skip_bb);
         }
         // m82: `defer_for_let` joins `is_long_lived` as a reason to
         // route this locus through the deferred-dissolve frame

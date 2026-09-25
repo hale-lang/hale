@@ -1140,8 +1140,8 @@ child handle and the typed error.
 The handler may:
 - Return normally (absorb): treat as collapsed; parent
   forgets about the child.
-- Call `restart(c)`: re-instantiate the child with the same
-  params.
+- Call `restart(c)`: run the child again — `birth()`, then
+  `run()` — on the same instance (see § Recovery primitives).
 - Call `restart_in_place(c)`: re-init in place (preserve
   arena).
 - Call `quarantine(c)`: keep child in a halted state with
@@ -1188,16 +1188,20 @@ after `loader`'s inline `run()` filled it), and that only works
 because the children are born, and inline ones run, one at a time
 in declaration order.
 
-Two failures cannot wait and are delivered at once:
+**A restart requested from a held handler takes effect when the
+handler returns**, in the same delivery step: on the parent's
+thread for a cooperative child (the one settling the parent, which
+the child was running on), on the child's own thread for a pinned
+one — that thread waits for the handler's decision rather than
+deciding by timing. The child the handler restarts is the one it
+was handed, kept alive for it. A birth-epoch failure is held like
+any other: a child whose birth failed does not start `run()` until
+its handler has returned, and then starts it, restarts, or stays
+quarantined as the handler decided.
 
-- a **birth-epoch closure's**, because `restart(c)` in the
-  handler re-runs the child's birth before the child runs. A
-  handler that serves a birth-epoch closure of a child declared
-  in `params` sees only the params declared before that child
-  with their values, and a later default overwrites what it
-  writes.
-- a **dissolve-epoch closure's**, because the child's region is
-  released right after.
+One failure cannot wait and is delivered at once: a
+**dissolve-epoch closure's**, because the child's region is
+released right after.
 
 The bracket costs a locus nothing unless it declares
 `on_failure` and holds a locus-typed field or computes a
@@ -3527,10 +3531,25 @@ torn read possible.
 
 ### `restart(child)` / `restart(child) for N`
 
-1. Schedule child for dissolution.
-2. Once dissolved, instantiate a new child with the same
-   declared params.
-3. New child's birth runs; old child's state is gone.
+Restarts the child on the same instance — its arena, its
+subscriptions and its param values as they stand:
+
+1. The failure's drain request is lowered: the child is live again.
+2. `birth()` runs again, then the birth-epoch closures.
+3. `run()` runs again.
+
+When it takes effect depends on where the failure came from. A
+birth-epoch closure's failure re-runs birth right after the
+handler returns, before `run()` has started. A failure raised
+while `run()` executes — a `violate` in it, or for a pinned child
+the tick and duration closures its thread checks after it —
+restarts once `run()` has returned, on the thread that ran it (a
+pinned child's own thread). A failure held while the parent
+was still setting params takes effect when its handler returns
+(§ "on_failure(c, err)").
+
+A restart is not taken while the process is draining: the drain
+ends the child anyway.
 
 **The retry bound.** `restart(c) for N` gives this child at most
 `N` restarts. The count is per child instance and cumulative over
@@ -3556,12 +3575,12 @@ the observed restarts are comparable.
 
 ### `restart_in_place(child)`
 
-1. Set child's "restarting" flag.
-2. Wait for current handler / mode invocation to complete
-   (cooperative yield point).
-3. Reset locus to post-birth state, preserving the arena.
-4. Re-run birth().
-5. Mark restart complete.
+The same as `restart(child)`, except that before `birth()` runs
+again every param with a declared default is re-stored from that
+default — back to the configuration `birth()` first saw. A param
+declared without a default keeps its current value: the one given
+at instantiation is the only state it has. The retry bound and
+the default cap are shared with `restart`.
 
 Useful for transient failures that don't invalidate the
 locus's structural commitments (e.g., the locus's k_max is

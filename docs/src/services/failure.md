@@ -89,16 +89,17 @@ The runtime holds that failure and delivers it once every param
 has its value, just before the parent's `birth()`. So the handler
 can read any param, and what it writes is not overwritten by a
 later default. The failing child stays alive until then, even if
-its `run()` has already ended. The exception is a failure from a birth-epoch
-closure. It is delivered at once, so that `restart(c)` can re-run
-the child's birth before the child runs. A handler for one should
-touch only the params declared before that child.
+its `run()` has already ended, and a restart the handler asks for
+happens as soon as the handler returns.
 
 The recovery primitives:
 
 - **absorb** — just return; the failure is noted and contained.
-- **`restart(child)`** — dissolve and re-create it fresh.
-- **`restart_in_place(child)`** — reset it, keeping its region.
+- **`restart(child)`** — run it again: `birth()`, then `run()`,
+  on the same instance. A child whose `run()` failed restarts once
+  that `run()` has returned — a pinned child on its own thread.
+- **`restart_in_place(child)`** — the same, after putting every
+  param with a declared default back to that default.
 - **`quarantine(child)`** — pause it, preserving state for
   inspection.
 - **`bubble(err)`** — pass it up to *this* locus's parent.

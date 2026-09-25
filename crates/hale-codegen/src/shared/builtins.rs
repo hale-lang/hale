@@ -733,6 +733,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_failure_defer_reclaim", defer_ty, None);
+        // GH #1066: where a failing child learns what its held
+        // handler decided (0 nothing held, 1 waited, 2 resumed at
+        // settle): (child, resume fn, phase, restart count).
+        let await_ty = self.context.i64_type().fn_type(
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        );
+        self.module
+            .add_function("lotus_failure_await", await_ty, None);
         self.module.add_global(
             self.context.i64_type(),
             None,
