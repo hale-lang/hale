@@ -421,15 +421,15 @@ locus S3Cases {
         std::test::assert(pid_alive(pid), "the body runs before the stop");
         let stopped = self.drive(c, "s3-body-stop", "dna.body.local.stop", "{}");
         std::test::assert(stopped.state == "succeeded" && len(stopped.run_kind) == 0, "stopped: " + stopped.reason_code + " " + stopped.reason);
-        std::test::assert(std::json::find_string_field(stopped.outcome, "released_by") == "host" && std::json::find_int_field(stopped.outcome, "exit_code") == 143, "the host released it on TERM: " + stopped.outcome);
+        std::test::assert(std::json::find_string_field(stopped.outcome, "released_by") == "host" && std::json::find_int_field(stopped.outcome, "exit_code") == 0, "the host released it on TERM and ended cleanly — a node drains on SIGTERM (GH #986): " + stopped.outcome);
         std::test::assert(!pid_alive(pid) && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the host and its organization are gone");
-        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.child_dir + "/body.exit") or ""), "143", "the exit is recorded");
+        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.child_dir + "/body.exit") or ""), "0", "the exit is recorded");
         std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 1, "the host appended body.released");
         std::test::assert_eq_str(head::s3_available(c, "dna.body.local.stop"), "body_not_running", "nothing runs");
         std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "", "a body can start again");
         let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
-        std::test::assert(std::json::find_string_field(body, "state") == "exited" && std::json::find_int_field(body, "exit_code") == 143 && !std::json::find_bool_field(body, "organism_alive") && std::json::find_string_field(body, "mode") == "run", "the children view after the stop: " + view);
+        std::test::assert(std::json::find_string_field(body, "state") == "exited" && std::json::find_int_field(body, "exit_code") == 0 && !std::json::find_bool_field(body, "organism_alive") && std::json::find_string_field(body, "mode") == "run", "the children view after the stop: " + view);
         let again = self.drive(c, "s3-body-stop-again", "dna.body.local.stop", "{}");
         std::test::assert(again.state == "refused" && again.reason_code == "body_not_running", "a second stop is refused");
     }

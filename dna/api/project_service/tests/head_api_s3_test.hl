@@ -386,15 +386,16 @@ locus S3HeadCases {
         self.f.json.eq(self.f.json.raw(receipt, "run"), "kind", "inline");
         let outcome = self.f.json.raw(receipt, "outcome");
         self.f.json.eq(outcome, "released_by", "host");
-        self.f.json.is_int(outcome, "exit_code", 143);
+        // a node drains on SIGTERM and ends cleanly (GH #986)
+        self.f.json.is_int(outcome, "exit_code", 0);
         std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(outcome, "record"), "rows"), "\"kind\": \"body.released\""), "the host's release as evidence: " + outcome);
         std::test::assert(!self.f.child_alive("body") && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the host and its organization are gone");
-        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.f.state + "/children/body.exit") or ""), "143", "the exit is recorded");
+        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.f.state + "/children/body.exit") or ""), "0", "the exit is recorded");
         std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 1, "the host appended body.released");
         let state = self.f.head_state();
         let body = self.f.json.raw(self.f.json.raw(state, "children"), "body");
         self.f.json.eq(body, "state", "exited");
-        self.f.json.is_int(body, "exit_code", 143);
+        self.f.json.is_int(body, "exit_code", 0);
         self.f.json.is_bool(body, "organism_alive", false);
         self.f.json.eq(body, "mode", "run");
         self.f.json.is_int(body, "pid", pid);
