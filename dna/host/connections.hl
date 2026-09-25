@@ -77,14 +77,19 @@ fn peer_cache(root: String, name: String) -> String {
     return cache;
 }
 
-// The identity the record at `url` publishes ("" when it publishes none):
-// the identity ref at its remote.
-fn peer_identity(root: String, name: String, url: String) -> String {
+// The identity the record at `url` publishes, as read: the identity ref
+// at its remote. `id` "" with `ok` when it publishes none; a fetch that
+// failed is a read that did not happen (`ok` false, `why`), never a
+// record without an identity (GH #1072, #961's rule).
+type PeerIdentity { ok: Bool = false; id: String = ""; why: String = ""; }
+fn peer_identity(root: String, name: String, url: String) -> PeerIdentity {
     let cache = peer_cache(root, name);
-    if len(cache) == 0 { return ""; }
+    if len(cache) == 0 { return PeerIdentity { why: "no cache for connection " + name }; }
     let pc = rec(cache);
-    if !pc.receive(url, "peer/identity").ok { return ""; }
-    return dna::trim_nl(pc.cell("peer/identity").text);
+    let f = pc.receive(url, "peer/identity");
+    if !f.ok && !f.absent { return PeerIdentity { why: f.why }; }
+    if f.absent { return PeerIdentity { ok: true }; }
+    return PeerIdentity { ok: true, id: dna::trim_nl(pc.cell("peer/identity").text) };
 }
 
 // This record's mailbox in the connected record, fetched fresh into the
@@ -95,6 +100,8 @@ fn outbound_mailbox(cache: String, c: Connection, mine: String) -> dna::Head {
     let pc = rec(cache);
     let dropped = pc.drop_chain(chain);
     let fetched = pc.receive(c.url, chain);
+    // dropped above, so a fetch that failed would read as no mailbox
+    if !fetched.ok && !fetched.absent { return dna::Head { why: fetched.why }; }
     return pc.head(chain);
 }
 
@@ -110,7 +117,9 @@ fn peer_append(root: String, c: Connection, kind: String, entity: String, body: 
         tries = tries + 1;
         let cache = peer_cache(root, c.name);
         if len(cache) == 0 { return PeerWrite { why: "no cache for connection " + c.name }; }
-        if peer_identity(root, c.name, c.url) != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
+        let serves = peer_identity(root, c.name, c.url);
+        if !serves.ok { return PeerWrite { why: "the other record at " + c.url + " could not be read (" + serves.why + "); deliver again later", unreachable: true }; }
+        if serves.id != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
         let pc = rec(cache);
         let read = outbound_mailbox(cache, c, mine);
         if !read.ok { return PeerWrite { why: "this record's mailbox in the other record could not be read (" + read.why + "); deliver again later", unreachable: true }; }
@@ -290,7 +299,9 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     if prior.present && len(prior.closed) == 0 { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
     let url = absolute_url(root, url_in);
     if service_url(url) { return fail("connect: " + url + " is a service url; a connection exchanges through the other record's git remote (its mailbox refs), and reaching a record live is the nerves' (GH #986)"); }
-    let peer = peer_identity(root, name, url);
+    let serves = peer_identity(root, name, url);
+    if !serves.ok { return fail("connect: " + url + " could not be read (" + serves.why + "); nothing was changed"); }
+    let peer = serves.id;
     if len(peer) == 0 { return fail("connect: no record identity at " + url + " (`" + IDENTITY_REF + "`; a record publishes it when it syncs — `hale dna sync` there)"); }
     if peer == record_identity(root) { return fail("connect: " + url + " serves this record itself; a replica is inside the horizon and sync carries it — a connection crosses to a separate record"); }
     let published = publish_identity(root);

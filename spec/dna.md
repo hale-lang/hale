@@ -392,7 +392,8 @@ owner}` row; the node returns its checkout to the last genome that built
 (`.hale/dna/genome.built`), builds that, and serves it. A node that is up
 records `node.started <holder> {sha, by, owner}`. On its tick, every
 `HALE_DNA_GENOME_POLL` seconds (300 by default; 0 never), it fetches
-again; when the forge's head is neither what it runs nor a sha that did
+again, into `refs/dna/remote/genome` (never `FETCH_HEAD`, which any
+other fetch in the clone rewrites); when the forge's head is neither what it runs nor a sha that did
 not build here, it stops cleanly — the organization and the expression
 drain on SIGTERM, the body lease is given back (`body.released {why:
 "genome"}`) — and exits with `NODE_RESTART` (75); its unit
@@ -527,7 +528,15 @@ repository:
   pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
   local-only events are re-appended on top of the remote's head, bodies
   and authors unchanged, `seq` their new position, then pushed; a push
-  the remote refuses is fetched and reconciled again. **The reconciled
+  the remote refuses is fetched and reconciled again. **A fetch is a
+  read** (GH #961, #1072): two at once in one clone — the host's tick
+  and a verb beside it — race on git's lock of the ref they update, and
+  the one that loses is tried again, up to five times, waiting 100 ms
+  more before each (the other already moved the ref at least as far).
+  A fetch that still fails is a read that did not happen and refuses
+  the sync, the connect or the handoff with git's reason; only git's
+  own "couldn't find remote ref" is a remote that holds nothing under
+  the family. **The reconciled
   chain is built beside the ref and swapped in with one
   compare-and-swap**: the ref never points at a record missing a row
   it held a moment before, so a reader's position only grows, a writer

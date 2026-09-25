@@ -29,6 +29,23 @@ behavior.
   signature and gets the same located errors as a same-seed call. A
   method called on the handle an imported factory returns is checked
   as well.
+### DNA: a fetch that loses git's ref lock is tried again (GH #1072)
+
+- **Fixed:** two fetches of the record's refs at once in one clone —
+  the host's tick and `hale dna ledger adopt`, `sync` or a handoff
+  beside it — raced on git's ref lock, and the loser failed the whole
+  command (`cannot lock ref 'refs/dna/remote/journal': is at … but
+  expected …`). The record tries such a fetch again, up to five times;
+  one that still fails is a failed read with git's reason, never a
+  remote that holds nothing (GH #961's rule).
+- **Fixed:** the same rule where it did not hold: `connect` said an
+  unreadable url had no record identity, a handoff said a peer it
+  could not read no longer served its record, and a mailbox that could
+  not be fetched read as empty. A fleet node says when the fetch of a
+  revision failed.
+- **Fixed:** the genome pull read `FETCH_HEAD` after its fetch, which
+  any other fetch in the clone rewrites; it fetches into
+  `refs/dna/remote/genome`.
 
 ### `restart_in_place` keeps the params the child was built with
 

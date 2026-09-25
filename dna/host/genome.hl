@@ -76,14 +76,28 @@ fn genome_default_branch(root: String, remote: String) -> String {
     return if tab < 0 { dna::trim_nl(rest) } else { rest[0..tab] };
 }
 
+// Where the pull fetches the forge's default branch: a ref of its own,
+// never FETCH_HEAD, which every fetch in the clone rewrites — the record's
+// fetches of its own refs among them, so a read of FETCH_HEAD after this
+// fetch could name a row of the journal (GH #1072).
+const GENOME_REMOTE_REF: String = "refs/dna/remote/genome";
+
 // Fetch the forge's default branch; the commit it is at, "" when it could
-// not be fetched.
+// not be fetched. A fetch that lost the ref's lock to another is tried
+// again, as the record's own are.
 fn genome_fetch_default(root: String, remote: String) -> String {
     let branch = genome_default_branch(root, remote);
     if len(branch) == 0 { return ""; }
-    let f = genome(root, "fetch\n-q\n" + remote + "\n" + branch);
+    let args = "fetch\n-q\n" + remote + "\n+refs/heads/" + branch + ":" + GENOME_REMOTE_REF;
+    let mut f = genome(root, args);
+    let mut tries = 1;
+    while f.code != 0 && tries < dna::FETCH_TRIES && dna::lost_ref_lock(f.stderr) {
+        dna::fetch_backoff(tries);
+        f = genome(root, args);
+        tries = tries + 1;
+    }
     if f.code != 0 { return ""; }
-    return genome_commit(root, "FETCH_HEAD");
+    return genome_commit(root, GENOME_REMOTE_REF);
 }
 
 // Move the genome here forward to `target` when it descends from what is

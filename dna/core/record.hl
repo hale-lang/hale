@@ -602,6 +602,18 @@ locus MemRecord {
 
 const NO_OBJECT: String = "0000000000000000000000000000000000000000";
 
+// A fetch that lost a ref's lock to another fetch is tried again this
+// many times in all, waiting FETCH_RETRY longer before each (GH #1072).
+const FETCH_TRIES: Int = 5;
+const FETCH_RETRY: Duration = 100ms;
+
+// Whether a fetch failed only because another process held, or moved, a
+// ref it was updating: `cannot lock ref '…': is at X but expected Y`,
+// or `…: Unable to create '….lock': File exists`.
+fn lost_ref_lock(stderr: String) -> Bool { return std::str::contains(stderr, "cannot lock ref"); }
+// The wait before a fetch's `tries`+1-th try.
+fn fetch_backoff(tries: Int) { std::time::sleep(FETCH_RETRY * tries); }
+
 locus GitRecord {
     params {
         repo: String = ".";
@@ -830,8 +842,23 @@ locus GitRecord {
         }
         return out;
     }
+    // Fetch `what` from `remote` into this clone's refs. Two fetches of one
+    // family at once — the body's tick and a verb run beside it — race
+    // on git's ref lock, and the one that loses exits non-zero with
+    // nothing wrong (GH #1072): the winner already moved the ref at
+    // least as far. That fetch is tried again, a bounded few times. A
+    // fetch that still fails is a failed read, never an empty remote
+    // (GH #961): only git's own "no such remote ref" says the remote
+    // holds nothing under the family.
     fn receive(remote: String, what: String) -> Transfer {
-        let f = self.git("fetch\n-q\n" + remote + self.specs(what, false));
+        let args = "fetch\n-q\n" + remote + self.specs(what, false);
+        let mut f = self.git(args);
+        let mut tries = 1;
+        while f.code != 0 && tries < FETCH_TRIES && lost_ref_lock(f.stderr) {
+            fetch_backoff(tries);
+            f = self.git(args);
+            tries = tries + 1;
+        }
         if f.code == 0 { return Transfer { ok: true }; }
         // a remote with nothing under the family yet is not an error
         if std::str::contains(f.stderr, "ouldn't find remote ref") { return Transfer { ok: false, absent: true, why: trim_nl(f.stderr) }; }
