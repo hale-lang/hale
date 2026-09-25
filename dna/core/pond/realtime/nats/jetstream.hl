@@ -1,0 +1,122 @@
+// pond/realtime/nats — JetStream over a NatsClient: streams, durable
+// pull consumers, acknowledged publishes. Every call is a request on
+// the server's JetStream API subjects
+// (https://docs.nats.io/reference/reference-protocols/nats_api_reference);
+// free fns over a connection the caller owns.
+
+// The API's error object, when the reply carries one: "" when it did not.
+fn js_error_of(reply: String) -> String {
+    let e = std::json::find_string_field(reply, "error");
+    if len(e) == 0 || e == "null" { return ""; }
+    let code = std::json::find_int_field(e, "err_code");
+    return std::json::find_string_field(e, "description") + " (err_code " + to_string(code) + ")";
+}
+
+// A request nobody answered, said in JetStream's terms (and in the
+// client's `last_error`, like every failure here).
+fn no_responder_is(c: NatsClient, e: NatsError, what: String) -> NatsError {
+    if e.kind == "no_responders" { return c.fail_with("jetstream", what); }
+    return e;
+}
+
+fn js_call(c: NatsClient, api: String, body: String) -> String fallible(NatsError) {
+    let reply = c.request(api, std::bytes::from_string(body), c.timeout) or fail no_responder_is(c, err, "JetStream is not enabled on the server (" + api + ")");
+    let text = std::str::from_bytes(reply.data);
+    let refused = js_error_of(text);
+    if len(refused) > 0 { fail c.fail_with("jetstream", refused); }
+    return text;
+}
+
+/// Create stream `name` over `subjects` (comma-separated, wildcards
+/// allowed), kept on disk. Creating it again with the same subjects is
+/// not an error; with different ones it is.
+fn js_stream_create(c: NatsClient, name: String, subjects: String) fallible(NatsError) {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", name);
+    b.begin_array_field("subjects");
+    let mut rest = subjects;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let one = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
+        rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+        if len(one) > 0 { b.string_value(one); }
+    }
+    b.end_array();
+    b.string_field("storage", "file");
+    b.end_object();
+    let r = js_call(c, "$JS.API.STREAM.CREATE." + name, b.result()) or raise;
+}
+
+/// Delete stream `name` and everything in it.
+fn js_stream_delete(c: NatsClient, name: String) fallible(NatsError) {
+    let r = js_call(c, "$JS.API.STREAM.DELETE." + name, "") or raise;
+}
+
+/// Create durable pull consumer `spec.durable` on `stream`,
+/// acknowledging each message explicitly, starting where
+/// `spec.deliver` says (see ConsumerSpec). Creating it again unchanged
+/// is not an error; a durable keeps its place across reconnects and
+/// restarts, so `deliver` only matters the first time.
+fn js_consumer_create(c: NatsClient, stream: String, spec: ConsumerSpec) fallible(NatsError) {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("stream_name", stream);
+    b.begin_object_field("config");
+    b.string_field("durable_name", spec.durable);
+    b.string_field("ack_policy", "explicit");
+    let deliver = if len(spec.deliver) > 0 { spec.deliver } else { "all" };
+    b.string_field("deliver_policy", deliver);
+    if deliver == "by_start_sequence" { b.int_field("opt_start_seq", spec.start_seq); }
+    if deliver == "by_start_time" { b.string_field("opt_start_time", spec.start_time); }
+    if len(spec.filter) > 0 { b.string_field("filter_subject", spec.filter); }
+    if spec.ack_wait_ms > 0 { b.int_field("ack_wait", spec.ack_wait_ms * 1000000); }
+    b.end_object();
+    b.end_object();
+    let r = js_call(c, "$JS.API.CONSUMER.CREATE." + stream + "." + spec.durable, b.result()) or raise;
+}
+
+/// Publish `data` on `subject` and wait for the stream to store it.
+/// Fails with kind "jetstream" when no stream takes the subject.
+fn js_publish(c: NatsClient, subject: String, data: Bytes) -> PubAck fallible(NatsError) {
+    return js_publish_id(c, subject, "", data) or raise;
+}
+
+/// `js_publish` with a message id: within the stream's duplicate window
+/// a second publish of the same id is not stored again, and its PubAck
+/// says `duplicate` (with the first one's sequence). "" publishes
+/// without one.
+fn js_publish_id(c: NatsClient, subject: String, id: String, data: Bytes) -> PubAck fallible(NatsError) {
+    let headers = if len(id) > 0 { msg_id_headers(id) } else { "" };
+    let reply = c.request_with(subject, headers, data, c.timeout) or fail no_responder_is(c, err, "no stream takes " + subject);
+    let text = std::str::from_bytes(reply.data);
+    let refused = js_error_of(text);
+    if len(refused) > 0 { fail c.fail_with("jetstream", refused); }
+    return PubAck {
+        stream: std::json::find_string_field(text, "stream"),
+        seq: std::json::find_int_field(text, "seq"),
+        duplicate: std::json::find_bool_field(text, "duplicate")
+    };
+}
+
+/// The next message for pull consumer `consumer` on `stream`, waiting
+/// up to `wait_ms` for one to arrive. Fails with kind "no_messages"
+/// when none did; the message stays unacknowledged until `js_ack`, and
+/// comes again after the consumer's ack wait if it never is.
+fn js_next(c: NatsClient, stream: String, consumer: String, wait_ms: Int) -> NatsMsg fallible(NatsError) {
+    let body = "{\"batch\":1,\"expires\":" + to_string(wait_ms * 1000000) + "}";
+    let msg = c.request("$JS.API.CONSUMER.MSG.NEXT." + stream + "." + consumer, std::bytes::from_string(body), (wait_ms + 1000) * 1ms) or raise;
+    let status = header_status(msg.headers);
+    if std::str::starts_with(status, "404") || std::str::starts_with(status, "408") {
+        fail c.fail_with("no_messages", status);
+    }
+    if len(status) > 0 { fail c.fail_with("jetstream", status); }
+    return msg;
+}
+
+/// Acknowledge a message `js_next` returned: the consumer will not
+/// deliver it again.
+fn js_ack(c: NatsClient, m: NatsMsg) fallible(NatsError) {
+    if len(m.reply) == 0 { fail c.fail_with("jetstream", "not a JetStream message (no reply subject to ack on)"); }
+    c.pub_msg(m.reply, "", std::bytes::from_string("+ACK")) or raise;
+}

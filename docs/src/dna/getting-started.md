@@ -110,10 +110,10 @@ On one machine, the organization and the application under one host:
 $ hale dna dev
 built: …/dna/org/org
 hale dna dev: organization (pid 1874960) from … under LOTUS_OBS=1
-hale dna dev: membrane bound at …/.hale/dna
+hale dna dev: the organization reads its facts from the nerves (DNA_4F…)
 built: …/./chat
 hale dna dev: expression chat (pid 1874991) under LOTUS_OBS=1
-chat: 1 ping(s) echoed; membrane open
+chat: 1 ping(s) echoed; the bus is open
 ```
 
 Leave this terminal open; it is the host. It rebuilds and restarts
@@ -124,7 +124,7 @@ In another terminal:
 
 ```text
 $ hale dna status
-organism:   running (membrane bound)
+organism:   running (this clone's body holds the lease)
 journal:    35 event(s), chain verified at 5f0c2e9a41d7
 expression: attached Chat (shape 3c9b9327e480d349) · current shape 3c9b9327e480d349 · build 812f3c9bd9e4
 intents:    0 offered, 0 refused

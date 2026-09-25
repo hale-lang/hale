@@ -280,11 +280,11 @@ fn models_probes_every_backend_of_the_catalog_without_starting_the_organization(
     assert!(lines[2].contains("  50 micro-dollars  \"ready\""), "the answer's first line, and what it cost:\n{out}");
     assert!(lines[3].starts_with("fast        quick     quick-1                       ok  ") && lines[3].contains("  5 micro-dollars  \"ready\""), "{out}");
     assert_eq!(lines[4], "desk        private   gpt-4o                        not permitted (no credential present)", "{out}");
-    // the probe is scratch; the organization was not started, the
-    // membrane not bound, the record not written
+    // the probe is scratch; the organization was not started, no nerves
+    // connected, the record not written
     assert!(app.join(".hale/dna/probe/probe").is_file(), "built in scratch");
     assert!(!app.join(".hale/dna/org.pid").exists(), "no organization started");
-    assert!(!app.join(".hale/dna/hale-dna.review.verdict.sock").exists(), "no membrane bound");
+    assert!(std::fs::read_dir(app.join(".hale/dna")).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".sock")), "no socket file is ever created by DNA");
     let (ok, hist) = hale_env(&["dna", "history"], &app, &[], &[]);
     assert!(ok && !hist.contains("model.called"), "a probe is nobody's Attempt: nothing journaled\n{hist}");
 

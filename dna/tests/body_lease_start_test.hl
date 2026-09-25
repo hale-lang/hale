@@ -28,6 +28,15 @@ fn alive(pid: String) -> Bool {
 // An organization whose worker tool says it is alive every 200ms.
 const WORKER_ORG: String = "fn main() {\n    let r = std::process::run(\"sh\\n-c\\necho $$ > worker.pid; while :; do date +%s >> worker.tick; sleep 0.2; done\") or std::process::ProcessOutput { code: -1, signal: 0, stdout: \"\", stderr: \"\" };\n}\n";
 
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
 fn log_has(path: String, needle: String) -> Bool {
     return std::str::contains(std::io::fs::read_file(path) or "", needle);
 }
@@ -59,11 +68,10 @@ main locus App {
         let c5 = in_dir(head, cache, toolchain() + "\ndna\nsync");
         std::test::assert(std::str::contains(c5.stdout, "pulled the record"), "the head has the record: " + c5.stdout + c5.stderr);
 
-        // the host and membrane binaries, built into this fixture's cache
+        // the host binary, built into this fixture's cache
         let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
         let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
-        let membrane = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/membrane/membrane' -type f | head -1\nsh\n" + cache).stdout);
-        std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
+        std::test::assert(len(host) > 0, "the host is built: " + built.stdout + built.stderr);
         // the first line alone is the version: `hale --version` has a
         // second one since GH #726 (the embedded DNA digest)
         let version = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\n\"$1\" --version | head -1\nsh\n" + toolchain()).stdout);
@@ -74,7 +82,7 @@ main locus App {
         let x = dna::run_tool("chmod\n+x\n" + slow);
 
         // host A takes the lease and builds
-        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$5\" \"$4\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + slow + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$4\" \"$3\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + slow + "\n" + version + "\n" + a + "\n" + host);
         let mut taken = false;
         let mut tries = 0;
         while !taken && tries < 120 {
@@ -103,14 +111,26 @@ main locus App {
         // ---- every exit takes what the body started (the fifth review of
         // #622): under `dev` the organization starts and its tool runs, then
         // the host stops before the application starts — here because the
-        // lease is taken over while it waits for a membrane this organization
-        // never opens (GH #1026: the genome is checked and built whole before
-        // anything starts, so a build that fails stops the host earlier, with
-        // nothing to take). The tool must not outlive the host.
+        // lease is taken over while it waits for this organization, which
+        // never reads the nerves, to read its facts from them (GH #986; GH
+        // #1026: the genome is checked and built whole before anything
+        // starts, so a build that fails stops the host earlier, with nothing
+        // to take). The tool must not outlive the host. Without nerves the
+        // host has nothing to wait for, so this half needs a NATS server.
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(nats_owner) == 0 {
+            eprintln("body_lease_start_test: the `dev` half was not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
+            dna::scratch_done(scratch);
+            return;
+        }
+        let nerves = in_dir(a, cache, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        let nats_spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
+        let nats_org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
+        std::test::assert(nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0, "the nerves' stream is in place: " + nerves.stdout + nerves.stderr);
         std::io::fs::write_file(a + "/dna/org/main.hl", WORKER_ORG) or discard;
         let gc = in_dir(a, cache, "sh\n-c\ngit add -A && git commit -q -m 'an organization with a worker tool' && git push -q origin main");
         std::test::assert_eq_int(gc.code, 0, "the worker organization is the genome: " + gc.stderr);
-        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$5\" \"$4\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" HALE_DNA_NATS_URL_SPINE=\"$5\" HALE_DNA_NATS_ORG=\"$6\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$4\" \"$3\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + version + "\n" + a + "\n" + host + "\n" + nats_spine + "\n" + nats_org);
         let mut org_up = false;
         tries = 0;
         while !org_up && tries < 360 {

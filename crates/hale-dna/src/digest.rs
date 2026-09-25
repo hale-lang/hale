@@ -32,12 +32,12 @@ use std::path::Path;
 pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
     ("dna/core", &["hl"]),
     ("dna/host", &["hl"]),
-    ("dna/membrane", &["hl"]),
     ("dna/operations", &["hl"]),
     ("dna/organization_runtime", &["hl"]),
     ("dna/organization_source", &["hl"]),
     ("dna/core/pond/db", &["hl"]),
     ("dna/core/pond/pq", &["hl"]),
+    ("dna/core/pond/realtime/nats", &["hl"]),
     ("dna/ui", &["hl", "html"]),
 ];
 

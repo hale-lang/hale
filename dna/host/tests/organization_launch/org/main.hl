@@ -1,8 +1,13 @@
 // Disposable actual Organization for the prepared host acceptance fixture.
 import "../../vendor/core" as dna;
+import "../../vendor/core/pond/realtime/nats" as nats;
 main locus Org {
     params {
         title: String = "Original";
+        // GH #986: the facts arrive over the nerves, through the
+        // organization's durable consumer (`hale dna dev` hands the host,
+        // and the host this program, the spine's URL and the token)
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organization", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, jetstream: true };
         core: dna::Dna = dna::Dna {
             journal: dna::GitJournal { repo: "." },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
@@ -14,16 +19,17 @@ main locus Org {
             }
         };
     }
+    placement { nerves: pinned; }
     bindings {
-        dna::PracticeRequested: unix(".hale/dna/hale-dna.practice.requested.sock", role: listen);
-        dna::KnowledgeNodeRequested: unix(".hale/dna/hale-dna.knowledge.node.requested.sock", role: listen);
-        dna::KnowledgeBindingRequested: unix(".hale/dna/hale-dna.knowledge.binding.requested.sock", role: listen);
-        dna::KnowledgeEdgeRequested: unix(".hale/dna/hale-dna.knowledge.edge.requested.sock", role: listen);
-        dna::ReviewVerdict: unix(".hale/dna/hale-dna.review.verdict.sock", role: listen);
-        dna::IntentOffered: unix(".hale/dna/hale-dna.intent.offered.sock", role: listen);
-        dna::ExpressionObserved: unix(".hale/dna/hale-dna.expression.observed.sock", role: listen);
-        dna::PressureRaised: unix(".hale/dna/hale-dna.pressure.raised.sock", role: listen);
-        dna::ConcernRaised: unix(".hale/dna/hale-dna.concern.raised.sock", role: listen);
+        dna::PracticeRequested: nats::NatsAdapter { };
+        dna::KnowledgeNodeRequested: nats::NatsAdapter { };
+        dna::KnowledgeBindingRequested: nats::NatsAdapter { };
+        dna::KnowledgeEdgeRequested: nats::NatsAdapter { };
+        dna::ReviewVerdict: nats::NatsAdapter { };
+        dna::IntentOffered: nats::NatsAdapter { };
+        dna::ExpressionObserved: nats::NatsAdapter { };
+        dna::PressureRaised: nats::NatsAdapter { };
+        dna::ConcernRaised: nats::NatsAdapter { };
     }
     run() {
         if self.title == "Prepared" && std::io::fs::file_exists(".hale/dna/fixture-crash") { std::process::exit(17); }

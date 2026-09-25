@@ -1,14 +1,14 @@
-// Actual production relay over a native Record. /bin/true is only a transport
-// probe: invoking it would report a successful relay, without fabricating any
-// domain outcome. Failed signing must never turn a retry into trusted delivery.
+// Actual production relay over a native Record: the host's own `NodeRelay`,
+// live, so a row it relays is handed to the bus (this program binds no
+// topic, so nothing leaves it), without fabricating any domain outcome.
+// Failed signing must never turn a retry into trusted delivery.
 import "../core" as dna;
 import "../host" as host;
 
-fn relay_child(root: String) {
-    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
-    let expired = host::relay_mark("\n", host::fact_key(p, 0), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
-    let state = host::relay_record_membrane(root, ".", "", "test", expired, dna::Memory { repo: root });
-    println("relayed=", state.count);
+// The relay as a node runs it, `relayed` its memory of what it sent when.
+fn relay_once(root: String, relayed: String) -> Int {
+    let relay = host::NodeRelay { root: root, verb: "test", live: true, relayed: relayed };
+    return relay.relay(dna::Memory { repo: root });
 }
 
 fn check() {
@@ -27,22 +27,51 @@ fn check() {
     let trust = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nsigned");
     let signing = dna::run_tool("git\n-C\n" + root + "\nconfig\ngpg.program\n/bin/false");
     std::test::assert_eq_int(trust.code + signing.code, 0, "signed policy with unavailable signing service");
-    let initial = host::relay_record_membrane(root, ".", "", "test", "\n", dna::Memory { repo: root });
-    std::test::assert_eq_int(initial.count, 0, "first unsigned attempt never reaches membrane");
+    std::test::assert_eq_int(relay_once(root, "\n"), 0, "first unsigned attempt never reaches the nerves");
     let refreshed = journal.refresh();
     std::test::assert_eq_int(journal.revision(), 1, "refusal append really failed");
-    let child = dna::run_tool("env\nHALE_DNA_MEMBRANE=/bin/true\n" + std::env::arg_or(0, "") + "\nrelay\n" + root);
-    std::test::assert_eq_int(child.code, 0, "expired retry probe finished");
-    std::test::assert_eq_str(std::str::trim(child.stdout), "relayed=0", "expired retry still refuses the unverified row before transport");
+    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
+    let expired = host::relay_mark("\n", host::fact_key(p, 0), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
+    std::test::assert_eq_int(relay_once(root, expired), 0, "expired retry still refuses the unverified row before transport");
     let fresh = dna::GitJournal { repo: root };
     std::test::assert_eq_int(fresh.revision(), 1, "retry creates no acceptance or unsigned refusal");
     let removed = dna::run_tool("rm\n-rf\n" + root);
 }
 
-main locus App {
-    run() {
-        if std::env::arg_or(1, "") == "relay" { relay_child(std::env::arg_or(2, "")); }
-        else { check(); }
-    }
+// A pressure signal the relay refuses as unverified is answered by that
+// refusal (GH #986): the refusal names the request's id, so the relay does
+// not refuse it again every interval.
+fn check_pressure() {
+    let root = "/tmp/dna-pressure-relay-trust-" + to_string(std::process::pid());
+    let previous = dna::run_tool("rm\n-rf\n" + root);
+    let made = dna::run_tool("sh\n-c\nset -e; mkdir -p \"$1\"; cd \"$1\"; git init -q -b main; git config user.name riley; git config user.email riley@dna; ssh-keygen -q -t ed25519 -N '' -C riley -f key; printf 'riley %s\\n' \"$(cat key.pub)\" > allowed_signers\nsh\n" + root);
+    std::test::assert_eq_int(made.code, 0, "a record and a signing key: " + made.stderr);
+    let journal = dna::GitJournal { repo: root };
+    let g = journal.append_exact(journal.revision(), "application.observed", "org", "{}");
+    let b = std::json::Builder { };
+    b.begin_object(); b.string_field("request", "r-unsigned"); b.string_field("source", "worker"); b.string_field("what", "mail backlog"); b.end_object();
+    let input = journal.append_exact(journal.revision(), "pressure.requested", "worker", b.result());
+    std::test::assert(g.ok && input.ok, "an unsigned pressure request");
+    // signed trust from here, with a key the host signs its own rows with
+    let signed = dna::run_tool("sh\n-c\nset -e; cd \"$1\"; git config gpg.format ssh; git config user.signingkey \"$1/key\"; git config gpg.ssh.allowedSignersFile \"$1/allowed_signers\"; git config dna.trust signed\nsh\n" + root);
+    std::test::assert_eq_int(signed.code, 0, "signed trust: " + signed.stderr);
+    std::test::assert_eq_int(relay_once(root, "\n"), 0, "the unverified request is never published");
+    let after = dna::GitJournal { repo: root };
+    std::test::assert_eq_int(after.revision(), 3, "one refusal written: " + to_string(after.revision()));
+    let refusal = after.read(2);
+    std::test::assert(refusal.kind == "pressure.refused" && dna::request_named(refusal.body) == "r-unsigned", "the refusal names the request it answers: " + refusal.kind + " " + refusal.body);
+    let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
+    std::test::assert(host::request_answered(p, 1, " pressure.raised pressure.refused "), "and answers it");
+    let expired = host::relay_mark("\n", host::fact_key(p, 1), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
+    std::test::assert_eq_int(relay_once(root, expired), 0, "past the interval nothing is relayed");
+    let again = dna::GitJournal { repo: root };
+    std::test::assert_eq_int(again.revision(), 3, "and nothing is refused again");
+    let removed = dna::run_tool("rm\n-rf\n" + root);
+}
+
+// A plain locus: the host this imports is the `main locus` of its own
+// program (GH #986), and a bundle has one.
+locus App {
+    run() { check(); check_pressure(); }
 }
 fn main() { App { }; }

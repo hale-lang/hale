@@ -1,0 +1,348 @@
+// pond/realtime/nats — the std::bus adapter: two loci, one connection.
+//
+//     main locus App {
+//         params { nats: nats::NatsConn = nats::NatsConn { url: "nats://127.0.0.1:4222", subjects: "orders.>" }; }
+//         placement { nats: pinned; }
+//         bindings { Orders: nats::NatsAdapter { }; }
+//         ...
+//     }
+//
+// `NatsAdapter` is what a program binds a topic to: the compiler calls
+// its `send` on every publish of that topic. `send` only puts the
+// message on the internal `NatsOutbound` topic. `NatsConn` is a child
+// the program declares and places `pinned`: it subscribes to
+// `NatsOutbound`, so every socket write happens on its thread, and its
+// `run()` is the receive loop that hands inbound messages to
+// `std::bus::__local_dispatch`.
+//
+// Two loci because a bound adapter's own subscriptions run on the
+// publishing thread, not the adapter's (hale#1032): an adapter that
+// owned the socket would write it from every publisher's thread. When
+// that closes, NatsConn folds into NatsAdapter.
+//
+// Delivery is at least once. `send` cannot fail, by contract, so the
+// conn keeps every outbound message until the server has it — a PING
+// barrier's PONG in core mode, the stream's PubAck with `jetstream` —
+// writes it again after a reconnect, and audits the gap: a message
+// still unacknowledged `ack_window_ms` after it was sent is a
+// violation of `delivery`, which collapses the conn to its owner
+// (`on_failure(c: NatsConn, err: ClosureViolation)`; `c.last_error`
+// says which message and why).
+
+/// The outbound queue that NatsConn drains. One per program: every
+/// bound topic's adapter publishes here, and one NatsConn writes it.
+locus NatsAdapter {
+    bus { publish NatsOutbound; }
+    fn send(subject: String, bytes: Bytes) {
+        NatsOutbound <- Outbound { subject: subject, data: bytes };
+    }
+}
+
+locus NatsConn {
+    params {
+        url: String = "nats://127.0.0.1:4222";
+        user: String = "";
+        pass: String = "";
+        token: String = "";
+        name: String = "hale-bus";
+        // Core subscriptions, comma-separated NATS subjects (wildcards
+        // allowed); each inbound message is dispatched under its own
+        // subject. `queue` puts them in a queue group.
+        subjects: String = "";
+        queue: String = "";
+        // Prepended to every subject on the wire and taken off what
+        // arrives, so the program's topics keep their declared subjects
+        // while NATS sees them under a namespace (`acme.` makes
+        // `orders.new` travel as `acme.orders.new`). `subjects` are
+        // given without it; a `consumer.filter` is a NATS subject, with it.
+        subject_prefix: String = "";
+        // JetStream. `jetstream`: outbound messages are acknowledged by
+        // the stream that takes their subject (a PubAck) instead of a
+        // PING barrier. `stream` + `consumer.durable`: receive from that
+        // durable pull consumer, acking each message after it is
+        // dispatched.
+        jetstream: Bool = false;
+        stream: String = "";
+        consumer: ConsumerSpec = ConsumerSpec { };
+        pull_batch: Int = 64;
+        // A message unacknowledged this long after it was queued is a
+        // violation of `delivery`.
+        ack_window_ms: Int = 10000;
+        // > 0: run() returns after this long (tests, examples, and a
+        // bounded run while a pinned loop cannot see a drain —
+        // pond COMPILER-BUGS.md #3).
+        run_for_ms: Int = 0;
+        reconnect_max_ms: Int = 2000;
+
+        client: NatsClient = NatsClient { };
+        // pending message i is message number base_id + i; acks[i] is 1
+        // once the server has it, queued[i] when send handed it over
+        pending: NatsMsgLog = NatsMsgLog { };
+        acks: NatsInts = NatsInts { };
+        queued: NatsInts = NatsInts { };
+        head: Int = 0;
+        base_id: Int = 1;
+        // pending entries below this were written on this connection
+        written_to: Int = 0;
+        // how many were written to the socket, and how many the server
+        // acknowledged (writes after a reconnect count again)
+        sent: Int = 0;
+        acked: Int = 0;
+        received: Int = 0;
+        reconnects: Int = 0;
+        last_error: String = "";
+        inbox: String = "";
+        ack_sid: Int = 0;
+        pull_sid: Int = 0;
+        pull_open: Bool = false;
+        pull_left: Int = 0;
+        pull_deadline_ns: Int = 0;
+        // core mode: pending entries below this are covered by the PING
+        // in flight (-1: none in flight)
+        barrier: Int = -1;
+        backoff_ms: Int = 0;
+        retry_at_ns: Int = 0;
+    }
+
+    bus { subscribe NatsOutbound as on_out; }
+
+    closure delivery { captures: sent, acked, last_error; epoch inline; }
+
+    // Record why delivery is in trouble.
+    // @unbounded: once per refused publish, server error, or the
+    // violation that ends this conn.
+    @unbounded
+    fn note(what: String, detail: String) { self.last_error = what + detail; }
+
+    birth() {
+        self.client.url = self.url;
+        self.client.user = self.user;
+        self.client.pass = self.pass;
+        self.client.token = self.token;
+        self.client.name = self.name;
+        // what this program publishes reaches its own subscribers on
+        // the bus already; the server must not send it back
+        self.client.echo = false;
+        self.inbox = new_inbox();
+    }
+
+    // Runs on this locus's thread, between reads (run() yields for it).
+    // @unbounded: one entry per message the server has not acknowledged;
+    // advance() cuts them as acknowledgements arrive and the audit ends
+    // the conn if they stop.
+    @unbounded
+    fn on_out(o: Outbound) {
+        self.pending.push(o.subject, o.data);
+        self.acks.push(0);
+        self.queued.push(std::time::monotonic_ns());
+        if self.client.connected { self.write_pending(); }
+    }
+
+    // Write what this connection has not written yet, then (core mode)
+    // PING so its PONG acknowledges everything before it.
+    fn write_pending() {
+        let n = self.pending.len();
+        while self.written_to < n {
+            let i = self.written_to;
+            if (self.acks.get(i) or 1) == 0 {
+                let reply = if self.jetstream { self.inbox + ".ack." + to_string(self.base_id + i) } else { "" };
+                self.client.pub_msg(self.subject_prefix + self.pending.subject_at(i), reply, self.pending.data_at(i)) or discard;
+                if !self.client.connected { return; }
+                self.sent = self.sent + 1;
+            }
+            self.written_to = i + 1;
+        }
+        if !self.jetstream && self.barrier < 0 && self.written_to > self.head {
+            if self.client.write_str(ping_line()) { self.barrier = self.written_to; }
+        }
+    }
+
+    fn mark_acked(i: Int) {
+        if (self.acks.get(i) or 1) != 0 { return; }
+        self.acks.set(i, 1) or discard;
+        self.acked = self.acked + 1;
+    }
+
+    // Move past the acknowledged prefix. Once all of it is, the buffer
+    // starts over; under load that never lets it empty, the
+    // acknowledged prefix is cut off once it is half the queue.
+    fn advance() {
+        let n = self.pending.len();
+        while self.head < n && (self.acks.get(self.head) or 1) != 0 { self.head = self.head + 1; }
+        if self.head == 0 { return; }
+        if self.head == n {
+            self.pending.clear();
+            ints_clear(self.acks);
+            ints_clear(self.queued);
+        } else if self.head >= 256 && self.head * 2 >= n {
+            self.pending.drop_front(self.head);
+            ints_drop_front(self.acks, self.head);
+            ints_drop_front(self.queued, self.head);
+        } else {
+            return;
+        }
+        self.base_id = self.base_id + self.head;
+        self.written_to = self.written_to - self.head;
+        if self.barrier >= 0 { self.barrier = self.barrier - self.head; }
+        self.head = 0;
+    }
+
+    fn on_pong() {
+        if self.barrier < 0 { return; }
+        let mut i = self.head;
+        while i < self.barrier && i < self.pending.len() {
+            self.mark_acked(i);
+            i = i + 1;
+        }
+        self.barrier = -1;
+        self.advance();
+        // what was written after that PING needs a barrier of its own
+        self.write_pending();
+    }
+
+    // A PubAck (or a refusal) on `<inbox>.ack.<id>`.
+    fn on_pub_ack(f: NatsFrame) {
+        // `<inbox>.ack.<id>`
+        let at = len(self.inbox) + 5;
+        let id = if len(f.subject) > at { std::str::parse_int(f.subject[at..len(f.subject)]) or 0 } else { 0 };
+        // a 503 status: no stream takes the subject
+        let status = if f.op == "HMSG" { header_status(f.headers) } else { "" };
+        let refused = if len(status) > 0 { "no stream takes it (" + status + ")" } else { js_error_of(std::str::from_bytes(f.data)) };
+        if len(refused) > 0 {
+            // left unacknowledged: written again after a reconnect, and
+            // the audit fires if it never lands
+            self.note("jetstream refused message " + to_string(id) + ": ", refused);
+            return;
+        }
+        let i = id - self.base_id;
+        if i >= self.head && i < self.pending.len() { self.mark_acked(i); }
+        self.advance();
+    }
+
+    fn pull() {
+        let body = "{\"batch\":" + to_string(self.pull_batch) + ",\"expires\":1000000000}";
+        self.client.pub_msg("$JS.API.CONSUMER.MSG.NEXT." + self.stream + "." + self.consumer.durable, self.inbox + ".pull", std::bytes::from_string(body)) or discard;
+        self.pull_open = true;
+        self.pull_left = self.pull_batch;
+        self.pull_deadline_ns = std::time::monotonic_ns() + 1500000000;
+    }
+
+    fn on_pulled(f: NatsFrame) {
+        if f.op == "HMSG" {
+            let status = header_status(f.headers);
+            if len(status) > 0 {
+                // 404 no messages / 408 expired / 409 limits: pull again;
+                // 100 is an idle heartbeat
+                if !std::str::starts_with(status, "100") { self.pull_open = false; }
+                return;
+            }
+        }
+        std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
+        self.received = self.received + 1;
+        if len(f.reply) > 0 { self.client.pub_msg(f.reply, "", std::bytes::from_string("+ACK")) or discard; }
+        self.pull_left = self.pull_left - 1;
+        if self.pull_left <= 0 { self.pull_open = false; }
+    }
+
+    // A subject as the program's topics know it: without the prefix.
+    fn local_subject(s: String) -> String {
+        let n = len(self.subject_prefix);
+        if n > 0 && std::str::starts_with(s, self.subject_prefix) { return s[n..len(s)]; }
+        return s;
+    }
+
+    fn on_frame() {
+        let f = self.client.framer.frame;
+        if f.op == "MSG" || f.op == "HMSG" {
+            if f.sid == self.ack_sid && self.ack_sid > 0 { self.on_pub_ack(f); return; }
+            if f.sid == self.pull_sid && self.pull_sid > 0 { self.on_pulled(f); return; }
+            std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
+            self.received = self.received + 1;
+            return;
+        }
+        if f.op == "PONG" { self.on_pong(); return; }
+        if f.op == "ERR" { self.note("server: ", f.text); }
+    }
+
+    // Connect, set up what this conn receives, and write again whatever
+    // the server has not acknowledged. False when the server is not
+    // reachable yet (retried with backoff).
+    fn connect() -> Bool {
+        if !self.client.open() { self.last_error = self.client.last_error; return false; }
+        if self.jetstream {
+            self.ack_sid = self.client.sub_to(self.inbox + ".ack.*", "") or 0;
+        }
+        if len(self.stream) > 0 && len(self.consumer.durable) > 0 {
+            js_consumer_create(self.client, self.stream, self.consumer) or discard;
+            if !self.client.connected { self.last_error = self.client.last_error; return false; }
+            if std::str::starts_with(self.client.last_error, "jetstream") { self.last_error = self.client.last_error; }
+            self.pull_sid = self.client.sub_to(self.inbox + ".pull", "") or 0;
+            self.pull_open = false;
+        }
+        let mut rest = self.subjects;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let one = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
+            rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+            if len(one) > 0 { let sid = self.client.sub_to(self.subject_prefix + one, self.queue) or 0; }
+        }
+        self.client.set_read_timeout(10ms);
+        self.barrier = -1;
+        self.written_to = self.head;
+        self.write_pending();
+        return self.client.connected;
+    }
+
+    // The oldest unacknowledged message, if it is older than the window.
+    fn audit(now: Int) {
+        if self.head >= self.pending.len() { return; }
+        let queued = self.queued.get(self.head) or now;
+        if now - queued < self.ack_window_ms * 1000000 { return; }
+        let why = if len(self.last_error) > 0 { self.last_error } else { "no acknowledgement" };
+        self.note("message " + to_string(self.base_id + self.head) + " on " + self.pending.subject_at(self.head) + " unacknowledged after " + to_string(self.ack_window_ms) + " ms: ", why);
+        violate delivery;
+    }
+
+    fn step(now: Int) {
+        if !self.client.connected {
+            if now < self.retry_at_ns { return; }
+            if self.connect() {
+                if self.backoff_ms > 0 { self.reconnects = self.reconnects + 1; }
+                self.backoff_ms = 0;
+            } else {
+                self.backoff_ms = if self.backoff_ms == 0 { 50 } else { self.backoff_ms * 2 };
+                if self.backoff_ms > self.reconnect_max_ms { self.backoff_ms = self.reconnect_max_ms; }
+                self.retry_at_ns = now + self.backoff_ms * 1000000;
+                return;
+            }
+        }
+        if self.pull_sid > 0 && (!self.pull_open || now > self.pull_deadline_ns) { self.pull(); }
+        let mut n = 0;
+        while n < 256 && self.client.next_frame() {
+            self.on_frame();
+            n = n + 1;
+        }
+        if !self.client.connected {
+            // everything written but unacknowledged goes again
+            self.last_error = self.client.last_error;
+            self.pull_open = false;
+            self.barrier = -1;
+        }
+    }
+
+    // @unbounded: the connection's receive loop, for the conn's life;
+    // each pass reads at most 256 frames or waits 10 ms.
+    @unbounded
+    run() {
+        let started = std::time::monotonic_ns();
+        while !self.draining {
+            let now = std::time::monotonic_ns();
+            if self.run_for_ms > 0 && now - started >= self.run_for_ms * 1000000 { break; }
+            self.step(now);
+            self.audit(now);
+            // yield: NatsOutbound handlers run here, on this thread
+            if self.client.connected { std::time::sleep(0ms); } else { std::time::sleep(10ms); }
+        }
+        self.client.close();
+    }
+}

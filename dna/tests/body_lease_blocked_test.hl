@@ -65,11 +65,10 @@ main locus App {
         let g5 = in_dir(a, cache, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
         std::test::assert_eq_int(g5.code, 0, "pushed: " + g5.stderr);
 
-        // the host and membrane binaries, built into this fixture's cache
+        // the host binary, built into this fixture's cache
         let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
         let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
-        let membrane = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/membrane/membrane' -type f | head -1\nsh\n" + cache).stdout);
-        std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
+        std::test::assert(len(host) > 0, "the host is built: " + built.stdout + built.stderr);
         // the first line alone is the version: `hale --version` has a
         // second one since GH #726 (the embedded DNA digest)
         let version = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\n\"$1\" --version | head -1\nsh\n" + toolchain()).stdout);
@@ -90,13 +89,13 @@ main locus App {
         let x = dna::run_tool("chmod\n+x\n" + bin + "/git");
 
         // host A comes up and runs its organization, whose worker ticks
-        let started = in_dir(a, cache, "sh\n-c\nPATH=\"$1:$PATH\" HALE_BIN=\"$2\" HALE_DNA_MEMBRANE=\"$3\" HALE_DNA_TOOLCHAIN=\"$4\" HALE_DNA_GENOME=\"$5\" nohup sh -c 'timeout 300 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$6\" \"$5\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + bin + "\n" + toolchain() + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let started = in_dir(a, cache, "sh\n-c\nPATH=\"$1:$PATH\" HALE_BIN=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 300 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$5\" \"$4\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + bin + "\n" + toolchain() + "\n" + version + "\n" + a + "\n" + host);
         let mut up = false;
         let mut tries = 0;
         while !up && tries < 720 {
-            // past the host's wait for a membrane (this organization binds
-            // none), so the host is in its ticks
-            if log_has(a + "/a.log", "the organization runs unobserved") && last_number(a + "/worker.tick") > 0 { up = true; } else { std::time::sleep(250ms); }
+            // the host names the genome it runs just before its first tick
+            // (no nerves are handed to it: its organization reads none)
+            if log_has(a + "/a.log", "hale dna run: genome ") && last_number(a + "/worker.tick") > 0 { up = true; } else { std::time::sleep(250ms); }
             tries = tries + 1;
         }
         std::test::assert(up, "host A came up with its worker: " + (std::io::fs::read_file(a + "/a.log") or ""));

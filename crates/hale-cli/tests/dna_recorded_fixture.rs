@@ -96,7 +96,9 @@ struct Fixture {
     procs: Vec<std::process::Child>,
     tape: PathBuf,
     mode: String,
-    spine: String, // memory under the record's spine role (K4; GH #985)
+    spine: String,     // memory under the record's spine role (K4; GH #985)
+    nats_spine: String, // the nerves' spine URL (GH #986)
+    nats_org: String,   // the organization's token on the nerves (GH #986)
 }
 
 impl Fixture {
@@ -108,7 +110,9 @@ impl Fixture {
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             .env("HALE_DNA_TAPE", &self.mode)
             .env("HALE_DNA_TAPE_DIR", &self.tape)
-            .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine);
+            .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine)
+            .env("HALE_DNA_NATS_URL_SPINE", &self.nats_spine)
+            .env("HALE_DNA_NATS_ORG", &self.nats_org);
         c
     }
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
@@ -185,7 +189,7 @@ fn bring_up() -> Fixture {
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new() };
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new() };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
@@ -209,14 +213,26 @@ fn bring_up() -> Fixture {
         f.fail(&format!("memory migrate: {out}"));
     }
     f.spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE=")).unwrap_or("").to_string();
+    // the nerves (GH #986): a verdict, an intent or a report reaches the
+    // organization only over them — the owner migrates the stream, the
+    // organization and the host run under the spine's role and the
+    // organization's token
+    let (ok, out) = f.hale(&["dna", "nerves", "migrate"], &app);
+    if !ok {
+        f.fail(&format!("nerves migrate: {out}"));
+    }
+    f.nats_spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).unwrap_or("").to_string();
+    f.nats_org = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).unwrap_or("").to_string();
     f.spawn(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app);
     let edges = f.edges.clone();
     for (i, e) in edges.iter().enumerate() {
         f.spawn(&["node", &format!("edge-{}", i + 1), "--repo", &e.to_string_lossy(), "--tick", "300"], &d);
     }
-    trace::wait_until("dna run: the membrane bound", Duration::from_secs(90), Duration::from_millis(200), || app.join(".hale/dna/hale-dna.intent.offered.sock").exists());
-    if !app.join(".hale/dna/hale-dna.intent.offered.sock").exists() {
-        f.fail("the membrane did not come up");
+    let host_log = f.d.join("dna-run.stderr");
+    let nerves_up = || std::fs::read_to_string(&host_log).unwrap_or_default().contains("the organization reads its facts from the nerves");
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(90), Duration::from_millis(200), nerves_up);
+    if !nerves_up() {
+        f.fail("the organization never read its facts from the nerves");
     }
     let (ok, out) = f.hale(&["dna", "deploy", "HEAD"], &app);
     if !ok || !out.contains("touching gateway-0 gateway-1 api-0 worker-0") {
@@ -236,6 +252,10 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let _t = trace::test("dna_recorded_fixture");
     if std::env::var("HALE_DNA_MEMORY_DSN_OWNER").map(|d| d.is_empty()).unwrap_or(true) {
         eprintln!("dna_recorded_fixture: no HALE_DNA_MEMORY_DSN_OWNER; the organization's knowledge is memory's, so nothing was exercised");
+        return;
+    }
+    if std::env::var("HALE_DNA_NATS_URL_OWNER").map(|d| d.is_empty()).unwrap_or(true) {
+        eprintln!("dna_recorded_fixture: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     }
     let mut f = bring_up();
@@ -278,7 +298,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let rows = journal(&app);
     let requested = rows.iter().filter(|(_, k, e, _)| k == "concern.requested" && e == "org/trio/worker").count();
     let raised = rows.iter().filter(|(_, k, e, _)| k == "concern.raised" && e == "org/trio/worker").count();
-    assert!(requested >= 3 && raised >= 3, "three concerns travelled from the node into the record and onto the membrane: requested {requested}, raised {raised}");
+    assert!(requested >= 3 && raised >= 3, "three concerns travelled from the node into the record and onto the nerves: requested {requested}, raised {raised}");
     assert!(rows.iter().any(|(_, k, e, b)| k == "concern.requested" && e == "org/trio/worker" && b.contains("\"node\": \"edge-2\"")), "the node that heard it is named");
     let kprop = rows.iter().find(|(_, k, _, b)| k == "knowledge.proposed" && b.contains("\"author\": \"org/trio/worker\"")).expect("the proposal");
     let kdigest = kprop.2.clone();

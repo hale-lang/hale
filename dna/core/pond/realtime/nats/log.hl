@@ -1,0 +1,97 @@
+// pond/realtime/nats — NatsMsgLog, a queue of (subject, payload)
+// messages that a long-lived locus can churn without growing.
+//
+// The obvious shape, an `@form(vec)` of `Outbound`, keeps every payload
+// it ever held: neither `set` nor `pop` reclaims the heap of the value
+// it replaces or removes when that value carries Bytes, and `pop`
+// frees no String either (hale#1037; pond COMPILER-BUGS.md #7). So the bytes
+// live back to back in one reused BytesBuilder — subject, then payload
+// — and only Ints go in vecs, which churn cleanly.
+
+@form(vec)
+locus NatsInts { capacity { heap items of Int; } }
+
+// Remove the first `k` entries of `v`, keeping the order of the rest.
+// @unbounded: one pass over the vec; callers amortize (they cut only
+// once the removed prefix is a large share of it).
+@unbounded
+fn ints_drop_front(v: NatsInts, k: Int) {
+    let n = v.len();
+    if k <= 0 { return; }
+    let mut i = k;
+    while i < n {
+        v.set(i - k, v.get(i) or 0) or discard;
+        i = i + 1;
+    }
+    let mut j = 0;
+    while j < k && v.len() > 0 {
+        let gone = v.pop() or 0;
+        j = j + 1;
+    }
+}
+
+// Empty `v`.
+// @unbounded: one pop per entry, run when a queue drains.
+@unbounded
+fn ints_clear(v: NatsInts) {
+    while v.len() > 0 { let gone = v.pop() or 0; }
+}
+
+locus NatsMsgLog {
+    params {
+        buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { };
+        starts: NatsInts = NatsInts { };
+        subj_lens: NatsInts = NatsInts { };
+        data_lens: NatsInts = NatsInts { };
+    }
+
+    fn len() -> Int { return self.starts.len(); }
+
+    // @unbounded: the owner bounds the log (drop_front / clear); every
+    // owner in this lib does, and its README gives the soak.
+    @unbounded
+    fn push(subject: String, data: Bytes) {
+        self.starts.push(self.buf.len());
+        self.buf.append_str(subject);
+        self.buf.append(data);
+        self.subj_lens.push(len(subject));
+        self.data_lens.push(len(data));
+    }
+
+    fn subject_at(i: Int) -> String {
+        let at = self.starts.get(i) or 0;
+        return std::str::from_bytes(std::bytes::slice(self.buf.view(), at, at + (self.subj_lens.get(i) or 0)));
+    }
+
+    fn data_at(i: Int) -> Bytes {
+        let at = (self.starts.get(i) or 0) + (self.subj_lens.get(i) or 0);
+        return std::bytes::slice(self.buf.view(), at, at + (self.data_lens.get(i) or 0));
+    }
+
+    /// Forget the oldest `k` messages.
+    // @unbounded: one pass over the index; see ints_drop_front.
+    @unbounded
+    fn drop_front(k: Int) {
+        let n = self.starts.len();
+        if k <= 0 { return; }
+        if k >= n { self.clear(); return; }
+        let cut = self.starts.get(k) or 0;
+        self.buf.shift_front(cut);
+        let mut i = k;
+        while i < n {
+            self.starts.set(i - k, (self.starts.get(i) or cut) - cut) or discard;
+            i = i + 1;
+        }
+        let mut j = 0;
+        while j < k { let gone = self.starts.pop() or 0; j = j + 1; }
+        ints_drop_front(self.subj_lens, k);
+        ints_drop_front(self.data_lens, k);
+    }
+
+    fn clear() {
+        self.buf.clear();
+        ints_clear(self.starts);
+        ints_clear(self.subj_lens);
+        ints_clear(self.data_lens);
+    }
+}

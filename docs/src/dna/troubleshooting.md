@@ -7,14 +7,32 @@ the record when the repository has a remote (an organization
 elsewhere answers), and need `hale dna run` or `dev` in another
 terminal when it doesn't.
 
-**`the organism is not running here (no membrane) and the
-repository has no remote to reach one through`**. Same thing, with
-nowhere to send it. Start a host, or add a remote and start one
-somewhere.
+**`the organism is not running here (no body in this clone holds the
+record's lease) and the repository has no remote to reach one
+through`**. Same thing, with nowhere to send it. Start a host, or add a
+remote and start one somewhere.
 
-**`membrane client failed: … File name too long`**. The sockets
-under `.hale/dna/` are unix sockets, and a path over about a hundred
-bytes cannot be bound. Move the checkout somewhere shorter.
+**`no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not
+set`** from the host. It runs, and the organization hears nothing the
+record asks: a task stays `requested`. Under `dev`, `dna/compose.yaml`
+needs its `nerves` service (`hale dna upgrade` says what to add) and
+docker compose on PATH, or set `HALE_DNA_NATS_URL_OWNER` to a NATS
+server with JetStream; under `run`, set the two variables
+`hale dna nerves migrate` prints.
+
+**`the organization did not come to read the nerves within 20s`**. The
+organization's connection cannot reach the server, or its user is not
+allowed its consumer (`spine`, or over a shared record `spine_<owner>`;
+`dna/nats.conf`). Its log
+(`.hale/dna/org.log`) says which. The facts wait in the stream; they
+reach it once it connects.
+
+**`nerves.lost` in the history.** The stream stopped acknowledging the
+host's publishes — the server went away, or no stream takes the
+subject (`hale dna nerves migrate` makes it). The host stopped, gave
+its lease back and exited 75; its unit starts it again with a fresh
+connection, and every request still unanswered is published again.
+Under `hale dna dev` there is no unit: start it again yourself.
 
 **`task t1 born … [failed]`**, and `history t1` says
 `credential not present`. The editor's hosted model has no key. Set

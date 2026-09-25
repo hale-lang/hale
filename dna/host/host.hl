@@ -1,9 +1,10 @@
 // dna/host/host.hl — `hale dna run` / `hale dna dev`: the stateless
-// host beside the organization (GH #566 F8). It builds and starts the
-// organization, waits for its membrane, attaches iris (the inspector,
-// on the organization's process like any Hale binary), and then ticks:
-// sync the record, mirror GitHub, relay the membrane rows in the
-// record, re-project `status.json`, answer restart requests — under
+// host beside the organization (GH #566 F8), a node of the organism. It
+// builds and starts the organization, waits for it to read the nerves,
+// attaches iris (the inspector, on the organization's process like any
+// Hale binary), and then ticks: sync the record, mirror GitHub, publish
+// the record's requests onto the nerves (GH #986), re-project
+// `status.json`, answer restart requests — under
 // `dev` by rebuilding and restarting the application and watching the
 // window; under `run` with a fleet by a deploy row and the window over
 // every touched instance; for the organization's own seed by
@@ -14,6 +15,7 @@ import "../core" as dna;
 import "../organization_runtime" as org_runtime;
 import "../organization_source" as orgsource;
 import "../../iris/process_identity" as identity;
+import "../core/pond/realtime/nats" as nats;
 
 const ORG_SEED: String = "dna/org";
 
@@ -181,11 +183,17 @@ fn relayed_at(list: String, key: String) -> Int {
 fn relay_mark(list: String, key: String, now: Int) -> String {
     return keys_add(list, key + "@" + to_string(now));
 }
-// A membrane publish is confirmed by its answer in the record, never by the
-// client's exit: after this long unanswered, the row is relayed again
+// A publish is confirmed by its answer in the record, never by the
+// transport: after this long unanswered, the row is relayed again
 // (the organism admits an intent once by id; a duplicate verdict is refused
 // as already settled).
 const RELAY_AGAIN_AFTER: Int = 30;
+// How long a pull lives on the stream: pond's NatsConn pulls with a one
+// second expiry (its `pull`), and a little more for the server to drop it.
+const NERVES_PULL_LIFE_MS: Int = 1250;
+// How long a node inside an observation window waits for the organism to
+// record its report before it goes on (the relay does not stop).
+const OBSERVATION_WAIT: Int = 60;
 
 // A source marker selects the strict prepared path even when its evidence is
 // unavailable. Never fall back to an arbitrary live-checkout restart for it.
@@ -409,107 +417,221 @@ fn edge_admits_here(root: String, r: dna::KnowledgeEdgeRequest) -> Bool {
         && admits_here(root, e.to_author) && admits_here(root, e.to_target);
 }
 
-@unbounded
-fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String, memory: dna::Memory) -> RelayState {
-    let mut state = RelayState { relayed: relayed };
-    // no record, or one that could not be read: nothing to do this pass
-    let now = record_head(root);
-    if !now.ok || now.absent { return state; }
-    let p = open_projection(root, seed, toolchain, memory);
-    let trust = trust_mode(root);
-    let mut i = 0;
-    while i < p.rows() {
-        let r = p.row(i);
-        // Another owner's node request is theirs to verify and admit. Do not
-        // write a refusal using this host's keyring before checking routing.
-        let node_ours = if r.kind == "knowledge.node.requested" {
-            let codec = dna::KnowledgeNodeRequestCodec { };
-            let request = codec.decode(r.body);
-            codec.valid(request) && request.request_id == r.entity && admits_here(root, request.author) && admits_here(root, request.target)
-        } else if r.kind == "knowledge.binding.requested" {
-            let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
-            codec.valid(request) && request.request_id == r.entity && admits_here(root, request.author) && admits_here(root, request.target)
-        } else if r.kind == "knowledge.edge.requested" {
-            let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
-            request.request_id == r.entity && edge_admits_here(root, request)
-        } else { true };
-        let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested");
-        let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else { " review.settled review.refused " };
-        if requested && trust == "signed" && !row_verified(root, r.digest) {
-            // Verification gates EVERY attempt. Even when writing the refusal
-            // failed, an expired retry marker must never admit an unsigned row.
-            let last = relayed_at(state.relayed, fact_key(p, i));
-            if !request_answered(p, i, answers) && (last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER) {
-                let why = "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed";
-                let command_id = dna::native_json_string(r.body, "command_id");
-                if r.kind == "review.verdict" && len(command_id) > 0 {
-                    let v = dna::review_command_verdict(command_id, r.body);
-                    let ok = append_as(root, "review.command_decided", command_id, dna::review_command_body(v, false, why, false, ""), "host", memory);
-                } else if r.kind == "knowledge.node.requested" {
-                    let codec = dna::KnowledgeNodeRequestCodec { };
-                    let request = codec.decode(r.body);
-                    if codec.valid(request) && request.request_id == r.entity {
-                        let ok = append_as(root, "knowledge.node.refused", r.entity, codec.refused(request, why), "host", memory);
-                    }
-                } else if r.kind == "knowledge.binding.requested" {
-                    let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
-                    if codec.valid(request) && request.request_id == r.entity {
-                        let ok = append_as(root, "knowledge.binding.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
-                    }
-                } else if r.kind == "knowledge.edge.requested" {
-                    let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
-                    if codec.valid(request) && request.request_id == r.entity {
-                        let ok = append_as(root, "knowledge.edge.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
-                    }
-                } else {
-                    let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
-                    let ok = append_as(root, refused, r.entity, why, "host", memory);
-                }
-                state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now());
-                eprintln("hale dna ", verb, ": refused an unverified ", r.kind, " (", r.entity, ") from the record");
-            }
-        } else if requested {
-            let answered = request_answered(p, i, answers);
-            // GH #664: an intent for a position another owner holds is
-            // theirs to admit; it stays in the record, unanswered here
-            let ours = r.kind != "intent.requested" || admits_here(root, std::json::find_string_field(r.body, "to"));
-            // GH #682: relayed before and still unanswered — relay again
-            let mut last = relayed_at(state.relayed, fact_key(p, i));
-            // a head beside this organism published it itself: count that
-            // as the first delivery, and relay only if it stays unanswered
-            if last < 0 && std::str::contains(r.body, "\"via\": \"membrane\"") {
-                state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now());
-                last = std::time::now();
-            }
-            let due = last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER;
-            if !answered && ours && due {
-                let mut body = r.body;
-                if r.kind == "intent.requested" {
-                    // the row's entity is the intent id
-                    let inner = dna::trim_nl(body);
-                    let close = last_index_of(inner, "}");
-                    if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
-                }
-                if r.kind == "knowledge.node.requested" {
-                    // Admission metadata stays in Record. Transport only the
-                    // exact eleven native fields after trust/owner checks;
-                    // duplicating command_payload can exceed process argv.
-                    let codec = dna::KnowledgeNodeRequestCodec { };
-                    body = codec.started(codec.decode(r.body));
-                }
-                if r.kind == "knowledge.binding.requested" { let codec = dna::KnowledgeBindingCodec { }; body = codec.started(codec.decode(r.body)); }
-                if r.kind == "knowledge.edge.requested" { let codec = dna::KnowledgeEdgeCodec { }; body = codec.started(codec.decode(r.body)); }
-                let e = publish_on_membrane(root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else { "verdict" }, body);
-                if len(e) == 0 { state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now()); state.count = state.count + 1; }
-                else { state.error = r.kind + " (" + r.entity + "): " + e; }
-            }
-        }
-        i = i + 1;
+// The node's relay (GH #682, #986): the record's requests onto the nerves.
+// The host owns one and ticks it; its publishes go out through the
+// program's `bindings`, so a program that is not the host — a test's —
+// can own one too and bind the topics itself.
+locus NodeRelay {
+    params {
+        root: String = ".";
+        seed: String = ".";
+        toolchain: String = "";
+        verb: String = "run";
+        live: Bool = false; // the program's nerves are configured
+        relayed: String = "\n";
+        error: String = ""; // the last relay's failure, "" when it had none
+        relayed_count: Int = 0; // what the last relay published
     }
-    return state;
+    bus {
+        publish dna::IntentOffered;
+        publish dna::ReviewVerdict;
+        publish dna::ExpressionObserved;
+        publish dna::PressureRaised;
+        publish dna::ConcernRaised;
+        publish dna::PracticeRequested;
+        publish dna::KnowledgeNodeRequested;
+        publish dna::KnowledgeBindingRequested;
+        publish dna::KnowledgeEdgeRequested;
+    }
+    // One fact onto the nerves, on the topic the organization subscribes:
+    // the row the record holds, as the organization's own declaration of
+    // it. "" when it was handed to the connection, which keeps it until the
+    // stream acknowledges it; otherwise why not.
+    fn publish_fact(kind: String, body: String) -> String {
+        if !self.live { return "no nerves (" + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set)"; }
+        if kind == "intent" {
+            dna::IntentOffered <- dna::IntentOffer {
+                intent_id: std::json::find_string_field(body, "intent_id"),
+                outcome: std::json::find_string_field(body, "outcome"),
+                from: std::json::find_string_field(body, "from"),
+                to: std::json::find_string_field(body, "to")
+            };
+        } else if kind == "verdict" {
+            dna::ReviewVerdict <- dna::Verdict {
+                command_id: dna::native_json_string(body, "command_id"),
+                review_id: dna::native_json_string(body, "review_id"),
+                subject_digest: dna::native_json_string(body, "subject_digest"),
+                verdict: dna::native_json_string(body, "verdict"),
+                reviewer: dna::native_json_string(body, "reviewer"),
+                authority: dna::native_json_string(body, "authority"),
+                comment: dna::native_json_string(body, "comment")
+            };
+        } else if kind == "observed" {
+            dna::ExpressionObserved <- dna::Observation {
+                mutation_id: std::json::find_string_field(body, "mutation_id"),
+                outcome: std::json::find_string_field(body, "outcome"),
+                model_hash: std::json::find_string_field(body, "model_hash"),
+                detail: std::json::find_string_field(body, "detail")
+            };
+        } else if kind == "pressure" {
+            dna::PressureRaised <- dna::Pressure {
+                source: std::json::find_string_field(body, "source"),
+                what: std::json::find_string_field(body, "what"),
+                count: 1,
+                request: std::json::find_string_field(body, "request")
+            };
+        } else if kind == "concern" {
+            dna::ConcernRaised <- dna::Concern {
+                source: std::json::find_string_field(body, "source"),
+                what: std::json::find_string_field(body, "what"),
+                severity: std::json::find_int_field(body, "severity"),
+                request: std::json::find_string_field(body, "request")
+            };
+        } else if kind == "practice" {
+            dna::PracticeRequested <- dna::PracticeRequest {
+                request_id: dna::native_json_string(body, "request_id"),
+                name: dna::native_json_string(body, "name"),
+                text: dna::native_json_string(body, "text"),
+                by: dna::native_json_string(body, "by"),
+                because: dna::native_json_string(body, "because"),
+                supersedes: dna::native_json_string(body, "supersedes")
+            };
+        } else if kind == "knowledge-node" {
+            let codec = dna::KnowledgeNodeRequestCodec { };
+            let request = codec.decode(body);
+            if !codec.valid(request) { return "an invalid knowledge-node request"; }
+            dna::KnowledgeNodeRequested <- request;
+        } else if kind == "knowledge-binding" {
+            let codec = dna::KnowledgeBindingCodec { };
+            let request = codec.decode(body);
+            if !codec.valid(request) { return "an invalid knowledge-binding request"; }
+            dna::KnowledgeBindingRequested <- request;
+        } else if kind == "knowledge-edge" {
+            let codec = dna::KnowledgeEdgeCodec { };
+            let request = codec.decode(body);
+            if !codec.valid(request) { return "an invalid knowledge-edge request"; }
+            dna::KnowledgeEdgeRequested <- request;
+        } else {
+            return "no fact of kind `" + kind + "`";
+        }
+        return "";
+    }
+    // The record onto the nerves (GH #682, #986): a request row — an
+    // `intent.requested`, a `review.verdict`, a `concern.requested`, a
+    // `pressure.requested`, a practice or knowledge request — a CLI, a
+    // head or a node wrote in any clone is published on the topic the
+    // organization subscribes, once it is in this node's record, and again
+    // every RELAY_AGAIN_AFTER while the record holds no answer to it. The
+    // row is the durable fact; the publish only tells the organization.
+    @unbounded
+    fn relay(memory: dna::Memory) -> Int {
+        let mut state = RelayState { relayed: self.relayed };
+        // no record, or one that could not be read: nothing to do this pass
+        let now = record_head(self.root);
+        if !now.ok || now.absent { return 0; }
+        let p = open_projection(self.root, self.seed, self.toolchain, memory);
+        let trust = trust_mode(self.root);
+        let mut i = 0;
+        while i < p.rows() {
+            let r = p.row(i);
+            // Another owner's node request is theirs to verify and admit. Do not
+            // write a refusal using this host's keyring before checking routing.
+            let node_ours = if r.kind == "knowledge.node.requested" {
+                let codec = dna::KnowledgeNodeRequestCodec { };
+                let request = codec.decode(r.body);
+                codec.valid(request) && request.request_id == r.entity && admits_here(self.root, request.author) && admits_here(self.root, request.target)
+            } else if r.kind == "knowledge.binding.requested" {
+                let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
+                codec.valid(request) && request.request_id == r.entity && admits_here(self.root, request.author) && admits_here(self.root, request.target)
+            } else if r.kind == "knowledge.edge.requested" {
+                let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
+                request.request_id == r.entity && edge_admits_here(self.root, request)
+            } else { true };
+            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested");
+            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else { " review.settled review.refused " };
+            if requested && trust == "signed" && !row_verified(self.root, r.digest) {
+                // Verification gates EVERY attempt. Even when writing the refusal
+                // failed, an expired retry marker must never admit an unsigned row.
+                let last = relayed_at(state.relayed, fact_key(p, i));
+                if !request_answered(p, i, answers) && (last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER) {
+                    let why = "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed";
+                    let command_id = dna::native_json_string(r.body, "command_id");
+                    if r.kind == "review.verdict" && len(command_id) > 0 {
+                        let v = dna::review_command_verdict(command_id, r.body);
+                        let ok = append_as(self.root, "review.command_decided", command_id, dna::review_command_body(v, false, why, false, ""), "host", memory);
+                    } else if r.kind == "knowledge.node.requested" {
+                        let codec = dna::KnowledgeNodeRequestCodec { };
+                        let request = codec.decode(r.body);
+                        if codec.valid(request) && request.request_id == r.entity {
+                            let ok = append_as(self.root, "knowledge.node.refused", r.entity, codec.refused(request, why), "host", memory);
+                        }
+                    } else if r.kind == "knowledge.binding.requested" {
+                        let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
+                        if codec.valid(request) && request.request_id == r.entity {
+                            let ok = append_as(self.root, "knowledge.binding.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
+                        }
+                    } else if r.kind == "knowledge.edge.requested" {
+                        let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
+                        if codec.valid(request) && request.request_id == r.entity {
+                            let ok = append_as(self.root, "knowledge.edge.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
+                        }
+                    } else {
+                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "observation.requested" { "observation.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
+                        // a request with an id of its own (a concern's, a
+                        // pressure signal's) is answered only by a row naming
+                        // that id; the refusal names it, so it answers
+                        let id = std::json::find_string_field(r.body, "request");
+                        let ok = append_as(self.root, refused, r.entity, if len(id) > 0 { dna::concern_refusal_body(why, id) } else { why }, "host", memory);
+                    }
+                    state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now());
+                    eprintln("hale dna ", self.verb, ": refused an unverified ", r.kind, " (", r.entity, ") from the record");
+                }
+            } else if requested {
+                let answered = request_answered(p, i, answers);
+                // GH #664: an intent for a position another owner holds is
+                // theirs to admit; it stays in the record, unanswered here
+                let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));
+                // GH #682: relayed before and still unanswered — relay again
+                let last = relayed_at(state.relayed, fact_key(p, i));
+                let due = last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER;
+                if !answered && ours && due {
+                    let mut body = r.body;
+                    if r.kind == "intent.requested" {
+                        // the row's entity is the intent id
+                        let inner = dna::trim_nl(body);
+                        let close = last_index_of(inner, "}");
+                        if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
+                    }
+                    if r.kind == "knowledge.node.requested" {
+                        // Admission metadata stays in Record. Transport only the
+                        // exact eleven native fields after trust/owner checks;
+                        // duplicating command_payload can exceed process argv.
+                        let codec = dna::KnowledgeNodeRequestCodec { };
+                        body = codec.started(codec.decode(r.body));
+                    }
+                    if r.kind == "knowledge.binding.requested" { let codec = dna::KnowledgeBindingCodec { }; body = codec.started(codec.decode(r.body)); }
+                    if r.kind == "knowledge.edge.requested" { let codec = dna::KnowledgeEdgeCodec { }; body = codec.started(codec.decode(r.body)); }
+                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "observation.requested" { "observed" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else { "verdict" }, body);
+                    if len(e) == 0 { state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now()); state.count = state.count + 1; }
+                    else { state.error = r.kind + " (" + r.entity + "): " + e; }
+                }
+            }
+            i = i + 1;
+        }
+        self.relayed = state.relayed;
+        self.error = state.error;
+        self.relayed_count = state.count;
+        return state.count;
+    }
 }
 
-locus Host {
+// The host is the program's `main locus` when it runs a node (`run`,
+// `dev`), so its `bindings` are this program's: every fact the node
+// publishes goes out through pond's NATS adapter, and the pinned
+// `nerves` connection carries it to the organization's stream (GH #986).
+// Nothing is instantiated for a one-shot verb, which never publishes: it
+// writes its row, and a node relays it.
+main locus Host {
     birth() { self.memory.point(self.root, dna::own_dsn_env()); }
     params {
         verb: String = "run";
@@ -554,12 +676,49 @@ locus Host {
         org_ready: String = ""; // the organization's binary, built for `genome_sha`
         app_ready: String = ""; // the application's, under `dev`
         handled: String = "\n";
-        relayed: String = "\n";
         app_gone_reported: Bool = false;
         exit_code: Int = 0;
         lease: BodyLease = BodyLease { }; // GH #617: this body's lease on the record
         holder: String = "";
         fence: Proc = Proc { }; // the second review of #622: the renewer that fences the organism
+        // GH #986: the nerves, as the spine — the server and the
+        // organization's token `dev` handed this host (HALE_DNA_NATS_URL_SPINE,
+        // HALE_DNA_NATS_ORG); every publish is acknowledged by the stream.
+        // Declared here, not passed in, so its failure reaches this host.
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "dna-node", subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()), jetstream: true };
+        nerves_on: Bool = false;
+        relay: NodeRelay = NodeRelay { };
+        // when this node last stopped an organization (monotonic ns; 0
+        // never): its pulls outlive it for a pull's life
+        org_stopped_at: Int = 0;
+    }
+    placement { nerves: pinned; }
+    // Every topic the node publishes, onto the nerves: the record's
+    // requests it relays, and the observation it reports.
+    bindings {
+        dna::IntentOffered: nats::NatsAdapter { };
+        dna::ReviewVerdict: nats::NatsAdapter { };
+        dna::ExpressionObserved: nats::NatsAdapter { };
+        dna::PressureRaised: nats::NatsAdapter { };
+        dna::ConcernRaised: nats::NatsAdapter { };
+        dna::PracticeRequested: nats::NatsAdapter { };
+        dna::KnowledgeNodeRequested: nats::NatsAdapter { };
+        dna::KnowledgeBindingRequested: nats::NatsAdapter { };
+        dna::KnowledgeEdgeRequested: nats::NatsAdapter { };
+    }
+    // A publish the stream did not acknowledge within the connection's
+    // window collapses it here: a `nerves.lost` row says why, and the node
+    // stops cleanly and exits with NODE_RESTART for its unit to start it
+    // again: a fresh process, its connection and its organization's both
+    // new, rather than one connection restarted in place beside an
+    // organization that may be as stuck. The row first is what makes the
+    // loss recoverable: the next node relays every request still
+    // unanswered.
+    on_failure(c: nats::NatsConn, err: ClosureViolation) {
+        let why = c.last_error;
+        self.say("nerves: " + why + "; stopping for the unit to start this node again");
+        let ok = append_as(self.root, "nerves.lost", self.holder, "{\"why\": " + quote(why) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host", self.memory);
+        self.stop_to_restart("nerves", dna::NODE_RESTART);
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
     // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
@@ -683,7 +842,7 @@ locus Host {
     fn stop_body(code: Int) {
         self.stop_started();
         self.stop_fence();
-        stop_proc(self.org);
+        self.stop_org();
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
@@ -930,8 +1089,11 @@ locus Host {
     // Stop cleanly — the organization and the expression drain on SIGTERM —
     // give the body lease back, and exit for the unit to start this node
     // again on the new genome.
-    fn restart_for_genome() {
-        stop_proc(self.org);
+    fn restart_for_genome() { self.stop_to_restart("genome", GENOME_RESTART); }
+    // Stop cleanly, give the lease back naming `why`, and exit with `code`
+    // for the supervisor to start this node again.
+    fn stop_to_restart(why: String, code: Int) {
+        self.stop_org();
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.app.pid > 0 { stop_proc(self.app); }
         self.stop_started();
@@ -939,26 +1101,38 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.stop_fence();
         if body_release(self.root, self.lease, self.memory) {
-            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\", \"why\": \"genome\"" + owner_json(self.root) + "}", "host", self.memory);
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\", \"why\": " + quote(why) + owner_json(self.root) + "}", "host", self.memory);
         }
         let s = sync_record(self.root, self.memory);
-        std::process::exit(GENOME_RESTART);
+        std::process::exit(code);
     }
-    fn remove_sockets() {
-        std::io::fs::unlink(self.dna_dir + "/" + VERDICT_SOCK) or discard;
-        std::io::fs::unlink(self.dna_dir + "/" + INTENT_SOCK) or discard;
-        std::io::fs::unlink(self.dna_dir + "/" + OBSERVED_SOCK) or discard;
-        std::io::fs::unlink(self.dna_dir + "/" + PRESSURE_SOCK) or discard;
-        std::io::fs::unlink(self.dna_dir + "/" + CONCERN_SOCK) or discard;
-        std::io::fs::unlink(self.dna_dir + "/" + PRACTICE_SOCK) or discard;
-        std::io::fs::unlink(self.dna_dir + "/" + KNOWLEDGE_NODE_SOCK) or discard;
+    // Stop the organization, noting when: its outstanding pull on the
+    // stream lives on for a pull's life (wait_nerves).
+    fn stop_org() {
+        stop_proc(self.org);
+        self.org_stopped_at = std::time::monotonic_ns();
     }
-    fn wait_membrane(secs: Int) -> Bool {
+    // Whether the organization this host just started comes to read its
+    // facts within `secs` (GH #986): its durable consumer on the stream
+    // has a pull outstanding. A pull the organization this node stopped
+    // left behind counts for nothing until its life is over, so a pull
+    // seen before then is not this organization's. Without nerves there
+    // is nothing to read; an organization still running is all there is.
+    fn wait_nerves(secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
+        if !self.nerves_on { return exit_code(self.org) == -2; }
+        let stale_until = if self.org_stopped_at > 0 { self.org_stopped_at + NERVES_PULL_LIFE_MS * 1000000 } else { 0 };
+        let c = nats::NatsClient { url: dna::nerves_spine_url(), name: "dna-node-probe", timeout: 2s };
+        let mut why = "";
         while true {
-            if membrane_up(self.root) { return true; }
-            if exit_code(self.org) != -2 { return false; }
-            if std::time::now() > deadline { return false; }
+            if exit_code(self.org) != -2 { c.close(); return false; }
+            if std::time::monotonic_ns() < stale_until {
+                why = "the stopped organization's pull has not expired yet";
+            } else if c.connected || c.open() {
+                why = nerves_listening(c, dna::nerves_org(), owner_here(self.root));
+                if len(why) == 0 { c.close(); return true; }
+            } else { why = c.last_error; }
+            if std::time::now() > deadline { self.say("nerves: the organization is not reading its facts (" + why + ")"); c.close(); return false; }
             std::time::sleep(100ms);
         }
         return false;
@@ -968,6 +1142,7 @@ locus Host {
         let now = record_head(self.root);
         if !now.ok || now.absent { return; }
         let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
+        p.live = true;
         let tmp = self.status_path + ".tmp";
         let w = write_text(tmp, p.json()) or false;
         if w { std::io::fs::rename(tmp, self.status_path) or discard; }
@@ -980,16 +1155,6 @@ locus Host {
         if self.observer.pid > 0 { eprintln("hale dna run: iris at http://127.0.0.1:", self.port, "/"); }
         else { eprintln("hale dna run: could not launch hale iris"); }
     }
-    // The membrane over the record: an `intent.requested`, a
-    // `review.verdict` or a `concern.requested` row a CLI or a node
-    // appended from any clone is relayed onto the organism's sockets,
-    // once.
-    fn relay_record_membrane() -> Int {
-        let state = relay_record_membrane(self.root, self.seed, self.toolchain, self.verb, self.relayed, self.memory);
-        self.relayed = state.relayed;
-        if len(state.error) > 0 { self.say("membrane relay failed: " + state.error); }
-        return state.count;
-    }
     fn observed(mutation_id: String, outcome: String, model_hash: String, detail: String) {
         let b = std::json::Builder { };
         b.begin_object();
@@ -998,18 +1163,21 @@ locus Host {
         b.string_field("model_hash", model_hash);
         b.string_field("detail", detail);
         b.end_object();
-        // GH #682: a publish the membrane loses leaves a mutation applied and
-        // never retained; the observation is confirmed by the row the
-        // organism writes on receipt, and sent again until it is, thrice
-        let mut attempts = 0;
-        while attempts < 3 {
-            attempts = attempts + 1;
-            let e = publish_on_membrane(self.root, "observed", b.result());
-            if len(e) > 0 { self.say("could not report on the membrane: " + e); }
-            if self.observation_landed(mutation_id, outcome, 20) { return; }
-            self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; reporting it again");
+        // GH #682, #986: the report is a row first, like every request —
+        // `observation.requested`, which the relay publishes as
+        // ExpressionObserved until the organism answers it with
+        // `expression.observed`. This node is inside its own tick here, so
+        // it relays while it waits for the answer.
+        if !append_as(self.root, "observation.requested", mutation_id, b.result(), "host", self.memory) {
+            self.say("the " + outcome + " observation of " + mutation_id + " was not written into the record");
+            return;
         }
-        self.say("the " + outcome + " observation of " + mutation_id + " was reported three times and the organism recorded none of them");
+        let deadline = std::time::now() + OBSERVATION_WAIT;
+        while std::time::now() <= deadline {
+            let n = self.relay.relay(self.memory);
+            if self.observation_landed(mutation_id, outcome, 1) { return; }
+        }
+        self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; the relay goes on publishing it until it does");
     }
     // Whether `expression.observed <id>` with `outcome` is in the record,
     // waiting up to `secs` for it.
@@ -1029,8 +1197,8 @@ locus Host {
         return false;
     }
     // Rebuild the organization and restart it for a Mutation of its own
-    // seed: sockets down, the new org up with the Mutation in its
-    // environment. True when the membrane came up.
+    // seed: the old one stopped, the new org up with the Mutation in its
+    // environment. True when it reads its facts from the nerves.
     // Durable identity precedes process replacement. Building/retaining exact
     // candidate inputs is preparatory; only an acknowledged new claim permits
     // start. A later call returns the existing attempt without rebuilding it.
@@ -1082,7 +1250,7 @@ locus Host {
         let dir = source.directory(a);
         if std::io::fs::file_exists(dir + "/org.pid") || source.file_digest(dir + "/program") != a.binary_digest
             || source.file_digest(dir + "/topology.json") != a.topology_digest { return false; }
-        stop_proc(self.org); self.remove_sockets();
+        self.stop_org();
         if !self.body_assert("the retained prepared organization") { return false; }
         self.org = start(dir, "org", self.root, self.child_envs(a.mutation_id, a.binary_digest) + "\nHALE_DNA_ORGANIZATION_LAUNCH=" + a.attempt_id, dir + "/program");
         self.org_log = 0;
@@ -1107,7 +1275,7 @@ locus Host {
         }
         if proc.pid <= 0 { return dna::OrganizationLaunchReceipt { }; }
         self.org = proc;
-        if !self.wait_membrane(20) { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
+        if !self.wait_nerves(20) { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
         let live = source.live(a, self.memory.leases); if !live.valid { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
         let existing = source.launched(a);
         if existing.valid {
@@ -1165,13 +1333,13 @@ locus Host {
         if fresh {
             if !source.scope(a, self.memory.leases) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
                 || source.file_digest(dir + "/rollback.topology") != claim.topology_digest { return false; }
-            stop_proc(self.org); self.remove_sockets(); if !self.body_assert("the original organization") { return false; }
+            self.stop_org(); if !self.body_assert("the original organization") { return false; }
             self.org = start(dir, "rollback", self.root, self.child_envs(id, "rollback " + claim.binary_digest), dir + "/rollback.program"); self.org_log = 0;
         } else {
             let pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(dir + "/rollback.pid") or "")) or - 1;
             self.org = Proc { pid: pid, dir: dir, name: "rollback" };
         }
-        if self.org.pid <= 0 || exit_code(self.org) != -2 || !self.wait_membrane(20) { return false; }
+        if self.org.pid <= 0 || exit_code(self.org) != -2 || !self.wait_nerves(20) { return false; }
         let process = identity::Identity { }; let before = process.capture(self.org.pid);
         if len(before.key) == 0 || source.file_digest("/proc/" + self.org.pid + "/exe") != claim.binary_digest
             || source.file_digest(dir + "/rollback.program") != claim.binary_digest || source.file_digest(dir + "/rollback.topology") != claim.topology_digest
@@ -1229,14 +1397,13 @@ locus Host {
         let bin = self.build_seed(org_seed);
         if len(bin) == 0 { self.say(id + ": the organization does not express"); if !rollback { self.observed(id, "build_failed", "", "build failed"); } return false; }
         let expression = (if rollback { "rollback " } else { "" }) + shape_of(art) + " build " + self.sha12(bin);
-        stop_proc(self.org);
-        self.remove_sockets();
+        self.stop_org();
         if !self.body_assert("the organization again") { self.stop_body(3); }
         self.org = start(self.dna_dir, "org", self.root, self.child_envs(id, expression), bin);
         self.org_log = 0;
         let w = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
         eprintln("hale dna: organization restarted (pid ", self.org.pid, ") as ", expression);
-        return self.wait_membrane(20);
+        return self.wait_nerves(20);
     }
     // The window over the touched instances of a fleet deploy.
     @unbounded
@@ -1405,6 +1572,14 @@ locus Host {
                 self.app_gone_reported = true;
             }
         }
+        // the record's requests onto the nerves first (GH #986): the relay
+        // is what a person waiting on an answer waits for, so it never
+        // waits behind the sync, memory's work or the forge. A row another
+        // clone wrote arrives with the sync below and is relayed on the
+        // next tick; the sync below shares what this relay answers.
+        let n = self.relay.relay(self.memory);
+        if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
+        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); }
         let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
         self.memory_tick(s.ok);
@@ -1414,10 +1589,8 @@ locus Host {
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }
         // the sync above may have blocked past the lease's life: prove it
-        // again before relaying anything onto the membrane
+        // again before answering anything
         if !self.body_alive() { self.stop_body(3); }
-        let n = self.relay_record_membrane();
-        if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root, self.memory); }
         self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
@@ -1464,8 +1637,16 @@ locus Host {
         //    expression identity (a fresh artifact of the application) and
         //    the binaries, or the last genome that built (GH #1026)
         if !self.prepare_genome() { self.quit(1); }
-        // 2. memory, before the organization that reads and writes it (GH #985)
+        // 2. memory, before the organization that reads and writes it (GH #985),
+        //    and the nerves it hears the record's requests on (GH #986)
         self.start_memory();
+        self.nerves_on = dna::nerves_here();
+        self.relay.root = self.root;
+        self.relay.seed = self.seed;
+        self.relay.toolchain = self.toolchain;
+        self.relay.verb = self.verb;
+        self.relay.live = self.nerves_on;
+        if !self.nerves_on { self.say("no nerves: " + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks"); }
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
         let incoming = open_projection(self.root, self.seed, self.toolchain, self.memory);
@@ -1478,7 +1659,6 @@ locus Host {
             // 3. the organization: built (above), started from the root, observable
             let org_bin = self.org_ready;
             if len(org_bin) == 0 { self.quit(1); }
-            self.remove_sockets();
             std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
             std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
             if !self.body_assert("the organization") {
@@ -1489,21 +1669,21 @@ locus Host {
             let pw = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
             self.say("organization (pid " + to_string(self.org.pid) + ") from " + self.root + " under LOTUS_OBS=1");
         }
-        // 3. the membrane comes up
-        let bound = self.wait_membrane(20);
-        if bound { self.say("membrane bound at " + self.dna_dir); }
-        else if exit_code(self.org) == -2 { self.say("the membrane did not come up within 20s; the organization runs unobserved"); }
+        // 3. the organization reads its facts from the nerves
+        let bound = self.wait_nerves(20);
+        if bound && self.nerves_on { self.say("the organization reads its facts from the nerves (" + dna::nerves_stream(dna::nerves_org()) + ")"); }
+        else if exit_code(self.org) == -2 && self.nerves_on { self.say("the organization did not come to read the nerves within 20s; the facts wait in the stream"); }
         // 4. dev: the application too, under this host
         if self.verb == "dev" {
             let bin = self.app_ready;
-            if len(bin) == 0 { stop_proc(self.org); self.quit(1); }
+            if len(bin) == 0 { self.stop_org(); self.quit(1); }
             self.app_bin = bin;
             if !self.body_assert("the expression") {
-                stop_proc(self.org);
+                self.stop_org();
                 self.quit(3);
             }
             self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
-            if self.app.pid <= 0 { self.say("cannot start " + bin); stop_proc(self.org); self.quit(1); }
+            if self.app.pid <= 0 { self.say("cannot start " + bin); self.stop_org(); self.quit(1); }
             let aw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
             self.say("expression " + self.app_name() + " (pid " + to_string(self.app.pid) + ") under LOTUS_OBS=1");
         }
@@ -1517,9 +1697,11 @@ locus Host {
             let baseline = self.dna_dir + "/baseline.topology";
             self.launch_iris(if std::io::fs::file_exists(baseline) { baseline } else { "" });
         }
-        // 6. supervise: the organization's exit is ours
+        // 6. supervise: the organization's exit is ours — and a SIGTERM to
+        //    this node (its unit stopping it) ends the supervision: the
+        //    runtime drains the program, and this loop is what reads it
         let mut code = -2;
-        while code == -2 {
+        while code == -2 && !self.draining {
             code = exit_code(self.org);
             if code == -2 {
                 self.tick();
@@ -1538,6 +1720,12 @@ locus Host {
         }
         // the fence stopped it: the lease is not ours to keep
         if !self.body_alive() { self.stop_body(3); }
+        // told to stop: the organization drains on SIGTERM like this node
+        if self.draining {
+            self.say("stopping: the organization and what it started go with this node");
+            self.stop_org();
+            code = exit_code(self.org);
+        }
         // the organization is gone; what it started goes with it
         self.stop_started();
         self.org_log = drain_log(self.org, self.org_log);
@@ -1552,6 +1740,8 @@ locus Host {
             let s3 = sync_record(self.root, self.memory);
         }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
+        // drained: return, and the runtime ends the process by its signal
+        if self.draining { return; }
         if self.exit_code != 0 { self.quit(self.exit_code); }
         self.quit(if code < 0 { 1 } else { code });
     }

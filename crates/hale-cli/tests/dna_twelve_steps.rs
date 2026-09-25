@@ -78,6 +78,10 @@ fn copy_dir(from: &Path, to: &Path) {
 
 #[test]
 fn the_twelve_steps_run_on_the_acceptance_application() {
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_twelve_steps: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
     let d = std::env::temp_dir().join(format!("hale_dna_twelve_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
@@ -118,6 +122,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
 
     // 2. a local governed session (iris reads the same status projection)
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
+    let log = d.join("dev.stderr");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "dev", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
@@ -127,10 +132,10 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OPENAI_API_KEY")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
-    let up = |app: &Path| app.join(".hale/dna/hale-dna.review.verdict.sock").exists() && app.join(".hale/dna/hale-dna.intent.offered.sock").exists();
+    let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let dl = Instant::now() + Duration::from_secs(120);
     while Instant::now() < dl && !up(&app) {
         std::thread::sleep(Duration::from_millis(200));
@@ -147,7 +152,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     };
     if !up(&app) {
         finish(&mut host);
-        panic!("the membrane did not come up");
+        panic!("the organism never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     std::thread::sleep(Duration::from_millis(500));
     // the verdict flags are read fresh per call; the organism must not see ONESHOT

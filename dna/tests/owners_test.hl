@@ -3,10 +3,11 @@
 // A new organization is born with an empty map (one owner) and a main.hl
 // that reads it. Once the map names owners, a body says which it is or
 // does not run; a name the map lacks does not run either. An ask for a
-// position another owner holds never goes over the membrane, even with
-// a body here: it goes into the record for that owner's controller, and
-// `status` here shows it waiting, by owner, while the owner's own clone
-// shows nothing waiting. A shared record runs no body until its ledger
+// position another owner holds is not this body's to relay, even with a
+// body here: it goes into the record for that owner's controller (a
+// one-shot verb only ever writes its row — GH #986), and `status` here
+// shows it waiting, by owner, while the owner's own clone shows nothing
+// waiting. A shared record runs no body until its ledger
 // is adopted (GH #665): the owners' controllers coordinate there.
 
 import "../core" as dna;
@@ -72,12 +73,18 @@ main locus App {
         // GH #665: the owners' controllers coordinate through the ledger
         let unadopted = in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
         std::test::assert(unadopted.code != 0 && std::str::contains(unadopted.stderr, "coordinate through the ledger, which it has not adopted"), "a shared record runs no body until the ledger is adopted: " + unadopted.stderr);
-        // ---- with a body here (its sockets stand in for it), an ask for
-        // north's position takes the record path, not the membrane
-        std::io::fs::mkdir(app + "/.hale") or discard;
-        std::io::fs::mkdir(app + "/.hale/dna") or discard;
-        std::io::fs::write_file(app + "/.hale/dna/hale-dna.intent.offered.sock", "") or discard;
-        std::io::fs::write_file(app + "/.hale/dna/hale-dna.review.verdict.sock", "") or discard;
+        // ---- with a body here, an ask for north's position is north's.
+        // "The organism runs from this clone" is this clone's body holding
+        // the record's lease, live (GH #986); a lease is planted for it
+        // the way a host takes it — in the record, shared with the remote,
+        // held by this clone — so no process has to run
+        let holder = dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && h=$(hostname 2>/dev/null || echo localhost) && echo \"${USER:-body}@$h:$(pwd -P)\"\nsh\n" + app).stdout);
+        let lease = dna::GitRecord { repo: app };
+        let planted = lease.swap("lease/body", holder + "\n1\n" + to_string(std::time::now() + 600) + "\n1", "");
+        let shared = lease.share(lease.remote(), "lease/body", "new");
+        std::test::assert(planted && shared.ok, "a live lease held by this clone is in the record");
+        let here = in_dir(app, toolchain() + "\ndna\nstatus");
+        std::test::assert(std::str::contains(here.stdout, "running (this clone's body holds the lease)"), "status here reads the organism as running from this clone: " + here.stdout + here.stderr);
         let asked = in_dir(app, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/collections\n--as\nalice\ncall the agency about the late invoice");
         std::test::assert_eq_int(asked.code, 0, "the ask is taken: " + asked.stdout + asked.stderr);
         std::test::assert(std::str::contains(asked.stdout, "requested in the record for its owner's controller") && std::str::contains(asked.stdout, "owned by north, not acme"), "…into the record, naming whose it is: " + asked.stdout);

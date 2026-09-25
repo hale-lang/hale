@@ -66,16 +66,23 @@ fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
         .expect("spawn hale dna run")
 }
 
-fn wait_log(log: &Path, needle: &str, secs: u64, host: &mut std::process::Child) -> bool {
-    let has = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().contains(needle);
+/// Whether the organization's process (`.hale/dna/org.pid`) is up: this
+/// fixture is about the body's credential, not about the organization
+/// answering anything, so — unlike a fixture that needs a verdict to
+/// cross the nerves — it waits for the process alone (GH #986).
+fn wait_org_up(app: &Path, secs: u64, host: &mut std::process::Child) -> bool {
+    let up = |app: &Path| -> bool {
+        let pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default();
+        let pid = pid.trim();
+        !pid.is_empty() && Command::new("kill").args(["-0", pid]).status().map(|s| s.success()).unwrap_or(false)
+    };
     let mut at_exit: Option<bool> = None;
-    let held = trace::wait_until(format!("log: {needle}"), Duration::from_secs(secs), Duration::from_millis(250), || {
-        if has(log) {
+    let held = trace::wait_until("org.pid written and the organization is up".to_string(), Duration::from_secs(secs), Duration::from_millis(250), || {
+        if up(app) {
             return true;
         }
-        // the host exited: the log will not grow, so stop waiting on it
         if matches!(host.try_wait(), Ok(Some(_))) {
-            at_exit = Some(has(log));
+            at_exit = Some(up(app));
             return true;
         }
         false
@@ -193,7 +200,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     // ---- the host: a missing credential surfaces at once ----
     let log = d.join("host.log");
     let mut host = run_host(&app, &home_empty, &log);
-    assert!(wait_log(&log, "membrane bound", 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
+    assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     let l = std::fs::read_to_string(&log).unwrap();
     assert!(l.contains(&format!("no credential for the model: none of {cred} is set here or in ~/.config/hale-dna/{key}.env")), "{l}");
     let (ok, st) = hale_env(&["dna", "status"], &app, &home_empty, None);
@@ -204,7 +211,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     assert!(journal(&app).contains("\"kind\": \"body.credential_missing\", \"entity\": \"model\""));
     // with the secret on this machine: present, handed to the organization, and the board is clear
     let mut host = run_host(&app, &home, &log);
-    assert!(wait_log(&log, "membrane bound", 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
+    assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     assert!(std::fs::read_to_string(&log).unwrap().contains("the model's credential is present now"), "{}", std::fs::read_to_string(&log).unwrap());
     let org_pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap().trim().to_string();
     let environ = std::fs::read(format!("/proc/{org_pid}/environ")).unwrap_or_default();

@@ -36,9 +36,9 @@
     check(value.head.active === "" || hex40(value.head.active));
   }
   function validBody(value) {
-    check(closed(value, ["state", "pid", "since", "command_id", "membrane_up", "mode", "exit_code"]));
+    check(closed(value, ["state", "pid", "since", "command_id", "organism_alive", "mode", "exit_code"]));
     check(["stopped", "running", "exited", "external"].includes(value.state) && int(value.pid) && int(value.since) && text(value.command_id, 256));
-    check(bool(value.membrane_up) && ["run", "dev", ""].includes(value.mode) && int(value.exit_code));
+    check(bool(value.organism_alive) && ["run", "dev", ""].includes(value.mode) && int(value.exit_code));
   }
   function validHeadData(data, active) {
     check(closed(data, ["state", "active", "state_dir", "sources_dir", "projects_dir", "children", "credentials", "busy", "operations"]));
@@ -446,7 +446,7 @@
       const d = state.data;
       fact(summary, "Head state", d.state);
       fact(summary, "Active project", d.state === "attached" ? d.active.name + " · " + d.active.root : "none");
-      fact(summary, "Body", d.children.body.state + (d.children.body.mode ? " · " + d.children.body.mode : "") + (d.children.body.state === "running" ? (d.children.body.membrane_up ? " · membrane up" : " · membrane not up") : "") + (d.children.body.state === "exited" ? " · exit " + d.children.body.exit_code : ""));
+      fact(summary, "Body", d.children.body.state + (d.children.body.mode ? " · " + d.children.body.mode : "") + (d.children.body.state === "running" ? (d.children.body.organism_alive ? " · organism alive" : " · organism not alive") : "") + (d.children.body.state === "exited" ? " · exit " + d.children.body.exit_code : ""));
       fact(summary, "State directory", d.state_dir, true);
       fact(summary, "Secret sources", d.sources_dir + (d.credentials.file_sources.length ? " · " + d.credentials.file_sources.join(", ") : " · none"), true);
       fact(summary, "Credentials needed", d.credentials.needed.length ? d.credentials.needed.map(name => name + (d.credentials.env_present.includes(name) ? " (exported)" : "")).join(", ") : "none declared");

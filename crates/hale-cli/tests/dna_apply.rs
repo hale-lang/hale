@@ -5,7 +5,7 @@
 //! the maintainer's verdict makes the organism apply the pinned commit
 //! and ask for a restart; the host rebuilds, restarts the organism
 //! (which journals `expression.restarted`), watches it stay up for the
-//! window, and reports `healthy` on the membrane; the organism retains
+//! window, and reports `healthy` on the nerves; the organism retains
 //! the Mutation and dissolves its worktree. `git log` gains exactly the
 //! candidate; the organism is still up afterwards.
 
@@ -93,6 +93,10 @@ fn has(rows: &[(String, String, String)], kind: &str, entity: &str) -> bool {
 #[test]
 fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     let _t = trace::test("dna_apply");
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_apply: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_apply_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -111,6 +115,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     assert_eq!(git(&["rev-parse", "HEAD"], &app), base, "nothing applied before the verdict");
 
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
+    let log = d.join("dev.stderr");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "dev", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
@@ -118,11 +123,11 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
-    let up = |app: &Path| app.join(".hale/dna/hale-dna.review.verdict.sock").exists() && app.join(".hale/dna/hale-dna.intent.offered.sock").exists();
-    trace::wait_until("dna dev: the membrane bound", Duration::from_secs(90), Duration::from_millis(200), || up(&app));
+    let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
+    trace::wait_until("dna dev: the organization reads its facts from the nerves", Duration::from_secs(90), Duration::from_millis(200), || up(&app));
     // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
         let _ = host.kill();
@@ -135,7 +140,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     };
     if !up(&app) {
         finish(&mut host);
-        panic!("the membrane did not come up");
+        panic!("the organization never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     // the organism writes org.pid once it is up
     trace::wait_until("org.pid written", Duration::from_secs(30), Duration::from_millis(200), || {
@@ -166,7 +171,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     assert!(has(&rows, "expression.restart_requested", "m1"), "{}", kinds.join("\n"));
     let restarted = rows.iter().find(|(k, e, _)| k == "expression.restarted" && e == "m1").expect("the restarted expression journaled itself");
     assert!(restarted.2.contains("build "), "expression named (by the host, GH #566 F2): {}", restarted.2);
-    let observed = rows.iter().find(|(k, e, _)| k == "expression.observed" && e == "m1").expect("the host reported on the membrane");
+    let observed = rows.iter().find(|(k, e, _)| k == "expression.observed" && e == "m1").expect("the host reported on the nerves");
     assert!(observed.2.starts_with("healthy "), "{}", observed.2);
     assert_eq!(count, "2", "exactly the candidate was applied");
     assert_ne!(head, base);
@@ -174,7 +179,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     assert!(rows.iter().any(|(k, e, b)| k == "mutation.worktree" && e == "m1" && b == "removed"), "worktree dissolved");
     assert!(ok3 && status.contains("m1 [retained]"), "status:\n{status}");
     assert!(ok4 && history.contains("expression.restarted") && history.contains("mutation.retained"), "history:\n{history}");
-    assert!(still_up, "the restarted organism is up with its membrane");
+    assert!(still_up, "the restarted organism is up and reading the nerves");
     assert!(!app.join(".hale/dna/worktrees/m1").exists(), "the worktree is dissolved");
     let _ = std::fs::remove_dir_all(&d);
 }

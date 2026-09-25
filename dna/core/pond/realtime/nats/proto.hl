@@ -1,0 +1,229 @@
+// pond/realtime/nats — the wire: encoders for what a client sends,
+// and a framing state machine for what a server sends
+// (https://docs.nats.io/reference/reference-protocols/nats-protocol).
+//
+// Control lines are text ended by CRLF; MSG and HMSG carry a sized
+// payload after theirs. `NatsFramer` holds the received bytes and
+// hands back one whole frame at a time, leaving a partial one in the
+// buffer until the rest arrives — bytes in, frames out, no I/O here.
+
+// A control line longer than this is not NATS: the framer refuses it
+// rather than buffering without bound (the server's own default
+// max_control_line is 4 KiB).
+const MAX_CONTROL_LINE: Int = 4096;
+
+fn crlf() -> String { return "\r\n"; }
+
+/// `CONNECT {…}` with the options this client speaks: no verbose
+/// `+OK`s, headers on, `echo` as asked (false keeps a process's own
+/// publishes from coming back to it), and whichever credentials are
+/// set (a token wins over user/pass).
+fn connect_line(user: String, pass: String, token: String, name: String, echo: Bool) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.bool_field("verbose", false);
+    b.bool_field("pedantic", false);
+    b.bool_field("tls_required", false);
+    b.string_field("lang", "hale");
+    b.string_field("version", "0.1.0");
+    b.int_field("protocol", 1);
+    b.bool_field("headers", true);
+    b.bool_field("no_responders", true);
+    b.bool_field("echo", echo);
+    if len(name) > 0 { b.string_field("name", name); }
+    if len(token) > 0 {
+        b.string_field("auth_token", token);
+    } else if len(user) > 0 {
+        b.string_field("user", user);
+        b.string_field("pass", pass);
+    }
+    b.end_object();
+    return "CONNECT " + b.result() + crlf();
+}
+
+/// `PUB <subject> [reply] <size>\r\n<payload>\r\n`.
+fn pub_frame(subject: String, reply: String, data: Bytes) -> Bytes {
+    let out = std::bytes::BytesBuilder { };
+    out.append_str("PUB " + subject + " ");
+    if len(reply) > 0 { out.append_str(reply + " "); }
+    out.append_str(to_string(len(data)) + crlf());
+    out.append(data);
+    out.append_str(crlf());
+    return out.finish();
+}
+
+/// `HPUB <subject> [reply] <header size> <total size>\r\n<headers><payload>\r\n`:
+/// a publish carrying a header block (`headers` is the whole block,
+/// status line to the blank line, as `msg_id_headers` builds it).
+fn hpub_frame(subject: String, reply: String, headers: String, data: Bytes) -> Bytes {
+    let out = std::bytes::BytesBuilder { };
+    out.append_str("HPUB " + subject + " ");
+    if len(reply) > 0 { out.append_str(reply + " "); }
+    out.append_str(to_string(len(headers)) + " " + to_string(len(headers) + len(data)) + crlf());
+    out.append_str(headers);
+    out.append(data);
+    out.append_str(crlf());
+    return out.finish();
+}
+
+/// The header block that gives a publish its JetStream message id: a
+/// stream stores a message once per id within its duplicate window.
+fn msg_id_headers(id: String) -> String {
+    return "NATS/1.0" + crlf() + "Nats-Msg-Id: " + id + crlf() + crlf();
+}
+
+/// `SUB <subject> [queue] <sid>\r\n`.
+fn sub_line(subject: String, queue: String, sid: Int) -> String {
+    if len(queue) > 0 { return "SUB " + subject + " " + queue + " " + to_string(sid) + crlf(); }
+    return "SUB " + subject + " " + to_string(sid) + crlf();
+}
+
+/// `UNSUB <sid> [max]\r\n` (max <= 0: at once).
+fn unsub_line(sid: Int, max: Int) -> String {
+    if max > 0 { return "UNSUB " + to_string(sid) + " " + to_string(max) + crlf(); }
+    return "UNSUB " + to_string(sid) + crlf();
+}
+
+fn ping_line() -> String { return "PING" + crlf(); }
+fn pong_line() -> String { return "PONG" + crlf(); }
+
+// The `k`th space-separated token of `line` (0-based), "" past the end.
+// @unbounded: walks one control line, at most MAX_CONTROL_LINE bytes.
+@unbounded
+fn token_at(line: String, k: Int) -> String {
+    let mut rest = line;
+    let mut i = 0;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let tok = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(tok) == 0 { continue; }
+        if i == k { return tok; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// How many space-separated tokens `line` has.
+// @unbounded: walks one control line, at most MAX_CONTROL_LINE bytes.
+@unbounded
+fn token_count(line: String) -> Int {
+    let mut rest = line;
+    let mut n = 0;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let tok = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(tok) > 0 { n = n + 1; }
+    }
+    return n;
+}
+
+/// Frames what a server sends. `feed` appends received bytes (a
+/// connection reads straight into `rx` instead); `next()` takes one
+/// whole frame off the front into `frame` and returns true, or
+/// returns false and leaves a partial frame for the next read. A
+/// stream that cannot be NATS sets `error` and `next()` stays false.
+locus NatsFramer {
+    params {
+        rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { };
+        frame: NatsFrame = NatsFrame { };
+        error: String = "";
+    }
+
+    fn feed(b: Bytes) { self.rx.append(b); }
+
+    fn clear() {
+        self.rx.clear();
+        self.error = "";
+    }
+
+    // Each frame writes only the fields its op defines, and `op` is
+    // always a literal. A field that alternates between a heap value and
+    // an empty one keeps every heap value it held (hale#1033), so a
+    // PING must not blank the subject a MSG left; and rebuilding the
+    // whole struct into `frame` keeps each old one in this locus's
+    // region, where a field write retires what it held.
+    fn control(op: String) { self.frame.op = op; }
+
+    // Stop framing: `next()` refuses every later frame, so this runs
+    // once per stream (until `clear()`).
+    // @unbounded: once per stream, on the frame that cannot be NATS.
+    @unbounded
+    fn stop(what: String, line: String) { self.error = what + line; }
+
+    fn next() -> Bool {
+        if len(self.error) > 0 { return false; }
+        let n = self.rx.len();
+        if n == 0 { return false; }
+        // a view, not a copy: the frame's parts are sliced out of it
+        let b = self.rx.view();
+        let nl = std::bytes::find_byte(b, 0, 10);
+        if nl < 0 {
+            if n > MAX_CONTROL_LINE { self.stop("a control line longer than ", to_string(MAX_CONTROL_LINE) + " bytes"); }
+            return false;
+        }
+        let end = if nl > 0 && (std::bytes::at(b, nl - 1) or 0) == 13 { nl - 1 } else { nl };
+        let line = std::str::from_bytes(std::bytes::slice(b, 0, end));
+        let op = std::str::upper(token_at(line, 0));
+        let body = nl + 1;
+        if op == "MSG" {
+            // MSG <subject> <sid> [reply] <size>
+            let count = token_count(line);
+            if count != 4 && count != 5 { self.stop("MSG with " + to_string(count) + " fields: ", line); return false; }
+            let size = std::str::parse_int(token_at(line, count - 1)) or - 1;
+            if size < 0 { self.stop("MSG size is not a number: ", line); return false; }
+            if n < body + size + 2 { return false; }
+            self.frame.op = "MSG";
+            self.frame.subject = token_at(line, 1);
+            self.frame.sid = std::str::parse_int(token_at(line, 2)) or 0;
+            self.frame.reply = if count == 5 { token_at(line, 3) } else { "" };
+            self.frame.data = std::bytes::slice(b, body, body + size);
+            self.rx.shift_front(body + size + 2);
+            return true;
+        }
+        if op == "HMSG" {
+            // HMSG <subject> <sid> [reply] <header size> <total size>
+            let count = token_count(line);
+            if count != 5 && count != 6 { self.stop("HMSG with " + to_string(count) + " fields: ", line); return false; }
+            let hsize = std::str::parse_int(token_at(line, count - 2)) or - 1;
+            let total = std::str::parse_int(token_at(line, count - 1)) or - 1;
+            if hsize < 0 || total < hsize { self.stop("HMSG sizes do not add up: ", line); return false; }
+            if n < body + total + 2 { return false; }
+            self.frame.op = "HMSG";
+            self.frame.subject = token_at(line, 1);
+            self.frame.sid = std::str::parse_int(token_at(line, 2)) or 0;
+            self.frame.reply = if count == 6 { token_at(line, 3) } else { "" };
+            self.frame.headers = std::str::from_bytes(std::bytes::slice(b, body, body + hsize));
+            self.frame.data = std::bytes::slice(b, body + hsize, body + total);
+            self.rx.shift_front(body + total + 2);
+            return true;
+        }
+        self.rx.shift_front(body);
+        if op == "INFO" {
+            self.frame.op = "INFO";
+            self.frame.text = if len(line) > 5 { line[5..len(line)] } else { "" };
+            return true;
+        }
+        if op == "PING" { self.control("PING"); return true; }
+        if op == "PONG" { self.control("PONG"); return true; }
+        if op == "+OK" { self.control("OK"); return true; }
+        if op == "-ERR" {
+            let text = if len(line) > 5 { line[5..len(line)] } else { "" };
+            self.frame.op = "ERR";
+            self.frame.text = std::str::replace(text, "'", "");
+            return true;
+        }
+        self.stop("not a NATS frame: ", line);
+        return false;
+    }
+}
+
+/// The status line of an HMSG header block ("" when none), e.g.
+/// "404 No Messages" from `NATS/1.0 404 No Messages`.
+fn header_status(headers: String) -> String {
+    let nl = std::str::index_of(headers, "\r\n");
+    let first = if nl < 0 { headers } else { headers[0..nl] };
+    if !std::str::starts_with(first, "NATS/1.0") { return ""; }
+    return std::str::trim(first[8..len(first)]);
+}

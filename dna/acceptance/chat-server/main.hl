@@ -5,7 +5,8 @@
 // verdict applies it, the host restarts it, the window judges it.
 //
 // One difference from the page: `run()` holds the process up (the
-// organism keeps its membrane open) unless HALE_DNA_ONESHOT is set.
+// application stays up under `hale dna run`) unless HALE_DNA_ONESHOT is
+// set.
 
 type ChatLine { room: Int; who: String; text: String; }
 type Join { room: Int; who: String; }

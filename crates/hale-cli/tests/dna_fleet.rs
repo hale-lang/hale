@@ -37,6 +37,29 @@ fn wait_row(app: &Path, what: &str, secs: u64, pred: impl Fn(&(u64, String, Stri
     trace::wait_until(what.to_string(), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().any(&pred))
 }
 
+/// The nerves' owner (GH #986), from the environment (CI's NATS
+/// service container). A verdict reaches the organization only over
+/// the nerves, so without one this fixture has nothing to exercise.
+fn nats_owner() -> Option<String> {
+    std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty())
+}
+
+/// The organization's NATS token and the spine's URL for this record
+/// (GH #986), from the owner's migration — handed to `dna run` the
+/// same way a memory-dependent fixture hands it the spine's DSN.
+fn nerves_env(f: &Fleet, app: &Path) -> Vec<(String, String)> {
+    let (ok, out) = f.hale(&["dna", "nerves", "migrate"], app);
+    assert!(ok, "nerves migrates: {out}");
+    ["HALE_DNA_NATS_URL_SPINE", "HALE_DNA_NATS_ORG"]
+        .iter()
+        .map(|key| {
+            let prefix = format!("{key}=");
+            let v = out.lines().find_map(|l| l.strip_prefix(&prefix)).unwrap_or_else(|| panic!("no {prefix} in: {out}"));
+            (key.to_string(), v.to_string())
+        })
+        .collect()
+}
+
 fn dump(app: &Path) -> String {
     journal(app).iter().map(|(q, k, e, b)| format!("{q} {k} {e} {}", b.chars().take(110).collect::<String>())).collect::<Vec<_>>().join("\n")
 }
@@ -92,19 +115,24 @@ impl Fleet {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     }
     fn spawn(&mut self, args: &[&str], cwd: &Path) {
+        self.spawn_env(args, cwd, &[]);
+    }
+    fn spawn_env(&mut self, args: &[&str], cwd: &Path, env: &[(&str, &str)]) {
         let _s = trace::Span::new("spawn", args.join(" "));
         // stderr to a file per process, shown when the test fails
         let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
-        let c = Command::new(env!("CARGO_BIN_EXE_hale"))
-            .args(args)
+        let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+        c.args(args)
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             .stdout(Stdio::null())
-            .stderr(log)
-            .spawn()
-            .expect("spawn");
+            .stderr(log);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let c = c.spawn().expect("spawn");
         self.procs.push(c);
     }
     fn logs(&self) -> String {
@@ -159,7 +187,23 @@ fn bring_up(tag: &str) -> Fleet {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let mut f = Fleet { d: d.clone(), app: d.join("fleetapp"), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], base: String::new(), cand: String::new() };
-    let (ok, out) = f.hale(&["dna", "new", "fleetapp"], &d);
+    // Each test's record is its own: the two tests make the same project
+    // at the same moment, and a record's identity is its first commit, so
+    // an identical one would name the same organization — its memory's
+    // schema and its stream on the nerves, whose durable consumer the two
+    // organizations would then share, each hearing the other's facts
+    // (GH #986). A committer of the test's own makes the first commit its.
+    let made = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "new", "fleetapp"])
+        .current_dir(&d)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("GIT_COMMITTER_NAME", format!("fleet-{tag}"))
+        .env("GIT_AUTHOR_NAME", format!("fleet-{tag}"))
+        .output()
+        .expect("hale dna new");
+    let (ok, out) = (made.status.success(), format!("{}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr)));
     assert!(ok, "{out}");
     let app = f.app.clone();
     std::fs::write(
@@ -190,8 +234,11 @@ fn bring_up(tag: &str) -> Fleet {
     let (ok, out) = f.hale(&["run", "mutate"], &app);
     assert!(ok && out.contains("m1: review"), "driver:\n{out}");
     f.cand = journal(&app).iter().find(|(_, k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.3.clone()).expect("candidate");
-    // the organization, then the nodes, then the base deployed
-    f.spawn(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app);
+    // the organization, then the nodes, then the base deployed — a
+    // verdict reaches the organization over the nerves (GH #986)
+    let nerves = nerves_env(&f, &app);
+    let nerves: Vec<(&str, &str)> = nerves.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    f.spawn_env(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app, &nerves);
     let edges = f.edges.clone();
     for (i, e) in edges.iter().enumerate() {
         f.spawn(&["node", &format!("edge-{}", i + 1), "--repo", &e.to_string_lossy(), "--tick", "300"], &d);
@@ -218,6 +265,10 @@ fn bring_up(tag: &str) -> Fleet {
 #[test]
 fn an_approval_redeploys_both_instances_and_the_window_retains() {
     let _t = trace::test("dna_fleet::retains");
+    let Some(_) = nats_owner() else {
+        eprintln!("dna_fleet: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
     let mut f = bring_up("ok");
     let app = f.app.clone();
     let cand = f.cand.clone();
@@ -252,6 +303,10 @@ fn an_approval_redeploys_both_instances_and_the_window_retains() {
 #[test]
 fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     let _t = trace::test("dna_fleet::rolls_back");
+    let Some(_) = nats_owner() else {
+        eprintln!("dna_fleet: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
+        return;
+    };
     let mut f = bring_up("kill");
     let app = f.app.clone();
     let cand = f.cand.clone();

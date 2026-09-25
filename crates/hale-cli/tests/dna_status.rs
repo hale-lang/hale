@@ -1,5 +1,5 @@
 //! GH #528 — `hale dna status / ask / history / review` over the
-//! membrane (Track C, PR 26). The host publishes and reads; the
+//! nerves (Track C, PR 26; GH #986). The host relays and reads; the
 //! organism decides; the Journal is the record both consult.
 
 #[path = "support/reap.rs"]
@@ -15,6 +15,10 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 
 #[test]
 fn status_ask_review_and_history_read_the_organism_through_the_journal() {
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_status: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_status_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -46,17 +50,28 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let (ok, out) = hale(&["dna", "history"], &app);
     assert!(ok && out.contains("application.attached") && out.contains("review.requested"), "{out}");
 
+    // the nerves (GH #986): a verdict or a task only reaches the
+    // organism over them — the owner migrates the stream, the organism
+    // and the host run under the spine's role and the organism's token
+    let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     // the organism, unobserved
+    let log = d.join("run.stderr");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
+    let nerves_up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let dl = Instant::now() + Duration::from_secs(60);
-    while Instant::now() < dl && !(app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()) {
+    while Instant::now() < dl && !nerves_up() {
         std::thread::sleep(Duration::from_millis(200));
     }
     // the host, then the processes it started (their pids are in .hale/dna)
@@ -69,9 +84,9 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
             }
         }
     };
-    if !app.join(".hale/dna/hale-dna.intent.offered.sock").exists() {
+    if !nerves_up() {
         finish(&mut host);
-        panic!("the membrane did not come up");
+        panic!("the organism never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     let env_cache = |c: &mut Command| { c.env("XDG_CACHE_HOME", &cache); };
     let run = |args: &[&str]| -> (bool, String) {
@@ -97,7 +112,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
     assert!(settled, "review (maintainer): {out2}");
-    assert!(ok3 && out3.contains("running (membrane bound)") && out3.contains("14 pending of 15") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
+    assert!(ok3 && out3.contains("running (this clone's body holds the lease)") && out3.contains("14 pending of 15") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
     assert!(ok4, "{out4}");
     let st: serde_json::Value = serde_json::from_str(&out4).expect("status --json is JSON");
     assert_eq!(st["journal"]["chain"], "verified");

@@ -23,3 +23,20 @@ were re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context with the old template
 line or the original recorded edit put back. No fresh model call was
 made; every answer is unchanged.
+
+GH #986 moved the organization's facts from Unix sockets onto the
+nerves, which changed four places in the generated organization's
+`main.hl`: it imports pond's NATS package; it holds a `nerves`
+connection (before the baseline review); it binds its fact topics to
+the NATS adapter, placed `pinned`, where it bound them to sockets, with
+an `on_failure` for the connection after them; and its `run()` loop
+ends when the program drains. Two entries carry that file in their
+context. The organization-growth edit (`24445cec5037…`, was
+`f4c54ee848de…`) is re-keyed, and its recorded output carries the same
+four changes and nothing else. The recorded fulfilment Leader is
+untouched, and the connection sits after it, before the baseline
+review, where the template puts it. The growth assessment
+(`7ec59ec75a20…`, was `deb0c457bcdb…`) is re-keyed for the changed
+context alone. Each old context digest was checked by reproducing it
+from the new context with the four changes taken back out. No fresh
+model call was made; every answer is unchanged.

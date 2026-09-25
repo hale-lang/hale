@@ -126,9 +126,9 @@ $ hale dna review m1 approve --as riley --comment "fine"
 review m1 settled: approve by riley
 ```
 
-The verdict is a typed `ReviewVerdict` keyed to this Review — over
-the membrane when the organization is here, as a `review.verdict`
-row in the record otherwise. What the Review checks, in order:
+The verdict is a `review.verdict` row in the record, which the host
+beside the organization relays as a typed `ReviewVerdict` keyed to
+this Review, over the nerves. What the Review checks, in order:
 
 1. **The digest.** The verdict names the candidate the reviewer
    looked at — by default the one the request pinned, or the one
@@ -160,7 +160,7 @@ becomes a `review.verdict` row in the reviewer's login — `board` when
 by login, commit and state, and the Review admits or refuses it
 exactly as above. The settlement goes back as a comment
 (`github.commented`), and an approval pushes the genome so GitHub
-sees the merge. GitHub is a projection of the record and the record
+sees the merge — both once the change is applied. GitHub is a projection of the record and the record
 wins.
 
 ## On the page and in iris

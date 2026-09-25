@@ -1,0 +1,102 @@
+// The nerves' stream, created by its owner (GH #986).
+//
+// `hale dna nerves migrate` (and `dev`, before it starts the organism)
+// runs `nerves-migrate`: the owner's NATS URL from HALE_DNA_NATS_URL_OWNER,
+// or from dna/compose.yaml's `nerves` service brought up, creates the
+// organization's stream and prints the organization's token and each
+// role's URL. Like memory's owner, the owner's URL never reaches a
+// process that runs the organism: `dev` hands the host the spine's.
+
+// (`nats` is the host package's alias of pond's client, host.hl; the
+// core imports none of it, see dna/core/nerves.hl.)
+
+// `nerves-migrate`: `HALE_DNA_NATS_ORG=<token>` and one
+// `HALE_DNA_NATS_URL_<ROLE>=<url>` per role when the stream is in place,
+// `none: <why>` when there is no server to put it on.
+fn nerves_migrate_verb(root: String) -> Answer {
+    let org = dna::schema_for(record_identity(root));
+    let mut owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+    if len(owner) == 0 {
+        let infra = ReferenceInfrastructure { root: root };
+        let server = infra.nerves_server(root);
+        if !server.present { return answer("none: " + server.why + "\n"); }
+        owner = dna::nerves_role_url(server.dsn, "owner");
+    }
+    let c = nats::NatsClient { url: owner, name: "dna-owner", timeout: 2s };
+    // a server compose has just started takes a moment to listen
+    let mut tries = 0;
+    let mut open = c.open();
+    while !open && tries < 50 {
+        std::time::sleep(200ms);
+        open = c.open();
+        tries = tries + 1;
+    }
+    if !open { return fail("nerves migrate: " + c.last_error); }
+    if !c.jetstream { c.close(); return fail("nerves migrate: the server does not run JetStream (start it with -js)"); }
+    let m = nerves_migrate(c, org);
+    c.close();
+    if !m.ok { return fail("nerves migrate: " + m.why); }
+    let mut out = dna::NATS_ORG_ENV + "=" + org + "\n";
+    out = out + dna::NATS_SPINE_URL_ENV + "=" + dna::nerves_role_url(owner, "spine") + "\n";
+    out = out + dna::NATS_HEAD_URL_ENV + "=" + dna::nerves_role_url(owner, "head") + "\n";
+    out = out + dna::NATS_APP_URL_ENV + "=" + dna::nerves_role_url(owner, "app") + "\n";
+    return answer(out);
+}
+
+// What `nerves_migrate` did: the stream exists as this toolchain wants it.
+type NervesMigration {
+    ok: Bool = false;
+    why: String = "";
+    stream: String = "";
+}
+
+// Create the organization's stream with the owner's connection, or bring
+// an existing one to this configuration. Idempotent.
+fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
+    let stream = dna::nerves_stream(org);
+    let config = dna::nerves_stream_config(org);
+    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
+    if len(made) > 0 { return NervesMigration { ok: true, stream: stream }; }
+    // already there with another configuration (err_code 10058): update it
+    if !std::str::contains(c.last_error, "10058") { return NervesMigration { why: c.last_error, stream: stream }; }
+    let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
+    if len(updated) == 0 { return NervesMigration { why: c.last_error, stream: stream }; }
+    return NervesMigration { ok: true, stream: stream };
+}
+
+// Whether the organization is reading its facts: its durable consumer
+// has a pull outstanding (a connection that went away leaves none once
+// its pull expires). "" when it is; otherwise why not. The host asks
+// this where it used to look for the membrane's sockets.
+fn nerves_listening(c: nats::NatsClient, org: String, owner: String) -> String {
+    let info = nats::js_call(c, dna::nerves_info_subject_of(org, owner), "") or "";
+    if len(info) == 0 { return c.last_error; }
+    if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
+    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::nerves_durable_of(owner);
+}
+
+// The owner this host's body is, for the subjects it publishes under: the
+// clone's `dna.owner` ("" when the organization is the only owner). Read
+// from the root the CLI hands the host, before `Host` is born.
+fn host_owner() -> String { return owner_here(std::env::arg_or(2, ".")); }
+
+// `nerves-drop`: the organization's stream deleted with the owner's URL,
+// everything it held with it — what a fixture does beside dropping its
+// memory's schema, and an operator tearing an organization down. `dropped
+// <stream>`, `absent <stream>` when there was none, `none: <why>` when
+// there is no server.
+fn nerves_drop_verb(root: String) -> Answer {
+    let org = dna::schema_for(record_identity(root));
+    let owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+    if len(owner) == 0 { return answer("none: no " + dna::NATS_OWNER_URL_ENV + "; the stream is dropped with the owner's URL\n"); }
+    let c = nats::NatsClient { url: owner, name: "dna-owner", timeout: 2s };
+    if !c.open() { return fail("nerves drop: " + c.last_error); }
+    let stream = dna::nerves_stream(org);
+    let gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + stream, "") or "";
+    let why = c.last_error;
+    c.close();
+    if len(gone) > 0 { return answer("dropped " + stream + "\n"); }
+    // err_code 10059: stream not found
+    if std::str::contains(why, "10059") { return answer("absent " + stream + "\n"); }
+    return fail("nerves drop: " + why);
+}

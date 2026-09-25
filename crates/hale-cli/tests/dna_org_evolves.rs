@@ -58,6 +58,10 @@ fn wait_for(app: &Path, secs: u64, kind: &str, entity: &str) -> bool {
 #[test]
 fn persistent_pressure_grows_the_organization_through_the_board() {
     let _t = trace::test("dna_org_evolves");
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_org_evolves: no HALE_DNA_NATS_URL_OWNER; pressure cannot reach the organization, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_grow_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -90,19 +94,26 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     assert_ne!(grown, org);
     std::fs::write(app.join(".hale/dna/scripted-org.hl"), &grown).unwrap();
 
+    let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
+    let log = d.join("run.stderr");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
-    let up = |app: &Path| app.join(".hale/dna/hale-dna.pressure.raised.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists();
-    trace::wait_until("dna run: the membrane bound", Duration::from_secs(120), Duration::from_millis(200), || up(&app));
+    let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(120), Duration::from_millis(200), || up(&app));
     let stop = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();
@@ -114,7 +125,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     };
     if !up(&app) {
         stop(&mut host);
-        panic!("the membrane did not come up");
+        panic!("the organization never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     // the organism writes org.pid once it is up
     trace::wait_until("org.pid written", Duration::from_secs(30), Duration::from_millis(200), || {

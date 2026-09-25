@@ -1,18 +1,19 @@
-//! GH #527 B6 — the typed control channel.
+//! GH #527 B6 / GH #986 — the typed control channel, now the nerves.
 //!
 //! What these hold the design to:
 //!   1. A `bindings { }` entry may name an IMPORTED topic
 //!      (`alias::Topic`): the organism binds the DNA core's own
 //!      declarations, it does not re-declare them.
 //!   2. The edge is a declared route in the fleet model: `hale fleet
-//!      check` admits it over the organism's artifact and the membrane
-//!      client's (`dna/membrane`, the program `hale dna task create`
-//!      and `hale dna review` exec), and refuses a route naming a
-//!      topic the client never publishes.
+//!      check` admits it over the organism's artifact and the host's
+//!      (`dna/host`, the `main locus Host` whose `NodeRelay` publishes
+//!      the fact topics — `hale dna task create` and `hale dna review`
+//!      exec it), and refuses a route naming a topic the host never
+//!      publishes.
 //!
-//! That a verdict and an intent published by the membrane client cross
-//! the socket and the owning locus decides is proven end to end by the
-//! DNA fixtures (`dna/tests/membrane_loss_test.hl`,
+//! That a verdict and an intent published onto the nerves cross the
+//! stream and the owning locus decides is proven end to end by the DNA
+//! fixtures (`dna/tests/nerves_fake_test.hl`,
 //! `dna/tests/relay_repeated_request_test.hl`). Iris publishes nothing
 //! into the organism (#998).
 
@@ -28,20 +29,20 @@ fn hale() -> Command {
 }
 
 fn workdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("hale_membrane_{}_{}", std::process::id(), tag));
+    let dir = std::env::temp_dir().join(format!("hale_nerves_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// The reference organism, relocated: `dna/core` copied beside it and
-/// its two literal socket paths pointed into `root`, so parallel
-/// tests never share a socket.
+/// The reference organism, beside a copy of `dna/core` (and what it
+/// imports beneath it, pond's driver — GH #985): it binds its two typed
+/// topics to pond's NATS adapter directly (GH #986), so — unlike the
+/// membrane's Unix sockets — there is no per-test path to relocate.
 fn organism_fixture(root: &Path) -> PathBuf {
     let core_src = repo().join("dna/core");
     let core_dst = root.join("dna/core");
     std::fs::create_dir_all(&core_dst).unwrap();
-    // the core and what it imports beneath it (pond's driver, GH #985)
     fn copy_hl(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).unwrap();
         for e in std::fs::read_dir(from).unwrap() {
@@ -54,14 +55,9 @@ fn organism_fixture(root: &Path) -> PathBuf {
         }
     }
     copy_hl(&core_src, &core_dst);
-    let src = std::fs::read_to_string(repo().join("dna/organism/main.hl")).unwrap();
-    let relocated = src
-        .replace("/tmp/hale-dna.review.verdict.sock", &format!("{}/hale-dna.review.verdict.sock", root.display()))
-        .replace("/tmp/hale-dna.intent.offered.sock", &format!("{}/hale-dna.intent.offered.sock", root.display()));
-    assert_ne!(src, relocated, "the reference organism must bind the documented socket paths");
     let seed = root.join("dna/organism");
     std::fs::create_dir_all(&seed).unwrap();
-    std::fs::write(seed.join("main.hl"), relocated).unwrap();
+    std::fs::copy(repo().join("dna/organism/main.hl"), seed.join("main.hl")).unwrap();
     seed
 }
 
@@ -105,31 +101,33 @@ fn a_binding_may_name_an_imported_topic() {
 }
 
 #[test]
-fn the_membrane_edge_is_a_declared_route_in_the_fleet_model() {
+fn the_nerves_edge_is_a_declared_route_in_the_fleet_model() {
     let dir = workdir("fleet");
     let seed = organism_fixture(&dir);
     let org = dir.join("organism.topology");
     let out = hale().arg("check").arg(&seed).arg(format!("--dump-topology={}", org.display())).output().unwrap();
     assert!(org.is_file(), "organism artifact: {}", String::from_utf8_lossy(&out.stderr));
-    let client = dir.join("membrane.topology");
+    // the host, not a membrane client: `NodeRelay` (dna/host/host.hl)
+    // publishes every fact topic once its row is in the record
+    let host_artifact = dir.join("host.topology");
     let out = hale()
         .arg("check")
-        .arg(repo().join("dna/membrane"))
-        .arg(format!("--dump-topology={}", client.display()))
+        .arg(repo().join("dna/host"))
+        .arg(format!("--dump-topology={}", host_artifact.display()))
         .output()
         .unwrap();
-    assert!(client.is_file(), "membrane client artifact: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(host_artifact.is_file(), "host artifact: {}", String::from_utf8_lossy(&out.stderr));
     let plan = |routes: &str, claims: &str| -> (bool, String) {
         let p = dir.join("plan.json");
         std::fs::write(
             &p,
             format!(
-                r#"{{"schema": "1.0", "name": "organism-with-membrane-client",
+                r#"{{"schema": "1.0", "name": "organism-with-host",
   "instances": [
     {{"id": "organism-0", "artifact": "organism.topology", "labels": ["organism"]}},
-    {{"id": "membrane-0", "artifact": "membrane.topology", "labels": ["client"]}}],
+    {{"id": "host-0", "artifact": "host.topology", "labels": ["host"]}}],
   "routes": {routes},
-  "groups": {{"organism": {{"labels": ["organism"]}}, "client": {{"labels": ["client"]}}}},
+  "groups": {{"organism": {{"labels": ["organism"]}}, "host": {{"labels": ["host"]}}}},
   "claims": {claims}}}"#
             ),
         )
@@ -141,26 +139,23 @@ fn the_membrane_edge_is_a_declared_route_in_the_fleet_model() {
         )
     };
     let routes = r#"[
-    {"id": "verdicts", "transport": "unix",
-     "publishers":  [{"instance": "membrane-0", "topic": "dna::ReviewVerdict"}],
+    {"id": "verdicts", "transport": "nats",
+     "publishers":  [{"instance": "host-0", "topic": "dna::ReviewVerdict"}],
      "subscribers": [{"instance": "organism-0", "topic": "dna::ReviewVerdict"}]},
-    {"id": "intent", "transport": "unix",
-     "publishers":  [{"instance": "membrane-0", "topic": "dna::IntentOffered"}],
+    {"id": "intent", "transport": "nats",
+     "publishers":  [{"instance": "host-0", "topic": "dna::IntentOffered"}],
      "subscribers": [{"instance": "organism-0", "topic": "dna::IntentOffered"}]}]"#;
     let claims = r#"[
     {"name": "verdicts_reach_the_organism", "require_subscribes": {"group": "organism", "subject": "dna.review.verdict"}},
-    {"name": "the_client_publishes_verdicts", "require_publishes": {"group": "client", "subject": "dna.review.verdict"}},
+    {"name": "the_host_publishes_verdicts", "require_publishes": {"group": "host", "subject": "dna.review.verdict"}},
     {"name": "intent_reaches_the_organism", "require_subscribes": {"group": "organism", "subject": "dna.intent.offered"}}]"#;
     let (ok, out) = plan(routes, claims);
-    assert!(ok, "the membrane routes and their laws hold:\n{out}");
-    // A route with a phantom producer — the client declares the topic
-    // (it imports the core) but nothing in its artifact publishes it —
-    // is refused. The client's artifact carries the core's loci too, so
-    // the phantom is a topic none of them publishes: `RecordResumed` is
-    // the host's to publish, and the host is not imported here.
+    assert!(ok, "the nerves' routes and their laws hold:\n{out}");
+    // A route with a phantom producer — the host does not publish
+    // RecordResumed — is refused.
     let phantom = r#"[
-    {"id": "resumes", "transport": "unix",
-     "publishers":  [{"instance": "membrane-0", "topic": "dna::RecordResumed"}],
+    {"id": "resumes", "transport": "nats",
+     "publishers":  [{"instance": "host-0", "topic": "dna::RecordResumed"}],
      "subscribers": [{"instance": "organism-0", "topic": "dna::RecordResumed"}]}]"#;
     let (ok, out) = plan(phantom, "[]");
     assert!(!ok, "a phantom producer must be refused:\n{out}");

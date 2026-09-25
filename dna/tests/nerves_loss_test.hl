@@ -1,0 +1,214 @@
+// dna/tests/nerves_loss_test.hl — a fact the nerves lose is not a lost
+// intent (GH #682, #986).
+//
+// A publish onto the nerves is confirmed by the stream, not by the
+// organization: the host hands the fact to JetStream, and whether the
+// organization ever reads it is another matter. Delivery is therefore
+// confirmed by the fact's answer in the record, never by the transport.
+// Here the organization is stopped while an `intent.requested` row lands
+// in the record; the host relays it, and the fixture takes the message
+// off the organization's own durable consumer and acknowledges it, so
+// the organization never sees it. After the relay interval the host
+// relays the intent again because the record still holds no answer, and
+// the organization, running again, admits it once.
+
+import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
+
+// Whether the organization is reading its facts: its durable consumer has
+// a pull outstanding ("" when it has; otherwise why not). The host asks
+// the same of the stream; the core, which imports no NATS, cannot.
+fn listening(c: nats::NatsClient, org: String) -> String {
+    let info = nats::js_call(c, dna::nerves_info_subject_of(org, ""), "") or "";
+    if len(info) == 0 { return c.last_error; }
+    if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
+    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::nerves_durable_of("");
+}
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`: discovery and hosted models off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// The word after `marker` in `text`, "" when it is not there.
+fn word_after(text: String, marker: String) -> String {
+    let at = std::str::index_of(text, marker);
+    if at < 0 { return ""; }
+    let rest = text[(at + len(marker))..len(text)];
+    let sp = std::str::index_of(rest, " ");
+    return if sp < 0 { dna::trim_nl(rest) } else { rest[0..sp] };
+}
+
+@unbounded
+fn rows(repo: String, kind: String, needle: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && (std::str::contains(e.entity, needle) || std::str::contains(e.body, needle)) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// How many times the host said it relayed something onto the nerves.
+@unbounded
+fn relays(app: String) -> Int {
+    let needle = "fact(s) from the record onto the nerves";
+    let mut rest = std::io::fs::read_file(app + "/host.log") or "";
+    let mut n = 0;
+    let mut at = std::str::index_of(rest, needle);
+    while at >= 0 {
+        n = n + 1;
+        rest = rest[(at + len(needle))..len(rest)];
+        at = std::str::index_of(rest, needle);
+    }
+    return n;
+}
+
+fn log_has(app: String, needle: String) -> Bool {
+    return std::str::contains(std::io::fs::read_file(app + "/host.log") or "", needle);
+}
+
+// Whether the organization's durable consumer has a pull outstanding,
+// waiting up to `secs` for it to be `want`.
+fn wait_listening(c: nats::NatsClient, org: String, want: Bool, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if (len(listening(c, org)) == 0) == want { return true; }
+        std::time::sleep(100ms);
+    }
+    return false;
+}
+
+// Take the next message off the organization's durable consumer and
+// acknowledge it, as the organization would once it had dispatched it:
+// the fact is gone from the stream's view of what the organization has
+// still to read. Its subject and its payload (the bus's encoding, in
+// hex), "" when there was none.
+fn steal(c: nats::NatsClient, org: String) -> String {
+    let m = nats::js_next(c, dna::nerves_stream(org), dna::nerves_durable_of(""), 2000) or nats::NatsMsg { };
+    if len(m.reply) == 0 { return ""; }
+    nats::js_ack(c, m) or discard;
+    c.flush() or discard;
+    return m.subject + " " + dna::hex(m.data);
+}
+
+// Whether a message `steal` took carries `text` in its payload.
+fn carries(taken: String, text: String) -> Bool { return std::str::contains(taken, dna::hex(std::bytes::from_string(text))); }
+
+main locus App {
+    run() {
+        let scratch = dna::scratch_root("nervesloss");
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(nats_owner) == 0 {
+            eprintln("nerves_loss_test: not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
+            dna::scratch_done(scratch);
+            return;
+        }
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nlossy");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/lossy";
+        let g1 = in_dir(a, "git\nconfig\nuser.name\norganism-host");
+        let g2 = in_dir(a, "git\nconfig\nuser.email\nhost@dna");
+        let g3 = in_dir(a, "git\nadd\n-A");
+        let g4 = in_dir(a, "git\ncommit\n-q\n-m\nthe app");
+
+        // the organization's stream, and what the spine connects with
+        let nerves = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
+        let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
+        std::test::assert(nerves.code == 0 && len(spine) > 0 && len(org) > 0, "the nerves' stream is in place: " + nerves.stdout + nerves.stderr);
+
+        let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+        let host_pid = dna::trim_nl(started.stdout);
+        let mut up = false;
+        let deadline = std::time::now() + dna::wait_secs(300);
+        while !up && std::time::now() <= deadline {
+            if log_has(a, "the organization reads its facts from the nerves") && log_has(a, "hale dna run: genome ") { up = true; } else { std::time::sleep(500ms); }
+        }
+        std::test::assert(up, "the organization came up and reads its facts from the nerves: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        let org_pid = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/org.pid") or "");
+        std::test::assert(len(org_pid) > 0, "the organization's pid is written");
+
+        // the organization stops reading: once its outstanding pull has
+        // expired (a second), nothing the host publishes reaches it
+        let c = nats::NatsClient { url: spine, name: "nerves-loss-thief", timeout: 2s };
+        std::test::assert(c.open(), "the fixture reaches the nerves: " + c.last_error);
+        let stopped = dna::run_tool("kill\n-STOP\n" + org_pid);
+        std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);
+        std::test::assert(wait_listening(c, org, false, 10), "and its pull expires: " + listening(c, org));
+
+        // an intent in the record, from this clone, as a person asks
+        let before = relays(a);
+        let asked = in_dir(a, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--as\nriley\nreconcile the day");
+        let intent = word_after(asked.stdout, "intent ");
+        std::test::assert(asked.code == 0 && std::str::starts_with(intent, "i"), "the intent is in the record: " + asked.stdout + asked.stderr);
+
+        // the host relays it, and the relay is lost: the fixture reads it
+        // off the organization's consumer and acknowledges it
+        let mut relayed = false;
+        let relay_deadline = std::time::now() + dna::wait_secs(30);
+        while !relayed && std::time::now() <= relay_deadline {
+            if relays(a) > before { relayed = true; } else { std::time::sleep(250ms); }
+        }
+        std::test::assert(relayed, "the host relayed the intent: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        let taken = steal(c, org);
+        std::test::assert(std::str::contains(taken, "dna.intent.offered") && carries(taken, intent), "the relay is taken off the organization's consumer: " + taken + " " + c.last_error);
+        let resumed = dna::run_tool("kill\n-CONT\n" + org_pid);
+        std::test::assert_eq_int(resumed.code, 0, "the organization runs again: " + resumed.stderr);
+        std::test::assert(wait_listening(c, org, true, 10), "and reads the nerves again: " + listening(c, org));
+        c.close();
+        // the one publish there has been is gone: nothing answers it
+        std::test::assert(relays(a) == before + 1 && rows(a, "intent.offered", intent) == 0, "the lost relay is unanswered: " + (std::io::fs::read_file(a + "/host.log") or ""));
+
+        // relayed again (RELAY_AGAIN_AFTER, 30s), admitted — once
+        let mut offered = false;
+        let offer_deadline = std::time::now() + dna::wait_secs(120);
+        while !offered && std::time::now() <= offer_deadline {
+            if rows(a, "intent.offered", intent) > 0 { offered = true; } else { std::time::sleep(500ms); }
+        }
+        std::test::assert(offered, "the host relayed the unanswered intent again and the organism admitted it: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(relays(a) >= before + 2, "on a second relay: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        // card 18: the admission follows the leader's word; it names the
+        // intent as its request, and there is one of it
+        let admission = "\"request\": \"" + intent + "\"";
+        let born_of = intent + ": ";
+        let mut admitted = false;
+        let admit_deadline = std::time::now() + dna::wait_secs(120);
+        while !admitted && std::time::now() <= admit_deadline {
+            if rows(a, "workflow.admitted", admission) > 0 { admitted = true; } else { std::time::sleep(500ms); }
+        }
+        std::test::assert(admitted, "the organism admitted the relayed intent as a workflow: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(rows(a, "intent.offered", intent) == 1 && rows(a, "workflow.admitted", admission) == 1, "admitted once");
+        let mut born = false;
+        let born_deadline = std::time::now() + dna::wait_secs(60);
+        while !born && std::time::now() <= born_deadline {
+            if rows(a, "task.born", born_of) > 0 { born = true; } else { std::time::sleep(500ms); }
+        }
+        std::test::assert_eq_int(rows(a, "task.born", born_of), 1, "one task is born of it, and not again once answered");
+
+        let k1 = dna::run_tool("kill\n" + host_pid);
+        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -CONT $(cat .hale/dna/$f.pid) 2>/dev/null && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

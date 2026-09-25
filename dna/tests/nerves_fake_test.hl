@@ -1,0 +1,67 @@
+// dna/tests/nerves_fake_test.hl — the nerves' contract in one process
+// (GH #986), against pond's broker-less `NatsFake`.
+//
+// This program binds a DNA fact topic to the NATS adapter exactly as the
+// node's host and the organization do, and the fake takes the
+// connection's place. A fact published on the topic reaches the adapter
+// in the bus's own encoding, and the organization's subscriber decides
+// from it. Delivered again — as the stream delivers what the relay
+// publishes again while the record holds no answer — the same intent is
+// admitted once. A connection that never hears an acknowledgement
+// violates its `delivery` closure, and the violation reaches the
+// connection's owner, which is where the host records `nerves.lost` and
+// starts the connection again. The fixtures that start a body cover the
+// same path over a real server.
+
+import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
+
+main locus App {
+    params {
+        org: dna::Dna = dna::Dna { };
+        // the stream: every message acknowledged at once
+        nerves: nats::NatsFake = nats::NatsFake { };
+        // a server that acknowledges nothing, with a short window
+        silent: nats::NatsFake = nats::NatsFake { ack: false, ack_window_ms: 200 };
+        lost: String = "";
+    }
+    bindings { dna::IntentOffered: nats::NatsAdapter { }; }
+    bus { publish dna::IntentOffered; }
+    on_failure(c: nats::NatsFake, err: ClosureViolation) { self.lost = c.last_error; }
+    // Whether the organization has admitted `n` intents within `secs`.
+    fn asked(n: Int, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if self.org.asked >= n { return true; }
+            std::time::sleep(50ms);
+        }
+        return false;
+    }
+    run() {
+        dna::IntentOffered <- dna::IntentOffer { intent_id: "i-nerves-1", outcome: "say hello", from: "riley", to: "" };
+        std::test::assert(self.asked(1, 20), "the organization admits the intent it was told: asked " + to_string(self.org.asked));
+        std::test::assert_eq_int(self.nerves.count("dna.intent.offered"), 1, "the adapter handed the fact to the connection once, on its declared subject");
+        let task = self.org.last_task;
+        std::test::assert(len(task) > 0, "a task is born for it");
+
+        // the stream delivers it again: one intent, one task. A second,
+        // different intent after it is the barrier — one subscriber's
+        // deliveries are handled in order, so once the second is admitted
+        // the redelivery before it has been handled too
+        std::test::assert_eq_int(self.nerves.replay("dna.intent.offered", "dna.intent.offered"), 1, "the fact, delivered again");
+        dna::IntentOffered <- dna::IntentOffer { intent_id: "i-nerves-2", outcome: "say goodbye", from: "riley", to: "" };
+        std::test::assert(self.asked(2, 20), "the intent after the redelivery is admitted: asked " + to_string(self.org.asked));
+        std::test::assert_eq_int(self.org.asked, 2, "a redelivered intent is admitted once: two intents, two asks, not three");
+
+        // nothing acknowledged: the connection's closure is violated, and
+        // its owner hears why
+        let deadline = std::time::now() + dna::wait_secs(20);
+        while len(self.lost) == 0 && std::time::now() <= deadline {
+            std::time::sleep(50ms);
+            self.silent.audit();
+        }
+        std::test::assert(std::str::contains(self.lost, "unacknowledged after 200 ms"), "an unacknowledged fact reaches the connection's owner: " + self.lost);
+    }
+}
+
+fn main() { App { }; }

@@ -55,7 +55,7 @@ fn start_spine(app: String, owner: String, keys: String) -> String {
 // The host, then everything it started.
 fn stop_spine(app: String, pid: String) {
     let k = dna::run_tool("kill\n" + pid);
-    let gone = dna::run_tool("sh\n-c\nn=0; while kill -0 \"$1\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; cd \"$2\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + pid + "\n" + app);
+    let gone = dna::run_tool("sh\n-c\nn=0; while kill -0 \"$1\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; cd \"$2\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + pid + "\n" + app);
 }
 
 // The body of the record's row of `kind` about `entity`, once there is one
@@ -217,6 +217,10 @@ main locus App {
         std::test::assert(std::str::contains(fenced_rows, "\"entity\": \"t1\"") && std::str::contains(fenced_rows, "\"entity\": \"t5\"") && !std::str::contains(fenced_rows, "\"entity\": \"t2\"") && !std::str::contains(fenced_rows, "\"entity\": \"t3\"") && !std::str::contains(fenced_rows, "\"entity\": \"t4\"") && !std::str::contains(fenced_rows, "\"entity\": \"t6\""), "exactly the writes under a held lease are rows: " + fenced_rows);
         self.leases.conn.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "the fence's record: schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(app, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
 
         // ---- a head's writes, gated by the store (GH #1026): a shared record,
         // each owner's heads writing as that owner's role
@@ -280,6 +284,10 @@ main locus App {
         std::test::assert_eq_int(count_rows(after, "\"entity\": \"i8\""), 1, "one row for the request written twice: " + after);
         stop_spine(shared, spine);
         std::test::assert_eq_str(dna::unmigrate(owner, srecord), "", "the shared record's schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(shared, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
         dna::scratch_done(scratch);
     }
 }

@@ -82,6 +82,10 @@ esac
 #[test]
 fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() {
     let _t = trace::test("dna_github_membrane::gh");
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_github_membrane: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_gh_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -126,7 +130,12 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     assert!(ok && out.contains("m1: review"), "driver:\n{out}");
     let cand = journal(&app).iter().find(|(k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.2.clone()).expect("candidate");
 
-    // the host mirrors it out, and reads GitHub's review back in
+    // the host mirrors it out, and reads GitHub's review back in — the
+    // verdict it writes still reaches the organism only over the nerves
+    let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
@@ -134,6 +143,8 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -195,6 +206,10 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
 #[test]
 fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     let _t = trace::test("dna_github_membrane::file_forge");
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_github_membrane: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_forge_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -231,6 +246,10 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     let (ok, out) = hale(&["run", "mutate"], &app);
     assert!(ok && out.contains("m1: review"), "driver:\n{out}");
     let cand = journal(&app).iter().find(|(k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.2.clone()).expect("candidate");
+    let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
@@ -238,6 +257,8 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("HALE_DNA_FORGE", "file")
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

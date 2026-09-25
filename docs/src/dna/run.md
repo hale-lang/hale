@@ -1,4 +1,4 @@
-# The host, the membrane, the nodes
+# The host, the nerves, the nodes
 
 ```sh
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
@@ -18,11 +18,12 @@ files beside it, and the host echoes the logs to the terminal a tick
 at a time. It cuts a fresh artifact
 of the application (`.hale/dna/current.topology`), builds the
 organization and execs it under `LOTUS_OBS=1` from the project root
-with `HALE_BIN` set to the toolchain that started it, waits for the
-membrane sockets, attaches iris to inspect it, and then supervises. Each tick it
-syncs the record, mirrors GitHub when configured, relays the
-membrane rows in the record, re-projects `status.json`, and answers
-the organization's restart requests. It holds no Task state; when
+with `HALE_BIN` set to the toolchain that started it, waits for it to
+read its facts from [the nerves](#the-nerves), attaches iris to inspect
+it, and then supervises. Each tick it relays the record's unanswered
+requests onto the nerves (first, so an answer never waits behind the
+rest), syncs the record, mirrors GitHub when configured, re-projects
+`status.json`, and answers the organization's restart requests. It holds no Task state; when
 the organization exits, the host reaps iris and exits with its code.
 
 The host is also a node of memory's **spine**, beside any number of
@@ -37,7 +38,12 @@ first, with `HALE_DNA_MEMORY_DSN_OWNER` or the database
 alone; `run` takes the spine's DSN from its environment and keeps any
 owner's or head's DSN away from the host. The host checks the
 schema's version before it starts anything on it. See
-[Operating](./operating.md#memory).
+[Operating](./operating.md#memory). The nerves go the same way: `dev`
+creates the organization's stream with the owner's NATS URL
+(`HALE_DNA_NATS_URL_OWNER`, or the server `dna/compose.yaml` brings
+up) and hands the host the spine's URL and the organization's token;
+`run` takes those two from its environment
+(`hale dna nerves migrate` prints them).
 
 Under **`dev`** the application runs under the same host, and a
 restart request for it is answered here: rebuild, restart, watch the
@@ -55,7 +61,7 @@ nothing is expressed.
 ```text
 $ hale dna run . --no-iris
 hale dna run: organization (pid 1874960) from … under LOTUS_OBS=1
-hale dna run: membrane bound at …/.hale/dna
+hale dna run: the organization reads its facts from the nerves (DNA_4F…)
 hale dna run: the fleet `production` (…/fleet.plan.json) is the expression; `hale node <name>` runs its nodes
 ```
 
@@ -66,8 +72,8 @@ vendored core, and emitting its IR takes a few seconds — the same few
 seconds on every start and every restart of an organism nobody has
 edited. So the host builds a seed **once per content fingerprint** and
 copies the binary after that. A warm start is the copy and the boot,
-not the build — measured from `hale dna run` to the membrane sockets
-appearing under `.hale/dna`, on one project on a quiet machine:
+not the build — measured from `hale dna run` to the organization
+listening, on one project on a quiet machine:
 
 ```text
 first start, or after any edit    3.7s
@@ -114,7 +120,7 @@ tool that left the session on purpose (`setsid`), read through `/proc`
 on Linux; a Mac shows no other process's environment, and the host says
 at startup that such a tool is out of reach. The fence writes why to
 `.hale/dna/body.fence.status`. The host reads that file at the top of
-every tick, before it relays anything onto the membrane or restarts
+every tick, before it relays anything onto the nerves or restarts
 anything, and again the moment before it starts a process, and exits
 3 when the lease is not its own. So a host stuck in a hung sync or a
 long build cannot keep its organization running on a lease it lost,
@@ -134,7 +140,7 @@ lines at its foot.
 
 The first combination beyond local is a local head with a remote
 body: the organization on a server, your clone as the head, the
-record over the git remote as the membrane between them.
+record over the git remote between them.
 `hale dna body provision` makes the body over ssh:
 
 ```text
@@ -175,26 +181,50 @@ this machine. A body that starts with no credential for its model
 says so at once, on the board and in `status`, instead of on a task
 hours later.
 
-## The membrane
+## The nerves
 
-The organization binds four typed topics on unix sockets under
-`.hale/dna/`:
+Facts travel between the organism's parts over **NATS JetStream**
+(pond's client and bus adapter, vendored with the core). Every
+request is a row first: `hale dna task create`, a verdict, `concern
+raise`, `pressure raise` and `practice propose` write their row into
+the record, and **never publish anything themselves**. The host is
+the one that publishes. While it runs it is its program's `main locus`,
+with the organization's topics bound to the NATS adapter, and on every
+tick it relays each request row the record has not answered. It relays
+the row again every 30 seconds until the answer is in the record:
 
-| topic | subject | who publishes |
+| topic | subject | from the row |
 |---|---|---|
-| `ReviewVerdict` | `dna.review.verdict` | `hale dna review <id> <verdict>`, the page; the host, relaying a `review.verdict` row |
-| `IntentOffered` | `dna.intent.offered` | `hale dna task create`, the page; the host, relaying an `intent.requested` row |
-| `ExpressionObserved` | `dna.expression.observed` | the host, after an observation window |
-| `PressureRaised` | `dna.pressure.raised` | `hale dna pressure raise`, the page, a metrics relay |
+| `ReviewVerdict` | `dna.review.verdict` | `review.verdict` (`hale dna review <id> <verdict>`, the page) |
+| `IntentOffered` | `dna.intent.offered` | `intent.requested` (`hale dna task create`, the page) |
+| `ConcernRaised` | `dna.concern.raised` | `concern.requested` (`hale dna concern raise`, a node's instances) |
+| `PressureRaised` | `dna.pressure.raised` | `pressure.requested` (`hale dna pressure raise`, the page) |
+| `PracticeRequested` | `dna.practice.requested` | `practice.requested` (`hale dna practice propose`) |
+| `KnowledgeNodeRequested`, `…BindingRequested`, `…EdgeRequested` | `dna.knowledge.*.requested` | the face's knowledge commands |
+| `ExpressionObserved` | `dna.expression.observed` | `observation.requested` (the host itself, after an observation window) |
+
+On the server every subject is under the organization's token —
+`dna_<id>.dna.intent.offered` — in one stream per organization,
+`DNA_<ID>`, which keeps what was said for a week. The organization
+reads it through its durable consumer, so a fact published while it
+was restarting reaches it when it is back. Each part holds its own
+credential: the owner creates the stream, the spine (the host and the
+organization) publishes and reads, the head only subscribes.
+`dna/nats.conf` configures `dna/compose.yaml`'s server that way, with
+placeholder passwords for now.
 
 A verdict is admitted by the Review that owns it — authority,
 independence from the author, and the candidate digest are checked
 there, never by the transport. Intent goes through the Board. The
 observation report is judged by the substrate against the Mutation's
-state. Pressure is counted by source. The sockets are how the
-outside gets *in*; nothing about a decision lives in them, and the
-same facts as rows in the record reach the same loci through the
-host's relay.
+state. Pressure is counted by source. The nerves are how the outside
+gets *in*; nothing about a decision lives in them. A fact the
+transport loses costs a relay, never the fact: the row is still
+unanswered, and the host publishes it again. When the stream stops
+acknowledging, the host writes `nerves.lost` and exits for its unit to
+start it again with a fresh connection. Over a shared record every
+owner's facts travel in a space of their own, so each organization
+hears only its owner's.
 
 ## The nodes
 
@@ -212,8 +242,8 @@ fleet](./operating.md).
 `hale dna ui` is a Hale program from the toolchain cache serving one
 page and a small API. Every request runs one offline verb of `hale
 dna` in the project root and returns what it printed; the forms send
-a verdict, an intent or a pressure signal the way the CLI does and
-do not wait. It reads nothing itself and decides nothing, so with or
+a verdict, an intent or a pressure signal the way the CLI does — a
+row a node relays — and do not wait. It reads nothing itself and decides nothing, so with or
 without a host it shows what the CLI shows. Iris stays the inspector:
 attached to the organization's process it renders the org as the
 live topology it is, as it would any Hale binary. The face

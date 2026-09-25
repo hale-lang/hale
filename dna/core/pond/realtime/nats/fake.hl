@@ -1,0 +1,104 @@
+// pond/realtime/nats — NatsFake, the broker-less stand-in for NatsConn.
+//
+// It takes NatsConn's place in a program: it subscribes to the same
+// `NatsOutbound` queue the adapter publishes onto, so the program's
+// adapter and bindings stay as they are. What would have gone to a
+// server is kept here instead, acknowledged at once (or never, with
+// `ack: false`), and the delivery audit is the same closure with the
+// same captures. Inbound traffic is whatever the test injects.
+//
+//     params { nats: nats::NatsFake = nats::NatsFake { }; }
+//     ...
+//
+// `inject`, `replay` and `count` are direct calls, so the fake shares
+// its owner's pool. A test that expects the audit to fire places it
+// `pinned` instead: an unpinned fake collapsed by the audit is freed
+// twice at exit (hale#1036).
+//     self.nats.replay("orders.out", "orders.in");   // echo what was sent, as `In`
+
+locus NatsFake {
+    params {
+        // false: nothing is acknowledged, so the audit fires once a
+        // message is older than `ack_window_ms`
+        ack: Bool = true;
+        ack_window_ms: Int = 10000;
+        // how many of the latest messages `log` keeps
+        keep: Int = 1000;
+
+        log: NatsMsgLog = NatsMsgLog { };
+        sent: Int = 0;
+        acked: Int = 0;
+        received: Int = 0;
+        last_error: String = "";
+        oldest_unacked_ns: Int = 0;
+        oldest_unacked_id: Int = 0;
+        oldest_unacked_subject: String = "";
+    }
+
+    bus { subscribe NatsOutbound as on_out; }
+
+    closure delivery { captures: sent, acked, last_error; epoch inline; }
+
+    // @unbounded: once, on the violation that ends this fake.
+    @unbounded
+    fn note(why: String) { self.last_error = why; }
+
+    fn on_out(o: Outbound) {
+        self.sent = self.sent + 1;
+        if self.log.len() >= self.keep { self.log.drop_front(self.log.len() - self.keep + 1); }
+        self.log.push(o.subject, o.data);
+        if self.ack {
+            self.acked = self.acked + 1;
+        } else if self.oldest_unacked_ns == 0 {
+            self.oldest_unacked_ns = std::time::monotonic_ns();
+            self.oldest_unacked_id = self.sent;
+            self.oldest_unacked_subject = o.subject;
+        }
+        self.audit();
+    }
+
+    /// The same check NatsConn makes on every receive tick: a message
+    /// unacknowledged past the window violates `delivery`. The fake
+    /// runs it on each send; call it to check with no traffic.
+    fn audit() {
+        if self.oldest_unacked_ns == 0 { return; }
+        if std::time::monotonic_ns() - self.oldest_unacked_ns < self.ack_window_ms * 1000000 { return; }
+        self.note("message " + to_string(self.oldest_unacked_id) + " on " + self.oldest_unacked_subject + " unacknowledged after " + to_string(self.ack_window_ms) + " ms: no acknowledgement");
+        violate delivery;
+    }
+
+    /// Deliver `data` under `subject` as though the server had sent it:
+    /// the local subscribers of that subject's topic receive it.
+    fn inject(subject: String, data: Bytes) {
+        std::bus::__local_dispatch(subject, data);
+        self.received = self.received + 1;
+    }
+
+    /// Deliver every logged message sent on `from` again, under `to` —
+    /// what a relay between two subjects would do. Returns how many.
+    fn replay(from: String, to: String) -> Int {
+        let mut i = 0;
+        let mut n = 0;
+        let total = self.log.len();
+        while i < total {
+            if self.log.subject_at(i) == from {
+                self.inject(to, self.log.data_at(i));
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    /// How many logged messages were sent on `subject`.
+    fn count(subject: String) -> Int {
+        let mut i = 0;
+        let mut n = 0;
+        let total = self.log.len();
+        while i < total {
+            if self.log.subject_at(i) == subject { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+}

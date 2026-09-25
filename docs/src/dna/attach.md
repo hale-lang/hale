@@ -14,7 +14,8 @@ every file.
 
 ## The organization is a program
 
-`dna/org/main.hl` is one `main locus` with four children:
+`dna/org/main.hl` is one `main locus` with four children and its
+connection to the nerves:
 
 ```hale,fragment
 main locus Org {
@@ -32,13 +33,16 @@ main locus Org {
         };
         leader: dna::Leader = dna::Leader { name: "leader", models: …, receipts: dna::GitReceipts { repo: "." }, source: dna::SourceReader { repo: "." } };
         purpose: dna::Review = dna::Review { review_id: "purpose", question: "ratify the declared purpose?", subject_digest: "sha256:…", required_authority: "board", author: "hale dna init" };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, … };
     }
     claims { adopt Org; }
+    placement { nerves: pinned; }
     bindings {
-        dna::ReviewVerdict: unix(".hale/dna/hale-dna.review.verdict.sock", role: listen);
-        dna::IntentOffered: unix(".hale/dna/hale-dna.intent.offered.sock", role: listen);
-        dna::ExpressionObserved: unix(".hale/dna/hale-dna.expression.observed.sock", role: listen);
-        dna::PressureRaised: unix(".hale/dna/hale-dna.pressure.raised.sock", role: listen);
+        dna::ReviewVerdict: nats::NatsAdapter { };
+        dna::IntentOffered: nats::NatsAdapter { };
+        dna::ExpressionObserved: nats::NatsAdapter { };
+        dna::PressureRaised: nats::NatsAdapter { };
+        …
     }
     run() { while true { std::time::sleep(100ms); } }
 }
@@ -47,10 +51,13 @@ main locus Org {
 `core` is the substrate: the record, the work system, the grant and
 the policy, the Board as the membrane, the gateway, verification,
 the editor. `leader` is the position that decides inside the grant.
-`purpose` is the first Review. The four bindings are the
-**membrane** — the typed topics on which a verdict, an intent, the
-host's observation report and a pressure signal enter. Nothing
-decides in the transport; the loci that own those topics decide.
+`purpose` is the first Review. The bindings are the organization's
+end of the **nerves** — the typed topics on which a verdict, an
+intent, the host's observation report, a concern and a pressure
+signal enter, over NATS; `nerves` is the connection that reads them
+from the organization's stream ([the host, the nerves, the
+nodes](./run.md#the-nerves)). Nothing decides in the transport; the
+loci that own those topics decide.
 
 Every setting is a constructor argument, so `hale check` sees the
 whole organization as wiring: which position holds which handle,

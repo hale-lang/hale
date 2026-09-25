@@ -176,7 +176,7 @@ and a vector out, when one is worth its cost.
 
 A **concern** is a child's signal about the part above it. An
 application raises one by declaring the fact itself — the same shape
-the membrane speaks, on the subject `dna.concern.raised`, with no
+the nerves carry, on the subject `dna.concern.raised`, with no
 import of the DNA — and publishing it when it sees something:
 
 ```hale,fragment
@@ -188,8 +188,9 @@ WorkerConcerns <- Concern { source: "org/trio/worker", what: "mail backlog behin
 
 The node the instance runs on hears it on a socket of its own and
 puts it in the record; the host beside the organization relays it
-onto the membrane; the organization writes `concern.raised`. Or you
-raise one yourself, from anywhere with the record:
+onto the nerves; the organization writes `concern.raised`. Or you
+raise one yourself, from anywhere with the record — the same row, the
+same relay:
 
 ```text
 $ hale dna concern raise org/trio/worker mail backlog behind fulfilment --severity 2

@@ -70,6 +70,45 @@ fn wait_log(log: &Path, needle: &str, secs: u64, host: &mut std::process::Child)
     at_exit.unwrap_or(held)
 }
 
+/// Whether the organization's process (`.hale/dna/org.pid`) is up: this
+/// fixture is about the body lease, not about the organization
+/// answering anything, so — unlike a fixture that needs a verdict to
+/// cross the nerves — it waits for the process alone (GH #986).
+fn wait_org_up(app: &Path, secs: u64, host: &mut std::process::Child) -> bool {
+    let up = |app: &Path| -> bool {
+        let pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default();
+        let pid = pid.trim();
+        !pid.is_empty() && Command::new("kill").args(["-0", pid]).status().map(|s| s.success()).unwrap_or(false)
+    };
+    let mut at_exit: Option<bool> = None;
+    let held = trace::wait_until("org.pid written and the organization is up".to_string(), Duration::from_secs(secs), Duration::from_millis(250), || {
+        if up(app) {
+            return true;
+        }
+        if matches!(host.try_wait(), Ok(Some(_))) {
+            at_exit = Some(up(app));
+            return true;
+        }
+        false
+    });
+    at_exit.unwrap_or(held)
+}
+
+/// Whether a bare remote's record already carries a row of `kind`: used
+/// to wait for a host's own body-lease claim to be PUSHED, not merely
+/// appended locally — `org.pid` (GH #986's readiness signal here, since
+/// this fixture is about the lease, not an answer over the nerves)
+/// exists well before the host's first tick pushes anything, so a
+/// caller that goes straight on to another clone's `body claim` can
+/// race the push.
+fn remote_has(bare: &Path, kind: &str) -> bool {
+    Command::new("git")
+        .args(["--git-dir", &bare.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"kind\": \"{kind}\"")))
+        .unwrap_or(false)
+}
+
 fn kill_org(app: &Path) {
     if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
         let _ = Command::new("kill").args(["-9", pid.trim()]).status();
@@ -114,9 +153,16 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     // host A takes the lease and runs
     let log_a = d.join("a.log");
     let mut host_a = run_host(&a, &log_a);
-    assert!(wait_log(&log_a, "membrane bound", 180, &mut host_a), "host A did not come up:\n{}", std::fs::read_to_string(&log_a).unwrap_or_default());
+    assert!(wait_org_up(&a, 180, &mut host_a), "host A did not come up:\n{}", std::fs::read_to_string(&log_a).unwrap_or_default());
     let la = std::fs::read_to_string(&log_a).unwrap();
     assert!(la.contains("body lease taken as ") && la.contains(":") && la.contains("(token 1)"), "{la}");
+    // the claim is appended locally at once, but reaches the remote only
+    // on the host's first tick (HOST_TICK, 1s) — wait for it before a
+    // second clone's own claim races it there
+    assert!(
+        trace::wait_until("A's claim reached the remote".to_string(), Duration::from_secs(15), Duration::from_millis(200), || remote_has(&bare, "body.claimed")),
+        "A's claim never reached the remote"
+    );
     // a second body on the same record is refused by the lease at the remote
     let (_, code, out) = hale_in(&["dna", "run", ".", "--no-iris"], &b);
     assert_eq!(code, 3, "{out}");
@@ -155,7 +201,7 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     assert!(forced["author"] == "riley" && forced["body"].as_str().unwrap().contains("\"by\": \"riley\"") && forced["entity"].as_str().unwrap().ends_with("/bodied"), "{forced}");
     // A again: the same clone is the same holder and takes the lease straight back
     let mut host_a = run_host(&a, &log_a);
-    assert!(wait_log(&log_a, "membrane bound", 180, &mut host_a), "{}", std::fs::read_to_string(&log_a).unwrap_or_default());
+    assert!(wait_org_up(&a, 180, &mut host_a), "{}", std::fs::read_to_string(&log_a).unwrap_or_default());
     assert!(std::fs::read_to_string(&log_a).unwrap().contains("(token 2)"), "the token fences: {}", std::fs::read_to_string(&log_a).unwrap());
     // a partition: the remote goes away; A keeps its lease until it expires, then stops
     let hidden = d.join("origin.hidden");

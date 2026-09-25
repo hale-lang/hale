@@ -1,0 +1,162 @@
+// dna/core/nerves.hl — the nerves: facts between an organization's
+// parts over NATS JetStream (GH #986).
+//
+// A fact is a row first. The node whose tick lands it in the record
+// publishes it, on the topic the organization subscribes, through the
+// bus adapter its `main locus` binds that topic to (pond's `NatsAdapter`,
+// vendored under `pond/realtime/nats`); the payload is the bus's own
+// encoding, so both ends are Hale programs declaring the same topic. A
+// one-shot verb never publishes: it writes the row, and a node relays
+// it until the record holds its answer (GH #682).
+//
+// Subjects. Everything an organization carries is under its own token,
+// the one memory names its schema with (`schema_for(record id)`), so two
+// organizations share a server without sharing a subject:
+//
+//   <org>.dna.<family>.<event>    what DNA's own parts say: the
+//                                 declared subject of a `dna::` topic
+//                                 (`dna.intent.offered`) under the org
+//   <org>.app.<app>.<subject>     what an application says, under its
+//                                 own name (#987 gives it its events)
+//
+// The connection takes the token off what arrives and puts it on what
+// leaves (`subject_prefix`), so a topic keeps its declared subject.
+//
+// One stream per organization, `DNA_<ID>`, over `<org>.>`: limits
+// retention with a maximum age, so what was said is kept and read from
+// a position, not deleted once one consumer acks it. The organization
+// reads it through its durable consumer `spine`, which keeps its place
+// across restarts.
+//
+// Credentials, one per family, each a URL with its user (placeholders
+// in dna/nats.conf until the vault, #989):
+//   owner  creates the stream (`hale dna nerves migrate`); held by no
+//          process that runs the organism
+//   spine  publishes and reads <org>.dna.>: the node's host and the
+//          organization
+//   head   subscribes, publishes nothing (the face's push)
+//   app    publishes on <org>.app.<app>.> (#987)
+
+const NATS_OWNER_URL_ENV: String = "HALE_DNA_NATS_URL_OWNER";
+const NATS_SPINE_URL_ENV: String = "HALE_DNA_NATS_URL_SPINE";
+const NATS_HEAD_URL_ENV: String = "HALE_DNA_NATS_URL_HEAD";
+const NATS_APP_URL_ENV: String = "HALE_DNA_NATS_URL_APP";
+// The organization's token: `dev` hands it to the host, and the host to
+// the parts it starts.
+const NATS_ORG_ENV: String = "HALE_DNA_NATS_ORG";
+
+// How long the stream keeps what it was told.
+const NERVES_MAX_AGE_SECS: Int = 604800;
+
+// The durable consumer the organization reads its facts through (an
+// owner's organization, over a shared record: `spine_<owner>`).
+const NERVES_DURABLE: String = "spine";
+
+// The exit code of a part of the organism that stops to be started again:
+// a node whose genome moved on the forge (GH #1026), and a node or an
+// organization whose connection to the nerves collapsed, started again
+// fresh rather than restarting the one connection in place. Its
+// supervisor starts it again: the node's unit (`Restart=always`), or for
+// the organization the node. EX_TEMPFAIL: not a failure, try again.
+const NODE_RESTART: Int = 75;
+
+// Over a shared record every owner runs a body and an organization of
+// its own (GH #664), and each organization answers only for its owner's
+// positions. An owner's facts travel under `<org>.<owner>.` and its
+// organization reads them through a durable of its own, so no
+// organization pulls a fact another owner's host published for its own
+// organization — and refuses it, which the relay would take as the
+// answer. With one owner there is no owner segment.
+const NERVES_OWNER_ENV: String = "HALE_DNA_OWNER";
+
+// An owner's name as a NATS subject token and a durable's name:
+// letters, digits, `-` and `_` kept, anything else `_`.
+@unbounded
+fn nerves_token(s: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let keep = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_";
+        out = out + (if keep { c } else { "_" });
+        i = i + 1;
+    }
+    return out;
+}
+
+// The subject prefix of an owner's facts ("" owner: the organization's).
+fn nerves_prefix_of(org: String, owner: String) -> String {
+    if len(org) == 0 { return ""; }
+    return org + "." + (if len(owner) == 0 { "" } else { nerves_token(owner) + "." });
+}
+
+// The durable an owner's organization reads through.
+fn nerves_durable_of(owner: String) -> String { return if len(owner) == 0 { NERVES_DURABLE } else { NERVES_DURABLE + "_" + nerves_token(owner) }; }
+
+// The organization's stream: its token upper-cased (`dna_<id>` makes
+// `DNA_<ID>`).
+fn nerves_stream(org: String) -> String { return std::str::upper(org); }
+
+// A NATS URL for `role` on the server `base` names (`nats://host:port`),
+// with that role's placeholder password (dna/nats.conf).
+fn nerves_role_url(base: String, role: String) -> String {
+    let sep = std::str::index_of(base, "://");
+    if sep < 0 { return base; }
+    let rest = base[(sep + 3)..len(base)];
+    let at = std::str::index_of(rest, "@");
+    let host = if at < 0 { rest } else { rest[(at + 1)..len(rest)] };
+    return base[0..sep] + "://" + role + ":" + nerves_placeholder_password(role) + "@" + host;
+}
+
+// Until the vault (#989): the password dna/nats.conf gives `role`.
+fn nerves_placeholder_password(role: String) -> String { return "dna-" + role + "-dev"; }
+
+fn env_or_empty(name: String) -> String {
+    if std::env::var_exists(name) { return std::env::var(name); }
+    return "";
+}
+
+// What a part of the organism running as the spine connects with, from
+// its environment: the server with the spine's user, and the
+// organization's token. Both empty when no nerves were handed to it.
+fn nerves_spine_url() -> String { return env_or_empty(NATS_SPINE_URL_ENV); }
+fn nerves_org() -> String { return env_or_empty(NATS_ORG_ENV); }
+fn nerves_owner() -> String { return env_or_empty(NERVES_OWNER_ENV); }
+fn nerves_here() -> Bool { return len(nerves_spine_url()) > 0 && len(nerves_org()) > 0; }
+
+// The organization's side of the nerves: every `dna.` fact of its
+// owner's, read from the stream through its durable consumer (the host's
+// relays, and anything published while it was down). The consumer's
+// filter; its spec is `nats::ConsumerSpec { durable: nerves_durable(),
+// filter: nerves_filter() }`, spelled where the connection is. The core
+// imports no NATS: a locus of pond's connection reads `draining`, and a
+// program that holds one drains on SIGTERM (GH #1039) — which every
+// program importing the core would, the head and the API among them,
+// had the core imported it.
+fn nerves_filter_of(org: String, owner: String) -> String { return nerves_prefix_of(org, owner) + "dna.>"; }
+
+// The JetStream API subject that answers for an owner's durable consumer
+// (whether it has a pull outstanding: `num_waiting`).
+fn nerves_info_subject_of(org: String, owner: String) -> String { return "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + nerves_durable_of(owner); }
+
+// The same, for the part of the organism this process is, from its
+// environment: what an organization's connection is spelled with.
+fn nerves_subject_prefix() -> String { return nerves_prefix_of(nerves_org(), nerves_owner()); }
+fn nerves_stream_here() -> String { return nerves_stream(nerves_org()); }
+fn nerves_durable() -> String { return nerves_durable_of(nerves_owner()); }
+fn nerves_filter() -> String { return nerves_filter_of(nerves_org(), nerves_owner()); }
+
+// The stream's configuration.
+fn nerves_stream_config(org: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", nerves_stream(org));
+    b.begin_array_field("subjects");
+    b.string_value(org + ".>");
+    b.end_array();
+    b.string_field("storage", "file");
+    b.string_field("retention", "limits");
+    b.int_field("max_age", NERVES_MAX_AGE_SECS * 1000000000);
+    b.end_object();
+    return b.result();
+}

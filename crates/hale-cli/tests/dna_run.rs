@@ -1,10 +1,10 @@
 //! GH #528 — `hale dna run` (Track C, PR 25): the stateless host.
 //! It cuts a fresh artifact, builds, execs the organism under
-//! LOTUS_OBS=1 from the project root, waits for the membrane, attaches
-//! plain iris (law + review-vs-baseline) to inspect the organism like
-//! any Hale binary, and holds no state of its own: an intent offered
-//! through the membrane lands in the organism's Journal, not in the
-//! host. Iris carries nothing of DNA: no membrane, no status (#998).
+//! LOTUS_OBS=1 from the project root, waits for the nerves (GH #986),
+//! attaches plain iris (law + review-vs-baseline) to inspect the
+//! organism like any Hale binary, and holds no state of its own: an
+//! intent offered over the nerves lands in the organism's Journal, not
+//! in the host. Iris carries nothing of DNA: no status (#998).
 
 #[path = "support/reap.rs"]
 mod reap;
@@ -30,6 +30,10 @@ fn http(port: u16, req: &str) -> String {
 
 #[test]
 fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_run: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_run_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -39,10 +43,16 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let app: PathBuf = d.join("orgrun");
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let (ok, migrated) = hale(&["dna", "nerves", "migrate"], &app);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--port", &port.to_string()])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -93,15 +103,15 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let compact = snap.replace(' ', "");
     assert!(compact.contains("\"classification\":\"identical\""), "init leaves the application's model unchanged: {snap}");
     // Iris is the inspector and nothing more: the snapshot carries no
-    // membrane and no organism status.
-    assert!(!compact.contains("\"membrane\":") && !compact.contains("\"dna\":{"), "iris carries nothing of DNA: {snap}");
+    // organism status.
+    assert!(!compact.contains("\"dna\":{"), "iris carries nothing of DNA: {snap}");
     // The observed tower names imported loci by their AUTHOR-facing
     // names, so the DNA's loci join with the artifact (PR 28).
     let types = organism_loci(&snap).expect("the organism's process in the snapshot");
     assert!(types.iter().any(|t| t == "dna::Dna" || t == "dna::Metabolism"), "imported loci observed under their author-facing names: {types:?}");
     assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
-    // an intent through the membrane (`hale dna task create`, the
-    // membrane client) lands in the organism's Journal
+    // an intent over the nerves (`hale dna task create`) lands in the
+    // organism's Journal
     let record = |app: &Path| -> String { Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() };
     let before = record(&app).lines().count();
     let ask = Command::new(env!("CARGO_BIN_EXE_hale"))
@@ -140,7 +150,7 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     };
     finish(&mut host);
     assert!(grew, "the organism journaled intent.offered + task.born");
-    assert!(ask.status.success() && ask_out.contains("task t1 born"), "task create over the membrane: {ask_out}");
+    assert!(ask.status.success() && ask_out.contains("task t1 born"), "task create over the nerves: {ask_out}");
     assert!(status_ok, "status.json re-projected from the Journal");
     let _ = std::fs::remove_dir_all(&d);
 }

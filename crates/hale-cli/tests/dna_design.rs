@@ -57,15 +57,22 @@ fn journal(app: &Path) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// A role's NATS URL or token for this record (`HALE_DNA_NATS_URL_SPINE=`
+/// or `HALE_DNA_NATS_ORG=`), from the owner's migration (GH #986).
+fn nerves_env(app: &Path, line: &str) -> String {
+    let (ok, out) = hale(&["dna", "nerves", "migrate"], app);
+    assert!(ok, "nerves migrates: {out}");
+    out.lines().find_map(|l| l.strip_prefix(line)).unwrap_or_else(|| panic!("no {line} in: {out}")).to_string()
+}
+
 /// The organization, running, until `finish`.
 fn start_org(app: &Path) -> std::process::Child {
     let spine = memory_dsn(app, "HALE_DNA_MEMORY_DSN_SPINE=");
+    let nats_spine = nerves_env(app, "HALE_DNA_NATS_URL_SPINE=");
+    let nats_org = nerves_env(app, "HALE_DNA_NATS_ORG=");
     let _s = trace::Span::new("start_org", "hale dna run");
-    // a previous organization's sockets would answer the wait below
-    // before the new one has bound
-    for s in ["hale-dna.intent.offered.sock", "hale-dna.review.verdict.sock"] {
-        let _ = std::fs::remove_file(app.join(".hale/dna").join(s));
-    }
+    let log = app.join(".hale/dna/host.log");
+    let _ = std::fs::remove_file(&log);
     let host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
@@ -73,14 +80,15 @@ fn start_org(app: &Path) -> std::process::Child {
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_MEMORY_DSN_SPINE", spine)
+        .env("HALE_DNA_NATS_URL_SPINE", nats_spine)
+        .env("HALE_DNA_NATS_ORG", nats_org)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
-    trace::wait_until("dna run: the membrane bound", Duration::from_secs(120), Duration::from_millis(200), || {
-        app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()
-    });
-    assert!(app.join(".hale/dna/hale-dna.review.verdict.sock").exists(), "the organization never bound its membrane");
+    let up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(120), Duration::from_millis(200), up);
+    assert!(up(), "the organization never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     host
 }
 
@@ -121,6 +129,13 @@ fn finish(app: &Path, host: &mut std::process::Child, what: &str, until: impl Fn
 /// look at.
 fn owner_dsn() -> Option<String> {
     std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok().filter(|d| !d.is_empty())
+}
+
+/// The nerves' owner (GH #986), from the environment (CI's NATS
+/// service). A verdict reaches the organization only over the nerves,
+/// so without one this test has nothing to exercise either.
+fn nats_owner_url() -> Option<String> {
+    std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty())
 }
 
 /// A role's DSN for this record (`HALE_DNA_MEMORY_DSN_SPINE=` or `…_HEAD=`),
@@ -182,13 +197,15 @@ fn family_ids(list: &str, family: &str) -> Vec<String> {
         .collect()
 }
 
-/// This record's schema and roles, gone again.
+/// This record's schema, roles and stream, gone again.
 fn unmigrate(app: &Path, owner: &str) {
     let out = Command::new("git").args(["rev-list", "--max-parents=0", "refs/dna/journal"]).current_dir(app).output().unwrap();
     let id = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
     let sch = format!("dna_{id}");
     let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
     let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
+    // and its stream on the nerves (GH #986), with the owner's URL
+    let _ = Command::new(env!("CARGO_BIN_EXE_hale")).args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
 }
 
 /// A driver that ratifies an EARLIER version of two design practices
@@ -224,6 +241,10 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let _t = trace::test("dna_design");
     let Some(owner) = owner_dsn() else {
         eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
+    let Some(_nats_owner) = nats_owner_url() else {
+        eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
     let d = std::env::temp_dir().join(format!("hale_dna_design_{}", std::process::id()));
@@ -443,6 +464,10 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let _t = trace::test("dna_design::operating");
     let Some(owner) = owner_dsn() else {
         eprintln!("dna_design: no HALE_DNA_MEMORY_DSN_OWNER; the package is memory's, so nothing was exercised");
+        return;
+    };
+    let Some(_nats_owner) = nats_owner_url() else {
+        eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
     let d = std::env::temp_dir().join(format!("hale_dna_operating_{}", std::process::id()));

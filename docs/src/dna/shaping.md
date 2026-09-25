@@ -131,7 +131,7 @@ the wiring:
 | role | fills it |
 |---|---|
 | the record | `GitJournal` — `refs/dna/journal`; always |
-| the membrane (where people decide) | the sockets on one machine; the record across clones; GitHub with `git config dna.github` |
+| the membrane (where people decide) | the record, relayed over the nerves by the host; GitHub with `git config dna.github` |
 | the deployment | none (`hale dna dev` expresses here); the fleet (`[dna] fleet`); `ShellDeployment { command, seed }` for your own pipeline |
 | the observation | the window the host watches; what the nodes report; your command's exit code |
 

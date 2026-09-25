@@ -19,7 +19,7 @@ const test = base.extend({
     expect(errors, 'No unhandled face JavaScript error').toEqual([]);
   },
 });
-test.skip(!nativeCommandEnvironmentPresent(), 'Supply explicit HALE_NATIVE_COMMAND_API/BODY/RELAY/MEMBRANE binaries for real native browser acceptance.');
+test.skip(!nativeCommandEnvironmentPresent(), 'Supply explicit HALE_NATIVE_COMMAND_API/BODY/RELAY binaries for real native browser acceptance.');
 test.setTimeout(75_000);
 
 const recovery = page => page.getByRole('region', { name: 'Command recovery', exact: true });

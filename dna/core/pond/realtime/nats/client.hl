@@ -1,0 +1,385 @@
+// pond/realtime/nats — NatsClient, one connection to a NATS server.
+//
+// Owner-driven, like `pond/websocket`'s WsClient: nothing runs in the
+// background. The owner opens it, writes (publish / subscribe), and
+// reads by calling `next_frame()` or `read_msg()` from its own loop.
+// A server PING is answered inside `next_frame()`, so an owner that
+// keeps reading keeps the connection alive. (`publish` and `subscribe`
+// are reserved words, hence `pub_msg` / `sub_to` / `unsub`.)
+//
+// `nats://host[:port]` dials plain TCP; `tls://host[:port]` reads the
+// server's plain INFO and then upgrades the same socket to TLS, which
+// is how a NATS server expects TLS (a `nats://` server whose INFO says
+// `tls_required` is upgraded the same way). The INFO line is the only
+// plaintext the server sends before the client's handshake, so the
+// read before the upgrade cannot swallow TLS bytes.
+
+/// The bytes under a connection: one handle, TCP or TLS.
+locus NatsTransport {
+    params {
+        sock: Int = -1;
+        tls: Int = -1;
+    }
+    fn is_open() -> Bool { return self.tls >= 0 || self.sock >= 0; }
+    fn set_recv_deadline(d: Duration) {
+        if self.tls >= 0 {
+            std::io::tls::set_recv_timeout(self.tls, d) or discard;
+        } else if self.sock >= 0 {
+            std::io::tcp::set_recv_timeout(self.sock, d) or discard;
+        }
+    }
+    fn write_all(b: Bytes) -> Int {
+        if self.tls >= 0 { return std::io::tls::send_bytes(self.tls, b); }
+        if self.sock >= 0 { return std::io::tcp::__send_bytes(self.sock, b); }
+        return -1;
+    }
+    // > 0 bytes appended, 0 peer closed, -2 deadline fired, < 0 fatal
+    fn recv_into(buf: std::bytes::BytesBuilder, n: Int) -> Int {
+        if self.tls >= 0 { return std::io::tls::recv_stamped_into(self.tls, buf, n); }
+        if self.sock >= 0 { return std::io::tcp::recv_into(self.sock, buf, n); }
+        return -1;
+    }
+    fn close() {
+        if self.tls >= 0 { std::io::tls::close(self.tls); self.tls = -1; }
+        if self.sock >= 0 { std::io::tcp::close_fd(self.sock); self.sock = -1; }
+    }
+    dissolve() { self.close(); }
+}
+
+// Lowercase hex of `b`.
+// @unbounded: two characters per byte of a fixed-size random id.
+@unbounded
+fn hex_of(b: Bytes) -> String {
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut i = 0;
+    while i < len(b) {
+        let v = std::bytes::at(b, i) or 0;
+        out = out + digits[(v / 16)..(v / 16 + 1)] + digits[(v % 16)..(v % 16 + 1)];
+        i = i + 1;
+    }
+    return out;
+}
+
+/// A subject no other client will use: `_INBOX.<22 random hex>`.
+fn new_inbox() -> String {
+    let raw = std::os::getrandom(11) or std::bytes::from_string(to_string(std::time::monotonic_ns()));
+    return "_INBOX." + hex_of(raw);
+}
+
+locus NatsClient {
+    params {
+        url: String = "nats://127.0.0.1:4222";
+        user: String = "";
+        pass: String = "";
+        token: String = "";
+        name: String = "";
+        // false: this connection's own publishes are not delivered back
+        // to its own subscriptions (what a bus adapter wants).
+        echo: Bool = true;
+        // how long a handshake, a flush or a request may wait
+        timeout: Duration = 5s;
+        recv_chunk: Int = 65536;
+
+        io: NatsTransport = NatsTransport { };
+        framer: NatsFramer = NatsFramer { };
+        // messages set aside while a `request` waited for its reply, in
+        // order: (subject, payload), (reply, headers) and sid, by index
+        stash: NatsMsgLog = NatsMsgLog { };
+        stash_meta: NatsMsgLog = NatsMsgLog { };
+        stash_sids: NatsInts = NatsInts { };
+        stash_head: Int = 0;
+        connected: Bool = false;
+        scheme: String = "";
+        host: String = "";
+        port: Int = 4222;
+        next_sid: Int = 1;
+        last_error: String = "";
+        last: NatsMsg = NatsMsg { };
+        // from the server's INFO
+        server_id: String = "";
+        max_payload: Int = 1048576;
+        jetstream: Bool = false;
+        tls_required: Bool = false;
+    }
+
+    // Record why the last operation failed, as "<kind>: <detail>".
+    // @unbounded: once per failure, and a failure ends the operation
+    // or the connection.
+    @unbounded
+    fn note(kind: String, detail: String) { self.last_error = kind + ": " + detail; }
+
+    fn fail_with(kind: String, detail: String) -> NatsError {
+        self.note(kind, detail);
+        return NatsError { kind: kind, detail: detail };
+    }
+
+    // scheme://[user:pass@]host[:port]
+    fn parse_url() -> Bool {
+        let u = self.url;
+        let sep = std::str::index_of(u, "://");
+        if sep < 0 { self.note("url", "no scheme in " + u); return false; }
+        self.scheme = u[0..sep];
+        if self.scheme != "nats" && self.scheme != "tls" { self.note("url", "scheme " + self.scheme + " (nats or tls)"); return false; }
+        let mut rest = u[(sep + 3)..len(u)];
+        let slash = std::str::index_of(rest, "/");
+        if slash >= 0 { rest = rest[0..slash]; }
+        let at = std::str::index_of(rest, "@");
+        if at >= 0 {
+            let cred = rest[0..at];
+            rest = rest[(at + 1)..len(rest)];
+            let colon = std::str::index_of(cred, ":");
+            if colon < 0 { if len(self.token) == 0 { self.token = cred; } }
+            else if len(self.user) == 0 { self.user = cred[0..colon]; self.pass = cred[(colon + 1)..len(cred)]; }
+        }
+        let pc = std::str::index_of(rest, ":");
+        if pc < 0 { self.host = rest; self.port = 4222; }
+        else { self.host = rest[0..pc]; self.port = std::str::parse_int(rest[(pc + 1)..len(rest)]) or 4222; }
+        if len(self.host) == 0 { self.note("url", "no host in " + u); return false; }
+        return true;
+    }
+
+    fn write(b: Bytes) -> Bool {
+        if !self.io.is_open() { return false; }
+        if self.io.write_all(b) < 0 {
+            self.connected = false;
+            self.last_error = "io: the write failed";
+            return false;
+        }
+        return true;
+    }
+
+    fn write_str(s: String) -> Bool { return self.write(std::bytes::from_string(s)); }
+
+    /// Dial, read INFO, send CONNECT, and wait for the server's PONG to
+    /// the PING after it: the server has accepted the connection when
+    /// the PONG arrives, and a `-ERR` (bad credentials) arrives instead.
+    fn open() -> Bool {
+        self.close();
+        self.last_error = "";
+        if !self.parse_url() { return false; }
+        let h = std::io::tcp::connect(self.host, self.port) or - 1;
+        if h < 0 { self.note("connect", "tcp to " + self.host + ":" + to_string(self.port)); return false; }
+        self.io.sock = h;
+        std::io::tcp::set_nodelay(h, true) or discard;
+        self.framer.clear();
+        self.io.set_recv_deadline(self.timeout);
+        let deadline = std::time::monotonic() + self.timeout;
+        // INFO first
+        let mut got_info = false;
+        while !got_info && std::time::monotonic() < deadline {
+            if !self.pull() { break; }
+            while self.framer.next() {
+                if self.framer.frame.op == "INFO" {
+                    self.take_info(self.framer.frame.text);
+                    got_info = true;
+                }
+            }
+        }
+        if !got_info { self.io.close(); if len(self.last_error) == 0 { self.last_error = "handshake: no INFO from the server"; } return false; }
+        if self.scheme == "tls" || self.tls_required {
+            let fd = self.io.sock;
+            let t = std::io::tls::upgrade(fd, self.host, true) or - 1;
+            if t < 0 { self.note("handshake", "TLS with " + self.host + " failed"); self.io.close(); return false; }
+            self.io.sock = -1;
+            self.io.tls = t;
+            self.io.set_recv_deadline(self.timeout);
+        }
+        if !self.write_str(connect_line(self.user, self.pass, self.token, self.name, self.echo) + ping_line()) { self.io.close(); return false; }
+        while std::time::monotonic() < deadline {
+            if !self.pull() { break; }
+            while self.framer.next() {
+                let op = self.framer.frame.op;
+                if op == "PONG" { self.connected = true; return true; }
+                if op == "ERR" { self.note("server", self.framer.frame.text); self.io.close(); return false; }
+                if op == "PING" { let p = self.write_str(pong_line()); }
+            }
+        }
+        if len(self.last_error) == 0 { self.last_error = "handshake: no PONG to the CONNECT"; }
+        self.io.close();
+        return false;
+    }
+
+    fn take_info(json: String) {
+        self.server_id = std::json::find_string_field(json, "server_id");
+        let mp = std::json::find_int_field(json, "max_payload");
+        if mp > 0 { self.max_payload = mp; }
+        self.jetstream = std::json::find_bool_field(json, "jetstream");
+        self.tls_required = std::json::find_bool_field(json, "tls_required");
+    }
+
+    // One read into the framer. False when the connection is gone
+    // (a deadline firing is not that: it returns true with nothing new).
+    fn pull() -> Bool {
+        if !self.io.is_open() { return false; }
+        let got = self.io.recv_into(self.framer.rx, self.recv_chunk);
+        if got > 0 || got == -2 { return true; }
+        self.connected = false;
+        self.last_error = if got == 0 { "closed: the server closed the connection" } else { "io: the read failed" };
+        return false;
+    }
+
+    /// The next frame, reading at most once (bounded by the recv
+    /// deadline) when none is buffered. A server PING is answered here
+    /// and not returned. False when nothing whole arrived in time, the
+    /// connection is gone, or the stream stopped framing (`last_error`
+    /// says which).
+    fn next_frame() -> Bool {
+        let mut tries = 0;
+        while tries < 2 {
+            while self.framer.next() {
+                if self.framer.frame.op == "PING" { let p = self.write_str(pong_line()); continue; }
+                return true;
+            }
+            if len(self.framer.error) > 0 { self.note("protocol", self.framer.error); self.connected = false; return false; }
+            if tries == 1 { return false; }
+            if !self.pull() { return false; }
+            tries = tries + 1;
+        }
+        return false;
+    }
+
+    /// Set the read deadline a `next_frame()` waits at most.
+    fn set_read_timeout(d: Duration) { self.io.set_recv_deadline(d); }
+
+    fn pub_msg(subject: String, reply: String, data: Bytes) fallible(NatsError) {
+        self.pub_headers(subject, reply, "", data) or raise;
+    }
+
+    /// A publish with a header block (HPUB), or a plain PUB when
+    /// `headers` is "".
+    fn pub_headers(subject: String, reply: String, headers: String, data: Bytes) fallible(NatsError) {
+        if !self.connected { fail self.fail_with("closed", "not connected"); }
+        if len(headers) + len(data) > self.max_payload { fail self.fail_with("io", "payload of " + to_string(len(headers) + len(data)) + " bytes over the server's max_payload " + to_string(self.max_payload)); }
+        let frame = if len(headers) > 0 { hpub_frame(subject, reply, headers, data) } else { pub_frame(subject, reply, data) };
+        if !self.write(frame) { fail self.fail_with("io", "the write failed"); }
+    }
+
+    fn sub_to(subject: String, queue: String) -> Int fallible(NatsError) {
+        if !self.connected { fail self.fail_with("closed", "not connected"); }
+        let sid = self.next_sid;
+        self.next_sid = self.next_sid + 1;
+        if !self.write_str(sub_line(subject, queue, sid)) { fail self.fail_with("io", "the write failed"); }
+        return sid;
+    }
+
+    fn unsub(sid: Int) fallible(NatsError) {
+        if !self.connected { fail self.fail_with("closed", "not connected"); }
+        if !self.write_str(unsub_line(sid, 0)) { fail self.fail_with("io", "the write failed"); }
+    }
+
+    /// PING and wait for its PONG: everything written before it has
+    /// reached the server and been processed, in order.
+    fn flush() fallible(NatsError) {
+        if !self.write_str(ping_line()) { fail self.fail_with("io", "the write failed"); }
+        let deadline = std::time::monotonic() + self.timeout;
+        while std::time::monotonic() < deadline {
+            if !self.next_frame() {
+                if !self.connected { fail self.fail_with("closed", self.last_error); }
+                continue;
+            }
+            let op = self.framer.frame.op;
+            if op == "PONG" { return; }
+            if op == "ERR" { fail self.fail_with("server", self.framer.frame.text); }
+            if op == "MSG" || op == "HMSG" { self.set_aside(); }
+        }
+        fail self.fail_with("timeout", "no PONG within the timeout");
+    }
+
+    fn as_msg(f: NatsFrame) -> NatsMsg {
+        return NatsMsg { subject: f.subject, sid: f.sid, reply: f.reply, headers: if f.op == "HMSG" { f.headers } else { "" }, data: f.data };
+    }
+
+    // Put a message into `last` field by field: replacing the whole
+    // struct would keep each old payload for the client's lifetime.
+    fn keep_last(subject: String, sid: Int, reply: String, headers: String, data: Bytes) {
+        self.last.subject = subject;
+        self.last.sid = sid;
+        self.last.reply = reply;
+        self.last.headers = headers;
+        self.last.data = data;
+    }
+
+    // @unbounded: one entry per message that arrives while a `request`
+    // waits; read_msg empties the stash once it has handed them all out.
+    @unbounded
+    fn set_aside() {
+        let f = self.framer.frame;
+        self.stash.push(f.subject, f.data);
+        self.stash_meta.push(f.reply, std::bytes::from_string(if f.op == "HMSG" { f.headers } else { "" }));
+        self.stash_sids.push(f.sid);
+    }
+
+    /// The next message into `last`, waiting at most `wait`: one set
+    /// aside by a `request` first, then the wire. False on timeout or a
+    /// closed connection (`connected` says which).
+    fn read_msg(wait: Duration) -> Bool {
+        if self.stash_head < self.stash.len() {
+            let i = self.stash_head;
+            self.keep_last(self.stash.subject_at(i), self.stash_sids.get(i) or 0, self.stash_meta.subject_at(i), std::str::from_bytes(self.stash_meta.data_at(i)), self.stash.data_at(i));
+            self.stash_head = i + 1;
+            if self.stash_head == self.stash.len() {
+                self.stash.clear();
+                self.stash_meta.clear();
+                ints_clear(self.stash_sids);
+                self.stash_head = 0;
+            }
+            return true;
+        }
+        self.io.set_recv_deadline(wait);
+        let deadline = std::time::monotonic() + wait;
+        while std::time::monotonic() < deadline {
+            if !self.next_frame() {
+                if !self.connected { return false; }
+                continue;
+            }
+            let op = self.framer.frame.op;
+            if op == "MSG" || op == "HMSG" {
+                let f = self.framer.frame;
+                self.keep_last(f.subject, f.sid, f.reply, if op == "HMSG" { f.headers } else { "" }, f.data);
+                return true;
+            }
+            if op == "ERR" { self.note("server", self.framer.frame.text); }
+        }
+        return false;
+    }
+
+    /// Publish `data` with a fresh inbox as its reply subject and wait
+    /// for the one answer. Messages for other subscriptions that arrive
+    /// meanwhile are kept for `read_msg`.
+    fn request(subject: String, data: Bytes, wait: Duration) -> NatsMsg fallible(NatsError) {
+        return self.request_with(subject, "", data, wait) or raise;
+    }
+
+    /// `request` with a header block on the publish (see `pub_headers`).
+    fn request_with(subject: String, headers: String, data: Bytes, wait: Duration) -> NatsMsg fallible(NatsError) {
+        let inbox = new_inbox();
+        let sid = self.sub_to(inbox, "") or raise;
+        if !self.write_str(unsub_line(sid, 1)) { fail self.fail_with("io", "the write failed"); }
+        self.pub_headers(subject, inbox, headers, data) or raise;
+        self.io.set_recv_deadline(wait);
+        let deadline = std::time::monotonic() + wait;
+        while std::time::monotonic() < deadline {
+            if !self.next_frame() {
+                if !self.connected { fail self.fail_with("closed", self.last_error); }
+                continue;
+            }
+            let f = self.framer.frame;
+            if (f.op == "MSG" || f.op == "HMSG") && f.sid == sid {
+                let status = if f.op == "HMSG" { header_status(f.headers) } else { "" };
+                if std::str::starts_with(status, "503") { fail self.fail_with("no_responders", "nothing answers " + subject); }
+                return self.as_msg(f);
+            }
+            if f.op == "MSG" || f.op == "HMSG" { self.set_aside(); }
+            if f.op == "ERR" { fail self.fail_with("server", f.text); }
+        }
+        fail self.fail_with("timeout", "no reply from " + subject + " within the wait");
+    }
+
+    fn close() {
+        self.io.close();
+        self.connected = false;
+    }
+
+    dissolve() { self.close(); }
+}

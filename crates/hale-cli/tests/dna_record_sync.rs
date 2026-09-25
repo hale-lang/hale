@@ -1,10 +1,10 @@
 //! GH #566 F1 — the record across clones. One bare repository, the
-//! organism running in clone A, a person in clone B with no sockets:
-//! B's `hale dna task create` and its verdict are rows in the record, pushed;
-//! A's host pulls them, relays them onto the membrane, and pushes the
-//! organism's answers back; B reads them. Then, with nothing running,
-//! both clones append offline and `sync` reconciles them into one
-//! linear record with every event and identical heads.
+//! organism running in clone A, a person in clone B with no nerves of
+//! its own: B's `hale dna task create` and its verdict are rows in the
+//! record, pushed; A's host pulls them, relays them onto the nerves,
+//! and pushes the organism's answers back; B reads them. Then, with
+//! nothing running, both clones append offline and `sync` reconciles
+//! them into one linear record with every event and identical heads.
 
 #[path = "support/reap.rs"]
 mod reap;
@@ -37,6 +37,10 @@ fn record(cwd: &Path) -> Vec<serde_json::Value> {
 
 #[test]
 fn a_person_in_another_clone_asks_and_decides_through_the_record() {
+    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
+        eprintln!("dna_record_sync: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
+        return;
+    };
     let d = std::env::temp_dir().join(format!("hale_dna_sync_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -63,18 +67,27 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let (ok, st) = hale_in(&["dna", "status"], &b);
     assert!(ok && st.contains("35 event(s), chain verified") && st.contains("not running"), "{st}");
 
+    // the nerves (GH #986): a verdict or a task only reaches the
+    // organism over them
+    let (ok, migrated) = hale_in(&["dna", "nerves", "migrate"], &a);
+    assert!(ok, "{migrated}");
+    let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
+    let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     // the organism runs in A
+    let log = d.join("run.stderr");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&a)
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
+        .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
+        .env("HALE_DNA_NATS_ORG", &nats_org)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .expect("hale dna run");
-    let up = |a: &Path| a.join(".hale/dna/hale-dna.review.verdict.sock").exists() && a.join(".hale/dna/hale-dna.intent.offered.sock").exists();
+    let up = |_a: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let dl = Instant::now() + Duration::from_secs(90);
     while Instant::now() < dl && !up(&a) {
         std::thread::sleep(Duration::from_millis(200));
@@ -87,13 +100,16 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
                 let _ = Command::new("kill").args(["-9", pid.trim()]).status();
             }
         }
-        for s in ["hale-dna.review.verdict.sock", "hale-dna.intent.offered.sock", "hale-dna.expression.observed.sock"] {
-            let _ = std::fs::remove_file(a.join(".hale/dna").join(s));
-        }
+        // GH #986: "no organism here" used to be answered by the
+        // membrane's sockets being gone; it is the body lease now
+        // (`organism_here`), which outlives the killed process until
+        // its TTL — release it so A goes back to being a plain clone
+        // (below, both A and B append offline with nobody local)
+        let _ = hale_in(&["dna", "body", "release", "--force"], &a);
     };
     if !up(&a) {
         finish(&mut host);
-        panic!("the membrane did not come up");
+        panic!("the organism never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     std::thread::sleep(Duration::from_millis(500));
 
@@ -106,11 +122,15 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let (ok4, st_b) = hale_in(&["dna", "status"], &b);
     finish(&mut host);
     let (ok5, _) = hale_in(&["dna", "sync"], &a);
+    // `finish` released A's body lease as a row of its own (GH #986); B
+    // pulls it too, so both clones agree before the offline section
+    let (ok5b, _) = hale_in(&["dna", "sync"], &b);
     assert!(ok1 && asked.contains("task t1 born"), "ask from the other clone: {asked}");
     assert!(ok2 && decided.contains("review purpose settled: approve by riley"), "verdict from the other clone: {decided}");
     assert!(ok3, "{synced}");
     assert!(ok4 && st_b.contains("t1 [") && st_b.contains("settled approve by riley") && st_b.contains("chain verified"), "status in B:\n{st_b}");
     assert!(ok5);
+    assert!(ok5b);
     let rows_a = record(&a);
     let rows_b = record(&b);
     assert_eq!(git(&["rev-parse", "refs/dna/journal"], &a), git(&["rev-parse", "refs/dna/journal"], &b), "same head in both clones");

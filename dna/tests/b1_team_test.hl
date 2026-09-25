@@ -25,12 +25,13 @@
 //      and a forged cookie is refused.
 //
 // Step 4 also proves the ask is attributed on the co-located path: an ask
-// entering through a head that shares a clone with a LIVE body goes over
-// the membrane, where the body writes the `intent.offered` row itself —
-// so the asker is not the row's author but is named in its body,
-// `… (from alice)`. The same ask from a clone with no body of its own is
-// written by that head in the person's own name, as their
-// `intent.requested` (step 8). Either way the record says which of two
+// entering through a head that shares a clone with a LIVE body is still
+// the head's own `intent.requested` row in the person's name, which the
+// body relays onto the nerves (GH #986); the organism writes the
+// `intent.offered` row itself, so the asker is not that row's author but
+// is named in its body, `… (from alice)`. The same ask from a clone with
+// no body of its own is written the same way, by that head in the
+// person's own name (step 8). Either way the record says which of two
 // people asked.
 
 import "../core" as dna;
@@ -310,17 +311,22 @@ main locus App {
         return dna::trim_nl(started.stdout);
     }
     // The body beside the founder's clone, the spine of the record's
-    // memory: `verb` is `dev`, given the owner's DSN (dev migrates and
-    // hands the host the spine's role), or `run`, given the spine's; its
-    // pid.
-    fn body(app: String, verb: String, dsn_env: String, dsn: String) -> String {
-        let started = in_dir(app, "sh\n-c\nexport \"$3=$4\" && nohup timeout 900 \"$1\" dna \"$2\" . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + verb + "\n" + dsn_env + "\n" + dsn);
+    // memory and of the nerves: `verb` is `dev`, given the owner's DSN (dev
+    // migrates memory and the nerves' stream and hands the host the
+    // spine's roles), or `run`, given the spine's DSN and the nerves'
+    // spine URL and organization (GH #986); its pid.
+    fn body(app: String, verb: String, dsn_env: String, dsn: String, nats_spine: String, nats_org: String) -> String {
+        let started = in_dir(app, "sh\n-c\nexport \"$3=$4\" && if [ -n \"$5\" ]; then export HALE_DNA_NATS_URL_SPINE=\"$5\" HALE_DNA_NATS_ORG=\"$6\"; fi && nohup timeout 900 \"$1\" dna \"$2\" . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + verb + "\n" + dsn_env + "\n" + dsn + "\n" + nats_spine + "\n" + nats_org);
         return dna::trim_nl(started.stdout);
     }
-    fn membrane_up(app: String, tries: Int) -> Bool {
+    // The organization runs: its pid file is written and the process is
+    // alive. Nothing else to wait for — what the record asks of it waits
+    // in the nerves' stream until it reads it (GH #986).
+    fn organization_up(app: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
-            if std::io::fs::file_exists(app + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(app + "/.hale/dna/hale-dna.review.verdict.sock") && std::io::fs::file_exists(app + "/.hale/dna/org.pid") { return true; }
+            let pid = dna::trim_nl(std::io::fs::read_file(app + "/.hale/dna/org.pid") or "");
+            if len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0 { return true; }
             std::time::sleep(500ms);
             n = n + 1;
         }
@@ -427,23 +433,34 @@ main locus App {
             dna::scratch_done(scratch);
             return;
         }
+        // the organization hears what the record asks over the nerves (GH #986)
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(nats_owner) == 0 {
+            eprintln("b1_team_test: not exercised past the scaffold (HALE_DNA_NATS_URL_OWNER is not set)");
+            dna::scratch_done(scratch);
+            return;
+        }
         let record_id = dna::GitJournal { repo: app }.genesis();
         let migrated = in_dir(app, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$1\" dna memory migrate\nsh\n" + toolchain() + "\n" + owner);
         let head_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         let spine_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_SPINE");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head_dsn, "postgres") && std::str::starts_with(spine_dsn, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
-        let first = self.body(app, "dev", "HALE_DNA_MEMORY_DSN_OWNER", owner);
-        std::test::assert(self.membrane_up(app, 600), "the body came up beside the founder's clone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        let nerves = in_dir(app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        let nats_spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
+        let nats_org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
+        std::test::assert(nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0, "the nerves' stream is in place for the record: " + nerves.stdout + nerves.stderr);
+        let first = self.body(app, "dev", "HALE_DNA_MEMORY_DSN_OWNER", owner, "", "");
+        std::test::assert(self.organization_up(app, 600), "the body came up beside the founder's clone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         let adopted = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
         std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
         std::test::assert(len(self.wait_in_record(app, head_dsn, "\"kind\": \"ledger.adopted\"", 240)) > 0, "a node adopts the ledger on its tick: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         // the body again, now on the ledger from its start: `hale dna run`
-        // with the spine's DSN
+        // with the spine's DSN and the nerves' spine
         let k0 = dna::run_tool("kill\n" + first);
         std::test::assert(self.gone(first, 600), "the first body stops");
-        let rest0 = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + app);
-        let body_pid = self.body(app, "run", "HALE_DNA_MEMORY_DSN_SPINE", spine_dsn);
-        std::test::assert(self.membrane_up(app, 600), "the body came up again beside the founder's clone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        let rest0 = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + app);
+        let body_pid = self.body(app, "run", "HALE_DNA_MEMORY_DSN_SPINE", spine_dsn, nats_spine, nats_org);
+        std::test::assert(self.organization_up(app, 600), "the body came up again beside the founder's clone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
 
         // ---- 3. two heads, two clones, a session each
         let pid_a = self.head(app, p1, head_dsn, ".hale/ui.log");
@@ -477,7 +494,7 @@ main locus App {
         // offer; it is waited for, and there is one of it
         let admitted_row = wait_row(app, head_dsn, "\"kind\": \"workflow.admitted\"", 240);
         std::test::assert(len(admitted_row) > 0, "the organism admitted it as a workflow: " + ledger(app, head_dsn));
-        std::test::assert_eq_int(count_rows(ledger(app, head_dsn), "\"kind\": \"workflow.admitted\""), 1, "once, though the head both wrote and published it (card 18: the ask is an admitted workflow)");
+        std::test::assert_eq_int(count_rows(ledger(app, head_dsn), "\"kind\": \"workflow.admitted\""), 1, "once, though the body relays it until it is answered (card 18: the ask is an admitted workflow)");
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "and it names who asked, the person head A identified, not the form's `as`: " + offered);
         let rec = record(app);
         std::test::assert_eq_int(count_rows(rec, "chase the late invoice"), 0, "and none of it is the record's: the day's work is the ledger's: " + row_with(rec, "chase the late invoice"));
@@ -520,7 +537,7 @@ main locus App {
         std::test::assert_eq_int(bobs.status, 200, "head B takes the verdict: " + bobs.body);
         // the head answers 200 whatever the verb said; the verb's own words
         // say whether the verdict is in the record
-        std::test::assert(std::str::contains(bobs.body, "sent into the record"), "head B put bob's verdict into the record: " + bobs.body);
+        std::test::assert(std::str::contains(bobs.body, "written into the record"), "head B put bob's verdict into the record: " + bobs.body);
         let refused = self.wait_in_record(app, head_dsn, "\"kind\": \"review.refused\", \"entity\": \"" + rid + "\"", 240);
         std::test::assert(std::str::contains(refused, "authority reviewer does not satisfy board"), "bob's verdict is refused for want of the Board's authority: " + refused);
         let bob_verdict = row_with(record(app), "\"kind\": \"review.verdict\", \"entity\": \"" + rid + "\"");
@@ -551,8 +568,12 @@ main locus App {
         let k2 = dna::run_tool("kill\n" + pid_b);
         let k3 = dna::run_tool("kill\n" + body_pid);
         std::test::assert(self.gone(body_pid, 600), "the body stops");
-        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + app);
+        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + app);
         std::test::assert_eq_str(dna::unmigrate(owner, record_id), "", "this run's schema and roles dropped");
+        // and its stream on the nerves, which the node's `dev` or the
+        // fixture's migration made (GH #986)
+        let nerves_gone = in_dir(app, toolchain() + "\ndna\nnerves\ndrop\n.");
+        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
         dna::scratch_done(scratch);
     }
 }

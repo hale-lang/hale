@@ -1,7 +1,7 @@
 // The composed head raises work: the real GovernanceCommands over a fresh Git
 // Record, the practice_review adapter and the real Api. The organism's answers
-// below are explicit fixture rows; no body, host or membrane is started, and
-// no HALE_API_BIN process is spawned.
+// below are explicit fixture rows; no body or host is started, and no
+// HALE_API_BIN process is spawned.
 import ".." as api;
 import "../practice_review" as head;
 import "../../core" as dna;
