@@ -9704,10 +9704,30 @@ static void lotus_drain_on_signal(int sig) {
     errno = saved;
 }
 
+/* GH #1077: the live instances of loci whose code reads `draining` —
+ * the ones that can answer a drain. Codegen counts one in at
+ * instantiation and out at its arena destroy. A `draining` read in
+ * code the program never runs (an imported package's receive loop)
+ * turned the drain on for the whole program; with no such instance
+ * live, nothing can answer it, and the grace is only a wait. */
+static int64_t g_drain_observers = 0;
+static int64_t g_drain_mode = 0;   /* 1: counted observers; 2: always */
+
+void lotus_drain_observer_add(int64_t delta) {
+    __atomic_add_fetch(&g_drain_observers, delta, __ATOMIC_RELEASE);
+}
+
 static void *lotus_drain_watcher(void *arg) {
     (void)arg;
     char b;
     while (read(g_drain_pipe[0], &b, 1) < 0 && errno == EINTR) {}
+    /* Nothing live reads `draining`: behave as a program that cannot
+     * observe the drain does — the signal's default action, now. */
+    if (g_drain_mode == 1 &&
+        __atomic_load_n(&g_drain_observers, __ATOMIC_ACQUIRE) <= 0) {
+        lotus_drain_die_by((int)g_drain_signal);
+        _exit(128 + (int)g_drain_signal);
+    }
     __atomic_store_n(&lotus_process_draining_flag, 1, __ATOMIC_RELEASE);
 #if LOTUS_HAVE_ASYNC_IO
     for (size_t i = 0; i < g_coop_pool_count; i++) {
@@ -9743,6 +9763,7 @@ static void *lotus_drain_watcher(void *arg) {
 void lotus_drain_signals_install(int64_t observes_drain) {
     if (!observes_drain) return;
     if (g_drain_pipe[0] >= 0) return;
+    g_drain_mode = observes_drain;
     /* pipe + FD_CLOEXEC, not pipe2: macOS has no pipe2. A spawned
      * subprocess must not inherit the drain pipe. */
     if (pipe(g_drain_pipe) != 0) return;
@@ -9769,6 +9790,7 @@ void lotus_drain_signals_install(int64_t observes_drain) {
 void lotus_drain_signals_install(int64_t observes_drain) {
     (void)observes_drain;
 }
+void lotus_drain_observer_add(int64_t delta) { (void)delta; }
 #endif /* __wasm__ */
 
 static void *lotus_coop_pool_worker(void *arg) {

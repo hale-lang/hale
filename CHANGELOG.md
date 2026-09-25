@@ -19,6 +19,16 @@ behavior.
   the literal: the instance keeps a copy of its params as built, and
   `restart_in_place` restores that copy. A param holding a locus keeps
   its child.
+### SIGTERM waits for a drain only while something can answer it (GH #1077)
+
+- **Fixed:** a `self.draining` read anywhere in the compiled program
+  turned the SIGINT/SIGTERM drain on for the whole program, including a
+  read in an imported package the program never builds. Importing the
+  NATS package made a web head that never opened a connection wait out
+  the 5 s grace on every stop. The runtime now counts live instances of
+  loci whose code reads `draining`. A signal that finds none live takes
+  the signal's default action at once. With one live, the drain and its
+  grace work as before.
 
 ### A failed child its owner holds stays readable (GH #1069)
 
