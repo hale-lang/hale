@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### A child passed into its parent's literal is supervised by it (GH #1035)
+
+- **Fixed:** a child locus written in its parent's literal at the call
+  site — `App { b: Boom { url: std::env::var("URL") } }` from `fn main`
+  — was not routed to the parent's `on_failure`. A closure violation
+  killed the process with "no parent handler", though the same child as
+  the parent's param default was supervised. The override was lowered
+  in the caller's context, which is right for what `self.x` in it reads
+  and wrong for who supervises the literal it builds. Written in a
+  method body, the failure went to the method's locus instead of the
+  literal's. Both now go to the locus whose field the literal
+  initialises.
+
 ### `@form(vec)` frees what `pop` and `set` take out (GH #1037)
 
 - **Fixed:** `pop()` returned the slot's own pointer and freed nothing,

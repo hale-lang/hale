@@ -57,7 +57,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // has been entered, so `current_self` isn't set. The
         // params-init loop sets `params_init_self` to the parent
         // being instantiated for exactly this lookup.
-        let cs = match self.current_self.as_ref() {
+        // GH #1035: a literal written as a field of another literal
+        // is supervised by the locus that literal builds, whatever
+        // context the override is lowered in.
+        let supervisor = self
+            .supervising_parent
+            .as_ref()
+            .filter(|(child, _)| child == child_locus_name)
+            .map(|(_, cs)| cs);
+        let cs = match supervisor.or(self.current_self.as_ref()) {
             Some(cs) => cs,
             None => match self.params_init_self.as_ref() {
                 Some(cs) => cs,

@@ -1152,6 +1152,20 @@ The handler may:
 Default on_failure: `bubble(err)`. The runtime root's default
 is process exit with stack trace.
 
+**Which locus is the parent.** A child locus held in a param
+field is supervised by the locus that holds it, whichever way
+the literal is written: as the field's default in the parent's
+`params { }`, or at the call site in the parent's literal
+(`App { b: Boom { why: w } }`), in any branch of an `if` or `match`
+that the field's value names, and one level at a time
+through nesting (`App { w: Wrap { b: Boom { } } }` — `Boom`'s
+parent is `Wrap`). An override expression is otherwise lowered
+in the caller's context (`self.x` in it reads the caller), but
+the literal it builds belongs to the parent. A locus built
+elsewhere and passed in by name — a `let` binding, a factory's
+return — keeps the route of the place it was built: the locus
+whose method body built it, or none from a free fn or `fn main`.
+
 ### Reassigning a locus-typed field (WS1#4)
 
 Assigning a fresh locus literal to a locus-typed field —
