@@ -34708,15 +34708,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // clones (lotus_str_field_replace_fixup). Either kind
             // of field on this locus means its own arena can hold
             // pending retires at the activation boundary.
+            // GH #1033: a Bytes field retires exactly as a String one
+            // (lotus_bytes_assign_in_place), and a locus whose only
+            // retiring field was Bytes never flushed — its retired
+            // blocks were never reusable.
             let has_retiring_self_fields =
                 info.fields.values().any(|(_, fty)| match fty {
-                    CodegenTy::String => true,
+                    CodegenTy::String | CodegenTy::Bytes => true,
                     CodegenTy::TypeRef(tn) => self
                         .user_types
                         .get(tn)
                         .map(|t| {
                             t.fields.values().any(|(_, f)| {
-                                matches!(f, CodegenTy::String)
+                                matches!(f, CodegenTy::String | CodegenTy::Bytes)
                             })
                         })
                         .unwrap_or(false),

@@ -704,6 +704,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             str_field_fixup_ty,
             None,
         );
+        // GH #1033: the Bytes companion, same signature.
+        self.module.add_function(
+            "lotus_bytes_field_replace_fixup",
+            str_field_fixup_ty,
+            None,
+        );
         // F.30: deep-copy Bytes blob (length-prefixed) into a
         // destination arena. Companion to lotus_str_clone for
         // BytesView → Bytes upgrades via `std::bytes::clone`.

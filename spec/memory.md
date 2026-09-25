@@ -1386,33 +1386,33 @@ reclaim on a real-world long-running workload:
      keep their pointers and retire nothing. Net: repeated
      whole-struct replaces with fresh String contents hold
      `self.__arena` flat — previously each replace orphaned the
-     old clones for the locus lifetime. String fields only at
-     v0.1 (Bytes and pointer-shaped compound fields of the
-     replaced struct keep the pre-fix behavior); fields of
-     @form vec / bounded cells and stores from boundary-less
-     contexts (a `run()` loop) do not retire.
+     old clones for the locus lifetime. String and Bytes fields
+     (Bytes since GH #1033, `lotus_bytes_field_replace_fixup`:
+     before it, a replaced Bytes blob — 8 bytes even for an
+     empty payload — was orphaned on every whole-struct write);
+     pointer-shaped compound fields of the replaced struct keep
+     the pre-fix behavior, and fields of @form vec / bounded
+     cells and stores from boundary-less contexts (a `run()`
+     loop) do not retire.
 
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
-     reuses the existing slot's buffer when `strlen(new) <=
-     strlen(old)`: memcpy new bytes + NUL into `old`'s buffer,
+     reuses the existing slot's buffer when `strlen(new) ==
+     strlen(old)`: memcpy the new bytes into `old`'s buffer and
      return `old` unchanged. `lotus_bytes_assign_in_place` is
      the Bytes companion — same shape against the `[int64 len]
-     [payload]` Bytes header; when `new_len <= old_cap` it
-     updates the prefix and memcpys the payload in place.
-     Static-literal `old` falls through to the clone path
-     (`.rodata` isn't writable). When new is longer than old's
-     buffer, the abandoned buffer is *retired* (String since
-     2026-07-17, Bytes since 2026-07-18) — reusable after the
-     activation-boundary flush instead of leaking. The retire
-     freelist mixes align-1 String blocks and align-8 Bytes
-     blocks; pops are alignment-aware (a String request reuses
-     either kind, a Bytes request only 8-aligned blocks). Note
-     the capacity-collapse caveat below bounds what Bytes-grow
-     retire can reclaim: a single oscillating field's grow
-     requests are always larger than its own shrink-collapsed
-     retire records, so the recycled blocks pay off through
-     other same-arena allocations of matching sizes.
+     [payload]` Bytes header, in place when `new_len ==
+     old_len`. Static-literal `old` falls through to the clone
+     path (`.rodata` isn't writable). At any OTHER length the
+     abandoned buffer is *retired* (String since 2026-07-17,
+     Bytes since 2026-07-18) — reusable after the
+     activation-boundary flush instead of leaking — and the slot
+     takes a fresh block from the retire freelist, or no block at
+     all when the new value is a literal (stored as is) or empty
+     (a static empty value). The retire freelist mixes align-1
+     String blocks and align-8 Bytes blocks; pops are
+     alignment-aware (a String request reuses either kind, a
+     Bytes request only 8-aligned blocks).
 
      Single-owner rule (2026-07-17): on every path that stores
      a replacement pointer, an incoming pointer that is already
@@ -1434,11 +1434,16 @@ reclaim on a real-world long-running workload:
      — measured against a per-frame `self.last_ts = ts` pattern
      in a long-running daemon: the receiver locus's arena
      dropped from ~+1-3 chunks per instance per 4 min to flat.
-     Caveat (both helpers): the
-     length-tracking field doubles as the capacity field, so a
-     reduce-then-grow oscillation gradually loses available
-     capacity and degrades toward "always clone"; bounded-
-     variance fields keep the in-place path indefinitely.
+     A block is never shrunk in place (GH #1033). The
+     length-tracking field — `strlen`, the Bytes prefix — is the
+     block's only size record, so an in-place shrink lost the
+     block's size: the next longer write retired it under the
+     shrunk size, which no request of the real size matches, and
+     allocated afresh. A field alternating between a heap value
+     and an empty one leaked a block per cycle (~32 bytes for a
+     5-byte String, until the locus dissolved). Keeping the
+     record exact makes every retire reusable, so a field whose
+     length varies stays flat.
 
   8. **m49 sret-pattern return-arena routing.** When a method-
      with-scratch is about to return a heap-typed value, the
