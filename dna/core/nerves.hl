@@ -54,8 +54,8 @@ const NERVES_DURABLE: String = "spine";
 
 // The exit code of a part of the organism that stops to be started again:
 // a node whose genome moved on the forge (GH #1026), and a node or an
-// organization whose connection to the nerves collapsed — a pinned
-// connection restarted in place does not run again (GH #1066). Its
+// organization whose connection to the nerves collapsed, started again
+// fresh rather than restarting the one connection in place. Its
 // supervisor starts it again: the node's unit (`Restart=always`), or for
 // the organization the node. EX_TEMPFAIL: not a failure, try again.
 const NODE_RESTART: Int = 75;

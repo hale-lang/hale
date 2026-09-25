@@ -1080,8 +1080,9 @@ repository:
   stream acknowledges it, writes it again after a reconnect, and a
   publish unacknowledged past its window violates the connection's
   `delivery` closure. The violation collapses it to its owner, which
-  does not restart it: a pinned connection restarted from `on_failure`
-  never runs again (GH #1066). The host appends `nerves.lost <holder>`
+  does not restart the connection in place: the node starts again as a
+  fresh process, its connection and its organization's both new. The
+  host appends `nerves.lost <holder>`
   (`why`, `by`), stops its organization and the expression, gives the
   body lease back (`body.released`, `why: nerves`) and exits
   `NODE_RESTART` (75, the genome pull's code: one restart code for the

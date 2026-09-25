@@ -48,7 +48,7 @@ main locus Organism {
     }
 
     // The nerves collapsed: stop, for whatever supervises this program to
-    // start it again with a fresh connection (GH #1066).
+    // start it again with a fresh connection.
     on_failure(c: nats::NatsConn, err: ClosureViolation) {
         eprintln("organism: the nerves failed (", c.last_error, ")");
         std::process::exit(dna::NODE_RESTART);

@@ -709,9 +709,11 @@ main locus Host {
     // A publish the stream did not acknowledge within the connection's
     // window collapses it here: a `nerves.lost` row says why, and the node
     // stops cleanly and exits with NODE_RESTART for its unit to start it
-    // again — a pinned connection restarted in place never runs again
-    // (GH #1066). The row first is what makes the loss recoverable: the
-    // next node relays every request still unanswered.
+    // again: a fresh process, its connection and its organization's both
+    // new, rather than one connection restarted in place beside an
+    // organization that may be as stuck. The row first is what makes the
+    // loss recoverable: the next node relays every request still
+    // unanswered.
     on_failure(c: nats::NatsConn, err: ClosureViolation) {
         let why = c.last_error;
         self.say("nerves: " + why + "; stopping for the unit to start this node again");
