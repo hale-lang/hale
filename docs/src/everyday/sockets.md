@@ -92,6 +92,13 @@ println(std::str::from_bytes(resp));
 std::io::tls::close(h);
 ```
 
+A connection nothing is listening for fails straight away — `connect`
+(here, and `std::io::tcp::connect`) makes one attempt, and a refused
+one comes back as `connection_refused`. If you are starting the peer
+yourself and it may not be listening yet, say how long to wait:
+`std::io::tcp::connect_wait(host, port, 2s)` retries a refused
+connect until then.
+
 This is **client-side only** — there is no TLS *server* in the
 stdlib. `set_recv_timeout(h, d)` bounds a read; with one set,
 `recv_into` returns the `-2` "timed out, retryable" sentinel so a

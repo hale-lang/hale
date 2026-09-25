@@ -18,6 +18,11 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_io_tcp_connect_wait_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_tcp_accept_one_fallible(
         &mut self,
         args: &[Expr],
@@ -179,86 +184,25 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         )
     }
 
-    /// `std::io::tcp::connect(host, port) -> Int fallible(IoError)`.
+    /// `std::io::tcp::connect(host, port) -> Int fallible(IoError)`:
+    /// one attempt — a refused connect fails at once (GH #1030).
     fn lower_std_io_tcp_connect_fallible(
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        if args.len() != 2 {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::connect takes 2 args (host, port), got {}",
-                args.len()
-            )));
-        }
-        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::connect: host must be String, got {:?}",
-                host_ty
-            )));
-        }
-        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
-        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
-        if port_ty != CodegenTy::Int {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::connect: port must be Int, got {:?}",
-                port_ty
-            )));
-        }
-        let connect_fn = self
-            .module
-            .get_function("lotus_tcp_connect")
-            .expect("lotus_tcp_connect declared");
-        // NOTE 2026-07-02: was truncated to i32, mismatching the
-        // i16-port declaration (and the C uint16_t). Benign on
-        // x86-64 SysV (both travel in the low register bits) but a
-        // real signature mismatch — surfaced by the DWARF-gated
-        // module verifier on the first pond build that exercised
-        // this path with debug info enabled.
-        let port_i16 = self
-            .builder
-            .build_int_truncate(
-                port_val.into_int_value(),
-                self.context.i16_type(),
-                "connect.port.i16",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let fd_i32 = self
-            .builder
-            .build_call(
-                connect_fn,
-                &[host_val.into(), port_i16.into()],
-                "connect.fd",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i32")
-            .into_int_value();
-        let is_err = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::SLT,
-                fd_i32,
-                self.context.i32_type().const_zero(),
-                "connect.is_err",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let fd_i64 = self
-            .builder
-            .build_int_s_extend(
-                fd_i32,
-                self.context.i64_type(),
-                "connect.fd.i64",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.complete_io_fallible_call(
-            is_err,
-            host_val,
-            Some((fd_i64.into(), CodegenTy::Int)),
-            "tcp.connect",
-        )
+        self.lower_tcp_connect_common(args, scope, false)
+    }
+
+    /// `std::io::tcp::connect_wait(host, port, wait) -> Int
+    /// fallible(IoError)`: retry a refused connect for up to `wait`
+    /// (a Duration) — for a caller racing its peer's `listen()`.
+    fn lower_std_io_tcp_connect_wait_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_tcp_connect_common(args, scope, true)
     }
 
     /// `std::io::tcp::accept_one(listen_fd) -> Int fallible(IoError)`.
@@ -993,4 +937,112 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((ret_i64.into(), CodegenTy::Int))
     }
 
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// `connect` / `connect_wait`: host, port, and — for the latter —
+    /// how long to keep retrying a refused connect.
+    fn lower_tcp_connect_common(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        with_wait: bool,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (name, want) = if with_wait { ("connect_wait", 3) } else { ("connect", 2) };
+        if args.len() != want {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::{} takes {} args ({}), got {}",
+                name,
+                want,
+                if with_wait { "host, port, wait" } else { "host, port" },
+                args.len()
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::connect: host must be String, got {:?}",
+                host_ty
+            )));
+        }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
+        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
+        if port_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::connect: port must be Int, got {:?}",
+                port_ty
+            )));
+        }
+        let wait_ns = if with_wait {
+            let (w, wt) = self.lower_expr(&args[2], scope)?;
+            if wt != CodegenTy::Duration {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::io::tcp::connect_wait: wait must be a Duration, got {:?}",
+                    wt
+                )));
+            }
+            Some(w.into_int_value())
+        } else {
+            None
+        };
+        let connect_fn = self
+            .module
+            .get_function("lotus_tcp_connect_wait")
+            .expect("lotus_tcp_connect_wait declared");
+        // NOTE 2026-07-02: was truncated to i32, mismatching the
+        // i16-port declaration (and the C uint16_t). Benign on
+        // x86-64 SysV (both travel in the low register bits) but a
+        // real signature mismatch — surfaced by the DWARF-gated
+        // module verifier on the first pond build that exercised
+        // this path with debug info enabled.
+        let port_i16 = self
+            .builder
+            .build_int_truncate(
+                port_val.into_int_value(),
+                self.context.i16_type(),
+                "connect.port.i16",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fd_i32 = self
+            .builder
+            .build_call(
+                connect_fn,
+                &[
+                    host_val.into(),
+                    port_i16.into(),
+                    wait_ns
+                        .unwrap_or_else(|| self.context.i64_type().const_zero())
+                        .into(),
+                ],
+                "connect.fd",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                fd_i32,
+                self.context.i32_type().const_zero(),
+                "connect.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fd_i64 = self
+            .builder
+            .build_int_s_extend(
+                fd_i32,
+                self.context.i64_type(),
+                "connect.fd.i64",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            host_val,
+            Some((fd_i64.into(), CodegenTy::Int)),
+            "tcp.connect",
+        )
+    }
 }

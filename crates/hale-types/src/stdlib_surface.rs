@@ -498,7 +498,7 @@ pub const SURFACES: &[NsSurface] = &[
             e("__last_io_status", EffectSet::PURE), e("__listen_socket", EffectSet::SYSCALL),
             e("__recv", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("__recv_bytes", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("__send", EffectSet::SYSCALL), e("__send_bytes", EffectSet::SYSCALL),
             e("__set_recv_timeout_ns", EffectSet::SYSCALL), e("__shutdown_listen_socket", EffectSet::SYSCALL),
-            e("accept_one", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("close_fd", EffectSet::SYSCALL), e("connect", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("last_recv_kernel_ns", EffectSet::PURE),
+            e("accept_one", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("close_fd", EffectSet::SYSCALL), e("connect", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("connect_wait", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("last_recv_kernel_ns", EffectSet::PURE),
             e("last_recv_user_ns", EffectSet::PURE), e("listen_socket", EffectSet::SYSCALL), e("recv_into", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
             e("recv_stamped_into", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("send_fd", EffectSet::SYSCALL), e("set_nodelay", EffectSet::SYSCALL),
             e("set_recv_timeout", EffectSet::SYSCALL), e("set_rx_timestamps", EffectSet::SYSCALL), e("set_send_timeout", EffectSet::SYSCALL),
@@ -1363,6 +1363,7 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_FILE, "at_eof", [Int], Bool),
     sig!(NS_TCP, "listen_socket", [Str, Int], Int, "IoError"),
     sig!(NS_TCP, "connect", [Str, Int], Int, "IoError"),
+    sig!(NS_TCP, "connect_wait", [Str, Int, Duration], Int, "IoError"),
     sig!(NS_TCP, "accept_one", [Int], Int, "IoError"),
     sig!(NS_TCP, "close_fd", [Int], Int),
     // GH #829: the `buf` slot is not polymorphic — the lowering

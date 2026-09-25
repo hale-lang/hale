@@ -1417,6 +1417,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tcp", "connect"] => Ok(Some(
                 self.lower_std_io_tcp_connect_fallible(args, scope)?,
             )),
+            ["std", "io", "tcp", "connect_wait"] => Ok(Some(
+                self.lower_std_io_tcp_connect_wait_fallible(args, scope)?,
+            )),
             ["std", "io", "tcp", "accept_one"] => Ok(Some(
                 self.lower_std_io_tcp_accept_one_fallible(args, scope)?,
             )),

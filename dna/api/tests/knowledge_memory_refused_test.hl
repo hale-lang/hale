@@ -1,0 +1,48 @@
+// GH #1030 — a Knowledge read against a memory that refuses connections
+// answers 503 at once.
+//
+// The read dials memory once, and a refused dial is an answer: the
+// runtime's `std::io::tcp::connect` used to retry a refused connect for
+// ~1 s, and the pq driver redialled eight times on top of that, so one
+// read against a store that was down took ~9 s to say 503. Now `connect`
+// makes one attempt, pq's `open` treats "connection_refused" as final,
+// and the API answers `knowledge_unavailable` (retryable) straight away,
+// naming the reason on its own stderr.
+//
+// The DSN has to come from the environment, so the fixture runs itself
+// as a child with it set. The port is one `dna::free_port` could bind a
+// moment ago and then let go: nothing listens there.
+import ".." as api;
+import "../../core" as dna;
+
+fn child(root: String) {
+    let k = api::LocalKnowledge { root: root, dsn_env: "HALE_1030_TEST_DSN" };
+    std::test::assert(k.supported(), "the DSN reached the child");
+    let request = api::KnowledgeRequest {
+        source: api::Source { ok: true, identity: "record-1030", head: "head-1030", revision: 1 },
+        reader: "alice",
+        kind: "nodes",
+        query: api::KnowledgeQuery { ok: true },
+    };
+    let t0 = std::time::monotonic();
+    let r = k.read(request);
+    let elapsed = std::time::monotonic() - t0;
+    std::test::assert_eq_int(r.status, 503, "a refused memory answers 503: " + r.body);
+    std::test::assert(std::str::contains(r.body, "\"knowledge_unavailable\""), "the code names the outage: " + r.body);
+    std::test::assert(std::str::contains(r.body, "\"retryable\": true"), "and says a retry may work: " + r.body);
+    std::test::assert(elapsed < 200ms, "the 503 comes at once, not after connect retries: " + to_string(elapsed));
+}
+
+fn main() {
+    if std::env::arg_or(1, "") == "child" {
+        child(std::env::arg_or(2, ""));
+        return;
+    }
+    let scratch = dna::scratch_root("knowledge-memory-refused");
+    let port = dna::free_port(1);
+    let dsn = "postgres://dna:dna@127.0.0.1:" + to_string(port) + "/dna?sslmode=disable";
+    let outcome = dna::run_tool("env\nHALE_1030_TEST_DSN=" + dsn + "\n" + std::env::arg_or(0, "") + "\nchild\n" + scratch);
+    std::test::assert_eq_int(outcome.code, 0, "the read against a closed port: " + outcome.stdout + outcome.stderr);
+    std::test::assert(std::str::contains(outcome.stderr, "connection_refused"), "the API names the reason on stderr: " + outcome.stderr);
+    dna::scratch_done(scratch);
+}

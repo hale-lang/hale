@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### A refused TCP connect fails at once (GH #1030)
+
+- **Changed:** `std::io::tcp::connect` (and `std::io::tls::connect`)
+  makes one attempt. A connect nothing listens for fails immediately
+  with `connection_refused` instead of retrying for ~1 s. A caller that
+  races its peer's `listen()` uses the new
+  `std::io::tcp::connect_wait(host, port, wait)`.
+- **Fixed:** a DNA Knowledge read against a memory that refused
+  connections took ~9 s to answer 503: eight pq dials, each with the
+  runtime's second of retries. pq's `open` now treats
+  `connection_refused` as final. The read dials once and answers
+  `knowledge_unavailable` in about a millisecond, with the reason on the
+  API's stderr.
+
 ### An adapter beside an env route no longer corrupts that route's bytes (GH #1058)
 
 - **Fixed:** a topic bound to an adapter and also routed over

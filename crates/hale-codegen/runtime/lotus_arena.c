@@ -13707,7 +13707,25 @@ int lotus_tcp_accept_one(int listen_fd) {
     }
 }
 
+int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns);
+
+/* `std::io::tcp::connect`: one attempt. A refused connect is an answer
+ * — nothing listens there — and returns -1 with errno ECONNREFUSED at
+ * once (GH #1030). It used to retry for ~1 s (200 x 5 ms), which is the
+ * right shape for a peer that is starting at the same moment and the
+ * wrong default for a client: a dial to a store that is down cost each
+ * read a second per attempt. A caller that is racing its peer's
+ * listen() asks for the wait (`connect_wait`). */
 int lotus_tcp_connect(const char *host, uint16_t port) {
+    return lotus_tcp_connect_wait(host, port, 0);
+}
+
+/* `std::io::tcp::connect_wait`: retry a REFUSED connect (and EAGAIN)
+ * every 5 ms until `wait_ns` has passed on the monotonic clock, then
+ * report the refusal. Any other error ends it at once, and so does a
+ * process drain (nothing is going to come up for a program that is
+ * stopping). */
+int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
     /* Mirrors lotus_tcp_create's CONNECT-role logic but returns a
      * raw fd so it can be wrapped by `std::io::tcp::Stream {
      * conn_fd }` from Hale source. Same retry-on-ECONNREFUSED
@@ -13757,8 +13775,8 @@ int lotus_tcp_connect(const char *host, uint16_t port) {
         freeaddrinfo(res);
     }
     struct timespec backoff = { 0, 5L * 1000L * 1000L };
-    int attempts = 200;
-    while (attempts-- > 0) {
+    int64_t deadline = lotus_now_mono_ns() + (wait_ns > 0 ? wait_ns : 0);
+    for (;;) {
         /* A fresh socket per attempt. After a refused connect(2) POSIX
          * leaves the socket's state unspecified: Linux lets the same
          * socket try again, but on macOS / the BSDs it is spent, and
@@ -13784,13 +13802,14 @@ int lotus_tcp_connect(const char *host, uint16_t port) {
             perror("lotus_tcp_connect: connect");
             return -1;
         }
+        if (lotus_now_mono_ns() >= deadline || lotus_process_draining()) {
+            /* Refused, and no (more) waiting asked for: the answer,
+             * not a fault — no stderr line; the IoError says it. */
+            errno = ECONNREFUSED;
+            return -1;
+        }
         nanosleep(&backoff, NULL);
     }
-    fprintf(stderr,
-            "lotus_tcp_connect: connect to %s:%u timed out\n",
-            h, (unsigned)port);
-    errno = ETIMEDOUT;
-    return -1;
 }
 
 int lotus_tcp_close_fd(int fd) {
