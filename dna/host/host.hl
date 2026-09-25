@@ -751,7 +751,8 @@ locus Host {
         if len(file) > 0 { e = e + "\n" + file; }
         // the fourth review of #622: the body's mark, inherited by every tool
         // a child starts, so the fence finds them even once that child is gone
-        if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + dna::body_mark(self.holder, self.lease.token, std::process::pid()); }
+        // GH #1026: and the node's name in the claims its organism takes
+        if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + dna::body_mark(self.holder, self.lease.token, std::process::pid()) + "\nHALE_DNA_NODE=" + self.holder; }
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
         // GH #664: which owner this body is, over a shared record
         let me = owner_here(self.root);

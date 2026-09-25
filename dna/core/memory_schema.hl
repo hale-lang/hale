@@ -10,8 +10,10 @@
 // change them. A store's `open` checks the schema version and refuses a
 // memory at another one, naming both, the same fence the record keeps.
 
-// The version `migrate` writes and every `open` requires.
-const MEMORY_SCHEMA_VERSION: Int = 1;
+// The version `migrate` writes and every `open` requires. 2 (GH #1026):
+// the lease table became `claims`, and the graph's projection is one
+// transaction per record row.
+const MEMORY_SCHEMA_VERSION: Int = 2;
 
 type Migrated {
     ok: Bool = false;
@@ -62,6 +64,9 @@ fn knowledge_ddl() -> String {
         + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));";
 }
 
+// GH #1026: claims by id. The lease table of version 1 is the `claims`
+// table — a key, its holder and when the hold ends — so it is renamed in
+// place, its rows (the body lease among them) kept.
 fn ledger_ddl() -> String {
     return "CREATE TABLE IF NOT EXISTS ledger_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, prev text NOT NULL, digest text NOT NULL, at timestamptz NOT NULL DEFAULT now(), record_seq bigint, record_commit text);"
         + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
@@ -70,7 +75,8 @@ fn ledger_ddl() -> String {
         + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
         + "DROP TABLE IF EXISTS ledger_mailboxes;"
-        + "CREATE TABLE IF NOT EXISTS ledger_leases (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, expires bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now());"
+        + "DO $m$ BEGIN IF to_regclass('ledger_leases') IS NOT NULL AND to_regclass('claims') IS NULL THEN ALTER TABLE ledger_leases RENAME TO claims; ALTER TABLE claims RENAME COLUMN expires TO until; END IF; END $m$;"
+        + "CREATE TABLE IF NOT EXISTS claims (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, until bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now());"
         + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS protected_redactions (digest text PRIMARY KEY, erased_at bigint NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS memory_keys (name text PRIMARY KEY, value text NOT NULL);";
@@ -112,14 +118,25 @@ fn graph_indexes() -> String {
     return "CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_order ON knowledge_ideas (id COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_edges_order ON knowledge_edges (src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_bindings_order ON knowledge_bindings (idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\")";
 }
 
-// Only the transaction that first claims the protocol initializes its
-// metadata. An older populated projection cannot prove that no partial
-// event escaped its old stamp, even at live watermark zero. Preserve
-// its rows/live progress but require an explicit projection rebuild.
-// A later migration never recreates missing metadata or clears a known
-// pending suffix: corruption and incomplete migrations remain unavailable.
+// The projection's protocol (GH #1026): `watermark` is the number of
+// record rows applied and `graph_projection_head` the digest of the last
+// of them ("" at 0); a projector applies one row per transaction and
+// moves both by compare-and-swap. A store at any other protocol — none
+// yet, or version 1's stamped prefix with a pending suffix — holds a
+// graph this protocol cannot vouch for, so it is emptied here and the
+// projectors rebuild it from the record: the graph is derived, the
+// record is not. The generation moves first, so a reader holding an
+// old page sees the change.
 fn projection_protocol() -> String {
-    return "WITH claimed AS (INSERT INTO knowledge_meta (key, value) SELECT 'graph_projection_protocol', CASE WHEN EXISTS (SELECT 1 FROM knowledge_ideas) OR EXISTS (SELECT 1 FROM knowledge_bindings) OR EXISTS (SELECT 1 FROM knowledge_edges) OR EXISTS (SELECT 1 FROM knowledge_structure) OR EXISTS (SELECT 1 FROM knowledge_signals) OR EXISTS (SELECT 1 FROM knowledge_meta WHERE (key IN ('watermark', 'graph_projection_watermark') AND value <> '0') OR (key = 'graph_projection_head' AND value <> '') OR key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head')) THEN 'rebuild_required' ELSE '1' END ON CONFLICT (key) DO NOTHING RETURNING key), initialized AS (INSERT INTO knowledge_meta (key, value) SELECT defaults.key, CASE defaults.key WHEN 'watermark' THEN coalesce((SELECT value FROM knowledge_meta WHERE key = 'watermark'), '0') WHEN 'graph_generation' THEN (coalesce((SELECT value::bigint FROM knowledge_meta WHERE key = 'graph_generation'), -1) + 1)::text ELSE defaults.value END FROM claimed CROSS JOIN (VALUES ('watermark', '0'), ('graph_generation', '0'), ('graph_projection_watermark', '0'), ('graph_projection_head', ''), ('graph_projection_pending_watermark', '0'), ('graph_projection_pending_head', '')) AS defaults(key, value) ON CONFLICT (key) DO UPDATE SET value = CASE WHEN knowledge_meta.key IN ('graph_projection_pending_watermark', 'graph_projection_pending_head') THEN knowledge_meta.value ELSE EXCLUDED.value END RETURNING key) SELECT count(*) FROM initialized";
+    // the stamp's rows are locked first, watermark then head, the order a
+    // projector takes them in
+    return "DO $p$ BEGIN IF coalesce((SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'), '') <> '2' THEN "
+        + "PERFORM 1 FROM knowledge_meta WHERE key = 'watermark' FOR UPDATE; PERFORM 1 FROM knowledge_meta WHERE key = 'graph_projection_head' FOR UPDATE; "
+        + "INSERT INTO knowledge_meta (key, value) VALUES ('graph_generation', '0') ON CONFLICT (key) DO UPDATE SET value = ((knowledge_meta.value::bigint) + 1)::text; "
+        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals; "
+        + "DELETE FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head'); "
+        + "INSERT INTO knowledge_meta (key, value) VALUES ('watermark', '0'), ('graph_projection_head', ''), ('graph_projection_protocol', '2') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; "
+        + "END IF; END $p$";
 }
 
 fn graph_generation_ddl(sch: String) -> String {
@@ -152,14 +169,14 @@ fn spine_grants(sch: String, role: String) -> String {
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
 }
 
-// What a head may do (GH #985): take or fence a lease, read the ledger and
+// What a head may do (GH #985): take or fence a claim, read the ledger and
 // the graph, and file and read protected evidence through the functions.
 // It writes nothing else; a head's write is a request in the record.
 fn head_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
-        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".ledger_leases, "
+        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".claims, "
         + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals TO " + role + ";"
-        + "GRANT INSERT, UPDATE ON " + sch + ".ledger_leases TO " + role + ";"
+        + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
         + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text) TO " + role;
 }
 
@@ -243,7 +260,7 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     }
     let indexes = c.exec(graph_indexes());
     if !indexes.ok { return abort(c, "graph indexes", indexes.err); }
-    let protocol = c.query_one(projection_protocol());
+    let protocol = c.exec(projection_protocol());
     if !protocol.ok { return abort(c, "projection protocol migration", protocol.err); }
     let tracked = c.exec(graph_generation_ddl(sch));
     if !tracked.ok { return abort(c, "graph migration", tracked.err); }

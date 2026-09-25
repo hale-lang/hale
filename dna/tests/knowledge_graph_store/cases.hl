@@ -29,12 +29,15 @@ locus MutateGraphPolicy {
     }
 }
 
-locus CheckpointGraphPolicy {
-    params { graph: dna::GraphStore; previous: dna::GraphProjection; watermark: Int; head: String; fired: Bool = false; }
+// Another projector lands a row while the read is open: the page keeps the
+// stamp of its own snapshot.
+locus RowGraphPolicy {
+    params { other: dna::KnowledgeStore; seq: Int; prev: String; head: String; fired: Bool = false; }
     fn visible(id: String) -> Bool {
         if !self.fired {
             self.fired = true;
-            std::test::assert(self.graph.checkpoint_projection(self.previous, self.watermark, self.head), "concurrent projection checkpoint");
+            std::test::assert_eq_int(self.other.begin_row(self.seq, self.prev, self.head), 1, "concurrent row begun");
+            std::test::assert(self.other.commit_row(), "concurrent row landed");
         }
         return true;
     }
@@ -58,13 +61,14 @@ locus GraphCases {
         std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "h", rel: "hidden" }), "seed hidden edge");
         std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r" }), "seed shorter relation");
         std::test::assert(store.link(dna::KnowledgeEdge { from: "z", to: "é", rel: "unrelated" }), "seed unrelated");
-        std::test::assert(store.set_watermark(16), "seed watermark");
     }
     fn exercise(store: dna::KnowledgeStore, graph: dna::GraphStore, label: String) {
         std::test::assert(store.open(), label + ": open");
-        std::test::assert(graph.begin_projection(graph.projection_basis(), 16, "head-16"), label + ": fence before graph population");
         let initial = graph.graph_generation();
+        // the graph as one record row's effects: the row and its stamp land together
+        std::test::assert_eq_int(store.begin_row(0, "", "head-1"), 1, label + ": row 0 begun");
         self.populate(store);
+        std::test::assert(store.commit_row(), label + ": row 0 lands");
         std::test::assert_eq_int(graph.graph_generation(), initial + 14, label + ": each effective graph mutation advances generation");
         std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r" }), label + ": duplicate edge");
         std::test::assert_eq_int(graph.graph_generation(), initial + 14, label + ": duplicate edge does not change generation");
@@ -80,7 +84,8 @@ locus GraphCases {
         std::test::assert(!page.subject_present, label + ": collection has no exact subject");
         std::test::assert_eq_str(page.record, store.record(), label + ": scope basis");
         std::test::assert_eq_int(page.generation, initial + 14, label + ": generation basis");
-        std::test::assert_eq_int(page.watermark, 16, label + ": watermark basis");
+        std::test::assert_eq_int(page.watermark, 1, label + ": watermark basis");
+        std::test::assert_eq_str(page.projection_head, "head-1", label + ": stamped head basis");
         let detail = first.nodes.get(0) or dna::Stored { };
         std::test::assert_eq_str(detail.idea.text, "A\nbody\tquoted \"text\"", label + ": native body survives transport");
         std::test::assert_eq_str(detail.idea.name, "practice/é", label + ": native practice name");
@@ -174,151 +179,104 @@ locus GraphCases {
         self.expect_ok(graph.read_graph(dna::GraphQuery { target: "org/child" }, policy, retired), label + " retired relevance");
         std::test::assert_eq_int(retired.nodes.len(), 0, label + ": retired idea leaves relevance");
     }
+    // GH #1026: one transaction per record row; the stamp moves first, by
+    // compare-and-swap on the watermark and then on the head.
     fn lineage(store: dna::KnowledgeStore, graph: dna::GraphStore, label: String) {
-        let fresh = graph.projection_basis();
+        let before = graph.projection_basis();
+        std::test::assert(before.ok && before.watermark == 1 && before.head == "head-1", label + ": the stamp names the row that landed");
         let generation = graph.graph_generation();
-        let watermark = store.watermark();
-        std::test::assert(fresh.ok && fresh.watermark == 0 && fresh.head == "", label + ": unstamped graph is explicitly unproven");
-        std::test::assert(fresh.live_watermark == watermark && fresh.pending_watermark == watermark && fresh.pending_head == "head-16", label + ": target remains pending until checkpoint");
-        std::test::assert(watermark > 0, label + ": live watermark cannot imply a projection head");
-        std::test::assert(!graph.checkpoint_projection(dna::GraphProjection { }, watermark, "head-16"), label + ": invalid prior basis refused");
-        std::test::assert(!graph.checkpoint_projection(dna::GraphProjection { ok: true, watermark: 1, head: "wrong-prior" }, watermark, "head-16"), label + ": stale prior pair refused");
-        std::test::assert(!graph.checkpoint_projection(fresh, watermark + 1, "head-17"), label + ": live watermark mismatch refused");
-        std::test::assert(!graph.checkpoint_projection(fresh, watermark, ""), label + ": empty nonfresh head refused");
-        std::test::assert_eq_int(graph.graph_generation(), generation, label + ": rejected checkpoint leaves generation unchanged");
-        std::test::assert(graph.projection_basis().head == "" && graph.projection_basis().watermark == 0, label + ": rejected checkpoint leaves pair unchanged");
-        std::test::assert(graph.checkpoint_projection(fresh, watermark, "head-16"), label + ": checkpoint completed prefix");
-        let stamped = graph.projection_basis();
-        std::test::assert(stamped.ok && stamped.watermark == watermark && stamped.head == "head-16", label + ": exact prefix persisted");
-        std::test::assert_eq_int(graph.graph_generation(), generation + 1, label + ": checkpoint advances graph generation");
-        std::test::assert(graph.checkpoint_projection(stamped, watermark, "head-16"), label + ": identical checkpoint succeeds");
-        std::test::assert_eq_int(graph.graph_generation(), generation + 1, label + ": identical checkpoint keeps pagination stable");
-        std::test::assert(!graph.checkpoint_projection(fresh, watermark, "head-16"), label + ": stale CAS cannot overwrite even same target");
-        std::test::assert(!graph.begin_projection(stamped, watermark, "head-16"), label + ": begin requires actual new target");
-        std::test::assert(graph.begin_projection(stamped, watermark + 1, "head-17"), label + ": fence next prefix before writing");
-        let pending = graph.projection_basis();
-        std::test::assert(store.set_watermark(watermark + 1), label + ": live application progresses");
-        let policy = GraphPolicy { };
-        let sink = CaptureGraph { };
-        let partial = graph.read_graph(dna::GraphQuery { }, policy, sink);
-        self.expect_ok(partial, label + " native partial projection read");
-        std::test::assert(partial.watermark == watermark + 1 && partial.projection_watermark == watermark && partial.projection_head == "head-16", label + ": page distinguishes live progress from proven prefix");
-        std::test::assert(partial.projection_pending_watermark == watermark + 1 && partial.projection_pending_head == "head-17", label + ": same snapshot exposes pending target");
-        std::test::assert(!graph.checkpoint_projection(stamped, watermark + 1, "head-17"), label + ": checkpoint requires captured pending pair");
-        std::test::assert(graph.checkpoint_projection(pending, watermark + 1, "head-17"), label + ": advance proven prefix by CAS");
-        std::test::assert_eq_int(graph.graph_generation(), generation + 3, label + ": begin and checkpoint each advance generation once");
+        std::test::assert_eq_int(store.begin_row(0, "", "head-1"), 0, label + ": a row already applied is not begun again");
+        std::test::assert_eq_int(store.begin_row(1, "other-head", "head-2"), 0, label + ": a row whose predecessor is not the stamped head is not begun");
+        std::test::assert_eq_int(store.begin_row(2, "head-2", "head-3"), 0, label + ": a row past the next is not begun");
+        std::test::assert_eq_int(store.begin_row(-1, "", "head-0"), -1, label + ": a row that cannot exist is refused as an error");
+        std::test::assert_eq_int(store.begin_row(1, "head-1", ""), -1, label + ": a row with no digest is refused as an error");
+        std::test::assert_eq_int(graph.graph_generation(), generation, label + ": refused rows change nothing");
+        std::test::assert_eq_int(store.begin_row(1, "head-1", "head-2"), 1, label + ": the next row is begun");
+        std::test::assert(store.upsert(dna::Idea { id: "mid-row", text: "inside the row" }, 2), label + ": an effect inside the row");
+        store.abort_row();
+        std::test::assert(!store.idea("mid-row").present, label + ": an aborted row lands none of its effects");
+        std::test::assert(graph.projection_basis().watermark == 1 && graph.projection_basis().head == "head-1" && graph.graph_generation() == generation, label + ": nor its stamp, nor a generation");
+        std::test::assert_eq_int(store.begin_row(1, "head-1", "head-2"), 1, label + ": the row is begun again");
+        std::test::assert(store.commit_row(), label + ": and lands");
         let next = graph.projection_basis();
-        std::test::assert(next.ok && next.watermark == watermark + 1 && next.head == "head-17", label + ": advanced pair is coherent");
+        std::test::assert(next.ok && next.watermark == 2 && next.head == "head-2", label + ": the stamp moved one row");
+        std::test::assert_eq_int(store.watermark(), 2, label + ": the watermark is the stamp's");
+        let policy = GraphPolicy { };
         let stable_sink = CaptureGraph { };
         let stable = graph.read_graph(dna::GraphQuery { }, policy, stable_sink);
         self.expect_ok(stable, label + " stamped page");
-        std::test::assert(stable.projection_head == next.head && stable.projection_watermark == next.watermark && stable.watermark == next.watermark, label + ": page captures stamped pair in basis");
-        std::test::assert(stable.projection_pending_watermark == 0 && stable.projection_pending_head == "", label + ": checkpoint clears pending pair together");
+        std::test::assert(stable.projection_head == next.head && stable.watermark == next.watermark, label + ": a page carries the stamp of its own snapshot");
     }
-    fn pending_recovery(store: dna::KnowledgeStore, graph: dna::GraphStore, label: String) {
-        std::test::assert(store.open(), label + ": open pending fixture");
-        let fresh = graph.projection_basis();
-        std::test::assert(graph.begin_projection(fresh, 2, "pending-2"), label + ": begin before any event writes");
-        let pending = graph.projection_basis();
-        let generation = graph.graph_generation();
-        std::test::assert(graph.begin_projection(pending, 2, "pending-2"), label + ": unchanged pending target is idempotent");
-        std::test::assert_eq_int(graph.graph_generation(), generation, label + ": idempotent begin keeps generation");
-        std::test::assert(store.upsert(dna::Idea { id: "partially-applied", text: "event row before binding/watermark" }, 1), label + ": partial event leaves row");
-        let sink = CaptureGraph { };
-        let policy = GraphPolicy { };
-        let page = graph.read_graph(dna::GraphQuery { }, policy, sink);
-        self.expect_ok(page, label + " inspect partial event natively");
-        std::test::assert(sink.nodes.len() == 1 && page.watermark == 0 && page.projection_watermark == 0 && page.projection_pending_watermark == 2 && page.projection_pending_head == "pending-2", label + ": extra row cannot hide behind unchanged watermark");
-        std::test::assert(!graph.begin_projection(fresh, 3, "pending-3"), label + ": stale pending pair refused");
-        std::test::assert(!graph.checkpoint_projection(pending, 2, "pending-2"), label + ": unfinished target cannot checkpoint");
-        std::test::assert(store.set_watermark(1), label + ": prefix progresses partway");
-        std::test::assert(!graph.begin_projection(pending, 3, "pending-3"), label + ": stale live mark refused");
-        let progressed = graph.projection_basis();
-        std::test::assert(!graph.begin_projection(progressed, 1, "shorter-1"), label + ": pending target cannot rewind");
-        std::test::assert(graph.begin_projection(progressed, 3, "pending-3"), label + ": caller-proven extension replaces pending target");
-        let extended = graph.projection_basis();
-        std::test::assert(!graph.checkpoint_projection(pending, 2, "pending-2"), label + ": old target cannot complete new pending suffix");
-        std::test::assert(store.set_watermark(3), label + ": exact extended target applied");
-        std::test::assert(!graph.checkpoint_projection(extended, 3, "other-3"), label + ": checkpoint pins target digest");
-        std::test::assert(graph.checkpoint_projection(extended, 3, "pending-3"), label + ": checkpoint clears completed extended target");
-        let complete = graph.projection_basis();
-        std::test::assert(complete.watermark == 3 && complete.live_watermark == 3 && complete.head == "pending-3" && complete.pending_watermark == 0 && complete.pending_head == "", label + ": completed basis is coherent");
-    }
-    // GH #985: the stores open as the record's spine role; the faults
-    // this injects that change a table's shape are the owner's to make,
-    // through `admin`, and a projection-protocol step that used to run at
-    // open is the migration's.
-    fn postgres_pending(owner: String, admin: dna::Pq, record: String) {
+    // GH #985: the stores open as the record's spine role; the faults this
+    // injects that change a table's shape are the owner's to make, through
+    // `admin`. GH #1026: a row lands whole or not at all, whichever of its
+    // statements fails, and the migration to protocol 2 empties a graph it
+    // cannot vouch for.
+    fn postgres_faults(owner: String, admin: dna::Pq, record: String) {
         let spine = dna::migrated(owner, record);
         std::test::assert(spine.ok, "the schema is applied: " + spine.why);
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
         let sch = dna::schema_for(record);
-        self.pending_recovery(store, store, "postgres");
-        let clean = store.projection_basis();
-        let generation = store.graph_generation();
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta ADD CONSTRAINT pending_fixture_reject CHECK (key <> 'graph_projection_pending_head' OR value <> 'rejected-begin')"), "inject begin SQL failure");
-        std::test::assert(!store.begin_projection(clean, 4, "rejected-begin"), "failed begin is refused");
-        std::test::assert(store.projection_basis().pending_watermark == 0 && store.projection_basis().head == clean.head && store.graph_generation() == generation, "failed begin rolls back all metadata and generation");
-        std::test::assert_eq_str(store.conn.tx_status(), "idle", "failed begin leaves transaction idle");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT pending_fixture_reject"), "repair begin SQL fixture");
-        std::test::assert(store.begin_projection(clean, 4, "pending-4"), "begin recovers after SQL repair");
-        let pending = store.projection_basis();
-        std::test::assert(store.upsert(dna::Idea { id: "failed-binding", text: "durable partial event" }, 4), "event row is written first");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings ADD CONSTRAINT binding_fixture_reject CHECK (class <> 'refused-fixture')"), "inject event binding failure");
-        std::test::assert(!store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "refused-fixture" }), "event fails after durable row");
-        std::test::assert(store.reopen(), "reopen after interrupted event");
-        let recovered = store.projection_basis();
-        std::test::assert(recovered.watermark == 3 && recovered.live_watermark == 3 && recovered.head == "pending-3" && recovered.pending_watermark == 4 && recovered.pending_head == "pending-4", "pending survives restart with unchanged old live watermark");
+        std::test::assert(store.open(), "open the fault fixture: " + store.last_error());
+        let fresh = store.projection_basis();
+        std::test::assert(fresh.ok && fresh.watermark == 0 && fresh.head == "", "a migrated store is stamped at row 0");
+        // an effect fails: the row is dropped whole
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings ADD CONSTRAINT binding_fixture_reject CHECK (class <> 'refused-fixture')"), "inject an effect failure");
+        std::test::assert_eq_int(store.begin_row(0, "", "row-1"), 1, "row 0 begun");
+        std::test::assert(store.upsert(dna::Idea { id: "failed-binding", text: "the row's first effect" }, 0), "the first effect");
+        std::test::assert(!store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "refused-fixture" }), "the second effect fails");
+        store.abort_row();
+        std::test::assert_eq_str(store.conn.tx_status(), "idle", "the dropped row leaves the connection idle");
+        std::test::assert(!store.idea("failed-binding").present && store.projection_basis().watermark == 0, "nothing of the failed row landed");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings DROP CONSTRAINT binding_fixture_reject"), "repair the effect fixture");
+        // the watermark's compare-and-swap fails
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta ADD CONSTRAINT watermark_fixture_reject CHECK (key <> 'watermark' OR value <> '1')"), "inject a watermark failure");
+        std::test::assert_eq_int(store.begin_row(0, "", "row-1"), -1, "a watermark that cannot move is an error");
+        std::test::assert(store.conn.tx_status() == "idle" && store.projection_basis().watermark == 0, "and begins nothing");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT watermark_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT head_fixture_reject CHECK (key <> 'graph_projection_head' OR value <> 'row-1')"), "inject a head failure");
+        // the head's compare-and-swap fails after the watermark's moved
+        std::test::assert_eq_int(store.begin_row(0, "", "row-1"), -1, "a head that cannot move is an error");
+        let after_head = store.projection_basis();
+        std::test::assert(store.conn.tx_status() == "idle" && after_head.watermark == 0 && after_head.head == "", "and the watermark it moved is rolled back with it");
+        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT head_fixture_reject"), "repair the head fixture");
+        std::test::assert_eq_int(store.begin_row(0, "", "row-1"), 1, "row 0 begun again");
+        std::test::assert(store.upsert(dna::Idea { id: "failed-binding", text: "the row's first effect" }, 0) && store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "goal" }), "its effects");
+        std::test::assert(store.commit_row(), "the row lands");
+        std::test::assert(store.reopen(), "reopen");
+        let landed = store.projection_basis();
+        std::test::assert(landed.watermark == 1 && landed.head == "row-1" && store.idea("failed-binding").present, "the row and its stamp survive a reopen");
         let observer = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
-        std::test::assert(observer.open() && observer.projection_basis().pending_head == "pending-4", "another opener never resets an active pending target");
+        std::test::assert(observer.open() && observer.projection_basis().head == "row-1", "another connection reads the same stamp");
         observer.conn.close();
-        std::test::assert(store.conn.exec("DELETE FROM knowledge_meta WHERE key = 'graph_projection_pending_head'").ok, "simulate missing half of pending metadata");
-        std::test::assert(dna::migrated(owner, record).ok && store.reopen() && !store.projection_basis().ok, "neither migration nor reopen silently recreates missing pending half");
-        std::test::assert_eq_str(store.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'graph_projection_pending_watermark'").data, "4", "corrupt pending pair keeps known target watermark");
-        std::test::assert(store.conn.exec("INSERT INTO knowledge_meta (key, value) VALUES ('graph_projection_pending_head', 'pending-4'); UPDATE knowledge_meta SET value = 'corrupt' WHERE key = 'graph_projection_protocol'").ok, "repair pending fixture and corrupt protocol marker");
-        std::test::assert(store.reopen() && !store.projection_basis().ok, "unknown protocol marker fails closed across reopen");
-        std::test::assert(!store.begin_projection(recovered, 5, "pending-5"), "protocol change fences a previously captured begin basis");
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '1' WHERE key = 'graph_projection_protocol'").ok, "repair protocol fixture");
-        std::test::assert(store.projection_basis().pending_head == "pending-4", "protocol repair has not erased pending target");
-        let sink = CaptureGraph { };
-        let policy = GraphPolicy { };
-        let page = store.read_graph(dna::GraphQuery { id: "failed-binding" }, policy, sink);
-        self.expect_ok(page, "inspect failed event projection natively");
-        std::test::assert(sink.nodes.len() == 1 && page.watermark == 3 && page.projection_watermark == 3 && page.projection_pending_watermark == 4, "same-snapshot pending prevents a partial row appearing clean");
-        std::test::assert(!store.checkpoint_projection(recovered, 3, "pending-3"), "old committed prefix cannot clear partial suffix");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings DROP CONSTRAINT binding_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT watermark_fixture_reject CHECK (key <> 'watermark' OR value <> '4')"), "inject watermark failure");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "goal" }), "event binding replay succeeds");
-        std::test::assert(!store.set_watermark(4), "watermark SQL failure leaves suffix pending");
-        std::test::assert(store.projection_basis().pending_head == "pending-4" && store.projection_basis().live_watermark == 3, "failed watermark preserves durable pending target");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT watermark_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT checkpoint_fixture_reject CHECK (key <> 'graph_projection_head' OR value <> 'pending-4')"), "repair watermark and inject checkpoint failure");
-        std::test::assert(store.set_watermark(4), "target watermark completes");
-        let rollback_generation = store.graph_generation();
-        std::test::assert(!store.checkpoint_projection(pending, 4, "pending-4"), "checkpoint SQL failure refused");
-        let failed = store.projection_basis();
-        std::test::assert(failed.watermark == 3 && failed.head == "pending-3" && failed.pending_watermark == 4 && failed.pending_head == "pending-4" && store.graph_generation() == rollback_generation, "checkpoint error cannot partially clear pending or update stamp/generation");
-        std::test::assert_eq_str(store.conn.tx_status(), "idle", "checkpoint rollback leaves transaction idle");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT checkpoint_fixture_reject"), "repair checkpoint SQL fixture");
-        std::test::assert(store.checkpoint_projection(pending, 4, "pending-4"), "checkpoint retry completes exact target");
-        std::test::assert(store.reopen(), "reopen completed target");
-        let completed = store.projection_basis();
-        std::test::assert(completed.watermark == 4 && completed.head == "pending-4" && completed.pending_watermark == 0 && completed.pending_head == "", "complete target and cleared pending survive reopen");
-        std::test::assert(store.conn.exec("DELETE FROM knowledge_meta WHERE key IN ('graph_projection_protocol', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").ok, "simulate old stamped store without pending protocol");
-        std::test::assert(dna::migrated(owner, record).ok && store.reopen() && !store.projection_basis().ok, "pre-fence stamp with existing rows requires rebuild");
-        std::test::assert_eq_str(store.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'").data, "rebuild_required", "migration records explicit unavailable lineage");
-        std::test::assert_eq_str(store.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'graph_projection_watermark'").data, "0", "migration invalidates unsafe prior stamp");
-        std::test::assert_eq_int(store.watermark(), 4, "migration preserves live progress and graph rows");
-        let invalid_generation = store.graph_generation();
-        std::test::assert(dna::migrated(owner, record).ok && store.reopen() && !store.projection_basis().ok && store.graph_generation() == invalid_generation, "protocol initialization never reruns after first claim");
+        // an idempotent migration leaves a protocol-2 graph alone
+        let generation = store.graph_generation();
+        std::test::assert(dna::migrated(owner, record).ok && store.reopen(), "migrate again");
+        std::test::assert(store.projection_basis().head == "row-1" && store.idea("failed-binding").present && store.graph_generation() == generation, "a second migration changes nothing");
+        // an unknown protocol marker fails closed
+        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = 'corrupt' WHERE key = 'graph_projection_protocol'").ok, "corrupt the protocol marker");
+        std::test::assert(store.reopen() && !store.projection_basis().ok, "an unknown protocol has no valid stamp");
+        std::test::assert_eq_int(store.begin_row(1, "row-1", "row-2"), 0, "and no row begins over it");
+        std::test::assert_eq_int(store.watermark(), 1, "the refused row moved nothing");
+        // version 1's stamped prefix with a pending suffix: the migration
+        // empties the graph and stamps row 0, and the projectors rebuild it
+        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '1' WHERE key = 'graph_projection_protocol'; INSERT INTO knowledge_meta (key, value) VALUES ('graph_projection_watermark', '1'), ('graph_projection_pending_watermark', '2'), ('graph_projection_pending_head', 'row-2')").ok, "a version-1 projection");
+        std::test::assert(dna::migrated(owner, record).ok && store.reopen(), "migrate a version-1 projection");
+        let migrated = store.projection_basis();
+        std::test::assert(migrated.ok && migrated.watermark == 0 && migrated.head == "", "the migration stamps row 0");
+        std::test::assert(!store.idea("failed-binding").present && store.count("bindings") == 0, "and empties the graph it cannot vouch for");
+        std::test::assert(store.graph_generation() > generation, "moving the generation, so an old page is seen to be old");
+        std::test::assert_eq_str(store.conn.query_one("SELECT count(*) FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").data, "0", "version 1's stamp keys are gone");
+        // version 1's lease table is the claims table, its rows kept
+        std::test::assert(ddl(admin, sch, "INSERT INTO claims (key, holder, token, until, present) VALUES ('body', 'a@host:/clone', 4, 99, true); ALTER TABLE claims RENAME COLUMN until TO expires; ALTER TABLE claims RENAME TO ledger_leases; UPDATE memory_meta SET value = '1' WHERE key = 'schema_version'"), "a version-1 lease table");
+        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 1; this toolchain needs version 2"), "a version-1 memory is refused at open: " + store.last_error());
+        std::test::assert(dna::migrated(owner, record).ok, "migrate a version-1 lease table");
+        let leases = dna::PqLeaseStore { conn: dna::pq_conn(spine), record_id: record };
+        std::test::assert(leases.open(), "the claims open: " + leases.last_error());
+        let body = leases.current("body");
+        std::test::assert(body.known && body.holder == "a@host:/clone" && body.token == 4 && body.expires == 99 && body.present, "the body lease is a row of `claims`, token and all");
+        leases.conn.close();
         store.conn.close();
-        std::test::assert(drop_scope(owner, record), "remove pending fault test scope");
-        let zero_spine = dna::migrated(owner, record + "zero");
-        std::test::assert(zero_spine.ok, "the zero-watermark schema is applied: " + zero_spine.why);
-        let zero = dna::Pq { conn: dna::pq_conn(zero_spine), record_id: record + "zero" };
-        std::test::assert(zero.open() && zero.upsert(dna::Idea { id: "partial-first-event" }, 0), "seed old partial first event with watermark zero");
-        std::test::assert(zero.conn.exec("DELETE FROM knowledge_meta WHERE key IN ('graph_projection_protocol', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").ok, "simulate pre-fence zero-watermark projection");
-        std::test::assert(dna::migrated(owner, record + "zero").ok && zero.reopen() && zero.watermark() == 0 && !zero.projection_basis().ok, "existing rows at zero watermark never count as a fresh projection");
-        zero.conn.close();
-        std::test::assert(drop_scope(owner, record + "zero"), "remove zero-watermark migration fixture");
+        std::test::assert(drop_scope(owner, record), "remove the fault fixture's scope");
     }
     fn postgres(owner: String) {
         let dsn = dna::parse_dsn(owner);
@@ -327,7 +285,7 @@ locus GraphCases {
         let admin = dna::Pq { conn: dna::pq_conn(dsn) };
         std::test::assert(admin.conn.open().ok, "the owner connects");
         let record = "knowledgegraph" + to_string(std::process::pid());
-        self.postgres_pending(owner, admin, record + "pending");
+        self.postgres_faults(owner, admin, record + "faults");
         let spine = dna::migrated(owner, record);
         std::test::assert(spine.ok, "the schema is applied: " + spine.why);
         let sch = dna::schema_for(record);
@@ -337,7 +295,7 @@ locus GraphCases {
         let other = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(other.open(), "second connection");
         let persisted = other.projection_basis();
-        std::test::assert(persisted.ok && persisted.watermark == 17 && persisted.head == "head-17", "projection pair survives second connection and idempotent migration");
+        std::test::assert(persisted.ok && persisted.watermark == 2 && persisted.head == "head-2", "projection pair survives second connection and idempotent migration");
         std::test::assert(other.reopen(), "reopen projection connection");
         std::test::assert(other.projection_basis().head == persisted.head && other.projection_basis().watermark == persisted.watermark, "projection pair survives reopen");
         let generation = store.graph_generation();
@@ -351,17 +309,14 @@ locus GraphCases {
         let direct = other.conn.exec("UPDATE knowledge_bindings SET class = 'external' WHERE idea = 'a' AND target = 'org'");
         std::test::assert(direct.ok, "external SQL mutation");
         std::test::assert_eq_int(store.graph_generation(), generation + 2, "SQL trigger covers external update");
-        std::test::assert(other.begin_projection(other.projection_basis(), 18, "head-18"), "own target before concurrent checkpoint");
-        let checkpoint_before = store.projection_basis();
-        let checkpoint_generation = store.graph_generation();
-        std::test::assert(other.set_watermark(checkpoint_before.watermark + 1), "owner advances live watermark before concurrent checkpoint");
-        let checkpoint_policy = CheckpointGraphPolicy { graph: other, previous: checkpoint_before, watermark: checkpoint_before.watermark + 1, head: "head-18" };
-        let checkpoint_sink = CaptureGraph { };
-        let checkpoint_page = store.read_graph(dna::GraphQuery { }, checkpoint_policy, checkpoint_sink);
-        self.expect_ok(checkpoint_page, "snapshot during external checkpoint");
-        std::test::assert(checkpoint_page.projection_watermark == checkpoint_before.watermark && checkpoint_page.projection_head == checkpoint_before.head && checkpoint_page.generation == checkpoint_generation, "page keeps the old stamp and generation from one snapshot");
-        std::test::assert(checkpoint_page.projection_pending_watermark == 18 && checkpoint_page.projection_pending_head == "head-18", "page captures pending pair before external completion");
-        std::test::assert(store.projection_basis().head == "head-18" && store.graph_generation() == checkpoint_generation + 1, "post-read basis detects concurrent checkpoint");
+        let row_before = store.projection_basis();
+        let row_generation = store.graph_generation();
+        let row_policy = RowGraphPolicy { other: other, seq: row_before.watermark, prev: row_before.head, head: "head-3" };
+        let row_sink = CaptureGraph { };
+        let row_page = store.read_graph(dna::GraphQuery { }, row_policy, row_sink);
+        self.expect_ok(row_page, "snapshot during another projector's row");
+        std::test::assert(row_page.watermark == row_before.watermark && row_page.projection_head == row_before.head && row_page.generation == row_generation, "the page keeps the stamp and generation of its own snapshot");
+        std::test::assert(store.projection_basis().head == "head-3" && store.projection_basis().watermark == row_before.watermark + 1, "a basis read after it sees the row that landed");
         std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_edges RENAME TO knowledge_edges_offline"), "induce graph SQL failure");
         let sink = CaptureGraph { };
         let policy = GraphPolicy { };
@@ -409,23 +364,6 @@ locus GraphCases {
         std::test::assert(!escaped_cap.ok && escaped_cap.error == "read_limit", "postgres rejects oversized escaped JSON before transport");
         limited.conn.close();
         std::test::assert(drop_scope(owner, limited_record), "remove bounded-scan test scope");
-        let legacy_record = record + "legacy";
-        let legacy_spine = dna::migrated(owner, legacy_record);
-        std::test::assert(legacy_spine.ok, "the projection migration schema is applied: " + legacy_spine.why);
-        let legacy = dna::Pq { conn: dna::pq_conn(legacy_spine), record_id: legacy_record };
-        std::test::assert(legacy.open(), "open projection migration fixture");
-        std::test::assert(legacy.set_watermark(9), "legacy store has applied watermark only");
-        std::test::assert(legacy.conn.exec("DELETE FROM knowledge_meta WHERE key IN ('graph_projection_protocol', 'graph_projection_head', 'graph_projection_watermark', 'graph_projection_pending_head', 'graph_projection_pending_watermark')").ok, "simulate pre-lineage metadata");
-        std::test::assert(dna::migrated(owner, legacy_record).ok && legacy.reopen(), "migrate legacy projection metadata");
-        let unproven = legacy.projection_basis();
-        std::test::assert(!unproven.ok && legacy.watermark() == 9, "migration never backfills an unknown applied head");
-        let unproven_sink = CaptureGraph { };
-        let unproven_page = legacy.read_graph(dna::GraphQuery { }, policy, unproven_sink);
-        std::test::assert(!unproven_page.ok && unproven_page.error == "read_failed", "native graph read fails closed for pre-protocol lineage");
-        std::test::assert(!legacy.begin_projection(unproven, 10, "head-10"), "unknown legacy progress cannot begin a fabricated suffix");
-        std::test::assert(!legacy.checkpoint_projection(unproven, 9, "head-9"), "unknown legacy progress cannot be stamped without rebuild");
-        legacy.conn.close();
-        std::test::assert(drop_scope(owner, legacy_record), "remove projection migration test scope");
         let malformed_record = record + "malformed";
         let malformed_spine = dna::migrated(owner, malformed_record);
         std::test::assert(malformed_spine.ok, "the malformed-key schema is applied: " + malformed_spine.why);

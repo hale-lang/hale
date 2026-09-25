@@ -20,7 +20,7 @@ one (GH #646).
 The routing table is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
-`report` and `lease` families are the Ledger's, as are
+`report`, `lease` and `claim` families are the Ledger's, as are
 `concern.requested` / `.raised` / `.refused`, `grant.reserved` /
 `.released` / `.fenced` / `.reservation_refused` (money;
 `grant.refused` — a grant born wider than its ceiling — is authority
@@ -205,7 +205,7 @@ envelope reaches it through the exchange, never when a delivery
 returned.
 
 **Coordination in memory (stage 2, #651).** On routing 1 every lease
-is a row of memory's `ledger_leases`, swapped by its token:
+is a row of memory's `claims` table, swapped by its token:
 `MemoryLeases` is `Coordination` over `current(key)` and `put(key,
 lease, expected)`, and a put lands only when the stored token is the
 one expected (0 for an absent lease). `GitLeases` — the record's
@@ -276,7 +276,11 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 1. A store's `open`
+- **The version fence.** The schema version is 2 (GH #1026: the lease
+  table became `claims`, and the graph's projection is one transaction
+  per record row; migrating a version-1 memory renames the table in
+  place, its rows kept, and empties the graph for the projectors to
+  rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
   DSN; it also refuses a schema whose claim names another record (`it
@@ -284,8 +288,8 @@ host's tick (**The spine**, below).
   it starts anything, and refuses to start (exit 2) on a mismatch.
 - **Grants.** The head's role has `SELECT` on the ledger, knowledge
   and meta tables (`memory_meta`, `ledger_rows`, `ledger_meta`,
-  `ledger_requests`, `ledger_leases`, `knowledge_*`), `INSERT` and
-  `UPDATE` on `ledger_leases` only, to take and fence a lease, and
+  `ledger_requests`, `claims`, `knowledge_*`), `INSERT` and
+  `UPDATE` on `claims` only, to take and fence a claim, and
   `EXECUTE` on `receipt_file` and `receipt_read`. It writes nothing
   else: a head's write is a request in the record. The spine's role
   reads and writes its schema's tables (`SELECT`, `INSERT`, `UPDATE`,
@@ -307,7 +311,7 @@ host's tick (**The spine**, below).
 adoption or abandonment the record asks for (`RequestAdmission`), and
 erases the protected bodies the record redacted
 (`MemoryVault.complete_redactions`) — only while it holds the **spine
-lease**. `SPINE_LEASE` is `spine`, a lease in memory's lease table;
+lease**. `SPINE_LEASE` is `spine`, a row of memory's `claims` table;
 `SPINE_TTL` is 30 s, renewed at its token on every tick (the constants
 sit beside `BODY_TTL` in `dna/host/record.hl`). Whichever spine takes
 it first projects, admits and erases; a spine without it reads and
@@ -323,6 +327,42 @@ a body (its lease `owner/<owner>`), and the spine lease picks one
 spine among them. A host with no `HALE_DNA_MEMORY_DSN_SPINE` says so
 and runs with no memory: nothing is projected or admitted. What failed
 on a tick is said once, when it changes, and tried again on the next.
+
+**Claims by id (GH #1026).** Every non-idempotent act a node takes is
+claimed by id, with an expiry, in memory before it is taken, so any
+number of nodes may run one organism over one record with no
+coordinator. The table is `claims(key, holder, token, until,
+present)`; the body lease is one of its rows. `MemoryLeases.claim(key,
+holder, ttl)` takes a key that is free, expired or already this
+holder's, with one conditional write — of two holders racing for a key
+one lands and the other finds it taken — and answers with the claim as
+it stands. Expiry is the database's clock, never a node's: the write
+computes `until` from Postgres's `now()` and compares against it, so
+nodes whose clocks disagree agree on when a claim ends. A renewal by
+its holder keeps the token; any other take raises it.
+`release_claim(key, holder)` gives it back on completion, its token
+kept so a late renewal is refused. A holder that dies leaves
+its claim to expire and another finishes the act. Without memory (no
+DSN) there is no one to race and a claim is granted. The substrate
+names its node by `HALE_DNA_NODE` (the host sets it to the body's
+holder, `user@host:<clone>`; otherwise this machine and process) and
+claims before it spends: an ask is claimed as `plan/<intent>`, and a
+human case the leader is asked to plan as `plan/case:<case>`, for
+`claim_ttl` (300 s) before the leader is asked, and, once
+claimed, the record is read again, so an ask the claim's previous
+holder admitted meanwhile is answered with that admission and the
+claim given back; a node that finds the claim taken answers `planning
+elsewhere: <holder> holds plan/<intent>` and writes nothing, and the
+ask comes back to it with the host's relay until it is answered or the
+claim expires (a case is held and driven again by `redrive`; memory
+that cannot be reached is said as such, `not planned: memory could not
+be reached to claim …`). The claim is given back once the plan's
+admission is recorded (the case handed). The optimize pass claims its window, `optimize/<n>` for the
+cadence's length, and leaves it to expire. A claim a node acts on is a
+`claim.taken <key> {holder, token, until}` row and its return a
+`claim.released <key> {holder}` row (the Ledger's), so the record
+shows who took what, and a second node's take after the first one's
+expiry; a claim taken without memory is not recorded.
 
 ## The record
 
@@ -729,7 +769,10 @@ repository:
   loop calls `request_tick` with a millisecond monotonic clock), the substrate
   first asks the budget — the pass is model-backed work, and none is
   routed on an exhausted window: `optimize.refused <org>`, and the
-  pass waits for the next window — then reads the record's structural signals
+  pass waits for the next window — then claims the window
+  (`optimize/<n>`, the cadence's own length; **Claims by id**, below),
+  so of the nodes running the organism one runs the pass, then reads
+  the record's structural signals
   — asks planned and how many took the defaults, concerns raised,
   grant contractions, verdicts refused, mutations rolled back — and
   asks the leader (`OptimizeRequested`, keyed by `org_id`) to walk the
@@ -986,6 +1029,7 @@ record's.
 | `budget.exhausted` | ledger | the window's model allowance is spent |
 | `model.called` | ledger | a model call and its evidence |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
+| `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
@@ -2110,7 +2154,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   A record admits one body per owner at a time — one body when the
   organization is the one owner (bounded attachment; the initial
   controller model). Over a shared record (the owners map above) the
-  lease is a row of memory's lease table per owner, `owner/<owner>`,
+  lease is a row of memory's `claims` table per owner, `owner/<owner>`,
   taken like the single body's `body` row, so two
   firms' controllers run side by side over one record and a firm's
   second host waits on its own firm's lease alone; a shared record
@@ -2571,8 +2615,9 @@ The live half is memory's, projected from the record by the spine
   does not add a universal Review requirement to the graph primitives.
 - **Memory holds the live half.** `dna/core/memory_store.hl` declares
   `KnowledgeStore`: `scope` / `record`, `open`, `healthy` / `reopen`,
-  `watermark` / `set_watermark` (the next record seq to apply; it only
-  advances), `upsert(idea, ratified_seq)` (idempotent by id, which is
+  `watermark` (the next record seq to apply), `begin_row(seq, prev,
+  head)` / `commit_row` / `abort_row` (one record row's transaction,
+  below), `rebuild(watermark, head)`, `upsert(idea, ratified_seq)` (idempotent by id, which is
   the digest), `retire`, `bind`, `unbind`, `link`, `unlink`,
   `idea(id)`, `context_ids(target, budget)` (accepted ideas bound to
   the target or any prefix of its path — goals flow down, initiatives
@@ -2584,15 +2629,24 @@ The live half is memory's, projected from the record by the spine
   upserts and removals delete exact tuples; rows come back as JSON
   built by the server, since the driver's tab- and newline-separated
   rows cannot carry an ordinary paragraph; a signal counts once per
-  record row, keyed on that row's sequence, because the projection
-  write and the watermark advance are separate and a crash between
-  them replays the row). **The projection is a consumer of the
-  record**: `apply_record(store, journal, receipts)` in
-  `dna/operations/memory_tail.hl` walks `knowledge.*` rows from the
-  watermark, resolves each digest to its receipt, upserts (`ratified`
-  accepted with its binding; `proposed` and `declined` kept as such,
-  never over a ratification), and advances the watermark row by row, so
-  after a crash it resumes and converges. Nothing in memory becomes
+  record row, keyed on that row's sequence). **The projection is a
+  consumer of the record**: `apply_record(store, journal, receipts)` in
+  `dna/operations/memory_tail.hl` walks the record's rows from the
+  watermark, resolves each knowledge digest to its receipt, upserts
+  (`ratified` accepted with its binding; `proposed` and `declined` kept
+  as such, never over a ratification). **Each record row is one
+  transaction (GH #1026)**: `begin_row` moves the stamp first — the
+  watermark from `n` to `n + 1`, then `graph_projection_head` from row
+  `n - 1`'s digest to row `n`'s, each by compare-and-swap on its
+  `knowledge_meta` row — then the row's effects, and `commit_row` lands
+  them together; a failed effect lands nothing (`abort_row`), and the
+  next pass begins the row again. A projector whose compare finds the
+  stamp moved rolls back having written nothing and ends its pass
+  (`yielded`): it blocked on the watermark's row while another
+  projector held it, and that projector committed the row. So any
+  number of projectors may apply one record at once, with no
+  coordinator, and converge on one graph, each row applied once; after
+  a crash a projector resumes at the stamp. Nothing in memory becomes
   ratified except from a `knowledge.ratified` row: git is the sole
   authority; memory can lag, never disagree. The observed and inferred
   tier (K3) lives only in Postgres and is backed up like any Postgres;
@@ -2617,7 +2671,21 @@ The live half is memory's, projected from the record by the spine
   (`dna/operations/memory_tail.hl`) applies the record into the graph
   on the host's tick, as the record's spine role, while the host holds
   the spine lease (**The spine**, above), so the projection advances
-  without anyone asking. **A question memory cannot answer is a
+  without anyone asking. **The fence compares heads by ancestry**:
+  memory's stamp is a commit of the record, so every clone can place
+  it. Nothing stamped, or the stamped head is this clone's row at the
+  stamp: the rows after it are the delta. This clone's head an ancestor
+  of the stamped head, or the stamped head a commit this clone has not
+  received: another projector is ahead, and there is nothing to project
+  here until the record is received (a head a clone cannot place is
+  never taken for a replaced chain, or two nodes that append before they
+  share would rebuild each other's projection until they synced).
+  Neither, of a head this clone holds: the chain was rebuilt
+  beneath the projection (a reconcile re-appends local rows with new
+  digests, GH #603), so the graph is rebuilt from row 0 —
+  `rebuild(watermark, head)` empties it only while the stamp is still
+  the one read, so of several projectors that see one replaced chain
+  one rebuilds, and a projector rebuilds at most once per pass. **A question memory cannot answer is a
   refusal, never an empty answer**: a package built from failing
   reads, or from a projection behind the record, is indistinguishable
   from "there is no knowledge here". The projection's store is opened

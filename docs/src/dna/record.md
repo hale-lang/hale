@@ -203,7 +203,7 @@ memories as one.
 
 Once adopted, the leases move too: the mutation leases the gateway
 takes and the body lease `hale dna run` holds are rows of memory's
-lease table, swapped by their token, and the fence renews a row rather
+`claims` table, swapped by their token, and the fence renews a row rather
 than a ref. A host that lost its lease presents a stale token and is
 refused. Over a shared record (the owners map) the body lease is one
 row per owner, `owner/<owner>`, so every owner's body runs side by

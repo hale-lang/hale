@@ -168,10 +168,11 @@ main locus App {
         let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id }; std::test::assert(store.open(), "the store opens: " + store.last_error());
         let projected = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(projected.error, "", "mixed direct and reviewed facts project in order"); std::test::assert_eq_int(store.count("edges"), 2, "reverse and self edges survive exact retired parallel removal");
-        // `set_watermark` only advances, so the lost watermark is made in SQL
+        // the stamp set back one row, in SQL (GH #1026: a row lands with its
+        // stamp, so both move back): the removal replays
         let generation = store.graph_generation(); let lost = j.revision() - 1;
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'").ok && store.watermark() == lost, "lose the removal's watermark");
-        let retry = ops::apply_record(store, j, receipts); std::test::assert_eq_str(retry.error, "", "lost removal watermark replays"); std::test::assert_eq_int(store.graph_generation(), generation, "absent exact tuple replay is idempotent");
+        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '" + j.read(lost - 1).digest + "' WHERE key = 'graph_projection_head'").ok && store.watermark() == lost, "set the stamp back before the removal");
+        let retry = ops::apply_record(store, j, receipts); std::test::assert_eq_str(retry.error, "", "the removal replays"); std::test::assert_eq_int(store.graph_generation(), generation, "absent exact tuple replay is idempotent");
         let rebuilt_id = id + "rebuilt";
         let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
         let reopened = dna::GitJournal { repo: repo }; let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };

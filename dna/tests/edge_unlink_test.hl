@@ -88,35 +88,24 @@ locus UnlinkCases {
         std::test::assert_eq_int(reopened.graph_generation(), generation, "postgres reopen does not fabricate a delete mutation");
         std::test::assert(reopened.unlink(self.forward()), "postgres absent replay succeeds");
         std::test::assert_eq_int(reopened.graph_generation(), generation, "postgres zero-row DELETE fires no row generation trigger");
-        reopened.close();
-        std::test::assert(store.begin_projection(store.projection_basis(), 1, "head-1"), "first projector acquires scope claim");
-        std::test::assert(reopened.open(), "read-only connection opens while another projector owns scope");
-        let pending = store.projection_basis();
-        std::test::assert(store.begin_projection(pending, 1, "head-1"), "same projector can resume without double-locking");
-        std::test::assert(!reopened.begin_projection(reopened.projection_basis(), 1, "head-1"), "second projector cannot replay an already-pending suffix concurrently");
-        std::test::assert(store.set_watermark(1) && store.checkpoint_projection(pending, 1, "head-1"), "completed checkpoint releases projector claim");
-        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 2, "head-2"), "one unlock releases a reentered claim entirely");
-        let second = reopened.projection_basis();
-        std::test::assert(!reopened.checkpoint_projection(second, 2, "head-2"), "checkpoint before effects refuses");
-        std::test::assert(!store.begin_projection(store.projection_basis(), 2, "head-2"), "failed in-progress checkpoint retains owning claim for retry");
-        std::test::assert(reopened.set_watermark(2) && reopened.checkpoint_projection(second, 2, "head-2"), "owner completes after retry");
-        std::test::assert(store.begin_projection(store.projection_basis(), 3, "head-3"), "new pending target claimed before scope change");
-        store.scope(identity + "unused");
-        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 3, "head-3"), "scope switch disconnects and releases former Record claim");
-        let third = reopened.projection_basis();
-        std::test::assert(reopened.set_watermark(3) && reopened.checkpoint_projection(third, 3, "head-3"), "new owner finishes released suffix");
-        store.scope(identity); std::test::assert(store.open(), "original Record scope reopens");
-        std::test::assert(store.begin_projection(store.projection_basis(), 4, "head-4"), "claim before connection restart");
-        std::test::assert(store.reopen(), "connection restart clears local claim state");
-        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 4, "head-4"), "another connection can resume after owner restart");
-        std::test::assert(!store.begin_projection(store.projection_basis(), 4, "head-4"), "reopened connection cannot reuse stale ownership");
-        let fourth = reopened.projection_basis();
-        std::test::assert(reopened.set_watermark(4) && reopened.checkpoint_projection(fourth, 4, "head-4"), "resumed owner checkpoints");
-        let wrong = dna::GraphProjection { ok: true, watermark: 4, head: "wrong-head", live_watermark: 4 };
-        std::test::assert(!store.begin_projection(wrong, 5, "head-5"), "stale initial metadata CAS refuses after claim acquisition");
-        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 5, "head-5"), "failed initial begin never strands a session claim");
-        let fifth = reopened.projection_basis();
-        std::test::assert(reopened.set_watermark(5) && reopened.checkpoint_projection(fifth, 5, "head-5"), "final owner clears pending suffix");
+        // GH #1026: the projection is one transaction per record row, and
+        // the stamp moves first by compare-and-swap, so of two connections
+        // that begin one row, one lands it and the other writes nothing.
+        std::test::assert_eq_int(store.begin_row(0, "", "head-1"), 1, "the first projector wins row 0");
+        std::test::assert(store.commit_row(), "row 0 lands with its stamp");
+        std::test::assert_eq_int(reopened.begin_row(0, "", "head-1"), 0, "a second projector finds row 0 applied and writes nothing");
+        std::test::assert_eq_int(reopened.begin_row(1, "other-head", "head-2"), 0, "a row whose predecessor is not the stamped head is not begun");
+        std::test::assert_eq_int(reopened.begin_row(1, "head-1", "head-2"), 1, "the row after the stamp is begun");
+        std::test::assert(reopened.upsert(dna::Idea { id: "aborted", text: "never lands" }, 2), "an effect inside the row");
+        reopened.abort_row();
+        std::test::assert(!reopened.idea("aborted").present, "an aborted row lands none of its effects");
+        std::test::assert(reopened.projection_basis().watermark == 1 && reopened.projection_basis().head == "head-1", "an aborted row leaves the stamp where it was");
+        std::test::assert_eq_int(store.begin_row(1, "head-1", "head-2"), 1, "the row is begun again");
+        std::test::assert(store.commit_row(), "and lands");
+        std::test::assert(!store.rebuild(1, "head-1") && len(store.last_error()) == 0, "a rebuild over a stamp that has moved changes nothing");
+        std::test::assert(store.projection_basis().watermark == 2, "the stamp stands");
+        std::test::assert(store.rebuild(2, "head-2"), "a rebuild at the stamp");
+        std::test::assert(store.projection_basis().watermark == 0 && store.projection_basis().head == "" && store.count("edges") == 0, "empties the graph and the stamp");
         store.close(); reopened.close();
         std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "remove only owned unlink test schema");
     }

@@ -1,0 +1,165 @@
+// dna/tests/claims_test.hl — claims by id (GH #1026).
+//
+// Any number of nodes may run an organism over one record, with no
+// coordinator: an ask is claimed in memory's `claims` table before it is
+// planned, so of the nodes offered one, one spends on it. Two nodes
+// racing for one ask: one claims and plans it, the other finds it taken
+// and is answered by the admission. A node killed after claiming an ask
+// and before its plan landed leaves the claim to expire; a second node,
+// offered the ask meanwhile, leaves it while the claim stands and plans
+// it once it has expired; the record shows both claims, one admission
+// and one offer. Memory is Postgres: without the owner's DSN in
+// HALE_DNA_MEMORY_DSN_OWNER nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source_root() -> String {
+    if std::env::var_exists("HALE_DNA_SOURCE") { return std::env::var("HALE_DNA_SOURCE"); }
+    return ".";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+main locus App {
+    params { repo: String = ""; bin: String = ""; spine: String = ""; }
+    // The rows of `kind` under `entity`, their `holder` fields in order.
+    @unbounded
+    fn holders(kind: String, entity: String) -> String {
+        let j = dna::GitJournal { repo: self.repo };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { out = out + std::json::find_string_field(e.body, "holder") + " "; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let j = dna::GitJournal { repo: self.repo };
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (e.entity == entity || std::json::find_string_field(e.body, "request") == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // A node in the foreground, bounded; its output.
+    fn node(name: String, intent: String, lead: String, ttl: Int) -> dna::RunResult {
+        return sh("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NODE=\"$3\" timeout 120 \"$4\" \"$1\" \"$5\" \"$6\" \"$7\" 90 2>&1\nsh\n" + self.repo + "\n" + self.spine + "\n" + name + "\n" + self.bin + "\n" + intent + "\n" + lead + "\n" + to_string(ttl));
+    }
+    // A node in the background, bounded; its pid. Its output goes to `log`.
+    fn start(name: String, intent: String, lead: String, ttl: Int, log: String) -> String {
+        let r = sh("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NODE=\"$3\" nohup timeout 120 \"$4\" \"$1\" \"$5\" \"$6\" \"$7\" 90 >\"$8\" 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + self.spine + "\n" + name + "\n" + self.bin + "\n" + intent + "\n" + lead + "\n" + to_string(ttl) + "\n" + log);
+        return dna::trim_nl(r.stdout);
+    }
+    // Whether `log` comes to hold `text` within `secs`.
+    @unbounded
+    fn says(log: String, text: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if std::str::contains(std::io::fs::read_file(log) or "", text) { return true; }
+            std::time::sleep(100ms);
+        }
+        return false;
+    }
+    // Whether the node logging to `log` ends within `secs`: admitted here,
+    // or answered by an admission another node made.
+    @unbounded
+    fn ended(log: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            let text = std::io::fs::read_file(log) or "";
+            if std::str::contains(text, "node: admitted") || std::str::contains(text, "node: answered") { return true; }
+            std::time::sleep(100ms);
+        }
+        return false;
+    }
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 { eprintln("claims_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let scratch = dna::scratch_root("claims");
+        // the node, built beside a copy of the core so the checkout is never built in
+        let copied = sh("sh\n-c\nmkdir -p \"$1/dna/tests/claims\" && cp -r \"$2/dna/core\" \"$1/dna/core\" && cp \"$2/dna/tests/claims/node.hl\" \"$1/dna/tests/claims/node.hl\"\nsh\n" + scratch + "\n" + source_root());
+        std::test::assert_eq_int(copied.code, 0, "the node and the core copied to scratch: " + copied.stderr);
+        let built = sh(toolchain() + "\nbuild\n--dev\n" + scratch + "/dna/tests/claims/node.hl");
+        std::test::assert_eq_int(built.code, 0, "the node builds: " + built.stdout + built.stderr);
+        self.bin = scratch + "/dna/tests/claims/node";
+        self.repo = scratch + "/repo";
+        let mk = sh("sh\n-c\nmkdir -p \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '/.hale/\\n' > .gitignore && echo base > base && git add -A && git commit -q -m base\nsh\n" + self.repo);
+        std::test::assert_eq_int(mk.code, 0, "the organism's repository: " + mk.stderr);
+        let born = dna::GitJournal { repo: self.repo };
+        std::test::assert(born.append(0, "application.observed", "org", "{}").ok, "the record's first row gives it its identity");
+        let identity = dna::GitRecord { repo: self.repo }.identity();
+        let m = dna::migrate(dna::parse_dsn(owner), identity);
+        std::test::assert(m.ok, "memory migrates for the record: " + m.why);
+        self.spine = m.spine_dsn;
+
+        // ---- the claim itself: one write, on the database's clock
+        let leases = dna::PqLeaseStore { conn: dna::pq_conn(dna::parse_dsn(self.spine)), record_id: identity };
+        std::test::assert(leases.open(), "the claims open: " + leases.last_error());
+        let first = leases.claim("probe", "x", 60);
+        std::test::assert(first.present && first.holder == "x" && first.token == 1, "a free key is claimed at token 1");
+        let clock = leases.conn.query_one("SELECT extract(epoch FROM now())::bigint");
+        let db_now = std::str::parse_int(dna::trim_nl(clock.data)) or 0;
+        std::test::assert(first.expires >= db_now + 58 && first.expires <= db_now + 60, "until is the database's now plus the ttl: " + to_string(first.expires) + " at " + to_string(db_now));
+        let taken = leases.claim("probe", "y", 60);
+        std::test::assert(taken.holder == "x" && taken.token == 1, "a live claim is someone else's: " + taken.holder);
+        let renewed = leases.claim("probe", "x", 60);
+        std::test::assert(renewed.holder == "x" && renewed.token == 1, "its holder renews it at the same token");
+        std::test::assert(leases.conn.exec("UPDATE claims SET until = extract(epoch FROM now())::bigint - 1 WHERE key = 'probe'").ok, "the claim ends a second ago by the database's clock");
+        let expired = leases.claim("probe", "y", 60);
+        std::test::assert(expired.present && expired.holder == "y" && expired.token == 2, "an expired claim is anyone's, at the next token");
+        std::test::assert(!leases.give_back("probe", "x"), "a claim that was taken over is not the old holder's to give back");
+        std::test::assert(leases.give_back("probe", "y"), "its holder gives it back");
+        let given = leases.current("probe");
+        std::test::assert(!given.present && given.token == 2, "given back, its token kept");
+        std::test::assert_eq_int(leases.claim("probe", "x", 60).token, 3, "and the next take raises it");
+        leases.conn.close();
+
+        // ---- two nodes race for one ask: one claims and plans it, the
+        // other finds it taken and is answered by the one admission
+        let log_a = scratch + "/race-a.log";
+        let log_b = scratch + "/race-b.log";
+        let a = self.start("node-a", "race", "yes", 300, log_a);
+        let b = self.start("node-b", "race", "yes", 300, log_b);
+        std::test::assert(self.ended(log_a, 90), "node a is answered: " + (std::io::fs::read_file(log_a) or ""));
+        std::test::assert(self.ended(log_b, 90), "node b is answered: " + (std::io::fs::read_file(log_b) or ""));
+        let gone = sh("sh\n-c\nkill \"$1\" \"$2\" 2>/dev/null; true\nsh\n" + a + "\n" + b);
+        let said_a = std::io::fs::read_file(log_a) or "";
+        let said_b = std::io::fs::read_file(log_b) or "";
+        std::test::assert(std::str::contains(said_a, "node: claimed plan/race") != std::str::contains(said_b, "node: claimed plan/race"), "one node planned the ask: " + said_a + " / " + said_b);
+        std::test::assert_eq_int(self.rows("claim.taken", "plan/race"), 1, "and only its claim is recorded: " + self.holders("claim.taken", "plan/race"));
+        std::test::assert_eq_int(self.rows("workflow.admitted", "race"), 1, "the ask is admitted once");
+        std::test::assert_eq_int(self.rows("intent.offered", "race"), 1, "and offered once");
+        std::test::assert_eq_int(self.rows("claim.released", "plan/race"), 1, "the claim is given back once the plan is admitted");
+
+        // ---- a node killed after claiming, before its plan landed: the
+        // claim stands until it expires, and then a second node finishes
+        let log_dead = scratch + "/killed.log";
+        let dead = self.start("node-killed", "k1", "no", 4, log_dead);
+        std::test::assert(self.says(log_dead, "node: claimed plan/k1", 60), "the first node claims the ask: " + (std::io::fs::read_file(log_dead) or ""));
+        let killed = sh("kill\n-9\n" + dead);
+        std::test::assert_eq_int(killed.code, 0, "the first node is killed before its plan lands");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "k1"), 0, "nothing was admitted for the ask");
+        let second = self.node("node-second", "k1", "yes", 300);
+        std::test::assert(std::str::contains(second.stdout, "planning elsewhere: node-killed holds plan/k1"), "the second node leaves the ask while the dead node's claim stands: " + second.stdout);
+        std::test::assert(std::str::contains(second.stdout, "node: claimed plan/k1") && std::str::contains(second.stdout, "node: admitted"), "and plans it once the claim has expired: " + second.stdout);
+        std::test::assert_eq_str(self.holders("claim.taken", "plan/k1"), "node-killed node-second ", "the record shows both claims, in order");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "k1"), 1, "the ask is admitted once");
+        std::test::assert_eq_int(self.rows("intent.offered", "k1"), 1, "and offered once: the second node does not offer it again");
+
+        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

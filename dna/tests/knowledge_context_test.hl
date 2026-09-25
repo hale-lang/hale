@@ -114,7 +114,9 @@ main locus App {
         std::test::assert(store.bind(dna::KnowledgeBinding { idea: DESIGN, target: "org", author: "org", class: dna::classify_binding("org", "org") }), "bound to the organization");
         std::test::assert(store.upsert(dna::Idea { id: IDEA, kind: "practice", text: IDEA_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 5 }, 5), "the application's practice");
         std::test::assert(store.bind(dna::KnowledgeBinding { idea: IDEA, target: "org/app", author: "org", class: dna::classify_binding("org", "org/app") }), "bound to the application");
-        std::test::assert(store.set_watermark(7), "applied through row 7");
+        // the stamp as a projector leaves it after row 7 (GH #1026: a row
+        // and its stamp land together, so the fixture writes both)
+        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '7' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = 'fixture-row-6' WHERE key = 'graph_projection_head'").ok, "applied through row 7");
         self.leader.knowledge.repo = repo;
 
         // ---- a reader alone: a budget of one keeps what the query is about

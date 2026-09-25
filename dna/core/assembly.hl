@@ -317,6 +317,17 @@ locus Dna {
         // false, routed edit Work is a Mutation of class `application`,
         // as before — fixtures with no leader keep that.
         planned: Bool = false;
+        // GH #1026: claims by id. Any number of nodes may run this
+        // organism over one record; an ask is claimed in memory before it
+        // is planned and the optimize pass before it runs, so of the
+        // nodes offered one, one spends on it. `node` names this one in
+        // its claims ("" = HALE_DNA_NODE, which the host sets, else this
+        // machine and process); `claim_ttl` is how long a claim to plan
+        // stands before another node may take it.
+        claims: MemoryLeases = MemoryLeases { };
+        node: String = "";
+        claim_ttl: Int = 300;
+        claimed: Lease = Lease { }; // the claim this node took last
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
@@ -1291,6 +1302,13 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "optimize.refused", self.org_id, "budget exhausted (" + self.budget.describe(now) + "); the pass waits for the next window");
             return;
         }
+        // GH #1026: one pass per window among the nodes running this
+        // organism: the window is claimed for its own length, and a node
+        // that finds it taken leaves it to the node that took it
+        let window = if self.optimize_every_ms > 0 { (now * 1000) / self.optimize_every_ms } else { now };
+        let ttl = if self.optimize_every_ms >= 1000 { self.optimize_every_ms / 1000 } else { 1 };
+        if !self.take_claim("optimize/" + to_string(window), ttl) { return; }
+        self.note_claim("optimize/" + to_string(window));
         self.last_signals = self.signals();
         self.optimizations = self.optimizations + 1;
         OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
@@ -1546,6 +1564,7 @@ locus Dna {
                 self.pending_cases.set(c, CaseAsk { }) or discard;
                 self.plans = self.plans + 1;
                 self.hand_case(ask, p.assignee, p.obligation, "leader", p.narrative);
+                self.give_up_claim("plan/case:" + case_id_of(ask.request), true);
                 return;
             }
             c = c + 1;
@@ -1560,6 +1579,8 @@ locus Dna {
                 self.pending_asks.set(i, Intent { }) or discard;
                 self.plans = self.plans + 1;
                 let id = self.admit_ask(intent, p, true);
+                // the plan is spent and its admission recorded: the claim goes
+                self.give_up_claim("plan/" + p.task_id, true);
                 return;
             }
             i = i + 1;
@@ -1668,6 +1689,21 @@ locus Dna {
                 if len(p.attempt_id) > 0 && case_id_of(p.request) == case_id { return; }
                 i = i + 1;
             }
+            // GH #1026: claimed before the leader is asked, as an ask is. A
+            // case another node is planning is held and driven again
+            // (`redrive`) until that node has admitted it or its claim has
+            // expired; claimed, the record is read again, and a case the
+            // claim's last holder admitted meanwhile is completed, not
+            // planned twice.
+            let key = "plan/case:" + case_id;
+            if !self.take_claim(key, self.claim_ttl) { self.held_cases.push(c); return; }
+            let again = self.journal.refresh();
+            if len(self.recorded_case(case_id)) > 0 {
+                self.give_up_claim(key, false);
+                let x = self.ensure_case_rows(case_id);
+                return;
+            }
+            self.note_claim(key);
             self.pending_cases.push(c);
             PlanRequested <- PlanRequest { org: self.org_id, task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
             return;
@@ -3065,12 +3101,35 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, why);
             return why;
         }
+        // GH #1026: the ask is claimed before it is planned — a model call
+        // is spend. Of the nodes offered it, the one whose claim lands
+        // plans it; the others leave it to that node, and are offered it
+        // again (the host relays an unanswered ask) until it is answered
+        // or that node's claim expires.
+        let key = "plan/" + i.id;
+        if self.planned {
+            if !self.take_claim(key, self.claim_ttl) {
+                if !self.claims.reachable { return "not planned: memory could not be reached to claim " + key + " (" + self.claims.last_error + "); it is offered again"; }
+                return "planning elsewhere: " + self.claims.holder_of(key) + " holds " + key;
+            }
+            // claimed, then read: the node that held it before may have
+            // admitted the ask and given the claim back since this node's
+            // view of the record was read
+            let moved = self.journal.refresh();
+            let done = self.workflow_admission_of(i.id, self.journal.revision());
+            if len(done) > 0 { self.give_up_claim(key, false); return done; }
+            self.note_claim(key);
+        }
         self.asked = self.asked + 1;
         // The row names who asked: the person a head identified, a schedule,
         // an optimizer — the body writes the row, so the asker is in its body.
-        let offered_body = if i.from == "" { i.outcome } else { i.outcome + " (from " + i.from + ")" };
-        let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, offered_body);
-        if !born.ok { return "refused: journal " + born.error; }
+        // A node that takes an ask over from one that died does not offer it
+        // a second time.
+        if !self.has_row("intent.offered", i.id) {
+            let offered_body = if i.from == "" { i.outcome } else { i.outcome + " (from " + i.from + ")" };
+            let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, offered_body);
+            if !born.ok { return "refused: journal " + born.error; }
+        }
         // card 18 (GH #596 L): in an organism the leader plans for, the
         // leader says what the ask is before it is admitted — a person's
         // job, an organism change, an application change — and the
@@ -4543,6 +4602,55 @@ locus Dna {
     }
     // Whether the journal holds a row of `kind` for `entity`, anywhere.
     @unbounded
+    // This node's name in its claims (GH #1026).
+    fn node_name() -> String {
+        if len(self.node) > 0 { return self.node; }
+        if std::env::var_exists("HALE_DNA_NODE") && len(std::env::var("HALE_DNA_NODE")) > 0 {
+            self.node = std::env::var("HALE_DNA_NODE");
+        } else {
+            let h = run_tool("hostname");
+            self.node = (if h.code == 0 { trim_nl(h.stdout) } else { "localhost" }) + ":" + to_string(std::process::pid());
+        }
+        return self.node;
+    }
+    // Take `key` for `ttl` seconds in memory (GH #1026): true when this
+    // node holds it now. Nothing is recorded yet: a claim is recorded
+    // once the node has read that the act is still its to take.
+    @unbounded
+    fn take_claim(key: String, ttl: Int) -> Bool {
+        let me = self.node_name();
+        let l = self.claims.claim(key, me, ttl);
+        if !l.present || l.holder != me { return false; }
+        self.claimed = l;
+        return true;
+    }
+    // The claim just taken, as a `claim.taken` row naming this node, its
+    // token and until when: the record shows who took what, and a second
+    // node's take after the first one's expiry. Without memory there is
+    // no one to race and nothing to record.
+    @unbounded
+    fn note_claim(key: String) {
+        if !self.claims.ready() { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("holder", self.claimed.holder);
+        b.int_field("token", self.claimed.token);
+        b.int_field("until", self.claimed.expires);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "claim.taken", key, b.result());
+    }
+    // Give `key` back on completion; a claim that was recorded is given
+    // back as a `claim.released` row.
+    @unbounded
+    fn give_up_claim(key: String, noted: Bool) {
+        let me = self.node_name();
+        if !self.claims.release_claim(key, me) || !noted || !self.claims.ready() { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("holder", me);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "claim.released", key, b.result());
+    }
     fn has_row(kind: String, entity: String) -> Bool {
         let n = self.journal.revision();
         let mut i = 0;

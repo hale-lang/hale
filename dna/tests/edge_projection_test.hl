@@ -114,11 +114,11 @@ locus EdgeProjectionCases {
         std::test::assert_eq_int(idle.rows, 0, "up-to-date projection reads no rows");
         std::test::assert_eq_int(store.graph_generation(), generation, "idle tail does not mutate graph");
 
-        // Simulate a crash after an edge write but before its checkpoint, then
-        // replay all rows into the same graph. The store's link owns tuple
-        // idempotence. `set_watermark` only advances, so the loss is made
-        // in SQL, as the record's spine role.
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '0' WHERE key = 'watermark'").ok && store.watermark() == 0, "lose the watermark");
+        // Set the stamp back to row 0 and replay every row into the same
+        // graph: the store's link owns tuple idempotence. (GH #1026: a row
+        // lands with its stamp, so the stamp is set back whole, in SQL, as
+        // the record's spine role.)
+        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '0' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '' WHERE key = 'graph_projection_head'").ok && store.watermark() == 0, "set the stamp back to row 0");
         let replay = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(replay.error, "", "watermark-loss replay succeeds");
         std::test::assert_eq_int(replay.watermark, j.revision(), "replayed checkpoint catches up");

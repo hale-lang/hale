@@ -1,0 +1,48 @@
+// dna/tests/projectors/projector.hl — one node's projection of a record
+// into memory, for projectors_test (GH #1026).
+//
+//   projector <repo> <deadline secs>
+//
+// Applies the record at <repo> into memory under the spine's DSN
+// (HALE_DNA_MEMORY_DSN_SPINE) until memory's watermark reaches the
+// record's end, as a node's tick does, however many other projectors
+// run beside it; then says how many rows it applied itself. A pass that
+// yields to another projector is taken again at once. It ends by
+// <deadline>, and fails on any projection error.
+
+import "../../core" as dna;
+import "../../operations" as ops;
+
+main locus Projector {
+    params {
+        repo: String = ".";
+        deadline: Int = 60;
+        tail: ops::MemoryProjection = ops::MemoryProjection { };
+    }
+    @unbounded
+    run() {
+        let until = std::time::now() + self.deadline;
+        let mut applied = 0;
+        let mut passes = 0;
+        let mut done = false;
+        let mut failed = "";
+        while !done && len(failed) == 0 && std::time::now() < until {
+            let r = self.tail.apply();
+            passes = passes + 1;
+            if len(r.error) > 0 { failed = r.error + " (" + self.tail.last_error + ")"; }
+            // a row this projector won is applied whole, whether or not
+            // it later yielded to another
+            applied = applied + r.rows;
+            done = self.tail.store.watermark() >= self.tail.j.revision();
+        }
+        if len(failed) > 0 { println("projector: failed: ", failed); return; }
+        println("projector: applied ", to_string(applied), " passes ", to_string(passes), " watermark ", to_string(self.tail.store.watermark()), " of ", to_string(self.tail.j.revision()));
+    }
+}
+
+fn main() {
+    let repo = std::env::arg_or(1, ".");
+    let deadline = std::str::parse_int(std::env::arg_or(2, "60")) or 60;
+    // the journal and the receipts read the repository they are born with
+    Projector { repo: repo, deadline: deadline, tail: ops::MemoryProjection { root: repo, j: dna::GitJournal { repo: repo, author: "spine" }, receipts: dna::GitReceipts { repo: repo } } };
+}

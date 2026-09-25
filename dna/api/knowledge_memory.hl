@@ -239,7 +239,7 @@ fn graph_read(r: GraphRequest, store: dna::KnowledgeStore, graph: dna::GraphStor
     let page = graph.read_graph(http.query(r), policy, items);
     if !page.ok { return http.error(if page.error == "invalid_query" { 400 } else { 503 }, if page.error == "read_limit" { "knowledge_read_limit" } else if page.error == "knowledge_unsupported" || page.error == "invalid_query" { page.error } else { "knowledge_unavailable" }); }
     if page.record != r.record_id { return http.error(503, "knowledge_scope_mismatch"); }
-    if page.projection_pending_watermark != 0 || len(page.projection_pending_head) > 0 || page.watermark != captured.record_revision || page.projection_watermark != page.watermark || page.projection_head != r.record_head { return http.error(503, "knowledge_projection_unavailable"); }
+    if page.watermark != captured.record_revision || page.projection_head != r.record_head { return http.error(503, "knowledge_projection_unavailable"); }
     let basis = http.basis(r, captured, page);
     let snapshot = dna::digest_of(basis);
     if len(r.snapshot) > 0 && r.snapshot != snapshot { return http.error(409, "snapshot_changed"); }

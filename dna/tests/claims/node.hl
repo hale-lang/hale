@@ -1,0 +1,96 @@
+// dna/tests/claims/node.hl — one node of an organism, for claims_test
+// (GH #1026).
+//
+//   node <repo> <intent> <lead: yes | no> <ttl secs> <deadline secs>
+//
+// A `Dna` over the record at <repo>, its claims in memory under the
+// spine's DSN (HALE_DNA_MEMORY_DSN_SPINE), named by HALE_DNA_NODE. It is
+// offered the intent the way a host relays an unanswered one: again,
+// until the offer is taken here, and then until the ask is admitted.
+// With `lead: no` its leader answers another organization, so the node
+// claims the ask, asks for a plan no one gives, and holds on — the node
+// the fixture kills. With `lead: yes` its leader plans the ask as a
+// person's job, and the node exits once it is admitted. Either way it
+// ends by <deadline>: a fixture never leaves a node behind.
+
+import "../../core" as dna;
+
+main locus Node {
+    params {
+        repo: String = ".";
+        intent: String = "";
+        lead: Bool = false;
+        deadline: Int = 60;
+        core: dna::Dna = dna::Dna { };
+        leader: dna::Leader = dna::Leader { };
+    }
+    @unbounded
+    fn admitted() -> String {
+        let moved = self.core.journal.refresh();
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            let e = self.core.journal.read(i);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == self.intent { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    run() {
+        let until = std::time::now() + self.deadline;
+        let mut said = "";
+        let mut taken = false;
+        let mut answered = false;
+        while !taken && !answered && std::time::now() < until {
+            let answer = self.core.ask(dna::Intent { id: self.intent, outcome: "file the quarter's expense report", from: "riley" });
+            if answer == "planning" {
+                taken = true;
+                println("node: claimed plan/", self.intent);
+            } else if std::str::starts_with(answer, "planning elsewhere") || std::str::starts_with(answer, "not planned:") {
+                if answer != said { println("node: ", answer); said = answer; }
+                std::time::sleep(100ms);
+            } else {
+                // admitted already (by another node), or refused
+                answered = true;
+                println("node: answered ", answer);
+            }
+        }
+        let mut admitted = "";
+        while taken && len(admitted) == 0 && std::time::now() < until {
+            admitted = self.admitted();
+            if len(admitted) == 0 { std::time::sleep(100ms); }
+        }
+        if len(admitted) > 0 { println("node: admitted ", admitted); }
+    }
+}
+
+fn main() {
+    let repo = std::env::arg_or(1, ".");
+    let intent = std::env::arg_or(2, "i1");
+    let lead = std::env::arg_or(3, "no") == "yes";
+    let ttl = std::str::parse_int(std::env::arg_or(4, "300")) or 300;
+    let deadline = std::str::parse_int(std::env::arg_or(5, "60")) or 60;
+    let plan = "kind: person\nclass: process-policy\ntarget: (none)\ncount: 1\nassignee: riley\nobligation: expense-approval\nA person's job.";
+    Node {
+        repo: repo,
+        intent: intent,
+        lead: lead,
+        deadline: deadline,
+        core: dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            claims: dna::MemoryLeases { repo: repo },
+            claim_ttl: ttl,
+            planned: true,
+            org_id: "claims"
+        },
+        leader: dna::Leader {
+            name: "leader",
+            org: if lead { "claims" } else { "elsewhere" },
+            charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: plan },
+                deep: dna::FakeModel { name: "deep", answer: plan }
+            }
+        }
+    };
+}

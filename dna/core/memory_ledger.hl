@@ -455,7 +455,7 @@ locus PqLeaseStore {
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
+        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, until AS expires, present FROM claims WHERE key = $1) t", a);
         if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
         if rows.n == 0 { return StoredLease { key: key }; }
         let row = trim_nl(line_one(rows.csv));
@@ -472,11 +472,41 @@ locus PqLeaseStore {
         a.add(to_string(expires));
         a.add(if present { "true" } else { "false" });
         a.add(to_string(expected));
-        let r = self.run_q("INSERT INTO ledger_leases (key, holder, token, expires, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM ledger_leases WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
+        let r = self.run_q("INSERT INTO claims (key, holder, token, until, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM claims WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
         if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
         if r.n > 0 { return true; }
-        let u = self.run_q("UPDATE ledger_leases SET holder = $2, token = $3::bigint, expires = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
+        let u = self.run_q("UPDATE claims SET holder = $2, token = $3::bigint, until = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
         if !u.ok { self.error = "put: " + u.err.kind + " " + u.err.detail; return false; }
         return u.n > 0;
+    }
+    // GH #1026: take `key` for `holder` for `ttl` seconds, timed by the
+    // database's clock, never a node's: nodes whose clocks disagree still
+    // agree on when a claim expires. One statement: it lands when the key
+    // is free, released, expired, or already `holder`'s (a renewal keeps
+    // the token; any other take raises it). The claim as it stands after
+    // the statement, whoever holds it; `known` false with `last_error`
+    // when the store could not answer.
+    @unbounded
+    fn claim(key: String, holder: String, ttl: Int) -> StoredLease {
+        let a = db::Args { };
+        a.add(key);
+        a.add(holder);
+        a.add(to_string(ttl));
+        let r = self.run_q("WITH clock AS (SELECT extract(epoch FROM now())::bigint AS t) INSERT INTO claims AS c (key, holder, token, until, present) SELECT $1, $2, 1, clock.t + $3::bigint, true FROM clock ON CONFLICT (key) DO UPDATE SET token = CASE WHEN c.present AND c.holder = EXCLUDED.holder AND c.until > EXCLUDED.until - $3::bigint THEN c.token ELSE c.token + 1 END, holder = EXCLUDED.holder, until = EXCLUDED.until, present = true, at = now() WHERE NOT c.present OR c.until <= EXCLUDED.until - $3::bigint OR c.holder = EXCLUDED.holder RETURNING row_to_json((SELECT t FROM (SELECT c.key, c.holder, c.token, c.until AS expires, c.present) t))", a);
+        if !r.ok { self.error = "claim: " + r.err.kind + " " + r.err.detail; return StoredLease { key: key }; }
+        if r.n == 0 { return self.current(key); }
+        let row = trim_nl(line_one(r.csv));
+        return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
+    }
+    // Give `key` back if `holder` holds it: its token kept, so a late
+    // renewal of the old claim lands nothing. True when it was theirs.
+    @unbounded
+    fn give_back(key: String, holder: String) -> Bool {
+        let a = db::Args { };
+        a.add(key);
+        a.add(holder);
+        let r = self.run_q("UPDATE claims SET present = false, until = 0, at = now() WHERE key = $1 AND holder = $2 AND present RETURNING key", a);
+        if !r.ok { self.error = "give back: " + r.err.kind + " " + r.err.detail; return false; }
+        return r.n > 0;
     }
 }
