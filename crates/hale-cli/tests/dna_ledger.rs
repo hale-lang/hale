@@ -137,11 +137,11 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     let head_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
     let head: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head_dsn.as_str())];
 
-    // adoption: a head asks, the spine (the body, under the spine's role)
+    // adoption: a head asks, a node (the body, under the spine's role)
     // carries it out on its tick
     let mut host = spine(&app, &d, &spine_dsn, "run");
     let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, head);
-    assert!(ok && adopted.contains("ledger adoption requested"), "{adopted}");
+    assert!(ok && adopted.contains("ledger adoption asked for"), "{adopted}");
     let landed = trace::wait_until("the spine adopted the ledger", Duration::from_secs(180), Duration::from_millis(300), || record(&app).iter().any(|r| r["kind"] == "ledger.adopted"));
     assert!(landed, "the spine adopts on its tick:\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
     let after = record(&app);
@@ -159,20 +159,22 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     let (ok, again) = hale(&["dna", "ledger", "adopt"], &app, head);
     assert!(!ok && again.contains("already on routing 1"), "{again}");
 
-    // after cutover: an operational row is a request in the record, admitted
-    // into the ledger by the spine
+    // after cutover: an operational row goes straight into the ledger, under
+    // the head's role (GH #1026)
     std::fs::write(app.join("second.txt"), "the second invoice").unwrap();
     let (ok, out) = hale(&["dna", "receipt", "file", "second.txt", "--as", "sam"], &app, head);
     assert!(ok, "{out}");
     let rows = ledger_until(&app, head, |r| r.contains("second.txt"));
     assert!(rows.contains("second.txt"), "the ledger took it:\n{rows}");
-    assert!(!record(&app).iter().any(|r| r["kind"] == "receipt.filed" && r["body"].as_str().unwrap_or("").contains("second.txt")), "the record holds its request, not the row");
-    // a head with no memory named still requests: the record is the pager
+    assert!(!record(&app).iter().any(|r| r["kind"] == "receipt.filed" && r["body"].as_str().unwrap_or("").contains("second.txt")), "the record holds none of it");
+    // a head with no memory named writes nothing: the row's home is the
+    // ledger, and it says so, naming the checkpoint — never into git instead
     std::fs::write(app.join("third.txt"), "the third invoice").unwrap();
     let (ok, out) = hale(&["dna", "receipt", "file", "third.txt", "--as", "sam"], &app, &[]);
-    assert!(ok && out.contains("requested"), "{out}");
-    let rows = ledger_until(&app, head, |r| r.contains("third.txt"));
-    assert!(rows.contains("third.txt"), "and the spine admits it:\n{rows}");
+    assert!(!ok && out.contains("no memory is named here") && out.contains("live in the ledger since"), "{out}");
+    let rows = ledger_until(&app, head, |r| r.contains("second.txt"));
+    assert!(!rows.contains("third.txt"), "and nothing landed for it:\n{rows}");
+    assert!(!record(&app).iter().any(|r| r["body"].as_str().unwrap_or("").contains("third.txt")), "nor in the record");
     // an evolutionary row still goes to the record
     let (ok, out) = hale(&["dna", "practice", "propose", "billing/late", "--text", "Chase an invoice at seven days.", "--as", "riley"], &app, head);
     assert!(ok, "{out}");
@@ -201,7 +203,7 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     // rows never removed
     let mut host = spine(&app, &d, &spine_dsn, "run2");
     let (ok, ab) = hale(&["dna", "ledger", "abandon", "--why", "the fixture is done", "--as", "riley"], &app, head);
-    assert!(ok && ab.contains("requested"), "{ab}");
+    assert!(ok && ab.contains("asked for"), "{ab}");
     let done = trace::wait_until("the spine abandoned the ledger", Duration::from_secs(180), Duration::from_millis(300), || record(&app).iter().any(|r| r["kind"] == "ledger.abandoned"));
     stop_host(&app, &mut host);
     assert!(done, "the spine abandons on its tick:\n{}", std::fs::read_to_string(d.join("run2.stderr")).unwrap_or_default());
@@ -315,7 +317,7 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     let now = record(&app);
     let now_kinds: Vec<String> = now.iter().map(|r| format!("{} {}", r["kind"].as_str().unwrap_or(""), r["entity"].as_str().unwrap_or(""))).collect();
     assert_eq!(&now_kinds[..before_kinds.len()], &before_kinds[..], "the record's rows are untouched");
-    assert!(now_kinds[before_kinds.len()..].iter().all(|k| k.starts_with("body.") || k.starts_with("spine.") || k.starts_with("ledger.adopt") || k.starts_with("intent.unrecovered")), "and it gained only the body's and the adoption's rows: {:?}", &now_kinds[before_kinds.len()..]);
+    assert!(now_kinds[before_kinds.len()..].iter().all(|k| k.starts_with("body.") || k.starts_with("ledger.adopt") || k.starts_with("intent.unrecovered")), "and it gained only the body's and the adoption's rows: {:?}", &now_kinds[before_kinds.len()..]);
 
     // the projections after: the same, across two memories
     let (ok, history_after) = hale(&["dna", "history"], &app, head);
@@ -325,7 +327,7 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     // without its position
     let strip = |s: &str| -> Vec<String> {
         s.lines()
-            .filter(|l| l.contains(" ") && !l.contains("ledger.adopt") && !l.contains("event(s)") && !l.contains("body.") && !l.contains("spine.") && !l.contains("intent.unrecovered"))
+            .filter(|l| l.contains(" ") && !l.contains("ledger.adopt") && !l.contains("event(s)") && !l.contains("body.") && !l.contains("intent.unrecovered"))
             .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit()).trim().to_string())
             .collect()
     };
@@ -361,9 +363,9 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
         }
     }
     // stage 4: redacted evidence keeps its treatment across the two
-    // memories — a redaction after adoption is a ledger row (asked of the
-    // spine), and the body filed before adoption is still a blob of the
-    // record: it goes on the next sync after the spine admits it
+    // memories — a redaction after adoption is a ledger row, written by the
+    // head, and the body filed before adoption is still a blob of the
+    // record: it goes on the next sync
     let (ok, redacted) = hale(&["dna", "receipt", "redact", &old_digest, "--why", "wrong customer", "--policy", "gdpr", "--as", "riley"], &app, head);
     assert!(ok, "{redacted}");
     let redaction = format!("\"kind\": \"receipt.redacted\", \"entity\": \"{old_digest}\"");

@@ -885,6 +885,7 @@ fn dna_fixture_set_is_complete() {
             "review_authority_test.hl",
             "review_command_test.hl",
             "routing_test.hl",
+            "row_admission_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",
             "status_chain_race_test.hl",

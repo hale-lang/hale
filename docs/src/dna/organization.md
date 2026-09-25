@@ -239,14 +239,15 @@ owner's own: a grant names who pays (`funder: "acme/ops"`), every
 allocation is reserved once by the store, every attempt's spend is
 retained, and a purchase two owners fund is two reservations that may
 not both land — undoing one is a compensation someone authorizes.
-Every owner runs a body, and the **spine lease** in memory picks one
-of them to project the record, admit the heads' requests and erase
-redacted evidence; the others read and forward
-([Operating](./operating.md#the-spine-lease)). Each owner holds a key
-out of band: the spine has them all (`HALE_DNA_OWNER_KEYS`,
-`<owner>=<key> …`), each head its own owner's (`git config dna.owner`,
-`dna.owner.key`), and a request in a person's name is admitted only
-when it is signed with the key of that person's owner. The map may
+Every owner runs a body, and every body is a node of the spine: each
+projects the record, carries out what the record asks, and erases
+redacted evidence, none coordinating
+([Operating](./operating.md#the-spine-is-every-node)). Each owner's
+heads write the ledger as that owner's role in memory, which writes
+only in its own members' names; the migration makes a role per owner
+from the owners' keys (`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`), and
+the members are the genome's owners map, which every node projects
+([Operating](./operating.md#shared-records-and-owners-roles)). The map may
 also name a `host = <owner>`, changed only with every owner's
 approval; it no longer decides where anything runs.
 

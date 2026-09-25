@@ -149,6 +149,26 @@ interface Record {
     fn why() -> String;
 }
 
+// ---- admission, as a reader checks it (GH #1026) -------------------------
+
+// Why the record's row `e` does not count, "" when it does. Admission is a
+// property a reader checks on a row, not a gate a process grants: every
+// reader runs this, and a row it refuses is never acted on — never
+// projected into memory. Under `dna.trust = signed` a row counts only when
+// its commit carries a signature the record's trust verifies (git's
+// keyring or allowed-signers file is the list of who may act), so an
+// unsigned row, or one signed with a key the record does not know, is
+// refused. Under `local` trust every writer to the record is trusted. A
+// Ledger row needs no reader's check: memory's insert function refused it
+// before it landed.
+fn row_admissible(r: Record, e: Event, trust: String) -> String {
+    if trust != "signed" { return ""; }
+    let s = r.signer(e.digest);
+    if !s.signed { return "row " + to_string(e.seq) + " (" + e.kind + " " + e.entity + ") is not signed, and this record admits signed rows alone"; }
+    if !s.verified { return "row " + to_string(e.seq) + " (" + e.kind + " " + e.entity + ") is signed with " + (if len(s.key) > 0 { "key " + s.key } else { "a key" }) + " this record's trust does not know"; }
+    return "";
+}
+
 // ---- the line format ---------------------------------------------------
 
 // A command contains its canonical payload inside a native event, itself

@@ -12,8 +12,12 @@
 
 // The version `migrate` writes and every `open` requires. 2 (GH #1026):
 // the lease table became `claims`, and the graph's projection is one
-// transaction per record row.
-const MEMORY_SCHEMA_VERSION: Int = 2;
+// transaction per record row. 3 (GH #1026): the Ledger's gate is memory's
+// insert function, `ledger_append`: a row lands only as a role that holds
+// its author, with its lease live, and past the checks the spine's
+// admission ran; the org chart it checks against is projected into
+// `org_members` and `org_retired`.
+const MEMORY_SCHEMA_VERSION: Int = 3;
 
 type Migrated {
     ok: Bool = false;
@@ -22,6 +26,9 @@ type Migrated {
     // role's name and credentials
     spine_dsn: String = "";
     head_dsn: String = "";
+    // over a shared record, each owner's head role (GH #1026): `<owner>=
+    // <dsn>` one per line; a head writes as its owner's role
+    owner_dsns: String = "";
 }
 
 // A record's roles are its own: one role granted on every record's schema
@@ -38,6 +45,47 @@ fn head_role(record_id: String) -> String {
     let base = schema_for(record_id);
     let cut = if len(base) > 58 { base[0..58] } else { base };
     return cut + "_head";
+}
+
+// An owner's head over a shared record (GH #1026). In memory a role is
+// who a writer is: a head writes the Ledger as its owner's role, and the
+// insert function lets that role write as the owner's members alone.
+fn owner_role(record_id: String, owner: String) -> String {
+    let base = schema_for(record_id);
+    let cut = if len(base) > 40 { base[0..40] } else { base };
+    return cut + "_head_" + identifier_part(owner, 16);
+}
+
+// `s` as part of an identifier: lowercase letters and digits, anything
+// else `_`, at most `n` bytes.
+@unbounded
+fn identifier_part(s: String, n: Int) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) && i < n {
+        let c = std::str::lower(s[i..(i + 1)]);
+        out = out + (if (c >= "a" && c <= "z") || (c >= "0" && c <= "9") { c } else { "_" });
+        i = i + 1;
+    }
+    return out;
+}
+
+// The owners a shared record's heads write as: the names of the owners'
+// keys (HALE_DNA_OWNER_KEYS, `<owner>=<key> …`), space-separated, "" for
+// one owner. The keys themselves stay the record's until the vault holds
+// them (GH #989); memory never holds signature bytes.
+@unbounded
+fn owners_of_keys(keys: String) -> String {
+    let mut out = "";
+    let mut rest = keys + " ";
+    while len(rest) > 1 {
+        let sp = std::str::index_of(rest, " ");
+        let entry = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 { out = word_add(out, entry[0..eq]); }
+    }
+    return out;
 }
 
 // Placeholder-local credentials until the vault holds them (GH #989).
@@ -79,7 +127,90 @@ fn ledger_ddl() -> String {
         + "CREATE TABLE IF NOT EXISTS claims (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, until bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now());"
         + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS protected_redactions (digest text PRIMARY KEY, erased_at bigint NOT NULL);"
-        + "CREATE TABLE IF NOT EXISTS memory_keys (name text PRIMARY KEY, value text NOT NULL);";
+        + "CREATE TABLE IF NOT EXISTS memory_keys (name text PRIMARY KEY, value text NOT NULL);"
+        + ledger_gate_ddl();
+}
+
+// GH #1026: what the Ledger's gate needs. Every row records the lease and
+// epoch it was written under and the role that wrote it. Which role may
+// write as whom is owner-only (`memory_principals`); the org chart the
+// gate checks against is the spine's projection — members by owner from
+// the genome's owners map, retirements from the record's rows.
+fn ledger_gate_ddl() -> String {
+    return "ALTER TABLE ledger_rows ADD COLUMN IF NOT EXISTS lease text NOT NULL DEFAULT '';"
+        + "ALTER TABLE ledger_rows ADD COLUMN IF NOT EXISTS epoch bigint NOT NULL DEFAULT 0;"
+        + "ALTER TABLE ledger_rows ADD COLUMN IF NOT EXISTS writer text NOT NULL DEFAULT '';"
+        + "CREATE TABLE IF NOT EXISTS memory_principals (role text NOT NULL, principal text NOT NULL, PRIMARY KEY (role, principal));"
+        + "CREATE TABLE IF NOT EXISTS org_members (person text PRIMARY KEY, owner text NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS org_retired (person text PRIMARY KEY, seq bigint NOT NULL);";
+}
+
+// The Ledger's gate (GH #1026): the store is the boundary. A row lands
+// through `ledger_append` alone, run as the owner, and the calling role
+// is who wrote it (`session_user`; inside a definer function
+// `current_user` is the owner). It refuses, with the reason, a record kind
+// (`ledger_kind`, the routing table as data); an author the role does not
+// hold (`memory_principals`: `*` any author and no person checks — the
+// spine's role; `@` any person — one owner's head; an owner's name — its
+// members, `org_members`; `host` — any head); a person retired
+// (`org_retired`); a transfer's acceptance outside the owner it is offered
+// to, or of one not offered; a completion outside the task's assignee; a
+// body row whose claim is not live with that token in `claims` right now;
+// a revision a decision was read at that the Ledger has moved past (a
+// transfer's acceptance lands at the tail, GH #1052); a claim kind whose
+// entity is taken. A request id seen before is answered as it landed.
+// Appends are serialized on the schema, and the row's digest extends the
+// chain as `event_digest` does.
+fn ledger_functions(sch: String) -> String {
+    let refuse = "RETURN json_build_object('error', 'refused', 'why', ";
+    return "CREATE OR REPLACE FUNCTION " + sch + ".ledger_kind(p_kind text) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $k$ SELECT split_part(p_kind, '.', 1) = ANY (string_to_array('" + LEDGER_FAMILIES + "', ' ')) OR p_kind = ANY (string_to_array('" + LEDGER_KINDS + "', ' ')) $k$;"
+        + "CREATE OR REPLACE FUNCTION " + sch + ".ledger_json(p_body text, p_key text) RETURNS text LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog AS $j$ BEGIN RETURN p_body::json ->> p_key; EXCEPTION WHEN others THEN RETURN NULL; END $j$;"
+        + "CREATE OR REPLACE FUNCTION " + sch + ".ledger_append(p_expected bigint, p_kind text, p_entity text, p_body text, p_author text, p_lease text, p_epoch bigint, p_request text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $a$ "
+        + "DECLARE me text := session_user; who text := coalesce(nullif(p_author, ''), 'ledger'); anyone boolean; human boolean; n bigint; v_prev text; d text; c record; r record; o text; mine text; t text; cn text; "
+        + "BEGIN "
+        + "IF NOT ledger_kind(p_kind) THEN " + refuse + "'`' || p_kind || '` is a row of the record, not the ledger: it is appended to the record')::text; END IF; "
+        + "IF p_request <> '' THEN SELECT revision INTO n FROM ledger_requests WHERE request_id = p_request; IF FOUND THEN RETURN json_build_object('error', '', 'seq', n - 1, 'again', true)::text; END IF; END IF; "
+        + "anyone := EXISTS (SELECT 1 FROM memory_principals WHERE role = me AND principal = '*'); "
+        + "human := who NOT IN ('host', 'ledger'); "
+        + "IF NOT anyone AND NOT EXISTS (SELECT 1 FROM memory_principals p WHERE p.role = me AND (p.principal = '@' OR p.principal = who OR who = 'host' OR EXISTS (SELECT 1 FROM org_members m WHERE m.person = who AND m.owner = p.principal))) THEN "
+        + refuse + "'the role ' || me || ' does not write as ' || who || ': a head writes as its owner''s members')::text; END IF; "
+        + "IF NOT anyone AND human THEN "
+        + "SELECT seq INTO n FROM org_retired WHERE person = who; "
+        + "IF FOUND THEN " + refuse + "who || ' retired from this organism (person.retired at row ' || n || '); nothing is admitted in their name')::text; END IF; "
+        + "IF p_kind = 'task.transfer_accepted' THEN "
+        + "SELECT kind, body INTO r FROM ledger_rows WHERE entity = p_entity AND kind IN ('task.transfer_requested', 'task.transfer_accepted') ORDER BY seq DESC LIMIT 1; "
+        + "o := CASE WHEN FOUND AND r.kind = 'task.transfer_requested' THEN coalesce(ledger_json(r.body, 'to'), '') ELSE '' END; "
+        + "IF o = '' THEN " + refuse + "'task ' || p_entity || ' is not offered to an owner of this record; nothing to accept')::text; END IF; "
+        + "SELECT owner INTO mine FROM org_members WHERE person = who; "
+        + "IF coalesce(mine, '') <> o THEN " + refuse + "'task ' || p_entity || ' is offered to ' || o || '; ' || who || ' is ' || CASE WHEN coalesce(mine, '') = '' THEN 'no owner''s' ELSE mine || '''s' END || ' member, and only ' || o || '''s accepts')::text; END IF; "
+        + "END IF; "
+        + "IF p_kind IN ('task.done', 'task.failed', 'completion.linked', 'completion.excepted') THEN "
+        + "SELECT a INTO t FROM (SELECT seq, CASE WHEN kind = 'task.reassigned' THEN ledger_json(body, 'to') ELSE ledger_json(body, 'assignee') END AS a FROM ledger_rows WHERE entity = p_entity AND kind IN ('task.handed', 'task.reassigned')) x WHERE coalesce(a, '') <> '' ORDER BY seq DESC LIMIT 1; "
+        + "IF coalesce(t, '') <> '' AND t <> who THEN " + refuse + "'task ' || p_entity || ' is handed to ' || t || ', not to ' || who || '; a completion is admitted in the assignee''s name')::text; END IF; "
+        + "END IF; "
+        + "END IF; "
+        + "IF p_lease <> '' THEN "
+        + "SELECT * INTO c FROM claims WHERE key = p_lease; "
+        + "IF NOT FOUND OR NOT c.present THEN " + refuse + "'fenced: the lease `' || p_lease || '` is not held; a controller writes only under a lease it holds')::text; END IF; "
+        + "IF c.token <> p_epoch THEN " + refuse + "'fenced: the lease `' || p_lease || '` is ' || c.holder || '''s at epoch ' || c.token || ', not epoch ' || p_epoch || '; a controller that lost its lease writes nothing')::text; END IF; "
+        + "IF c.until <= extract(epoch FROM now())::bigint THEN " + refuse + "'fenced: the lease `' || p_lease || '` expired at ' || c.until || ' (epoch ' || p_epoch || ') and was not renewed')::text; END IF; "
+        + "END IF; "
+        + "PERFORM pg_advisory_xact_lock(hashtext('hale.ledger:' || current_schema())); "
+        + "SELECT coalesce(max(seq) + 1, 0) INTO n FROM ledger_rows; "
+        + "IF p_expected >= 0 AND p_expected <> n AND p_kind <> 'task.transfer_accepted' THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "SELECT digest INTO v_prev FROM ledger_rows WHERE seq = n - 1; "
+        + "v_prev := coalesce(v_prev, 'genesis'); "
+        + "d := encode(digest(v_prev || '|' || p_kind || '|' || p_entity || '|' || p_body, 'sha256'), 'hex'); "
+        + "BEGIN "
+        + "INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, lease, epoch, writer) VALUES (n, p_kind, p_entity, p_body, who, v_prev, d, p_lease, p_epoch, me); "
+        + "EXCEPTION WHEN unique_violation THEN GET STACKED DIAGNOSTICS cn = CONSTRAINT_NAME; "
+        + "IF cn = 'ledger_rows_claims' THEN RETURN json_build_object('error', 'claimed', 'why', 'claimed: `' || p_kind || ' ' || p_entity || '` is already claimed')::text; END IF; "
+        + "RAISE; "
+        + "END; "
+        + "IF p_request <> '' THEN INSERT INTO ledger_requests (request_id, revision) VALUES (p_request, n + 1) ON CONFLICT DO NOTHING; END IF; "
+        + "RETURN json_build_object('error', '', 'seq', n, 'prev', v_prev, 'digest', d)::text; "
+        + "END $a$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text) FROM PUBLIC";
 }
 
 // Protected evidence is sealed, opened and erased inside memory (GH #985):
@@ -118,6 +249,11 @@ fn graph_indexes() -> String {
     return "CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_order ON knowledge_ideas (id COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_edges_order ON knowledge_edges (src COLLATE \"C\", dst COLLATE \"C\", rel COLLATE \"C\"); CREATE INDEX IF NOT EXISTS knowledge_graph_bindings_order ON knowledge_bindings (idea COLLATE \"C\", target COLLATE \"C\", author COLLATE \"C\")";
 }
 
+// The projection's protocol: what a projector's stamp vouches for. 2 (GH
+// #1026) is one transaction per row; 3 adds the org chart's retirements
+// (`org_retired`), so a memory at 2 is projected again to fill them.
+const PROJECTION_PROTOCOL: String = "3";
+
 // The projection's protocol (GH #1026): `watermark` is the number of
 // record rows applied and `graph_projection_head` the digest of the last
 // of them ("" at 0); a projector applies one row per transaction and
@@ -130,12 +266,12 @@ fn graph_indexes() -> String {
 fn projection_protocol() -> String {
     // the stamp's rows are locked first, watermark then head, the order a
     // projector takes them in
-    return "DO $p$ BEGIN IF coalesce((SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'), '') <> '2' THEN "
+    return "DO $p$ BEGIN IF coalesce((SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'), '') <> '" + PROJECTION_PROTOCOL + "' THEN "
         + "PERFORM 1 FROM knowledge_meta WHERE key = 'watermark' FOR UPDATE; PERFORM 1 FROM knowledge_meta WHERE key = 'graph_projection_head' FOR UPDATE; "
         + "INSERT INTO knowledge_meta (key, value) VALUES ('graph_generation', '0') ON CONFLICT (key) DO UPDATE SET value = ((knowledge_meta.value::bigint) + 1)::text; "
-        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals; "
+        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals, org_retired; "
         + "DELETE FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head'); "
-        + "INSERT INTO knowledge_meta (key, value) VALUES ('watermark', '0'), ('graph_projection_head', ''), ('graph_projection_protocol', '2') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; "
+        + "INSERT INTO knowledge_meta (key, value) VALUES ('watermark', '0'), ('graph_projection_head', ''), ('graph_projection_protocol', '" + PROJECTION_PROTOCOL + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; "
         + "END IF; END $p$";
 }
 
@@ -164,20 +300,24 @@ fn spine_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
         + "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA " + sch + " TO " + role + ";"
         + "REVOKE ALL ON " + sch + ".memory_keys FROM " + role + ";"
+        + "REVOKE ALL ON " + sch + ".memory_principals FROM " + role + ";"
         + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM " + role + ";"
         + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
 }
 
-// What a head may do (GH #985): take or fence a claim, read the ledger and
-// the graph, and file and read protected evidence through the functions.
-// It writes nothing else; a head's write is a request in the record.
+// What a head may do (GH #985): take or fence a claim, read the ledger, the
+// graph and the org chart memory holds, file and read protected evidence
+// through the functions, and append to the Ledger through its insert
+// function (GH #1026), which decides whom it may write as.
 fn head_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
         + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".claims, "
-        + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals TO " + role + ";"
+        + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals, "
+        + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
         + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
-        + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text) TO " + role;
+        + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
+        + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text) TO " + role;
 }
 
 // The receipt key memory seals protected evidence under, from the owner's
@@ -205,18 +345,32 @@ fn receipt_key_step(c: pq::PgConn) -> String {
 // version row. Idempotent; a memory a newer toolchain migrated is refused.
 @unbounded
 fn migrate(owner: Dsn, record_id: String) -> Migrated {
+    return migrate_for(owner, record_id, owners_of_keys(if std::env::var_exists("HALE_DNA_OWNER_KEYS") { std::env::var("HALE_DNA_OWNER_KEYS") } else { "" }));
+}
+
+// As `migrate`, for the owners named (space-separated, "" for one owner):
+// each gets a head role of its own (GH #1026).
+@unbounded
+fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
     if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
     let c = pq::PgConn { host: owner.host, port: owner.port, user: owner.user, password: owner.password, database: owner.database, sslmode: owner.sslmode };
     let st = c.open();
     if !st.ok { return Migrated { why: "open: " + st.err.kind + " " + st.err.detail }; }
-    let why = migrate_on(c, record_id);
+    let why = migrate_on(c, record_id, owners);
     c.close();
     if len(why) > 0 { return Migrated { why: why }; }
-    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))) };
+    let mut dsns = "";
+    let mut i = 0;
+    while len(nth_word(owners, i)) > 0 {
+        let o = nth_word(owners, i);
+        dsns = dsns + o + "=" + dsn_text(role_dsn(owner, owner_role(record_id, o))) + "\n";
+        i = i + 1;
+    }
+    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))), owner_dsns: dsns };
 }
 
 @unbounded
-fn migrate_on(c: pq::PgConn, record_id: String) -> String {
+fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
     // pgvector ranks inside the bound (K3) and pgcrypto seals protected
     // evidence (GH #606); a Postgres without either says so here
     let ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
@@ -266,6 +420,8 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     if !tracked.ok { return abort(c, "graph migration", tracked.err); }
     let sealed = c.exec(receipt_functions(sch));
     if !sealed.ok { return abort(c, "receipt functions", sealed.err); }
+    let gate = c.exec(ledger_functions(sch));
+    if !gate.ok { return abort(c, "the ledger's insert function", gate.err); }
     let key = receipt_key_step(c);
     if len(key) > 0 { let rb = c.exec("ROLLBACK"); return key; }
     let role = spine_role(record_id);
@@ -278,6 +434,28 @@ fn migrate_on(c: pq::PgConn, record_id: String) -> String {
     if !head_made.ok { return abort(c, "role " + head, head_made.err); }
     let head_granted = c.exec(head_grants(sch, head));
     if !head_granted.ok { return abort(c, "grants to " + head, head_granted.err); }
+    // GH #1026: who each role writes as. The spine's role writes as anyone
+    // (the organism's own rows, no person checks); with one owner the
+    // head's role writes as any person; over a shared record each owner's
+    // head role writes as that owner's members, and the plain head role
+    // reads. Rewritten whole at every migration.
+    let mut principals = "DELETE FROM memory_principals; INSERT INTO memory_principals (role, principal) VALUES ('" + role + "', '*')";
+    if len(owners) == 0 { principals = principals + ", ('" + head + "', '@')"; }
+    let mut k = 0;
+    while len(nth_word(owners, k)) > 0 {
+        let o = nth_word(owners, k);
+        let r = owner_role(record_id, o);
+        let r_made = c.exec(role_sql(r));
+        if !r_made.ok { return abort(c, "role " + r, r_made.err); }
+        let r_granted = c.exec(head_grants(sch, r));
+        if !r_granted.ok { return abort(c, "grants to " + r, r_granted.err); }
+        principals = principals + ", ('" + r + "', '" + std::str::replace(o, "'", "''") + "')";
+        k = k + 1;
+    }
+    // the owner who applied the schema is anyone in it, as its DDL is
+    principals = principals + "; INSERT INTO memory_principals (role, principal) SELECT current_user, '*' ON CONFLICT DO NOTHING";
+    let seeded = c.exec(principals);
+    if !seeded.ok { return abort(c, "principals", seeded.err); }
     let versioned = c.exec("INSERT INTO memory_meta (key, value) VALUES ('schema_version', '" + to_string(MEMORY_SCHEMA_VERSION) + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; COMMIT");
     if !versioned.ok { return abort(c, "schema version", versioned.err); }
     return "";
@@ -333,6 +511,15 @@ fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
     return "";
 }
 
+// As `migrated`, over a shared record of `owners` (space-separated): the
+// DSN of `name`'s head role (GH #1026).
+fn migrated_owner(owner: String, record_id: String, owners: String, name: String) -> Dsn {
+    let d = parse_dsn(owner);
+    let m = migrate_for(d, record_id, owners);
+    if !m.ok { return Dsn { why: m.why }; }
+    return role_dsn(d, owner_role(record_id, name));
+}
+
 // As `migrated`, the head's DSN.
 fn migrated_head(owner: String, record_id: String) -> Dsn {
     let m = migrate(parse_dsn(owner), record_id);
@@ -350,7 +537,10 @@ fn unmigrate(owner: String, record_id: String) -> String {
     let c = pq_conn(d);
     let st = c.open();
     if !st.ok { return "open: " + st.err.kind + " " + st.err.detail; }
-    let dropped = c.exec("DROP SCHEMA IF EXISTS " + schema_for(record_id) + " CASCADE; DROP ROLE IF EXISTS " + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id));
+    // and every owner's head role (GH #1026), whichever owners it had
+    let base = schema_for(record_id);
+    let owned = (if len(base) > 40 { base[0..40] } else { base }) + "_head_";
+    let dropped = c.exec("DROP SCHEMA IF EXISTS " + base + " CASCADE; DROP ROLE IF EXISTS " + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id) + "; DO $d$ DECLARE r text; BEGIN FOR r IN SELECT rolname FROM pg_roles WHERE starts_with(rolname, '" + owned + "') LOOP EXECUTE 'DROP ROLE ' || quote_ident(r); END LOOP; END $d$");
     c.close();
     if !dropped.ok { return dropped.err.kind + " " + dropped.err.detail; }
     return "";

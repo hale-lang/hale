@@ -163,7 +163,7 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: d
         // the lease just before a renewal reads it again and claims the
         // renewed one, a few times, before giving up
         if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while claiming; try again"); }
-        let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + owner_json(root) + "}", who);
+        let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + owner_json(root) + "}", who, memory);
         let s = sync_record(root, memory);
         return answer("body: the lease of " + cur.holder + " was taken by " + who + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n");
     }
@@ -172,7 +172,7 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: d
         let mine = body_holder(root);
         if cur.holder != mine && !force { return fail("body: the lease is held by " + cur.holder + ", not this clone (" + mine + "); `hale dna body release --force` releases another's"); }
         if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while releasing; try again"); }
-        let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + owner_json(root) + "}", who);
+        let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + owner_json(root) + "}", who, memory);
         let s = sync_record(root, memory);
         return answer("body: released the lease of " + cur.holder + " (body.released)\n");
     }
@@ -547,7 +547,7 @@ fn report_verb(p: Projection, memory: dna::Memory) -> Answer {
     }
     let body = "since #" + to_string(since) + ": proposed " + to_string(proposed) + " · reviewed " + to_string(reviewed) + " · applied " + to_string(applied) + " · retained " + to_string(retained) + " · rolled back " + to_string(rolled) + " · rejected " + to_string(rejected) + " · escalated " + to_string(escalated) + " · pressure " + to_string(pressure) + " · proposals " + to_string(proposals) + " · model calls " + to_string(calls) + " (" + to_string(cost) + " µ$) · settled: " + (if len(settled) == 0 { "none" } else { settled });
     let id = "r" + to_string(p.rows());
-    if !append_as(p.root, "report.filed", id, body, "") { return fail("report: the record refused the append"); }
+    if !append_as(p.root, "report.filed", id, body, "", memory) { return fail("report: the record refused the append"); }
     let s = sync_record(p.root, memory);
     return answer("report " + id + " filed: " + body + "\n");
 }
@@ -756,7 +756,7 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
     // 3. remembered here, and in the record — the target and the pin, never a credential
     let c1 = rec(root).set_setting("body", target);
     let c2 = rec(root).set_setting("body.dir", dir);
-    let row = append_as(root, "body.provisioned", target, "{\"dir\": " + quote(dir) + ", \"toolchain\": " + quote(pin) + ", \"knowledge\": " + quote(if len(dsn) > 0 { "dsn" } else { "compose" }) + ", \"by\": " + quote(who) + "}", who);
+    let row = append_as(root, "body.provisioned", target, "{\"dir\": " + quote(dir) + ", \"toolchain\": " + quote(pin) + ", \"knowledge\": " + quote(if len(dsn) > 0 { "dsn" } else { "compose" }) + ", \"by\": " + quote(who) + "}", who, memory);
     let s = sync_record(root, memory);
     return answer("body provision: " + target + "\n" + indent_lines(dna::trim_nl(r.stdout), "    ") + "\n    dna.body = " + target + " (start/stop/logs go there); the body takes the lease when its unit starts\n");
 }
@@ -821,7 +821,7 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     let scratch_dir = root + "/.hale/dna";
     let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
     if !infra.put_credential(project + "/" + name, value) { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + infra.last + "; nothing was recorded"); }
-    let row = append_as(root, "secret.rotated", name, "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": " + quote(who) + "}", who);
+    let row = append_as(root, "secret.rotated", name, "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": " + quote(who) + "}", who, memory);
     let s = sync_record(root, memory);
     return answer("secret " + sub + ": " + name + " is in " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A running body reads it at its next start: `hale dna body stop && hale dna body start`\n");
 }
@@ -886,7 +886,7 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String, memory
         if !known { return fail("schedule " + sub + ": no schedule `" + id + "` is declared in the record"); }
         if sub == "pause" && paused { return answer("schedule " + id + " is already paused\n"); }
         if sub == "resume" && !paused { return answer("schedule " + id + " is not paused\n"); }
-        let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + "}", who);
+        let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + "}", who, memory);
         if !ok { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
         return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; it never fires until resumed)" } else { "resumed (schedule.resumed)" }) + "\n");
@@ -966,7 +966,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         b.string_field("purpose", purpose);
         b.string_field("by", who);
         b.end_object();
-        if !append_as(root, "receipt.disclosed", digest, b.result(), who) { return fail("the record refused the append"); }
+        if !append_as(root, "receipt.disclosed", digest, b.result(), who, memory) { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
         return answer("receipt " + digest + " disclosed to " + to + " for " + purpose + " (receipt.disclosed, by " + who + ")\n");
     }
@@ -990,7 +990,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         b.string_field("why", why);
         b.end_object();
         let kind = if sub == "hold" { "receipt.held" } else { "receipt.hold_released" };
-        if !append_as(root, kind, digest, b.result(), who) { return fail("the record refused the append"); }
+        if !append_as(root, kind, digest, b.result(), who, memory) { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
         return answer("receipt " + digest + " " + (if sub == "hold" { "held" } else { "released from its hold" }) + " (" + kind + ", by " + who + ")\n");
     }
@@ -1062,7 +1062,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.string_field("class", class);
             b.string_field("store", if withheld { "none (withheld)" } else { "git" });
             b.end_object();
-            let landed = append_as_at(root, read_at, ledger_at, "receipt.redacted", digest, b.result(), who);
+            let landed = append_as_at(root, read_at, ledger_at, "receipt.redacted", digest, b.result(), who, memory);
             if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was erased — redact again"); }
             if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + "); nothing was erased"); }
         }

@@ -67,7 +67,7 @@ interface TaskWriterAdmission {
     fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String;
 }
 locus RecordTaskWriterAdmission {
-    params { root: String = "."; }
+    params { root: String = "."; memory: dna::Memory = dna::Memory { }; }
     fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String {
         let r = rec(self.root);
         let now = r.head(JOURNAL);
@@ -76,7 +76,7 @@ locus RecordTaskWriterAdmission {
         if routing > 0 {
             // Preserve the existing owning-Ledger path. This is not a joint
             // Record/Ledger transaction; atomic person retirement is Record-only.
-            return append_as_at(self.root, expected, ledger_expected, row.kind, row.entity, row.body, row.author);
+            return append_as_at(self.root, expected, ledger_expected, row.kind, row.entity, row.body, row.author, self.memory);
         }
         // Do not choose a different memory after reading routing 0. Concurrent
         // Ledger adoption moves this exact Record predecessor and loses this CAS.
@@ -95,7 +95,7 @@ locus RecordTaskWriterAdmission {
 // not handed: a Task the organism is working, or has settled, is not
 // a person's to close.
 fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String, memory: dna::Memory) -> Answer {
-    let writer = RecordTaskWriterAdmission { root: root };
+    let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_done_admit(root, seed, id, who_flag, note, evidence_flag, exception, authorized_by, writer, memory);
 }
 
@@ -208,7 +208,7 @@ fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
 // only one of the people the bound practice names when it names them.
 @unbounded
 fn task_authorize_verb(root: String, seed: String, id: String, exception: String, who_flag: String, memory: dna::Memory) -> Answer {
-    let writer = RecordTaskWriterAdmission { root: root };
+    let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_authorize_admit(root, seed, id, exception, who_flag, writer, memory);
 }
 
@@ -266,7 +266,7 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
 // the decider.
 @unbounded
 fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
-    let writer = RecordTaskWriterAdmission { root: root };
+    let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_decide_admit(root, seed, id, decided_by, via, evidence_flag, note, who_flag, writer, memory);
 }
 
@@ -378,7 +378,7 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
     b.string_field("class", "internal");
     b.string_field("store", "git");
     b.end_object();
-    if !append_as(root, "receipt.filed", digest, b.result(), who) { return fail("the record refused the append"); }
+    if !append_as(root, "receipt.filed", digest, b.result(), who, memory) { return fail("the record refused the append"); }
     let s3 = sync_record(root, memory);
     return answer("receipt " + digest + " filed (internal, " + to_string(len(text)) + " bytes, under refs/dna/receipts; receipt.filed, by " + who + ")\n");
 }
@@ -387,7 +387,7 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
 // names both; the Task stays handed. Reached per command.
 @unbounded
 fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_flag: String, memory: dna::Memory) -> Answer {
-    let writer = RecordTaskWriterAdmission { root: root };
+    let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_reassign_admit(root, seed, id, to, by_flag, writer, memory);
 }
 
@@ -438,7 +438,7 @@ fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_fl
 // the Task to the assignee the request named. Refused for anyone else:
 // settlement is the receiving owner's alone.
 fn task_accept_verb(root: String, seed: String, id: String, who_flag: String, note: String, memory: dna::Memory) -> Answer {
-    let writer = RecordTaskWriterAdmission { root: root };
+    let writer = RecordTaskWriterAdmission { root: root, memory: memory };
     return task_accept_admit(root, seed, id, who_flag, note, writer, memory);
 }
 
@@ -544,7 +544,7 @@ fn retire_rows(root: String, seed: String, who: String, to: String, by_flag: Str
     b.string_field("to", to);
     b.int_field("transferred", n);
     b.end_object();
-    if !append_as(root, "person.retired", who, b.result(), by) { return fail("the record refused the append"); }
+    if !append_as(root, "person.retired", who, b.result(), by, memory) { return fail("the record refused the append"); }
     let s2 = sync_record(root, memory);
     return answer(who + " retired by " + by + "; " + to_string(n) + " task(s) transferred" + (if n > 0 { " to " + to } else { "" }) + "\n");
 }
@@ -655,7 +655,7 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
     if !std::str::starts_with(last, "unknown") { return fail("effect `" + key + "` is " + (if len(last) == 0 { "still in flight" } else { last }) + ", not unknown: nothing to resolve"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let body = outcome + " (resolved by " + who + (if len(note) > 0 { ": " + note } else { "" }) + ")";
-    if !append_as(root, "effect.result", key, body, who) { return fail("the record refused the append"); }
+    if !append_as(root, "effect.result", key, body, who, memory) { return fail("the record refused the append"); }
     let s2 = sync_record(root, memory);
     return answer("effect " + key + " " + body + "\n");
 }
@@ -690,12 +690,14 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     if local { b.string_field("via", "membrane"); }
     b.end_object();
     // `--no-wait`: the one notice, on either path, once the row is in the record
-    let requested = "intent " + intent_id + " requested in the record" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
+    // where the ask's row lands: the record, or the ledger once it is adopted
+    let place = if dna::route(routing_here(root), "intent.requested") == "ledger" { "the ledger" } else { "the record" };
+    let requested = "intent " + intent_id + " requested in " + place + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
     if local {
         // GH #682: the durable fact precedes the act, on this path too — the
         // row lands first, so a publish the membrane loses is relayed by the
         // host beside the organism, which admits an intent once by its id
-        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
+        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         let e = publish_on_membrane(root, "intent", b.result());
         if len(e) > 0 { eprintln("hale dna task create: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
         if no_wait { return answer(requested); }
@@ -703,7 +705,7 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
         if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
-        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
+        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }
         if no_wait { return answer(requested); }
@@ -966,13 +968,13 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     if local { b.string_field("via", "membrane"); }
     b.end_object();
     if local {
-        if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }) { return fail("the record refused the append"); }
+        if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }, memory) { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "verdict", b.result());
         if len(e) > 0 { eprintln("hale dna review: ", e, "; the verdict is in the record, and the host beside the organism relays it"); }
     } else {
         // a row in the record, in the reviewer's name; the host beside the
         // organism relays it, and the Review answers in the record
-        if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }) { return fail("the record refused the append"); }
+        if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }, memory) { return fail("the record refused the append"); }
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }
     }
@@ -1023,7 +1025,7 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
         // GH #682: the row first, then the publish
         b.string_field("via", "membrane");
         b.end_object();
-        if !append_as(root, "concern.requested", source, b.result(), "") { return fail("the record refused the append"); }
+        if !append_as(root, "concern.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "concern", b.result());
         if len(e) > 0 { eprintln("hale dna concern: ", e, "; the concern is in the record, and the host beside the organization relays it"); }
         return answer("concern raised by " + source + ": " + what + "\n");
@@ -1032,7 +1034,7 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
     // no organization here: into the record, and the host beside the
     // organization relays it (GH #583 K4)
     if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
-    if !append_as(root, "concern.requested", source, b.result(), "") { return fail("the record refused the append"); }
+    if !append_as(root, "concern.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
     return answer("concern from " + source + " requested in the record; the organization hears it there\n");
@@ -1068,7 +1070,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
             b.string_field("via", "membrane");
             b.end_object();
             let before = open_projection(root, seed, "", memory).rows();
-            if !append_as(root, "practice.requested", request_id, b.result(), who) { return fail("the record refused the append"); }
+            if !append_as(root, "practice.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
             let e = publish_on_membrane(root, "practice", b.result());
             if len(e) > 0 { eprintln("hale dna practice: ", e, "; the proposal is in the record, and the host beside the organization relays it"); }
             // the organization answers from its bus; give a busy one a minute
@@ -1087,7 +1089,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
         }
         b.end_object();
         if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
-        if !append_as(root, "practice.requested", request_id, b.result(), who) { return fail("the record refused the append"); }
+        if !append_as(root, "practice.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }
         return answer("practice " + name + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
@@ -1231,7 +1233,7 @@ fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, s
     b.field("touched", touched_json(touched));
     b.string_field("reason", reason);
     b.end_object();
-    if !append_as(root, "fleet.deploy", entity, b.result(), "") { return Deploy { error: "the record refused the append" }; }
+    if !append_as(root, "fleet.deploy", entity, b.result(), "", memory) { return Deploy { error: "the record refused the append" }; }
     let s = sync_record(root, memory);
     let p = open_projection(root, ".", "", memory);
     let mut seq = 0;
@@ -1349,7 +1351,7 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
             b.string_field("candidate", r.candidate_commit);
             b.string_field("forge", forge.kind());
             b.end_object();
-            if !append_as(root, "github.pr", r.id, b.result(), "") { return fail("the record refused the append"); }
+            if !append_as(root, "github.pr", r.id, b.result(), "", memory) { return fail("the record refused the append"); }
             out = out + r.id + ": review opened at the forge (" + url + ")\n";
         }
         i = i + 1;
@@ -1387,7 +1389,7 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
                     b.string_field("comment", forge.kind() + " review #" + number);
                     b.string_field("github", key);
                     b.end_object();
-                    if !append_as(root, "review.verdict", r.id, b.result(), "") { return fail("the record refused the append"); }
+                    if !append_as(root, "review.verdict", r.id, b.result(), "", memory) { return fail("the record refused the append"); }
                     out = out + r.id + ": " + verdict + " by " + login + " (" + authority + ") from the forge's review #" + number + "\n";
                 }
             }
@@ -1404,7 +1406,7 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
             let number = to_string(std::json::find_int_field(pr, "number"));
             if std::str::starts_with(r.settled, "approve") && forge.kind() == "github" { let pushed = genome_push_branch(root, remote, branch, branch, false); }
             if !forge.comment(ref, "dna: review " + r.id + " settled: " + r.settled) { return fail("the forge did not take the comment"); }
-            if !append_as(root, "github.commented", r.id, "#" + number + ": " + r.settled, "") { return fail("the record refused the append"); }
+            if !append_as(root, "github.commented", r.id, "#" + number + ": " + r.settled, "", memory) { return fail("the record refused the append"); }
             out = out + r.id + ": the forge's review #" + number + " told: " + r.settled + "\n";
         }
         i = i + 1;

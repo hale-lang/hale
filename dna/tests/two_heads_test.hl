@@ -4,9 +4,10 @@
 // verdict and an intent posted with it act as the member the subject maps
 // to, whatever the form says; without a session they are refused and
 // nothing reaches the record; an unmapped subject gets no session; a
-// sign-in is used once; a sign-out ends the session. Both heads' writes
-// are requests in the record; the spine (the body host) is the one
-// admission controller and the ledger's one writer (GH #985).
+// sign-in is used once; a sign-out ends the session. Both heads write the
+// ledger directly, under the head's role, and memory's insert function is
+// the gate (GH #1026): no node admits anything, and a write lands with no
+// node running.
 
 import "../core" as dna;
 
@@ -207,6 +208,23 @@ fn row_with(text: String, needle: String) -> String {
     return "";
 }
 
+// Whether memory's org chart, read as `dsn`, comes to hold `who` retired
+// within `secs` (the nodes project it from the record, GH #1026).
+@unbounded
+fn retired_in_memory(dsn: String, record: String, who: String, secs: Int) -> Bool {
+    let c = dna::pq_conn(dna::parse_dsn(dsn));
+    if !c.open().ok { return false; }
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    let mut ok = false;
+    while !ok && std::time::now() <= deadline {
+        let r = c.query_one("SELECT count(*) FROM " + dna::schema_for(record) + ".org_retired WHERE person = '" + who + "'");
+        ok = r.ok && dna::trim_nl(r.data) == "1";
+        if !ok { std::time::sleep(200ms); }
+    }
+    c.close();
+    return ok;
+}
+
 main locus App {
     params {
         srv: std::http::Server = std::http::Server { port: 47813, handler: FakeIssuer { base: "http://127.0.0.1:47813" } };
@@ -253,7 +271,7 @@ main locus App {
 
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
         if len(owner) == 0 {
-            eprintln("two_heads_test: no HALE_DNA_MEMORY_DSN_OWNER; the heads have no spine to admit their requests, so nothing was exercised");
+            eprintln("two_heads_test: no HALE_DNA_MEMORY_DSN_OWNER; the heads have no ledger to write, so nothing was exercised");
             dna::scratch_done(scratch);
             return;
         }
@@ -261,12 +279,11 @@ main locus App {
         let head_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head_dsn, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
 
-        // the one logical admission controller: the spine, and the record adopted into its ledger
+        // a node, and the record adopted into its ledger
         let spine = start_spine(app, owner);
         let adopted = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nadopt\n--as\nhead-operator");
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption requested as"), "adoption requested: " + adopted.stdout + adopted.stderr);
-        std::test::assert(record_has(app, "ledger.adopted", "checkpoint", 300), "the spine adopts the ledger on its tick");
-        std::test::assert(record_has(app, "spine.taken", "\"holder\"", 30), "the spine that adopted holds the spine lease, and the record names it");
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
+        std::test::assert(record_has(app, "ledger.adopted", "checkpoint", 300), "a node adopts the ledger on its tick");
 
         // the hosted head, with the head's role in memory
         let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_OIDC_SECRET=fake-secret HALE_DNA_MEMORY_DSN_HEAD=\"$4\" && nohup timeout 600 \"$2\" dna ui . --port \"$3\" >.hale/ui.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + toolchain() + "\n" + to_string(port) + "\n" + head_dsn);
@@ -295,9 +312,9 @@ main locus App {
         let brow = row_with(row_with_all(ledger, "\"kind\": \"intent.requested\""), "reconcile the payroll account");
         std::test::assert(std::str::contains(arow, "\"author\": \"alice\"") && !std::str::contains(arow, "\"author\": \"bob\""), "alice's ask, in alice's name whatever the form said: " + arow);
         std::test::assert(std::str::contains(brow, "\"author\": \"bob\"") && !std::str::contains(brow, "\"author\": \"alice\""), "bob's ask, in bob's name whatever the form said: " + brow);
-        // the record holds the request, not the day's work
+        // the record holds none of the day's work: the ask went straight into the ledger
         let record = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
-        std::test::assert(std::str::contains(row_with(record, "chase the late invoice"), "\"kind\": \"ledger.requested\""), "the ask reached the record as a request: " + row_with(record, "chase the late invoice"));
+        std::test::assert_eq_str(row_with(record, "chase the late invoice"), "", "the ask never touched the record");
         // a session is not a shared secret: bob's cookie on alice's form field is bob
         let b2 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b2.status, 200, "taken");
@@ -332,19 +349,23 @@ main locus App {
         // up to its size; a handle per call reached ninety within seconds
         std::test::assert(most <= 16, "the spine's and the head's connections stay a fixed handful over ten seconds of ticks: " + to_string(first) + " at first, " + to_string(most) + " at most, " + to_string(last) + " at the end");
 
-        // ---- the spine away: the head still takes a request into the record;
-        // back, the spine checks it against the record as it is then
+        // ---- no node running: a head's write still lands, done — the store is
+        // the boundary, not a process (GH #1026)
         stop_spine(app, spine);
-        let requested = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
-        std::test::assert_eq_int(requested.status, 200, "taken while the spine is away: " + requested.body);
-        std::test::assert(record_has(app, "ledger.requested", "close the quarter", 30), "a request in the record, waiting for the spine");
-        // bob retires meanwhile — a fact of the record
+        let away = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
+        std::test::assert_eq_int(away.status, 200, "taken while no node runs: " + away.body);
+        let ledger3 = ledger_holding(app, head_dsn, "close the quarter", 30);
+        std::test::assert(std::str::contains(ledger3, "close the quarter"), "and in the ledger at once, in bob's name, no node needed: " + ledger3);
+        // bob retires — a fact of the record; a node back projects it, and the
+        // store refuses bob's next write, saying why
         let retired = in_dir(app, toolchain() + "\ndna\nretire\nbob\n--to\nalice\n--as\nalice");
         std::test::assert(retired.code == 0, "bob retired: " + retired.stdout + retired.stderr);
         let spine2 = start_spine(app, owner);
-        std::test::assert(record_has(app, "ledger.request_refused", "bob retired from this organism", 300), "the request is checked against the record as it is now, not as it was, and refused in the record");
-        let ledger3 = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nrows").stdout;
-        std::test::assert(!std::str::contains(ledger3, "close the quarter"), "and nothing landed for it");
+        std::test::assert(retired_in_memory(head_dsn, record_id, "bob", 300), "a node projects the retirement into memory's org chart");
+        let refused = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"open the next quarter\",\"to\":\"\"}").body;
+        std::test::assert(std::str::contains(refused, "bob retired from this organism"), "the store refuses bob's write and says why: " + refused);
+        let ledger4 = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nrows").stdout;
+        std::test::assert(!std::str::contains(ledger4, "open the next quarter"), "and nothing landed for it");
 
         let stop = dna::run_tool("kill\n" + pid);
         stop_spine(app, spine2);

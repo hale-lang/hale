@@ -58,7 +58,7 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
         b.string_field("by", who);
         b.string_field("why", why);
         b.end_object();
-        if !append_as(root, "candidate.dropped", id_in, b.result(), who) { return fail("the record refused the append"); }
+        if !append_as(root, "candidate.dropped", id_in, b.result(), who, memory) { return fail("the record refused the append"); }
         let dropped = apply_drops(root);
         let s = sync_record(root, memory);
         return answer("candidate " + id_in + " dropped by " + who + ": " + why + " (candidate.dropped; no longer kept here or at the remote; every clone drops it at its next sync)\n");
@@ -90,7 +90,7 @@ fn record_head_verb(root: String) -> Answer {
 // Append every row of a file (one JSON object per line: kind, entity,
 // body) in order, in the identity of whoever runs this. The count.
 @unbounded
-fn record_seed_verb(root: String, path: String) -> Answer {
+fn record_seed_verb(root: String, path: String, memory: dna::Memory) -> Answer {
     if len(path) == 0 { return fail("record-seed: a file of rows"); }
     let text = std::io::fs::read_file(path) or "";
     let mut n = 0;
@@ -102,7 +102,7 @@ fn record_seed_verb(root: String, path: String) -> Answer {
         if len(dna::trim_nl(line)) == 0 { continue; }
         let kind = std::json::find_string_field(line, "kind");
         if len(kind) == 0 { return fail("record-seed: row " + to_string(n + 1) + " has no kind"); }
-        if !append_as(root, kind, std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), "") { return fail("record-seed: the record refused row " + to_string(n + 1) + " (" + kind + ")"); }
+        if !append_as(root, kind, std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), "", memory) { return fail("record-seed: the record refused row " + to_string(n + 1) + " (" + kind + ")"); }
         n = n + 1;
     }
     return answer(to_string(n) + "\n");
@@ -241,7 +241,7 @@ fn seeded_family(name: String) -> String {
 // Propose one practice: its receipt, a `knowledge.proposed` row and a
 // Review of its own, grouped by its family for the listing. The review
 // id, "" when the record refused.
-fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String) -> String {
+fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String, memory: dna::Memory) -> String {
     let raw = rec(root).keep(design_document(name, text, toolchain, supersedes));
     if len(raw) == 0 { return ""; }
     let digest = "sha256:" + raw;
@@ -258,7 +258,7 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     b.string_field("name", name);
     b.string_field("supersedes", supersedes);
     b.end_object();
-    if !append_as(root, "knowledge.proposed", digest, b.result(), "") { return ""; }
+    if !append_as(root, "knowledge.proposed", digest, b.result(), "", memory) { return ""; }
     let first = if len(text) > 72 { text[0..72] + "…" } else { text };
     let question = "ratify the " + seeded_family(name) + " practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
     let q = std::json::Builder { };
@@ -274,7 +274,7 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     q.string_field("group", seeded_family(name));
     q.string_field("name", name);
     q.end_object();
-    if !append_as(root, "review.requested", "review:" + review_id, q.result(), "") { return ""; }
+    if !append_as(root, "review.requested", "review:" + review_id, q.result(), "", memory) { return ""; }
     return review_id;
 }
 
@@ -282,7 +282,7 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
 // them, one JSON object per line (`name`, `text`). Prints
 // `proposed=<n> superseding=<m> waiting=<w>`.
 @unbounded
-fn design_upgrade_verb(root: String, path: String, toolchain: String) -> Answer {
+fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let practices = std::io::fs::read_file(path) or "";
@@ -304,7 +304,7 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String) -> Answer 
         if len(st.name) > 0 && st.latest_text == text && !st.refused { continue; }
         if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
         let old = st.active;
-        if len(propose_design(root, name, text, toolchain, old)) == 0 { return fail("design-upgrade: the record refused the proposal of " + name); }
+        if len(propose_design(root, name, text, toolchain, old, memory)) == 0 { return fail("design-upgrade: the record refused the proposal of " + name); }
         proposed = proposed + 1;
         if len(old) > 0 { superseding = superseding + 1; }
     }
@@ -369,9 +369,9 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         b.string_field("by", who);
         b.end_object();
         let digest = record_append(root, "ledger.adopting", "ledger", b.result(), who);
-        if len(digest) == 0 { return fail("ledger adopt: the record refused `ledger.adopting`; nothing was requested"); }
+        if len(digest) == 0 { return fail("ledger adopt: the record refused `ledger.adopting`; nothing was asked"); }
         let s2 = sync_record(root, memory);
-        return answer("ledger adoption requested as " + short(digest) + ": the body copies the record's operational rows into the ledger on its next tick and records `ledger.adopted` (routing " + to_string(dna::ROUTING_VERSION) + "); `hale dna ledger status` shows it\n");
+        return answer("ledger adoption asked for as " + short(digest) + ": a node copies the record's operational rows into the ledger on its next tick and records `ledger.adopted` (routing " + to_string(dna::ROUTING_VERSION) + "); `hale dna ledger status` shows it\n");
     }
     if sub == "abandon" {
         if len(why) == 0 { return fail("ledger abandon: `hale dna ledger abandon --why <why> [--as <who>]`"); }
@@ -381,9 +381,9 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         b.string_field("why", why);
         b.end_object();
         let digest = record_append(root, "ledger.abandoning", "ledger", b.result(), who);
-        if len(digest) == 0 { return fail("ledger abandon: the record refused `ledger.abandoning`; nothing was requested"); }
+        if len(digest) == 0 { return fail("ledger abandon: the record refused `ledger.abandoning`; nothing was asked"); }
         let s2 = sync_record(root, memory);
-        return answer("ledger abandonment requested as " + short(digest) + " by " + who + ": " + why + "; the body empties the ledger on its next tick and records `ledger.abandoned`, and the record is the only memory again (its operational rows were never removed)\n");
+        return answer("ledger abandonment asked for as " + short(digest) + " by " + who + ": " + why + "; a node empties the ledger on its next tick and records `ledger.abandoned`, and the record is the only memory again (its operational rows were never removed)\n");
     }
     return fail("ledger: `hale dna ledger [status]`, `hale dna ledger rows`, `hale dna ledger adopt [--as <who>]`, `hale dna ledger abandon --why <why> [--as <who>]`");
 }

@@ -3,8 +3,10 @@
 // Postgres; the core's `MemoryLedger` (memory_spine.hl) is what an
 // organism and a head hold, and the spine is its one writer (GH #985).
 //
-// Rows are appended under compare-and-swap on the tail — one insert
-// conditioned on the row count — so a reservation read at a revision
+// Rows are appended through memory's insert function (`ledger_append`,
+// GH #1026), the Ledger's gate: it decides whether the calling role may
+// write the row at all, then appends at the tail or exactly at the
+// revision a decision was read at, so a reservation read at a revision
 // cannot land after a writer that changed it (GH #605 without a ref).
 // Claim kinds (`effect.requested`, `spend.reserved`, `task.born`) carry
 // a unique constraint on (kind, entity): the exclusive claim is the
@@ -58,11 +60,6 @@ interface Ledger {
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool;
     fn checkpoint() -> Cutover;
     fn abandon() -> Bool;
-    // ---- requests (GH #646 stage 3, #652): a request id seen before is
-    // answered as it was (the revision its row landed at, or -1 when it
-    // was refused); an id never seen is -2.
-    fn seen(request_id: String) -> Int;
-    fn mark(request_id: String, revision: Int) -> Bool;
 }
 
 // The row as it is served: the event plus its author.
@@ -91,8 +88,16 @@ fn claim_kind(kind: String) -> Bool {
 locus PqLedger {
     params {
         // the author an append writes the row under: the ledger's own, or
-        // the person a request was admitted for, in the same insert (GH #985)
+        // the person a head writes for (GH #985); memory's insert function
+        // decides whether this role may (GH #1026)
         writer: String = "ledger";
+        // GH #1026: the claim a body's row is written under and its token (its epoch)
+        // ("" and 0 for none), and a head's request id ("" for none): the
+        // insert function refuses a body row whose claim is not live with
+        // that token, and answers a request id it has seen as it landed
+        lease: String = "";
+        lease_token: Int = 0;
+        request: String = "";
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
         // GH #985: the environment variable naming this store's DSN, read
         // at open; "" when the connection was built from a DSN in hand
@@ -269,32 +274,44 @@ locus PqLedger {
         self.authors.push(author);
         return "";
     }
-    // Compare-and-append: the in-process check against `expected`, then
-    // the store's; a lost race reloads and re-appends at the new tail,
-    // as the record does (GH #603).
+    // One row through memory's insert function (GH #1026), which is the
+    // Ledger's gate: `expected` the revision a decision was read at, -1 for
+    // the tail. The rows since the last read are loaded either way.
+    @unbounded
+    fn gate(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let a = db::Args { };
+        a.add(to_string(expected));
+        a.add(kind);
+        a.add(entity);
+        a.add(body);
+        a.add(self.writer);
+        a.add(self.lease);
+        a.add(to_string(self.lease_token));
+        a.add(self.request);
+        let r = self.run_q("SELECT ledger_append($1::bigint, $2, $3, $4, $5, $6, $7::bigint, $8)", a);
+        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        let out = trim_nl(line_one(r.csv));
+        let err = std::json::find_string_field(out, "error");
+        self.load();
+        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
+        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        // a claim conflict reads back as `claimed`, as it always has
+        self.error = if err == "claimed" { "claimed" } else { std::json::find_string_field(out, "why") };
+        return AppendResult { error: if err == "claimed" { "claimed" } else { "refused" }, expected: expected, actual: self.rows.len() };
+    }
+    // At the tail, once the in-process check against `expected` holds: the
+    // insert function serializes appends, so a lost race is not a refusal.
     @unbounded
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        let mut attempt = 0;
-        while attempt < 200 {
-            let out = self.insert(self.rows.len(), kind, entity, body, self.writer, -1, "");
-            if len(out) == 0 { return AppendResult { ok: true, revision: self.rows.len() }; }
-            if out != "stale" { return AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() }; }
-            self.load();
-            attempt = attempt + 1;
-        }
-        self.error = "append lost the tail two hundred times";
-        return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        return self.gate(-1, kind, entity, body);
     }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let moved = self.refresh();
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        let out = self.insert(rev, kind, entity, body, self.writer, -1, "");
-        if len(out) == 0 { return AppendResult { ok: true, revision: self.rows.len() }; }
-        if out == "stale" { self.load(); return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() }; }
-        return AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() };
+        return self.gate(expected, kind, entity, body);
     }
     @unbounded
     fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
@@ -331,21 +348,6 @@ locus PqLedger {
         let at = self.meta("checkpoint");
         if len(at) == 0 { return Cutover { }; }
         return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
-    }
-    fn seen(request_id: String) -> Int {
-        let a = db::Args { };
-        a.add(request_id);
-        let rows = self.run_q("SELECT revision FROM ledger_requests WHERE request_id = $1", a);
-        if !rows.ok || rows.n == 0 { return -2; }
-        return std::str::parse_int(trim_nl(line_one(rows.csv))) or - 2;
-    }
-    fn mark(request_id: String, revision: Int) -> Bool {
-        let a = db::Args { };
-        a.add(request_id);
-        a.add(to_string(revision));
-        let r = self.run_x("INSERT INTO ledger_requests (request_id, revision) VALUES ($1, $2::bigint) ON CONFLICT (request_id) DO NOTHING", a);
-        if !r.ok { return self.fail("mark", r.err); }
-        return true;
     }
     fn abandon() -> Bool {
         let r = self.run_sql("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");

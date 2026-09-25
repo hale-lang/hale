@@ -25,12 +25,13 @@ membrane rows in the record, re-projects `status.json`, and answers
 the organization's restart requests. It holds no Task state; when
 the organization exits, the host reaps iris and exits with its code.
 
-The host is also memory's **spine**, when it holds the spine lease:
-on each tick — once a second — it projects the record into the
-knowledge graph, admits the requests heads have left in the record,
-and erases the protected evidence the record says was redacted, all
-under the record's spine role (`HALE_DNA_MEMORY_DSN_SPINE`). A host
-without the lease reads and forwards. `dev` applies memory's schema
+The host is also a node of memory's **spine**, beside any number of
+others: on each tick — once a second — it projects the record into the
+knowledge graph and the org chart, carries out an adoption the record
+asks for, and erases the protected evidence the record says was
+redacted, all under the record's spine role
+(`HALE_DNA_MEMORY_DSN_SPINE`). Nothing coordinates the nodes; the
+stores do. `dev` applies memory's schema
 first, with `HALE_DNA_MEMORY_DSN_OWNER` or the database
 `dna/compose.yaml` brings up, and hands the host the spine's DSN
 alone; `run` takes the spine's DSN from its environment and keeps any

@@ -52,10 +52,6 @@ fn trust_mode(root: String) -> String { let authority = org_runtime::HostAuthori
 
 // GH #664: the owner this clone's body is (`git config dna.owner`), "" when unnamed.
 fn owner_here(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.owner(); }
-// GH #669: this owner's key to the shared record's service (`git config dna.owner.key`).
-fn owner_key_here(root: String) -> String {
-    return rec(root).setting("owner.key");
-}
 const OWNERS_FILE: String = "dna/org/owners";
 // Whether the genome's owners map names any position (the record is shared).
 fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.shared(); }
@@ -138,27 +134,20 @@ fn routing_line(root: String, memory: dna::Memory) -> String {
     return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations and leases live in memory" + reach + ")";
 }
 
-// An operational row of an adopted organism goes to the Ledger as a
-// request the spine admits, never into the record itself (#646 decision 3).
-fn ledger_append(root: String, kind: String, entity: String, body: String) -> Bool {
-    return ledger_submit(root, kind, entity, body, "");
+// An operational row of an adopted organism goes to the Ledger, never into
+// the record itself (#646 decision 3), written straight in by this
+// process under its own role (GH #1026).
+fn ledger_append(root: String, kind: String, entity: String, body: String, memory: dna::Memory) -> Bool {
+    return ledger_submit(root, kind, entity, body, "", memory);
 }
 
-// A request's nonce, minted when it is captured: what the owner's
-// signature covers beside the request itself.
+// A write's request id, minted when it is made: a write retried after an
+// answer that was lost lands once.
 fn request_id(root: String) -> String {
     let d = dna::digest_of(root + "\n" + to_string(std::time::now()) + "\n" + to_string(std::process::pid()) + "\n" + to_string(millis()));
     return if std::str::starts_with(d, "sha256:") { d[7..31] } else { d[0..24] };
 }
 
-// A row in a person's name on an adopted organism (GH #646 stage 3, #652;
-// GH #985). A head does not write the ledger: it records a request — a
-// `ledger.requested` row, in the record — and says so with the request
-// row's digest. The spine admits it on its tick, in the person's name, or
-// refuses it with a `ledger.request_refused` row naming why; `hale dna
-// history` and `status` show which once the spine has run. Over a shared
-// record the request is signed with this owner's key, which stays here.
-@unbounded
 // `, "owner": "<owner>"` for a body's own rows when the record names an
 // owner (GH #985): a row written as `host` still says whose body it was.
 fn owner_json(root: String) -> String {
@@ -166,24 +155,33 @@ fn owner_json(root: String) -> String {
     return if len(o) > 0 { ", \"owner\": " + quote(o) } else { "" };
 }
 
-fn ledger_submit(root: String, kind: String, entity: String, body: String, author: String) -> Bool {
-    let digest = ledger_request(root, -1, kind, entity, body, author);
-    if len(digest) == 0 { return false; }
-    eprintln("hale dna: `", kind, " ", entity, "` is requested of the ledger as ", short(digest), " (this organism's operations live there since ", short(checkpoint_here(root)), "); the body admits it on its next tick — `hale dna history ", entity, "` shows the outcome");
+// A row in a person's name on an adopted organism (GH #646 stage 3, #652;
+// GH #1026). The writer writes it: straight into the Ledger, as its own
+// role, through memory's insert function, which is the gate — it lands
+// the row, or refuses it and says why (a retired person, a task handed to
+// someone else, a transfer accepted outside the owner it was offered to,
+// an author this role does not write as, a claim already taken). A write
+// is done when it lands, and the verb says so; there is no request to
+// wait on and no spine to admit it.
+fn ledger_submit(root: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
+    let why = ledger_write(root, -1, kind, entity, body, author, memory);
+    if len(why) > 0 { eprintln("hale dna: `", kind, " ", entity, "` was not written to the ledger: ", why); return false; }
     return true;
 }
 
-// The request row for one ledger write: its digest, "" when the record
-// refused it. `expected` is the ledger revision a decision was read at
-// (-1 for the tail): the spine refuses the request as stale when the
-// ledger has moved past it.
+// One row into the Ledger in `author`'s name ("" = the host's): "" when it
+// landed, `stale_revision` when the Ledger moved past `expected` (-1 for
+// the tail), else why it was refused.
 @unbounded
-fn ledger_request(root: String, expected: Int, kind: String, entity: String, body: String, author: String) -> String {
+fn ledger_write(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
+    let l = memory.ledger;
+    if !l.ready() { return "no memory is named here (" + l.dsn_env + "); this organism's operations live in the ledger since " + short(checkpoint_here(root)); }
     let who = if len(author) > 0 { author } else { "host" };
-    let request = dna::request_body(kind, entity, body, author, expected, owner_here(root), owner_key_here(root), request_id(root));
-    let digest = record_append(root, "ledger.requested", kind + " " + entity, request, who);
-    if len(digest) == 0 { eprintln("hale dna: the record refused the request for `", kind, " ", entity, "`; nothing was requested"); }
-    return digest;
+    let r = l.write(expected, kind, entity, body, who, request_id(root));
+    if r.ok { return ""; }
+    if r.error == "stale_revision" { return "stale_revision"; }
+    let why = l.last_error();
+    return if len(why) > 0 { why } else { r.error };
 }
 
 // The ledger's revision as memory holds it now, or -1 when this head holds
@@ -194,16 +192,13 @@ fn ledger_revision(root: String, memory: dna::Memory) -> Int {
     return l.revision();
 }
 
-// A row of the ledger only if the ledger is still at `expected` (the
-// revision a decision was read at): requested with `expected` in it, so
-// the spine lands it there or refuses it as stale. "" when it is
-// requested, else why it could not be.
-fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, body: String, author: String) -> String {
+// A row of the Ledger only if the Ledger is still at `expected` (the
+// revision a decision was read at). "" when it landed, `stale_revision`
+// when the Ledger moved (read again and decide again), else why it was
+// refused.
+fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
     if expected < 0 { return "the ledger's revision was not read"; }
-    let digest = ledger_request(root, expected, kind, entity, body, author);
-    if len(digest) == 0 { return "the record refused the request"; }
-    eprintln("hale dna: `", kind, " ", entity, "` is requested of the ledger as ", short(digest), " at revision ", to_string(expected), "; the body admits it on its next tick, or refuses it if the ledger moved — `hale dna history ", entity, "` shows the outcome");
-    return "";
+    return ledger_write(root, expected, kind, entity, body, author, memory);
 }
 
 // Whether rows this clone writes are signed (GH #604 rule 6: under
@@ -220,8 +215,8 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // host reconciling beside a busy organism lost them all and dropped the
 // row (GH #603).
 @unbounded
-fn append_as(repo: String, kind: String, entity: String, body: String, author: String) -> Bool {
-    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author); }
+fn append_as(repo: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
+    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author, memory); }
     return len(record_append(repo, kind, entity, body, author)) > 0;
 }
 
@@ -252,8 +247,8 @@ fn record_append(repo: String, kind: String, entity: String, body: String, autho
 // (nothing appended; read again and decide again), else why it was
 // refused (#636: a redaction that read "no hold" must not land after a
 // hold did — on either memory).
-fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String) -> String {
-    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author); }
+fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
+    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory); }
     let r = rec(repo);
     let now = r.head(JOURNAL);
     if !now.ok { return "the record's head could not be read: " + now.why; }
@@ -597,15 +592,7 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
 const BODY_LEASE: String = org_runtime::BODY_LEASE;
 const BODY_LEASE_TRACK: String = org_runtime::BODY_LEASE_TRACK;
 const BODY_TTL: Int = 30;
-// GH #985: the spine lease — which body's spine projects memory, admits
-// the heads' requests and erases redacted evidence. On a shared record
-// every owner runs a body; this lease, held in memory and arbitrated
-// there, picks one: whichever spine takes it first. The others read and
-// forward.
-const SPINE_LEASE: String = "spine";
-const SPINE_TTL: Int = 30;
-// The host's tick: supervision, the record's sync, and memory's work (the
-// spine lease is renewed on it, so SPINE_TTL is many ticks).
+// The host's tick: supervision, the record's sync, and memory's work.
 const HOST_TICK: Duration = 1s;
 // The body fence stops the organism this many seconds before the lease
 // it could last prove expires; another body can take the lease only once

@@ -186,20 +186,20 @@ step, and the body carries it out:
 
 ```sh
 hale dna ledger                # routing, the memory named here, the cutover
-hale dna ledger adopt          # asks the body to adopt
+hale dna ledger adopt          # asks a node to adopt
 hale dna ledger abandon --why "back to one memory"
 ```
 
-`adopt` appends `ledger.adopting` to the record. The body that holds
-the spine lease (see [Operating](./operating.md#the-spine-lease)), on
-its next tick, copies every operational row of the record into the
-ledger keyed by its commit (rerun after any interruption; nothing is
-copied twice), carries its own body lease into memory at the token it
-holds, and appends `ledger.adopted` naming the checkpoint. From that
-commit on, an operational row never goes into git: the organization
-appends it to the ledger itself, and everyone else asks for it. The
-record keeps every row it ever held; `hale dna history` reads both
-memories as one.
+`adopt` appends `ledger.adopting` to the record. On its next tick a
+node (see [Operating](./operating.md#the-spine-is-every-node)) claims
+the ask, copies every operational row of the record into the ledger
+keyed by its commit (rerun after any interruption; nothing is copied
+twice), carries its own body lease into memory at the token it holds,
+and appends `ledger.adopted` naming the checkpoint. From that commit
+on, an operational row never goes into git: whoever writes it — the
+organization, a head — writes it straight into the ledger. The record
+keeps every row it ever held; `hale dna history` reads both memories
+as one.
 
 Once adopted, the leases move too: the mutation leases the gateway
 takes and the body lease `hale dna run` holds are rows of memory's
@@ -214,49 +214,38 @@ lease it last proved until just before it expires and then stops the
 organism; `hale dna status` says the ledger is unreachable and that
 nothing is admitted until it answers.
 
-### A head's writes are requests
+### A head writes the ledger directly
 
-The ledger has one writer: the spine's role. A head — the CLI in your
-clone, `hale dna ui`, the read API — never writes it. Once adopted, a
-verb that writes the day's work in your name records a **request**
-instead: a `ledger.requested` row in the record, saying what to write,
-in whose name, and the ledger revision the decision was read at. The
-verb tells you so, with the request's digest:
+Once adopted, a verb that writes the day's work in your name writes it
+straight into the ledger, as your head's role in memory, and memory's
+insert function is the gate: the row lands, or it is refused with the
+reason, there and then. The verb says which:
 
 ```text
 $ hale dna receipt hold sha256:9d0e… --why "audit" --as sam
-hale dna: `receipt.held sha256:9d0e…` is requested of the ledger as 3f1c2a9e0b77 (this organism's operations live there since 232dc8f18dde); the body admits it on its next tick — `hale dna history sha256:9d0e…` shows the outcome
 receipt sha256:9d0e… held (receipt.held, by sam)
+
+$ hale dna task done acme:t4 --as alice
+hale dna: `task.done acme:t4` was not written to the ledger: task acme:t4 is handed to bob, not to alice; a completion is admitted in the assignee's name
 ```
 
-The spine admits each request once, on its tick, keyed on the
-request's digest, so a request seen twice lands once. It checks the
-request there, in the spine, against the ledger as it stands: a person
-who retired (`person.retired`) is refused, a completion for a task
-handed to someone else is refused, a transfer is accepted only by a
-member of the owner it was offered to, a claim already taken is
-refused, and a decision read at a revision the ledger has since moved
-past is refused as stale. A request memory could not take for any
-other reason stays undecided and is tried again on the next tick. Over a shared record the request must also carry a valid
-signature of its owner's key (see
-[Operating](./operating.md#shared-records-and-owners-keys)). An
-admitted request lands in the ledger in the person's name; a refused
-one is a `ledger.request_refused` row in the record with the reason.
-`hale dna history` and `hale dna status` show which, once the spine
-has run. The spine writes under the spine lease it holds: one that lost
-it lands nothing, and the next holder decides the request.
+The gate checks the row against memory as it stands: a person who
+retired (`person.retired`, which every node projects into memory) is
+refused, a completion for a task handed to someone else is refused, a
+transfer is accepted only by a member of the owner it was offered to, a
+claim already taken is refused, an author your head's role does not
+write as is refused, and a decision read at a revision the ledger has
+since moved past is refused as stale — the verb reads again and decides
+again. Over a shared record your head writes as your owner's role (see
+[Operating](./operating.md#shared-records-and-owners-roles)), which
+writes only in your owner's members' names. A write carries a request
+id, so one retried after an answer that was lost lands once.
 
-Because a request is a row of the record, a head needs no memory to
-make one: the record is the pager. A clone with no DSN named requests
-a write at the tail as any other, and `sync` carries the request to the
-body. A write decided at a ledger revision — `task done`, a
-completion — needs that revision read, so without memory its verb
-refuses ("the ledger's revision was not read") and requests nothing;
-with memory it is requested with the revision, and says so with the
-request's digest and that revision. Before
-adoption (routing 0) there is nothing to request — operational rows go
-into the record as they always did. The host's own operational writes
-go the same way, signed as its owner.
+A head with no memory named writes nothing once the ledger is adopted:
+the row's home is the ledger, and the verb says so, naming the
+checkpoint — it never falls back to git. Before adoption (routing 0)
+operational rows go into the record as they always did. The host's own
+operational writes go the same way, as `host`.
 
 `hale dna ledger rows` prints the ledger as memory holds it, one JSON
 object per line, for a head that names memory

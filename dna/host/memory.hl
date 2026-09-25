@@ -10,8 +10,11 @@
 const OWNER_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_OWNER";
 
 // `memory-migrate`: `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and
-// `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` when the schema was applied, `none:
-// <why>` when there is no database to apply it to.
+// `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` when the schema was applied — and over a
+// shared record (HALE_DNA_OWNER_KEYS names its owners) one
+// `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>=<dsn>` per owner, the role that owner's
+// heads write the Ledger as (GH #1026) — `none: <why>` when there is no
+// database to apply it to.
 fn memory_migrate_verb(root: String) -> Answer {
     let mut owner = if std::env::var_exists(OWNER_DSN_ENV) { std::env::var(OWNER_DSN_ENV) } else { "" };
     if len(owner) == 0 {
@@ -22,7 +25,16 @@ fn memory_migrate_verb(root: String) -> Answer {
     }
     let m = dna::migrate(dna::parse_dsn(owner), record_identity(root));
     if !m.ok { return fail("memory migrate: " + m.why); }
-    return answer(dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "=" + m.head_dsn + "\n");
+    let mut out = dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "=" + m.head_dsn + "\n";
+    let mut rest = m.owner_dsns;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let eq = std::str::index_of(line, "=");
+        if eq > 0 { out = out + dna::HEAD_DSN_ENV + "_" + std::str::upper(line[0..eq]) + "=" + line[(eq + 1)..len(line)] + "\n"; }
+    }
+    return answer(out);
 }
 
 // "" when the spine's DSN reaches a schema at this toolchain's version;

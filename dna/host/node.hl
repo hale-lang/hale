@@ -124,7 +124,7 @@ locus Node {
                         b.string_field("build", build_digest);
                         b.int_field("pid", p.pid);
                         b.end_object();
-                        let ok = append_as(self.root, "instance.up", id, b.result(), self.author);
+                        let ok = append_as(self.root, "instance.up", id, b.result(), self.author, self.memory);
                         self.say("instance " + id + " up (pid " + to_string(p.pid) + ") at " + short(rev) + " as " + short(shape));
                         let fresh = Instance { id: id, revision: rev, proc: p };
                         if idx >= 0 { self.instances.set(idx, fresh) or discard; } else { self.instances.push(fresh); }
@@ -157,7 +157,7 @@ locus Node {
                 b.string_field("revision", x.revision);
                 b.int_field("code", code);
                 b.end_object();
-                let ok = append_as(self.root, "instance.exited", x.id, b.result(), self.author);
+                let ok = append_as(self.root, "instance.exited", x.id, b.result(), self.author, self.memory);
                 std::io::fs::unlink(self.node_dir + "/" + x.id + ".pid") or discard;
                 self.instances.set(i, Instance { id: x.id, revision: x.revision, proc: Proc { pid: -1, dir: x.proc.dir, name: x.proc.name }, log_offset: x.log_offset }) or discard;
                 gone = true;
@@ -186,7 +186,7 @@ locus Node {
         b.int_field("severity", c.severity);
         b.string_field("node", self.name);
         b.end_object();
-        if !append_as(self.root, "concern.requested", c.source, b.result(), self.author) { self.say("the record refused the concern from " + c.source); return; }
+        if !append_as(self.root, "concern.requested", c.source, b.result(), self.author, self.memory) { self.say("the record refused the concern from " + c.source); return; }
         self.concerns_relayed = self.concerns_relayed + 1;
         let s = sync_record(self.root, self.memory);
         self.say("concern from " + c.source + " (`" + c.what + "`) put into the record" + (if s.ok { "" } else { "; sync: " + s.summary }));
