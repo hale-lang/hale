@@ -84,6 +84,38 @@ fn record_contract(r: dna::Record, label: String) {
     std::test::assert(!s.signed && !s.verified, label + ": an unsigned row has no signer");
 }
 
+// Two fetches of one ref at once — the body's tick and a verb beside it
+// (GH #1072): the one that loses git's ref lock is tried again, and a
+// fetch that still fails is a failed read, never an empty remote
+// (GH #961). The lock another fetch would hold is held here by its file.
+fn receive_contract(src: dna::GitRecord) {
+    let root = dna::scratch_root("record-fetch");
+    let setup = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q --bare remote.git && git init -q --bare empty.git && git -C \"$2\" push -q \"$1/remote.git\" refs/dna/journal:refs/dna/journal && git init -q -b main here && mkdir -p here/.git/refs/dna/remote\nsh\n" + root + "\n" + src.repo);
+    std::test::assert_eq_int(setup.code, 0, "fetch: a remote holding the record, and a clone: " + setup.stderr);
+    let here = dna::GitRecord { repo: root + "/here" };
+    let remote = root + "/remote.git";
+    let lock = root + "/here/.git/refs/dna/remote/journal.lock";
+
+    // the lock held throughout: the fetch fails and says why — not absent
+    std::io::fs::write_file(lock, "") or discard;
+    let held = here.receive(remote, "journal");
+    std::test::assert(!held.ok && !held.absent && std::str::contains(held.why, "cannot lock ref"), "fetch: one that cannot take the ref's lock is a failed read, not an empty remote: " + held.why);
+    let untouched = here.head("remote/journal");
+    std::test::assert(untouched.ok && untouched.absent, "fetch: and moved nothing");
+
+    // the lock let go while the fetch waits, as the other fetch ends: tried
+    // again, and received
+    let let_go = dna::run_tool("sh\n-c\n(sleep 0.3; rm -f \"$1\") >/dev/null 2>&1 &\nsh\n" + lock);
+    let later = here.receive(remote, "journal");
+    std::test::assert(later.ok, "fetch: a fetch that lost the lock to another is tried again: " + later.why);
+    std::test::assert_eq_str(here.head("remote/journal").id, src.head("journal").id, "fetch: and brings the remote's record");
+
+    // a remote with no record: the one answer that is empty
+    let none = here.receive(root + "/empty.git", "journal");
+    std::test::assert(!none.ok && none.absent, "fetch: a remote without the family is absent: " + none.why);
+    dna::scratch_done(root);
+}
+
 main locus App {
     run() {
         let mem = dna::MemRecord { };
@@ -129,6 +161,7 @@ main locus App {
         let ls = dna::GitLeases { repo: dir };
         let l = ls.acquire("work:w1", "a", 100, 50);
         std::test::assert(l.present && g.cell("lease/work/w1").present, "GitLeases: a lease is a cell of the record");
+        receive_contract(g);
         dna::scratch_done(dir);
     }
 }

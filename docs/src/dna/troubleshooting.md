@@ -34,6 +34,19 @@ its lease back and exited 75; its unit starts it again with a fresh
 connection, and every request still unanswered is published again.
 Under `hale dna dev` there is no unit: start it again yourself.
 
+**`fetch origin: error: cannot lock ref 'refs/dna/remote/journal'`**
+from `sync`, `ledger adopt` or the host. Another git process kept the
+ref's lock for more than a second: the record tries a fetch that lost
+the lock to another fetch five times before it says so, and nothing
+was changed. Run the command again; if it keeps saying so, look for a
+stuck `git` in that clone or a stale `.lock` file under
+`.git/refs/dna/` left by one that was killed.
+
+**`connect: <url> could not be read`**. The fetch of the other record's
+identity failed: the url is wrong, or the remote is unreachable from
+here. It is not the same as `no record identity at <url>`, which means
+the other record exists and has never synced.
+
 **`task t1 born … [failed]`**, and `history t1` says
 `credential not present`. The editor's hosted model has no key. Set
 the key the catalog names (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`;

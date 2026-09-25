@@ -162,6 +162,10 @@ main locus App {
         std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt7"), "no connection `acct`"), "nothing crosses without a connection");
         let to_self = dna_cli(firm, "connect\n" + firm_url + "\n--name\nself\n--as\nitself\n--purpose\nnone\n--classes\ninternal");
         std::test::assert(std::str::contains(to_self, "serves this record itself"), "a replica is not a connection: " + to_self);
+        // a url that could not be read is not a record without an identity
+        // (GH #1072, #961's rule): the connect says the read failed
+        let unread = dna_cli(firm, "connect\n" + scratch + "/nowhere.git\n--name\nnowhere\n--as\nnobody\n--purpose\nnone\n--classes\ninternal");
+        std::test::assert(std::str::contains(unread, "could not be read") && !std::str::contains(unread, "no record identity"), "an unreadable url is a failed read: " + unread);
         std::test::assert(std::str::contains(dna_cli(firm, "connect\n" + acct_url + "\n--name\nacct\n--as\naccountant\n--purpose\nbooks\n--classes\nsecret"), "`secret` is not a data class"), "classes are checked");
 
         // ---- the connection is a Board Review, and reads nothing of the other record

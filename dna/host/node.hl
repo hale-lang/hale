@@ -70,8 +70,13 @@ locus Node {
         let rev = std::json::find_string_field(deploy.body, "revision");
         if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }
         let remote = record_remote(self.root);
-        if len(remote) > 0 { let f = rec(self.root).receive(remote, "revisions"); }
-        if len(genome_commit(self.root, rev)) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": revision " + short(rev) + " is not here yet (retrying next tick)"); return false; }
+        // a fetch that failed is not a revision the forge lacks: say which
+        let mut unread = "";
+        if len(remote) > 0 {
+            let f = rec(self.root).receive(remote, "revisions");
+            if !f.ok && !f.absent { unread = "; the fetch of revisions failed: " + f.why; }
+        }
+        if len(genome_commit(self.root, rev)) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": revision " + short(rev) + " is not here yet" + unread + " (retrying next tick)"); return false; }
         let co = genome_checkout(self.root, rev);
         if len(co) > 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": " + co + " (retrying next tick)"); return false; }
         let plan_name = std::json::find_string_field(deploy.body, "plan");
