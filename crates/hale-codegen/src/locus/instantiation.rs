@@ -3095,6 +3095,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .const_int(crate::DEFAULT_RESTART_BOUND, false),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1069: is this instance held by something that reclaims
+        // it later? Everything but a bare statement literal is — a
+        // param field, a binding, a returned or expression-position
+        // value. A failed child that is held keeps its memory until
+        // that owner's teardown.
+        let held_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.held_by_owner_field_idx,
+                &format!("{}.__held_by_owner.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(
+                held_ptr,
+                self.context.i64_type().const_int(u64::from(!is_bare_stmt), false),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         // m41: zero-init the synthetic __quarantined flag.
         let q_ptr = self
             .builder
@@ -4828,6 +4848,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )?;
                 }
             }
+            // GH #1069: a statement literal whose run() failed was
+            // already reclaimed by its run wrapper (nobody else holds
+            // it). Step over the spine then, as the owner cascades do
+            // (GH #1036): its dissolve() ran once and its arena is gone.
+            let eager_skip_bb = self.emit_reclaimed_child_skip(
+                &info, self_ptr, locus_name, "self", "eager",
+            )?;
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()
             // cascades depth-first; children first, then self."
@@ -4894,6 +4921,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // composite-default literals, ClosureViolations, bus
             // payload copies it received — goes here.
             self.emit_locus_arena_destroy(&info, self_ptr, locus_name)?;
+            self.builder
+                .build_unconditional_branch(eager_skip_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(eager_skip_bb);
         } else if returns_this_locus {
             // Intentionally no-op: see m90 note above. The locus
             // outlives this fn's frame by design.

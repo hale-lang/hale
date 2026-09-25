@@ -1164,6 +1164,19 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             }
         }
 
+        // GH #1069: synthetic `__held_by_owner: i64` — 1 when the
+        // literal that built this instance is held by something that
+        // reclaims it later (a param field, a binding, a returned or
+        // expression-position value), 0 for a bare statement literal
+        // nobody names. A child that FAILS and is not restarted stops
+        // running, but while it is held its memory stays until that
+        // owner's teardown: its reader may still read it. Appended
+        // last so no other field moves.
+        let held_by_owner_field_idx = idx;
+        llvm_field_tys.push(self.context.i64_type().into());
+        idx += 1;
+        let _ = idx;
+
         let struct_ty = self
             .context
             .opaque_struct_type(&format!("locus.{}", l.name.name));
@@ -1248,6 +1261,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 quarantined_field_idx,
                 restart_in_place_pending_field_idx,
                 drain_requested_field_idx,
+                held_by_owner_field_idx,
                 slot_borrowed_mask_field_idx,
                 locus_ref_owned_mask_field_idx,
                 locus_ref_bit_per_field,

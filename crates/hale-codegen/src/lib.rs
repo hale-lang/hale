@@ -39,6 +39,13 @@ pub(crate) mod bus;
 /// `__restart_bound` and the check that reads it.
 pub const DEFAULT_RESTART_BOUND: u64 = 2;
 
+/// GH #1069: the value a failure (`violate`, a failed `birth_check`)
+/// stores in a locus's `__drain_requested` latch. `terminate` stores 1.
+/// Every reader tests the latch `!= 0`, so both mean "draining"; the
+/// run-end and handler-end reclaim tell them apart, keeping a FAILED
+/// child's memory while its owner still holds it.
+pub(crate) const LATCH_FAILED: u64 = 2;
+
 pub mod deployment;
 pub(crate) mod channels;
 pub mod codegen;

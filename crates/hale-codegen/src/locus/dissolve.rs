@@ -1069,7 +1069,8 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
 
         // Set __drain_requested = 1.
-        let one = i64_t.const_int(1, false);
+        // A failure: LATCH_FAILED, not `terminate`'s 1 (GH #1069).
+        let one = i64_t.const_int(crate::LATCH_FAILED, false);
         let dr_ptr = self
             .builder
             .build_struct_gep(

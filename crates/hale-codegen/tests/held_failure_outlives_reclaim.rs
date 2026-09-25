@@ -12,6 +12,10 @@
 //! the runtime first, and a child with a held failure is reclaimed
 //! right after its handler instead.
 //!
+//! GH #1069 then moved the reclaim of a failed child that an owner
+//! still holds — this one is App's param field — to that owner's
+//! teardown, so `dissolve` now prints after App's run(), once.
+//!
 //! The child's strings are heap values in its own arena (a literal
 //! would sit in static memory and hide the free). The run is under
 //! ASan with the chunk pool off, which is what lets the sanitizer see
@@ -66,9 +70,9 @@ fn a_held_failures_child_is_reclaimed_after_its_handler() {
         stdout.lines().collect::<Vec<_>>(),
         [
             "handler",
-            "dissolve HEAP-NAME",
             "seen=[got HEAP-NAME LIT-HEAP-NAME]",
+            "dissolve HEAP-NAME",
         ],
-        "the handler reads the child, then the child is reclaimed once; stderr: {stderr}"
+        "the handler reads the child, which is reclaimed once, at App's teardown; stderr: {stderr}"
     );
 }

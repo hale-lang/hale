@@ -484,6 +484,7 @@ crates/hale-codegen/tests/factory_field_ownership.rs#5 d5aa2c0aad4d9767
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
 crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
 crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
+crates/hale-codegen/tests/failed_child_kept_by_owner.rs#0 80225cf743c34c98
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#0 10f9617e7cef3887
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#1 04bacc10168e5f20
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#2 53f6481685bfc133

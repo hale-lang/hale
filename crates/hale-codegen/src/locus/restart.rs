@@ -176,6 +176,89 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(ok)
     }
 
+    /// GH #1069: i1 — does this child stay allocated although it asked
+    /// to be reclaimed? True for a child that FAILED (its latch holds
+    /// `LATCH_FAILED`, not `terminate`'s 1), is held by an owner that
+    /// reclaims it later (`__held_by_owner`), and was not accepted
+    /// (`__owner_self` null — an accepted child's tracker expects it
+    /// gone). Such a child has stopped running, but its parent's field
+    /// or its binding still names it; its memory lives until that
+    /// owner's teardown, as quarantine already promises.
+    pub(crate) fn emit_failed_child_is_kept(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let load = |cx: &mut Self, idx: u32, name: &str| -> Result<IntValue<'ctx>, CodegenError> {
+            let p = cx
+                .builder
+                .build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{name}.ptr"))
+                .map_err(e)?;
+            Ok(cx.builder.build_load(i64_t, p, name).map_err(e)?.into_int_value())
+        };
+        let dr = load(self, info.drain_requested_field_idx, "kept.latch")?;
+        let held = load(self, info.held_by_owner_field_idx, "kept.held")?;
+        let owner_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.owner_self_field_idx, "kept.owner.ptr")
+            .map_err(e)?;
+        let owner = self
+            .builder
+            .build_load(ptr_t, owner_ptr, "kept.owner")
+            .map_err(e)?
+            .into_pointer_value();
+        let failed = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                dr,
+                i64_t.const_int(crate::LATCH_FAILED, false),
+                "kept.failed",
+            )
+            .map_err(e)?;
+        let is_held = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, held, i64_t.const_zero(), "kept.is_held")
+            .map_err(e)?;
+        let unaccepted = self.builder.build_is_null(owner, "kept.unaccepted").map_err(e)?;
+        let k = self.builder.build_and(failed, is_held, "kept").map_err(e)?;
+        Ok(self.builder.build_and(k, unaccepted, "kept").map_err(e)?)
+    }
+
+    /// GH #1069: if `kept`, drop the child's bus subscriptions now — a
+    /// failed child stops, whether or not its memory has to wait for
+    /// its owner. The same runtime walk `quarantine(c)` uses.
+    pub(crate) fn emit_stop_kept_child(
+        &mut self,
+        kept: IntValue<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if self.bus_state.is_none() {
+            return Ok(());
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let stop_bb = self.context.append_basic_block(func, "kept.stop");
+        let cont_bb = self.context.append_basic_block(func, "kept.cont");
+        self.builder.build_conditional_branch(kept, stop_bb, cont_bb).map_err(e)?;
+        self.builder.position_at_end(stop_bb);
+        let unsub = self
+            .module
+            .get_function("lotus_bus_quarantine_self")
+            .expect("lotus_bus_quarantine_self declared");
+        self.builder.build_call(unsub, &[self_ptr.into()], "kept.unsubscribe").map_err(e)?;
+        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
+        self.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
     /// i64 from `lotus_failure_await(self, resume, phase, pre)` — 0
     /// nothing outstanding, 1 waited for another thread's handler, 2
     /// the runtime resumes this child at settle — behind one monotonic
