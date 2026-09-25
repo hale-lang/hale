@@ -387,6 +387,18 @@ binding resolves against the imported declaration. Two aliases for
 one library are one type, because the declaration they name is one
 declaration.
 
+**A call into an imported seed is checked like a local one.** In a
+whole program, `lib::f(..)` is typed with the library's own
+signature: too few arguments (fewer than its params without a
+default), too many, an argument of the wrong type, `or` on a fn
+that cannot fail, and the type of the value it returns are the same
+located errors a same-seed call gets, naming the callee as written
+(fn `lib::add3` takes at least 3 arguments, got 2). The value an
+imported factory returns is typed too, so a method called on it is
+held to its signature. (GH #1028: the path was typed as unknown,
+and a call with an argument too few passed `hale check` to fail in
+`hale build`.)
+
 One thing stays permissive, because the declaration genuinely is
 not in the bundle: a check of a single FILE of a multi-file seed,
 where the `import` line may live in a sibling — one file is not a

@@ -13932,6 +13932,31 @@ impl<'a> Checker<'a> {
     /// (`check_struct_literal`). A `bindings { }` topic needs no site
     /// of its own: `check_main_and_bindings` already refuses a topic
     /// nothing declares, qualified or not.
+    /// GH #1028: the imported free fn a qualified path names, through
+    /// the same table codegen resolves it with (`import_renames`:
+    /// `["lib", "add3"]` -> the mangled symbol the library's seed
+    /// declared). With the path as the author wrote it, unscoped
+    /// (GH #746's `u$0` head reads `u`), for diagnostics.
+    fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let (_, mangled) = self
+            .import_renames
+            .iter()
+            .find(|(k, _)| k.iter().map(|s| s.as_str()).eq(key.iter().copied()))?;
+        match self.top.lookup(mangled) {
+            Some(TopSymbol::Fn(sig)) => {
+                let written: Vec<&str> = std::iter::once(unscoped_alias(key[0]))
+                    .chain(key[1..].iter().copied())
+                    .collect();
+                Some((written.join("::"), sig.clone()))
+            }
+            _ => None,
+        }
+    }
+
     fn check_qualified_path(&mut self, path: &QualifiedName) {
         if let Some(msg) = self.unresolved_qualified(path) {
             self.diags.push(Diag::ty(path.span, msg));
@@ -14175,6 +14200,17 @@ impl<'a> Checker<'a> {
                             return Ty::Named(enum_name.clone());
                         }
                     }
+                }
+                // GH #1028: an imported seed's free fn, `alias::f`. It
+                // is typed like a bare fn, so a call through the path
+                // gets the arity bounds and the argument types a
+                // same-seed call gets (the call arm reads this type),
+                // and the value it returns has a type downstream.
+                if let Some((_, sig)) = self.imported_fn(qn) {
+                    return Ty::Function {
+                        params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                        ret: Box::new(sig.ret.clone()),
+                    };
                 }
                 // GH #803: nothing above answered the path, and in a
                 // whole program nothing else will. This is the CALL
@@ -14944,6 +14980,10 @@ impl<'a> Checker<'a> {
                             Expr::Ident(id) => {
                                 format!("fn `{}`", id.name)
                             }
+                            Expr::Path(qn) => match self.imported_fn(qn) {
+                                Some((written, _)) => format!("fn `{}`", written),
+                                None => "this callee".to_string(),
+                            },
                             _ => "this callee".to_string(),
                         };
                         self.diags.push(Diag::ty(
@@ -14973,6 +15013,12 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 }
                             }
+                            // GH #1028: `lib::f(..)`, the imported seed's fn.
+                            Expr::Path(qn) => self.imported_fn(qn).map(
+                                |(written, sig)| {
+                                    (sig.required_params(), format!("fn `{}`", written))
+                                },
+                            ),
                             Expr::Field { receiver, name, .. } => {
                                 let mark = self.diags.len();
                                 let rt = self.check_expr(receiver);
@@ -15861,6 +15907,9 @@ impl<'a> Checker<'a> {
                     _ => None,
                 }
             }
+            // GH #1028: an imported seed's fn, `alias::f(..)` — typed
+            // like a bare one, fallibility included.
+            Expr::Path(qn) => self.imported_fn(qn).and_then(|(_, sig)| sig.fallible),
             // v1.x-FORM-1 PR3b: method calls like `l.get(i)`. The
             // callee is a Field expression whose receiver resolves
             // to a locus/perspective; we look up the method by
