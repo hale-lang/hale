@@ -1,0 +1,75 @@
+// pond/realtime/nats — shape types.
+
+/// A NATS failure, on the value channel. `kind` is stable:
+/// "url", "connect", "handshake", "closed", "io", "timeout",
+/// "server" (a `-ERR` from the server), "protocol" (bytes that
+/// do not frame), "jetstream" (an API error reply), "no_messages".
+type NatsError {
+    kind: String = "";
+    detail: String = "";
+}
+
+/// One protocol frame as the server sent it. `op` is one of
+/// INFO, MSG, HMSG, PING, PONG, OK, ERR, and only the fields that op
+/// defines are current — the rest still hold an earlier frame's. For
+/// MSG and HMSG: `subject`, `sid`, `reply` ("" when none) and `data`;
+/// HMSG adds `headers`, the raw header block including the `NATS/1.0`
+/// status line. For INFO the JSON is in `text`; for ERR the server's
+/// message.
+type NatsFrame {
+    op: String = "";
+    subject: String = "";
+    sid: Int = 0;
+    reply: String = "";
+    headers: String = "";
+    data: Bytes = b"";
+    text: String = "";
+}
+
+/// A message a subscription received (MSG or HMSG).
+type NatsMsg {
+    subject: String = "";
+    sid: Int = 0;
+    reply: String = "";
+    headers: String = "";
+    data: Bytes = b"";
+}
+
+/// A JetStream publish acknowledgement.
+type PubAck {
+    stream: String = "";
+    seq: Int = 0;
+    duplicate: Bool = false;
+}
+
+/// A durable pull consumer. `deliver` is where a new one starts:
+/// "all" (the stream's first message), "new" (only what arrives after
+/// it is created), "last" (the last message), "by_start_sequence"
+/// (from `start_seq`) or "by_start_time" (from `start_time`, RFC 3339
+/// such as "2026-09-24T00:00:00Z"). `filter` narrows it to one subject
+/// ("" for the whole stream). An unacknowledged message comes again
+/// after `ack_wait_ms` (0: the server's default, 30 s).
+type ConsumerSpec {
+    durable: String = "";
+    filter: String = "";
+    deliver: String = "all";
+    start_seq: Int = 0;
+    start_time: String = "";
+    ack_wait_ms: Int = 0;
+}
+
+/// One outbound publish on its way from a bus adapter's `send` to
+/// the connection that writes it (the internal queue topic below).
+type Outbound {
+    subject: String = "";
+    data: Bytes = b"";
+}
+
+// The adapter's outbound queue: `NatsAdapter.send` publishes here on
+// the publisher's thread, and `NatsConn` — placed `pinned` by the
+// program — receives it on its own, where every socket write happens.
+// Local only: nothing binds it, so it never reaches the adapter again.
+topic NatsOutbound {
+    payload: Outbound;
+    subject: "pond.nats.outbound";
+}
