@@ -1175,7 +1175,17 @@ param is stored, before the parent's `birth()`; several are
 delivered in the order they arrived, on the thread settling the
 parent. So a handler always reads params that hold their values,
 and nothing it writes is overwritten by a default stored after
-it. Two failures cannot wait and are delivered at once:
+it.
+
+The rule holds the *handler* back, not the children. The other
+reading — every param settled before any child runs — would undo
+§ Birth order is load-bearing: a later param's default may read
+what an earlier child computed (`total: Int = self.loader.count`
+after `loader`'s inline `run()` filled it), and that only works
+because the children are born, and inline ones run, one at a time
+in declaration order.
+
+Two failures cannot wait and are delivered at once:
 
 - a **birth-epoch closure's**, because `restart(c)` in the
   handler re-runs the child's birth before the child runs. A
