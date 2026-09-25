@@ -1166,6 +1166,31 @@ elsewhere and passed in by name — a `let` binding, a factory's
 return — keeps the route of the place it was built: the locus
 whose method body built it, or none from a free fn or `fn main`.
 
+**When it runs: never before the parent's params are settled.**
+A child can fail while its parent is still setting params — a
+cooperative child's `run()` executes inside that loop (§ Birth
+order is load-bearing) and a pinned child's thread starts in it.
+The failure is **held** and delivered once the parent's last
+param is stored, before the parent's `birth()`; several are
+delivered in the order they arrived, on the thread settling the
+parent. So a handler always reads params that hold their values,
+and nothing it writes is overwritten by a default stored after
+it. Two failures cannot wait and are delivered at once:
+
+- a **birth-epoch closure's**, because `restart(c)` in the
+  handler re-runs the child's birth before the child runs. A
+  handler that serves a birth-epoch closure of a child declared
+  in `params` sees only the params declared before that child
+  with their values, and a later default overwrites what it
+  writes.
+- a **dissolve-epoch closure's**, because the child's region is
+  released right after.
+
+The bracket costs a locus nothing unless it declares
+`on_failure` and holds a locus-typed field or computes a
+default; one that does pays two uncontended lock round trips per
+instantiation.
+
 ### Reassigning a locus-typed field (WS1#4)
 
 Assigning a fresh locus literal to a locus-typed field —

@@ -1067,7 +1067,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let i32_t = self.context.i32_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let void_t = self.context.void_type();
 
         // Set __drain_requested = 1.
         let one = i64_t.const_int(1, false);
@@ -1183,22 +1182,14 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // route_then: indirect-call parent.on_failure(parent_self,
         // self_ptr, viol_ptr), then branch to after_bb.
         self.builder.position_at_end(route_then);
-        let handler_callee_ty = void_t.fn_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
-            false,
-        );
-        self.builder
-            .build_indirect_call(
-                handler_callee_ty,
-                parent_on_failure,
-                &[
-                    parent_self.into(),
-                    self_ptr.into(),
-                    viol_ptr.into(),
-                ],
-                "bcheck.on_failure.call",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.emit_on_failure_call(
+            parent_on_failure,
+            parent_self,
+            self_ptr,
+            viol_ptr,
+            true,
+            "bcheck.on_failure.call",
+        )?;
         self.builder
             .build_unconditional_branch(after_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

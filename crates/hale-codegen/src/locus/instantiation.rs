@@ -115,6 +115,36 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// A field type no locus can hide in: scalars, text, bytes, and
+    /// data records / arrays / bounds of those. Anything else — a
+    /// locus, an interface, an unknown name — counts as a child
+    /// holder for the params-settle bracket.
+    fn is_plain_value_ty(
+        user_types: &BTreeMap<String, crate::codegen::TypeInfo<'ctx>>,
+        ty: &CodegenTy,
+    ) -> bool {
+        match ty {
+            CodegenTy::LocusRef(_) => false,
+            CodegenTy::TypeRef(n) => user_types.contains_key(n),
+            CodegenTy::Array(inner, _) | CodegenTy::Bounded(inner, _) => {
+                Self::is_plain_value_ty(user_types, inner)
+            }
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::String
+            | CodegenTy::Duration
+            | CodegenTy::Decimal
+            | CodegenTy::Time
+            | CodegenTy::Bytes
+            | CodegenTy::BytesView
+            | CodegenTy::StringView
+            | CodegenTy::BytesMut
+            | CodegenTy::Enum(_) => true,
+            _ => false,
+        }
+    }
+
     /// The instantiation lowering proper. Reached only through
     /// `lower_locus_instantiation`, which holds the GH #813 re-entry
     /// guard above it.
@@ -2163,6 +2193,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self_ptr,
             fields: info.fields.clone(),
         });
+        // A locus's on_failure never runs before its params are
+        // settled: a child that fails during the loop below — a
+        // cooperative child's run() executes inline in it, a pinned
+        // child's thread starts in it — has its failure held until
+        // `lotus_params_settle` after the loop.
+        //
+        // Only a locus that can be failed TO during the loop pays for
+        // the bracket: one holding a locus (a field whose value is not
+        // a plain value) or computing a default, where a literal can
+        // route to it. `Sup { n: 0 }` in a hot loop stays as it was.
+        let settles_failures = info.failure_handler.is_some()
+            && (info
+                .fields
+                .iter()
+                .any(|(_, (_, ty))| !Self::is_plain_value_ty(&self.user_types, ty))
+                || info
+                    .defaults
+                    .iter()
+                    .any(|(_, d)| matches!(d, DefaultInit::Expr(_))));
+        if settles_failures {
+            let open_fn = self
+                .module
+                .get_function("lotus_params_open")
+                .expect("lotus_params_open declared");
+            self.builder
+                .build_call(open_fn, &[self_ptr.into()], "params.open")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         // GH #233 steps 3-4: publish the main locus's self ptr to
         // `lotus.main.self` so the transport loss-dispatch fn
         // (registered at the prelude, firing from the queue
@@ -2916,6 +2974,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let Some(init) = self.params_init_initialized.as_mut() {
                 init.insert(fname.clone());
             }
+        }
+        if settles_failures {
+            // Every param is stored: deliver what was held, before
+            // this locus's own birth().
+            let settle_fn = self
+                .module
+                .get_function("lotus_params_settle")
+                .expect("lotus_params_settle declared");
+            self.builder
+                .build_call(settle_fn, &[self_ptr.into()], "params.settle")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         self.current_arena_override = prev_arena_override;
         // iris handoff-2 P9: restore the obs-parent context.
