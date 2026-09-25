@@ -51,7 +51,44 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory
     // pieces, and who runs it — never a stored label
     let now = std::time::now();
     let gap = credential_gap(p);
-    return answer(p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       " + body_line(root, now, memory) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root, memory) + "\n");
+    return answer(p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       " + body_line(root, now, memory) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root, memory) + "\n" + "genome:     " + genome_line(p) + "\n");
+}
+
+// GH #1026: the genome each node runs, from its last `node.started` row,
+// and a newer one that did not build, from its last `node.build_failed`.
+@unbounded
+fn genome_line(p: Projection) -> String {
+    let mut holders = "";
+    let mut i = 0;
+    while i < p.j.revision() {
+        let e = p.j.read(i);
+        if (e.kind == "node.started" || e.kind == "node.build_failed") && !std::str::contains("\n" + holders, "\n" + e.entity + "\n") { holders = holders + e.entity + "\n"; }
+        i = i + 1;
+    }
+    if len(holders) == 0 { return "no node has recorded the genome it runs"; }
+    let mut out = "";
+    let mut rest = holders;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let who = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let mut running = "";
+        let mut failed = "";
+        let mut fallback = false; // the next start is the one that fell back from `failed`
+        let mut k = 0;
+        while k < p.j.revision() {
+            let e = p.j.read(k);
+            if e.entity == who && e.kind == "node.build_failed" { failed = std::json::find_string_field(e.body, "sha"); fallback = true; }
+            if e.entity == who && e.kind == "node.started" {
+                running = std::json::find_string_field(e.body, "sha");
+                if !fallback { failed = ""; }
+                fallback = false;
+            }
+            k = k + 1;
+        }
+        out = out + (if len(out) > 0 { "; " } else { "" }) + (if len(running) > 0 { short(running) } else { "none yet" }) + " on " + who + (if len(failed) > 0 && failed != running { " (" + short(failed) + " did not build)" } else { "" });
+    }
+    return out;
 }
 
 // ---- the organism's combination (GH #617) ---------------------------
@@ -693,10 +730,13 @@ fn shell_path(dir: String) -> String {
     return sq(dir);
 }
 
+// GH #1026: `Restart=always` — a node that sees its genome move on the
+// forge exits (GENOME_RESTART) for its unit to start it again on the new
+// genome, as does any other exit.
 fn unit_text(name: String, dir: String) -> String {
     // systemd expands %h, not $HOME
     let wd = if std::str::starts_with(dir, "$HOME/") { "%h/" + dir[6..len(dir)] } else { dir };
-    return "[Unit]\nDescription=hale dna body for " + name + "\nAfter=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n\n[Service]\nWorkingDirectory=" + wd + "\nEnvironment=PATH=%h/.hale/bin:/usr/local/bin:/usr/bin:/bin\nEnvironment=HALE_BIN=%h/.hale/bin/hale\nEnvironmentFile=-%h/.config/hale-dna/" + name + ".env\nExecStart=%h/.hale/bin/hale dna dev . --no-iris\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n";
+    return "[Unit]\nDescription=hale dna body for " + name + "\nAfter=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n\n[Service]\nWorkingDirectory=" + wd + "\nEnvironment=PATH=%h/.hale/bin:/usr/local/bin:/usr/bin:/bin\nEnvironment=HALE_BIN=%h/.hale/bin/hale\nEnvironmentFile=-%h/.config/hale-dna/" + name + ".env\nExecStart=%h/.hale/bin/hale dna dev . --no-iris\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n";
 }
 
 // The script the body runs, in order: the toolchain the lock pins (or

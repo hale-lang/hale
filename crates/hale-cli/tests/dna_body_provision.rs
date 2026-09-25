@@ -146,7 +146,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
         "WorkingDirectory=%h/dna/prov",
         &format!("EnvironmentFile=-%h/.config/hale-dna/{key}.env"),
         "ExecStart=%h/.hale/bin/hale dna dev . --no-iris",
-        "Restart=on-failure",
+        "Restart=always",
         "systemctl --user enable --now",
         "then here: git config dna.body riley@srv",
     ] {

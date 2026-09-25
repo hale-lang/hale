@@ -102,13 +102,24 @@ main locus App {
 
         // ---- every exit takes what the body started (the fifth review of
         // #622): under `dev` the organization starts and its tool runs, then
-        // the application does not build. The host exits 1, and the tool must
-        // not outlive it.
+        // the host stops before the application starts — here because the
+        // lease is taken over while it waits for a membrane this organization
+        // never opens (GH #1026: the genome is checked and built whole before
+        // anything starts, so a build that fails stops the host earlier, with
+        // nothing to take). The tool must not outlive the host.
         std::io::fs::write_file(a + "/dna/org/main.hl", WORKER_ORG) or discard;
-        let failing = scratch + "/failhale";
-        std::io::fs::write_file(failing, "#!/bin/sh\nif [ \"$1\" = build ] && [ \"$2\" = \"" + a + "\" ]; then echo the application does not build >&2; exit 1; fi\nexec \"" + toolchain() + "\" \"$@\"\n") or discard;
-        let fx = dna::run_tool("chmod\n+x\n" + failing);
-        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$5\" \"$4\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + failing + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let gc = in_dir(a, cache, "sh\n-c\ngit add -A && git commit -q -m 'an organization with a worker tool' && git push -q origin main");
+        std::test::assert_eq_int(gc.code, 0, "the worker organization is the genome: " + gc.stderr);
+        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$5\" \"$4\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let mut org_up = false;
+        tries = 0;
+        while !org_up && tries < 360 {
+            if log_has(a + "/b.log", "organization (pid") && std::io::fs::file_exists(a + "/worker.pid") { org_up = true; } else { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(org_up, "the organization started and its tool ran: " + (std::io::fs::read_file(a + "/b.log") or ""));
+        let retaken = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
+        std::test::assert(std::str::contains(retaken.stdout, "was taken by riley"), "the head takes the lease while the host waits: " + retaken.stdout + retaken.stderr);
         let mut dev_ended = false;
         tries = 0;
         while !dev_ended && tries < 360 {
@@ -116,7 +127,7 @@ main locus App {
             tries = tries + 1;
         }
         let dev_log = std::io::fs::read_file(a + "/b.log") or "";
-        std::test::assert(dev_ended && dna::trim_nl(std::io::fs::read_file(a + "/b.exit") or "") == "1" && std::str::contains(dev_log, "organization (pid") && std::str::contains(dev_log, "` failed"), "the organization started and the application's build failed, host exit 1: " + dev_log);
+        std::test::assert(dev_ended && dna::trim_nl(std::io::fs::read_file(a + "/b.exit") or "") != "0" && !std::str::contains(dev_log, "expression bodied (pid"), "the host stopped before the application started: " + dev_log);
         let worker = dna::trim_nl(std::io::fs::read_file(a + "/worker.pid") or "");
         std::test::assert(len(worker) > 0, "the organization's tool ran: " + dev_log);
         let tick = dna::trim_nl(dna::run_tool("tail\n-n\n1\n" + a + "/worker.tick").stdout);

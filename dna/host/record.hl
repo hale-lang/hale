@@ -592,6 +592,10 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
 const BODY_LEASE: String = org_runtime::BODY_LEASE;
 const BODY_LEASE_TRACK: String = org_runtime::BODY_LEASE_TRACK;
 const BODY_TTL: Int = 30;
+// GH #1026: the exit code of a node that stops to take a moved genome; its
+// unit (`Restart=always`) starts it again, and it builds the new genome at
+// start. EX_TEMPFAIL: not a failure, try again.
+const GENOME_RESTART: Int = 75;
 // The host's tick: supervision, the record's sync, and memory's work.
 const HOST_TICK: Duration = 1s;
 // The body fence stops the organism this many seconds before the lease

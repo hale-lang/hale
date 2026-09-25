@@ -542,6 +542,17 @@ locus Host {
         memory: dna::Memory = dna::Memory { };
         memory_on: Bool = false;
         memory_said: String = "";
+        // GH #1026: the genome this node runs, pulled from the forge's
+        // default branch every `genome_poll` seconds (HALE_DNA_GENOME_POLL;
+        // 0 is never); a sha whose build failed is not restarted for again
+        genome_sha: String = "";
+        genome_poll: Int = 300;
+        genome_polled: Int = 0;
+        genome_failed: String = "";
+        genome_said: String = ""; // the failed sha the poll has said it stays off
+        genome_polls: Int = 0; // polls this node has made since it started
+        org_ready: String = ""; // the organization's binary, built for `genome_sha`
+        app_ready: String = ""; // the application's, under `dev`
         handled: String = "\n";
         relayed: String = "\n";
         app_gone_reported: Bool = false;
@@ -817,6 +828,121 @@ locus Host {
             if len(why) > 0 { self.say("memory: " + why); } else if len(self.memory_said) > 0 { self.say("memory: answering again"); }
             self.memory_said = why;
         }
+    }
+    // ---- the genome pull (GH #1026) ---------------------------------------
+    // Nodes converge on the genome by pulling. At start a node fetches the
+    // forge's default branch, moves its genome forward to it, and checks
+    // and builds it; a genome that does not check or build is a
+    // `node.build_failed` row, and the node goes back to the last genome
+    // that built (`.hale/dna/genome.built`) and serves that. On its tick,
+    // every `genome_poll` seconds, it fetches again; when the forge's head
+    // moved past what it runs it stops cleanly and exits with
+    // GENOME_RESTART, and its unit (`Restart=always`) starts it again on
+    // the new genome — never an exec in place.
+    fn prepare_genome() -> Bool {
+        let knob = if std::env::var_exists("HALE_DNA_GENOME_POLL") { std::env::var("HALE_DNA_GENOME_POLL") } else { "" };
+        self.genome_poll = if len(knob) > 0 { std::str::parse_int(knob) or 300 } else { 300 };
+        let remote = record_remote(self.root);
+        if len(remote) > 0 && self.genome_poll > 0 {
+            let target = genome_fetch_default(self.root, remote);
+            if len(target) == 0 { self.say("genome: the forge's default branch could not be fetched; running the genome here"); }
+            else {
+                let why = genome_fast_forward(self.root, target);
+                if len(why) > 0 { self.say("genome: " + why); }
+            }
+        }
+        self.genome_polled = std::time::now();
+        self.genome_sha = genome_commit(self.root, "HEAD");
+        let why = self.build_genome();
+        if len(why) == 0 { self.keep_genome(); return true; }
+        let kept = dna::trim_nl(std::io::fs::read_file(self.dna_dir + "/genome.built") or "");
+        if len(kept) == 0 || kept == self.genome_sha { self.say(why); return false; }
+        let failed = self.genome_sha;
+        self.genome_row("node.build_failed", why);
+        self.say("genome " + short(failed) + " does not build (" + why + "); staying on " + short(kept));
+        if !genome_reset(self.root, kept) { self.say("genome: this clone cannot go back to " + short(kept)); return false; }
+        self.genome_failed = failed;
+        self.genome_sha = kept;
+        let again = self.build_genome();
+        if len(again) > 0 { self.say(again); return false; }
+        return true;
+    }
+    // The genome as it stands, checked and built: "" when it did, else why.
+    fn build_genome() -> String {
+        let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
+        if len(cut) > 0 { return cut; }
+        self.org_ready = self.build_seed(self.root + "/" + ORG_SEED);
+        if len(self.org_ready) == 0 { return "`hale build " + ORG_SEED + "` failed"; }
+        if self.verb == "dev" {
+            self.app_ready = self.build_seed(self.seed_dir());
+            if len(self.app_ready) == 0 { return "`hale build " + self.seed_dir() + "` failed"; }
+        }
+        return "";
+    }
+    // `.hale/dna/genome.json`: the sha this node runs, the one that did not
+    // build (if any), and how many polls it has made since it started.
+    fn write_genome() {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("sha", self.genome_sha);
+        b.string_field("failed", self.genome_failed);
+        b.int_field("polls", self.genome_polls);
+        b.end_object();
+        let tmp = self.dna_dir + "/genome.json.tmp";
+        let w = write_text(tmp, b.result()) or false;
+        if w { std::io::fs::rename(tmp, self.dna_dir + "/genome.json") or discard; }
+    }
+    fn keep_genome() {
+        let w = write_text(self.dna_dir + "/genome.built", self.genome_sha + "\n") or false;
+    }
+    // `node.started` / `node.build_failed` <holder>: the sha this node runs
+    // (and for a failure, the sha that did not build and why).
+    fn genome_row(kind: String, why: String) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("sha", self.genome_sha);
+        if len(why) > 0 { b.string_field("why", why); }
+        b.string_field("by", "host");
+        b.end_object();
+        let body = b.result();
+        let o = owner_json(self.root);
+        let full = if len(o) > 0 { body[0..(len(body) - 1)] + o + "}" } else { body };
+        let ok = append_as(self.root, kind, self.holder, full, "host", self.memory);
+    }
+    fn poll_genome() {
+        if self.genome_poll <= 0 { return; }
+        let now = std::time::now();
+        if now - self.genome_polled < self.genome_poll { return; }
+        self.genome_polled = now;
+        let remote = record_remote(self.root);
+        if len(remote) == 0 { return; }
+        let target = genome_fetch_default(self.root, remote);
+        self.genome_polls = self.genome_polls + 1;
+        self.write_genome();
+        if target == self.genome_failed && self.genome_said != target {
+            self.genome_said = target;
+            self.say("genome: the forge's default branch is at " + short(target) + ", which did not build here; staying on " + short(self.genome_sha));
+        }
+        if len(target) == 0 || target == self.genome_sha || target == self.genome_failed { return; }
+        self.say("genome: the forge's default branch is at " + short(target) + " and this node runs " + short(self.genome_sha) + "; restarting to take it");
+        self.restart_for_genome();
+    }
+    // Stop cleanly — the organization and the expression drain on SIGTERM —
+    // give the body lease back, and exit for the unit to start this node
+    // again on the new genome.
+    fn restart_for_genome() {
+        stop_proc(self.org);
+        if self.observer.pid > 0 { stop_proc(self.observer); }
+        if self.app.pid > 0 { stop_proc(self.app); }
+        self.stop_started();
+        std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
+        std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
+        self.stop_fence();
+        if body_release(self.root, self.lease, self.memory) {
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\", \"why\": \"genome\"" + owner_json(self.root) + "}", "host", self.memory);
+        }
+        let s = sync_record(self.root, self.memory);
+        std::process::exit(GENOME_RESTART);
     }
     fn remove_sockets() {
         std::io::fs::unlink(self.dna_dir + "/" + VERDICT_SOCK) or discard;
@@ -1282,6 +1408,7 @@ locus Host {
         let s = sync_record(self.root, self.memory);
         if !s.ok { self.say("sync: " + s.summary); }
         self.memory_tick(s.ok);
+        self.poll_genome();
         if forge_kind(self.root) != "none" {
             let g = github_sync(self.root, self.seed, self.memory);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
@@ -1333,9 +1460,10 @@ locus Host {
         self.say("body lease taken as " + self.holder + " (token " + to_string(l.token) + ")");
         self.start_fence();
         self.check_credentials();
-        // 1. the expression identity: a fresh artifact of the application
-        let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
-        if len(cut) > 0 { self.say(cut); self.quit(1); }
+        // 1. the genome as the forge has it, checked and built: the
+        //    expression identity (a fresh artifact of the application) and
+        //    the binaries, or the last genome that built (GH #1026)
+        if !self.prepare_genome() { self.quit(1); }
         // 2. memory, before the organization that reads and writes it (GH #985)
         self.start_memory();
         // A pending prepared handoff uses its claimed attempt even at host
@@ -1347,8 +1475,8 @@ locus Host {
             let answered = self.answer_prepared_org(prepared_restart.entity);
             if self.org.pid <= 0 { self.say("prepared organization launch remains unavailable; no second attempt started"); self.quit(3); }
         } else {
-            // 3. the organization: built, started from the root, observable
-            let org_bin = self.build_seed(org_seed);
+            // 3. the organization: built (above), started from the root, observable
+            let org_bin = self.org_ready;
             if len(org_bin) == 0 { self.quit(1); }
             self.remove_sockets();
             std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
@@ -1367,7 +1495,7 @@ locus Host {
         else if exit_code(self.org) == -2 { self.say("the membrane did not come up within 20s; the organization runs unobserved"); }
         // 4. dev: the application too, under this host
         if self.verb == "dev" {
-            let bin = self.build_seed(self.seed_dir());
+            let bin = self.app_ready;
             if len(bin) == 0 { stop_proc(self.org); self.quit(1); }
             self.app_bin = bin;
             if !self.body_assert("the expression") {
@@ -1380,6 +1508,9 @@ locus Host {
             self.say("expression " + self.app_name() + " (pid " + to_string(self.app.pid) + ") under LOTUS_OBS=1");
         }
         if self.verb == "run" && len(self.fleet) > 0 { self.say("the fleet `" + self.fleet + "` (" + self.root + "/" + self.plan + ") is the expression; `hale node <name>` runs its nodes"); }
+        // the node is up on its genome: a row naming the sha it runs
+        self.genome_row("node.started", "");
+        self.say("genome " + short(self.genome_sha) + (if self.genome_poll > 0 && len(record_remote(self.root)) > 0 { ", pulled from the forge every " + to_string(self.genome_poll) + "s" } else { "" }));
         // 5. iris
         self.write_status();
         if self.iris && bound {
