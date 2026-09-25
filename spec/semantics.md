@@ -3551,7 +3551,8 @@ torn read possible.
 ### `restart(child)` / `restart(child) for N`
 
 Restarts the child on the same instance — its arena, its
-subscriptions and its param values as they stand:
+subscriptions and its param values as they stand (a restart never
+re-evaluates a default):
 
 1. The failure's drain request is lowered: the child is live again.
 2. `birth()` runs again, then the birth-epoch closures.
@@ -3595,11 +3596,16 @@ the observed restarts are comparable.
 ### `restart_in_place(child)`
 
 The same as `restart(child)`, except that before `birth()` runs
-again every param with a declared default is re-stored from that
-default — back to the configuration `birth()` first saw. A param
-declared without a default keeps its current value: the one given
-at instantiation is the only state it has. The retry bound and
-the default cap are shared with `restart`.
+again every param is put back to the value **this instance was
+built with**: the value its literal gave it, or its default as that
+default evaluated when the instance was built. Params are settled
+once, from the literal; a restart never re-evaluates a default. So
+`Worker { tag: "a" }` restarts with `tag` `"a"`, whatever its
+declared default says, and a default that builds a locus or reads
+the clock is not run again. A param that holds a locus (or an
+interface or perspective handle) keeps its child: a restart re-runs
+this instance, not its children's construction. The retry bound
+and the default cap are shared with `restart`.
 
 Useful for transient failures that don't invalidate the
 locus's structural commitments (e.g., the locus's k_max is

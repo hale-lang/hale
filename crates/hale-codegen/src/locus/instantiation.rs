@@ -2975,6 +2975,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 init.insert(fname.clone());
             }
         }
+        // A restart-in-place target keeps the params as built — before
+        // any held failure is delivered, which could restart it.
+        self.emit_snapshot_built_params(locus_name, &info, self_ptr)?;
         if settles_failures {
             // Every param is stored: deliver what was held, before
             // this locus's own birth().

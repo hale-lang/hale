@@ -489,7 +489,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             // locus's own arena (via current_arena_override),
             // matching the instantiation-time discipline.
             self.builder.position_at_end(zero_fields_bb);
-            self.emit_reset_params_to_defaults(&info, cs_struct_ty, child_self)?;
+            self.emit_restore_built_params(&info, cs_struct_ty, child_self)?;
             // Clear the pending flag; otherwise a subsequent
             // restart() (without _in_place) would zero again.
             self.builder

@@ -12,8 +12,9 @@
 //! Each locus a failure can come from (one declaring a closure or a
 //! `birth_check`) now gets:
 //!
-//! - `__restart_<L>(self)`: the restart itself — reset params to their
-//!   declared defaults if `restart_in_place` asked for it, lower the
+//! - `__restart_<L>(self)`: the restart itself — put the params back to
+//!   the values the instance was built with if `restart_in_place` asked
+//!   for it, lower the
 //!   drain latch the `violate` raised, re-run `birth()` and the
 //!   birth-epoch closures. The caller then runs `run()` again.
 //! - `__resume_<L>(self, phase, pre)`: what the child does once a HELD
@@ -33,7 +34,7 @@ use inkwell::types::StructType;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 
-use crate::codegen::{CodegenError, Cx, DefaultInit, LocusInfo, Scope, SelfCx};
+use crate::codegen::{CodegenError, Cx, LocusInfo, SelfCx};
 
 /// The per-locus restart entry points.
 #[derive(Clone, Copy)]
@@ -69,6 +70,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let void_t = self.context.void_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
+        // The locus types some handler restarts in place, found by the
+        // handler body's own rendering: `restart_in_place` is a
+        // statement, and a statement can sit in any block — an `if` or
+        // `match` used as a value included — so a hand walk over some
+        // of the tree could miss one, and a miss would re-evaluate
+        // nothing and restore nothing. A false hit (the word in a
+        // string) only costs that locus one copy of its params.
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
+            let hale_syntax::ast::TopDecl::Locus(l) = item else { continue };
+            let restarts_in_place = l.members.iter().any(|m| {
+                matches!(m, hale_syntax::ast::LocusMember::Failure(fd)
+                    if format!("{:?}", fd.body).contains("RestartInPlace"))
+            });
+            if !restarts_in_place {
+                continue;
+            }
+            if let Some((child, _)) = self
+                .user_loci
+                .get(&l.name.name)
+                .and_then(|info| info.failure_handler.as_ref())
+            {
+                self.restart_in_place_targets.insert(child.clone());
+            }
+        }
         let names: Vec<String> = self.user_loci.keys().cloned().collect();
         for name in names {
             if !self.locus_declares_failures(&name) {
@@ -335,54 +360,133 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(phi.as_basic_value().into_int_value())
     }
 
-    /// Re-store each declared default into its param field — what
-    /// `restart_in_place` resets. A required param (no default) keeps
-    /// its value: the one given at instantiation is the only state it
-    /// has. Composite defaults allocate in the locus's own arena.
-    pub(crate) fn emit_reset_params_to_defaults(
+    /// The params a restart-in-place restores: every param that holds a
+    /// value (a scalar, text, bytes, a record, a tuple, an array). A
+    /// param holding a locus, an interface or a perspective keeps its
+    /// child — a restart re-runs this instance, not its children's
+    /// construction — and a `bounded` field is not a first-class value.
+    fn built_param_fields(&self, info: &LocusInfo<'ctx>) -> Vec<(u32, crate::codegen::CodegenTy)> {
+        use crate::codegen::CodegenTy;
+        info.defaults
+            .iter()
+            .filter_map(|(fname, _)| info.fields.get(fname).cloned())
+            .filter(|(_, ty)| match ty {
+                CodegenTy::LocusRef(_)
+                | CodegenTy::Interface(_)
+                | CodegenTy::Perspective(_)
+                | CodegenTy::Drain(_)
+                | CodegenTy::Bounded(_, _) => false,
+                CodegenTy::TypeRef(n) => self.user_types.contains_key(n),
+                _ => true,
+            })
+            .collect()
+    }
+
+    /// After the params loop of a locus some handler restarts in place:
+    /// copy the params as built — the literal's values, defaults as they
+    /// evaluated then — into `__built_params`, in the locus's own arena.
+    /// The copies are the instance's, never a field's, so a later
+    /// assignment that retires a field's block cannot touch them.
+    pub(crate) fn emit_snapshot_built_params(
+        &mut self,
+        locus_name: &str,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if !self.restart_in_place_targets.contains(locus_name) {
+            return Ok(());
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let arena = self.emit_locus_arena_load(info, self_ptr)?;
+        let size = info.struct_ty.size_of().expect("locus struct has a size");
+        let snap = self.arena_alloc(size, "built_params.alloc")?;
+        for (idx, ty) in self.built_param_fields(info) {
+            let llvm_ty = info
+                .struct_ty
+                .get_field_type_at_index(idx)
+                .expect("param field index is in the struct");
+            let src = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_ptr, idx, "built_params.src")
+                .map_err(e)?;
+            let v = self.builder.build_load(llvm_ty, src, "built_params.v").map_err(e)?;
+            let owned = self.emit_owned_store_copy_ptr(v, &ty, arena)?;
+            let dst = self
+                .builder
+                .build_struct_gep(info.struct_ty, snap, idx, "built_params.dst")
+                .map_err(e)?;
+            self.builder.build_store(dst, owned).map_err(e)?;
+        }
+        let slot = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.built_params_field_idx, "built_params.slot")
+            .map_err(e)?;
+        self.builder.build_store(slot, snap).map_err(e)?;
+        Ok(())
+    }
+
+    /// `restart_in_place`: put every value param back to what this
+    /// instance was built with, from `__built_params` — a fresh copy
+    /// each time, so the field owns its block. Never re-evaluates a
+    /// default. No snapshot (the locus is not a restart-in-place
+    /// target): nothing to restore, the params stay as they are.
+    pub(crate) fn emit_restore_built_params(
         &mut self,
         info: &LocusInfo<'ctx>,
         struct_ty: StructType<'ctx>,
         self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let arena_slot = self
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let slot = self
             .builder
-            .build_struct_gep(struct_ty, self_ptr, info.arena_field_idx, "restart_in_place.arena.ptr")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let locus_arena = self
+            .build_struct_gep(struct_ty, self_ptr, info.built_params_field_idx, "restore.slot")
+            .map_err(e)?;
+        let snap = self.builder.build_load(ptr_t, slot, "restore.snap").map_err(e)?.into_pointer_value();
+        let func = self
             .builder
-            .build_load(
-                self.context.ptr_type(AddressSpace::default()),
-                arena_slot,
-                "restart_in_place.arena",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        let prev_override = self.current_arena_override;
-        self.current_arena_override = Some(locus_arena);
-        let scope = Scope::default();
-        let defaults_snapshot = info.defaults.clone();
-        for (fname, default) in &defaults_snapshot {
-            let (val, _) = match default {
-                DefaultInit::Const(pv) => self.const_param(pv),
-                DefaultInit::Expr(e) => self.lower_expr(e, &scope)?,
-                DefaultInit::Required => continue,
-            };
-            let (slot_idx, _) = info
-                .fields
-                .get(fname)
-                .cloned()
-                .expect("field declared by declare_locus_struct");
-            let field_slot = self
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let do_bb = self.context.append_basic_block(func, "restore.do");
+        let done_bb = self.context.append_basic_block(func, "restore.done");
+        let none = self.builder.build_is_null(snap, "restore.none").map_err(e)?;
+        self.builder.build_conditional_branch(none, done_bb, do_bb).map_err(e)?;
+        self.builder.position_at_end(do_bb);
+        let arena = self.emit_locus_arena_load(info, self_ptr)?;
+        for (idx, ty) in self.built_param_fields(info) {
+            let llvm_ty = struct_ty.get_field_type_at_index(idx).expect("param field index is in the struct");
+            let src = self
                 .builder
-                .build_struct_gep(struct_ty, self_ptr, slot_idx, &format!("restart_in_place.{}.ptr", fname))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(field_slot, val)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                .build_struct_gep(struct_ty, snap, idx, "restore.src")
+                .map_err(e)?;
+            let v = self.builder.build_load(llvm_ty, src, "restore.v").map_err(e)?;
+            let owned = self.emit_owned_store_copy_ptr(v, &ty, arena)?;
+            let dst = self
+                .builder
+                .build_struct_gep(struct_ty, self_ptr, idx, "restore.dst")
+                .map_err(e)?;
+            self.builder.build_store(dst, owned).map_err(e)?;
         }
-        self.current_arena_override = prev_override;
+        self.builder.build_unconditional_branch(done_bb).map_err(e)?;
+        self.builder.position_at_end(done_bb);
         Ok(())
+    }
+
+    fn emit_locus_arena_load(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let slot = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.arena_field_idx, "locus.arena.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(self
+            .builder
+            .build_load(self.context.ptr_type(AddressSpace::default()), slot, "locus.arena")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value())
     }
 
     /// Emit the bodies of every declared `__restart_<L>` /
@@ -428,7 +532,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         let prev_ipd = std::mem::replace(&mut self.in_params_default, false);
 
-        // restart_in_place: back to the declared defaults first.
+        // restart_in_place: back to the params as built first.
         let rip_ptr = self
             .builder
             .build_struct_gep(
@@ -451,7 +555,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let rerun_bb = self.context.append_basic_block(f, "restart.rerun");
         self.builder.build_conditional_branch(in_place, reset_bb, rerun_bb).map_err(e)?;
         self.builder.position_at_end(reset_bb);
-        self.emit_reset_params_to_defaults(info, info.struct_ty, self_arg)?;
+        self.emit_restore_built_params(info, info.struct_ty, self_arg)?;
         self.builder.build_store(rip_ptr, i64_t.const_zero()).map_err(e)?;
         self.builder.build_unconditional_branch(rerun_bb).map_err(e)?;
 

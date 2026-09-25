@@ -3,8 +3,11 @@
 // Where m40's `restart(c)` re-runs birth() on whatever state
 // the previous attempt left behind (state preserved across
 // the retry), m45's `restart_in_place(c)` adds a "factory
-// reset" pre-pass: user fields are zeroed back to declared
-// defaults BEFORE birth() runs again. Both share the cap-2
+// reset" pre-pass: params are put back to the values the
+// instance was built with — its literal's, or its defaults as they
+// evaluated then; a restart never re-evaluates a default — BEFORE
+// birth() runs again. (`Worker { }` here overrides nothing, so
+// that is scratch=0.) Both share the cap-2
 // budget on the same retry counter, so a locus can use at
 // most 2 attempts total (in any combination of restart and
 // restart_in_place).
@@ -30,7 +33,8 @@
 // With step=2 and target=4 (used here):
 //   - First birth (clean state): scratch=2, fails.
 //   - on_failure calls restart_in_place(w). The runtime
-//     zeros scratch back to 0 BEFORE re-running birth.
+//     puts scratch back to its built value, 0, BEFORE re-running
+//     birth.
 //   - Second birth (clean state again): scratch=2, still
 //     fails (factory reset means birth always sees the
 //     same starting state).

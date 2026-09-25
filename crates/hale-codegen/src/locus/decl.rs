@@ -1175,6 +1175,14 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let held_by_owner_field_idx = idx;
         llvm_field_tys.push(self.context.i64_type().into());
         idx += 1;
+        // Synthetic `__built_params: ptr` — the params this instance
+        // was built with, copied once after its params loop, for a
+        // locus some `on_failure` restarts in place. `restart_in_place`
+        // puts them back: params are settled once, from the literal,
+        // and a restart never re-evaluates a default. Null otherwise.
+        let built_params_field_idx = idx;
+        llvm_field_tys.push(ptr_t.into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -1262,6 +1270,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 restart_in_place_pending_field_idx,
                 drain_requested_field_idx,
                 held_by_owner_field_idx,
+                built_params_field_idx,
                 slot_borrowed_mask_field_idx,
                 locus_ref_owned_mask_field_idx,
                 locus_ref_bit_per_field,

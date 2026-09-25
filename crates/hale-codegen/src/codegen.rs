@@ -1636,6 +1636,7 @@ pub fn build_executable_with_options(
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
         restart_fns: BTreeMap::new(),
+        restart_in_place_targets: BTreeSet::new(),
         deployment: Default::default(),
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
@@ -5089,6 +5090,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #1066: `__restart_<L>` / `__resume_<L>` for each locus a
     /// failure can come from (see `locus::restart`).
     pub(crate) restart_fns: BTreeMap<String, crate::locus::restart::RestartFns<'ctx>>,
+    /// Locus types some `on_failure` handler restarts in place: they
+    /// keep a copy of the params they were built with.
+    pub(crate) restart_in_place_targets: BTreeSet<String>,
 
     /// R3 (2026-07-29): the reified deployment arrangement — see
     /// `crate::deployment::DeploymentPlan`. Populated by
@@ -7123,6 +7127,10 @@ pub(crate) struct LocusInfo<'ctx> {
     /// when something other than the instance itself reclaims it
     /// later (see `LATCH_FAILED`).
     pub(crate) held_by_owner_field_idx: u32,
+    /// Index of the synthetic `__built_params: ptr` — the params this
+    /// instance was built with, for `restart_in_place` (see
+    /// `locus::restart`). Null unless the locus is restarted in place.
+    pub(crate) built_params_field_idx: u32,
     /// v1.x-4b: index of the synthetic `__slot_borrowed_mask:
     /// i64` field. Always present (uniform locus-struct layout).
     /// Bit N (LSB = slot 0 in declaration order) is set iff this
