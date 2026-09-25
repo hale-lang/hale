@@ -386,15 +386,23 @@ main locus App {
         }
         return false;
     }
+    // "" once the head at `ui` answers within `secs`, else why it did not:
+    // whether its process still runs, what it said, and which builds were
+    // running. Before it listens, `hale dna ui` builds the surface under
+    // the toolchain cache's one build lock (`hale iris: building …`), taken
+    // even when the surface is already built, and syncs its clone; on a
+    // cold cache another fixture's build can hold that lock the whole
+    // time.
     @unbounded
-    fn head_up(ui: String, tries: Int) -> Bool {
-        let mut n = 0;
-        while n < tries {
-            if curl("GET", ui + "/api/board", "", "").status != 0 { return true; }
+    fn head_up(ui: String, pid: String, log: String, secs: Int) -> String {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if curl("GET", ui + "/api/board", "", "").status != 0 { return ""; }
+            if dna::run_tool("kill\n-0\n" + pid).code != 0 { return "the head exited before it listened; its log: " + (std::io::fs::read_file(log) or ""); }
             std::time::sleep(200ms);
-            n = n + 1;
         }
-        return false;
+        let building = dna::run_tool("sh\n-c\nps -eo pid,etime,args | grep -E '[h]ale (build|iris)|[b]uild\\.lock' || true").stdout;
+        return "the head still runs and does not listen after " + to_string(secs) + " s; its log: " + (std::io::fs::read_file(log) or "") + "; builds running: " + (if len(dna::trim_nl(building)) == 0 { "none" } else { building });
     }
     run() {
         let scratch = dna::scratch_root("b1-team");
@@ -464,14 +472,16 @@ main locus App {
 
         // ---- 3. two heads, two clones, a session each
         let pid_a = self.head(app, p1, head_dsn, ".hale/ui.log");
-        std::test::assert(self.head_up(ui_a, 600), "head A came up at " + ui_a);
+        let a_up = self.head_up(ui_a, pid_a, app + "/.hale/ui.log", 180);
+        std::test::assert(len(a_up) == 0, "head A came up at " + ui_a + ": " + a_up);
         let cloned = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
         std::test::assert_eq_int(cloned.code, 0, "the second person clones the record: " + cloned.stderr);
         self.configure(other, "bob", ui_b);
         let synced_b = as_head(other, head_dsn, toolchain() + "\ndna\nsync");
         std::test::assert(synced_b.code == 0 && std::str::contains(synced_b.stdout, "refs/dna/journal"), "clone B has the record: " + synced_b.stdout + synced_b.stderr);
         let pid_b = self.head(other, p2, head_dsn, ".hale/ui.log");
-        std::test::assert(self.head_up(ui_b, 600), "head B came up at " + ui_b);
+        let b_up = self.head_up(ui_b, pid_b, other + "/.hale/ui.log", 180);
+        std::test::assert(len(b_up) == 0, "head B came up at " + ui_b + ": " + b_up);
 
         let alice = self.session(ui_a, "alice-sub");
         let bob = self.session(ui_b, "bob-sub");
