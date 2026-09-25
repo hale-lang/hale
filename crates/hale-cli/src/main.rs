@@ -6788,6 +6788,64 @@ fn render_diag_json(
 /// Every caller waits on the child it starts on the thread that
 /// started it, so the forking thread cannot exit early and retire
 /// the signal under a child that should still be running.
+/// The pid `hale run`'s SIGTERM handler forwards to (GH #1039).
+static RUN_CHILD_PID: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn forward_to_run_child(sig: libc::c_int) {
+    let pid = RUN_CHILD_PID.load(std::sync::atomic::Ordering::SeqCst);
+    if pid > 0 {
+        // SAFETY: kill(2) is async-signal-safe.
+        unsafe {
+            libc::kill(pid, sig);
+        }
+    }
+}
+
+/// Spawn `cmd` and wait for it, standing aside for its signals (GH
+/// #1039). The program drains on SIGINT / SIGTERM, so `hale run` must
+/// not end first and leave it orphaned mid-drain:
+///
+/// * **SIGINT is ignored.** A terminal's Ctrl-C reaches the whole
+///   foreground process group, the program included; `hale` just
+///   keeps waiting and reports how the drain ended.
+/// * **SIGTERM is forwarded.** A `kill` names `hale`'s pid only, so
+///   the program would never hear it; the handler passes it on, and
+///   `hale` keeps waiting.
+///
+/// Both dispositions change only AFTER the spawn — an ignored SIGINT
+/// is inherited across exec, and the program must get the default —
+/// and are restored once the program has ended.
+fn wait_passing_signals(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut child = cmd.spawn()?;
+    RUN_CHILD_PID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: plain sigaction(2) calls; the handler only calls kill.
+    let (old_int, old_term) = unsafe {
+        let mut ign: libc::sigaction = std::mem::zeroed();
+        ign.sa_sigaction = libc::SIG_IGN;
+        libc::sigemptyset(&mut ign.sa_mask);
+        let mut fwd: libc::sigaction = std::mem::zeroed();
+        fwd.sa_sigaction = forward_to_run_child as extern "C" fn(libc::c_int) as usize;
+        libc::sigemptyset(&mut fwd.sa_mask);
+        fwd.sa_flags = libc::SA_RESTART;
+        let mut old_int: libc::sigaction = std::mem::zeroed();
+        let mut old_term: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGINT, &ign, &mut old_int);
+        libc::sigaction(libc::SIGTERM, &fwd, &mut old_term);
+        (old_int, old_term)
+    };
+    let status = child.wait();
+    // SAFETY: restoring the dispositions saved above.
+    unsafe {
+        libc::sigaction(libc::SIGINT, &old_int, std::ptr::null_mut());
+        libc::sigaction(libc::SIGTERM, &old_term, std::ptr::null_mut());
+    }
+    RUN_CHILD_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+    status
+}
+
 pub(crate) fn dies_with_us(cmd: &mut std::process::Command) {
     #[cfg(target_os = "linux")]
     {
@@ -6866,7 +6924,7 @@ fn compile_and_exec(
     // killed out from under it leaves it running against a caller
     // that cannot see its output end — GH #905.
     dies_with_us(&mut cmd);
-    let status = cmd.status();
+    let status = wait_passing_signals(&mut cmd);
     let _ = std::fs::remove_file(&bin);
     match status {
         Ok(s) => {
@@ -7255,7 +7313,17 @@ fn run_one_test_file(f: &Path) -> TestOutcome {
     let (passed, message) = match compile_test_binary(f) {
         Err(diag) => (false, Some(diag)),
         Ok(bin) => {
-            let output = std::process::Command::new(&bin).output();
+            let mut cmd = std::process::Command::new(&bin);
+            // A test that builds a program (a child it signals, a
+            // tool it drives) builds it with THIS toolchain, not
+            // whichever `hale` PATH finds first; a caller's own
+            // HALE_BIN wins (GH #1039).
+            if std::env::var_os("HALE_BIN").is_none() {
+                if let Ok(me) = std::env::current_exe() {
+                    cmd.env("HALE_BIN", me);
+                }
+            }
+            let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
             match output {
                 Ok(out) => {

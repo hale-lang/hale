@@ -1805,6 +1805,22 @@ static inline int lotus_runtime_multithreaded(void) {
     return __atomic_load_n(&g_runtime_multithreaded, __ATOMIC_ACQUIRE);
 }
 
+/* GH #1039: the whole-process drain (spec/semantics.md § "Drain
+ * cascade (whole-process)"). Raised once, by the drain watcher, on
+ * the first SIGINT / SIGTERM; never lowered. Every locus's
+ * `self.draining` reads it (codegen ORs it with the locus's own
+ * `__drain_requested`), timed sleeps and timed parks return early
+ * once it is up, and the process then ends the ordinary way: each
+ * `run()` that watches `self.draining` returns, loci dissolve
+ * leaves-first, and main returns 0. Exported, not static: codegen
+ * loads it directly (an atomic monotonic load, no call) so a
+ * `self.draining` read in a hot handler stays one load. */
+int64_t lotus_process_draining_flag = 0;
+
+static inline int lotus_process_draining(void) {
+    return __atomic_load_n(&lotus_process_draining_flag, __ATOMIC_ACQUIRE) != 0;
+}
+
 /* Growable accept'd-children tracker (2026-05-29). Replaces the
  * old fixed `__children[16]` inline struct array, whose
  * unchecked accept-time append silently corrupted adjacent
@@ -7659,6 +7675,11 @@ typedef struct lotus_coro {
      * sentinel only on GENUINE deadline expiry. */
     int64_t           park_deadline_ns;
     int               park_timed_out;
+    /* GH #1039: 1 when this timed park began before the process
+     * drain did. The drain expires only such parks — a wait already
+     * in progress — never one a `drain()` / `dissolve()` body starts
+     * afterwards to pace a flush. */
+    int               park_pre_drain;
     /* Handler invocation parameters captured at coro creation. The
      * thunk reads them after swapcontext and tail-calls the handler. */
     void             *handler;
@@ -8502,6 +8523,7 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->done        = 0;
     c->park_deadline_ns = 0;
     c->park_timed_out   = 0;
+    c->park_pre_drain   = 0;
     c->handler     = cell->handler;
     c->self_ptr    = cell->self_ptr;
     /* Payload ownership is taken only once this slot is certain to run
@@ -8624,6 +8646,7 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     c->parked_fd        = fd;
     c->park_deadline_ns = deadline_ns;
     c->park_timed_out   = 0;
+    c->park_pre_drain   = !lotus_process_draining();
     /* Link onto parked head — single-threaded access (only the
      * worker touches this list), no lock needed. */
     c->next = p->parked_head;
@@ -8676,6 +8699,7 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     c->parked_fd        = -1;
     c->park_deadline_ns = lotus_now_mono_ns() + ns;
     c->park_timed_out   = 0;
+    c->park_pre_drain   = !lotus_process_draining();
     c->next = p->parked_head;
     p->parked_head = c;
     /* Same caller-arena snapshot discipline as the fd park: the
@@ -9126,14 +9150,25 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * sub-ms remainder doesn't busy-spin at timeout 0. */
         if (timeout_ms != 0) {
             int64_t min_deadline = 0;
+            int drain_due = 0;
+            int draining_now = lotus_process_draining();
             for (lotus_coro_t *dc = p->parked_head; dc; dc = dc->next) {
                 if (dc->park_deadline_ns > 0
                     && (min_deadline == 0
                         || dc->park_deadline_ns < min_deadline)) {
                     min_deadline = dc->park_deadline_ns;
                 }
+                if (draining_now && dc->park_deadline_ns > 0
+                    && dc->park_pre_drain) {
+                    drain_due = 1;
+                }
             }
-            if (min_deadline > 0) {
+            /* GH #1039: a timed park that began before the drain is
+             * due now — don't sleep toward a deadline the sweep below
+             * will treat as passed. */
+            if (drain_due) {
+                timeout_ms = 0;
+            } else if (min_deadline > 0) {
                 int64_t rem = min_deadline - lotus_now_mono_ns();
                 int64_t ms = rem <= 0 ? 0 : (rem + 999999) / 1000000;
                 if (ms > (int64_t)INT_MAX) ms = INT_MAX;
@@ -9206,11 +9241,20 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * re-parked (mutating the list) before yielding back. */
         for (;;) {
             int64_t now = lotus_now_mono_ns();
+            /* GH #1039: the drain expires every TIMED park that was
+             * already in progress when it began — a `sleep` returns
+             * and a deadline-bounded recv reports its timeout, so a
+             * `while !self.draining` loop gets to its check. A park
+             * begun after the drain (a flush's pacing) runs its full
+             * length; an untimed park (a plain accept) stays parked. */
+            int draining = lotus_process_draining();
             lotus_coro_t *expired = NULL;
             lotus_coro_t **epp = &p->parked_head;
             while (*epp) {
                 lotus_coro_t *ec = *epp;
-                if (ec->park_deadline_ns > 0 && now >= ec->park_deadline_ns) {
+                if (ec->park_deadline_ns > 0
+                    && ((draining && ec->park_pre_drain)
+                        || now >= ec->park_deadline_ns)) {
                     *epp = ec->next;
                     expired = ec;
                     break;
@@ -9307,6 +9351,128 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     return 0;
 }
 #endif /* LOTUS_HAVE_ASYNC_IO */
+
+/* GH #1039: SIGINT / SIGTERM start the whole-process drain.
+ *
+ * The handler is async-signal-safe: it only writes one byte to a
+ * pipe. A watcher thread, started at install, blocks on the pipe's
+ * read end; on the byte it raises lotus_process_draining_flag and
+ * wakes every async_io pool (whose parked coros would otherwise wait
+ * out their epoll timeout), then waits out the drain's grace period.
+ * A program that ends inside it exits the ordinary way, 0. One that
+ * does not — a `run()` that never reads `self.draining` — is ended
+ * by the watcher through the signal's own default action (restored,
+ * then re-raised — the process dies BY the signal, so SIGTERM still
+ * stops every program and its parent sees why). A second signal ends
+ * the process at once, the same way.
+ *
+ * Signals are caught, not blocked: a blocked mask is inherited
+ * across fork/exec, so every subprocess the program spawned would
+ * ignore SIGTERM. SA_RESTART keeps the runtime's other blocking
+ * calls from seeing EINTR; a sleep slices at 100 ms and a timed park
+ * is swept, so neither needs the interruption. Installed only when
+ * the program reads `draining` somewhere (the codegen passes that
+ * in): a program that cannot observe a drain keeps the default
+ * action and dies at the signal, as before. */
+#ifndef __wasm__
+static int g_drain_pipe[2] = {-1, -1};
+static volatile sig_atomic_t g_drain_signal = 0;
+
+/* End the process the way `sig`'s default action would, so a waiting
+ * parent sees it killed BY the signal (a shell reports 128 + sig),
+ * not an exit that merely spells the number. Async-signal-safe: a
+ * handler calls it for a second signal. Inside the handler `sig` is
+ * blocked, so the re-raise is delivered — and kills — on return. The
+ * watcher follows it with an _exit in case the default action somehow
+ * did not end the process. */
+static void lotus_drain_die_by(int sig) {
+    struct sigaction dfl;
+    memset(&dfl, 0, sizeof(dfl));
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    sigaction(sig, &dfl, NULL);
+    raise(sig);
+}
+
+static void lotus_drain_on_signal(int sig) {
+    if (g_drain_signal) {
+        lotus_drain_die_by(sig);
+        return;
+    }
+    g_drain_signal = sig;
+    int saved = errno;
+    char one = 1;
+    ssize_t w = write(g_drain_pipe[1], &one, 1);
+    (void)w;
+    errno = saved;
+}
+
+static void *lotus_drain_watcher(void *arg) {
+    (void)arg;
+    char b;
+    while (read(g_drain_pipe[0], &b, 1) < 0 && errno == EINTR) {}
+    __atomic_store_n(&lotus_process_draining_flag, 1, __ATOMIC_RELEASE);
+#if LOTUS_HAVE_ASYNC_IO
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        lotus_coop_pool_t *p = g_coop_pools[i];
+        if (p && __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE) &&
+            p->wake_fd >= 0) {
+            lotus_wake_post(p);
+        }
+    }
+#endif
+    int64_t grace_ms = 5000;
+    const char *env = getenv("LOTUS_DRAIN_GRACE_MS");
+    if (env && env[0]) {
+        char *end = NULL;
+        long long v = strtoll(env, &end, 10);
+        if (end != env && v >= 0) grace_ms = v;
+    }
+    struct timespec ts = {
+        (time_t)(grace_ms / 1000), (long)((grace_ms % 1000) * 1000000)
+    };
+    while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+    dprintf(2,
+            "lotus: the drain begun by signal %d did not finish within "
+            "%lld ms (a run() that never reads self.draining?); "
+            "ending as the signal's default action would "
+            "(LOTUS_DRAIN_GRACE_MS sets the grace)\n",
+            (int)g_drain_signal, (long long)grace_ms);
+    lotus_drain_die_by((int)g_drain_signal);
+    _exit(128 + (int)g_drain_signal);
+    return NULL;
+}
+
+void lotus_drain_signals_install(int64_t observes_drain) {
+    if (!observes_drain) return;
+    if (g_drain_pipe[0] >= 0) return;
+    /* pipe + FD_CLOEXEC, not pipe2: macOS has no pipe2. A spawned
+     * subprocess must not inherit the drain pipe. */
+    if (pipe(g_drain_pipe) != 0) return;
+    (void)fcntl(g_drain_pipe[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(g_drain_pipe[1], F_SETFD, FD_CLOEXEC);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t t;
+    int rc = pthread_create(&t, &attr, lotus_drain_watcher, NULL);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) return;   /* no watcher: keep the default actions */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = lotus_drain_on_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+#else
+/* wasm: no signals reach a browser module; the drain is never begun
+ * this way (codegen does not emit the install on wasm either). */
+void lotus_drain_signals_install(int64_t observes_drain) {
+    (void)observes_drain;
+}
+#endif /* __wasm__ */
 
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;

@@ -488,6 +488,15 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_store(remaining, ns)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1039: was the process already draining when this sleep
+        // began? The drain cuts short only a wait IN PROGRESS when it
+        // starts; a sleep begun afterwards (a `drain()` or `dissolve()`
+        // body pacing a flush) sleeps its full length.
+        let entry_draining = if self.is_wasm {
+            None
+        } else {
+            Some(self.emit_process_draining_load("sleep.draining.entry")?)
+        };
 
         let req_sec_ptr = self
             .builder
@@ -707,6 +716,36 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 "sleep.more",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1039: a sleep in progress when the process begins to
+        // drain returns at the next slice boundary (<= 100 ms), so a
+        // `while !self.draining { ...; sleep(..) }` loop reaches its
+        // check. (An async_io sleep parks instead; the pool's expiry
+        // sweep resumes it on the drain.)
+        let more = match entry_draining {
+            None => more,
+            Some(at_entry) => {
+                let now = self.emit_process_draining_load("sleep.draining")?;
+                let now_up = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, now, zero64, "sleep.drain.up")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let was_calm = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, at_entry, zero64, "sleep.drain.was_calm")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cut = self
+                    .builder
+                    .build_and(now_up, was_calm, "sleep.drain.cut")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let keep = self
+                    .builder
+                    .build_not(cut, "sleep.drain.keep")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_and(more, keep, "sleep.more.calm")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+        };
         self.builder
             .build_conditional_branch(more, chunk_bb, done_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

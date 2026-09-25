@@ -219,6 +219,20 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_load(i64_t, dr_ptr, "draining.raw")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_int_value();
+        // GH #1039: a locus is also draining once the process is —
+        // the SIGINT / SIGTERM drain raises one runtime flag rather
+        // than walking every locus. A plain monotonic load, so a hot
+        // handler's `if !self.draining` stays a load, not a call.
+        // wasm has no signals and no such flag.
+        let raw = if self.is_wasm {
+            raw
+        } else {
+            self.reads_draining = true;
+            let proc_raw = self.emit_process_draining_load("draining.process")?;
+            self.builder
+                .build_or(raw, proc_raw, "draining.any")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
         let zero = i64_t.const_int(0, false);
         let as_bool = self
             .builder

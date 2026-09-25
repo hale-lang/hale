@@ -585,10 +585,19 @@ bounded by it: the compiled program, and under `--observe` the iris
 session beside it and the `hale build` that materializes the
 observer. On Linux each of them is spawned with a parent-death
 signal (`PR_SET_PDEATHSIG`, SIGTERM) and stays in `hale`'s process
-group, so killing `hale` alone — `timeout`, a CI cancel, a SIGKILL
-— ends them too, and a group-directed signal (a shell's Ctrl-C,
-`timeout` without `--foreground`) still reaches them as it always
-did. Nothing is left running that only a human knows to kill.
+group, so a `hale` that dies — a CI cancel, a SIGKILL — takes them
+with it, and a group-directed signal (a shell's Ctrl-C, `timeout`
+without `--foreground`) still reaches them as it always did. Nothing
+is left running that only a human knows to kill.
+
+`hale` does not die first on the signals a program drains on (GH
+#1039, `semantics.md` § "Drain cascade (whole-process)"): once the
+program is running, `hale` ignores SIGINT — a Ctrl-C reaches the
+program through the process group, and `hale` waits for the drain —
+and forwards a SIGTERM sent to its own pid (`timeout`, `kill $pid`)
+to the program, then keeps waiting. Either way it reports how the
+program ended: exit 0 for a drain that finished, "killed by
+SIGTERM" for one that outlived its grace.
 
 The observed session also gets its OWN stdout and stderr, which
 `hale` relays to its stderr. The program's stdout is the command's

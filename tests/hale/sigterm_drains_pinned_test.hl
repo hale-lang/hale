@@ -1,0 +1,129 @@
+// GH #1039 — SIGTERM drains a pinned loop.
+//
+// spec/semantics.md § "Drain cascade (whole-process)": SIGINT or
+// SIGTERM begins the whole-process drain — every locus's
+// `self.draining` reads true, a timed sleep returns early, each
+// `run()` that watches the flag returns, the loci dissolve
+// leaves-first and the process exits 0. Before this the runtime
+// caught neither signal: a pinned child's `while !self.draining`
+// loop never saw a drain, its post-loop line and `dissolve` never
+// ran, and the process died with 143.
+//
+// The child program is the issue's shape, with main's `run()`
+// ending first — the state a pinned receive loop (a broker
+// connection) is in for most of its life, and the one the program
+// otherwise stays in until it is stopped. The fixture builds it with
+// the toolchain running the test (`HALE_BIN`, which `hale test`
+// exports), waits for main's `run()` to end, sends SIGTERM, and
+// waits — bounded — for the exit. Then the same through `hale run`,
+// signalling `hale` rather than the program.
+
+fn child_source() -> String {
+    return "locus Loop {\n"
+        + "    run() {\n"
+        + "        let mut i = 0;\n"
+        + "        while !self.draining {\n"
+        + "            if i == 0 { println(\"child tick\"); }\n"
+        + "            std::time::sleep(100ms);\n"
+        + "            i = i + 1;\n"
+        + "        }\n"
+        + "        println(\"child run sees drain\");\n"
+        + "    }\n"
+        + "    dissolve() { println(\"child dissolve\"); }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    params { l: Loop = Loop { }; }\n"
+        + "    placement { l: pinned; }\n"
+        + "    run() { std::time::sleep(200ms); println(\"app run ends\"); }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    // Collect stdout until `needle` shows up, for at most ~20s (a
+    // `hale run` child compiles first).
+    fn wait_for(needle: String) -> Bool {
+        let mut i = 0;
+        while i < 1000 {
+            self.out = self.out + (std::process::read_stdout(self.child) or "");
+            if std::str::contains(self.out, needle) {
+                return true;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fn term() {
+        std::process::signal(self.child, 15) or discard;
+    }
+
+    // The exit code once the child has exited (-1 = killed by a
+    // signal), or -2 if it is still running after ~10s.
+    fn exit_code() -> Int {
+        let mut i = 0;
+        while i < 500 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stdout(self.child) or "");
+                return code;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return -2;
+    }
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let src = std::io::fs::mktemp("/tmp/hale-1039-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, child_source()) or discard;
+    let bin = src[0..(len(src) - 3)];
+
+    let built = std::process::run(hale + "\nbuild\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(built.code, 0, "the child program builds: " + built.stderr);
+
+    let p = Proc { };
+    std::test::assert(p.start(bin), "the child started");
+    std::test::assert(p.wait_for("app run ends"),
+        "main's run() ended while the pinned loop runs: " + p.out);
+
+    p.term();
+    let code = p.exit_code();
+    std::test::assert_eq_int(code, 0, "SIGTERM drains to a clean exit: " + p.out);
+    std::test::assert(std::str::contains(p.out, "child run sees drain"),
+        "the pinned loop saw self.draining: " + p.out);
+    std::test::assert(std::str::contains(p.out, "child dissolve"),
+        "the pinned child dissolved: " + p.out);
+
+    // `hale run` stands aside: a SIGTERM aimed at `hale`'s own pid is
+    // forwarded to the program, which drains, and `hale` reports the
+    // program's clean exit rather than dying first.
+    let r = Proc { };
+    std::test::assert(r.start(hale + "\nrun\n" + src), "hale run started");
+    std::test::assert(r.wait_for("app run ends"),
+        "under hale run, main's run() ended while the pinned loop runs: " + r.out);
+    r.term();
+    let run_code = r.exit_code();
+    std::test::assert_eq_int(run_code, 0, "hale run forwards SIGTERM and reports the drain: " + r.out);
+    std::test::assert(std::str::contains(r.out, "child dissolve"),
+        "under hale run, the pinned child dissolved: " + r.out);
+
+    std::io::fs::unlink(src) or discard;
+    std::io::fs::unlink(bin) or discard;
+}

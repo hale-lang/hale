@@ -1388,10 +1388,11 @@ a single `atexit` hook on first call. The hook:
    restarts.
 
 The atexit hook runs on a clean process exit (return from
-main, `exit(3)`). Signal-driven termination (SIGTERM, SIGKILL,
-`_exit`) bypasses atexit and leaves the SHM namespace entry
-behind until reboot or manual `shm_unlink`. A future v1.x
-SIGINT/SIGTERM handler can fold into this same teardown.
+main, `exit(3)`), which includes a SIGINT / SIGTERM that drains
+to its end (GH #1039). Termination that does not return from main
+— SIGKILL, a signal the program does not observe, a drain that
+outlives its grace, `_exit` — bypasses atexit and leaves the SHM
+namespace entry behind until reboot or manual `shm_unlink`.
 
 **Constraint: subscriber handlers must not call `exit()`.** The
 handler runs on the reader thread; calling `exit()` from inside
@@ -2358,9 +2359,19 @@ for replay-under-a-different-plan) is the next milestone.
 
 - **Exit codes.** `main()` returning `()` exits 0; returning
   `int` exits with that code. Panics exit non-zero.
-- **Signal handling.** SIGINT / SIGTERM trigger `drain` →
-  `dissolve` on the root locus. Stdlib provides finer-grained
-  control if needed.
+- **Signal handling.** SIGINT / SIGTERM begin the whole-process
+  drain (`semantics.md` § "Drain cascade (whole-process)", GH
+  #1039): the handler writes one byte to a pipe, a watcher thread
+  raises the exported `lotus_process_draining_flag` (which every
+  `self.draining` read loads, beside the locus's own
+  `__drain_requested`), wakes every `async_io` pool so timed parks
+  that began before the drain expire, and then waits out the grace
+  (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the signal's
+  default action is restored and the signal re-raised, so the
+  process dies by it. A second signal does the same at once.
+  Installed by the main prelude only in a program that reads
+  `draining`; caught with `SA_RESTART`, never blocked, so spawned
+  subprocesses keep the default disposition.
 - **SIGPIPE globally ignored** (added 2026-05-17, C2). The
   prelude installs `signal(SIGPIPE, SIG_IGN)` once at
   `lotus_io_init` so writes to a closed pipe (subprocess stdin,
@@ -2699,6 +2710,7 @@ the runtime quiet.
 | `LOTUS_CHUNK_POOL_STATS=1` | Dumps per-thread chunk-pool hit / miss / store / overflow counters to stderr at process exit. Diagnostic for "pool isn't recycling" symptoms — pairs hits vs misses, stores vs overflows. The atexit handler runs on the main thread; counters are `__thread` so the dump is that thread's view. |
 | `LOTUS_GLIBC_ARENA_MAX=<N>` | Calls `mallopt(M_ARENA_MAX, <N>)` at startup. Caps glibc's per-thread malloc arena count. `1` forces a single arena (max contention, min virtual-address fragmentation); higher `<N>` trades contention for parallelism. Useful belt-and-suspenders against the per-thread arena heap-segment proliferation glibc default tuning can produce on long-running daemons. Unset keeps glibc's default. |
 | `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | Overrides the lazy-global bus payload arena's byte cap (default 64 MiB). When the cap fires, `lotus_arena_alloc` returns NULL and the existing alloc-fail paths (`empty_global` / `alloc_failed` violation) surface degraded service rather than OOM-killing the process. |
+| `LOTUS_DRAIN_GRACE_MS=<ms>` | How long a SIGINT / SIGTERM drain may take before the runtime re-raises the signal with its default action, ending the process by it (default 5000). Only in a program that reads `self.draining`; see `semantics.md` § "Drain cascade (whole-process)" (GH #1039). |
 | `LOTUS_ARENA_RESIDENCY=1` | Registers every top-level arena (locus `__arena`s, `g_bus_payload_arena`, the program-wide global) into a side-table at creation time with a 24-frame construction backtrace. `std::process::dump_arena_residency()` walks the live set and emits one line per arena to stderr — bytes / chunks / parent / label, sorted by bytes desc — with the construction backtrace. Subregions (method scratch) are skipped; they destroy at method exit and don't accumulate residency. Atexit also dumps, but post-dissolve fires after all loci tear down — useful only for the global arena's final state. Long-running daemons should call `dump_arena_residency` from a heartbeat / checkpoint tick so locus arenas are sampled while still alive. |
 | `LOTUS_CHUNK_POOL_PREFILL=<N>` | Per-thread chunk-pool pre-fill on first touch. Default 32 (= 2 MiB resident per scheduler thread). Set 0 to disable. Bumps the pool's steady-state floor so brief bursts don't drain to zero and miss into malloc; the trade-off is per-thread resident memory. |
 | `LOTUS_TSAN=1` | Read at *build time* (by the codegen's `build_executable`, not at runtime). When set, the emitted clang command passes `-fsanitize=thread` for both the C runtime compile and the binary link, and skips the `-Wl,--wrap=malloc/realloc/calloc/mmap` shim surface (TSAN intercepts malloc itself; the wrap'd `LOTUS_ARENA_LOG_BIG_CHUNKS` diagnostic is silently no-op under TSAN). The resulting binary runs ~5-15× slower; use only for race-hunting workloads. The C runtime embeds an empty `__tsan_default_suppressions` hook at link time so no external suppression file is needed; all originally-flagged substrate races (bus queue drain, arena destroy, coop pool worker, env-var lazy-init) have been fixed and the suppression list is empty. Opt-in tests live behind `#[ignore]` and the env var (see `crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs`). |
