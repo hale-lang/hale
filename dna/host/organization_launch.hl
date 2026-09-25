@@ -11,7 +11,7 @@ type OrganizationLaunchPreparation {
 type OrganizationLaunchWrite { ok: Bool = false; fresh: Bool = false; }
 
 // Exact once-only acknowledgment. A lost claim reply does not authorize start.
-fn organization_launch_write(root: String, kind: String, id: String, body: String) -> OrganizationLaunchWrite {
+fn organization_launch_write(root: String, kind: String, id: String, body: String, memory: dna::Memory) -> OrganizationLaunchWrite {
     let codec = dna::OrganizationSourceRequestCodec { }; let mut tries = 0;
     while tries < 20 {
         let j = dna::GitJournal { repo: root }; let existing = codec.fact(j, kind, id);
@@ -20,7 +20,7 @@ fn organization_launch_write(root: String, kind: String, id: String, body: Strin
             return OrganizationLaunchWrite { ok: existing.kind == kind && existing.body == body && author == "host"
                     && (trust_mode(root) != "signed" || row_verified(root, existing.digest)) };
         }
-        let result = append_as_at(root, j.head(), -1, kind, id, body, "host");
+        let result = append_as_at(root, j.head(), -1, kind, id, body, "host", memory);
         if result == "" { return OrganizationLaunchWrite { ok: true, fresh: true }; }
         if result != "stale_revision" { return OrganizationLaunchWrite { }; }
         tries = tries + 1;

@@ -1,0 +1,78 @@
+// dna/tests/row_admission_test.hl — admission is a reader's check (GH #1026).
+//
+// Under `dna.trust = signed` a row of the record counts only when its
+// commit carries a signature the record's trust verifies (git's
+// allowed-signers file is the list of who may act). A row signed with a
+// key the record does not know, and a row that is not signed at all, are
+// refused by the reader — `dna::row_admissible` says why — and the
+// projection moves its stamp past them without projecting anything of
+// them. Rows signed with a known key are projected as ever. Under `local`
+// trust every row counts. Memory is Postgres: without the owner's DSN in
+// HALE_DNA_MEMORY_DSN_OWNER nothing here is exercised.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+fn git(repo: String, args: String) -> dna::RunResult { return sh("git\n-C\n" + repo + "\n" + args); }
+
+main locus App {
+    params { repo: String = ""; }
+    // One row on the record's chain, signed with the key the repository is
+    // configured with when `sign`.
+    fn row(kind: String, entity: String, body: String, sign: Bool) -> String {
+        let r = dna::GitRecord { repo: self.repo };
+        let h = r.head("journal");
+        let a = r.append("journal", if h.absent { "" } else { h.id }, dna::Row { kind: kind, entity: entity, body: body, author: "riley" }, sign, "");
+        std::test::assert(a.ok, "row " + kind + " " + entity + ": " + a.error);
+        return a.id;
+    }
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 { eprintln("row_admission_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let scratch = dna::scratch_root("admission");
+        self.repo = scratch + "/repo";
+        // two keys: riley's, which the record's trust names, and one it does not
+        let keys = sh("sh\n-c\nset -e; cd \"$1\"; ssh-keygen -q -t ed25519 -N '' -C riley -f known; ssh-keygen -q -t ed25519 -N '' -C stranger -f unknown; printf 'riley %s\\n' \"$(cat known.pub)\" > allowed_signers\nsh\n" + scratch);
+        std::test::assert_eq_int(keys.code, 0, "two keys and the allowed signers: " + keys.stderr);
+        let mk = sh("sh\n-c\nset -e; mkdir -p \"$1/.hale/dna\"; cd \"$1\"; git init -q -b main; git config user.name riley; git config user.email riley@dna; git config gpg.format ssh; git config gpg.ssh.allowedSignersFile \"$2/allowed_signers\"; git config user.signingkey \"$2/known\"; git config dna.trust signed\nsh\n" + self.repo + "\n" + scratch);
+        std::test::assert_eq_int(mk.code, 0, "a record under signed trust: " + mk.stderr);
+
+        // ---- the record: signed by riley, then by a stranger, then unsigned, then riley again
+        let first = self.row("application.observed", "org", "{}", true);
+        let known = self.row("structure.observed", "locus:Known", "{\"kind\":\"locus\",\"name\":\"Known\"}", true);
+        std::test::assert_eq_int(git(self.repo, "config\nuser.signingkey\n" + scratch + "/unknown").code, 0, "the stranger's key");
+        let stranger = self.row("structure.observed", "locus:Stranger", "{\"kind\":\"locus\",\"name\":\"Stranger\"}", true);
+        std::test::assert_eq_int(git(self.repo, "config\nuser.signingkey\n" + scratch + "/known").code, 0, "riley's key again");
+        let unsigned = self.row("structure.observed", "locus:Unsigned", "{\"kind\":\"locus\",\"name\":\"Unsigned\"}", false);
+        let later = self.row("structure.observed", "locus:Later", "{\"kind\":\"locus\",\"name\":\"Later\"}", true);
+
+        // ---- every reader's check
+        let j = dna::GitJournal { repo: self.repo };
+        let r = dna::GitRecord { repo: self.repo };
+        std::test::assert_eq_int(j.revision(), 5, "five rows");
+        std::test::assert_eq_str(dna::row_admissible(r, j.read(1), "signed"), "", "a row signed with a known key counts");
+        let why_stranger = dna::row_admissible(r, j.read(2), "signed");
+        std::test::assert(std::str::contains(why_stranger, "this record's trust does not know"), "a row signed with an unknown key is refused, and says why: " + why_stranger);
+        let why_unsigned = dna::row_admissible(r, j.read(3), "signed");
+        std::test::assert(std::str::contains(why_unsigned, "is not signed"), "an unsigned row is refused under signed trust: " + why_unsigned);
+        std::test::assert_eq_str(dna::row_admissible(r, j.read(2), "local"), "", "under local trust every writer is trusted");
+
+        // ---- the projection: past the refused rows, never projecting them
+        let identity = r.identity();
+        let spine = dna::migrated(owner, identity);
+        std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);
+        let tail = ops::MemoryProjection { root: self.repo, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine) }, j: dna::GitJournal { repo: self.repo, author: "spine" }, receipts: dna::GitReceipts { repo: self.repo } };
+        let applied = tail.apply();
+        std::test::assert_eq_str(applied.error, "", "the record projects");
+        std::test::assert_eq_int(tail.store.watermark(), 5, "the stamp moves past every row, the refused ones too");
+        std::test::assert_eq_str(tail.store.structure_names("locus"), "Known Later", "and only the admitted rows are in memory");
+        tail.store.close();
+        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+        std::test::assert(len(first) > 0 && len(known) > 0 && len(stranger) > 0 && len(unsigned) > 0 && len(later) > 0, "every row has its commit");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

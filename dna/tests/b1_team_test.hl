@@ -1,5 +1,5 @@
-// GH #646 B1 — two people, two heads, one record, one admission
-// controller, on a ground-up organism. An organization is scaffolded
+// GH #646 B1 — two people, two heads, one record, one ledger, on a
+// ground-up organism. An organization is scaffolded
 // and pushed to a bare remote; a body runs beside the founder's clone,
 // the spine of the record's memory (GH #985), and adopts the ledger into
 // it; a second person clones the same record and runs a head of their
@@ -8,9 +8,9 @@
 //
 //   1. one organism, two members under one issuer (alice on the board,
 //      bob not), its models scripted so it runs without an API key;
-//   2. one admission controller: the spine, the ledger's one writer,
-//      which admits every request both heads and both clones put into
-//      the record;
+//   2. one ledger in memory, which both heads and both clones write
+//      directly, each under the head's role, its insert function the
+//      gate (GH #1026);
 //   3. two hosted heads on two clones, a session each;
 //   4. alice asks through her head; the organism plans the ask as a
 //      person's job and hands it to bob — in the ledger, not the record;
@@ -29,9 +29,9 @@
 // the membrane, where the body writes the `intent.offered` row itself —
 // so the asker is not the row's author but is named in its body,
 // `… (from alice)`. The same ask from a clone with no body of its own is
-// a request in the record in the person's own name, which the spine
-// admits as their `intent.requested` (step 8). Either way the record
-// says which of two people asked.
+// written by that head in the person's own name, as their
+// `intent.requested` (step 8). Either way the record says which of two
+// people asked.
 
 import "../core" as dna;
 
@@ -419,11 +419,11 @@ main locus App {
         let a4 = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
         std::test::assert_eq_int(a4.code, 0, "pushed the genome and the record: " + a4.stderr);
 
-        // ---- 2. one admission controller: the spine, the body beside the
-        // founder's clone, and the record adopted into its ledger
+        // ---- 2. one ledger: the body beside the founder's clone, and the
+        // record adopted into its ledger
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
         if len(owner) == 0 {
-            eprintln("b1_team_test: no HALE_DNA_MEMORY_DSN_OWNER; the organism has no spine to admit its heads' requests, so nothing past the scaffold was exercised");
+            eprintln("b1_team_test: no HALE_DNA_MEMORY_DSN_OWNER; the organism has no ledger for its heads to write, so nothing past the scaffold was exercised");
             dna::scratch_done(scratch);
             return;
         }
@@ -435,8 +435,8 @@ main locus App {
         let first = self.body(app, "dev", "HALE_DNA_MEMORY_DSN_OWNER", owner);
         std::test::assert(self.membrane_up(app, 600), "the body came up beside the founder's clone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         let adopted = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption requested as"), "adoption requested: " + adopted.stdout + adopted.stderr);
-        std::test::assert(len(self.wait_in_record(app, head_dsn, "\"kind\": \"ledger.adopted\"", 240)) > 0, "the spine adopts the ledger on its tick: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
+        std::test::assert(len(self.wait_in_record(app, head_dsn, "\"kind\": \"ledger.adopted\"", 240)) > 0, "a node adopts the ledger on its tick: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         // the body again, now on the ledger from its start: `hale dna run`
         // with the spine's DSN
         let k0 = dna::run_tool("kill\n" + first);
@@ -467,10 +467,8 @@ main locus App {
         let asked = curl("POST", ui_a + "/api/task/create", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
         std::test::assert_eq_int(asked.status, 200, "alice's ask is taken: " + asked.body);
         // the head's own row first (GH #682: the durable fact before the
-        // publish) — a request in the record (GH #985) — which the spine
-        // admits into the ledger in alice's name, beside the organism's
-        // admission
-        std::test::assert(std::str::contains(row_with(record(app), "chase the late invoice"), "\"kind\": \"ledger.requested\""), "the ask is a request in the record before anything acts on it: " + row_with(record(app), "chase the late invoice"));
+        // publish), written straight into the ledger in alice's name under
+        // the head's role (GH #1026)
         let requested = wait_row(app, head_dsn, "\"kind\": \"intent.requested\"", 240);
         std::test::assert(std::str::contains(requested, "\"author\": \"alice\"") && std::str::contains(row_body(requested), "chase the late invoice"), "the ask is a row of the ledger in alice's name: " + ledger(app, head_dsn));
         let offered = wait_row(app, head_dsn, "\"kind\": \"intent.offered\"", 240);
@@ -482,7 +480,7 @@ main locus App {
         std::test::assert_eq_int(count_rows(ledger(app, head_dsn), "\"kind\": \"workflow.admitted\""), 1, "once, though the head both wrote and published it (card 18: the ask is an admitted workflow)");
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "and it names who asked, the person head A identified, not the form's `as`: " + offered);
         let rec = record(app);
-        std::test::assert(count_rows(rec, "chase the late invoice") > 0 && count_rows(rec, "chase the late invoice") == count_both(rec, "chase the late invoice", "\"kind\": \"ledger.requested\""), "and of the record only as its request: the day's work is the ledger's: " + row_with(rec, "chase the late invoice"));
+        std::test::assert_eq_int(count_rows(rec, "chase the late invoice"), 0, "and none of it is the record's: the day's work is the ledger's: " + row_with(rec, "chase the late invoice"));
         // the plan: a person's job, bob's, and the hand-off that follows it
         let handed = wait_row(app, head_dsn, "\"kind\": \"task.handed\"", 240);
         std::test::assert(len(handed) > 0, "the organism planned the ask and handed it on: " + ledger(app, head_dsn));

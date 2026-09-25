@@ -152,7 +152,7 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     let env: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str())];
     let mut service = spine(&firm, &d);
     let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &firm, env);
-    assert!(ok && adopted.contains("ledger adoption requested"), "{adopted}");
+    assert!(ok && adopted.contains("ledger adoption asked for"), "{adopted}");
     let dl = Instant::now() + Duration::from_secs(300);
     while Instant::now() < dl && !record(&firm).iter().any(|r| r["kind"] == "ledger.adopted") {
         let _ = hale(&["dna", "sync"], &firm, &[]);

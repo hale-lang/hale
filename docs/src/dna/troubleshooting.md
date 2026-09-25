@@ -114,13 +114,14 @@ read here — `status`, the board, `history` — is the last projection
 this body built, and **nothing is admitted until memory answers**.
 The organism does not stop the instant memory goes: the fence keeps
 the lease it last proved and stops the body at the margin before
-that lease expires, so a short outage costs nothing. Requests made
-from a clone are not lost either: each is a `ledger.requested` row in
-the record, and the spine admits it once memory is back.
+that lease expires, so a short outage costs nothing. A head's write
+made meanwhile is refused and says so — memory is where it lands, and
+nothing is queued behind it — so run the verb again once memory
+answers.
 
 **`no memory: HALE_DNA_MEMORY_DSN_SPINE is not set`** from the host.
-It runs with no memory: nothing is projected into the graph, no
-request is admitted, and a context package is empty and says so.
+It runs with no memory: nothing is projected into the graph, and a
+context package is empty and says so.
 Under `hale dna dev`, bring memory up (`docker compose` on `PATH`,
 or `HALE_DNA_MEMORY_DSN_OWNER`); under `hale dna run`, set the spine's
 DSN, which `hale dna memory migrate` prints. On a record that has
@@ -137,32 +138,29 @@ toolchain instead.
 **`memory's projection is at row N of the record's M; the spine
 applies it on its tick`**. A context package waited 20 seconds for
 the graph to catch up with the record and refused rather than hand
-over a stale one. Is a body running with memory, and does one of them
-hold the spine lease? `.hale/dna/spine.json` on each body says
-whether it holds it and what it has projected; `spine.taken` and
-`spine.lost` in `hale dna history spine` say who held it when.
+over a stale one. Is a body running with memory, and is its sync
+completing? A node projects only what the record's remote holds after
+its sync, so a body that cannot reach the remote projects nothing and
+says so (`memory: projection waits for the record to be shared`).
 
-**`ledger.request_refused` in the history.** The spine refused a
-request a head made. Its body says why — a retired person, a task
-handed to someone else, a transfer accepted outside the owner it
-was offered to, a claim already taken (`claimed`), a decision read at
-a ledger revision that has since moved (`stale_revision`; a
-transfer's acceptance is not refused for this — the spine checks the
-transfer itself when it admits it), a record kind asked of the ledger,
-or over a shared record a request not signed with its owner's key.
-Read it, decide again, and run the verb again: a refusal is final for
-that request.
-
-**A request that stays requested.** The spine admits requests on its
-tick, so a `ledger.requested` row with neither an admitted row nor a
-refusal after it means no spine is running on this record, or it
-cannot reach memory. `sync`, then look at the body (`hale dna body`,
-`.hale/dna/spine.json` there).
+**`… was not written to the ledger: …`** from a verb. Memory's insert
+function refused the row, and the rest of the line says why — a
+retired person, a task handed to someone else, a transfer accepted
+outside the owner it was offered to, a claim already taken
+(`claimed`), a record kind asked of the ledger, a lease that is not
+live at the epoch the row names (`fenced`), or `the role … does not
+write as …`: over a shared record a head writes as its owner's role,
+only in its owner's members' names — check which DSN this head was
+given (`HALE_DNA_MEMORY_DSN_HEAD`, the owner's line `hale dna memory
+migrate` printed) and the owners map. A decision read at a ledger
+revision that has since moved is `stale_revision`; the verb reads
+again and decides again (a transfer's acceptance is not refused for
+it — the gate checks the transfer itself).
 
 **`ledger.adopting` in the history with no `ledger.adopted`.** The
-adoption was asked for and not yet carried out — no body holding the
-spine lease has run since, or memory went away mid-copy. Nothing is
-broken and nothing is lost: the spine picks it up on its next tick,
+adoption was asked for and not yet carried out — no node has run
+since, or memory went away mid-copy. Nothing is broken and nothing is
+lost: a node picks it up on its next tick,
 and because every row is keyed by its commit nothing is copied twice.
 Or run `hale dna ledger abandon --why <why>`, which empties what was
 copied and leaves the organism on the record alone. Either way the
@@ -202,7 +200,7 @@ answer.
 **Where things are.** `refs/dna/journal` (the record),
 `refs/dna/receipts/<sha256>` (receipts), `refs/dna/lease/*`,
 `refs/dna/revisions/<rev>` (what nodes fetch); `.hale/dna/` (sockets,
-sandboxes, scratch, `status.json`, `spine.json`); `.hale/node/<name>/`
+sandboxes, scratch, `status.json`); `.hale/node/<name>/`
 on a node (pid files, artifacts). Once the organism has adopted the
 ledger, the day's work is not under any of these: it is in memory,
 the record's own schema in Postgres, and `hale dna ledger` says where

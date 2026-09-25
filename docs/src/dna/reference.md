@@ -107,8 +107,11 @@ host that runs the organism is handed and the organization inherits;
 `HALE_DNA_MEMORY_DSN_HEAD`, a head's (the CLI, `hale dna ui`, the read
 API). `HALE_DNA_RECEIPT_KEY` (sixteen characters at least) is read
 once, at migration, into memory. `HALE_DNA_OWNER_KEYS` (`<owner>=<key>
-…`) is the spine's, over a shared record; a head signs with `git
-config dna.owner` and `dna.owner.key`. The host hands its organization
+…`), over a shared record, names the owners the migration makes a head
+role for, printed as `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>`; an owner's
+heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`. `HALE_DNA_NODE` is the
+name a node's organism claims under, which the host sets to its body's
+holder. The host hands its organization
 its body lease as `HALE_DNA_LEASE` / `HALE_DNA_LEASE_TOKEN` once the
 ledger is adopted.
 
@@ -143,11 +146,8 @@ sequence either way — see [The record](./record.md).
 | `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for, and who asked (`… (from alice)`, a schedule, an optimizer) / the refusal |
 | `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
 | `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
-| `ledger.adopting` / `ledger.adopted` | record | `ledger` | a head's request to adopt (`routing`, `by`), and the spine's adoption: `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
-| `ledger.abandoning` / `ledger.abandoned` | record | `ledger` | a head's request to abandon, and the spine's abandonment: `by`, `why` |
-| `ledger.requested` | record | `<kind> <entity>` | a head's operational write after adoption, as a request: `kind`, `entity`, `body`, `as`, `expected` (the ledger revision the decision was read at, -1 for the tail), `nonce`, and over a shared record `head_owner`, `head_mac` |
-| `ledger.request_refused` | record | the request's digest | the spine's refusal: `kind`, `entity`, `as`, `why` |
-| `spine.taken` / `spine.lost` | record | `spine` | the spine lease taken or lost: `holder`, `token`, `owner` (when the clone names one), and for a loss `why` (`released`, `expired`, `taken by <holder>`, `memory did not answer`) |
+| `ledger.adopting` / `ledger.adopted` | record | `ledger` | a head's ask to adopt (`routing`, `by`), and a node's adoption: `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
+| `ledger.abandoning` / `ledger.abandoned` | record | `ledger` | a head's ask to abandon, and a node's abandonment: `by`, `why` |
 | `task.born` | ledger | `t<n>` (`<owner>:t<n>` over a shared record) | `<intent>: <outcome>` |
 | `task.handed` | ledger | `t<n>` | handed to a person: `work`, `assignee`, `by`, `narrative`, `obligation`, `acceptance`, `evidence_required` |
 | `task.reassigned` | ledger | `t<n>` | the assignment moved: `to`, and who moved it |
@@ -305,7 +305,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
 | `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |
 | `memory_embed.hl` | the hashed bag-of-words embedding the graph ranks with |
-| `memory_spine.hl` | `Memory` (one process's handle), `MemoryLedger`, `MemoryLeases` (the `claims` table: leases, and `claim` / `release_claim` by id), `MemoryKnowledge` (the context package), `MemoryVault` (protected evidence), `RequestAdmission` (the spine's admission of the heads' requests, adoption and abandonment) |
+| `memory_spine.hl` | `Memory` (one process's handle), `MemoryLedger`, `MemoryLeases` (the `claims` table: leases, and `claim` / `release_claim` by id), `MemoryKnowledge` (the context package), `MemoryVault` (protected evidence), `LedgerAdoption` (adoption and abandonment, carried out by a node under a claim) |
 | `pond/` | pond's `db` and `pq`, pinned: the Postgres driver the memory files open through (`vendor/dna/pond` in a project) |
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |

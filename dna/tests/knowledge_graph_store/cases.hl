@@ -268,7 +268,7 @@ locus GraphCases {
         std::test::assert_eq_str(store.conn.query_one("SELECT count(*) FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").data, "0", "version 1's stamp keys are gone");
         // version 1's lease table is the claims table, its rows kept
         std::test::assert(ddl(admin, sch, "INSERT INTO claims (key, holder, token, until, present) VALUES ('body', 'a@host:/clone', 4, 99, true); ALTER TABLE claims RENAME COLUMN until TO expires; ALTER TABLE claims RENAME TO ledger_leases; UPDATE memory_meta SET value = '1' WHERE key = 'schema_version'"), "a version-1 lease table");
-        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 1; this toolchain needs version 2"), "a version-1 memory is refused at open: " + store.last_error());
+        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 1; this toolchain needs version " + to_string(dna::MEMORY_SCHEMA_VERSION)), "a version-1 memory is refused at open: " + store.last_error());
         std::test::assert(dna::migrated(owner, record).ok, "migrate a version-1 lease table");
         let leases = dna::PqLeaseStore { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(leases.open(), "the claims open: " + leases.last_error());

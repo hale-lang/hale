@@ -117,7 +117,7 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
 /// What `memory-migrate` found (GH #985): the spine's and the head's DSNs
 /// once the schema is applied, or no database to apply it to.
 enum MemoryPlan {
-    Roles { spine: String, head: String },
+    Roles { spine: String, head: String, owners: Vec<String> },
     NoDatabase(String),
 }
 
@@ -134,7 +134,8 @@ fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
     let spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE="));
     let head = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD="));
     if let (Some(spine), Some(head)) = (spine, head) {
-        return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string() });
+        let owners = out.lines().filter(|l| l.starts_with("HALE_DNA_MEMORY_DSN_HEAD_")).map(str::to_string).collect();
+        return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string(), owners });
     }
     let line = out.trim();
     Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
@@ -289,9 +290,13 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("memory") if args.get(1).map(String::as_str) == Some("migrate") => {
             let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             match memory_migrate(&dir) {
-                Ok(MemoryPlan::Roles { spine, head }) => {
+                Ok(MemoryPlan::Roles { spine, head, owners }) => {
                     println!("HALE_DNA_MEMORY_DSN_SPINE={spine}");
                     println!("HALE_DNA_MEMORY_DSN_HEAD={head}");
+                    // GH #1026: over a shared record, each owner's head role
+                    for line in owners {
+                        println!("{line}");
+                    }
                     ExitCode::SUCCESS
                 }
                 Ok(MemoryPlan::NoDatabase(why)) => {
@@ -535,10 +540,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna ledger [status | rows | adopt | abandon --why <w>]");
     eprintln!("                                    the operational memory: where the day's work lives, its rows as JSON lines, and the one-way");
-    eprintln!("                                    move of it into memory — adopt and abandon are requested; the body carries them out on its tick");
-    eprintln!("                                    once the ledger is adopted, a head's write (a task done, a receipt filed …) is REQUESTED: a");
-    eprintln!("                                    `ledger.requested` row, its digest printed; the body admits or refuses it on its tick, and");
-    eprintln!("                                    `hale dna history <entity>` shows which (a refusal is a `ledger.request_refused` row)");
+    eprintln!("                                    move of it into memory — adopt and abandon are asked in the record; a node carries them out on its tick");
+    eprintln!("                                    once the ledger is adopted, a head's write (a task done, a receipt filed …) goes straight into it");
+    eprintln!("                                    under the head's role: done when it lands, or refused by memory with the reason");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
     eprintln!("                                    the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one");
     eprintln!("       hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]");

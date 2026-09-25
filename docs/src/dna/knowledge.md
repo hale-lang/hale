@@ -42,8 +42,9 @@ decodes admitted facts with, not in the core. The stores it writes
 into are the core's (`dna/core/memory_*.hl`), and they reach Postgres
 through pond's driver, pinned under `dna/core/pond` and vendored into
 your project at `vendor/dna/pond`. The projection runs on the host's
-tick, once a second, while that host holds the **spine lease** (see
-[Operating](./operating.md#memory)), and nothing else writes the graph.
+tick, once a second — every host that runs a body, beside any number of
+others (see [Operating](./operating.md#the-spine-is-every-node)) — and
+nothing else writes the graph.
 Each record row is one transaction: the projector moves memory's stamp
 — the row count and the last row's commit — by compare-and-swap before
 the row's effects, and both land together. So a projection interrupted
@@ -67,7 +68,6 @@ $ hale dna dev
 hale dna dev: memory: the graph, the ledger and protected evidence under the record's spine role
 hale dna dev: organization (pid 41200) from …/chat under LOTUS_OBS=1
 …
-hale dna dev: spine: this body projects memory and admits requests (the spine lease, token 1)
 ```
 
 `docker compose` on `PATH` is all it needs. Without it, point

@@ -46,8 +46,16 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
 // begins it again. Bounded by the record.
 @unbounded
 fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> ProjectionApplied {
+    return apply_record_to(store, j, receipts, j.revision(), "");
+}
+
+// As `apply_record`, the record's first `n` rows alone. A row whose digest
+// is in `refused` (one per line) is one a reader refused (GH #1026,
+// `dna::row_admissible`): its stamp moves past it and nothing of it is
+// projected.
+@unbounded
+fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, n: Int, refused: String) -> ProjectionApplied {
     let mut out = ProjectionApplied { watermark: store.watermark() };
-    let n = j.revision();
     let mut i = out.watermark;
     while i < n {
         let e = j.read(i);
@@ -56,7 +64,7 @@ fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Rece
         if won < 0 { out.error = store.last_error(); return out; }
         if won == 0 { out.yielded = true; return out; }
         out.rows = out.rows + 1;
-        let r = apply_row(store, j, receipts, e, i);
+        let r = if std::str::contains("\n" + refused, "\n" + e.digest + "\n") { ProjectionApplied { } } else { apply_row(store, j, receipts, e, i) };
         if len(r.error) > 0 { store.abort_row(); out.error = r.error; return out; }
         if !store.commit_row() { out.error = store.last_error(); return out; }
         out.ratified = out.ratified + r.ratified;
@@ -75,6 +83,11 @@ fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Rece
 @unbounded
 fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, e: dna::Event, i: Int) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
+    // GH #1026: the org chart the Ledger's gate checks — a person the
+    // record retired writes nothing more in memory
+    if e.kind == "person.retired" && len(e.entity) > 0 {
+        if !store.retire_person(e.entity, i) { out.error = store.last_error(); return out; }
+    }
     // K3: the code's structure as the record observed it (init's
     // rows: loci, topics, bindings, effect classes, claims), keyed by
     // kind and name, the latest row winning; and the operational
@@ -395,6 +408,11 @@ locus MemoryProjection {
         applied: Int = 0;
         last_error: String = "";
         opened: Bool = false;
+        // GH #1026: the commit the projection stops at ("" = the record's
+        // end): the host projects only what the remote holds
+        until: String = "";
+        // the owners map as last projected into `org_members`
+        members: String = "?";
     }
     birth() {
         self.j.repo = self.root;
@@ -446,7 +464,42 @@ locus MemoryProjection {
         // record's identity as loaded, and what is applied is the same
         // loaded record
         let moved = self.j.refresh();
+        self.until = "";
         return self.project(false);
+    }
+    // As `apply`, up to and including the row `head` alone — the head the
+    // record's remote holds, so a node stamps only rows it has shared (GH
+    // #1026). A head this clone does not hold projects nothing.
+    fn apply_to(head: String) -> ProjectionApplied {
+        let moved = self.j.refresh();
+        self.until = head;
+        if len(head) == 0 { return ProjectionApplied { yielded: true }; }
+        let r = self.project(false);
+        self.until = "";
+        return r;
+    }
+    // The genome's owners map into `org_members` (GH #1026), when it has
+    // changed since it was last put there: `<person> <owner>` per member.
+    @unbounded
+    fn sync_members() -> Bool {
+        let owners = dna::Ownership { path: self.root + "/dna/org/owners", me_env: "" };
+        let names = owners.owners();
+        let mut pairs = "";
+        let mut i = 0;
+        while len(dna::nth_word(names, i)) > 0 {
+            let o = dna::nth_word(names, i);
+            let members = owners.members_of(o);
+            let mut k = 0;
+            while len(dna::nth_word(members, k)) > 0 {
+                pairs = pairs + dna::nth_word(members, k) + " " + o + "\n";
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        if pairs == self.members { return true; }
+        if !self.store.set_members(pairs) { self.last_error = "the org chart could not be projected: " + self.store.last_error(); return false; }
+        self.members = pairs;
+        return true;
     }
     fn projection_refused(why: String) -> ProjectionApplied {
         self.last_error = "the Knowledge projection cannot proceed over this Record: " + why;
@@ -475,17 +528,51 @@ locus MemoryProjection {
         if basis.watermark <= revision && self.j.read(basis.watermark - 1).digest == basis.head { return "descends"; }
         let r = self.j.record;
         if !r.holds(basis.head) { return "behind"; }
-        if revision == 0 || r.precedes(self.j.head(), basis.head) { return "behind"; }
+        if revision == 0 || r.precedes(self.j.read(revision - 1).digest, basis.head) { return "behind"; }
         return "replaced";
+    }
+    // The rows from `from` to `to` a reader refuses (GH #1026): their
+    // digests, one per line, each said once on stderr.
+    @unbounded
+    fn refused(from: Int, to: Int) -> String {
+        let trust = self.j.record.setting("trust");
+        if trust != "signed" { return ""; }
+        let mut out = "";
+        let mut i = if from < 0 { 0 } else { from };
+        while i < to {
+            let e = self.j.read(i);
+            let why = dna::row_admissible(self.j.record, e, trust);
+            if len(why) > 0 {
+                out = out + e.digest + "\n";
+                eprintln("hale dna: memory: not projected: ", why);
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The rows this pass projects: the record's, or up to `until`.
+    @unbounded
+    fn extent() -> Int {
+        if len(self.until) == 0 { return self.j.revision(); }
+        let mut i = self.j.revision();
+        while i > 0 {
+            if self.j.read(i - 1).digest == self.until { return i; }
+            i = i - 1;
+        }
+        return -1;
     }
     fn project(bounded: Bool) -> ProjectionApplied { return self.project_once(bounded, false); }
     fn project_once(bounded: Bool, rebuilt: Bool) -> ProjectionApplied {
         if !self.ensure_open() { return ProjectionApplied { error: self.last_error }; }
         let basis = self.store.projection_basis();
         if !basis.ok { return self.projection_refused("memory holds no valid projection stamp (" + self.store.last_error() + "); `hale dna memory migrate` sets one"); }
-        let revision = self.j.revision();
-        let target = if revision > 0 { self.j.read(revision - 1).digest } else { "" };
-        if revision > 0 && target != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + target + "`"); }
+        if !self.sync_members() { return ProjectionApplied { error: self.last_error }; }
+        let whole = self.j.revision();
+        let last = if whole > 0 { self.j.read(whole - 1).digest } else { "" };
+        if whole > 0 && last != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + last + "`"); }
+        // a shared head this clone has not taken in yet: nothing to project
+        let revision = self.extent();
+        if revision < 0 { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
         let place = self.fence(basis, revision);
         if place == "behind" { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
         if place == "replaced" {
@@ -501,7 +588,8 @@ locus MemoryProjection {
         }
         self.store.forget_error();
         let receipts = GraphReceipts { source: self.receipts };
-        let mut r = if bounded { apply_record(self.store, self.j, receipts) } else { apply_record(self.store, self.j, self.receipts) };
+        let refused = self.refused(basis.watermark, revision);
+        let mut r = if bounded { apply_record_to(self.store, self.j, receipts, revision, refused) } else { apply_record_to(self.store, self.j, self.receipts, revision, refused) };
         if len(receipts.error) > 0 { r.error = receipts.error; }
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;

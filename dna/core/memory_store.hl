@@ -95,6 +95,9 @@ interface KnowledgeStore {
     // one row per (kind, source, what): the count and the last record row
     fn put_signal(kind: String, source: String, what: String, seq: Int) -> Bool;
     fn signals() -> String; // a JSON array of {kind, source, what, count, last_seq}
+    // ---- the org chart the Ledger's gate checks (GH #1026): a person the
+    // record retired, at the row that retired them
+    fn retire_person(person: String, seq: Int) -> Bool;
 }
 
 type Signal { kind: String = ""; source: String = ""; what: String = ""; count: Int = 0; last_seq: Int = 0; }
@@ -437,7 +440,7 @@ locus Pq {
         if !self.opened || self.conn.tx_status() != "idle" { self.error = "projection basis: store is not idle and open"; return GraphProjection { }; }
         let row = self.conn.query_one("SELECT row_to_json(t) FROM (SELECT (SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark') AS watermark, (SELECT CASE WHEN octet_length(value) <= 4096 THEN value ELSE NULL END FROM knowledge_meta WHERE key = 'graph_projection_head') AS head, (SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol') AS protocol) t");
         if !row.ok { self.note("projection basis", row.err); return GraphProjection { }; }
-        let basis = GraphProjection { ok: std::json::find_string_field(row.data, "protocol") == "2" && std::str::starts_with(std::json::find_field_raw(row.data, "head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(row.data, "watermark")) or - 1, head: std::json::find_string_field(row.data, "head") };
+        let basis = GraphProjection { ok: std::json::find_string_field(row.data, "protocol") == PROJECTION_PROTOCOL && std::str::starts_with(std::json::find_field_raw(row.data, "head"), "\""), watermark: std::str::parse_int(std::json::find_field_raw(row.data, "watermark")) or - 1, head: std::json::find_string_field(row.data, "head") };
         let rules = GraphRules { };
         if !rules.projection_valid(basis) { self.error = "projection basis: missing or invalid stamp"; return GraphProjection { }; }
         return basis;
@@ -459,7 +462,7 @@ locus Pq {
         let h = db::Args { };
         h.add(prev);
         h.add(head);
-        let stamped = self.conn.query_params("UPDATE knowledge_meta SET value = $2 WHERE key = 'graph_projection_head' AND value = $1 AND EXISTS (SELECT 1 FROM knowledge_meta WHERE key = 'graph_projection_protocol' AND value = '2') RETURNING key", h);
+        let stamped = self.conn.query_params("UPDATE knowledge_meta SET value = $2 WHERE key = 'graph_projection_head' AND value = $1 AND EXISTS (SELECT 1 FROM knowledge_meta WHERE key = 'graph_projection_protocol' AND value = '" + PROJECTION_PROTOCOL + "') RETURNING key", h);
         if !stamped.ok { self.note("projection row", stamped.err); self.abort_row(); return -1; }
         if stamped.n == 0 { self.abort_row(); return 0; }
         return 1;
@@ -502,7 +505,7 @@ locus Pq {
         let record = std::json::find_string_field(basis.data, "record");
         let generation = std::str::parse_int(std::json::find_field_raw(basis.data, "generation")) or - 1;
         let mark = std::str::parse_int(std::json::find_field_raw(basis.data, "watermark")) or - 1;
-        if std::json::find_string_field(basis.data, "protocol") != "2" || record != self.record_id || generation < 0 || mark < 0 { self.error = "graph basis: invalid scope, generation or watermark"; return self.graph_abort("read_failed"); }
+        if std::json::find_string_field(basis.data, "protocol") != PROJECTION_PROTOCOL || record != self.record_id || generation < 0 || mark < 0 { self.error = "graph basis: invalid scope, generation or watermark"; return self.graph_abort("read_failed"); }
         let stamped = GraphProjection { ok: std::str::starts_with(std::json::find_field_raw(basis.data, "projection_head"), "\""), watermark: mark, head: std::json::find_string_field(basis.data, "projection_head") };
         if !rules.projection_valid(stamped) { self.error = "graph basis: missing or invalid projection stamp"; return self.graph_abort("read_failed"); }
         let mut subject_present = false;
@@ -567,7 +570,7 @@ locus Pq {
         let stamped = self.conn.query_params("SELECT key FROM knowledge_meta WHERE key = 'graph_projection_head' AND value = $1 FOR UPDATE", h);
         if !stamped.ok { self.note("rebuild", stamped.err); self.abort_row(); return false; }
         if stamped.n != 1 { self.abort_row(); return false; }
-        let sql = "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals;"
+        let sql = "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals, org_retired;"
             + " UPDATE knowledge_meta SET value = '0' WHERE key = 'watermark';"
             + " UPDATE knowledge_meta SET value = '' WHERE key = 'graph_projection_head'";
         let r = self.conn.exec(sql);
@@ -730,6 +733,34 @@ locus Pq {
         // and a row applied again change nothing.
         let r = self.conn.exec_params("INSERT INTO knowledge_signals (kind, source, what, count, last_seq) VALUES ($1, $2, $3, 1, $4::bigint) ON CONFLICT (kind, source, what) DO UPDATE SET count = knowledge_signals.count + 1, last_seq = EXCLUDED.last_seq WHERE knowledge_signals.last_seq < EXCLUDED.last_seq", a);
         if !r.ok { return self.fail("signal", r.err); }
+        return true;
+    }
+    fn retire_person(person: String, seq: Int) -> Bool {
+        let a = db::Args { };
+        a.add(person);
+        a.add(to_string(seq));
+        let r = self.conn.exec_params("INSERT INTO org_retired (person, seq) VALUES ($1, $2::bigint) ON CONFLICT (person) DO NOTHING", a);
+        if !r.ok { return self.fail("retired", r.err); }
+        return true;
+    }
+    // The genome's owners map as memory holds it (GH #1026): `pairs` is
+    // `<person> <owner>` one per line, and replaces the table whole in one
+    // transaction, so the gate never reads half of a changed map.
+    @unbounded
+    fn set_members(pairs: String) -> Bool {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "members: store is not idle and open"; return false; }
+        let mut sql = "BEGIN; DELETE FROM org_members;";
+        let mut rest = pairs;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let sp = std::str::index_of(line, " ");
+            if sp <= 0 { continue; }
+            sql = sql + " INSERT INTO org_members (person, owner) VALUES ('" + std::str::replace(line[0..sp], "'", "''") + "', '" + std::str::replace(line[(sp + 1)..len(line)], "'", "''") + "') ON CONFLICT (person) DO NOTHING;";
+        }
+        let r = self.conn.exec(sql + " COMMIT");
+        if !r.ok { self.note("members", r.err); self.abort_row(); return false; }
         return true;
     }
     // One JSON array, built by the server: a concern's text is free

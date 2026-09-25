@@ -234,9 +234,9 @@ fn connection_state(c: Connection) -> String {
 }
 
 // An approved connection's Review is settled once, in its approver's name.
-fn settle_connection(root: String, c: Connection) {
+fn settle_connection(root: String, c: Connection, memory: dna::Memory) {
     if len(c.approved_by) == 0 || c.settled { return; }
-    let ok = append_as(root, "review.settled", "review:" + c.review_id, "approve by " + c.approved_by + " (board): connection `" + c.name + "` in force", c.approved_by);
+    let ok = append_as(root, "review.settled", "review:" + c.review_id, "approve by " + c.approved_by + " (board): connection `" + c.name + "` in force", c.approved_by, memory);
 }
 
 // The connection names the record holds, newline-separated, first-proposed first.
@@ -309,7 +309,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     b.string_field("review_id", review_id);
     b.string_field("exchange", "git");
     b.end_object();
-    if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
+    if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by, memory) { return fail("the record refused the append"); }
     let question = "connect this record to record " + short(peer) + " at " + url + " as `" + position + "` for `" + purpose + "`, carrying " + norm + "?";
     let q = std::json::Builder { };
     q.begin_object();
@@ -320,7 +320,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     q.string_field("kind", "connection");
     q.string_field("target", position);
     q.end_object();
-    if !append_as(root, "review.requested", "review:" + review_id, q.result(), by) { return fail("the record refused the append"); }
+    if !append_as(root, "review.requested", "review:" + review_id, q.result(), by, memory) { return fail("the record refused the append"); }
     let s2 = sync_record(root, memory);
     return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + " (git exchange), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
 }
@@ -340,7 +340,7 @@ fn connections_list(root: String, seed: String, memory: dna::Memory) -> Answer {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(name) == 0 { continue; }
         let c = connection_of(p, name);
-        settle_connection(root, c);
+        settle_connection(root, c, memory);
         out = out + "  " + name + " → record " + short(c.peer) + " (" + c.url + ") as `" + c.position + "` for `" + c.purpose + "`, carrying " + c.classes + " — " + connection_state(c) + "\n";
         n = n + 1;
     }
@@ -362,7 +362,7 @@ fn disconnect_verb(root: String, seed: String, name: String, why: String, by_fla
     b.string_field("by", by);
     b.string_field("why", why);
     b.end_object();
-    if !append_as(root, "connection.closed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
+    if !append_as(root, "connection.closed", "connection:" + name, b.result(), by, memory) { return fail("the record refused the append"); }
     let s2 = sync_record(root, memory);
     return answer("connection " + name + " closed by " + by + ": " + why + "; its history stays in both records, and nothing further crosses it\n");
 }
@@ -380,7 +380,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     let p = open_projection(root, seed, "", memory);
     let c = connection_of(p, name);
     if !c.present { return fail("handoff: no connection `" + name + "`; `hale dna connect <record-url> --name " + name + " …` proposes one"); }
-    settle_connection(root, c);
+    settle_connection(root, c, memory);
     if len(c.closed) > 0 { return fail("handoff: connection `" + name + "` is closed (" + c.closed + "): nothing further crosses it"); }
     if len(c.approved_by) == 0 { return fail("handoff: connection `" + name + "` is " + connection_state(c)); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
@@ -436,7 +436,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         rb.string_field("by", who);
         rb.string_field("why", why);
         rb.end_object();
-        let refused = append_as(root, "handoff.refused", "handoff:" + hid, rb.result(), who);
+        let refused = append_as(root, "handoff.refused", "handoff:" + hid, rb.result(), who, memory);
         let s3 = sync_record(root, memory);
         return fail("handoff: " + why + "; refused at the edge (handoff.refused), nothing was written across");
     }
@@ -450,7 +450,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
             rb.string_field("handoff", hid);
             rb.string_field("by", who);
             rb.end_object();
-            if !append_as(root, "task.transfer_requested", subject, rb.result(), who) { return fail("the record refused the append"); }
+            if !append_as(root, "task.transfer_requested", subject, rb.result(), who, memory) { return fail("the record refused the append"); }
             let sr = sync_record(root, memory);
             return answer("handoff " + hid + ": task " + subject + " was already written into record " + short(c.peer) + "; its transfer is recorded here now\n");
         }
@@ -493,7 +493,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     // the envelope as delivered: a delivery the peer lost is made again from it
     pb.string_field("envelope", b.result());
     pb.end_object();
-    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who) { return fail("handoff: written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", but this record refused the append"); }
+    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who, memory) { return fail("handoff: written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", but this record refused the append"); }
     if kind == "task" {
         let tb = std::json::Builder { };
         tb.begin_object();
@@ -502,7 +502,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         tb.string_field("handoff", hid);
         tb.string_field("by", who);
         tb.end_object();
-        let t = append_as(root, "task.transfer_requested", subject, tb.result(), who);
+        let t = append_as(root, "task.transfer_requested", subject, tb.result(), who, memory);
     }
     let s2 = sync_record(root, memory);
     return answer("handoff " + hid + ": " + kind + " " + subject + " [" + class + "] written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", for `" + c.purpose + "`" + (if kind == "task" { "; the Task settles here when that record accepts it (`hale dna handoff sync`)" } else { "" }) + "\n");
@@ -625,7 +625,7 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
         b.string_field("class", std::json::find_string_field(body, "class"));
         b.string_field("fact", std::json::find_string_field(body, "fact"));
         b.end_object();
-        if !append_as(root, "handoff.accepted", ent, b.result(), who) { return fail("the record refused the append"); }
+        if !append_as(root, "handoff.accepted", ent, b.result(), who, memory) { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
     }
     // the acceptance goes back into the origin's mailbox for this record
@@ -711,10 +711,10 @@ fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
             b.string_field("note", std::json::find_string_field(body, "note"));
             b.end_object();
             if !peer_row {
-                if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "") { return fail("the record refused the append"); }
+                if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "", memory) { return fail("the record refused the append"); }
             }
             if transfer {
-                if !append_as(root, "task.transfer_accepted", subject, b.result(), "") { return fail("the record refused the append"); }
+                if !append_as(root, "task.transfer_accepted", subject, b.result(), "", memory) { return fail("the record refused the append"); }
             }
             out = out + "  " + ent[8..len(ent)] + ": " + kind + " " + subject + " accepted by " + by + " in record " + short(c.peer) + "\n";
             n = n + 1;

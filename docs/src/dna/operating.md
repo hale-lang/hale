@@ -180,29 +180,27 @@ closed when the process ends; a store closes its connection when it
 dissolves. However long a host runs, it holds a fixed handful of
 connections.
 
-### The spine lease
+### The spine is every node
 
-On every tick — once a second — the host renews a row of memory's
-`claims` table, `spine`, which lives 30 seconds. Whichever host holds it
-is *the spine*: it projects the record into the graph, admits the
-heads' requests, and erases the evidence the record says was redacted.
-A host without it reads and forwards, and does none of those. On a
-shared record every owner runs a body (each under its own lease,
-`owner/<owner>`), and the spine lease picks one of them: whichever
-took it first.
+The spine is not a process. Every host that runs a body is a node of
+it, any number of them, and a node holds nothing: its state is the
+stores, its code is the genome. On every tick — once a second — each
+node projects the record into the graph and the org chart, carries out
+an adoption the record asks for, and erases the evidence the record
+says was redacted. Nothing picks one of them. The stores keep them from
+doing anything twice: the projection moves a row at a time by
+compare-and-swap, an adoption is claimed by the row that asked for it,
+and an erasure is by digest. On a shared record every owner runs a body
+(each under its own lease, `owner/<owner>`), and every one of them is a
+node.
 
-Taking and losing it are rows of the record naming the holder, its
-token and its owner — `spine.taken`, and `spine.lost` with why:
-`released` (the host stopped), `expired`, `taken by <holder>`, or
-`memory did not answer`. Each host also writes what it has done as the
-spine to `.hale/dna/spine.json`:
+Nor does a node admit anything. A head writes its rows straight into
+the ledger (below), and memory's insert function decides, there and
+then, whether the row lands.
 
-```json
-{"holder": "you@build-1:/srv/chat", "held": true, "token": 3, "projected": 58, "decided": 4, "erased": 0}
-```
-
-`projected` is record rows applied to the graph, `decided` the
-requests admitted or refused, `erased` the protected bodies removed.
+When the record has a remote, a node projects only what the remote
+holds after that tick's sync — and nothing on a tick whose sync did not
+finish — so memory's stamp is always a commit every clone can receive.
 
 ### Claims by id
 
@@ -276,16 +274,23 @@ memory:     named here (HALE_DNA_MEMORY_DSN_HEAD)
 ledger:     413 row(s), cutover at 232dc8f18dde
 ```
 
-`adopt` and `abandon` are requests, like every write a head makes.
-`adopt` syncs the record and appends `ledger.adopting`; the body that
-holds the spine lease, on its next tick, copies every operational row
-of the record into the ledger keyed by its commit, carries its own
-body lease into memory at its token, and appends `ledger.adopted`
-naming the checkpoint. Interrupted anywhere, it is rerun rather than
-repaired by hand. `abandon --why …` appends `ledger.abandoning`; the
-spine empties the ledger and appends `ledger.abandoned`, and the
-organism is on the record alone again — the record's own rows are
-never removed from git, so nothing is lost either way.
+`adopt` and `abandon` are asked in the record. `adopt` syncs the record
+and appends `ledger.adopting`; on its next tick a node claims the ask
+(`ledger/<the ask's digest>`), copies every operational row of the
+record into the ledger keyed by its commit, carries its own body lease
+into memory at its token, and appends `ledger.adopted` naming the
+checkpoint. Interrupted anywhere, it is rerun rather than repaired by
+hand. `abandon --why …` appends `ledger.abandoning`; a node empties the
+ledger and appends `ledger.abandoned`, and the organism is on the
+record alone again — the record's own rows are never removed from git,
+so nothing is lost either way.
+
+Once adopted, a head writes the day's work straight into the ledger, as
+its own role, and memory's insert function is the gate: the row lands,
+and the verb says it is done, or it is refused and the verb says why —
+a retired person, a task handed to someone else, a transfer accepted
+outside the owner it was offered to, an author this head does not
+write as, a claim already taken. There is no request to wait on.
 
 `hale dna status` carries a `memory:` line on every organism,
 adopted or not:
@@ -299,19 +304,30 @@ and when memory stops answering, that same line says so: `THE
 LEDGER IS UNREACHABLE (…): what is read here is the last projection,
 and nothing is admitted until it answers`.
 
-### Shared records and owners' keys
+### Shared records and owners' roles
 
-Over a record several owners share, a head's request in a person's
-name is signed with its owner's key: the head names its owner and
-holds the key in its clone (`git config dna.owner`, `dna.owner.key`),
-and signs each request (HMAC-SHA256). The spine holds every owner's
-key in `HALE_DNA_OWNER_KEYS` (`<owner>=<key> …`), set out of band;
-the keys never enter the record. The spine admits a request only when
-it is signed with a key of the owner that person is a member of. A
-host is a principal too: it signs its own requests as its owner, and
-the spine admits a request by `host` under any owner's valid
-signature. Its `body.*` rows carry `"owner"`, so the record still says
-whose body it was.
+Over a record several owners share, each owner's heads write the ledger
+as that owner's role in memory, and a role is who a head is: memory
+lets an owner's role write only in its own members' names. Give the
+owners' keys (`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`) to the migration
+and it makes a role per owner and prints its DSN:
+
+```text
+$ HALE_DNA_OWNER_KEYS="acme=… north=…" hale dna memory migrate
+HALE_DNA_MEMORY_DSN_SPINE=postgres://…_spine:…
+HALE_DNA_MEMORY_DSN_HEAD=postgres://…_head:…
+HALE_DNA_MEMORY_DSN_HEAD_ACME=postgres://…_head_acme:…
+HALE_DNA_MEMORY_DSN_HEAD_NORTH=postgres://…_head_north:…
+```
+
+An owner's heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`; the plain
+head role of a shared record reads and writes as no one. Memory holds
+no key: the keys stay the record's until the vault holds them (#989).
+Which members an owner has is the genome's owners map, `dna/org/owners`,
+which every node projects into memory, so changing it is a reviewed
+change of the organization like any other. A host is a principal too:
+it writes its own rows as `host`, and its `body.*` rows carry
+`"owner"`, so the record still says whose body it was.
 
 ### Connections
 

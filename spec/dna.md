@@ -15,7 +15,7 @@ one (GH #646).
 |---|---|---|---|
 | **Structure** | what the organism *is*: positions, routes, schedules and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
 | **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | git, `refs/dna/*`, one signed commit per row, cloned and synced | the Board, the organism's pipeline, a head from its clone |
-| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | memory: Postgres, in the record's own schema `dna_<identity>` | the spine's role alone: the body, and the heads' requests it admits |
+| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
 
 The routing table is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
@@ -77,79 +77,93 @@ memory admits nothing); `dev` applies memory's schema and hands the
 host the spine's DSN. `hale dna ledger [status]` says the routing,
 whether memory is named here, and the Ledger's row count and cutover;
 `hale dna ledger rows` prints the Ledger's rows as JSON lines (`seq`,
-`kind`, `entity`, `body`, `author`, `prev`, `digest`), read under the
+`kind`, `entity`, `body`, `author`, `writer` — the role that wrote it, so a head writing as `host` is told apart from the body — `prev`, `digest`), read under the
 head's role or the spine's.
 
-**A head's writes are requests (GH #985).** A head — the CLI, `hale
-dna ui`, the API — writes nothing into the Ledger. On routing 1 an
-operational row a verb writes in a person's name is a
-`ledger.requested` row in the record, entity `<kind> <entity>`,
-authored by the person (`host` for the host's own rows), body `{kind,
-entity, body, as, expected, nonce}`: `as` is the person, `expected`
-the Ledger revision a decision was read at (-1 for the tail), `nonce`
-minted when the request was captured. A write at the tail reports
-itself requested, with the request row's digest, and says that `hale
-dna history <entity>` shows the outcome; a write decided at a revision
-(`task done`, a completion, a git receipt's redaction) is requested
-with that revision as `expected`, and says so the same way, naming the
-digest and the revision (a head with no memory named cannot read that
-revision, and requests nothing). An adoption and an abandonment
-are the record's `ledger.adopting` and `ledger.abandoning` rows above.
-The spine admits a request on its tick, once: each is keyed on its
-row's digest (`ledger_requests`), so a request already decided is
-never decided again, however often it is read. Admission checks, in
-the spine, in order:
+**Writers write directly; the store is the gate (GH #1026).** A head —
+the CLI, `hale dna ui`, the API — writes a Ledger row itself, straight
+into memory under its own role, and a node writes the organism's rows
+under the spine's; nothing sits in front of memory and no process
+admits anything. Every Ledger row lands through memory's insert
+function, `ledger_append(expected, kind, entity, body, author, lease,
+epoch, request)`, a definer function run as the schema's owner, and the
+calling role is who wrote it (`session_user`, kept in the row's
+`writer` column beside `lease` and `epoch`). It refuses, returning the
+reason the verb prints:
 
-1. the kind is the Ledger's; a record kind is refused (it is appended
-   to the record and synced);
-2. over a shared record, the owner's signature (**The owners' keys**,
-   below);
-3. the person's standing: a request in the name of someone the record
-   retired (`person.retired`) is refused;
-4. a `task.transfer_accepted` is refused unless the Task is offered to
-   an owner and the person is that owner's member;
+1. a kind that is not the Ledger's (`ledger_kind`, the routing table
+   above as data): it is appended to the record instead;
+2. an author the calling role does not hold. `memory_principals`,
+   owner-only, maps each role to whom it writes as: `*` any author and
+   no person checks (the spine's role, and the schema's owner); `@` any
+   person (the head's role over a record with one owner); an owner's
+   name, that owner's members (each owner's head role over a shared
+   record, **The owners' roles**, below); `host` for any head;
+3. a person the record retired (`org_retired`, below);
+4. a `task.transfer_accepted` for a Task not offered to an owner, or in
+   the name of someone who is not the member of the owner it is offered
+   to;
 5. `task.done`, `task.failed`, `completion.linked` and
-   `completion.excepted` are refused in any name but the Task's
-   assignee's;
-6. the append: exactly at `expected` when one was given, refused as
-   `stale_revision` when the Ledger moved past it, and refused as
-   `claimed` when a claim kind's entity is already taken. A
-   `task.transfer_accepted` lands at the tail whatever its `expected`
-   (GH #1052): check 4 has just read the transfer it accepts against
-   the Ledger as it stands, so the revision its head read at would
-   only refuse it for an unrelated row admitted first.
+   `completion.excepted` in any name but the Task's assignee's;
+6. a row naming a lease — the body's, which its organism carries — whose
+   claim is not live at that token in `claims` right now: `fenced`, with
+   whose it is and at what epoch;
+7. a revision a decision was read at that the Ledger has moved past
+   (`stale_revision`; a `task.transfer_accepted` lands at the tail
+   whatever its `expected`, GH #1052, since check 4 reads the transfer
+   against the Ledger as it stands), and a claim kind whose entity is
+   already taken (`claimed`).
 
-An admitted row lands in the person's name, in the same insert, so no
-reader sees it without its author. The spine appends under the spine
-lease it holds, at its token: a spine that lost the lease lands
-nothing, and the next holder decides the request. A refusal is a
-`ledger.request_refused <request digest> {kind, entity, as, why}` row
-in the record. A request memory could not take for any other reason
-stays undecided and is tried again on the next tick. The record is the
-pager: `hale dna history` and `status` show the outcome once the spine
-has run. A head with no memory named still requests a write at the
-tail; a write decided at a revision needs the Ledger's revision read,
-and without memory its verb refuses (`the ledger's revision was not
-read`), requesting nothing. Nothing on a
-head is authoritative, and no head executes work offline (#646
-decision 2). On routing 0 an operational row goes into the record, as
-it always did.
+Checks 3 to 5 are not the role's own business, so they apply to every
+role but a `*`. Appends are serialized on the schema, and the row's
+digest extends the chain as `event_digest` does. A write carries a
+request id minted when it is made (`ledger_requests`): a write retried
+after an answer that was lost is answered as it landed, once. A head's
+verb says it is done when the row lands, and says why when it is
+refused; nothing is pending and there is nothing to wait on. A head with
+no memory named writes nothing, naming the checkpoint the organism's
+operations live behind since — never into git instead. A write decided
+at a revision needs the Ledger's revision read, and without memory its
+verb refuses (`the ledger's revision was not read`). Nothing on a head
+is authoritative, and no head executes work offline (#646 decision 2).
+On routing 0 an operational row goes into the record, as it always did.
+An adoption and an abandonment are the record's `ledger.adopting` and
+`ledger.abandoning` rows above, carried out by a node under a claim on
+the asking row (**Claims by id**, below).
 
-**The owners' keys (GH #669).** Over a shared record a head names its
-owner and holds that owner's key (`git config dna.owner`,
-`dna.owner.key`), and signs each request: `head_owner`, and `head_mac`,
-HMAC-SHA256 under the key over the kind, entity, body, `as`,
-`expected`, owner and nonce. The spine holds every owner's key out of
-band, never in the record (`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`),
-and when it holds any it refuses a request in a person's name that
-names no owner or signature, one not signed with a key of the owner it
-names, and one in the name of a person who is not that owner's member
-(`dna/org/owners`). **The host is a principal**: it signs its own
-requests as its owner, as a head does, and a request by author `host`
-is admitted under any owner's valid signature. Its `body.*` rows carry
-`owner` in their body when the record names one, so a row by `host`
-still says whose body it was. Who a person is remains the head's to
-establish — its issuer under `dna.principal = oidc`.
+**The org chart in memory (GH #1026).** The checks above read what the
+spine projects: `org_members(person, owner)` is the genome's owners map
+(`dna/org/owners`), replaced whole in one transaction whenever its text
+changes; `org_retired(person, seq)` is the record's `person.retired`
+rows, projected in the same per-row transaction as the graph (and
+emptied with it on a rebuild). The head reads both, so a verb that
+checks before writing — a retired person, a transfer's owner — says so
+in its own words; the store's check is the gate, the head's the
+message.
+
+**The owners' roles (GH #1026).** Over a shared record each owner's
+heads write the Ledger as that owner's role, `<schema>_head_<owner>`,
+which the migration creates for every owner the owners' keys name
+(`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`, in the owner's environment
+at migration) and prints as `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>=<dsn>`;
+the plain head role of a shared record reads and writes as no one. A
+role is who a head is: memory holds no signature bytes, and the keys
+stay the record's until the vault holds them (#989). **The host is a
+principal**: it writes its own rows as `host`, under the spine's role
+or an owner's, and its `body.*` rows carry `owner` in their body when
+the record names one, so a row by `host` still says whose body it was.
+Who a person is remains the head's to establish — its issuer under
+`dna.principal = oidc`.
+
+**Admission, as a reader checks it (GH #1026).** A row of the record
+counts only when `dna::row_admissible(record, row, trust)` says so:
+under `dna.trust = signed` its commit carries a signature the record's
+trust verifies (git's keyring or allowed-signers file), and an unsigned
+row, or one signed with a key the record does not know, is refused;
+under `local` trust every writer is trusted. The projection runs it on
+every row it applies and moves its stamp past a refused row without
+projecting anything of it. A Ledger row needs no reader's check: the
+insert function refused it before it landed.
 
 **Evidence and the export across two memories (stage 4, #653).**
 Receipts are placed by what they evidence: `evidence.*` (a
@@ -234,7 +248,7 @@ core's — `dna/core/memory_store.hl` (the graph, `Pq`),
 (`PqProtected`), `memory_embed.hl`, `memory_schema.hl` (the schema,
 the roles, the grants and the functions) and `memory_spine.hl`
 (`Memory`, `MemoryLedger`, `MemoryLeases`, `MemoryKnowledge`,
-`MemoryVault`, `RequestAdmission`) — and they open Postgres through
+`MemoryVault`, `LedgerAdoption`) — and they open Postgres through
 pond's driver, pinned under `dna/core/pond` and vendored beside the
 core at `vendor/dna/pond`. The projection tail, `MemoryProjection`, is
 not in the core: it lives in `dna/operations/memory_tail.hl`, beside
@@ -276,28 +290,30 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 2 (GH #1026: the lease
-  table became `claims`, and the graph's projection is one transaction
-  per record row; migrating a version-1 memory renames the table in
-  place, its rows kept, and empties the graph for the projectors to
-  rebuild). A store's `open`
+- **The version fence.** The schema version is 3 (GH #1026: 2 made the
+  lease table `claims` and the graph's projection one transaction per
+  record row — migrating a version-1 memory renames the table in place,
+  its rows kept; 3 adds the Ledger's gate, `ledger_append`, with the
+  org chart it checks and the roles' principals. Each moves the
+  projection protocol, so the graph is emptied once for the projectors
+  to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
   DSN; it also refuses a schema whose claim names another record (`it
   is not read`). The host checks the version on the spine's DSN before
   it starts anything, and refuses to start (exit 2) on a mismatch.
-- **Grants.** The head's role has `SELECT` on the ledger, knowledge
-  and meta tables (`memory_meta`, `ledger_rows`, `ledger_meta`,
-  `ledger_requests`, `claims`, `knowledge_*`), `INSERT` and
-  `UPDATE` on `claims` only, to take and fence a claim, and
-  `EXECUTE` on `receipt_file` and `receipt_read`. It writes nothing
-  else: a head's write is a request in the record. The spine's role
-  reads and writes its schema's tables (`SELECT`, `INSERT`, `UPDATE`,
+- **Grants.** A head's role — the head's, or an owner's — has `SELECT`
+  on the ledger, knowledge, org-chart and meta tables (`memory_meta`,
+  `ledger_rows`, `ledger_meta`, `ledger_requests`, `claims`,
+  `knowledge_*`, `org_members`, `org_retired`), `INSERT` and `UPDATE`
+  on `claims` only, to take and fence a claim, and `EXECUTE` on
+  `receipt_file`, `receipt_read` and `ledger_append`: a head writes the
+  Ledger through its gate and no table directly. The spine's role reads
+  and writes its schema's tables (`SELECT`, `INSERT`, `UPDATE`,
   `DELETE`, `TRUNCATE`) except the owner-only `memory_keys`,
-  `protected_receipts` and `protected_redactions`, which it reaches
-  only through the functions, and has `EXECUTE` on `receipt_file`,
-  `receipt_read` and `receipt_erase`; it has no DDL. The Ledger has one
-  writer, the spine's role.
+  `memory_principals`, `protected_receipts` and `protected_redactions`,
+  and has `EXECUTE` on every function; it has no DDL. Every Ledger row
+  but an adoption's copy goes through `ledger_append`.
 - **Connections are bounded.** Each process holds one memory handle
   (`Memory`: the Ledger and the leases), opened on first use and
   closed when the process ends; everything in a process that reads the
@@ -305,28 +321,28 @@ host's tick (**The spine**, below).
   each `Pq` store closes its connection when it dissolves. A host holds
   a fixed handful of connections however long it runs.
 
-**The spine.** The host that runs a body is its spine. On each tick
-(`HOST_TICK`, 1 s) it applies the record into the graph
-(`MemoryProjection`), admits the heads' requests and carries out an
-adoption or abandonment the record asks for (`RequestAdmission`), and
-erases the protected bodies the record redacted
-(`MemoryVault.complete_redactions`) — only while it holds the **spine
-lease**. `SPINE_LEASE` is `spine`, a row of memory's `claims` table;
-`SPINE_TTL` is 30 s, renewed at its token on every tick (the constants
-sit beside `BODY_TTL` in `dna/host/record.hl`). Whichever spine takes
-it first projects, admits and erases; a spine without it reads and
-forwards, and takes it once it is free. Taking it appends `spine.taken
-spine {holder, token, owner}` to the record, and losing it
-`spine.lost spine {holder, token, why, owner}` (`owner` when the
-record names one), `why` one of `released` (the host stopping),
-`expired`, `taken by <holder>` and `memory did not answer`. Each host
-writes `.hale/dna/spine.json`: `holder`, `held`, `token`, and the rows
-it projected, the requests it decided and the bodies it erased
-(`projected`, `decided`, `erased`). On a shared record every owner runs
-a body (its lease `owner/<owner>`), and the spine lease picks one
-spine among them. A host with no `HALE_DNA_MEMORY_DSN_SPINE` says so
-and runs with no memory: nothing is projected or admitted. What failed
-on a tick is said once, when it changes, and tried again on the next.
+**The spine (GH #1026).** The spine is not a process: it is the program
+any number of identical nodes run, and a node holds nothing — its state
+is the stores, its code is the genome. On each tick (`HOST_TICK`, 1 s)
+every host that runs a body applies the record into the graph and the
+org chart (`MemoryProjection`), carries out an adoption or abandonment
+the record asks for (`LedgerAdoption`, under a claim on the asking row),
+and erases the protected bodies the record redacted
+(`MemoryVault.complete_redactions`). Nothing coordinates the nodes; the
+stores serialize them — the projection a row at a time by
+compare-and-swap, an adoption by its claim, an erasure by digest (it
+is idempotent). There is no spine lease and nothing is admitted: a
+writer writes, and memory's insert function is the gate (**Writers
+write directly**, above). **Sync before project**: when the record has
+a remote, a node projects only as far as the head the remote holds
+after that tick's sync, and not at all on a tick whose sync did not
+complete, so a stamped row is always a shared one — a node that
+projected a row it never shared and then died would leave every other
+node waiting on a commit none of them can receive. With no remote there
+is one clone, and nothing to wait on. A host with no
+`HALE_DNA_MEMORY_DSN_SPINE` says so and runs with no memory: nothing is
+projected. What failed on a tick is said once, when it changes, and
+tried again on the next.
 
 **Claims by id (GH #1026).** Every non-idempotent act a node takes is
 claimed by id, with an expiry, in memory before it is taken, so any
@@ -2117,19 +2133,17 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   hands a job to another owner's member appends `task.transfer_requested
   <task> {owner, to, assignee, …}` in place of `task.handed`, and the
   Task waits; a member of that owner accepts it (`hale dna task accept
-  <id> --as <who>`, `task.transfer_accepted`, admitted by the spine
-  only in a member of `to`'s name) and their controller then appends
+  <id> --as <who>`, `task.transfer_accepted`, which memory takes only
+  in a member of `to`'s name) and their controller then appends
   `task.handed` in its own name, naming `transferred_from` and who
   accepted, so completion is admitted in the assignee's name as
   always. Nothing settles on the request alone. Every owner runs a
-  body over a shared record, and the spine lease picks the one spine
-  that projects, admits and erases (**The spine**). Each owner's heads
-  sign their requests with their owner's key, and the spine, holding
-  every owner's key (`HALE_DNA_OWNER_KEYS`), admits a request in a
-  person's name only from a head of the owner that person is a member
-  of (**The owners' keys**); who the person is remains the head's to
-  establish — its issuer under `dna.principal = oidc`. A spine given no
-  keys admits requests on a single-owner record without a signature.
+  body over a shared record, and every body projects, carries out and
+  erases, none coordinating (**The spine**). Each owner's heads write
+  as their owner's role, which writes only in its owner's members'
+  names (**The owners' roles**); who the person is remains the head's
+  to establish — its issuer under `dna.principal = oidc`. With one
+  owner, the head's role writes as any person.
   The map may still name `host = <owner>` (GH #669); changing it
   affects every owner, so every owner approves, and memory does not
   read it.
@@ -2669,9 +2683,8 @@ The live half is memory's, projected from the record by the spine
   to the record's own schema once its first row lands.
 - **The spine projects; readers read.** `MemoryProjection`
   (`dna/operations/memory_tail.hl`) applies the record into the graph
-  on the host's tick, as the record's spine role, while the host holds
-  the spine lease (**The spine**, above), so the projection advances
-  without anyone asking. **The fence compares heads by ancestry**:
+  on the host's tick, as the record's spine role, on every node (**The
+  spine**, above), so the projection advances without anyone asking. **The fence compares heads by ancestry**:
   memory's stamp is a commit of the record, so every clone can place
   it. Nothing stamped, or the stamped head is this clone's row at the
   stamp: the rows after it are the delta. This clone's head an ancestor

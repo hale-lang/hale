@@ -10,32 +10,36 @@
 // journals underneath — the record's and the Ledger's — read as one
 // merged sequence, appended to by kind. `MemoryLedger` (memory_spine.hl)
 // is the Ledger as the organism and the host reach it, under the record's
-// spine role; a head reaches it read-only and writes by request (GH #985).
+// spine role; a head writes it directly under its own role, and memory's
+// insert function is the gate (GH #985, #1026).
 
 const ROUTING_VERSION: Int = 1;
 
-// Where a kind lives under routing version 1.
+// The routing table of version 1, as data: the families that are the
+// Ledger's whole, and the kinds of other families that are. `memory_of`
+// reads it, and so does memory's insert function (`ledger_kind`, GH
+// #1026), which refuses a record kind asked of the Ledger — one table,
+// read in two languages.
+//
+// The whole family is operational: cases, intents, tasks, decisions,
+// completions, exceptions, schedules, receipts, handoffs, pressure,
+// instances, effects, reports, leases and claims.
+const LEDGER_FAMILIES: String = "case intent task decision completion exception schedule receipt handoff pressure instance effect report lease claim";
+// Families split by kind — concerns, money, a body's liveness, model
+// calls — and, GH #646 card 05, a workflow execution's own facts: the
+// `workflow`, `step` and `attempt` families and `work.settled` are the
+// day's work, named here rather than left to the default.
+const LEDGER_KINDS: String = "concern.requested concern.raised concern.refused grant.reserved grant.released grant.fenced grant.reservation_refused spend.reserved spend.settled spend.compensated body.claimed body.released body.credential_missing body.credential_present model.called knowledge.consulted optimize.refused budget.exhausted workflow.admitted workflow.refused workflow.ask_refused workflow.settled step.registered step.activated step.completed step.failed work.settled attempt.admitted attempt.outcome";
+
+// Where a kind lives under routing version 1. Everything the table does
+// not name — mutations, reviews, knowledge, practices, grants as
+// authority, connections, provisioning, secrets, expression, the fleet's
+// deploys, people, the structure observed at init, and the adoption rows
+// themselves — is the record's.
 fn memory_of(kind: String) -> String {
     let dot = std::str::index_of(kind, ".");
     let family = if dot < 0 { kind } else { kind[0..dot] };
-    // the whole family is operational
-    if family == "case" || family == "intent" || family == "task" || family == "decision" || family == "completion" || family == "exception" || family == "schedule" || family == "receipt" || family == "handoff" || family == "pressure" || family == "instance" || family == "effect" || family == "report" || family == "lease" || family == "claim" { return "ledger"; }
-    // families split by kind
-    if kind == "concern.requested" || kind == "concern.raised" || kind == "concern.refused" { return "ledger"; }
-    if kind == "grant.reserved" || kind == "grant.released" || kind == "grant.fenced" || kind == "grant.reservation_refused" { return "ledger"; }
-    if kind == "spend.reserved" || kind == "spend.settled" || kind == "spend.compensated" { return "ledger"; }
-    if kind == "body.claimed" || kind == "body.released" || kind == "body.credential_missing" || kind == "body.credential_present" { return "ledger"; }
-    if kind == "model.called" || kind == "knowledge.consulted" || kind == "optimize.refused" || kind == "budget.exhausted" { return "ledger"; }
-    // GH #646 card 05: a workflow execution's own facts. The whole
-    // `workflow`, `step` and `attempt` families and `work.settled` are the
-    // day's work; they are named here rather than left to the default.
-    if kind == "workflow.admitted" || kind == "workflow.refused" || kind == "workflow.ask_refused" || kind == "workflow.settled" { return "ledger"; }
-    if kind == "step.registered" || kind == "step.activated" || kind == "step.completed" || kind == "step.failed" { return "ledger"; }
-    if kind == "work.settled" || kind == "attempt.admitted" || kind == "attempt.outcome" { return "ledger"; }
-    // everything else — mutations, reviews, knowledge, practices, grants
-    // as authority, connections, provisioning, secrets, expression, the
-    // fleet's deploys, people, the structure observed at init, and the
-    // adoption rows themselves — is the record's
+    if word_in(family, LEDGER_FAMILIES) || word_in(kind, LEDGER_KINDS) { return "ledger"; }
     return "record";
 }
 
