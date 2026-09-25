@@ -1,0 +1,63 @@
+// GH #1066 — a pinned child restarted from `on_failure` runs again.
+//
+// The issue's shape: a pinned child whose run() is its loop violates a
+// closure, and its owner restarts it. run() had returned for good, so
+// the child was dead from then on while the owner believed it had
+// recovered. Now the restart takes effect on the child's own thread once
+// run() returns (spec/semantics.md § "restart(child)"): birth() runs
+// again, then run().
+//
+// `Pump` fails twice. The first failure comes while `slow` still keeps
+// App's params open, so it is held: the pump's thread waits for the
+// handler's decision rather than deciding by timing. The second comes
+// with App settled, from inside the violate.
+
+locus Pump {
+    params { ticks: Int = 0; births: Int = 0; failures: Int = 0; }
+    closure delivery { captures: ticks; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    @unbounded
+    run() {
+        while !self.draining {
+            self.ticks = self.ticks + 1;
+            if (self.ticks == 2 && self.failures == 0) || (self.ticks == 60 && self.failures == 1) {
+                self.failures = self.failures + 1;
+                violate delivery;
+            }
+            std::time::sleep(5ms);
+        }
+    }
+}
+
+locus Slow {
+    run() { std::time::sleep(150ms); }
+}
+
+main locus App {
+    params {
+        pump: Pump = Pump { };
+        slow: Slow = Slow { };
+        fired: Int = 0;
+    }
+    placement { pump: pinned; }
+    on_failure(c: Pump, err: ClosureViolation) {
+        self.fired = self.fired + 1;
+        restart (c) for 5;
+    }
+    run() {
+        let mut i = 0;
+        while self.fired < 2 && i < 200 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert_eq_int(self.fired, 2, "both failures reached the handler");
+        let a = self.pump.ticks;
+        std::time::sleep(100ms);
+        let b = self.pump.ticks;
+        std::test::assert(b > a, "the pinned child's run() is running again");
+        std::test::assert_eq_int(self.pump.births, 3, "each restart re-ran birth()");
+        std::process::exit(0);
+    }
+}
+
+fn main() { App { }; }

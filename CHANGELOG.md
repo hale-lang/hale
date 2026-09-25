@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+### `restart` restarts a child that failed in `run()` (GH #1066)
+
+- **Fixed:** `restart(c)` and `restart_in_place(c)` from `on_failure`
+  only re-ran a child whose *birth-epoch* closure failed. A child that
+  failed in `run()` — a pinned connection whose delivery closure was
+  violated — never ran again, while its owner believed it had
+  recovered. The restart now takes effect once `run()` returns, on the
+  thread that ran it: `birth()` runs again, then `run()`.
+- A restart asked for by a handler whose failure was held (the parent
+  still setting params) takes effect when that handler returns. A
+  birth-epoch failure is now held like any other, which removes the
+  exception #1065 left: the child waits for its handler before
+  starting `run()`.
+- The spec's restart sections now describe what ships: a restart
+  reruns the same instance; it does not dissolve and rebuild it.
+
 ### `on_failure` waits for its locus's params (GH #1035, cooperative half)
 
 - **Fixed:** a child that failed while its parent was still setting

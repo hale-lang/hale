@@ -1843,43 +1843,72 @@ static inline int lotus_process_draining(void) {
  * on the settling thread, before the parent's birth(). The open count
  * keeps the no-parent-open case to one load. */
 typedef void (*lotus_failure_fn)(void *parent, void *child, void *err);
-typedef struct {
+typedef void (*lotus_resume_fn)(void *child, int64_t phase, int64_t pre);
+
+/* One held failure. A node stays linked until its handler has
+ * returned (state DONE), so a failing child can find it — to defer its
+ * reclaim behind the handler (#1067), or to learn what the handler
+ * decided (#1066) — for the whole time the failure is outstanding. */
+enum { LOTUS_HELD = 0, LOTUS_DELIVERING = 1, LOTUS_DELIVERED = 2 };
+typedef struct lotus_held_failure {
+    struct lotus_held_failure *next;
     void *parent;
+    pthread_t opener;          /* the thread holding the parent open */
     lotus_failure_fn fn;
     void *child;
     void *err;
     /* The child's own teardown, when it asked to be reclaimed while
-     * this failure was held (lotus_failure_defer_reclaim): run right
-     * after the handler, which reads the child. */
+     * this failure was held: run right after the handler, which reads
+     * the child. */
     void (*reclaim)(void *child);
+    /* What the failing child does once the handler returns, when it
+     * runs on the settling thread and so cannot wait for it: a restart
+     * the handler asked for takes effect here (spec/semantics.md §
+     * "on_failure(c, err)"). `phase` 0 = its run() had returned, 1 =
+     * it had not started run() yet; `pre` = its restart count before
+     * the handler. */
+    lotus_resume_fn resume;
+    int64_t phase, pre;
+    int state;
+    int waiters;               /* threads blocked in lotus_failure_await */
 } lotus_held_failure_t;
 
-/* How many failures are held right now. Exported, not static: every
- * `__reclaim_<L>` loads it (one monotonic load) and only calls
- * lotus_failure_defer_reclaim when it is non-zero. */
-int64_t lotus_held_failure_count = 0;
+typedef struct {
+    void *parent;
+    pthread_t opener;
+} lotus_params_open_t;
 
 static pthread_mutex_t g_params_open_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_held_delivered = PTHREAD_COND_INITIALIZER;
 static int64_t g_params_open_count = 0;
-static void **g_params_open = NULL;
+static lotus_params_open_t *g_params_open = NULL;
 static size_t g_params_open_len = 0, g_params_open_cap = 0;
-static lotus_held_failure_t *g_held_failures = NULL;
-static size_t g_held_len = 0, g_held_cap = 0;
+static lotus_held_failure_t *g_held_head = NULL, *g_held_tail = NULL;
+
+/* How many failures are outstanding (held or being delivered).
+ * Exported, not static: `__reclaim_<L>` and the restart points load it
+ * (one monotonic load) and only call into the runtime when it is
+ * non-zero. */
+int64_t lotus_held_failure_count = 0;
+
+static void lotus_held_oom(const char *what) {
+    pthread_mutex_unlock(&g_params_open_lock);
+    fprintf(stderr, "lotus: out of memory %s\n", what);
+    abort();
+}
 
 void lotus_params_open(void *parent) {
     pthread_mutex_lock(&g_params_open_lock);
     if (g_params_open_len == g_params_open_cap) {
         size_t cap = g_params_open_cap ? g_params_open_cap * 2 : 8;
-        void **grown = realloc(g_params_open, cap * sizeof *grown);
-        if (!grown) {
-            pthread_mutex_unlock(&g_params_open_lock);
-            fprintf(stderr, "lotus: out of memory opening params\n");
-            abort();
-        }
+        lotus_params_open_t *grown =
+            realloc(g_params_open, cap * sizeof *grown);
+        if (!grown) lotus_held_oom("opening params");
         g_params_open = grown;
         g_params_open_cap = cap;
     }
-    g_params_open[g_params_open_len++] = parent;
+    g_params_open[g_params_open_len++] =
+        (lotus_params_open_t){ parent, pthread_self() };
     __atomic_add_fetch(&g_params_open_count, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_params_open_lock);
 }
@@ -1890,100 +1919,156 @@ int64_t lotus_failure_hold(void *parent, void *fn, void *child,
     if (__atomic_load_n(&g_params_open_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
     pthread_mutex_lock(&g_params_open_lock);
-    int open = 0;
-    for (size_t i = 0; i < g_params_open_len; i++) {
-        if (g_params_open[i] == parent) { open = 1; break; }
+    lotus_params_open_t *open = NULL;
+    for (size_t i = g_params_open_len; i-- > 0;) {
+        if (g_params_open[i].parent == parent) {
+            open = &g_params_open[i];
+            break;
+        }
     }
     if (!open) {
         pthread_mutex_unlock(&g_params_open_lock);
         return 0;
     }
-    if (g_held_len == g_held_cap) {
-        size_t cap = g_held_cap ? g_held_cap * 2 : 8;
-        lotus_held_failure_t *grown = realloc(g_held_failures, cap * sizeof *grown);
-        if (!grown) {
-            pthread_mutex_unlock(&g_params_open_lock);
-            fprintf(stderr, "lotus: out of memory holding a failure\n");
-            abort();
-        }
-        g_held_failures = grown;
-        g_held_cap = cap;
-    }
+    lotus_held_failure_t *node = calloc(1, sizeof *node);
     void *copy = malloc(err_size > 0 ? (size_t)err_size : 1);
-    if (!copy) {
-        pthread_mutex_unlock(&g_params_open_lock);
-        fprintf(stderr, "lotus: out of memory holding a failure\n");
-        abort();
-    }
+    if (!node || !copy) lotus_held_oom("holding a failure");
     if (err_size > 0) memcpy(copy, err, (size_t)err_size);
-    g_held_failures[g_held_len++] = (lotus_held_failure_t){
-        parent, (lotus_failure_fn)fn, child, copy, NULL,
-    };
+    node->parent = parent;
+    node->opener = open->opener;
+    node->fn = (lotus_failure_fn)fn;
+    node->child = child;
+    node->err = copy;
+    node->state = LOTUS_HELD;
+    if (g_held_tail) g_held_tail->next = node; else g_held_head = node;
+    g_held_tail = node;
     __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_params_open_lock);
     return 1;
 }
 
+/* The latest outstanding failure of `child`, under the lock. */
+static lotus_held_failure_t *lotus_held_latest_for(void *child) {
+    lotus_held_failure_t *found = NULL;
+    for (lotus_held_failure_t *n = g_held_head; n; n = n->next)
+        if (n->child == child && n->state != LOTUS_DELIVERED) found = n;
+    return found;
+}
+
+static void lotus_held_unlink(lotus_held_failure_t *node) {
+    lotus_held_failure_t **pp = &g_held_head, *prev = NULL;
+    while (*pp && *pp != node) { prev = *pp; pp = &(*pp)->next; }
+    if (!*pp) return;
+    *pp = node->next;
+    if (g_held_tail == node) g_held_tail = prev;
+    node->next = NULL;
+}
+
 /* A child whose failure is held must outlive its handler: the handler
- * reads it. A cooperative child's run() returns at once after a
- * `violate`, with `__drain_requested` set, and its run wrapper reclaims
- * it on the spot — before the parent settles and delivers. So
- * `__reclaim_<L>` asks here first: 1 = a failure of this child is
- * held, and the reclaim now runs right after the last such handler;
- * 0 = reclaim now. */
+ * reads it. `__reclaim_<L>` asks here first: 1 = a failure of this
+ * child is outstanding, and the reclaim now runs right after its
+ * handler; 0 = reclaim now. */
 int64_t lotus_failure_defer_reclaim(void *child, void *reclaim) {
     pthread_mutex_lock(&g_params_open_lock);
-    for (size_t i = g_held_len; i-- > 0;) {
-        if (g_held_failures[i].child == child) {
-            g_held_failures[i].reclaim = (void (*)(void *))reclaim;
-            pthread_mutex_unlock(&g_params_open_lock);
-            return 1;
-        }
-    }
+    lotus_held_failure_t *node = lotus_held_latest_for(child);
+    if (node) node->reclaim = (void (*)(void *))reclaim;
     pthread_mutex_unlock(&g_params_open_lock);
-    return 0;
+    return node ? 1 : 0;
+}
+
+/* Where a failing child learns what its held handler decided, at the
+ * point it would act on it — after its run() returned (phase 0), or
+ * before it starts run() (phase 1). A restart the handler asks for
+ * takes effect when the handler returns:
+ *
+ *   0 — nothing of this child's is outstanding: decide now.
+ *   1 — it was, on another thread's parent (a pinned child, a pool
+ *       worker): this thread waited until the handler returned, and
+ *       the caller now decides with the count the handler left.
+ *   2 — it is, and the parent is open on THIS thread (a cooperative
+ *       child failing during its parent's params loop), so waiting
+ *       would never end. `resume` runs at settle, right after the
+ *       handler, on this thread; the caller stops here. */
+int64_t lotus_failure_await(void *child, void *resume, int64_t phase,
+                            int64_t pre) {
+    if (__atomic_load_n(&lotus_held_failure_count, __ATOMIC_ACQUIRE) == 0)
+        return 0;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_held_failure_t *node = lotus_held_latest_for(child);
+    if (!node) {
+        pthread_mutex_unlock(&g_params_open_lock);
+        return 0;
+    }
+    if (pthread_equal(node->opener, pthread_self())) {
+        int64_t r = 0;
+        if (node->state == LOTUS_HELD && resume) {
+            node->resume = (lotus_resume_fn)resume;
+            node->phase = phase;
+            node->pre = pre;
+            r = 2;
+        }
+        pthread_mutex_unlock(&g_params_open_lock);
+        return r;
+    }
+    node->waiters++;
+    while (node->state != LOTUS_DELIVERED)
+        pthread_cond_wait(&g_held_delivered, &g_params_open_lock);
+    if (--node->waiters == 0) free(node);
+    pthread_mutex_unlock(&g_params_open_lock);
+    return 1;
 }
 
 void lotus_params_settle(void *parent) {
     pthread_mutex_lock(&g_params_open_lock);
     for (size_t i = g_params_open_len; i-- > 0;) {
-        if (g_params_open[i] == parent) {
+        if (g_params_open[i].parent == parent) {
             g_params_open[i] = g_params_open[--g_params_open_len];
             __atomic_sub_fetch(&g_params_open_count, 1, __ATOMIC_RELEASE);
             break;
         }
     }
-    /* Take this parent's held failures, in arrival order, and close
-     * the gap they leave. Delivered outside the lock: a handler may
-     * build a locus that opens and settles in turn. */
-    size_t n = 0;
-    for (size_t i = 0; i < g_held_len; i++)
-        if (g_held_failures[i].parent == parent) n++;
-    lotus_held_failure_t *mine = NULL;
-    if (n) {
-        mine = malloc(n * sizeof *mine);
-        if (!mine) {
-            pthread_mutex_unlock(&g_params_open_lock);
-            fprintf(stderr, "lotus: out of memory settling params\n");
-            abort();
-        }
-        size_t k = 0, keep = 0;
-        for (size_t i = 0; i < g_held_len; i++) {
-            if (g_held_failures[i].parent == parent)
-                mine[k++] = g_held_failures[i];
-            else
-                g_held_failures[keep++] = g_held_failures[i];
-        }
-        g_held_len = keep;
-        __atomic_sub_fetch(&lotus_held_failure_count, (int64_t)n, __ATOMIC_RELEASE);
-    }
     pthread_mutex_unlock(&g_params_open_lock);
-    for (size_t i = 0; i < n; i++) {
-        mine[i].fn(mine[i].parent, mine[i].child, mine[i].err);
-        free(mine[i].err);
-        if (mine[i].reclaim) mine[i].reclaim(mine[i].child);
+    /* Deliver this parent's failures in arrival order, outside the
+     * lock: a handler may build a locus that opens and settles in
+     * turn. The node stays linked while its handler runs. */
+    for (;;) {
+        pthread_mutex_lock(&g_params_open_lock);
+        lotus_held_failure_t *node = g_held_head;
+        while (node && !(node->parent == parent && node->state == LOTUS_HELD))
+            node = node->next;
+        if (!node) {
+            pthread_mutex_unlock(&g_params_open_lock);
+            break;
+        }
+        node->state = LOTUS_DELIVERING;
+        pthread_mutex_unlock(&g_params_open_lock);
+
+        node->fn(node->parent, node->child, node->err);
+
+        pthread_mutex_lock(&g_params_open_lock);
+        void *child = node->child;
+        void *err = node->err;
+        lotus_resume_fn resume = node->resume;
+        int64_t phase = node->phase, pre = node->pre;
+        void (*reclaim)(void *) = node->reclaim;
+        node->state = LOTUS_DELIVERED;
+        lotus_held_unlink(node);
+        __atomic_sub_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
+        int waited = node->waiters > 0;
+        if (waited)
+            pthread_cond_broadcast(&g_held_delivered);
+        else
+            free(node);
+        pthread_mutex_unlock(&g_params_open_lock);
+        free(err);
+        /* The child's next step, now the handler has spoken: a resume
+         * (restart, or carry on / reclaim) for a child on this thread,
+         * else a teardown it deferred. */
+        if (resume)
+            resume(child, phase, pre);
+        else if (reclaim)
+            reclaim(child);
     }
-    free(mine);
 }
 
 /* Growable accept'd-children tracker (2026-05-29). Replaces the

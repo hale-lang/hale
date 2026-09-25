@@ -1634,6 +1634,8 @@ pub fn build_executable_with_options(
         cooperative_pool_for_next_locus_instantiation: None,
         current_cooperative_pool: None,
         coop_pool_run_wrappers: BTreeMap::new(),
+        run_end_fns: BTreeMap::new(),
+        restart_fns: BTreeMap::new(),
         deployment: Default::default(),
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
@@ -5080,6 +5082,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the pool-handler signature and calls the locus's run()
     /// method. Indexed by locus type name.
     pub(crate) coop_pool_run_wrappers: BTreeMap<String, FunctionValue<'ctx>>,
+    /// GH #1066: `__run_end_<L>` — the reclaim decision once a
+    /// locus's run() has returned, shared by its run wrapper and its
+    /// `__resume_<L>`.
+    pub(crate) run_end_fns: BTreeMap<String, FunctionValue<'ctx>>,
+    /// GH #1066: `__restart_<L>` / `__resume_<L>` for each locus a
+    /// failure can come from (see `locus::restart`).
+    pub(crate) restart_fns: BTreeMap<String, crate::locus::restart::RestartFns<'ctx>>,
 
     /// R3 (2026-07-29): the reified deployment arrangement — see
     /// `crate::deployment::DeploymentPlan`. Populated by
@@ -9354,13 +9363,97 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let _payload = wrapper
                 .get_nth_param(1)
                 .expect("wrapper payload_ptr param");
-            self.builder
-                .build_call(
-                    run_fn,
-                    &[self_arg.into()],
-                    &format!("{}.run.via_pool", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // GH #1066: what happens once run() has returned — the
+            // reclaim decision below — lives in `__run_end_<L>`, so a
+            // child resumed after a held failure (`__resume_<L>`) ends
+            // the same way.
+            let run_end = self.module.add_function(
+                &format!("__run_end_{}", locus_name),
+                void_t.fn_type(&[ptr_t.into()], false),
+                None,
+            );
+            if let Some(rf) = self.restart_fns.get(locus_name).copied() {
+                // GH #1066: a locus that can fail runs in a loop. A
+                // handler that asked for a restart (`restart(c)`,
+                // `restart_in_place(c)`) while run() was executing gets
+                // it once run() returns: `__restart_<L>` re-runs birth,
+                // and run() starts again. A failure the parent is still
+                // holding is waited for — or, on the thread holding the
+                // parent open, left to the runtime to resume at settle.
+                let e = |e: inkwell::builder::BuilderError| {
+                    CodegenError::LlvmEmit(e.to_string())
+                };
+                let loop_bb = self.context.append_basic_block(wrapper, "run.loop");
+                let decide_bb = self.context.append_basic_block(wrapper, "run.decide");
+                let restart_bb = self.context.append_basic_block(wrapper, "run.restart");
+                let end_bb = self.context.append_basic_block(wrapper, "run.end");
+                let out_bb = self.context.append_basic_block(wrapper, "run.out");
+                self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
+                self.builder.position_at_end(loop_bb);
+                let pre = self.emit_restart_count(&info, self_arg)?;
+                self.builder
+                    .build_call(
+                        run_fn,
+                        &[self_arg.into()],
+                        &format!("{}.run.via_pool", locus_name),
+                    )
+                    .map_err(e)?;
+                let now = self.emit_restart_count(&info, self_arg)?;
+                let a = self.emit_failure_await(self_arg, Some(rf.resume), 0, now)?;
+                let resumed_later = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        a,
+                        self.context.i64_type().const_int(2, false),
+                        "run.resumed_at_settle",
+                    )
+                    .map_err(e)?;
+                self.builder
+                    .build_conditional_branch(resumed_later, out_bb, decide_bb)
+                    .map_err(e)?;
+                self.builder.position_at_end(decide_bb);
+                let req = self.emit_restart_requested(&info, self_arg, pre)?;
+                self.builder
+                    .build_conditional_branch(req, restart_bb, end_bb)
+                    .map_err(e)?;
+                self.builder.position_at_end(restart_bb);
+                self.builder
+                    .build_call(rf.restart, &[self_arg.into()], "run.restart.call")
+                    .map_err(e)?;
+                self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
+                self.builder.position_at_end(end_bb);
+                self.builder
+                    .build_call(run_end, &[self_arg.into()], "run.end.call")
+                    .map_err(e)?;
+                self.builder.build_unconditional_branch(out_bb).map_err(e)?;
+                self.builder.position_at_end(out_bb);
+                self.builder.build_return(None).map_err(e)?;
+            } else {
+                self.builder
+                    .build_call(
+                        run_fn,
+                        &[self_arg.into()],
+                        &format!("{}.run.via_pool", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_call(run_end, &[self_arg.into()], "run.end.call")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_return(None)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            // The rest emits `__run_end_<L>`'s body.
+            let wrapper_fn = wrapper;
+            let wrapper = run_end;
+            let entry = self.context.append_basic_block(wrapper, "entry");
+            self.builder.position_at_end(entry);
+            self.di_begin_function();
+            let self_arg = wrapper
+                .get_nth_param(0)
+                .expect("run_end self_ptr param")
+                .into_pointer_value();
             // 2026-05-30: reclaim this locus when run() completes if
             // EITHER (a) it's a FLOW — some parent declares
             // `release(c: ThisType)`, so run-completion reclaims it (a
@@ -9464,7 +9557,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_return(None)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.coop_pool_run_wrappers
-                .insert(locus_name.clone(), wrapper);
+                .insert(locus_name.clone(), wrapper_fn);
+            self.run_end_fns.insert(locus_name.clone(), run_end);
         }
         if let Some(bb) = saved_block {
             self.builder.position_at_end(bb);
@@ -10164,6 +10258,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `__reclaim_<L>` on run-completion / terminate.
         self.synthesize_reclaim_fns()?;
         self.synthesize_handler_reclaim_wrappers()?;
+        self.declare_restart_fns();
         self.synthesize_coop_pool_run_wrappers()?;
 
         // Pass B: declare every user-defined function so call sites
@@ -10247,6 +10342,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for l in &locus_decls {
             self.lower_locus_method_bodies(l)?;
         }
+        // GH #1066: restart / resume bodies, now user fns are declared
+        // (a param default `restart_in_place` re-stores may call one).
+        self.define_restart_fns()?;
 
         // Pass D: lower bodies of user-defined fns.
         for f in &user_fn_decls {

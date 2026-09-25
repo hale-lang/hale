@@ -1,0 +1,53 @@
+// GH #1066 — `restart(c)` from `on_failure` restarts a child that failed
+// in its run(): birth() runs again, then run().
+//
+// `restart` used to bump the child's restart count and nothing else;
+// only a birth-epoch closure's own check read it. A `violate` in run()
+// ended run() for good while the owner believed it had recovered.
+//
+// spec/semantics.md § "restart(child)": the restart takes effect once
+// the failing run() has returned. A failure the parent is still holding
+// (its params not settled yet) is decided when the handler returns — for
+// a cooperative child, on the parent's thread. The pinned half is
+// pinned_restart_test.hl.
+//
+// - `early`, a param default: its run() executes inside App's params
+//   loop, so its first failure is held and its restart runs at settle;
+//   its second failure arrives with App settled.
+// - `late`, built in run(): App is settled, the handler runs inside the
+//   violate, and the restart follows when run() returns.
+
+locus Once {
+    params { tag: String = ""; runs: Int = 0; births: Int = 0; }
+    closure fuse { captures: runs; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    run() {
+        self.runs = self.runs + 1;
+        if self.runs < 3 { violate fuse; }
+    }
+}
+
+main locus App {
+    params {
+        early: Once = Once { tag: "early" };
+        fired: Int = 0;
+        seen: String = "";
+    }
+    on_failure(c: Once, err: ClosureViolation) {
+        self.fired = self.fired + 1;
+        self.seen = self.seen + c.tag + ";";
+        restart (c) for 5;
+    }
+    run() {
+        std::test::assert_eq_int(self.early.runs, 3, "the held child ran again until it passed");
+        std::test::assert_eq_int(self.early.births, 3, "each restart re-ran birth()");
+        std::test::assert_eq_str(self.seen, "early;early;", "both failures reached the handler, and the first write survived App's params");
+
+        let late = Once { tag: "late" };
+        std::test::assert_eq_int(late.runs, 3, "a child built in run() restarts too");
+        std::test::assert_eq_int(late.births, 3, "with birth() each time");
+        std::test::assert_eq_int(self.fired, 4, "and its two failures reached the handler");
+    }
+}
+
+fn main() { App { }; }
