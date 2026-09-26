@@ -273,6 +273,8 @@ fn main() {
         ans = github_verb(root, seed, word(a, 0), memory);
     } else if verb == "models" {
         ans = models_verb(root, std::env::var("HALE_BIN"));
+    } else if verb == "work" {
+        ans = work_verb(root, std::env::var("HALE_BIN"));
     }
     if ans.ok {
         print(ans.text);

@@ -472,6 +472,10 @@ fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
                 principal_mode: std::json::find_string_field(e.body, "principal_mode"), principal_name: std::json::find_string_field(e.body, "principal_name")
             };
         }
+        // given back by its holder at that token (`dna.attempt.release`): nobody's again
+        if e.kind == "attempt.released" && e.entity == attempt_id && out.present && std::json::find_string_field(e.body, "holder") == out.holder && std::json::find_int_field(e.body, "token") == out.token {
+            out = LegClaim { holder: out.holder, token: out.token, principal_mode: out.principal_mode, principal_name: out.principal_name };
+        }
         i = i + 1;
     }
     return out;

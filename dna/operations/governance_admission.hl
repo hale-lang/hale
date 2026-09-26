@@ -190,7 +190,7 @@ locus GovernanceCommands {
     }
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> GovernanceGrant {
         if operation == "dna.task.create" { let create = TaskCreateCommandCodec { }; return create.grant(context); }
-        if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
+        if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" || operation == "dna.attempt.renew" || operation == "dna.attempt.release" || operation == "dna.friction.file" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
         if operation == "dna.task.reassign" || operation == "dna.person.retire" { return self.task_authority.authorize(context, operation, recovery, j); }
         if operation == "dna.organization.propose" || operation == "dna.organization.ownership.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
         let grant = self.authority.authorize(context, operation, recovery, j);
@@ -295,7 +295,7 @@ locus GovernanceCommands {
         }
         b.append_str("}"); return std::str::from_bytes(b.snapshot());
     }
-    fn attempt_operation(operation: String) -> Bool { return operation == "dna.attempt.claim" || operation == "dna.attempt.outcome"; }
+    fn attempt_operation(operation: String) -> Bool { return std::str::starts_with(operation, "dna.attempt.") || operation == "dna.friction.file"; }
     // A leg's command found in the journal the attempt kinds live in — the
     // record, or the record with the adopted ledger (rows the record holds
     // of those kinds are read there, so a row is found once). A record
@@ -307,7 +307,7 @@ locus GovernanceCommands {
         let mut i = 0;
         while i < rj.revision() {
             let e = rj.read(i);
-            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" {
+            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.released" || e.kind == "friction.filed" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
                 if codec.string(e.body, "command_id") == id {
                     let fact = attempts.decode_fact(e); let c = fact.command;
@@ -387,8 +387,9 @@ locus GovernanceCommands {
                         || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: create.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
-            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" {
-                // GH #946: a leg's claim, or the outcome it handed back
+            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.released" || e.kind == "friction.filed" {
+                // GH #946: a leg's claim or renewal, the outcome it handed back,
+                // the lease it gave back, or the friction a position filed
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
                 if codec.string(e.body, "command_id") == id {
                     let fact = attempts.decode_fact(e); let c = fact.command;
@@ -556,7 +557,7 @@ locus GovernanceCommands {
             let create = TaskCreateCommandCodec { };
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: create.project(j, admission) };
         }
-        if admission.command.operation == "dna.attempt.claim" || admission.command.operation == "dna.attempt.outcome" {
+        if std::str::starts_with(admission.command.operation, "dna.attempt.") || admission.command.operation == "dna.friction.file" {
             let attempts = AttemptCommandCodec { };
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: attempts.project(j, admission) };
         }
@@ -628,6 +629,22 @@ locus GovernanceCommands {
                 if adopted && !ledger.ready() { return GovernanceResult { code: "commands_unsupported" }; }
                 let attempts = AttemptCommandCodec { }; let now = std::time::now();
                 let leases = dna::MemoryLeases { repo: self.record.location(), dsn_env: dna::HEAD_DSN_ENV };
+                if command.operation == "dna.friction.file" {
+                    // a position's friction is a fact of the record, filed at its
+                    // tail: nobody admits it, and the head the leg read is not a
+                    // fence on it (a leg a row behind still files)
+                    let fact = attempts.friction_fact(context, command, grant, s.head);
+                    if fact == "" { return GovernanceResult { code: "invalid_command" }; }
+                    if !self.unchanged(s) { continue; }
+                    let landed = self.land_attempt_row(s, ledger, false, dna::Row { kind: "friction.filed", entity: attempts.friction_entity(command), author: context.principal_name, body: fact }, id);
+                    if landed.ok {
+                        let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: landed.id, revision: s.revision + 1 };
+                        let moved = rj.refresh();
+                        return self.result_attempt(after, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: rj.revision() - 1, event_id: landed.id, native_body: fact, entity: attempts.friction_entity(command) });
+                    }
+                    if landed.error != "stale" { uncertain = true; }
+                    continue;
+                }
                 if command.operation == "dna.attempt.claim" {
                     // GH #946 slice 3: the claim is memory's, keyed on the attempt id
                     // with its TTL; the row names the lease. A refusal is a receipt
@@ -689,7 +706,7 @@ locus GovernanceCommands {
                 if !attempts.has_row(rj, "effect.requested", "attempt:" + a) { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never asked to run; nothing is outstanding on it")); }
                 let settled = dna::recorded_attempt_outcome(rj, a, rj.revision());
                 if settled.ok { return self.refusal(s, attempts.refused(context, command, "duplicate: attempt " + a + " is settled (" + settled.value.disposition + "); this outcome changes nothing")); }
-                if attempts.outcome_outstanding(rj, a, command.holder, command.token) { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
+                if command.operation == "dna.attempt.outcome" && attempts.outcome_outstanding(rj, a, command.holder, command.token) { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
                 let claim = dna::recorded_leg_claim(rj, a, rj.revision());
                 if !claim.present { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never claimed by a leg")); }
                 if claim.holder != command.holder || claim.token != command.token { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + command.holder + "'s at token " + to_string(command.token))); }
@@ -699,6 +716,39 @@ locus GovernanceCommands {
                     let live = leases.current("attempt:" + a);
                     if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to fence the lease: " + leases.last_error)); }
                     if !live.present || live.holder != command.holder || live.token != command.token || live.expires <= now { return self.refusal(s, attempts.refused(context, command, "stale: memory's claim on attempt " + a + " is not " + command.holder + "'s at token " + to_string(command.token) + " now")); }
+                }
+                if command.operation == "dna.attempt.renew" || command.operation == "dna.attempt.release" {
+                    // the lease renewed — memory's claim taken again by its holder,
+                    // which keeps the token — or given back; either is a row where
+                    // the attempt kinds live, and the lease check above is theirs too
+                    let mut renewed = dna::Lease { key: "attempt:" + a, holder: command.holder, token: command.token, expires: claim.expires, present: true };
+                    if command.operation == "dna.attempt.renew" {
+                        if leases.ready() {
+                            let l = leases.claim("attempt:" + a, command.holder, command.ttl);
+                            if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to renew the lease: " + leases.last_error)); }
+                            if !l.present || l.holder != command.holder || l.token != command.token { return self.refusal(s, attempts.refused(context, command, "stale: memory's claim on attempt " + a + " is not " + command.holder + "'s at token " + to_string(command.token) + " now")); }
+                            renewed = l;
+                        } else {
+                            renewed = dna::Lease { key: "attempt:" + a, holder: command.holder, token: command.token, expires: now + command.ttl, present: true };
+                        }
+                    } else if leases.ready() {
+                        let gone = leases.release_claim("attempt:" + a, command.holder);
+                        if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to give the lease back: " + leases.last_error)); }
+                    }
+                    let head = self.attempt_row_head(s, ledger, adopted);
+                    let fact = if command.operation == "dna.attempt.renew" { attempts.claim_fact(context, command, grant, head, admitted.value, renewed) } else { attempts.release_fact(context, command, grant, head) };
+                    if fact == "" { return GovernanceResult { code: "invalid_command" }; }
+                    if !self.unchanged(s) { continue; }
+                    let landed = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: if command.operation == "dna.attempt.renew" { "attempt.claimed" } else { "attempt.released" }, entity: a, author: context.principal_name, body: fact }, id);
+                    if landed.ok {
+                        let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: if adopted { s.head } else { landed.id }, revision: if adopted { s.revision } else { s.revision + 1 } };
+                        let moved = rj.refresh();
+                        return self.result_attempt(after, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: rj.revision() - 1, event_id: landed.id, native_body: fact, entity: a });
+                    }
+                    if landed.error == "stale" { continue; }
+                    if adopted { return self.refusal(s, attempts.refused(context, command, "memory refused the row: " + landed.error)); }
+                    uncertain = true;
+                    continue;
                 }
                 let filed = self.file_receipts(context, command);
                 if std::str::starts_with(filed, "!") { return self.refusal(s, attempts.refused(context, command, filed[1..len(filed)])); }

@@ -676,7 +676,19 @@ refusing row's id. Once the organism has adopted the ledger, both commands and
 the hat read and write it under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`);
 without it they answer `commands_unsupported` / `context_source_unavailable`.
 
-`/capabilities` exposes `attempt_commands` (`dna.attempt.v1`, both operations and
+Three more operations ride the same route for a leg's loop (GH #946 slice 4):
+`dna.attempt.renew@1` (target `dna.attempt`, the lease in `preconditions`,
+`arguments.ttl` 1..86400; the lease extended and the token kept, `state:
+renewed`), `dna.attempt.release@1` (the lease in `preconditions`,
+`arguments.why`; `attempt.released`, `state: released`, and the attempt is
+another leg's to claim) and `dna.friction.file@1` (target `dna.friction` with the
+application's id, `record_head` in `preconditions`, `arguments.position`
+(`position:<name>`), `attempt_id` (or `""`) and `text`; `friction.filed` on the
+attempt, else on the position, `state: filed`; nobody admits it). A lease that is
+not this principal's, this holder's at this token now is refused as for an
+outcome. `hale dna work` is the client of all five ([Legs](../../docs/src/dna/legs.md)).
+
+`/capabilities` exposes `attempt_commands` (`dna.attempt.v1`, the five operations and
 their bounds) and `writes.attempt_claim` / `writes.attempt_outcome`;
 `reads.context` says the hat is readable.
 

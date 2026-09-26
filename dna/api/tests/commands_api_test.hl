@@ -100,7 +100,7 @@ locus CommandCases {
         let refs = self.f.refs();
         let data = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.text(wire.raw(data, "attempt_commands"), "profile"), "dna.attempt.v1", "attempt profile advertised");
-        std::test::assert_eq_str(wire.text(wire.raw(data, "attempt_commands"), "operations"), "dna.attempt.claim dna.attempt.outcome", "both operations named");
+        std::test::assert_eq_str(wire.text(wire.raw(data, "attempt_commands"), "operations"), "dna.attempt.claim dna.attempt.outcome dna.attempt.renew dna.attempt.release dna.friction.file", "the five operations named");
         std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "attempt_claim"), "true", "claim write flag");
         std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "attempt_outcome"), "true", "outcome write flag");
         std::test::assert_eq_str(wire.raw(wire.raw(data, "reads"), "context"), "true", "the hat is readable");

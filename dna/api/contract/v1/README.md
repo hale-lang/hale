@@ -172,9 +172,15 @@ an integer 1..86400) and `AttemptOutcomeCommandRequest` (target `dna.attempt`;
 `evidence` an array of `AttemptEvidenceCall`; `receipts` an array of
 `AttemptReceiptBody`; the hat the leg wore as `hat_digest`, `hat_head`,
 `hat_watermark` (integer, -1 for none), `prompt_digest` and `renderer`, optional
-in the schema and admitted five together or none), both in `CommandRequest`'s `anyOf`; their receipts
-(`AttemptClaimCommandReceipt`, `AttemptOutcomeCommandReceipt`, in
-`CommandResponse`'s `anyOf`) carry an `AttemptCommandOutcome` whose `token` is
+in the schema and admitted five together or none), with `AttemptRenewCommandRequest`
+(`arguments.ttl`), `AttemptReleaseCommandRequest` (`arguments.why`) and
+`FrictionCommandRequest` (target `dna.friction`; `position`, `attempt_id`, `text`),
+all in `CommandRequest`'s `anyOf`; their receipts
+(`AttemptClaimCommandReceipt`, `AttemptOutcomeCommandReceipt`,
+`AttemptRenewCommandReceipt`, `AttemptReleaseCommandReceipt` and
+`FrictionCommandReceipt`, in `CommandResponse`'s `anyOf`) carry an
+`AttemptCommandOutcome` — `state` one of `claimed`, `renewed`, `requested`,
+`settled`, `released`, `filed`, `refused`, `unknown` — whose `token` is
 an unsigned decimal string or `""`. `/capabilities` gains `attempt_commands`
 (`AttemptCommandCapabilities`), `writes.attempt_claim`, `writes.attempt_outcome`
 and `reads.context`. All of these reject extra fields. Fixtures: the

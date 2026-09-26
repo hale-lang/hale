@@ -38,6 +38,7 @@ pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
     ("dna/core/pond/db", &["hl"]),
     ("dna/core/pond/pq", &["hl"]),
     ("dna/core/pond/realtime/nats", &["hl"]),
+    ("dna/core/legs", &["hl"]),
     ("dna/ui", &["hl", "html"]),
 ];
 

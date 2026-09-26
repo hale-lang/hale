@@ -1196,6 +1196,8 @@ record's.
 | `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the principal that took it (`principal_mode`, `principal_name`: whose outcome the lease admits), the attempt's task, work and performer kind, and the command that took it |
 | `attempt.outcome_requested` | ledger | the outcome a leg handed back under its lease: the disposition, the result (`result`, `result_ref`), the receipts it filed (`evidence_ref`), the calls it made (`calls`), the hat it wore (`hat_digest`, `hat_head`, `hat_watermark`, `prompt_digest`, `renderer`) and the command (`request`); relayed until `attempt.outcome` or `attempt.outcome_refused` answers it |
 | `attempt.outcome_refused` | ledger | why the owner would not settle a leg's outcome (`why`, `holder`, `token`, `request`) |
+| `attempt.released` | ledger | a leg gave its lease back without an outcome (`holder`, `token`, `why`, and the command); the attempt is another leg's to claim (GH #946) |
+| `friction.filed` | record | what got in a position's way (`position`, `attempt_id`, `text`, and the command), filed on the attempt it was met on, else on the position; nobody admits it, it is a fact (GH #946) |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
@@ -1585,6 +1587,31 @@ memory is named to it.
   live, and it is never `effect.result unknown` — and asks it again
   once the lease expires with no outcome (`effect.redelivered`, once per
   lease), when a leg claims it anew.
+- **The verbs** (`hale dna work`, GH #946 slice 4; `dna/core/legs`,
+  vendored as `vendor/dna/legs`) are a leg as API clients: `next` is
+  `dna.attempt.claim` for a position (`--as position:<name>`, the
+  graph's id, never a free string), `brief` the hat read — or rendered
+  in the leg, `text`, `prompt` or `agent`, recording the hat digest,
+  the digest of what was rendered and the renderer's version
+  (`legs-render/1`) — `renew` is `dna.attempt.renew` (the lease
+  extended, the token kept: another `attempt.claimed` row), `submit`
+  is `dna.attempt.outcome`, `settle` that command read back, `release`
+  is `dna.attempt.release` (`attempt.released`; the attempt is another
+  leg's to claim), and `friction` is `dna.friction.file`
+  (`friction.filed`, a fact nobody admits). Each prints one JSON
+  object and holds nothing afterwards; a request id is minted from
+  what the verb asks, so a verb run twice under one lease is one act.
+  `run` is one cycle through the project's performers
+  (`dna/org/work.hl`, generated at init): a person's leg renders the
+  brief and leaves the outcome to `submit`; a deterministic performer
+  wins for the work kinds it takes and settles; the model performer is
+  the model leg's, which follows. A performer is handed the brief and
+  the hands as interfaces — git in scratch, the forge (it decides, a
+  leg never merges), the toolchain; deploy and the heart's API refuse,
+  naming #987 — and answers a performance (a result struct until #732).
+  The verb is the project's own program, built beside the vendored
+  seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
+  `hale_dna_work`.
 
 ## Workflow execution: one step
 

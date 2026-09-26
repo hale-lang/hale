@@ -1,0 +1,137 @@
+// dna/core/legs/client.hl — the head, as a leg sees it (GH #946 slice 4).
+//
+// A leg holds nothing between tasks and has no database role: everything
+// it knows it reads from the head over HTTP, and everything it does is a
+// command on the head's table — the claim, the renewal, the outcome, the
+// release, the friction — each under a request id the leg mints from
+// what it asks, so a verb run twice is one act and the second run reads
+// the first's receipt. This seed sits beside the core it imports as `..`
+// in the repository (`dna/core/legs`), in the toolchain cache, and in a
+// project's `vendor/dna/legs`, like pond's copies do.
+import ".." as dna;
+
+type Reply {
+    ok: Bool = false; // a 2xx answer
+    status: Int = 0; // 0 when the head could not be reached
+    body: String = "";
+    error: String = ""; // the transport's failure, or the API's error code and message
+}
+
+locus Head {
+    params {
+        api: String = "http://127.0.0.1:8793"; // the API's origin, which every command carries as Origin
+        application: String = "";
+        record_head: String = "";
+        record_revision: String = "";
+        principal_mode: String = "";
+        principal_name: String = "";
+        attached: Bool = false;
+        error: String = "";
+    }
+    fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
+    }
+    fn http(method: String, url: String, headers: String, body: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        let u = std::http::parse_url(url) or raise;
+        let req = std::http::ClientRequest { method: method, url: u, headers: headers, body: std::bytes::from_string(body) };
+        return std::http::request(req) or raise;
+    }
+    fn reply(r: std::http::ClientResponse) -> Reply {
+        let text = std::str::from_bytes(r.body);
+        if r.status == 0 { return Reply { status: 0, error: "the head at " + self.api + " cannot be reached: " + text }; }
+        if r.status < 200 || r.status >= 300 {
+            let e = std::json::find_field_raw(text, "error");
+            let code = std::json::find_string_field(e, "code");
+            let message = std::json::find_string_field(e, "message");
+            return Reply { status: r.status, body: text, error: if len(code) > 0 { code + ": " + message } else { "HTTP " + to_string(r.status) } };
+        }
+        return Reply { ok: true, status: r.status, body: text };
+    }
+    fn get(path: String) -> Reply {
+        let r = self.http("GET", self.api + path, "Accept: application/json", "") or self.transport_failed(err);
+        return self.reply(r);
+    }
+    fn post(path: String, body: String) -> Reply {
+        let r = self.http("POST", self.api + path, "Origin: " + self.api + "\r\nContent-Type: application/json\r\nX-Hale-Command: 1", body) or self.transport_failed(err);
+        return self.reply(r);
+    }
+    fn prefix() -> String { return "/api/hale/v1/applications/" + self.application; }
+    // The application the head serves, its record head, and the principal
+    // the head sees this leg as: what every command's preconditions name.
+    fn attach() -> Bool {
+        let apps = self.get("/api/hale/v1/applications");
+        if !apps.ok { self.error = apps.error; return false; }
+        let source = std::json::find_field_raw(apps.body, "source");
+        self.application = std::json::find_string_field(source, "record_id");
+        self.record_head = std::json::find_string_field(source, "record_head");
+        self.record_revision = std::json::find_string_field(source, "record_revision");
+        if len(self.application) == 0 { self.error = "the head at " + self.api + " names no application"; return false; }
+        let caps = self.get(self.prefix() + "/capabilities");
+        if !caps.ok { self.error = caps.error; return false; }
+        let principal = std::json::find_field_raw(std::json::find_field_raw(caps.body, "data"), "principal");
+        self.principal_mode = std::json::find_string_field(principal, "mode");
+        self.principal_name = std::json::find_string_field(principal, "name");
+        if len(self.principal_name) == 0 { self.error = "the head names no principal for this leg"; return false; }
+        self.attached = true;
+        return true;
+    }
+    fn principal() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("mode", self.principal_mode);
+        b.string_field("name", self.principal_name);
+        b.end_object();
+        return b.result();
+    }
+    // The preconditions of a command on the record head the leg saw.
+    fn head_conditions() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("record_head", self.record_head);
+        b.field("principal", self.principal());
+        b.end_object();
+        return b.result();
+    }
+    // The preconditions of a command under a lease.
+    fn lease_conditions(holder: String, token: Int) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("holder", holder);
+        b.int_field("token", token);
+        b.field("principal", self.principal());
+        b.end_object();
+        return b.result();
+    }
+    fn envelope(request_id: String, operation: String, target_kind: String, target_id: String, preconditions: String, arguments: String) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("operation", operation);
+        b.string_field("operation_version", "1");
+        b.begin_object_field("context");
+        b.string_field("application_id", self.application);
+        b.string_field("position_id", "org");
+        b.end_object();
+        b.begin_object_field("target");
+        b.string_field("application_id", self.application);
+        b.string_field("kind", target_kind);
+        b.string_field("id", target_id);
+        b.end_object();
+        b.field("preconditions", preconditions);
+        b.field("arguments", arguments);
+        b.end_object();
+        return b.result();
+    }
+    // One command on the table; a refusal is an ok reply whose receipt
+    // says `refused` with the reason.
+    fn submit(request_id: String, operation: String, target_kind: String, target_id: String, preconditions: String, arguments: String) -> Reply {
+        return self.post(self.prefix() + "/commands", self.envelope(request_id, operation, target_kind, target_id, preconditions, arguments));
+    }
+    fn lookup(request_id: String) -> Reply {
+        return self.get(self.prefix() + "/commands?request_id=" + dna::url_encode(request_id));
+    }
+    // The hat of one Work, as the head renders it: structure, never a prompt.
+    fn context(work_id: String) -> Reply {
+        return self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
+    }
+}

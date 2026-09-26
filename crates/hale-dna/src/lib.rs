@@ -226,12 +226,24 @@ pub const POND_FILES: &[EmbeddedFile] = at![
     "dna/core/pond/realtime/nats/types.hl",
 ];
 
+/// The legs seed (`dna/core/legs`, GH #946 slice 4): a leg's verbs as
+/// API clients, the renderer, the performers and the hands, which a
+/// project's `dna/org/work.hl` imports as `vendor/dna/legs`; vendored
+/// beside the core it imports as `..`.
+pub const LEGS_FILES: &[EmbeddedFile] = at![
+    "dna/core/legs/client.hl",
+    "dna/core/legs/hands.hl",
+    "dna/core/legs/performer.hl",
+    "dna/core/legs/render.hl",
+    "dna/core/legs/verbs.hl",
+];
+
 /// Every embedded file as a `(path, content)` pair: the core, the
-/// host, the surface and pond's copies —
+/// host, the surface, pond's copies and the legs —
 /// the whole of what `EMBEDDED_DIGEST` names.
 pub fn embedded_pairs() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES) {
+    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES).chain(LEGS_FILES) {
         out.push((f.path.to_string(), f.content.to_string()));
     }
     for f in [&UI_MAIN, &UI_HTML] {
@@ -305,6 +317,13 @@ mod tests {
         let mut know_embedded: Vec<String> = POND_FILES.iter().map(|f| f.path.to_string()).collect();
         know_embedded.sort();
         assert_eq!(know_embedded, know_on_disk, "a dna/core/pond file was added or removed without updating hale-dna");
+        // the legs: every .hl under dna/core/legs
+        let legs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/legs");
+        let mut legs_on_disk: Vec<String> = std::fs::read_dir(&legs_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).map(|n| format!("dna/core/legs/{n}")).collect();
+        legs_on_disk.sort();
+        let mut legs_embedded: Vec<String> = LEGS_FILES.iter().map(|f| f.path.to_string()).collect();
+        legs_embedded.sort();
+        assert_eq!(legs_embedded, legs_on_disk, "a dna/core/legs file was added or removed without updating hale-dna");
     }
 
     /// GH #726: the build's snapshot is coherent. `build.rs` digested

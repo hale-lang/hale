@@ -24606,7 +24606,10 @@
             "class": "internal",
             "body": "the prompt as sent"
           }
-        ]
+        ],
+        "hat_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "prompt_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "renderer": "legs-render/1"
       }
     }
   },
@@ -24660,7 +24663,10 @@
             "class": "internal",
             "body": "the prompt as sent"
           }
-        ]
+        ],
+        "hat_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "prompt_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "renderer": "legs-render/1"
       }
     }
   },
@@ -25116,7 +25122,7 @@
         },
         "attempt_commands": {
           "profile": "dna.attempt.v1",
-          "operations": "dna.attempt.claim dna.attempt.outcome",
+          "operations": "dna.attempt.claim dna.attempt.outcome dna.attempt.renew dna.attempt.release dna.friction.file",
           "available": true,
           "authorized": true,
           "position_id": "org",
@@ -25287,6 +25293,423 @@
         "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "watermark": "41",
         "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    }
+  },
+  {
+    "name": "attempt-renew-request",
+    "schema": "AttemptRenewCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "renew-1",
+      "operation": "dna.attempt.renew",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "position:agent",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "ttl": 600
+      }
+    }
+  },
+  {
+    "name": "attempt-renew-shared-command-request",
+    "schema": "CommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "renew-1",
+      "operation": "dna.attempt.renew",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "position:agent",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "ttl": 600
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-renew-zero-ttl",
+    "schema": "AttemptRenewCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "renew-1",
+      "operation": "dna.attempt.renew",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "position:agent",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "ttl": 0
+      }
+    }
+  },
+  {
+    "name": "attempt-release-request",
+    "schema": "AttemptReleaseCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "release-1",
+      "operation": "dna.attempt.release",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "position:agent",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "why": "out of time"
+      }
+    }
+  },
+  {
+    "name": "friction-request",
+    "schema": "FrictionCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "friction-1",
+      "operation": "dna.friction.file",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.friction",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "position": "position:agent",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "text": "the hat named no tool grant for a judgment"
+      }
+    }
+  },
+  {
+    "name": "friction-shared-command-request",
+    "schema": "CommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "friction-1",
+      "operation": "dna.friction.file",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.friction",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "position": "position:agent",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "text": "the hat named no tool grant for a judgment"
+      }
+    }
+  },
+  {
+    "name": "invalid-friction-empty-text",
+    "schema": "FrictionCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "friction-1",
+      "operation": "dna.friction.file",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.friction",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "position": "position:agent",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "text": ""
+      }
+    }
+  },
+  {
+    "name": "attempt-renew-receipt",
+    "schema": "AttemptRenewCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.renew",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.renew",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:position:agent@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "renewed",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "t1",
+        "performer_kind": "agent",
+        "holder": "position:agent",
+        "token": "3",
+        "until": "1790500600",
+        "disposition": "",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "attempt-release-receipt",
+    "schema": "AttemptReleaseCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.release",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.release",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:position:agent@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "released",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "position:agent",
+        "token": "3",
+        "until": "0",
+        "disposition": "",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "friction-receipt",
+    "schema": "FrictionCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.friction.file",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.friction.file",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.friction",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "subject_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "filed",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "position:agent",
+        "token": "",
+        "until": "0",
+        "disposition": "",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-release-receipt-negative-token",
+    "schema": "AttemptReleaseCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "cmd:dna.attempt.release",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.release",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:position:agent@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "released",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "position:agent",
+        "token": "-1",
+        "until": "0",
+        "disposition": "",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
       }
     }
   },

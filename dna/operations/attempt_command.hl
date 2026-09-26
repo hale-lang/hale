@@ -14,11 +14,20 @@
 // row; a node relays the row to the owner, which settles the attempt as
 // it settles every reply (`attempt.outcome`) or refuses it
 // (`attempt.outcome_refused`). The owner still admits and settles;
-// nothing here runs a performer.
+// nothing here runs a performer. Three more verbs of a leg's loop ride
+// the same table (GH #946 slice 4): `dna.attempt.renew@1` extends the
+// lease it holds (memory's claim renewed, another `attempt.claimed` row
+// with the same token and a later `until`), `dna.attempt.release@1`
+// gives it back without an outcome (`attempt.released`), and
+// `dna.friction.file@1` files what got in a position's way as a row
+// (`friction.filed`), which nobody admits: it is a fact.
 import "../core" as dna;
 
 const ATTEMPT_CLAIM_FORMAT: String = "dna.attempt-claim-command/1";
 const ATTEMPT_OUTCOME_FORMAT: String = "dna.attempt-outcome-command/1";
+const ATTEMPT_RENEW_FORMAT: String = "dna.attempt-renew-command/1";
+const ATTEMPT_RELEASE_FORMAT: String = "dna.attempt-release-command/1";
+const FRICTION_FORMAT: String = "dna.friction-command/1";
 const ATTEMPT_TTL_MAX: Int = 86400;
 const ATTEMPT_CLASSES: String = "public internal customer confidential";
 
@@ -71,13 +80,25 @@ locus AttemptCommandCodec {
     params { }
     fn claim(operation: String) -> Bool { return operation == "dna.attempt.claim"; }
     fn outcome(operation: String) -> Bool { return operation == "dna.attempt.outcome"; }
-    fn known(operation: String, version: String) -> Bool { return version == "1" && (self.claim(operation) || self.outcome(operation)); }
+    fn renew(operation: String) -> Bool { return operation == "dna.attempt.renew"; }
+    fn releasing(operation: String) -> Bool { return operation == "dna.attempt.release"; }
+    fn friction(operation: String) -> Bool { return operation == "dna.friction.file"; }
+    // The operations that name a lease: an attempt, its holder and token.
+    fn leased(operation: String) -> Bool { return self.outcome(operation) || self.renew(operation) || self.releasing(operation); }
+    fn known(operation: String, version: String) -> Bool { return version == "1" && (self.claim(operation) || self.leased(operation) || self.friction(operation)); }
+    fn format_of(operation: String) -> String {
+        if self.claim(operation) { return ATTEMPT_CLAIM_FORMAT; }
+        if self.outcome(operation) { return ATTEMPT_OUTCOME_FORMAT; }
+        if self.renew(operation) { return ATTEMPT_RENEW_FORMAT; }
+        if self.releasing(operation) { return ATTEMPT_RELEASE_FORMAT; }
+        return FRICTION_FORMAT;
+    }
     // The fields these two operations carry; every other variant
     // requires them empty.
     fn absent(c: GovernanceCommand) -> Bool {
         return c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0
             && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == ""
-            && c.narrative == "" && c.evidence == "" && c.receipts == "";
+            && c.narrative == "" && c.evidence == "" && c.receipts == "" && c.hat_digest == "" && c.prompt_digest == "" && c.renderer == "";
     }
     fn lease_digest(holder: String, token: Int) -> String { return "lease:" + holder + "@" + to_string(token); }
     fn classes_ok(s: String) -> Bool {
@@ -147,17 +168,35 @@ locus AttemptCommandCodec {
                 && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == ""
                 && c.hat_digest == "" && c.hat_head == "" && c.hat_watermark == -1 && c.prompt_digest == "" && c.renderer == "";
         }
-        return c.target_kind == "dna.attempt" && common.bounded(c.attempt_id, 256, true, false) && c.target_id == c.attempt_id && c.record_head == ""
+        if self.friction(c.operation) {
+            // a position's friction: the position (`performer`), the attempt it
+            // was met on when one (`attempt_id`), the text (`result`)
+            return c.target_kind == "dna.friction" && c.target_id == context.application_id && common.bounded(c.record_head, 256, true, false) && c.subject_digest == c.record_head
+                && common.bounded(c.performer, 256, true, false) && common.bounded(c.attempt_id, 256, false, false) && common.bounded(c.result, 8192, true, true)
+                && c.performer_kind == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0
+                && c.holder == "" && c.token == 0 && c.disposition == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
+        }
+        let rendered = c.hat_digest == "" && c.prompt_digest == "" && c.renderer == "";
+        if self.friction(c.operation) && !rendered { return false; }
+        let lease = c.target_kind == "dna.attempt" && common.bounded(c.attempt_id, 256, true, false) && c.target_id == c.attempt_id && c.record_head == ""
             && common.bounded(c.holder, 256, true, false) && c.token >= 0 && c.subject_digest == self.lease_digest(c.holder, c.token)
+            && c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && (rendered || self.outcome(c.operation));
+        if self.renew(c.operation) {
+            return lease && c.ttl >= 1 && c.ttl <= ATTEMPT_TTL_MAX && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
+        }
+        if self.releasing(c.operation) {
+            // `narrative` says why it is given back
+            return lease && c.ttl == 0 && common.bounded(c.narrative, 2048, false, true) && c.disposition == "" && c.result == "" && c.result_ref == "" && c.evidence == "" && c.receipts == "";
+        }
+        return lease && c.ttl == 0
             && self.disposition_ok(c.disposition) && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
-            && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts) && self.hat_ok(c)
-            && c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0;
+            && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts) && self.hat_ok(c);
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
     fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {
         if !self.valid(context, c) { return ""; }
         let b = std::bytes::BytesBuilder { };
-        b.append_str("{\"format\":"); b.append_str(dna::record_json_quote(if self.claim(c.operation) { ATTEMPT_CLAIM_FORMAT } else { ATTEMPT_OUTCOME_FORMAT }));
+        b.append_str("{\"format\":"); b.append_str(dna::record_json_quote(self.format_of(c.operation)));
         self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
         self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
         self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id);
@@ -165,14 +204,20 @@ locus AttemptCommandCodec {
             self.field(b, "record_head", c.record_head); self.field(b, "performer_kind", c.performer_kind); self.field(b, "performer", c.performer);
             self.field(b, "capabilities", c.capabilities); self.field(b, "data_classes", c.data_classes); self.field(b, "organizations", c.organizations);
             b.append_str(",\"ttl\":"); b.append_str(to_string(c.ttl));
+        } else if self.friction(c.operation) {
+            self.field(b, "record_head", c.record_head); self.field(b, "position", c.performer); self.field(b, "attempt_id", c.attempt_id); self.field(b, "text", c.result);
         } else {
             self.field(b, "attempt_id", c.attempt_id); self.field(b, "holder", c.holder);
             b.append_str(",\"token\":"); b.append_str(to_string(c.token));
-            self.field(b, "disposition", c.disposition); self.field(b, "result", c.result); self.field(b, "result_ref", c.result_ref); self.field(b, "narrative", c.narrative);
-            self.field(b, "evidence", c.evidence); self.field(b, "receipts", c.receipts);
-            self.field(b, "hat_digest", c.hat_digest); self.field(b, "hat_head", c.hat_head);
-            b.append_str(",\"hat_watermark\":"); b.append_str(to_string(c.hat_watermark));
-            self.field(b, "prompt_digest", c.prompt_digest); self.field(b, "renderer", c.renderer);
+            if self.renew(c.operation) { b.append_str(",\"ttl\":"); b.append_str(to_string(c.ttl)); }
+            else if self.releasing(c.operation) { self.field(b, "why", c.narrative); }
+            else {
+                self.field(b, "disposition", c.disposition); self.field(b, "result", c.result); self.field(b, "result_ref", c.result_ref); self.field(b, "narrative", c.narrative);
+                self.field(b, "evidence", c.evidence); self.field(b, "receipts", c.receipts);
+                self.field(b, "hat_digest", c.hat_digest); self.field(b, "hat_head", c.hat_head);
+                b.append_str(",\"hat_watermark\":"); b.append_str(to_string(c.hat_watermark));
+                self.field(b, "prompt_digest", c.prompt_digest); self.field(b, "renderer", c.renderer);
+            }
         }
         b.append_str("}"); return std::str::from_bytes(b.snapshot());
     }
@@ -181,8 +226,8 @@ locus AttemptCommandCodec {
         let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { };
         if len(document) > 131072 || !syntax.valid(document) || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
         let format = common.string(document, "format");
-        if format != ATTEMPT_CLAIM_FORMAT && format != ATTEMPT_OUTCOME_FORMAT { return GovernanceCommand { }; }
         let operation = common.string(document, "operation");
+        if !self.known(operation, common.string(document, "operation_version")) || format != self.format_of(operation) { return GovernanceCommand { }; }
         let mut c = GovernanceCommand { application_id: common.string(document, "application_id"), request_id: common.string(document, "request_id"), operation: operation,
             operation_version: common.string(document, "operation_version"), position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"), target_id: common.string(document, "target_id") };
         if self.claim(operation) {
@@ -190,13 +235,20 @@ locus AttemptCommandCodec {
             c.performer_kind = common.string(document, "performer_kind"); c.performer = common.string(document, "performer");
             c.capabilities = common.string(document, "capabilities"); c.data_classes = common.string(document, "data_classes"); c.organizations = common.string(document, "organizations");
             c.ttl = std::json::find_int_field(document, "ttl");
+        } else if self.friction(operation) {
+            c.record_head = common.string(document, "record_head"); c.subject_digest = c.record_head;
+            c.performer = common.string(document, "position"); c.attempt_id = common.string(document, "attempt_id"); c.result = common.string(document, "text");
         } else {
             c.attempt_id = common.string(document, "attempt_id"); c.holder = common.string(document, "holder"); c.token = std::json::find_int_field(document, "token");
             c.subject_digest = self.lease_digest(c.holder, c.token);
-            c.disposition = common.string(document, "disposition"); c.result = common.string(document, "result"); c.result_ref = common.string(document, "result_ref"); c.narrative = common.string(document, "narrative");
-            c.evidence = common.string(document, "evidence"); c.receipts = common.string(document, "receipts");
-            c.hat_digest = common.string(document, "hat_digest"); c.hat_head = common.string(document, "hat_head"); c.hat_watermark = std::json::find_int_field(document, "hat_watermark");
-            c.prompt_digest = common.string(document, "prompt_digest"); c.renderer = common.string(document, "renderer");
+            if self.renew(operation) { c.ttl = std::json::find_int_field(document, "ttl"); }
+            else if self.releasing(operation) { c.narrative = common.string(document, "why"); }
+            else {
+                c.disposition = common.string(document, "disposition"); c.result = common.string(document, "result"); c.result_ref = common.string(document, "result_ref"); c.narrative = common.string(document, "narrative");
+                c.evidence = common.string(document, "evidence"); c.receipts = common.string(document, "receipts");
+                c.hat_digest = common.string(document, "hat_digest"); c.hat_head = common.string(document, "hat_head"); c.hat_watermark = std::json::find_int_field(document, "hat_watermark");
+                c.prompt_digest = common.string(document, "prompt_digest"); c.renderer = common.string(document, "renderer");
+            }
         }
         return if self.valid(context, c) && self.canonical(context, c) == document { c } else { GovernanceCommand { } };
     }
@@ -318,17 +370,40 @@ locus AttemptCommandCodec {
     }
     // The `attempt.claimed` row: the lease as granted, the attempt it is
     // on, and the command that took it.
+    // A renewal is the same row with the same token and a later `until`.
     fn claim_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, a: dna::AdmittedAttempt, lease: dna::Lease) -> String {
         let common = GovernanceCommandCodec { };
-        if !self.valid(context, c) || !self.claim(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) || len(a.attempt_id) == 0 { return ""; }
+        if !self.valid(context, c) || !(self.claim(c.operation) || self.renew(c.operation)) || !grant.allowed || !common.bounded(head, 256, true, false) || len(a.attempt_id) == 0 { return ""; }
         let b = std::json::Builder { }; b.begin_object();
         b.string_field("holder", lease.holder); b.int_field("token", lease.token); b.int_field("until", lease.expires);
-        b.string_field("task_id", a.task_id); b.string_field("work_id", a.work_id); b.string_field("performer_kind", a.performer_kind); b.string_field("performer", c.performer);
+        b.string_field("task_id", a.task_id); b.string_field("work_id", a.work_id); b.string_field("performer_kind", a.performer_kind); b.string_field("performer", if self.claim(c.operation) { c.performer } else { c.holder });
         // the principal that claimed it: whose outcome the lease admits (GH #946 hardening)
         b.string_field("principal_mode", context.principal_mode); b.string_field("principal_name", context.principal_name);
-        self.command_fields(b, context, c, grant, head, ATTEMPT_CLAIM_FORMAT);
+        self.command_fields(b, context, c, grant, head, self.format_of(c.operation));
         b.end_object(); return b.result();
     }
+    // The `attempt.released` row: the lease given back, and why.
+    fn release_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) -> String {
+        let common = GovernanceCommandCodec { };
+        if !self.valid(context, c) || !self.releasing(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("holder", c.holder); b.int_field("token", c.token); b.string_field("why", c.narrative);
+        self.command_fields(b, context, c, grant, head, ATTEMPT_RELEASE_FORMAT);
+        b.end_object(); return b.result();
+    }
+    // The `friction.filed` row: what got in a position's way, on which
+    // attempt when one, in whose name.
+    fn friction_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) -> String {
+        let common = GovernanceCommandCodec { };
+        if !self.valid(context, c) || !self.friction(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("position", c.performer); b.string_field("attempt_id", c.attempt_id); b.string_field("text", c.result); b.string_field("by", context.principal_name);
+        self.command_fields(b, context, c, grant, head, FRICTION_FORMAT);
+        b.end_object(); return b.result();
+    }
+    // The entity a friction row is filed under: the attempt it was met on,
+    // else the position.
+    fn friction_entity(c: GovernanceCommand) -> String { return if len(c.attempt_id) > 0 { c.attempt_id } else { c.performer }; }
     // The `attempt.outcome_requested` row: the outcome as the leg handed
     // it back under its lease, the receipts it filed, and the command.
     // `request` names the command, so the row is answered by the outcome
@@ -353,7 +428,7 @@ locus AttemptCommandCodec {
     fn decode_fact(e: dna::Event) -> AttemptCommandFact {
         let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { };
         let claimed = e.kind == "attempt.claimed";
-        if (!claimed && e.kind != "attempt.outcome_requested") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
+        if (!claimed && e.kind != "attempt.outcome_requested" && e.kind != "attempt.released" && e.kind != "friction.filed") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
         let payload = common.string(e.body, "command_payload");
         if len(payload) > 131072 || !syntax.valid(payload) { return AttemptCommandFact { }; }
         let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
@@ -362,9 +437,13 @@ locus AttemptCommandCodec {
         let head = common.string(e.body, "command_record_head");
         if !self.valid(context, c) || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false) || head != e.prev { return AttemptCommandFact { }; }
         let same = if claimed {
-            self.claim(c.operation) && e.body == self.claim_fact(context, c, grant, head,
+            (self.claim(c.operation) || (self.renew(c.operation) && c.attempt_id == e.entity)) && e.body == self.claim_fact(context, c, grant, head,
                 dna::AdmittedAttempt { attempt_id: e.entity, work_id: common.string(e.body, "work_id"), task_id: common.string(e.body, "task_id"), performer_kind: common.string(e.body, "performer_kind") },
                 dna::Lease { holder: common.string(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until") })
+        } else if e.kind == "attempt.released" {
+            self.releasing(c.operation) && c.attempt_id == e.entity && e.body == self.release_fact(context, c, grant, head)
+        } else if e.kind == "friction.filed" {
+            self.friction(c.operation) && self.friction_entity(c) == e.entity && e.body == self.friction_fact(context, c, grant, head)
         } else {
             self.outcome(c.operation) && c.attempt_id == e.entity && self.outcome_fact_at(context, c, grant, head, common.string(e.body, "evidence_ref"), std::json::find_int_field(e.body, "at")) == e.body
         };
@@ -380,8 +459,9 @@ locus AttemptCommandCodec {
     // A refusal at the head: a receipt with the reason, and no row.
     fn refused(context: GovernanceContext, c: GovernanceCommand, why: String) -> GovernanceReceipt {
         let common = GovernanceCommandCodec { };
+        let named = self.claim(c.operation) || self.friction(c.operation);
         return self.receipt_of(context, c, common.identity(context, c.request_id), self.fingerprint(context, c), "refused", why,
-            AttemptCommandOutcome { state: "refused", attempt_id: c.attempt_id, performer_kind: c.performer_kind, holder: if self.claim(c.operation) { c.performer } else { c.holder }, token: if self.claim(c.operation) { -1 } else { c.token }, reason: why });
+            AttemptCommandOutcome { state: "refused", attempt_id: c.attempt_id, performer_kind: c.performer_kind, holder: if named { c.performer } else { c.holder }, token: if named { -1 } else { c.token }, reason: why });
     }
     // The recorded command, re-derived from the record on every read: a
     // claim is its row; an outcome is `requested` until the owner's
@@ -391,14 +471,21 @@ locus AttemptCommandCodec {
     fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
         let c = a.command; let context = a.context;
         if a.unknown {
-            return self.receipt_of(context, c, a.command_id, a.fingerprint, "outcome_unknown", "", AttemptCommandOutcome { state: "unknown", attempt_id: c.attempt_id, performer_kind: c.performer_kind, holder: if self.claim(c.operation) { c.performer } else { c.holder }, token: if self.claim(c.operation) { -1 } else { c.token } });
+            let named = self.claim(c.operation) || self.friction(c.operation);
+            return self.receipt_of(context, c, a.command_id, a.fingerprint, "outcome_unknown", "", AttemptCommandOutcome { state: "unknown", attempt_id: c.attempt_id, performer_kind: c.performer_kind, holder: if named { c.performer } else { c.holder }, token: if named { -1 } else { c.token } });
         }
         let body = a.native_body;
-        if self.claim(c.operation) {
+        if self.claim(c.operation) || self.renew(c.operation) {
             return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome {
-                state: "claimed", attempt_id: a.entity, work_id: std::json::find_string_field(body, "work_id"), task_id: std::json::find_string_field(body, "task_id"),
+                state: if self.claim(c.operation) { "claimed" } else { "renewed" }, attempt_id: a.entity, work_id: std::json::find_string_field(body, "work_id"), task_id: std::json::find_string_field(body, "task_id"),
                 performer_kind: std::json::find_string_field(body, "performer_kind"), holder: std::json::find_string_field(body, "holder"),
                 token: std::json::find_int_field(body, "token"), until: std::json::find_int_field(body, "until"), event_id: a.event_id });
+        }
+        if self.releasing(c.operation) {
+            return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome { state: "released", attempt_id: a.entity, work_id: usage_work_of(a.entity), holder: c.holder, token: c.token, event_id: a.event_id });
+        }
+        if self.friction(c.operation) {
+            return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome { state: "filed", attempt_id: c.attempt_id, work_id: usage_work_of(c.attempt_id), holder: c.performer, token: -1, event_id: a.event_id });
         }
         let mut state = "requested"; let mut disposition = ""; let mut reason = "";
         let mut i = if a.sequence < 0 { 0 } else { a.sequence + 1 };

@@ -241,6 +241,19 @@ fn tool_list() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "hale_dna_work",
+            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, submit, settle, release, friction, run. Positions are the graph's position:<name> ids. Prints one JSON object.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "verb": { "type": "string", "enum": ["next", "brief", "renew", "submit", "settle", "release", "friction", "run"] },
+                    "args": { "type": "array", "items": { "type": "string" }, "description": "The verb's flags as given on the command line, e.g. [\"--as\", \"position:agent\", \"--api\", \"http://127.0.0.1:8793\"]." },
+                    "project": { "type": "string", "description": "The project directory (default: the current one)." }
+                },
+                "required": ["verb"]
+            }
+        }),
+        json!({
             "name": "hale_bus_graph",
             "description": "The seed's whole message topology: per subject, publishers, subscribers (locus + handler + placement), payload types, static-dispatch verdicts. One call instead of a grep session.",
             "inputSchema": path_schema("A file in the seed to analyze.")
@@ -395,6 +408,22 @@ fn dispatch(name: &str, args: &Value) -> Result<(String, bool), String> {
             let mut cli = vec!["fetch".into()];
             if let Some(r) = arg_str(args, "repo_root") {
                 cli.push(resolve_path(r)?.display().to_string());
+            }
+            self_exec(&cli)
+        }
+        "hale_dna_work" => {
+            let verb = arg_str(args, "verb").ok_or("verb required")?;
+            let mut cli = vec!["dna".to_string(), "work".to_string()];
+            if let Some(p) = arg_str(args, "project") {
+                cli.push(resolve_path(p)?.display().to_string());
+            }
+            cli.push(verb.to_string());
+            if let Some(a) = args.get("args").and_then(Value::as_array) {
+                for v in a {
+                    if let Some(s) = v.as_str() {
+                        cli.push(s.to_string());
+                    }
+                }
             }
             self_exec(&cli)
         }
