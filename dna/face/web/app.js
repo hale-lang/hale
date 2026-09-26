@@ -678,7 +678,13 @@
       if (!body.ok) return null;
       const commands = body.value?.commands;
       assert(Array.isArray(commands) && commands.every(entry => entry !== null && typeof entry === "object" && commandID(entry.name)));
-      return commands.map(entry => entry.name);
+      // The head describes an item another seed declared by its qualified
+      // name (`api::Claim`); this session knows the program, not its seeds,
+      // and sends the tail, which the wire accepts when one item bears it.
+      // So the slice holds tails, and a tail two items share stays qualified.
+      const names = commands.map(entry => entry.name);
+      const tails = names.map(name => { const at = name.lastIndexOf("::"); return at < 0 ? name : name.slice(at + 2); });
+      return names.map((name, i) => tails.indexOf(tails[i]) === tails.lastIndexOf(tails[i]) ? tails[i] : name);
     } catch (error) {
       if (error.name === "AbortError" && signal.aborted) throw error;
       return null;
