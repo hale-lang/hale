@@ -144,13 +144,14 @@ fn graph_member_sql(role: String) -> String {
 }
 
 // GH #1085, the org chart: every position, the node it unfolds from, its
-// holders and what it reviews, in the order the record put them.
+// holders and what it reviews, in the order the record put them; a
+// position under no node last.
 fn graph_org_sql() -> String {
     let of_position = "FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.role = 'position' AND a.node = p.id JOIN graph_members x ON x.edge = e.id";
     return "SELECT coalesce(json_agg(json_build_object('id', p.id, 'name', p.name, 'under', coalesce(u.parent, ''), "
         + "'holders', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'holder' WHERE e.kind = 'holds'), '[]'::json), "
         + "'reviews', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'subject' AND " + graph_live_sql("x.node") + " WHERE e.kind = 'reviews'), '[]'::json)) "
-        + "ORDER BY coalesce(u.pseq, -1), p.seq, p.id), '[]'::json) FROM graph_nodes p "
+        + "ORDER BY u.pseq IS NULL, u.pseq, p.seq, p.id), '[]'::json) FROM graph_nodes p "
         + "LEFT JOIN LATERAL (SELECT pm.node AS parent, n.seq AS pseq FROM graph_edges e JOIN graph_members cm ON cm.edge = e.id AND cm.role = 'child' AND cm.node = p.id JOIN graph_members pm ON pm.edge = e.id AND pm.role = 'parent' JOIN graph_nodes n ON n.id = pm.node WHERE e.kind = 'unfold' ORDER BY e.seq LIMIT 1) u ON true "
         + "WHERE p.kind = 'position'";
 }

@@ -1,35 +1,56 @@
-// dna/host/show.hl — `hale dna show org | processes [--json]` (GH #1086).
+// dna/host/show.hl — `hale dna show org | processes [--json] [project]`
+// (GH #1086).
 //
 // The two perspectives over the repository's graph, as queries over
 // memory: the org chart (positions, what each sits under, who holds it,
 // what it signs) and the process model (where the processes meet, over
-// what, and what runs them). Read under this head's own role; nothing is
-// edited through them — a change moves through the record's rows, and the
-// spine projects it into both. Text renders as graph_show.hl says; `--json`
-// is the query's answer as memory built it, with how far memory has
-// projected the record.
+// what, and what runs them). Read under the head's role, always — never
+// the spine's, even in a process that holds both; nothing is edited
+// through them: a change moves through the record's rows, and the spine
+// projects it into both. Text renders as graph_show.hl says; `--json` is
+// the query's answer as memory built it, with how far memory has
+// projected the record. How memory stands to the record — behind it, past
+// it, or with a stamp that vouches for nothing — is said on stderr, never
+// in the perspective.
 
 import "../core" as dna;
 import "../operations" as ops;
 
+// The answer when there is nothing to read: the query's empty shape.
+fn show_empty(what: String) -> String { return if what == "org" { "[]" } else { "{\"processes\": [], \"meets\": [], \"runs\": []}" }; }
+
+fn show_answer(what: String, json: Bool, data: String, rows: Int, projected: Int, valid: Bool) -> Answer {
+    if !json { return answer(if what == "org" { ops::show_org(data) } else { ops::show_processes(data) }); }
+    return answer("{\"perspective\": \"" + what + "\", \"record_rows\": " + to_string(rows) + ", \"projected_rows\": " + to_string(projected) + ", \"stamp_valid\": " + (if valid { "true" } else { "false" }) + ", \"graph\": " + data + "}\n");
+}
+
 fn show_verb(root: String, what: String, json: Bool) -> Answer {
-    if what != "org" && what != "processes" { return fail("usage: hale dna show org | processes [--json]"); }
-    let env = dna::own_dsn_env();
+    if what != "org" && what != "processes" { return fail("usage: hale dna show org | processes [--json] [project]"); }
+    let record = dna::GitJournal { repo: root };
+    let rows = record.revision();
+    // a record with no rows has no graph, and no memory scoped to it yet
+    if rows == 0 {
+        eprintln("hale dna show: the record has no rows: `hale dna init` seeds it, and `hale dna sync` fetches one another clone holds");
+        return show_answer(what, json, show_empty(what), 0, 0, true);
+    }
+    let env = dna::HEAD_DSN_ENV;
     if !dna::dsn_set(env) {
-        return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + dna::HEAD_DSN_ENV + "); `hale dna memory migrate` prints it, and a running spine (`hale dna dev`) projects the record into it");
+        return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it, and a running spine (`hale dna dev`) projects the record into it");
     }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
     if !store.reopen() { return fail("hale dna show " + what + ": memory is not open: " + store.last_error()); }
+    // the stamp before the graph: rows the spine lands between the two
+    // reads can only make the graph newer than the stamp says, never older
+    let basis = store.projection_basis();
     let data = store.graph_perspective(what);
     if len(data) == 0 { return fail("hale dna show " + what + ": memory did not answer: " + store.last_error()); }
-    let basis = store.projection_basis();
-    let record = dna::GitJournal { repo: root };
-    let rows = record.revision();
-    if !json {
-        // the graph as of the row memory reached: said beside it, never in it
-        if basis.ok && basis.watermark < rows { eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the graph as of row ", to_string(basis.watermark)); }
-        return answer(if what == "org" { ops::show_org(data) } else { ops::show_processes(data) });
+    if !basis.ok {
+        eprintln("hale dna show: memory's projection stamp vouches for nothing (", store.last_error(), "); `hale dna memory migrate` with the owner's DSN resets it, and the spine projects the record again");
+    } else if basis.watermark < rows {
+        eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the graph as of row ", to_string(basis.watermark));
+    } else if basis.watermark > rows {
+        eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " rows, more than this clone's record holds (", to_string(rows), "); this clone is behind its remote: `hale dna sync`");
     }
-    return answer("{\"perspective\": \"" + what + "\", \"record_rows\": " + to_string(rows) + ", \"projected_rows\": " + to_string(if basis.ok { basis.watermark } else { 0 }) + ", \"graph\": " + data + "}\n");
+    return show_answer(what, json, data, rows, if basis.ok { basis.watermark } else { 0 }, basis.ok);
 }

@@ -3278,31 +3278,41 @@ The live half is memory's, projected from the record by the spine
   document is fixed. A job's own `name:` names its gate and is not a
   word its steps say. `init` says what it read: `graph   <n> node(s), <m> edge(s):
   <count> <kind>, …`. A record that exists is not reseeded.
-- **Perspectives: `hale dna show` (GH #1086).** `hale dna show org |
-  processes [--json] [project]` is the host verb `show`: it opens memory
-  under this process's own role (`HALE_DNA_MEMORY_DSN_HEAD`, the spine's
-  when it holds that one), scoped to the record, and prints what
-  `graph_perspective` answers. Nothing is edited through it: a change
-  moves through the record's rows, and the spine projects it into both
-  perspectives. With no memory named it refuses, and says the graph is
-  memory's. Text (`dna/operations/graph_show.hl`) shows a node by the
-  last segment of its name. **The org chart** is `purpose`, then a line
-  per node positions sit under, in the record's order: a position under
-  the purpose is a line of its own (`  board`); any other node is `
-  <name, padded to the widest>  <role>, <role>`, a role being the
-  position's name less its node's (`api/reviewer` under `api` is
-  `reviewer`), followed by `(<what it reviews>)` and, when it has
-  holders, `[<holders>]`; a position under no node is under
-  `(unplaced)`. **The process model** is a line per `meets` — `<outside
-  parties>, <consumers>  --<via>: <contract>-->  <servers>`, `(nobody
-  here)` for no server, `  (carried by <carriers>)` after — then `<deployment>
-  runs { <processes> }` per `runs`. `--json` prints one object:
-  `perspective`, `record_rows` (the record's length), `projected_rows`
-  (memory's watermark) and `graph`, the query's answer as memory built
-  it. When memory is behind the record the text is the graph as memory
-  holds it, and stderr says `memory has projected <m> of the record's
-  <n> rows`. On voice's record with its holes filled the two texts are
-  GRAPH.md's renderings, byte for byte (`dna/tests/graph_show_test.hl`).
+- **Perspectives: `hale dna show` (GH #1086).**
+  `hale dna show org | processes [--json] [project]` is the host verb
+  `show`. It takes `--json` and at most one project directory, and
+  refuses any other flag, a second project or one that is not a
+  directory. It reads memory under the head's role alone
+  (`HALE_DNA_MEMORY_DSN_HEAD`), never the spine's, even in a process that
+  holds both, scoped to the record, and prints what `graph_perspective`
+  answers. Nothing is edited through it: a change moves through the
+  record's rows, and the spine projects it into both perspectives. A
+  record with no rows is the empty perspective, with no memory asked, and
+  stderr says `hale dna init` seeds a record and `hale dna sync` fetches
+  one; with rows and no memory named it refuses, and says the graph is
+  memory's. The projection's stamp is read before the graph, so the rows
+  it reports never overstate what the graph holds. Text
+  (`dna/operations/graph_show.hl`) shows a node by the last segment of its
+  name. **The org chart** is nothing when there are no positions;
+  otherwise `purpose`, then a line per node positions sit under, in the
+  record's order: a position under the purpose is a line of its own
+  (`board`), and any other node is its name, padded in code points to the
+  widest, then its positions' roles. A role is the position's name less
+  its node's (`api/reviewer` under `api` is `reviewer`), followed by
+  `(<what it reviews>)` and, when it has holders, `[<holders>]`; a
+  position under no node is under `(unplaced)`, after the rest. **The
+  process model** is a line per `meets` — its outside parties and
+  consumers, the arrow `--<via>: <contract>-->`, its servers or
+  `(nobody here)`, and `(carried by <carriers>)` after — then one
+  `<deployment> runs { <processes> }` per `runs`. `--json` prints one object: `perspective`, `record_rows` (the
+  record's length), `projected_rows` (memory's watermark), `stamp_valid`
+  and `graph`, the query's answer as memory built it. How memory stands to
+  the record is said on stderr, never in the perspective: behind it
+  (`memory has projected <m> of the record's <n> rows`), past it (this
+  clone is behind its remote: `hale dna sync`), or with a stamp that
+  vouches for nothing (`hale dna memory migrate`). On voice's record with
+  its holes filled the two texts are GRAPH.md's renderings, byte for byte
+  (`dna/tests/graph_show_test.hl`).
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the

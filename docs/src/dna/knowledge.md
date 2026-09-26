@@ -198,10 +198,17 @@ it, and say so when the record is ahead:
 ```text
 $ hale dna show processes
 callers, ui, node  --HTTP: openapi.yaml-->  api
+the machine's operator  --HTTP: node.yaml-->  node
 api  --NATS: protocol.yaml-->  node  (carried by nats)
+openapi.yaml, protocol.yaml  --open-responses-->  (nobody here)
 api, brain  --SQL: store.md-->  postgres
+api  --NATS: internal.yaml-->  brain  (carried by nats)
 compose runs { postgres, nats, api, brain, node }
+personal runs { api, brain, postgres, nats, node }
+scaled-out runs { api, brain, postgres, nats, node }
 ```
+
+That is voice's whole process model, as its repository states it.
 
 ## Ranking inside the bound
 
