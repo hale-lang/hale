@@ -153,6 +153,31 @@ locus App {
         }
         return false;
     }
+    // A verdict on one Review, written without the CLI's wait, and the
+    // Review's answer read from the record: `settled: <body>` or
+    // `refused: <body>`, "" when none came in `secs`. After the Board's
+    // decisions the organization runs a practice-ratify execution each, a
+    // commit per row on this record, and answers a verdict behind them:
+    // the fixture asserts the answer, not how soon it comes (GH #995).
+    @unbounded
+    fn decide(review: String, args: String, secs: Int) -> String {
+        let before = dna::GitJournal { repo: self.repo }.revision();
+        let wrote = self.dna("review\n" + review + "\n" + args + "\n--no-wait");
+        if wrote.code != 0 { return "not written: " + wrote.stderr; }
+        let deadline = std::time::now() + secs;
+        while std::time::now() <= deadline {
+            let j = dna::GitJournal { repo: self.repo };
+            let mut i = before;
+            while i < j.revision() {
+                let e = j.read(i);
+                if e.entity == review && e.kind == "review.settled" { return "settled: " + e.body; }
+                if e.entity == review && e.kind == "review.refused" { return "refused: " + e.body; }
+                i = i + 1;
+            }
+            std::time::sleep(500ms);
+        }
+        return "";
+    }
     // Whether the body's log says `needle`, within `tries` half-seconds.
     @unbounded
     fn logged(needle: String, tries: Int) -> Bool {
@@ -297,12 +322,12 @@ locus App {
         let listed_holds = self.dna("review");
         std::test::assert(std::str::contains(listed_holds.stdout, "holds — 3 proposed holder(s)"), "the holds, listed together: " + listed_holds.stdout);
         let self_review = self.review_of("ada holding the position `board`, as ada proposes");
-        let refused = self.dna("review\n" + self_review + "\napprove\n--as\nada\n--authority\nboard");
-        std::test::assert(std::str::contains(refused.stdout + refused.stderr, "reviewer ada authored the candidate"), "the proposer may not ratify it: " + refused.stdout + refused.stderr);
-        let approve_dev = self.dna("review\n" + self.review_of("ada holding the position `api/dev`, as grace proposes") + "\napprove\n--as\nada\n--authority\nboard");
-        std::test::assert_eq_int(approve_dev.code, 0, "grace's proposal ratified: " + approve_dev.stderr);
-        let approve_rev = self.dna("review\n" + self.review_of("ada holding the position `api/reviewer`, as grace proposes") + "\napprove\n--as\nada\n--authority\nboard");
-        std::test::assert_eq_int(approve_rev.code, 0, "and the same holder's: " + approve_rev.stderr);
+        let refused = self.decide(self_review, "approve\n--as\nada\n--authority\nboard", 300);
+        std::test::assert(std::str::starts_with(refused, "refused: ") && std::str::contains(refused, "reviewer ada authored the candidate"), "the proposer may not ratify it: " + refused);
+        let approve_dev = self.decide(self.review_of("ada holding the position `api/dev`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 300);
+        std::test::assert(std::str::starts_with(approve_dev, "settled: approve"), "grace's proposal ratified: " + approve_dev);
+        let approve_rev = self.decide(self.review_of("ada holding the position `api/reviewer`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 300);
+        std::test::assert(std::str::starts_with(approve_rev, "settled: approve"), "and the same holder's: " + approve_rev);
         let held = self.show_until(head, "  api         dev [ada], reviewer(openapi.yaml) [ada]\n", 240);
         std::test::assert(std::str::contains(held, "  api         dev [ada], reviewer(openapi.yaml) [ada]\n") && std::str::contains(held, "  board\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
         std::test::assert(self.logged("warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev", 240), "memory says so where it projects it: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
