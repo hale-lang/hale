@@ -11,6 +11,13 @@ fn genome(root: String, args: String) -> dna::RunResult {
     return dna::run_tool("git\n-C\n" + root + "\n" + args);
 }
 
+// The paths a range of the genome's history touches, one per line: a
+// rename is its old path and its new (`--no-renames`), so a file moved
+// away still names what it was (GH #1087, `hale dna route --diff`).
+fn genome_changed(root: String, range: String) -> dna::RunResult {
+    return genome(root, "-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + range);
+}
+
 // The commit `rev` names in the genome ("" when it names none).
 fn genome_commit(root: String, rev: String) -> String {
     let r = genome(root, "rev-parse\n--verify\n" + rev + "^{commit}");

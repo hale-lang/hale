@@ -110,7 +110,7 @@ fn route_verb(root: String, args: Args) -> Answer {
     let range = flag(args, "--diff");
     let mut paths = "";
     if len(range) > 0 {
-        let d = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + range);
+        let d = genome_changed(root, range);
         if d.code != 0 { return fail("route: git diff " + range + ": " + dna::trim_nl(d.stderr)); }
         paths = d.stdout;
     }
