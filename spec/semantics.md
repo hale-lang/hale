@@ -1828,6 +1828,14 @@ transport of its own (GH #1135), HTTP is such a forwarding transport,
 written by the program; a bearer token stays the third mode that
 arrives with it.
 
+**Names on the wire.** A call, a read or a watch names an item as the
+description spells it; an item another seed declared is spelled
+qualified (`api::Claim`). A caller that knows the program, not its
+seeds, may write the unqualified tail (`Claim`): the binding accepts
+it when exactly one item of the surface bears that tail and no item is
+spelled bare by it, and answers `unknown` otherwise, as for any name it
+does not serve. The description keeps the qualified spelling.
+
 **The gate (GH #1109).** A role is declared vocabulary
 (`spec/types.md` § "Roles and `@gated`"); `@gated(role: R)` on a
 subscribed handler, an `expose` member or a `publish` member says

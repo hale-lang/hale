@@ -9,7 +9,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { seatRecord, unseatRecord } from './record-seats.mjs';
 import { settle, wireLine } from './command-wire.mjs';
 
@@ -53,10 +53,14 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
   const origin = `http://127.0.0.1:${port}`, prefix = `/api/hale/v1/applications/${application}`;
   const processes = [], requests = []; let api, stopped = false, sequence = 0;
+  // Each API start mints a launch token (GH #989): every POST carries it, and
+  // every page the lane drives gets its session cookie again.
+  let token = ''; const pages = new Set();
+  const authorize = async page => { const opened = await page.request.get(`${origin}/?token=${token}`); assert.equal(opened.status(), 200, 'The launch token did not open the shell'); };
   const healthy = () => { assert(!stopped); if (api && !api.stopping) assert(api.child.exitCode === null && api.child.signalCode === null && !api.error, `Native Task API exited: ${api.output}`); };
   const send = (method, suffix, body) => new Promise((resolve, reject) => {
     healthy(); const data = body === undefined ? null : JSON.stringify(body); const entry = { method, path: suffix }; requests.push(entry);
-    const request = http.request(origin + suffix, { method, agent: false, headers: data === null ? {} : { Origin: origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, response => {
+    const request = http.request(origin + suffix, { method, agent: false, headers: data === null ? {} : { Origin: origin, 'X-Hale-Command': '1', 'X-Hale-Token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } }, response => {
       let size = 0; const chunks = [];
       response.on('data', chunk => { size += chunk.length; if (size > 2 * 1024 * 1024) request.destroy(new Error('Response bound exceeded')); else chunks.push(chunk); });
       response.on('end', () => { try { const json = JSON.parse(Buffer.concat(chunks).toString('utf8')); entry.status = response.statusCode; entry.code = json.error?.code; resolve({ status: response.statusCode, json }); } catch (error) { reject(error); } }); response.on('error', reject);
@@ -82,7 +86,7 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
     child.once('error', error => { item.error = error; record.error = error.message; });
     for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log.write(chunk); item.output = (item.output + chunk).slice(-8192); }); api = item;
     const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) { try { const result = await read(prefix + '/capabilities'); if (result.status === 200) { assert.equal(result.json.data.principal.name, actor); return result.json.data; } } catch (error) { if (!['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) throw error; } await delay(50); }
+    while (Date.now() < deadline) { try { const result = await read(prefix + '/capabilities'); if (result.status === 200) { assert.equal(result.json.data.principal.name, actor); token = await launchToken(root); for (const page of pages) await authorize(page); return result.json.data; } } catch (error) { if (!['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) throw error; } await delay(50); }
     throw new Error('Native Task API startup timed out: ' + item.output);
   }
   function exportEvidence() {
@@ -105,6 +109,8 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
       command: (row, to, request_id) => ({ request_id, operation: 'dna.task.reassign', operation_version: '1', context: { application_id: application, position_id: 'org' }, target: { application_id: application, kind: 'dna.task', id: row.id }, preconditions: { subject_digest: row.assignment_digest, principal: { mode: 'local', name: actor }, assignee: row.assignee }, arguments: { to } }),
       current: async (id = first.id) => { const response = await read(prefix + '/dna/tasks?id=' + encodeURIComponent(id)); assert.equal(response.status, 200, JSON.stringify(response)); return response.json.data.items[0]; },
       url: () => origin + '/#/tasks?' + new URLSearchParams({ app: application, id: first.id }),
+      // A page this lane drives: the session cookie now and after every restart.
+      attach: async page => { pages.add(page); await authorize(page); },
       restart: async () => { await stopAPI(); return startAPI(); }, stop, exportEvidence, journal, requests,
     };
   } catch (error) { await stop().catch(() => {}); throw error; }

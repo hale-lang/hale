@@ -172,6 +172,24 @@ Scripted lanes answer the route themselves through `command-wire.mjs`, so every
 lane scripts the one shape the head speaks. The projects workspace's
 `/api/hale/v1/head/commands` is the project head's own and is unaffected.
 
+Knowledge changes ride the same route (GH #1129): `KnowledgeEdgeLink`,
+`KnowledgeEdgeUnlink`, `KnowledgeNodePropose`, `KnowledgeNodeRevise`,
+`KnowledgeNodeRetire`, `KnowledgeBindingBind` and `KnowledgeBindingUnbind` are
+gated `position`, and recovery is a `KnowledgeLookup` line; each answers a
+`KnowledgeReply` whose typed receipt `command-wire.mjs`'s `settleKnowledge`
+regroups in the old receipt's terms. The slice says only that the session may
+send a change; the Knowledge policy decides per person, and refuses a change
+it does not grant with `code: "forbidden"`.
+
+Every real head a lane starts is a local session under its launch token
+(GH #989): the api heads mint it into `<root>/.hale/dna/head.token`, the
+project head into its state directory, and both print `/?token=<token>`. The
+shell opens only at that URL (a bare `/` is 401), which sets the `dna_local`
+cookie the face's POSTs carry; a harness reads the file after every start
+(`environment.mjs`'s `launchToken`), opens its pages at the tokenised URL — or,
+where the head restarts under an open page, gives the page the new cookie
+(`attach`) — and sends `X-Hale-Token` on its own Node-side POSTs.
+
 ## Practice command conformance
 
 `commands.spec.mjs` uses native practice reads with a scripted command slice and
@@ -415,20 +433,21 @@ skip visibly; with them and no owner's DSN, setup fails. The seed binary creates
 only prior canonical subjects; it never authors a command outcome.
 `native-knowledge-harness.mjs` owns a fresh Git Record, an explicit application
 and principal policy (`HALE_DNA_KNOWLEDGE_COMMAND_POLICY`, the API's only
-Knowledge configuration besides the head's DSN), and a bounded API process
+Knowledge configuration besides the head's DSN), the head's uid mapped to the
+policy's person and seated (the `position` gate), and a bounded API process
 group. Cleanup stops every owned process and drops the Record's memory.
 
 The spine projects an admitted command into memory on its tick; a graph read
 before that answers `knowledge_projection_unavailable`. This composition has no
 spine, so the harness stands in for its tick: it runs the seed binary's
-`project` after every admission — a Node-side `post`, and a browser POST, which
-a page route holds until the projection is done — and before every API start.
-A case's own route on the commands path hands a POST on with `fallback()`, or
-calls `service.tick()` itself before it fulfills the POST.
+`project` after every admission — a Node-side `post`, and a browser Knowledge
+call, which a page route holds until the projection is done — and before every
+API start. A case's own route on the commands path hands a Knowledge call on
+with `fallback()`, or calls `service.tick()` itself before it fulfills it.
 
 Eleven cases cover a directed Unicode relationship recorded once and observed
 through a fresh graph read; an actual admitted POST whose reply is discarded,
-followed by API restart and GET-only browser reload recovery; stale
+followed by API restart and lookup-only (`KnowledgeLookup`) browser reload recovery; stale
 Record-head refusal; unavailable graph readback and subsequent visibility
 restriction; and Review-required authority with no direct fallback. The browser
 saves only scoped recovery metadata before POST. Successful command responses
@@ -437,8 +456,8 @@ Restart starts a fresh API over the same memory, projected from the same Record.
 
 The removal cases select one exact stored relationship and preserve its reverse,
 other labels and endpoint items. They cover a lost removal reply followed by
-restart/GET-only recovery, stale-head refusal, independently denied/default-denied
-removal and unlink-only authority, and native pagination across 27 relationships.
+restart/lookup-only recovery, stale-head refusal, independently denied/default-denied
+removal and unlink-only authority (the policy's `forbidden`, the calls offered alike), and native pagination across 27 relationships.
 A failed second-page transport leaves absence unestablished; a later GET checks
 the complete sequence at one snapshot. An endpoint restriction between admission
 and graph read also leaves absence unestablished and clears displayed details.

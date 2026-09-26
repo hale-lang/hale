@@ -1,6 +1,6 @@
 // The composed head raises work: the real GovernanceCommands over a fresh Git
 // Record, the practice_review adapter and the head's command handlers
-// (api::Commands), called in-process. The organism's answers
+// (api::CommandAdmission), called in-process. The organism's answers
 // below are explicit fixture rows; no body or host is started, and no
 // HALE_API_BIN process is spawned.
 import ".." as api;
@@ -29,7 +29,7 @@ locus CreateApiCases {
         std::test::assert(policy.valid, "recover-only authority policy");
         let native = ops::GovernanceCommands { record: record, authority: ops::FixedAuthority { policy: policy } };
         let provider = head::PracticeReviewCommands { root: self.root, application_id: self.identity, service: native, people: native };
-        let commands = api::Commands { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" }, provider: provider };
+        let commands = api::CommandAdmission { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" }, provider: provider };
         let before = record.head("journal").id; let outcome = "Confirm the supplier handover\r\né 🧭 <literal & markup>";
         let admitted = commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller());
         std::test::assert(admitted.ok, "any authenticated principal may raise work: " + admitted.code);
@@ -67,7 +67,7 @@ locus CreateApiCases {
         std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "" }, self.caller()).code, "invalid_query", "lookup needs a request identity");
         std::test::assert_eq_str(commands.create_task(self.ask("create-4", now, "", "org"), self.caller()).code, "invalid_command", "an empty outcome is refused by the codec");
         // recovery is under the provider's own grant: bob, mapped but ungranted, reads nothing
-        let switched = api::Commands { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: provider };
+        let switched = api::CommandAdmission { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: provider };
         let foreign = switched.lookup(api::Lookup { request_id: "create-1" }, self.caller());
         std::test::assert(foreign.code == "forbidden" && foreign.receipt.command_id == "", "another principal cannot recover riley's ask: " + foreign.code);
         let moved = api::CommandContext { root: self.root, source: api::Source { ok: true, identity: self.identity, head: now, revision: 1 }, principal_mode: "local", principal_name: "bob" };

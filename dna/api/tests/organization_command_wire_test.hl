@@ -1,5 +1,5 @@
 // The typed mapping of the head's commands: a payload handed to
-// `api::Commands` reaches the provider as exactly the operations' command.
+// `api::CommandAdmission` reaches the provider as exactly the operations' command.
 // Organization submission stays a provider's to admit; this is not a
 // native admission/publication/activation proof.
 import ".." as api;
@@ -20,7 +20,7 @@ locus MappingProbe {
     fn lookup(context: api::CommandContext, request_id: String) -> api::CommandResult { return api::CommandResult { code: "command_not_found" }; }
 }
 locus OrganizationMappingCases {
-    params { root: String = ""; identity: String = ""; probe: MappingProbe; commands: api::Commands; }
+    params { root: String = ""; identity: String = ""; probe: MappingProbe; commands: api::CommandAdmission; }
     fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
     fn repeat(text: String, count: Int) -> String { let out = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { out.append_str(text); i = i + 1; } return std::str::from_bytes(out.snapshot()); }
     fn proposal(text: String, rationale: String) -> api::OrganizationProposal {
@@ -110,7 +110,7 @@ fn main() {
     let record = dna::GitRecord { repo: root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
     std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
     let probe = MappingProbe { };
-    let commands = api::Commands { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: probe };
+    let commands = api::CommandAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: probe };
     let cases = OrganizationMappingCases { root: root, identity: record.identity(), probe: probe, commands: commands };
     cases.mapping(); cases.compatibility();
     let swept = dna::run_tool("rm\n-rf\n" + root);

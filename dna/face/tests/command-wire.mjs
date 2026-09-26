@@ -9,8 +9,23 @@ export const CALLS = {
   'dna.organization.propose': 'OrganizationPropose', 'dna.task.reassign': 'TaskReassign',
   'dna.person.retire': 'PersonRetire', 'dna.task.create': 'TaskCreate',
 };
-// The two commands every authenticated peer may send.
-export const UNGATED = ['CommandLookup', 'TaskCreate'];
+// The head's Knowledge topics (dna/api/knowledge_commands.hl), and their
+// recovery call.
+export const KNOWLEDGE_CALLS = {
+  'dna.knowledge.edge.link': 'KnowledgeEdgeLink', 'dna.knowledge.edge.unlink': 'KnowledgeEdgeUnlink',
+  'dna.knowledge.node.propose': 'KnowledgeNodePropose', 'dna.knowledge.node.revise': 'KnowledgeNodeRevise', 'dna.knowledge.node.retire': 'KnowledgeNodeRetire',
+  'dna.knowledge.binding.bind': 'KnowledgeBindingBind', 'dna.knowledge.binding.unbind': 'KnowledgeBindingUnbind',
+};
+export const KNOWLEDGE_LOOKUP = 'KnowledgeLookup';
+// The commands every authenticated peer may send.
+export const UNGATED = ['CommandLookup', 'TaskCreate', KNOWLEDGE_LOOKUP];
+// The call a forwarded line names ('' for a describe or a GET).
+export function callOf(request) {
+  if (request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/commands')) return '';
+  try { return request.postDataJSON()?.call || ''; } catch { return ''; }
+}
+export const isKnowledgeCall = request => Object.values(KNOWLEDGE_CALLS).includes(callOf(request));
+export const isKnowledgeLookup = request => callOf(request) === KNOWLEDGE_LOOKUP;
 
 // A describe line asks for the caller's slice. It reads; lanes that watch
 // for writes leave it out.
@@ -81,8 +96,36 @@ export function wireLine(command) {
     'dna.person.retire': () => ({ request_id, person: target.id, subject_digest: p.subject_digest, to: a.to }),
     'dna.task.create': () => ({ request_id, record_head: p.record_head, outcome: a.outcome, to: a.to }),
   };
+  // A Knowledge change: the head derives every target but an edge's.
+  if (Object.hasOwn(KNOWLEDGE_CALLS, operation)) {
+    const edge = operation.startsWith('dna.knowledge.edge.');
+    return { call: KNOWLEDGE_CALLS[operation], payload: { request_id, record_head: p.record_head, ...(edge ? { target_id: target.id } : {}), ...a } };
+  }
   if (!Object.hasOwn(payloads, operation)) throw new Error('No call carries ' + operation);
   return { call: CALLS[operation], payload: payloads[operation]() };
+}
+export const knowledgeLookupLine = requestId => ({ call: KNOWLEDGE_LOOKUP, payload: { request_id: requestId } });
+// A KnowledgeReply's typed receipt in the old HTTP receipt's terms
+// (principal, context, target, a decimal sequence, only the operation's own
+// outcome branch), so a lane keeps asserting the Record facts it did.
+export function knowledgeReceiptView(r) {
+  const node = r.operation.startsWith('dna.knowledge.node.'), binding = r.operation.startsWith('dna.knowledge.binding.');
+  return {
+    command_id: r.command_id, request_id: r.request_id, application_id: r.application_id, operation: r.operation, operation_version: r.operation_version,
+    principal: { mode: r.principal_mode, name: r.principal_name }, context: { application_id: r.application_id, position_id: r.position_id },
+    target: { application_id: r.application_id, kind: r.operation === 'dna.knowledge.node.propose' ? 'dna.knowledge.collection' : 'dna.knowledge.node', id: r.target_id },
+    fingerprint: r.fingerprint, state: r.state, details_visible: r.details_visible, edge_id: r.edge_id, event_id: r.event_id, sequence: String(r.sequence),
+    admission_head: r.admission_head, authority: r.authority, authority_basis: r.authority_basis,
+    ...(node ? { node: r.node } : binding ? { binding: r.binding } : r.reviewed ? { relationship: r.relationship } : {}),
+  };
+}
+// A forwarded Knowledge exchange, settled: the binding's refusal kind, the
+// provider's refusal code, or the receipt in the old terms.
+export function settleKnowledge(status, json) {
+  if (!json || typeof json.ok !== 'boolean') return { status, code: json?.error?.code || 'unanswered' };
+  if (!json.ok) return { status, code: json.refusal.kind, refusal: json.refusal };
+  if (!json.value.ok) return { status, code: json.value.code };
+  return { status, code: '', reply: json.value, receipt: knowledgeReceiptView(json.value.receipt), source: { record_id: json.value.application_id, record_head: json.value.head, record_revision: String(json.value.revision) } };
 }
 // A receipt line's CommandReply receipt, grouped the way the old HTTP
 // receipt was (principal, target, proposal, verdict, review, activation), so

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isolatedEnvironment, boundedNative, memoryOwner } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner, launchToken } from './environment.mjs';
 import { seatRecord } from './record-seats.mjs';
 
 const execute = promisify(execFile);
@@ -205,8 +205,12 @@ export const test = base.extend({
       }
       if (!origin) throw new Error(`Owned API failed readiness.\n${log}`);
       const apiPath = `/api/hale/v1/applications/${data.application}`;
+      // The local session's launch token (GH #989): the shell opens at the
+      // URL the head printed, which sets the session cookie every POST needs.
+      const token = await launchToken(root);
+      const shell = `${origin}/?token=${token}`;
       await use({
-        ...data, origin, apiPath,
+        ...data, origin, apiPath, token, shell,
         // Each mutation projects again, as the spine's next tick would.
         mutate: action => executeNative(native, [root, action], { env: fixtureEnv, timeout: 15_000 }),
         // Memory stops answering the API, and answers again on the same DSN.
@@ -252,7 +256,7 @@ export const test = base.extend({
             .then(bytes => createHash('sha256').update(bytes).digest('hex')).catch(() => null) : null,
         }),
         refs: async () => (await execute('git', ['-C', root, 'show-ref'], { env, timeout: 5_000 })).stdout,
-        url: (view = 'practices', extra = {}) => `${origin}/#/${view}?${new URLSearchParams({ app: data.application, ...extra })}`,
+        url: (view = 'practices', extra = {}) => `${shell}#/${view}?${new URLSearchParams({ app: data.application, ...extra })}`,
       });
     } finally {
       await stop(child);

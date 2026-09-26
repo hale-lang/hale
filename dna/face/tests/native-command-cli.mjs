@@ -9,7 +9,7 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { settle, wireLine } from './command-wire.mjs';
 import { seatRecord } from './record-seats.mjs';
 
@@ -206,6 +206,8 @@ try {
       if (api.startError || api.exitCode !== null || api.signalCode) throw new Error(api.startError?.message || api.errors || 'API exited');
       try { return (await fetch(`${origin}/api/hale/v1/applications`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; }
     });
+    // the launch token the API minted (GH #989): a tool's POST carries it
+    const token = await launchToken(root);
     const get = async id => {
       const response = await fetch(endpoint + '?' + new URLSearchParams({ request_id: id }), { signal: AbortSignal.timeout(10_000) });
       const result = await response.json(); const settled = settle(response.status, result);
@@ -219,7 +221,7 @@ try {
       context: { application_id: application, position_id: 'org' }, target: { application_id: application, kind: 'dna.practice', id: ready.bootstrap_digest },
       preconditions: { subject_digest: ready.bootstrap_digest, principal: { mode: 'local', name: actor } }, arguments: { text, rationale } };
     // The HTTP route forwards one line of the head's wire to its socket.
-    const response = await fetch(endpoint, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(apiRequest)), signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(endpoint, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1', 'X-Hale-Token': token }, body: JSON.stringify(wireLine(apiRequest)), signal: AbortSignal.timeout(10_000) });
     const line = await response.json(); const settledPost = settle(response.status, line);
     assert.equal(settledPost.status, 200, JSON.stringify(line)); assert.equal(settledPost.code, '', JSON.stringify(line));
     const apiResult = { ...line, data: settledPost.receipt };

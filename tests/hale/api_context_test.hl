@@ -188,6 +188,8 @@ fn main() {
     std::test::assert(std::str::starts_with(marked, expect_head) && std::str::contains(marked, "|http-session|2|browser\""), "the handler's ctx.via is the mark, the principal the peer's: " + marked);
     let r1c = api.ask("{\"id\":12,\"call\":\"Claims\",\"payload\":{\"task\":4,\"who\":\"x\"},\"via\":\"\"}");
     std::test::assert(std::str::contains(r1c, "\"kind\":\"malformed\""), "an empty mark is refused: " + r1c);
+    let r1d = api.ask("{\"id\":13,\"call\":\"Claims\",\"payload\":{\"task\":5,\"who\":\"y\"},\"via\":5}");
+    std::test::assert(std::str::contains(r1d, "\"kind\":\"malformed\""), "a mark that is not a string is refused, never dropped: " + r1d);
 
     // A refusal carries it too.
     let r2 = api.ask("{\"id\":2,\"call\":\"Nope\",\"payload\":{}}");

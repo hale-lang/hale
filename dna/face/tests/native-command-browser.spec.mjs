@@ -13,9 +13,10 @@ const test = base.extend({
       await testInfo.attach('native-service-evidence', { path: service.evidence + '/service.json', contentType: 'application/json' });
     }
   },
-  page: async ({ page }, use) => {
+  page: async ({ page, service }, use) => {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    await service.attach(page);
     await use(page);
     expect(errors, 'No unhandled face JavaScript error').toEqual([]);
   },

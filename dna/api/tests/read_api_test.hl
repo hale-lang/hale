@@ -5,10 +5,17 @@ import ".." as api;
 import "./fixture" as fixture;
 import "./issuer" as issuer;
 
+// The shell's URL as the head printed it: `/?token=<launch token>`.
+fn shell_url(f: fixture::Fixture) -> String {
+    return "/?token=" + dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
+}
+
 // The browser's request: exact Origin, JSON, the command marker.
 fn forward(f: fixture::Fixture, method: String, url: String, body: String, headers: Bool) -> fixture::HttpResponse {
     let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--path-as-is\n--request\n" + method;
-    if headers { argv = argv + "\n--header\nOrigin: " + f.url() + "\n--header\nContent-Type: application/json\n--header\nX-Hale-Command: 1"; }
+    // the launch token the head printed, as a tool that read its file sends it
+    let token = dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
+    if headers { argv = argv + "\n--header\nOrigin: " + f.url() + "\n--header\nContent-Type: application/json\n--header\nX-Hale-Command: 1\n--header\nX-Hale-Token: " + token; }
     if len(body) > 0 { argv = argv + "\n--data\n" + body; }
     let result = dna::run_tool(argv + "\n" + url);
     let split = std::str::index_of(result.stdout, "\r\n\r\n");
@@ -47,7 +54,8 @@ locus Cases {
     // under the browser's CSRF headers, answered as the binding wrote it
     // with the head's own principal marked `via: http-session`.
     fn forwarding() {
-        let f = fixture::Fixture { root: self.root + "/fw", profiled_schema: self.schema }; f.standard(); f.start();
+        // with the shell: the launch token opens it
+        let f = fixture::Fixture { root: self.root + "/fw", profiled_schema: self.schema }; f.standard(); f.prepare_web(); f.start();
         let path = f.url() + f.prefix + "/commands";
         let described = forward(f, "POST", path, "{\"describe\":true}", true);
         std::test::assert_eq_int(described.status, 200, described.body);
@@ -58,10 +66,22 @@ locus Cases {
         let gated = forward(f, "POST", path, "{\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}", true);
         std::test::assert_eq_int(gated.status, 404, gated.body);
         std::test::assert(std::str::contains(gated.body, "\"kind\":\"unknown\""), "a closed gate is unknown to this principal, as on the socket: " + gated.body);
+        // a Knowledge change is a gated topic like the rest; its recovery is not
+        let knowledge = forward(f, "POST", path, "{\"call\":\"KnowledgeEdgeLink\",\"payload\":{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}}", true);
+        std::test::assert(knowledge.status == 404 && std::str::contains(knowledge.body, "\"kind\":\"unknown\""), "a Knowledge change outside the slice is unknown: " + knowledge.body);
+        let recovered = forward(f, "POST", path, "{\"call\":\"KnowledgeLookup\",\"payload\":{\"request_id\":\"k-1\"}}", true);
+        std::test::assert(recovered.status == 200 && std::str::contains(recovered.body, "\"code\":\"commands_unsupported\""), "a Knowledge lookup reaches its handler; no policy, no provider: " + recovered.body);
+        let old_route = forward(f, "POST", f.url() + f.prefix + "/dna/knowledge/commands", "{\"describe\":true}", true);
+        std::test::assert_eq_int(old_route.status, 405, "the Knowledge command route is gone: " + old_route.body);
         let claimed = forward(f, "POST", path, "{\"describe\":true,\"via\":\"admin\"}", true);
         std::test::assert_eq_int(claimed.status, 400, "a line that claims its own mark is refused: " + claimed.body);
         let bare = forward(f, "POST", path, "{\"describe\":true}", false);
-        std::test::assert_eq_int(bare.status, 403, "without the CSRF headers nothing is forwarded: " + bare.body);
+        std::test::assert_eq_int(bare.status, 401, "without the launch token no mutation is taken: " + bare.body);
+        let shell = f.http("GET", "/", "", "");
+        std::test::assert_eq_int(shell.status, 401, "and the shell opens only with the token: status " + to_string(shell.status) + " " + shell.headers + " " + shell.body);
+        let opened = f.http("GET", "/?token=" + dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or ""), "", "");
+        std::test::assert_eq_int(opened.status, 200, "the URL the head printed opens it: " + opened.body);
+        std::test::assert(std::str::contains(dna::response_header(opened.headers, "Set-Cookie"), "dna_local="), "and sets the session cookie: " + opened.headers);
         let looked = forward(f, "GET", path + "?request_id=ask-1", "", false);
         std::test::assert_eq_int(looked.status, 200, looked.body);
         std::test::assert(std::str::contains(looked.body, "\"via\":\"http-session\"}"), "a lookup is a forwarded CommandLookup: " + looked.body);
@@ -162,8 +182,8 @@ locus Cases {
         let mut i = 0;
         while i < 4 {
             let mut j = 0;
-            // POST /commands is the forwarding transport: without the browser's CSRF headers it is refused, not unknown
-            while j < 3 { f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), if i == 0 && j == 2 { 403 } else { 405 }, "", "{\"as\":\"board\",\"verdict\":\"approve\"}"); j = j + 1; }
+            // POST /commands is the forwarding transport: without the launch token it is refused, not unknown
+            while j < 3 { f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), if i == 0 && j == 2 { 401 } else { 405 }, "", "{\"as\":\"board\",\"verdict\":\"approve\"}"); j = j + 1; }
             i = i + 1;
         }
         f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}"); f.error("POST", "/api/task/create", 405, "", "{\"as\":\"board\"}");
@@ -315,7 +335,8 @@ locus Cases {
         let paths = "/\n/app.js\n/styles.css\n/application.js\n/definition-draft.js\n/organization-draft.js\n/knowledge-draft.js\n/task-administration.js\n/projects.js\n/task-create.js";
         let mut i = 0;
         while i < dna::count_lines(paths) {
-            let response = f.http("GET", dna::line_at(paths, i), "", "");
+            // the shell itself opens with the launch token; its assets are public
+            let response = f.http("GET", if i == 0 { shell_url(f) } else { dna::line_at(paths, i) }, "", "");
             std::test::assert_eq_int(response.status, 200, response.body);
             std::test::assert_eq_str(dna::response_header(response.headers, "Content-Type"), if i == 0 { "text/html; charset=utf-8" } else if i == 2 { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" }, "asset media type");
             std::test::assert_eq_str(dna::response_header(response.headers, "Cache-Control"), "no-store", "assets are not cached");
@@ -329,7 +350,7 @@ locus Cases {
             i = i + 1;
         }
         let expected_csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
-        std::test::assert_eq_str(dna::response_header(f.http("GET", "/", "", "").headers, "Content-Security-Policy"), expected_csp, "the shell connects to its own origin only");
+        std::test::assert_eq_str(dna::response_header(f.http("GET", shell_url(f), "", "").headers, "Content-Security-Policy"), expected_csp, "the shell connects to its own origin only");
         let absent = "/index.html\n/secret.txt\n/main.hl\n/.git/config\n/../secret.txt\n/%2e%2e/secret.txt\n/app.js/../secret.txt\n/app.js.map\n/missing.css\n/nested/app.js\n//app.js\n/%61pp.js";
         i = 0;
         while i < dna::count_lines(absent) { f.error("GET", dna::line_at(absent, i), 404, "", ""); i = i + 1; }
@@ -370,13 +391,13 @@ locus Cases {
         f.start();
         f.error("GET", "/application.js", 404, "", "");
         f.error("GET", "/definition-draft.js", 404, "", "");
-        f.error("GET", "/", 404, "", ""); f.error("GET", "/app.js", 404, "", ""); f.error("GET", "/styles.css", 404, "", "");
+        f.error("GET", shell_url(f), 404, "", ""); f.error("GET", "/app.js", 404, "", ""); f.error("GET", "/styles.css", 404, "", "");
         f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
     }
     fn web_oidc() {
         let f = fixture::Fixture { root: self.root + "/29", profiled_schema: self.schema }; let p = f.standard();
         f.prepare_web(); f.configure_oidc(self.issuer_url);
-        let shell = f.http("GET", "/", "", "");
+        let shell = f.http("GET", shell_url(f), "", "");
         std::test::assert_eq_int(shell.status, 200, "the public shell needs no DNA session");
         std::test::assert_eq_str(shell.body, fixture::SHELL_HTML, "unauthenticated shell is static");
         std::test::assert(!std::str::contains(shell.body, p.text), "no practice body in public shell");

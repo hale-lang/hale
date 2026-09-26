@@ -9,7 +9,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
 import { settle } from './command-wire.mjs';
 
@@ -60,6 +60,14 @@ export async function startService(options = {}) {
   const owned = new Set(), processLog = [], requestLog = [];
   let sequence = 0, body, relay, api, dependencies, application = '', practice = '', origin = '', stopped = false;
   let currentActor = principal;
+  // The launch token each API start mints (GH #989), and the pages the lane
+  // drives: each gets the session cookie of every launch.
+  let token = '';
+  const pages = new Set();
+  async function authorize(page) {
+    const opened = await page.request.get(`${origin}/?token=${token}`);
+    assert.equal(opened.status(), 200, 'The launch token did not open the shell');
+  }
   const save = (name, value) => fs.writeFileSync(path.join(evidence, name), JSON.stringify(value, null, 2) + '\n');
   const git = (...args) => execFileSync('git', ['-C', root, ...args], { env, encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const alive = item => item?.child.pid && !item.error && item.child.exitCode === null && item.child.signalCode === null;
@@ -175,6 +183,8 @@ export async function startService(options = {}) {
       try { return await get('/api/hale/v1/applications'); }
       catch (error) { if (['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) return null; throw error; }
     }, response => response?.status === 200 && response.json.source?.record_id === application);
+    token = await launchToken(root);
+    for (const page of pages) await authorize(page);
     const capabilities = await read(apiPath() + '/capabilities');
     assert.equal(capabilities.status, 200); assert.deepEqual(capabilities.json.data.principal, { mode: 'local', name: actor });
     return capabilities.json.data;
@@ -239,6 +249,10 @@ export async function startService(options = {}) {
       application, app: application, practice, origin, root, evidence, policy, principal: { mode: 'local', name: principal },
       apiPath: apiPath(), text: 'Collect the exact receipt.\nKeep its provenance.',
       url: (view = 'practices', extra = {}) => `${origin}/#/${view}?${new URLSearchParams({ app: application, ...extra })}`,
+      // A page this lane drives: the session cookie now and after every restart.
+      async attach(page) { pages.add(page); await authorize(page); },
+      // live, not a snapshot: a lane that spreads this service still sees each launch's
+      token: () => token,
       read, journal, quiesce, startBody, startRelay, startAPI, pauseDelivery, resumeDelivery, restart, stop, exportEvidence,
       processes: () => [...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })),
       stopAPI: () => stopProcess(api), stopBody: () => stopProcess(body, body.paused), stopRelay: () => stopProcess(relay, relay.paused),

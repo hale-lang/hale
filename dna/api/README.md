@@ -224,16 +224,51 @@ distributable API belongs to the service deployment work.
 
 ## Knowledge commands
 
-Knowledge commands (`dna.knowledge.edge.link@1` and `.unlink@1`, and the
-reviewed node and binding profiles) are admitted into the Record in the API's
-own process, by the operations' `KnowledgeCommands` (`LocalKnowledgeCommands`
-in `dna/api/knowledge_memory.hl`). There is no command key and no service to
+Knowledge changes are the head's gated topics on its api binding, like
+every other command the record takes ([Commands](#commands)) — over the
+binding, and forwarded over HTTP like the rest (`POST …/commands` with
+`{"call": "KnowledgeEdgeLink", "payload": {...}}`). There is no Knowledge
+command route. The head supplies the record, the principal and the
+target each operation implies; the operations' `KnowledgeCommandCodec`
+is the admissibility rule, checked before anything is admitted.
+
+| call name | subject | payload type (fields) | gate |
+|---|---|---|---|
+| `KnowledgeEdgeLink` | `dna.commands.knowledge.edge.link` | `KnowledgeLink { request_id, record_head, target_id, from_id, to_id, rel, rationale }` | `position` |
+| `KnowledgeEdgeUnlink` | `dna.commands.knowledge.edge.unlink` | `KnowledgeUnlink { request_id, record_head, target_id, edge_id, from_id, to_id, rel, rationale }` | `position` |
+| `KnowledgeNodePropose` | `dna.commands.knowledge.node.propose` | `KnowledgeNodeProposal { request_id, record_head, kind, name, text, author, target, rationale }` | `position` |
+| `KnowledgeNodeRevise` | `dna.commands.knowledge.node.revise` | `KnowledgeNodeRevision { request_id, record_head, supersedes, kind, name, text, author, target, rationale }` | `position` |
+| `KnowledgeNodeRetire` | `dna.commands.knowledge.node.retire` | `KnowledgeNodeRetirement { request_id, record_head, id, rationale }` | `position` |
+| `KnowledgeBindingBind` | `dna.commands.knowledge.binding.bind` | `KnowledgeBind { request_id, record_head, idea_id, author, target, rationale }` | `position` |
+| `KnowledgeBindingUnbind` | `dna.commands.knowledge.binding.unbind` | `KnowledgeUnbind { request_id, record_head, binding_id, idea_id, author, target, rationale }` | `position` |
+| `KnowledgeLookup` | `dna.commands.knowledge.lookup` | `KnowledgeRecovery { request_id }` | any authenticated peer |
+
+`record_head` is the head the change was prepared at (a moved record is
+`stale_subject`); an edge's `target_id` is the endpoint it is made from
+(its `from_id` or `to_id`); a proposal targets the collection `target`
+names, a revision the node it `supersedes`, a retirement the node `id`,
+a binding its `idea_id`. `edge_id` and `binding_id` are the identities
+the tuple being removed already has. Every change is gated `position` —
+a person of the record — and the Knowledge policy below decides what that
+person may change and whether it goes to Review. Every reply is a
+`KnowledgeReply { ok, code, application_id, head, revision, receipt }`,
+its receipt the record's `KnowledgeReceipt` as a typed value: `node`,
+`binding` or, for a reviewed edge (`reviewed: true`), `relationship`
+filled for its operation, the rest at their defaults; `sequence` is an
+integer. A refusal is `ok: false` with the code (`invalid_command`,
+`forbidden`, `stale_subject`, `request_conflict`, `command_not_found`,
+`commands_unsupported`, …). `KnowledgeLookup` recovers a command by the
+request id the caller minted, under the policy's `recover` grant.
+
+The commands are admitted into the Record in the head's own process, by
+the operations' `KnowledgeCommands` (`LocalKnowledgeCommands` in
+`dna/api/knowledge_memory.hl`). There is no command key and no service to
 reach. Set `HALE_DNA_KNOWLEDGE_COMMAND_POLICY` to the path of an explicit
-authority document; without it the API advertises no Knowledge command and
-answers `commands_unsupported`. The API reads the document once, when it
-starts, so an edit to the file does not change the basis a running API decides
-on. A document that is empty, larger than 64 KiB or invalid for this Record
-stops the API at startup (exit 2).
+authority document; without it every Knowledge call answers
+`commands_unsupported`. The head reads the document once, when it starts,
+so an edit to the file does not change the basis a running head decides
+on. A document that is empty, larger than 64 KiB or invalid for this
+Record stops the head at startup (exit 2).
 
 ```json
 {
@@ -260,18 +295,23 @@ authenticated mode/name pair, at most 128 of them. `edge_link` and optional
 removal. The optional `node_propose`, `node_revise`, `node_retire`,
 `binding_bind` and `binding_unbind` are `review` or `deny`, and a `review` grant
 among them needs its `node_scopes` or `binding_scopes` (`{author, target}`
-pairs, at most 32, never lateral). The public contract is in
-[contract/v1](contract/v1/README.md#optional-knowledge-relationship-command).
+pairs, at most 32, never lateral). A grant names the person a socket
+peer maps to (`local/<person>`), the principal every Knowledge row
+records.
 
 ## Commands
 
 The record's commands are gated topics on the head's api binding, not
 HTTP routes: one Unix socket per record,
-`$XDG_RUNTIME_DIR/hale/dna/<record id>.sock`, else `<root>/.hale/dna/<id>.sock`
+`$XDG_RUNTIME_DIR/hale/dna/<id12>.sock` (the record id's first twelve
+characters), else `<root>/.hale/dna/<id12>.sock`, else — when that would
+not fit an AF_UNIX address — `/tmp/hale-<uid>/<id12>.sock`; `/capabilities`
+names the socket only while this process answers on it
 (`LOTUS_API` overrides). `hale describe <socket>` lists a caller's
 slice — the calls it may use; `hale check --dump-api dna/api` prints the
-full description, which is the contract for these calls (`contract/v1`
-remains the contract for the HTTP reads and the knowledge commands).
+full description, which is the contract for these calls and for the
+[Knowledge commands](#knowledge-commands) (`contract/v1` remains the
+contract for the HTTP reads).
 
 | call name | subject | payload type (fields) | gate |
 |---|---|---|---|
@@ -296,12 +336,15 @@ mapped person holds the named role. Every reply is a `CommandReply { ok, code, a
 revision, receipt }`, its receipt exactly what an HTTP command receipt
 used to carry. `CommandLookup { request_id }` is recovery, in place of
 the old `GET /commands?request_id=`. The HTTP head answers 405 to every
-mutation now, except a knowledge command or a draft POST.
-`/capabilities` no longer carries `writes` or any command profile; it
-carries `api{transport,socket}` instead.
+mutation now, except a draft POST and the forwarding route below.
+`/capabilities` no longer carries `writes`, `knowledge_write` or any
+command profile, and `read_only` is always `true` (HTTP itself writes
+nothing); it carries `api{transport,socket,http}` instead, and what a
+session may send is its describe slice.
 
-`hale dna work`, the legs client, is being switched from the HTTP route
-to this socket by the DNA line; the socket is its target.
+`hale dna work`, the legs client, speaks this socket: every verb a
+`call` on its topic, the reads (`/applications`, `/capabilities`,
+`/dna/context`) over HTTP, the socket's path from `api.socket`.
 
 **HTTP is a forwarding transport** (forward.hl; GH #1135 is the binding's
 own HTTP transport). The face is where humans decide, so its writes keep
@@ -317,7 +360,15 @@ that already carries a `via` is refused. `GET …/commands?request_id=`
 forwards a `CommandLookup`. The principal is the head process's, mapped
 through `dna.unix.member` like any peer; rows record that person, and
 the local session `/capabilities` names is that same person (else
-`$USER`), so a forwarded receipt matches the session. The
+`uid:<n>`, never `$USER`), so a forwarded receipt matches the session.
+The forwarder connects to its own socket only when this very process
+answers on it (peer pid), so a clone of the record sharing the path is
+never forwarded into. The local session's trust until OIDC (GH #989) is
+the launch token: minted per launch into `<root>/.hale/dna/head.token`
+(0600) and printed in the head's URL; the shell at `/` and every POST
+carry it (the `dna_local` cookie the URL sets, or `X-Hale-Token`), and
+without it they are refused. Revoking a `dna.unix.member` mapping takes
+effect when the record next moves. The
 local session only: an OIDC session's person is not a socket peer, so
 that mode answers `commands_unsupported` here. `/capabilities` names the
 route as `api.http`.
@@ -778,8 +829,9 @@ built service. CI builds with the checkout's compiler and runs this suite.
 The native contract checker supports the schema profile used by this API and
 rejects unsupported schema constructs; it is not a general JSON Schema validator.
 `hale check --dump-api dna/api` prints the socket's full description — the
-contract for its gated commands ([Commands](#commands)); `contract/v1`
-stays the contract for the HTTP reads and the knowledge commands.
+contract for its gated commands ([Commands](#commands),
+[Knowledge commands](#knowledge-commands)); `contract/v1` stays the
+contract for the HTTP reads.
 
 ### Organization source preparation
 

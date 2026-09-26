@@ -233,8 +233,11 @@ locus HeadFixture {
     fn http(method: String, path: String, headers: String, body: String) -> HttpResponse {
         return curl(method, self.url() + path, headers, body);
     }
+    // The head's launch token, as a tool that read its file sends it
+    // (the head's state dir is `<root>/state`, set by spawn's script).
+    fn token() -> String { return dna::trim_nl(std::io::fs::read_file(self.root + "/state/head.token") or ""); }
     fn command_headers() -> String {
-        return "Origin: " + self.url() + "\nContent-Type: application/json\nX-Hale-Command: 1";
+        return "Origin: " + self.url() + "\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + self.token();
     }
     fn post(body: String) -> HttpResponse {
         return self.http("POST", HEAD + "/commands", self.command_headers(), body);

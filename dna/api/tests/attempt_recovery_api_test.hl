@@ -59,7 +59,7 @@ locus RecoveryCases {
         std::test::assert(policy.valid, "recover-only authority policy");
         let native = ops::GovernanceCommands { record: record, authority: ops::FixedAuthority { policy: policy } };
         let provider = head::PracticeReviewCommands { root: self.f.root, application_id: self.f.identity, service: native, people: native };
-        let commands = api::Commands { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" }, provider: provider };
+        let commands = api::CommandAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" }, provider: provider };
         let service = api::Api { root: self.f.root, local_name: "riley" };
         let attempt = dna::attempt_id_of(WORK, 0);
         // the hat, as the leg reads it before it works

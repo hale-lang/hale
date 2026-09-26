@@ -182,7 +182,7 @@ locus App {
         // description is not theirs.
         let none = api.ask("{\"id\":1,\"describe\":true}");
         std::test::assert(has(none, "\"ok\":true") && has(none, "\"app\":\"Head\""), "the head serves its description: " + none);
-        std::test::assert_eq_str(commands_of(none), "CommandLookup TaskCreate", "seated nowhere: the ungated commands only");
+        std::test::assert_eq_str(commands_of(none), "CommandLookup KnowledgeLookup TaskCreate", "seated nowhere: the ungated commands only");
         let locked = api.ask("{\"id\":2,\"describe\":\"full\"}");
         std::test::assert(has(locked, "\"kind\":\"unauthorized\"") && has(locked, "\"role\":\"owner\""), "the full description is the board's: " + locked);
 
@@ -190,7 +190,7 @@ locus App {
         // command but the reviewer's, listed the moment the record says so.
         let ada_board = self.holds(j, "board", "ada");
         let seated = self.slice_with(api, 3, "TaskReassign");
-        std::test::assert_eq_str(commands_of(seated), "AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile OrganizationPropose PersonRetire PracticePropose TaskCreate TaskReassign", "the board's slice: the owner's and a position's commands, not the reviewer's");
+        std::test::assert_eq_str(commands_of(seated), "AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise OrganizationPropose PersonRetire PracticePropose TaskCreate TaskReassign", "the board's slice: the owner's and a position's commands, not the reviewer's");
         let full = api.ask("{\"id\":4,\"describe\":\"full\"}");
         std::test::assert(has(full, "\"ok\":true"), "the board's holder reads the full description, by the record: " + full);
         std::test::assert_eq_str(std::json::find_field_raw(full, "value"), description, "and it is the emitted document");
@@ -215,7 +215,7 @@ locus App {
         // ada is seated as reviewer too: the verdict joins the slice.
         self.holds(j, "reviewer", "ada");
         let reviewing = self.slice_with(api, 7, "ReviewVerdict");
-        std::test::assert_eq_str(commands_of(reviewing), "AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile OrganizationPropose PersonRetire PracticePropose ReviewVerdict TaskCreate TaskReassign", "every command");
+        std::test::assert_eq_str(commands_of(reviewing), "AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise OrganizationPropose PersonRetire PracticePropose ReviewVerdict TaskCreate TaskReassign", "every command");
 
         // The record moves: the board's edge is taken out, and the source
         // reads it fresh — it asks the git record whether it moved at
@@ -231,7 +231,7 @@ locus App {
         }
         std::test::assert(has(gone, "\"kind\":\"unauthorized\"") && has(gone, "\"role\":\"owner\""), "once the record no longer says so, the full description is refused: " + gone);
         let still = api.ask("{\"id\":9,\"describe\":true}");
-        std::test::assert_eq_str(commands_of(still), "AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile PracticePropose ReviewVerdict TaskCreate", "the reviewer's seat still holds a position: the owner's three are gone, the rest stay");
+        std::test::assert_eq_str(commands_of(still), "AttemptClaim AttemptOutcome AttemptRelease AttemptRenew CommandLookup FrictionFile KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeLookup KnowledgeNodePropose KnowledgeNodeRetire KnowledgeNodeRevise PracticePropose ReviewVerdict TaskCreate", "the reviewer's seat still holds a position: the owner's three are gone, the rest stay");
         let not_owner = api.ask("{\"id\":10,\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"grace\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}");
         std::test::assert(has(not_owner, "\"kind\":\"unknown\"") && has(not_owner, "\"reason\":\"PersonRetire\""), "retiring a person is the board's: " + not_owner);
 

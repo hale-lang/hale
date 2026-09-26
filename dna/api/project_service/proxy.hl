@@ -110,9 +110,11 @@ fn forwarded(req: std::http::Request, name: String) -> String {
 // The header block a proxied request carries: the whitelist, the
 // body's real length, and `Origin` rewritten to the child's origin
 // exactly when the browser sent the head's own.
-fn proxied_headers(req: std::http::Request, api_port: Int, head_origin: String) -> String {
+fn proxied_headers(req: std::http::Request, api_port: Int, head_origin: String, child_token: String) -> String {
     let wire = api::CommandWire { };
     let mut headers = forwarded(req, "Accept") + forwarded(req, "Content-Type") + forwarded(req, "X-Hale-Command");
+    // the child's launch token, the head's to hand over: never the browser's
+    if len(child_token) > 0 { headers = headers + "X-Hale-Token: " + child_token + "\r\n"; }
     if req.method == "POST" || len(req.body) > 0 { headers = headers + "Content-Length: " + to_string(len(req.body)) + "\r\n"; }
     let origin = wire.header(req.headers, "Origin");
     if origin.valid && origin.count == 1 && origin.value == head_origin { headers = headers + "Origin: http://127.0.0.1:" + to_string(api_port) + "\r\n"; }
@@ -120,8 +122,8 @@ fn proxied_headers(req: std::http::Request, api_port: Int, head_origin: String) 
 }
 
 // Forwards `req` to the API child on `api_port`.
-fn proxy_exchange(req: std::http::Request, api_port: Int, head_origin: String) -> Upstream {
-    return exchange(api_port, req.method, req.path, proxied_headers(req, api_port, head_origin), req.body, UPSTREAM_TIMEOUT_NS);
+fn proxy_exchange(req: std::http::Request, api_port: Int, head_origin: String, child_token: String) -> Upstream {
+    return exchange(api_port, req.method, req.path, proxied_headers(req, api_port, head_origin, child_token), req.body, UPSTREAM_TIMEOUT_NS);
 }
 
 // The browser's answer for an exchange: the child's status, content

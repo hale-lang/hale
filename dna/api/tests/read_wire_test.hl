@@ -1,6 +1,7 @@
 // Candidate and Review field serialization only; actual HTTP/domain behavior
 // is covered separately by the native node acceptance harness.
 import ".." as api;
+import "../../core" as dna;
 import "../../operations" as ops;
 
 locus ReadWireCases {
@@ -43,11 +44,9 @@ locus ReadWireCases {
         std::test::assert(source.ok, "preserved actual large-node Record is a valid API source: " + source.code);
         std::test::assert_eq_str(source.head, expected_head, "source retains exact captured Record head");
         std::test::assert_eq_int(source.revision, expected_revision, "source retains exact captured revision");
-        let commands = api::KnowledgeCommandWire { };
-        let context = api::CommandContext { root: root, source: source, principal_mode: "local", principal_name: "alice" };
-        let request = commands.private_request(context, "lookup", ops::KnowledgeCommand { }, "preserved-fixture-query");
-        let nested = self.raw(request, "context");
-        std::test::assert_eq_str(self.json.decode(self.raw(nested, "application_id")), source.identity, "lookup context uses the same validated Record identity");
+        let knowledge = api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" } };
+        let context = knowledge.context(std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } });
+        std::test::assert_eq_str(context.source.identity, source.identity, "a Knowledge command's context uses the same validated Record identity");
     }
 }
 

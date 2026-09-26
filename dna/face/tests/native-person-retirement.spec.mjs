@@ -8,7 +8,8 @@ test.skip(!nativeTaskEnvironmentPresent(),'Supply matching native API and actual
 const policy=(application_id,name)=>({format:'dna.task-authority/1',application_id,owner:'operations',members:['alex','blair'],grants:[{mode:'local',name,reassign:true,retire:true,recover:true}]});
 const panel=page=>page.getByRole('region',{name:'Person administration',exact:true});
 const recovery=page=>page.getByRole('region',{name:'Person retirement request',exact:true});
-const open=(page,s)=>page.goto(s.origin+'/#/tasks?'+new URLSearchParams({app:s.application,assignee:'alex'}));
+// The page carries this launch's session cookie (GH #989), again after a restart.
+const open=async(page,s)=>{await s.attach(page);return page.goto(s.origin+'/#/tasks?'+new URLSearchParams({app:s.application,assignee:'alex'}));};
 async function prepare(page){await panel(page).getByLabel('Retirement successor',{exact:true}).selectOption('blair');await panel(page).getByRole('button',{name:'Review retirement',exact:true}).click();}
 function command(s,plan){return {request_id:randomUUID(),operation:'dna.person.retire',operation_version:'1',context:{application_id:s.application,position_id:'org'},target:{application_id:s.application,kind:'dna.person',id:'alex'},preconditions:{subject_digest:plan.subject_digest,principal:s.principal},arguments:{to:'blair'}};}
 test('native retirement transfers the complete reviewed work atomically and remains inspectable',async({page},info)=>{

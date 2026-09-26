@@ -22,9 +22,12 @@ locus Forward {
     }
     @unbounded
     fn line(request: String) -> String {
-        // no wait: a head whose binding never bound answers at once
+        // no wait: a head whose binding never bound answers at once; and
+        // only this process's own binding is forwarded into — a clone of
+        // the record sharing the path gets nothing
         let fd = std::io::unix::connect(self.socket) or - 1;
         if fd < 0 { return ""; }
+        if std::io::unix::peer_pid(fd) != std::process::pid() { std::io::tcp::__close_fd(fd); return ""; }
         std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
         self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
         self.stream.send(request + "\n") or discard;
@@ -37,6 +40,16 @@ locus Forward {
         }
         return "";
     }
+}
+
+// Whether this process answers on `socket` now: bound, and ours.
+fn socket_live(socket: String) -> Bool {
+    if len(socket) == 0 { return false; }
+    let fd = std::io::unix::connect(socket) or - 1;
+    if fd < 0 { return false; }
+    let ours = std::io::unix::peer_pid(fd) == std::process::pid();
+    std::io::tcp::__close_fd(fd);
+    return ours;
 }
 
 // The wire line for a forwarded request: the caller's object with the

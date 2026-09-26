@@ -43,3 +43,13 @@ export function boundedNative(command, args, { build = false, lock = true } = {}
     '--exclusive', '--no-fork', '--wait', '120', '/tmp/face-native-validation.lock', bounded.command, ...bounded.args,
   ] } : bounded;
 }
+
+// The launch token a local head minted into `dir` (GH #989): the record's
+// `.hale/dna` for an api head, the state directory for the project head.
+export async function launchToken(root, dir = '.hale/dna') {
+  const { readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const token = (await readFile(join(root, dir, 'head.token'), 'utf8')).trim();
+  if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('The head minted no launch token under ' + join(root, dir));
+  return token;
+}
