@@ -1324,7 +1324,12 @@ generated — written by `hale dna new` and rewritten to the current shape
 by every `hale dna upgrade`, whatever an earlier toolchain wrote — and
 returns it plus the project's own (`fn workflows() -> dna::WorkflowCatalog`),
 which live in `dna/org/own_workflows.hl` (`fn own_workflows(catalog)`:
-project-owned, written only where there is none, never rewritten),
+project-owned, written only where there is none, never rewritten;
+what it answers when a definition is refused is kept on the catalog,
+`refused`, which `hale dna definitions` leads with and fails on, never a
+smaller catalog; an upgrade that rewrites a workflows.hl holding
+definitions of its own names each line it dropped, for the project to
+move into own_workflows.hl),
 and the generated organization admits from it (`catalog: workflows()` on
 its `dna::Dna`; a body given no catalog takes the baseline at birth). The
 baseline is the vendored toolchain's, so an upgrade supersedes it by
@@ -1372,7 +1377,13 @@ organism step it does not know — a path not moved onto the catalog yet
 after the leader plans it), or a revision from a newer toolchain — is
 refused at admission naming the step, never failed when it runs, as a
 definition on a part not built is refused naming the part; both are
-`workflow.refused` rows and nothing else. `hale dna definitions` lists
+`workflow.refused` rows and nothing else. The organization performs a
+step only of a definition admitted directly, so one that invokes a
+definition with an organism step anywhere below it is refused at
+admission too. A ratification the catalog refuses is answered once per
+incarnation — one `workflow.refused` row — and asked again after a
+restart, so a catalog fixed in between ratifies it, and nothing retries
+at every reconciliation. `hale dna definitions` lists
 what an admission would refuse each definition for.
 
 - **practice-ratify** carries every knowledge proposal the Board
@@ -1422,8 +1433,9 @@ group first and then waits for the answers once, bounded by the group's
 size.
 
 **The declared purpose is a proposal like any other.** `hale dna init`
-proposes it (host verb `purpose-propose`: kind `purpose`, author `org`,
-for `org`, `provenance: declared`) with the Board's Review under the
+proposes it in the record's one seed call (host verb `record-seed`, or
+`graph-ingest` for a repository: kind `purpose`, author `org`, for
+`org`, `provenance: declared`) with the Board's Review under the
 group `purpose`, which `hale dna review` lists first and `hale dna
 review purpose approve` decides; the generated organization holds no
 Review of its own for it.

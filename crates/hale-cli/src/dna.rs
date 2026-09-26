@@ -1329,10 +1329,17 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     // not edited.
     if org_dir.join("main.hl").is_file() {
         let workflows = org_dir.join("workflows.hl");
-        if fs::read_to_string(&workflows).ok().as_deref() != Some(WORKFLOWS_HL) {
+        let old = fs::read_to_string(&workflows).ok();
+        if old.as_deref() != Some(WORKFLOWS_HL) {
             let was = workflows.is_file();
             fs::write(&workflows, WORKFLOWS_HL).map_err(|e| format!("write {}: {e}", workflows.display()))?;
             out.push(format!("{} {}", if was { "rewrote" } else { "created" }, workflows.display()));
+            // what an earlier toolchain's workflows.hl defined of its own is
+            // not carried over: it is named, for the project to move
+            let dropped: Vec<&str> = old.as_deref().unwrap_or("").lines().map(str::trim).filter(|l| !l.starts_with("//") && (l.contains(".define(") || l.contains(".leaf(") || l.contains(".child("))).collect();
+            if !dropped.is_empty() {
+                out.push(format!("note    {}: it defined workflows of its own, which the rewrite dropped; move them into {} (`own_workflows`):\n        {}", workflows.display(), org_dir.join("own_workflows.hl").display(), dropped.join("\n        ")));
+            }
         }
         let own = org_dir.join("own_workflows.hl");
         if !own.is_file() {
@@ -2382,7 +2389,7 @@ import "vendor/dna" as dna;
 
 fn workflows() -> dna::WorkflowCatalog {
     let catalog = dna::baseline_definitions();
-    let own = own_workflows(catalog);
+    catalog.refuse_own(own_workflows(catalog));
     return catalog;
 }
 "#;

@@ -33,10 +33,10 @@ HALE_DNA_COMMAND_POLICY=/path/to/authority.json \
 
 The binary accepts the launcher's existing `PROJECT PORT WEBROOT` arguments;
 direct invocation can omit `WEBROOT` for API-only use. The explicit policy path
-comes only from `HALE_DNA_COMMAND_POLICY`, which is required. An application with
-its own Workflow catalog can compose `PracticeReviewCommands` and call
-`api::serve_with_commands` with that catalog instead of this head's
-`NoWorkflowCatalog`. Retain the authority, native service and adapter for the
+comes only from `HALE_DNA_COMMAND_POLICY`, which is required. The head serves the
+organization's own Workflow catalog (`ProjectWorkflowCatalog`: what
+`hale dna definitions --json` reads, the baseline alone without a
+`dna/org/workflows.hl`). Retain the authority, native service and adapter for the
 entire server lifetime.
 
 ## Explicit authority

@@ -1359,8 +1359,8 @@ locus Dna {
         let ttl = if self.optimize_every_ms >= 1000 { self.optimize_every_ms / 1000 } else { 1 };
         if !self.take_claim("optimize/" + to_string(window), ttl) { return; }
         self.note_claim("optimize/" + to_string(window));
-        // GH #995: the pass is an execution of optimize-walk — the walk,
-        // then the leader's proposals, each a row
+        // GH #995: the pass is an execution of optimize-walk, one step: the
+        // walk, answered by the leader (a proposal is an ask of its own)
         self.optimizations = self.optimizations + 1;
         let t = self.run_workflow(WorkflowAsk { id: "optimize:" + to_string(window), definition: "optimize-walk", revision: self.catalog.latest("optimize-walk"), inputs: "{\"window\": " + to_string(window) + "}" });
     }
@@ -3760,7 +3760,14 @@ locus Dna {
         b.string_field("review_id", review_id);
         b.end_object();
         let t = self.run_workflow(WorkflowAsk { id: "ratify:" + digest, definition: "practice-ratify", revision: self.catalog.latest("practice-ratify"), inputs: b.result() });
-        if len(t) > 0 && !std::str::starts_with(t, "refused") { self.ratified_through = self.ratified_through + review_id + "\n"; }
+        // an answer is the Review's for this incarnation, a refusal too: the
+        // refusal is a `workflow.refused` row naming the request, written
+        // once, and a restart (a catalog fixed in between) asks again,
+        // never every tick
+        if len(t) > 0 {
+            self.ratified_through = self.ratified_through + review_id + "\n";
+            if std::str::starts_with(t, "refused") { eprintln("organization: the ratification of ", review_id, " was ", t); }
+        }
     }
     @unbounded
     fn practice_step(task: String, key: String, x: String) -> StepVerdict {

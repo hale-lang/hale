@@ -389,9 +389,17 @@ locus WorkflowCatalog {
         bound: BoundNodeRows = BoundNodeRows { };
         stats: DefStatRows = DefStatRows { }; // the preflight's memo
         gap: String = ""; // why the preflight refused
+        // why the project's own definitions were refused ("" when they
+        // were all taken): the generated workflows.hl records what
+        // own_workflows answered, and the listing leads with it
+        refused: String = "";
     }
 
     // ---- construction --------------------------------------------------
+
+    // Record why the project's own definitions were refused ("" when none
+    // was): never dropped, so the listing and the organization say it.
+    fn refuse_own(why: String) { self.refused = why; }
 
     // A workflow definition whose steps write `stores`, one word per step
     // in order (see the head of this file). "" when defined, else why not
@@ -498,6 +506,30 @@ locus WorkflowCatalog {
             m = m + 1;
             if md.workflow == id && md.revision == revision && md.kind == "leaf" && std::str::contains(md.requires, "organism") && !word_in(id + "/" + md.key, ORGANISM_STEPS) {
                 return "workflow " + definition_name(id, revision) + " step " + to_string(md.step) + ": the organization performs no step `" + md.key + "` of " + id + " (it performs " + ORGANISM_STEPS + ")";
+            }
+            // a child's steps run under the admitted execution's own: the
+            // organization performs a step only of a definition admitted
+            // directly, so an organism step anywhere below is refused here
+            // rather than failed when it runs
+            if md.workflow == id && md.revision == revision && md.kind == "child" {
+                let below = self.organism_below(md.child, md.child_revision);
+                if len(below) > 0 { return "workflow " + definition_name(id, revision) + " step " + to_string(md.step) + " invokes " + definition_name(md.child, md.child_revision) + ", whose step " + below + " the organization would perform: it performs steps of a definition admitted directly, never of one invoked"; }
+            }
+        }
+        return "";
+    }
+    // The first organism step of `id` or of anything it invokes, as
+    // `<n> (<key>)`; "" when none.
+    @unbounded
+    fn organism_below(id: String, revision: Int) -> String {
+        let mut m = 0;
+        while m < self.members.len() {
+            let md = self.members.get(m) or MemberDef { };
+            m = m + 1;
+            if md.workflow == id && md.revision == revision && md.kind == "leaf" && std::str::contains(md.requires, "organism") { return to_string(md.step) + " (" + md.key + ")"; }
+            if md.workflow == id && md.revision == revision && md.kind == "child" {
+                let deeper = self.organism_below(md.child, md.child_revision);
+                if len(deeper) > 0 { return deeper; }
             }
         }
         return "";
@@ -1104,7 +1136,7 @@ fn define_baseline(c: WorkflowCatalog) {
 // revision supersedes, and what a definition is refused at admission for.
 @unbounded
 fn definitions_listing(c: WorkflowCatalog) -> String {
-    let mut out = "";
+    let mut out = if len(c.refused) > 0 { "the project's own definitions were refused (dna/org/own_workflows.hl): " + c.refused + "\n" } else { "" };
     let mut i = 0;
     while i < c.workflow_count() {
         let w = c.workflow_at(i);

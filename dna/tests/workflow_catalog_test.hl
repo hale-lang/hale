@@ -53,6 +53,18 @@ main locus App {
         }
         return out;
     }
+    // How many `workflow.refused` rows refuse `definition` at `revision`.
+    @unbounded
+    fn refusals_of(definition: String, revision: Int) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == "workflow.refused" && std::json::find_string_field(e.body, "definition") == definition && std::json::find_int_field(e.body, "revision") == revision { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
     // Wait, bounded, until the record holds `n` rows of `kind` for `entity`.
     fn wait_rows(kind: String, entity: String, n: Int) -> Bool {
         let deadline = std::time::now() + 20;
@@ -157,6 +169,28 @@ main locus App {
         let w1 = self.one.catalog.leaf("optimize-walk", 2, 1, "tally", dna::WorkRequest { requires: "organism", objective: "tallied" }, 1);
         let newer = self.one.run_workflow(dna::WorkflowAsk { id: "walk-2", definition: "optimize-walk", revision: 2, inputs: "{}" });
         std::test::assert(std::str::starts_with(newer, "refused") && std::str::contains(newer, "the organization performs no step `tally` of optimize-walk"), "refused naming the step: " + newer);
+        // an organism step in a definition another invokes is refused at
+        // admission too: the organization performs a step only of a
+        // definition admitted directly
+        let kin = dna::baseline_definitions();
+        std::test::assert_eq_str(kin.define("roundup", 1, "record", "a concern raised as a step of another"), "", "defined");
+        let kc = kin.child("roundup", 1, 0, "raise", "concern-escalate", 1);
+        std::test::assert(std::str::contains(kin.unperformed("roundup", 1), "invokes concern-escalate@1, whose step 0 (raise) the organization would perform"), "an invoked organism step is refused: " + kin.unperformed("roundup", 1));
+
+        // ---- a ratification the catalog refuses is answered once, not at
+        // every reconciliation: practice-ratify revision 2 with a step this
+        // toolchain does not perform refuses each decision, one row each
+        std::test::assert_eq_str(self.one.catalog.define("practice-ratify", 2, "record", "a ratification from a newer toolchain"), "", "practice-ratify revision 2");
+        let r2 = self.one.catalog.leaf("practice-ratify", 2, 0, "vouch", dna::WorkRequest { requires: "organism", objective: "vouched" }, 1);
+        self.one.on_practice_requested(dna::PracticeRequest { request_id: "p2", name: "acceptance/invoices", text: "An invoice closes with its order.", by: "riley" });
+        std::test::assert(self.wait_rows("practice.proposed", "p2", 1), "a second practice is proposed");
+        let d2 = std::json::find_string_field(self.last("practice.proposed", "p2"), "digest");
+        let rv2 = dna::knowledge_review_id(d2);
+        let v2 = self.one.journal.append(self.one.journal.revision(), "review.settled", rv2, "approve by ada");
+        self.one.ratify_through(rv2);
+        self.one.ratify_through(rv2);
+        self.one.reconcile_governance();
+        std::test::assert_eq_int(self.refusals_of("practice-ratify", 2), 1, "refused once, however often it is reconciled");
 
         // ---- through the CLI: new writes the catalog, definitions lists it
         let scratch = dna::scratch_root("workflow-catalog");
@@ -178,14 +212,20 @@ main locus App {
         std::io::fs::write_file(own_path, own_text) or discard;
         std::test::assert_eq_str(std::io::fs::read_file(own_path) or "", own_text, "a definition of the project's own");
         let generated = std::io::fs::read_file(app + "/dna/org/workflows.hl") or "";
-        std::io::fs::write_file(app + "/dna/org/workflows.hl", generated + "// an earlier toolchain's shape\n") or discard;
+        std::io::fs::write_file(app + "/dna/org/workflows.hl", generated + "// an earlier toolchain's shape\nfn legacy(catalog: dna::WorkflowCatalog) -> String { return catalog.define(\"legacy\", 1, \"record\", \"kept here once\"); }\n") or discard;
         std::test::assert((std::io::fs::read_file(app + "/dna/org/workflows.hl") or "") != generated, "the generated half, grown stale");
         let up = in_dir(app, toolchain() + "\ndna\nupgrade");
         std::test::assert_eq_int(up.code, 0, "hale dna upgrade: " + up.stdout + up.stderr);
         std::test::assert(std::str::contains(up.stdout, "rewrote ") && (std::io::fs::read_file(app + "/dna/org/workflows.hl") or "") == generated, "the generated half is the current shape again: " + up.stdout);
         std::test::assert_eq_str(std::io::fs::read_file(own_path) or "", own_text, "the project's own definitions are left alone");
+        std::test::assert(std::str::contains(up.stdout, "it defined workflows of its own, which the rewrite dropped") && std::str::contains(up.stdout, "catalog.define(\"legacy\""), "a definition the old file held is named, never kept: " + up.stdout);
         let mine = in_dir(app, toolchain() + "\ndna\ndefinitions");
         std::test::assert(std::str::contains(mine.stdout, "close-month@1  close the month\n  0. books  record\n") && std::str::contains(mine.stdout, "practice-ratify@1"), "listed beside the baseline: " + mine.stdout + mine.stderr);
+        // a definition of the project's own the catalog refuses fails the
+        // listing, saying why: never a smaller catalog
+        std::io::fs::write_file(own_path, "import \"vendor/dna\" as dna;\n\nfn own_workflows(catalog: dna::WorkflowCatalog) -> String {\n    return catalog.define(\"Close_Month\", 1, \"record\", \"close the month\");\n}\n") or discard;
+        let refused = in_dir(app, toolchain() + "\ndna\ndefinitions");
+        std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "the project's own definitions were refused (dna/org/own_workflows.hl): a workflow definition id is [a-z0-9][a-z0-9-]*, not `Close_Month`"), "refused, saying why: " + refused.stdout + refused.stderr);
         dna::scratch_done(scratch);
         dna::scratch_done("/tmp/dna-workflow-catalog-receipts-" + to_string(std::process::pid()));
     }
