@@ -122,7 +122,7 @@ locus ContractSchema {
             } else if key == "format" {
                 if raw != "\"int64-decimal\"" || std::json::find_string_field(spec, "type") != "string" { return at + ": only int64-decimal string format is supported"; }
             } else if key == "pattern" {
-                if raw != "\"^(0|[1-9][0-9]*)$\"" && raw != "\"^(0|-?[1-9][0-9]*)$\"" { return at + ": unsupported pattern"; }
+                if raw != "\"^(0|[1-9][0-9]*)$\"" && raw != "\"^(0|-?[1-9][0-9]*)$\"" && raw != "\"^position:[A-Za-z0-9_.-]+$\"" && raw != "\"^position:[A-Za-z0-9_.-]+(#[0-9]+)?$\"" { return at + ": unsupported pattern"; }
             } else if key == "items" || key == "if" || key == "then" {
                 let error = self.profile(raw, at, depth + 1);
                 if len(error) > 0 { return error; }
@@ -142,6 +142,22 @@ locus ContractSchema {
         let consequent = std::json::find_field_raw(spec, "then");
         if (len(condition) > 0) != (len(consequent) > 0) { return path + ": if and then must be paired"; }
         return "";
+    }
+    fn position_id(text: String, workers: Bool) -> Bool {
+        if !std::str::starts_with(text, "position:") { return false; }
+        let rest = text[9..len(text)];
+        let hash = std::str::index_of(rest, "#");
+        let name = if hash < 0 { rest } else { rest[0..hash] };
+        let suffix = if hash < 0 { "" } else { rest[(hash + 1)..len(rest)] };
+        if hash >= 0 && (!workers || !self.decimal(suffix)) { return false; }
+        if len(name) == 0 { return false; }
+        let mut i = 0;
+        while i < len(name) {
+            let c = name[i..(i + 1)];
+            if !((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_" || c == "-" || c == ".") { return false; }
+            i = i + 1;
+        }
+        return true;
     }
     fn decimal(text: String) -> Bool {
         if len(text) == 0 { return false; }
@@ -251,6 +267,9 @@ locus ContractSchema {
             let pattern = std::json::find_string_field(spec, "pattern");
             if pattern == "^(0|[1-9][0-9]*)$" && !self.decimal(self.string(raw)) { return path + ": expected canonical unsigned decimal string"; }
             if pattern == "^(0|-?[1-9][0-9]*)$" && !self.signed_decimal(self.string(raw)) { return path + ": expected canonical signed decimal string"; }
+            // a position id (GH #946): `position:<name>`, and with `#<n>` one worker of several
+            if pattern == "^position:[A-Za-z0-9_.-]+$" && !self.position_id(self.string(raw), false) { return path + ": expected a position id (position:<name>)"; }
+            if pattern == "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$" && !self.position_id(self.string(raw), true) { return path + ": expected a position id (position:<name>, or position:<name>#<n>)"; }
         }
         if kind == "integer" {
             let minimum = std::json::find_field_raw(spec, "minimum");

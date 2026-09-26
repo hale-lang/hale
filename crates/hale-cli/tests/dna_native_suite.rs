@@ -861,6 +861,7 @@ fn dna_fixture_set_is_complete() {
             "knowledge_test.hl",
             "lease_epoch_test.hl",
             "ledger_test.hl",
+            "legs_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",
             "nerves_compose_test.hl",

@@ -220,4 +220,6 @@ that names no data class is handed nothing. An owner that restarts
 with a leg's attempt in flight leaves it to its claim and asks again
 when the lease expires. Once the organism has adopted the ledger, a
 leg's rows live there, written under the head's role. Positions are
-the graph's `position:<name>` ids.
+the graph's `position:<name>` ids. `hale dna work` is a leg as verbs
+([Legs](./legs.md)): claim, brief, renew, submit, settle, release,
+friction, and one cycle through the project's performers.

@@ -1,0 +1,98 @@
+// dna/core/legs/render.hl — the hat, rendered (GH #946 slice 4).
+//
+// The hat is structure; rendering it for whoever performs is a leg's,
+// and a pure function of the hat, this renderer's version and the mode.
+// The version travels on the attempt beside the hat digest and the
+// digest of what was rendered, so replay renders from the recorded hat
+// and the tape hits. Change a word here and change the version with it.
+import ".." as dna;
+
+const RENDERER_VERSION: String = "legs-render/1";
+
+// The modes: `text` reads as a brief for a person, `prompt` is what a
+// model is sent, `agent` is the prompt with the hands the grant allows.
+fn render_mode_known(mode: String) -> Bool { return mode == "text" || mode == "prompt" || mode == "agent"; }
+
+@unbounded
+fn practice_lines(hat: String, bullet: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(hat, "practices"));
+    while !it.done {
+        out = out + bullet + std::json::find_string_field(it.element, "text") + " [" + std::json::find_string_field(it.element, "id") + "]\n";
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+@unbounded
+fn history_lines(hat: String, bullet: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(hat, "history"));
+    while !it.done {
+        out = out + bullet + std::json::find_string_field(it.element, "kind") + " " + std::json::find_string_field(it.element, "id") + "\n";
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn or_none(s: String) -> String { return if len(s) == 0 { "(none)" } else { s }; }
+
+// A person's brief: every field of the hat, labelled, in the hat's order.
+fn render_text(hat: String) -> String {
+    let position = std::json::find_field_raw(hat, "position");
+    let mut out = "BRIEF " + std::json::find_string_field(hat, "work_id") + " (attempt " + or_none(std::json::find_string_field(hat, "attempt_id")) + ") of task " + std::json::find_string_field(hat, "task_id") + "\n";
+    out = out + "position: " + std::json::find_string_field(position, "id") + " (" + std::json::find_string_field(hat, "performer_kind") + ")\n";
+    out = out + "charter: " + or_none(std::json::find_string_field(position, "charter")) + "\n";
+    out = out + "objective: " + std::json::find_string_field(hat, "objective") + "\n";
+    out = out + "target: " + or_none(std::json::find_string_field(hat, "target")) + "\n";
+    out = out + "output contract: " + or_none(std::json::find_string_field(hat, "output_contract")) + "\n";
+    out = out + "data class: " + std::json::find_string_field(hat, "data_class") + "\n";
+    out = out + "requires: " + or_none(std::json::find_string_field(hat, "requires")) + "\n";
+    out = out + "cost ceiling: " + std::json::find_string_field(hat, "cost_ceiling") + "\n";
+    out = out + "tool grant: " + or_none(std::json::find_string_field(hat, "tool_grant")) + "\n";
+    out = out + "knowledge bindings: " + or_none(std::json::find_string_field(hat, "knowledge_bindings")) + "\n";
+    out = out + "practices (" + std::json::find_string_field(hat, "practices_status") + "):\n" + practice_lines(hat, "  - ");
+    out = out + "history:\n" + history_lines(hat, "  - ");
+    out = out + "head " + std::json::find_string_field(hat, "head") + " watermark " + std::json::find_string_field(hat, "watermark") + " hat " + std::json::find_string_field(hat, "digest") + " " + RENDERER_VERSION + "/text\n";
+    return out;
+}
+
+// What a model is sent: the position first, then the practices it works
+// by, then the Work; the answer is asked for in the output contract.
+fn render_prompt(hat: String) -> String {
+    let position = std::json::find_field_raw(hat, "position");
+    let charter = std::json::find_string_field(position, "charter");
+    let mut out = "You are " + std::json::find_string_field(position, "id") + " of this organization.\n";
+    if len(charter) > 0 { out = out + "Your charter: " + charter + "\n"; }
+    let practices = practice_lines(hat, "- ");
+    if len(practices) > 0 { out = out + "\nThe practices the organization ratified for this work:\n" + practices; }
+    out = out + "\nThe work: " + std::json::find_string_field(hat, "objective") + "\n";
+    let target = std::json::find_string_field(hat, "target");
+    if len(target) > 0 { out = out + "Its target: " + target + "\n"; }
+    let requires = std::json::find_string_field(hat, "requires");
+    if len(requires) > 0 { out = out + "It requires: " + requires + "\n"; }
+    let bindings = std::json::find_string_field(hat, "knowledge_bindings");
+    if len(bindings) > 0 { out = out + "Knowledge bound to it: " + bindings + "\n"; }
+    out = out + "Its data class is " + std::json::find_string_field(hat, "data_class") + ": nothing of that class leaves it.\n";
+    let history = history_lines(hat, "- ");
+    if len(history) > 0 { out = out + "\nWhat happened to this work so far:\n" + history; }
+    let output_contract = std::json::find_string_field(hat, "output_contract");
+    out = out + "\nAnswer " + (if len(output_contract) > 0 { "in the form the output contract names, `" + output_contract + "`" } else { "with your result" }) + ", and nothing else.\n";
+    return out;
+}
+
+// The prompt, with the hands the grant allows named for an agent.
+fn render_agent(hat: String) -> String {
+    let grant = std::json::find_string_field(hat, "tool_grant");
+    return render_prompt(hat) + "\nHands you may use: " + (if len(grant) > 0 { grant } else { "none; answer from the brief alone" }) + ".\nEvery command you run and every change you make is evidence on this attempt.\n";
+}
+
+fn render(hat: String, mode: String) -> String {
+    if mode == "text" { return render_text(hat); }
+    if mode == "agent" { return render_agent(hat); }
+    return render_prompt(hat);
+}
+
+// The digest of what was rendered: what the attempt records beside the
+// hat digest and the renderer's version.
+fn prompt_digest(rendered: String) -> String { return dna::digest_of(rendered); }

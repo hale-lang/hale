@@ -48,7 +48,7 @@ locus RecoveryCases {
     }
     fn call(service: api::Api, method: String, suffix: String, body: String, status: Int, schema: String) -> String {
         let response = service.handle(std::http::Request { method: method, path: self.f.prefix + suffix, headers: if method == "POST" { HEADERS } else { "" }, body: body });
-        std::test::assert_eq_int(response.status, status, response.body);
+        std::test::assert_eq_int(response.status, status, method + " " + suffix + " " + body + " -> " + response.body);
         if len(schema) > 0 { let checked = self.f.validator.validate(schema, response.body); std::test::assert(checked.ok, checked.error + "\n" + response.body); }
         return response.body;
     }
@@ -97,9 +97,16 @@ locus RecoveryCases {
         // row landed since, and another leg's claim at the old head still
         // answers with a receipt — refused, since the first leg holds it
         self.f.append("task.born", "leg-other", "leg-ask-2: another (workflow)");
-        let again = self.json.data(self.call(service, "POST", "/commands", self.claim_body("claim-2", head, "position:reviewer"), 200, "CommandResponse"));
+        let again = self.json.data(self.call(service, "POST", "/commands", self.claim_body("claim-2", head, "position:editor"), 200, "CommandResponse"));
         self.json.eq(again, "state", "refused");
         std::test::assert(std::str::contains(self.json.string(again, "reason"), "held by another leg") || std::str::contains(self.json.string(again, "reason"), "no admitted attempt"), "a refusal receipt at a moved head, not stale_subject: " + self.json.string(again, "reason"));
+        // the lease renewed (the token stays), and friction filed on the attempt (GH #946 slice 4)
+        let renewed = self.json.data(self.call(service, "POST", "/commands", self.envelope("renew-1", "dna.attempt.renew", "dna.attempt", attempt, "{\"holder\": \"position:agent\", \"token\": " + to_string(token) + ", \"principal\": " + self.principal() + "}", "{\"ttl\": 900}"), 200, "CommandResponse"));
+        self.json.eq(self.json.raw(renewed, "attempt"), "state", "renewed");
+        self.json.eq(self.json.raw(renewed, "attempt"), "token", to_string(token));
+        let filed = self.json.data(self.call(service, "POST", "/commands", self.envelope("friction-1", "dna.friction.file", "dna.friction", self.f.identity, "{\"record_head\": " + dna::record_json_quote(self.f.journal.head()) + ", \"principal\": " + self.principal() + "}", "{\"position\": \"position:agent\", \"attempt_id\": \"" + attempt + "\", \"text\": \"the hat named no tool grant for a judgment\"}"), 200, "CommandResponse"));
+        self.json.eq(self.json.raw(filed, "attempt"), "state", "filed");
+        std::test::assert_eq_str(self.last("friction.filed").entity, attempt, "friction is a row on the attempt");
         // the outcome, with the hat the leg wore: requested until the owner answers
         let requested = self.json.data(self.call(service, "POST", "/commands", self.outcome_body("outcome-1", attempt, token, hat_digest), 200, "CommandResponse"));
         self.json.eq(self.json.raw(requested, "attempt"), "state", "requested");

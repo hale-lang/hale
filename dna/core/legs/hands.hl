@@ -1,0 +1,134 @@
+// dna/core/legs/hands.hl — the hands a leg picks up (GH #946 slice 4).
+//
+// The body held these; a leg takes them as interfaces, and a performer
+// is handed the set: git (a scratch worktree, a patch applied, a
+// commit — never the primary checkout), the forge (a review opened, a
+// verdict read; the forge decides, a leg never merges), the toolchain
+// (`hale check`, `hale test`, `hale fmt --check`), and deploy and the
+// heart's API, which refuse until #987 hands them over, naming it.
+// Every hand answers a `HandResult`: done, what it produced, or why not.
+import ".." as dna;
+
+type HandResult {
+    ok: Bool = false;
+    output: String = ""; // a path, a sha, a url, a verdict, a tool's stdout
+    error: String = "";
+}
+
+fn hand_result(r: dna::RunResult, output: String) -> HandResult {
+    if r.code != 0 { return HandResult { error: dna::trim_nl(if len(r.stderr) > 0 { r.stderr } else { r.stdout }) }; }
+    return HandResult { ok: true, output: output };
+}
+
+interface GitHand {
+    // A scratch worktree of `base` (a ref or a sha) of the repository at
+    // `repo`: the path, never inside `repo`.
+    fn worktree(repo: String, base: String) -> HandResult;
+    // Every worktree this hand made, removed (kept under HALE_DNA_KEEP_SCRATCH).
+    fn clean();
+    // A unified diff applied in the worktree, index and all.
+    fn apply(worktree: String, patch: String) -> HandResult;
+    // Everything staged and changed, committed: the sha.
+    fn commit(worktree: String, message: String) -> HandResult;
+}
+interface ForgeHand {
+    // A review opened from the worktree's branch: its url.
+    fn open_review(worktree: String, title: String, body: String) -> HandResult;
+    // A review's verdict: `approve`, `revise` or `pending`.
+    fn verdict(review: String) -> HandResult;
+}
+interface ToolchainHand {
+    fn check(path: String) -> HandResult;
+    fn test(path: String) -> HandResult;
+    fn fmt_check(path: String) -> HandResult;
+}
+interface DeployHand { fn express(revision: String) -> HandResult; }
+interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
+
+// Git in scratch: a clone under a scratch root of the leg's own
+// (`dna::scratch_root`, one per worktree, swept by `clean` and by the
+// suite), so nothing a performer does reaches the primary checkout;
+// patches through a file, commits under the leg's own name.
+locus ScratchGit {
+    params { made: Int = 0; roots: String = ""; }
+    fn worktree(repo: String, base: String) -> HandResult {
+        self.made = self.made + 1;
+        let dir = dna::scratch_root("legs-git-" + to_string(self.made));
+        self.roots = self.roots + dir + "\n";
+        let cloned = dna::run_tool("git\nclone\n--quiet\n" + repo + "\n" + dir);
+        if cloned.code != 0 { return hand_result(cloned, ""); }
+        if len(base) == 0 || base == "HEAD" { return HandResult { ok: true, output: dir }; }
+        let out = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n--detach\n" + base);
+        return hand_result(out, dir);
+    }
+    fn apply(worktree: String, patch: String) -> HandResult {
+        let file = worktree + "/.hale-leg.patch";
+        std::io::fs::write_file(file, patch) or discard;
+        let out = dna::run_tool("git\n-C\n" + worktree + "\napply\n--index\n" + file);
+        let gone = dna::run_tool("rm\n-f\n" + file);
+        return hand_result(out, "");
+    }
+    @unbounded
+    fn clean() {
+        let mut rest = self.roots;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n"); let dir = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+            if len(dir) > 0 { dna::scratch_done(dir); }
+        }
+        self.roots = "";
+    }
+    fn commit(worktree: String, message: String) -> HandResult {
+        let staged = dna::run_tool("git\n-C\n" + worktree + "\nadd\n-A");
+        if staged.code != 0 { return hand_result(staged, ""); }
+        let out = dna::run_tool("git\n-C\n" + worktree + "\n-c\nuser.name=legs\n-c\nuser.email=legs@hale-dna\ncommit\n--quiet\n--allow-empty\n-m\n" + message);
+        if out.code != 0 { return hand_result(out, ""); }
+        let sha = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD");
+        return hand_result(sha, dna::trim_nl(sha.stdout));
+    }
+}
+
+// The forge through `gh`: a pull request from the worktree's branch, and
+// its review decision as a verdict. The forge decides; nothing here merges.
+locus GhForge {
+    params { opened: Int = 0; }
+    fn open_review(worktree: String, title: String, body: String) -> HandResult {
+        self.opened = self.opened + 1;
+        let out = dna::run_tool("sh\n-c\ncd \"$1\" && gh pr create --title \"$2\" --body \"$3\"\nsh\n" + worktree + "\n" + title + "\n" + body);
+        return hand_result(out, dna::trim_nl(out.stdout));
+    }
+    fn verdict(review: String) -> HandResult {
+        let out = dna::run_tool("gh\npr\nview\n" + review + "\n--json\nreviewDecision\n--jq\n.reviewDecision");
+        if out.code != 0 { return hand_result(out, ""); }
+        let decision = dna::trim_nl(out.stdout);
+        return HandResult { ok: true, output: if decision == "APPROVED" { "approve" } else if decision == "CHANGES_REQUESTED" { "revise" } else { "pending" } };
+    }
+}
+
+// The toolchain: this binary's own `hale` (HALE_BIN) on a path.
+locus Toolchain {
+    params { hale: String = ""; }
+    fn bin() -> String { return if len(self.hale) > 0 { self.hale } else if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" }; }
+    fn check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\ncheck\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
+    fn test(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\ntest\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
+    fn fmt_check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\nfmt\n--check\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
+}
+
+// Deploy is the body's until #987 hands it over: refused, naming it.
+locus NoDeploy {
+    fn express(revision: String) -> HandResult { return HandResult { error: "deploy is not a leg's hand yet: the body expresses a revision (GH #987 hands deploy to legs)" }; }
+}
+// The heart's API is not a hand until #987: refused, naming it.
+locus NoHeart {
+    fn ask(path: String, body: String) -> HandResult { return HandResult { error: "the heart's API is not a leg's hand yet (GH #987 hands the heart to legs)" }; }
+}
+
+// The set a performer is handed.
+locus Hands {
+    params {
+        git: GitHand = ScratchGit { };
+        forge: ForgeHand = GhForge { };
+        toolchain: ToolchainHand = Toolchain { };
+        deploy: DeployHand = NoDeploy { };
+        heart: HeartHand = NoHeart { };
+    }
+}

@@ -23,6 +23,7 @@ cut     …/chat/.hale/dna/baseline.topology (schema 1.19, shape 3c9b9327e480d34
 created …/chat/dna/org/purpose.hl
 created …/chat/dna/org/law.hl
 created …/chat/dna/org/models.hl
+created …/chat/dna/org/work.hl
 models  found   OPENAI_API_KEY set, no ollama on PATH
 models  frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY) · desk = llama3 (ollama at 127.0.0.1:11434, not found)
 models  leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)
@@ -43,6 +44,7 @@ your application. What appeared:
 | **The charter.** The leader's brief: it is the organism's architect, it proposes and you decide, and what it must know before it plans or judges. | `dna/org/charter.hl` | yes — edit it |
 | **The organization.** The Board, the Leader and its grant, the gateways. Ordinary Hale source; `hale check` validates it. | `dna/org/main.hl` | yes — edit it |
 | **The catalog.** Which model each position calls, and the budget, written from what your machine had. `hale dna models` probes it. | `dna/org/models.hl` | yes — edit it |
+| **The performers.** Who performs a Work in a leg of this project: a person, a program of yours for the kinds it takes, a model. `hale dna work` runs them ([Legs](./legs.md)). | `dna/org/work.hl` | yes — edit it |
 | **Memory's environment.** Its Postgres — the ledger, the knowledge graph, protected evidence — for `hale dna dev` through docker compose. | `dna/compose.yaml` | yes — edit it |
 | **The law.** What no position may ever do, enforced by the compiler against the wiring you actually built. Add to it; don't weaken it. | `dna/org/law.hl` | yes — extend it |
 | **The toolchain's part.** The DNA itself, as the `hale` you ran carries it. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna/` | no |

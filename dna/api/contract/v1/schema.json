@@ -2746,6 +2746,15 @@
             },
             {
               "$ref": "#/$defs/AttemptOutcomeCommandReceipt"
+            },
+            {
+              "$ref": "#/$defs/AttemptRenewCommandReceipt"
+            },
+            {
+              "$ref": "#/$defs/AttemptReleaseCommandReceipt"
+            },
+            {
+              "$ref": "#/$defs/FrictionCommandReceipt"
             }
           ]
         }
@@ -2913,6 +2922,15 @@
         },
         {
           "$ref": "#/$defs/AttemptOutcomeCommandRequest"
+        },
+        {
+          "$ref": "#/$defs/AttemptRenewCommandRequest"
+        },
+        {
+          "$ref": "#/$defs/AttemptReleaseCommandRequest"
+        },
+        {
+          "$ref": "#/$defs/FrictionCommandRequest"
         }
       ]
     },
@@ -11597,7 +11615,8 @@
             "performer": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
             "capabilities": {
               "type": "array",
@@ -11683,7 +11702,8 @@
             "holder": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
             "token": {
               "type": "integer",
@@ -11796,7 +11816,7 @@
           "const": "dna.attempt.v1"
         },
         "operations": {
-          "const": "dna.attempt.claim dna.attempt.outcome"
+          "const": "dna.attempt.claim dna.attempt.outcome dna.attempt.renew dna.attempt.release dna.friction.file"
         },
         "available": {
           "type": "boolean"
@@ -11855,6 +11875,9 @@
         "state": {
           "enum": [
             "claimed",
+            "renewed",
+            "released",
+            "filed",
             "requested",
             "settled",
             "refused",
@@ -12057,6 +12080,566 @@
         },
         "target": {
           "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "subject_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "refused",
+            "outcome_unknown"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "outcome": {
+              "const": ""
+            },
+            "subject_digest": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "outcome",
+            "subject_digest"
+          ],
+          "additionalProperties": false
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "attempt": {
+          "$ref": "#/$defs/AttemptCommandOutcome"
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "subject_digest",
+        "fingerprint",
+        "state",
+        "reason",
+        "review",
+        "activation",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptRenewCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.renew"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "holder": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
+            },
+            "token": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal"
+            }
+          },
+          "required": [
+            "holder",
+            "token",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "ttl": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          },
+          "required": [
+            "ttl"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "A leg extends the lease it holds on an attempt (GH #946): memory's claim is taken again by its holder, which keeps the token, and another attempt.claimed row names the later until."
+    },
+    "AttemptReleaseCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.release"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "holder": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
+            },
+            "token": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal"
+            }
+          },
+          "required": [
+            "holder",
+            "token",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "why": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            }
+          },
+          "required": [
+            "why"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "A leg gives the lease back without an outcome (GH #946): memory's claim released, an attempt.released row naming why; the attempt awaits another leg."
+    },
+    "FrictionCommandTarget": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "dna.friction"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "application_id",
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "FrictionCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.friction.file"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/FrictionCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "record_head": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal"
+            }
+          },
+          "required": [
+            "record_head",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "position": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+$"
+            },
+            "attempt_id": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 256
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192
+            }
+          },
+          "required": [
+            "position",
+            "attempt_id",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "A position files what got in its way (GH #946): a friction.filed row under the attempt it was met on, else the position; a fact nobody admits."
+    },
+    "AttemptRenewCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.renew"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "subject_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "refused",
+            "outcome_unknown"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "outcome": {
+              "const": ""
+            },
+            "subject_digest": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "outcome",
+            "subject_digest"
+          ],
+          "additionalProperties": false
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "attempt": {
+          "$ref": "#/$defs/AttemptCommandOutcome"
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "subject_digest",
+        "fingerprint",
+        "state",
+        "reason",
+        "review",
+        "activation",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptReleaseCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.release"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "subject_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "refused",
+            "outcome_unknown"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "outcome": {
+              "const": ""
+            },
+            "subject_digest": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "outcome",
+            "subject_digest"
+          ],
+          "additionalProperties": false
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "attempt": {
+          "$ref": "#/$defs/AttemptCommandOutcome"
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "subject_digest",
+        "fingerprint",
+        "state",
+        "reason",
+        "review",
+        "activation",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "FrictionCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.friction.file"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/FrictionCommandTarget"
         },
         "subject_digest": {
           "type": "string",

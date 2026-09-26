@@ -12,6 +12,8 @@ hale dna --embedded-digest [--from-tree <dir>]
                              the digest of the DNA source this binary embeds, alone on stdout; with a
                              checkout, what that tree would embed (unequal = the binary predates it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
+hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([legs](./legs.md)): next, brief,
+                             renew, submit, settle, release, friction, run; --as position:<name>, --api <origin>
 hale dna memory migrate [dir]
                              apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
                              dna/compose.yaml) and print the record's spine and head DSNs
@@ -332,6 +334,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
 | `hat.hl` | `Hat` (GH #946): one content-addressed context per Work — position and charter, practices as structure, bindings, grant, contract, class, history, head and watermark — `hat_body` / `hat_digest` / `hat_json`, `hat_position_of` (one id for a position wherever it is keyed), `hat_with_package`, `hat_sealed`; the owner builds one for the edits it asks, a head reads one for a leg (`dna/operations/context.hl`), memory keeps each by digest |
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
+| `legs/` (`dna/core/legs`, vendored as `vendor/dna/legs`) | the legs seed (GH #946): `Head` (the API as a leg sees it: attach, submit, lookup, context), `render` / `prompt_digest` / `RENDERER_VERSION`, `Brief` / `Performance` / `Performer` (`Person`, `NoDeterministic`, `FixedAnswer`, `NoModel`, `PerformerCatalog`), the hands (`GitHand` / `ScratchGit`, `ForgeHand` / `GhForge`, `ToolchainHand` / `Toolchain`, `NoDeploy`, `NoHeart`, `Hands`), `leg_main` (the verbs) |
 
 | `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables — `hats` among them since version 5 — the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
 | `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres, the repository's graph and its two perspectives), `Dsn` / `parse_dsn`, `schema_for` |
