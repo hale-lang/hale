@@ -316,10 +316,10 @@ locus App {
         std::test::assert_eq_int(practices.code, 0, "and the practices: " + practices.stdout + practices.stderr);
         // a verdict answers at `review.settled`; the ratification is the
         // practice-ratify execution each decision is admitted as (GH #995),
-        // so it is waited for, bounded: the 35 take some 15 to 18 s on this
-        // git-backed record (measured), and memory takes the same rows in
-        // about a second
-        let ratify_by = std::time::now() + 120;
+        // so it is waited for, bounded: the 35 take some 15 to 18 s on a
+        // quiet machine's git-backed record (measured) and minutes on a
+        // loaded runner, and memory takes the same rows in about a second
+        let ratify_by = std::time::now() + 600;
         while self.count_rows("knowledge.ratified") < 35 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
         std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 35, "35 proposals ratified by the organism");
         // every Board decision is an execution of practice-ratify that
