@@ -1,25 +1,147 @@
-// dna/core/legs/client.hl — the head, as a leg sees it (GH #946 slice 4).
+// dna/core/legs/client.hl — the head, as a leg sees it (GH #946 slice 4;
+// GH #1104 piece 5).
 //
 // A leg holds nothing between tasks and has no database role: everything
-// it knows it reads from the head over HTTP, and everything it does is a
-// command on the head's table — the claim, the renewal, the outcome, the
-// release, the friction — each under a request id the leg mints from
-// what it asks, so a verb run twice is one act and the second run reads
-// the first's receipt. This seed sits beside the core it imports as `..`
-// in the repository (`dna/core/legs`), in the toolchain cache, and in a
-// project's `vendor/dna/legs`, like pond's copies do.
+// it knows it reads from the head — the record and the hat over HTTP,
+// which stay reads — and everything it does is a call on the head's
+// gated topics over its api socket (`dna.commands.*`, GH #1110): the
+// claim, the renewal, the outcome, the release, the friction, and the
+// lookup that reads a command back, each under a request id the leg
+// mints from what it asks, so a verb run twice is one act and the second
+// run reads the first's receipt. The socket authenticates: the principal
+// is the peer's credentials, mapped to a person by the record
+// (`dna.unix.member`), and a verb outside what that person holds is
+// `unknown`, as the binding answers everything outside a caller's slice.
+// This seed sits beside the core it imports as `..` in the repository
+// (`dna/core/legs`), in the toolchain cache, and in a project's
+// `vendor/dna/legs`, like pond's copies do.
 import ".." as dna;
 
+// The head's topics for a leg, by their wire subjects (the hard cut of
+// #1129): a subject is the same on every head, while the call name a
+// head lists depends on whose seed subscribes the topic — `AttemptClaim`
+// on the standalone head, `api::AttemptClaim` on a composed one — so
+// the leg reads the names from the description at attach.
+const CLAIM_SUBJECT: String = "dna.commands.attempt.claim";
+const RENEW_SUBJECT: String = "dna.commands.attempt.renew";
+const OUTCOME_SUBJECT: String = "dna.commands.attempt.outcome";
+const RELEASE_SUBJECT: String = "dna.commands.attempt.release";
+const FRICTION_SUBJECT: String = "dna.commands.friction.file";
+const LOOKUP_SUBJECT: String = "dna.commands.lookup";
+const SOCKET_WAIT: Int = 30; // seconds a verb waits on the socket for its answer
+
+// The call name the description lists for a subject, "" when the
+// caller's slice has none: each command is one object of the `commands`
+// array, its `name` and `subject` among its fields.
+@unbounded
+fn topic_named(description: String, subject: String) -> String {
+    let commands = std::json::find_field_raw(description, "commands");
+    let mut i = 0;
+    let mut depth = 0;
+    let mut start = -1;
+    while i < len(commands) {
+        let c = commands[i..(i + 1)];
+        if c == "{" { if depth == 0 { start = i; } depth = depth + 1; }
+        if c == "}" {
+            depth = depth - 1;
+            if depth == 0 && start >= 0 {
+                let one = commands[start..(i + 1)];
+                if std::json::find_string_field(one, "subject") == subject { return std::json::find_string_field(one, "name"); }
+                start = -1;
+            }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
 type Reply {
-    ok: Bool = false; // a 2xx answer
+    ok: Bool = false; // an answer with a receipt (a refusal is a receipt: `state: refused`)
     status: Int = 0; // 0 when the head could not be reached
-    body: String = "";
-    error: String = ""; // the transport's failure, or the API's error code and message
+    body: String = ""; // `{"data": <receipt>, "source": {record_head, record_id, record_revision}}`
+    error: String = ""; // the transport's failure, the binding's refusal, or the head's error code
+}
+
+// One connection to the binding: a line sent, the line that answers it
+// (frames of a stream never arrive here: a leg watches nothing).
+locus Wire {
+    params {
+        path: String = "";
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+        open: Bool = false;
+        error: String = "";
+    }
+    // Once per attach: a verb's, or a renewal's through a wait.
+    @unbounded
+    fn connect(path: String) -> Bool {
+        self.path = path;
+        let fd = std::io::unix::connect(path) or - 1;
+        if fd < 0 { self.error = "the head's socket at " + path + " cannot be reached"; return false; }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        self.open = true;
+        return true;
+    }
+    // The next line the binding writes, within `SOCKET_WAIT`; "" when none came.
+    @unbounded
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let deadline = std::time::now() + SOCKET_WAIT;
+        while std::time::now() < deadline {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) > 0 { self.buf = self.buf + chunk; }
+        }
+        return "";
+    }
+    fn call(id: String, topic: String, payload: String) -> String {
+        return self.ask("{\"id\": " + dna::record_json_quote(id) + ", \"call\": " + dna::record_json_quote(topic) + ", \"payload\": " + payload + "}");
+    }
+    fn describe() -> String { return self.ask("{\"describe\": true}"); }
+}
+
+// A binding's answer as the verbs read one. The value is the head's
+// `CommandReply`: its receipt goes under `data`, its head under
+// `source`; a reply that carries no receipt is the head's error code;
+// a refusal of the binding (`unknown`, `unauthorized`, `malformed`) is
+// the error, naming its kind.
+fn socket_reply(path: String, line: String) -> Reply {
+    if len(line) == 0 { return Reply { status: 0, error: "the head's socket at " + path + " gave no answer" }; }
+    if !std::json::find_bool_field(line, "ok") {
+        let refusal = std::json::find_field_raw(line, "refusal");
+        let kind = std::json::find_string_field(refusal, "kind");
+        return Reply { status: 400, body: line, error: (if len(kind) > 0 { kind } else { "refused" }) + ": " + std::json::find_string_field(refusal, "reason") };
+    }
+    let value = std::json::find_field_raw(line, "value");
+    let receipt = std::json::find_field_raw(value, "receipt");
+    if !std::json::find_bool_field(value, "ok") && len(std::json::find_string_field(receipt, "state")) == 0 {
+        return Reply { status: 400, body: line, error: std::json::find_string_field(value, "code") };
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.field("data", receipt);
+    b.begin_object_field("source");
+    b.string_field("record_head", std::json::find_string_field(value, "head"));
+    b.string_field("record_id", std::json::find_string_field(value, "application_id"));
+    b.string_field("record_revision", to_string(std::json::find_int_field(value, "revision")));
+    b.end_object();
+    b.field("caller", std::json::find_field_raw(line, "caller"));
+    b.string_field("role", std::json::find_string_field(line, "role"));
+    b.end_object();
+    return Reply { ok: true, status: 200, body: b.result() };
 }
 
 locus Head {
     params {
-        api: String = "http://127.0.0.1:8793"; // the API's origin, which every command carries as Origin
+        api: String = "http://127.0.0.1:8793"; // the API's origin: the reads
+        socket: String = ""; // the head's api socket: the commands (--socket, HALE_DNA_SOCKET, or as /capabilities names it)
+        wire: Wire = Wire { };
         application: String = "";
         record_head: String = "";
         record_revision: String = "";
@@ -27,6 +149,13 @@ locus Head {
         principal_name: String = "";
         attached: Bool = false;
         error: String = "";
+        // the call names this head lists for the leg's subjects
+        claim_topic: String = "";
+        renew_topic: String = "";
+        outcome_topic: String = "";
+        release_topic: String = "";
+        friction_topic: String = "";
+        lookup_topic: String = "";
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
         return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
@@ -51,13 +180,12 @@ locus Head {
         let r = self.http("GET", self.api + path, "Accept: application/json", "") or self.transport_failed(err);
         return self.reply(r);
     }
-    fn post(path: String, body: String) -> Reply {
-        let r = self.http("POST", self.api + path, "Origin: " + self.api + "\r\nContent-Type: application/json\r\nX-Hale-Command: 1", body) or self.transport_failed(err);
-        return self.reply(r);
-    }
     fn prefix() -> String { return "/api/hale/v1/applications/" + self.application; }
-    // The application the head serves, its record head, and the principal
-    // the head sees this leg as: what every command's preconditions name.
+    // The application the head serves, its record head, the socket its
+    // commands are on, and the principal: what the reads say, then the
+    // binding's own word on what this peer may call. Once per verb, or
+    // once per renewal of a lease held through a wait.
+    @unbounded
     fn attach() -> Bool {
         let apps = self.get("/api/hale/v1/applications");
         if !apps.ok { self.error = apps.error; return false; }
@@ -68,70 +196,128 @@ locus Head {
         if len(self.application) == 0 { self.error = "the head at " + self.api + " names no application"; return false; }
         let caps = self.get(self.prefix() + "/capabilities");
         if !caps.ok { self.error = caps.error; return false; }
-        let principal = std::json::find_field_raw(std::json::find_field_raw(caps.body, "data"), "principal");
+        let data = std::json::find_field_raw(caps.body, "data");
+        let principal = std::json::find_field_raw(data, "principal");
         self.principal_mode = std::json::find_string_field(principal, "mode");
         self.principal_name = std::json::find_string_field(principal, "name");
-        if len(self.principal_name) == 0 { self.error = "the head names no principal for this leg"; return false; }
+        if len(self.socket) == 0 { self.socket = std::json::find_string_field(std::json::find_field_raw(data, "api"), "socket"); }
+        if len(self.socket) == 0 { self.error = "the head at " + self.api + " names no socket for its commands (an older head: `hale dna upgrade` the toolchain that serves it)"; return false; }
+        if !self.wire.connect(self.socket) { self.error = self.wire.error; return false; }
+        let described = self.wire.describe();
+        if len(described) == 0 { self.error = "the head's socket at " + self.socket + " gave no description"; return false; }
+        let caller = std::json::find_field_raw(described, "caller");
+        if len(std::json::find_string_field(caller, "name")) > 0 {
+            self.principal_mode = std::json::find_string_field(caller, "mode");
+            self.principal_name = std::json::find_string_field(caller, "name");
+        }
+        let description = std::json::find_field_raw(described, "value");
+        self.claim_topic = topic_named(description, CLAIM_SUBJECT);
+        self.renew_topic = topic_named(description, RENEW_SUBJECT);
+        self.outcome_topic = topic_named(description, OUTCOME_SUBJECT);
+        self.release_topic = topic_named(description, RELEASE_SUBJECT);
+        self.friction_topic = topic_named(description, FRICTION_SUBJECT);
+        self.lookup_topic = topic_named(description, LOOKUP_SUBJECT);
+        if len(self.claim_topic) == 0 {
+            self.error = "the head's socket lists no `" + CLAIM_SUBJECT + "` for " + self.principal_name + ": this peer holds no position the record knows (`git config --local --add dna.unix.member \"uid:<n>=<person>\"`, and a `holds` edge), or the head serves no commands";
+            return false;
+        }
         self.attached = true;
         return true;
     }
-    fn principal() -> String {
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("mode", self.principal_mode);
-        b.string_field("name", self.principal_name);
-        b.end_object();
-        return b.result();
+    // One call on a topic, the receipt as the verbs read it.
+    fn call(request_id: String, topic: String, payload: String) -> Reply {
+        return socket_reply(self.socket, self.wire.call(request_id, topic, payload));
     }
-    // The preconditions of a command on the record head the leg saw.
-    fn head_conditions() -> String {
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("record_head", self.record_head);
-        b.field("principal", self.principal());
-        b.end_object();
-        return b.result();
-    }
-    // The preconditions of a command under a lease.
-    fn lease_conditions(holder: String, token: Int) -> String {
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("holder", holder);
-        b.int_field("token", token);
-        b.field("principal", self.principal());
-        b.end_object();
-        return b.result();
-    }
-    fn envelope(request_id: String, operation: String, target_kind: String, target_id: String, preconditions: String, arguments: String) -> String {
+    // ---- the commands, each its topic's payload
+    fn claim(request_id: String, performer_kind: String, performer: String, capabilities: String, data_classes: String, organizations: String, ttl: Int) -> Reply {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("request_id", request_id);
-        b.string_field("operation", operation);
-        b.string_field("operation_version", "1");
-        b.begin_object_field("context");
-        b.string_field("application_id", self.application);
-        b.string_field("position_id", "org");
+        b.string_field("record_head", self.record_head);
+        b.string_field("performer_kind", performer_kind);
+        b.string_field("performer", performer);
+        b.string_field("capabilities", capabilities);
+        b.string_field("data_classes", data_classes);
+        b.string_field("organizations", organizations);
+        b.int_field("ttl", ttl);
         b.end_object();
-        b.begin_object_field("target");
-        b.string_field("application_id", self.application);
-        b.string_field("kind", target_kind);
-        b.string_field("id", target_id);
-        b.end_object();
-        b.field("preconditions", preconditions);
-        b.field("arguments", arguments);
-        b.end_object();
-        return b.result();
+        return self.call(request_id, self.claim_topic, b.result());
     }
-    // One command on the table; a refusal is an ok reply whose receipt
-    // says `refused` with the reason.
-    fn submit(request_id: String, operation: String, target_kind: String, target_id: String, preconditions: String, arguments: String) -> Reply {
-        return self.post(self.prefix() + "/commands", self.envelope(request_id, operation, target_kind, target_id, preconditions, arguments));
+    fn renew(request_id: String, attempt_id: String, holder: String, token: Int, ttl: Int) -> Reply {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("attempt_id", attempt_id);
+        b.string_field("holder", holder);
+        b.int_field("token", token);
+        b.int_field("ttl", ttl);
+        b.end_object();
+        return self.call(request_id, self.renew_topic, b.result());
     }
+    fn give_back(request_id: String, attempt_id: String, holder: String, token: Int, why: String) -> Reply {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("attempt_id", attempt_id);
+        b.string_field("holder", holder);
+        b.int_field("token", token);
+        b.string_field("why", why);
+        b.end_object();
+        return self.call(request_id, self.release_topic, b.result());
+    }
+    // The outcome: `evidence` and `receipts` travel as JSON arrays in text;
+    // the hat fields are empty and -1 when no hat was worn.
+    fn outcome(request_id: String, attempt_id: String, holder: String, token: Int, disposition: String, result: String, result_ref: String, narrative: String, evidence: String, receipts: String, hat_digest: String, hat_head: String, hat_watermark: Int, prompt_digest: String, renderer: String) -> Reply {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("attempt_id", attempt_id);
+        b.string_field("holder", holder);
+        b.int_field("token", token);
+        b.string_field("disposition", disposition);
+        b.string_field("result", result);
+        b.string_field("result_ref", result_ref);
+        b.string_field("narrative", narrative);
+        b.string_field("evidence", if len(evidence) > 0 { evidence } else { "[]" });
+        b.string_field("receipts", if len(receipts) > 0 { receipts } else { "[]" });
+        // the hat's five fields travel together or not at all
+        let worn = len(hat_digest) > 0;
+        b.string_field("hat_digest", if worn { hat_digest } else { "" });
+        b.string_field("hat_head", if worn { hat_head } else { "" });
+        b.int_field("hat_watermark", if worn { hat_watermark } else { -1 });
+        b.string_field("prompt_digest", if worn { prompt_digest } else { "" });
+        b.string_field("renderer", if worn { renderer } else { "" });
+        b.end_object();
+        return self.call(request_id, self.outcome_topic, b.result());
+    }
+    fn friction(request_id: String, position: String, attempt_id: String, text: String) -> Reply {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("record_head", self.record_head);
+        b.string_field("position", position);
+        b.string_field("attempt_id", attempt_id);
+        b.string_field("text", text);
+        b.end_object();
+        return self.call(request_id, self.friction_topic, b.result());
+    }
+    // A command read back by the request id the leg minted.
     fn lookup(request_id: String) -> Reply {
-        return self.get(self.prefix() + "/commands?request_id=" + dna::url_encode(request_id));
+        return self.call("lookup:" + request_id, self.lookup_topic, "{\"request_id\": " + dna::record_json_quote(request_id) + "}");
     }
-    // The hat of one Work, as the head renders it: structure, never a prompt.
+    // The hat of one Work, as the head renders it: structure, never a
+    // prompt (a read). The head refuses a hat the record moved under
+    // while it was built (`snapshot_changed`, another leg's claim landing):
+    // read again, a few times, before giving up.
+    @unbounded
     fn context(work_id: String) -> Reply {
-        return self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
+        let mut tries = 0;
+        let mut r = self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
+        while !r.ok && std::str::starts_with(r.error, "snapshot_changed") && tries < 5 {
+            std::time::sleep(200ms);
+            tries = tries + 1;
+            r = self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
+        }
+        return r;
     }
 }

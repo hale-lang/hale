@@ -371,7 +371,7 @@ fn native_of(command: CommandRequest) -> ops::GovernanceCommand {
 // HTTP wire used to restate), and hands it to the provider under the
 // caller the binding established. On its own pool: a command is git
 // work, and the HTTP head shares no thread with it.
-locus Commands {
+locus CommandAdmission {
     params {
         root: String = ".";
         roles: dna::RecordRoles = dna::RecordRoles { };
@@ -387,20 +387,6 @@ locus Commands {
         codec: ops::GovernanceCommandCodec = ops::GovernanceCommandCodec { };
     }
     birth() { self.reader.root = self.root; }
-    bus {
-        subscribe PracticePropose as propose;
-        subscribe ReviewVerdict as verdict;
-        subscribe OrganizationPropose as propose_organization;
-        subscribe TaskCreate as create_task;
-        subscribe TaskReassign as reassign_task;
-        subscribe PersonRetire as retire_person;
-        subscribe AttemptClaim as claim;
-        subscribe AttemptOutcome as outcome;
-        subscribe AttemptRenew as renew;
-        subscribe AttemptRelease as release_attempt;
-        subscribe FrictionFile as file_friction;
-        subscribe CommandLookup as lookup;
-    }
     // The caller as the record knows them: the person `dna.unix.member`
     // maps the peer to, else the peer's account name (only an ungated
     // command reaches here unmapped). Rows say `local`: the peer is a
@@ -442,15 +428,12 @@ locus Commands {
         if !self.provider.supported(request.operation, request.operation_version) { return self.refused("commands_unsupported"); }
         return self.reply(self.provider.submit(context, request));
     }
-    @gated(role: position)
     fn propose(p: PracticeProposal, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.practice.propose", target_kind: "dna.practice", target_id: p.subject_digest, subject_digest: p.subject_digest, text: p.text, rationale: p.rationale });
     }
-    @gated(role: reviewer)
     fn verdict(v: ReviewDecision, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: v.request_id, operation: "dna.review.verdict", target_kind: "dna.review", target_id: v.review_id, subject_digest: v.subject_digest, expected_review_state: "pending", verdict: v.verdict, comment: v.comment });
     }
-    @gated(role: owner)
     fn propose_organization(o: OrganizationProposal, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: o.request_id, operation: "dna.organization.propose", target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: o.module_digest,
             source_head: o.source_head, dependency_source: o.dependency_source, dependency_digest: o.dependency_digest, record_head: o.record_head, source_text: o.source_text, rationale: o.rationale });
@@ -458,35 +441,28 @@ locus Commands {
     fn create_task(t: TaskCreation, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.create", target_kind: "dna.record", subject_digest: t.record_head, record_head: t.record_head, outcome: t.outcome, to: t.to });
     }
-    @gated(role: owner)
     fn reassign_task(t: TaskReassignment, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.reassign", target_kind: "dna.task", target_id: t.task_id, subject_digest: t.assignment_digest, expected_assignee: t.assignee, new_assignee: t.to });
     }
-    @gated(role: owner)
     fn retire_person(p: PersonRetirement, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.person.retire", target_kind: "dna.person", target_id: p.person, subject_digest: p.subject_digest, new_assignee: p.to });
     }
-    @gated(role: position)
     fn claim(c: Claim, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: c.request_id, operation: "dna.attempt.claim", target_kind: "dna.work", subject_digest: c.record_head, record_head: c.record_head,
             performer_kind: c.performer_kind, performer: c.performer, capabilities: c.capabilities, data_classes: c.data_classes, organizations: c.organizations, ttl: c.ttl });
     }
-    @gated(role: position)
     fn outcome(o: Outcome, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: o.request_id, operation: "dna.attempt.outcome", target_kind: "dna.attempt", target_id: o.attempt_id, subject_digest: lease_of(o.holder, o.token),
             attempt_id: o.attempt_id, holder: o.holder, token: o.token, disposition: o.disposition, result: o.result, result_ref: o.result_ref, narrative: o.narrative,
             evidence: if o.evidence == "[]" { "" } else { o.evidence }, receipts: if o.receipts == "[]" { "" } else { o.receipts },
             hat_digest: o.hat_digest, hat_head: o.hat_head, hat_watermark: o.hat_watermark, prompt_digest: o.prompt_digest, renderer: o.renderer });
     }
-    @gated(role: position)
     fn renew(r: Renewal, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: r.request_id, operation: "dna.attempt.renew", target_kind: "dna.attempt", target_id: r.attempt_id, subject_digest: lease_of(r.holder, r.token), attempt_id: r.attempt_id, holder: r.holder, token: r.token, ttl: r.ttl });
     }
-    @gated(role: position)
     fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: r.request_id, operation: "dna.attempt.release", target_kind: "dna.attempt", target_id: r.attempt_id, subject_digest: lease_of(r.holder, r.token), attempt_id: r.attempt_id, holder: r.holder, token: r.token, narrative: r.why });
     }
-    @gated(role: position)
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: f.request_id, operation: "dna.friction.file", target_kind: "dna.friction", subject_digest: f.record_head, record_head: f.record_head, performer: f.position, attempt_id: f.attempt_id, result: f.text });
     }
@@ -498,6 +474,52 @@ locus Commands {
         if !context.source.ok { return self.refused(context.source.code); }
         return self.reply(self.provider.lookup(context, l.request_id));
     }
+}
+
+// The head's commands on its api binding: every handler a gated topic
+// of this seed (the surface is the entrypoint seed's own loci), each
+// delegating to the admission above. A composed head — the practice
+// review head — declares the same subscriptions on a locus of its own
+// seed over the same admission, since an imported locus is not part of
+// a program's surface (GH #1104 piece 5).
+locus Commands {
+    params { admission: CommandAdmission = CommandAdmission { }; }
+    bus {
+        subscribe PracticePropose as propose;
+        subscribe ReviewVerdict as verdict;
+        subscribe OrganizationPropose as propose_organization;
+        subscribe TaskCreate as create_task;
+        subscribe TaskReassign as reassign_task;
+        subscribe PersonRetire as retire_person;
+        subscribe AttemptClaim as claim;
+        subscribe AttemptOutcome as outcome;
+        subscribe AttemptRenew as renew;
+        subscribe AttemptRelease as release_attempt;
+        subscribe FrictionFile as file_friction;
+        subscribe CommandLookup as lookup;
+    }
+    @gated(role: position)
+    fn propose(p: PracticeProposal, ctx: std::api::Context) -> CommandReply { return self.admission.propose(p, ctx); }
+    @gated(role: reviewer)
+    fn verdict(v: ReviewDecision, ctx: std::api::Context) -> CommandReply { return self.admission.verdict(v, ctx); }
+    @gated(role: owner)
+    fn propose_organization(o: OrganizationProposal, ctx: std::api::Context) -> CommandReply { return self.admission.propose_organization(o, ctx); }
+    fn create_task(t: TaskCreation, ctx: std::api::Context) -> CommandReply { return self.admission.create_task(t, ctx); }
+    @gated(role: owner)
+    fn reassign_task(t: TaskReassignment, ctx: std::api::Context) -> CommandReply { return self.admission.reassign_task(t, ctx); }
+    @gated(role: owner)
+    fn retire_person(p: PersonRetirement, ctx: std::api::Context) -> CommandReply { return self.admission.retire_person(p, ctx); }
+    @gated(role: position)
+    fn claim(c: Claim, ctx: std::api::Context) -> CommandReply { return self.admission.claim(c, ctx); }
+    @gated(role: position)
+    fn outcome(o: Outcome, ctx: std::api::Context) -> CommandReply { return self.admission.outcome(o, ctx); }
+    @gated(role: position)
+    fn renew(r: Renewal, ctx: std::api::Context) -> CommandReply { return self.admission.renew(r, ctx); }
+    @gated(role: position)
+    fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply { return self.admission.release_attempt(r, ctx); }
+    @gated(role: position)
+    fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply { return self.admission.file_friction(f, ctx); }
+    fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply { return self.admission.lookup(l, ctx); }
 }
 
 // A leased command's subject: the lease it settles under.

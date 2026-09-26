@@ -300,8 +300,9 @@ mutation now, except a knowledge command or a draft POST.
 `/capabilities` no longer carries `writes` or any command profile; it
 carries `api{transport,socket}` instead.
 
-`hale dna work`, the legs client, is being switched from the HTTP route
-to this socket by the DNA line; the socket is its target.
+`hale dna work`, the legs client, speaks this socket: every verb a
+`call` on its topic, the reads (`/applications`, `/capabilities`,
+`/dna/context`) over HTTP, the socket's path from `api.socket`.
 
 **HTTP is a forwarding transport** (forward.hl; GH #1135 is the binding's
 own HTTP transport). The face is where humans decide, so its writes keep

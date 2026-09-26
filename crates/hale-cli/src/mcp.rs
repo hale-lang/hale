@@ -242,11 +242,11 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "hale_dna_work",
-            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, submit, settle, release, friction, run. Positions are the graph's position:<name> ids. Prints one JSON object.",
+            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, submit, settle, release, friction, run (one cycle through the project's performers), loop (worker mode, --parallel N; over MCP only with --once, so the call ends: one JSON line per child as it ends, then the loop's own). An external harness plugs in with next, brief --render agent, its own work, and submit --evidence-file. Positions are the graph's position:<name> ids. Every verb but loop prints one JSON object.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "verb": { "type": "string", "enum": ["next", "brief", "renew", "submit", "settle", "release", "friction", "run"] },
+                    "verb": { "type": "string", "enum": ["next", "brief", "renew", "submit", "settle", "release", "friction", "run", "loop"] },
                     "args": { "type": "array", "items": { "type": "string" }, "description": "The verb's flags as given on the command line, e.g. [\"--as\", \"position:agent\", \"--api\", \"http://127.0.0.1:8793\"]." },
                     "project": { "type": "string", "description": "The project directory (default: the current one)." }
                 },
@@ -413,6 +413,18 @@ fn dispatch(name: &str, args: &Value) -> Result<(String, bool), String> {
         }
         "hale_dna_work" => {
             let verb = arg_str(args, "verb").ok_or("verb required")?;
+            // a loop that runs until drained would hold this server forever
+            // and be orphaned with it: over MCP a loop is one pass
+            if verb == "loop" {
+                let bounded = args
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().any(|v| v.as_str() == Some("--once") || v.as_str() == Some("--drain")))
+                    .unwrap_or(false);
+                if !bounded {
+                    return Err("loop over MCP needs --once (each worker runs one task, then the call ends) or --drain; an unbounded loop belongs to a terminal".to_string());
+                }
+            }
             let mut cli = vec!["dna".to_string(), "work".to_string()];
             if let Some(p) = arg_str(args, "project") {
                 cli.push(resolve_path(p)?.display().to_string());

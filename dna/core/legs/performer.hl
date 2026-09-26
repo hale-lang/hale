@@ -5,13 +5,14 @@
 // lease the Work is held under — and the hands it may use, and answers
 // with a performance: a disposition and a result to hand back, the
 // calls it made as evidence, the receipts to file, and the digest of
-// what it rendered the hat into. Three kinds: a person (this PR's leg:
-// the brief is rendered for them and the outcome is theirs to submit),
-// a deterministic performer (a program: it wins for the work kinds it
-// takes), and a model (the next PR's leg; `NoModel` refuses until it
-// lands). The project's catalog (`dna/org/work.hl`, generated at init)
-// names one of each; the head's contract stays a result struct until
-// #732 gives the performers a contract of their own.
+// what it rendered the hat into. Three kinds: a person (the brief is
+// rendered for them and the outcome is theirs to submit), a
+// deterministic performer (a program: it wins for the work kinds it
+// takes), and a model (`ModelPerformer` in model.hl, the catalog's
+// router as a leg; `NoModel` takes nothing, so the work is a person's).
+// The project's catalog (`dna/org/work.hl`, generated at init) names
+// one of each; the head's contract stays a result struct until #732
+// gives the performers a contract of their own.
 import ".." as dna;
 
 // What a performer is handed: the Work as the hat says it, the lease it
@@ -55,6 +56,12 @@ interface Performer {
     fn perform(brief: Brief, hands: Hands) -> Performance;
 }
 
+// The `--worker <n>` a holder `position:<name>#<n>` was claimed with, or nothing.
+fn worker_flag(holder: String) -> String {
+    let i = std::str::index_of(holder, "#");
+    return if i >= 0 { " --worker " + holder[(i + 1)..len(holder)] } else { "" };
+}
+
 // A person: the brief is rendered as text for them; the outcome comes
 // back through `hale dna work submit`, under the lease the brief names.
 locus Person {
@@ -65,7 +72,7 @@ locus Person {
         self.briefed = self.briefed + 1;
         return Performance {
             pending: true, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION,
-            narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --attempt " + brief.attempt_id + " --holder " + brief.holder + " --token " + to_string(brief.token) + " --result <text>` hands the outcome back under the lease (until " + to_string(brief.until) + ")"
+            narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --as " + brief.position + worker_flag(brief.holder) + " --attempt " + brief.attempt_id + " --token " + to_string(brief.token) + " --result <text>` hands the outcome back under the lease (until " + to_string(brief.until) + ")"
         };
     }
 }
@@ -79,13 +86,13 @@ locus NoDeterministic {
     }
 }
 
-// No model leg yet: the second PR of GH #946 slice 4 brings it, absorbing
-// the catalog (`dna/org/models.hl`) and the tape.
+// No model: a project with no backend configured (or one that keeps
+// its models for the editor and leader) hands the work to a person.
 locus NoModel {
     fn kind() -> String { return "model"; }
     fn takes(performer_kind: String) -> Bool { return false; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
-        return Performance { refused: "no model leg performs " + brief.performer_kind + " work yet; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl" };
+        return Performance { refused: "no model performs " + brief.performer_kind + " work in this project; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl (`legs::ModelPerformer { router: agent_models() }` puts the catalog behind it)" };
     }
 }
 
@@ -104,7 +111,7 @@ locus FixedAnswer {
 
 // The project's performers, one of each kind: the deterministic one
 // wins for the work kinds it takes; a person's work is a person's; the
-// rest is the model's, and until the model leg lands, a person's too.
+// rest is the model's when the model takes the kind, a person's else.
 locus PerformerCatalog {
     params {
         person: Performer = Person { };
@@ -116,12 +123,29 @@ locus PerformerCatalog {
         if performer_kind == "human" || !self.model.takes(performer_kind) { return "person"; }
         return "model";
     }
+    // The choice, or the one a worker was told to be (`--performer`): a
+    // forced performer that takes nothing of the kind still refuses
+    // (`perform_as` asks `takes` first).
+    fn chosen_or(performer_kind: String, forced: String) -> String {
+        if forced == "person" || forced == "deterministic" || forced == "model" { return forced; }
+        return self.chosen(performer_kind);
+    }
     // The render mode a performer is briefed in.
     fn mode_for(who: String) -> String { return if who == "person" { "text" } else if who == "model" { "prompt" } else { "agent" }; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
-        let who = self.chosen(brief.performer_kind);
-        if who == "deterministic" { return self.deterministic.perform(brief, hands); }
-        if who == "model" { return self.model.perform(brief, hands); }
+        return self.perform_as(self.chosen(brief.performer_kind), brief, hands);
+    }
+    // The performance by the one chosen, or the one a worker was told to
+    // be: a performer never answers a kind it does not take, forced or not.
+    fn perform_as(who: String, brief: Brief, hands: Hands) -> Performance {
+        if who == "deterministic" {
+            if !self.deterministic.takes(brief.performer_kind) { return Performance { refused: "the deterministic performer does not take " + brief.performer_kind + " work" }; }
+            return self.deterministic.perform(brief, hands);
+        }
+        if who == "model" {
+            if !self.model.takes(brief.performer_kind) { return Performance { refused: "the model performer does not take " + brief.performer_kind + " work" }; }
+            return self.model.perform(brief, hands);
+        }
         return self.person.perform(brief, hands);
     }
 }

@@ -33,7 +33,9 @@ type ModelResult {
     backend: String = "";
     model: String = "";
     output: String = "";
-    tokens: Int = 0;
+    tokens: Int = 0; // input and output together
+    input_tokens: Int = 0; // the split, as the backend reported it (what its `ModelCalled` carries)
+    output_tokens: Int = 0;
     cost_micros: Int = 0;
     refused: String = ""; // why, when !ok
 }
@@ -65,6 +67,7 @@ fn fake_answer(name: String, model: String, req: ModelRequest, max_bytes: Int, p
         model: model,
         output: name + ":" + req.role + ":" + req.prompt_digest,
         tokens: req.context_bytes / 4 + 32,
+        output_tokens: req.context_bytes / 4 + 32,
         cost_micros: price
     };
 }
@@ -183,9 +186,9 @@ locus FakeModel {
         let found = self.scripted_for(req);
         let scripted = if len(found) > 0 { found } else { self.ruled_for(req) };
         let r = if len(scripted) > 0 {
-            ModelResult { ok: true, backend: self.name, model: self.model, output: scripted, tokens: len(scripted) / 4, cost_micros: self.price_micros }
+            ModelResult { ok: true, backend: self.name, model: self.model, output: scripted, tokens: len(scripted) / 4, output_tokens: len(scripted) / 4, cost_micros: self.price_micros }
         } else if len(self.answer) > 0 && (self.answer_role == "" || self.answer_role == req.role) {
-            ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, cost_micros: self.price_micros }
+            ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, output_tokens: len(self.answer) / 4, cost_micros: self.price_micros }
         } else {
             fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros)
         };
@@ -417,7 +420,7 @@ locus OpenAiChat {
         }
         return ModelResult {
             ok: true, backend: self.name, model: out.reported_model, output: out.text,
-            tokens: out.input_tokens + out.output_tokens, cost_micros: ev.cost_micros
+            tokens: out.input_tokens + out.output_tokens, input_tokens: out.input_tokens, output_tokens: out.output_tokens, cost_micros: ev.cost_micros
         };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
@@ -533,7 +536,7 @@ locus AnthropicMessages {
         }
         return ModelResult {
             ok: true, backend: self.name, model: out.reported_model, output: out.text,
-            tokens: out.input_tokens + out.output_tokens, cost_micros: ev.cost_micros
+            tokens: out.input_tokens + out.output_tokens, input_tokens: out.input_tokens, output_tokens: out.output_tokens, cost_micros: ev.cost_micros
         };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {

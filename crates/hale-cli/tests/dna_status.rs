@@ -70,7 +70,9 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
         .spawn()
         .expect("hale dna run");
     let nerves_up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let dl = Instant::now() + Duration::from_secs(60);
+    // a loaded runner builds the organization beside tests that run for
+    // minutes: the deadline is the runner's, not the organism's
+    let dl = Instant::now() + Duration::from_secs(180);
     while Instant::now() < dl && !nerves_up() {
         std::thread::sleep(Duration::from_millis(200));
     }
