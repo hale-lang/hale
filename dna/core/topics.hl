@@ -396,6 +396,9 @@ type ReviewRequest {
     question: String = "";
     subject_digest: String = ""; // exact candidate under review (TOCTOU pin)
     required_authority: String = "";
+    // GH #1089: the positions its route requires, `<position>=<holder>,…`;
+    // set, no one outside them decides it
+    signers: String = "";
     // GH #566 F2: what a position deciding it needs — the mutation, its
     // class and disposition under the grant, the base to diff from, the
     // receipts (by digest) and the evidence line
@@ -418,6 +421,8 @@ type Verdict {
     reviewer: String = "";
     authority: String = ""; // the authority the reviewer claims
     comment: String = "";
+    // GH #1089: the gate runs it cites, receipt digests space-separated
+    evidence: String = "";
 }
 topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by review_id; }
 

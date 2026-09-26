@@ -192,6 +192,13 @@ locus Leader {
     // Mutations proposed.
     @unbounded
     fn on_requested(req: ReviewRequest) {
+        // GH #1089: a Review its route routes is decided by the positions
+        // the route names, never by the leader on its own authority
+        if len(req.signers) > 0 {
+            self.escalated = self.escalated + 1;
+            self.last = req.review_id + ": the route's (" + approver_owners(req.signers) + ")";
+            return;
+        }
         if !authority_satisfies("leader", req.required_authority) {
             self.escalated = self.escalated + 1;
             self.last = req.review_id + ": the Board's";

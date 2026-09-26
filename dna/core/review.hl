@@ -5,9 +5,13 @@
 // candidate's digest at decision time, the authority required, and
 // the verdicts it received with their provenance. It settles only when
 // a verdict (a) names the exact candidate digest under review, (b)
-// comes from a reviewer whose claimed authority satisfies the
-// requirement, and (c) is independent of the authoring Attempt. A
-// capable performer with the wrong authority does not settle it.
+// comes from a reviewer who holds a position its route requires — or,
+// when the route names no held position, whose claimed authority
+// satisfies the requirement — and (c) is independent of the authoring
+// Attempt. A capable performer with the wrong standing does not settle
+// it. With a route, it settles approved only when every required
+// position has approved and every gate guarding the change has a
+// passing run at the candidate cited as evidence (GH #1089).
 //
 // The AutonomyBoundary is owned by the PARENT for one child
 // relationship. It computes the disposition from the grant, the
@@ -61,6 +65,32 @@ locus ReviewJournal {
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append_exact(expected, kind, entity, body); }
 }
 
+// The receipts a Review reads a verdict's evidence from, bound by the
+// assembly like the journal.
+locus ReviewReceipts {
+    params { inner: Receipts = FileReceipts { }; }
+    fn bind(r: Receipts) { self.inner = r; }
+    fn read(digest: String) -> String { return self.inner.read(digest); }
+}
+
+// The positions among `signers` (`<position>=<holder>,<holder> …`) that
+// `person` holds, space-separated.
+@unbounded
+fn signer_positions(signers: String, person: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while len(nth_word(signers, i)) > 0 {
+        let entry = nth_word(signers, i);
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 && word_in(person, words_of(entry[(eq + 1)..len(entry)])) { out = word_add(out, entry[0..eq]); }
+        i = i + 1;
+    }
+    return out;
+}
+
+// A gate as the route names it (`gate:ci/api`), from a run's `gate`.
+fn gate_id(gate: String) -> String { return if std::str::starts_with(gate, "gate:") { gate } else { "gate:" + gate }; }
+
 // Command outcomes are separate from Review settlement: an admitted abstention
 // has an outcome of its own, and a refusal cannot borrow another caller's approval.
 fn review_command_body(v: Verdict, accepted: Bool, refusal: String, settled: Bool, outcome: String) -> String {
@@ -77,6 +107,7 @@ fn review_command_body(v: Verdict, accepted: Bool, refusal: String, settled: Boo
     b.bool_field("settled", settled);
     b.string_field("outcome", outcome);
     b.string_field("comment", v.comment);
+    if len(v.evidence) > 0 { b.string_field("evidence", v.evidence); }
     b.end_object();
     return b.result();
 }
@@ -89,7 +120,8 @@ fn review_command_verdict(command_id: String, body: String) -> Verdict {
         verdict: native_json_string(body, "verdict"),
         reviewer: native_json_string(body, "reviewer"),
         authority: native_json_string(body, "authority"),
-        comment: native_json_string(body, "comment")
+        comment: native_json_string(body, "comment"),
+        evidence: native_json_string(body, "evidence")
     };
 }
 
@@ -98,7 +130,8 @@ fn review_command_matches(body: String, v: Verdict) -> Bool {
     return native_json_string(body, "command_id") == v.command_id
         && old.review_id == v.review_id && old.subject_digest == v.subject_digest
         && old.verdict == v.verdict && old.reviewer == v.reviewer
-        && old.authority == v.authority && old.comment == v.comment;
+        && old.authority == v.authority && old.comment == v.comment
+        && old.evidence == v.evidence;
 }
 
 @unbounded
@@ -126,6 +159,16 @@ locus Review {
         // "" means one admitted verdict decides
         approvers: String = "";
         approved_owners: String = ""; // owners whose approval is in, space-separated
+        // GH #1089: the positions its route requires, `<position>=<holder>,<holder> …`
+        // as they were held when it opened; set, they replace the required
+        // authority, and every one must approve
+        signers: String = "";
+        signed: String = ""; // positions whose approval is in, space-separated
+        // the gates guarding the change, space-separated: each needs a
+        // passing run at the candidate cited as evidence before it settles approved
+        gates: String = "";
+        evidenced: String = ""; // gates with such a run cited, space-separated
+        receipts: ReviewReceipts = ReviewReceipts { };
         blocking: Bool = true;
         verdicts: VerdictRows = VerdictRows { };
         settled: Bool = false;
@@ -217,9 +260,7 @@ locus Review {
                     self.command_verdicts.push(v);
                     if std::json::find_bool_field(e.body, "accepted") && v.subject_digest == self.subject_digest && self.source_verdict_admitted(v, e.seq) {
                         self.verdicts.push(v);
-                        if v.verdict == "approve" && len(self.approvers) > 0 {
-                            self.approved_owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
-                        }
+                        self.note(v);
                         if std::json::find_bool_field(e.body, "settled") {
                             self.settled = true;
                             self.outcome = native_json_string(e.body, "outcome");
@@ -250,25 +291,79 @@ locus Review {
             if e.kind == "review.settled" && e.entity == self.review_id { return "already settled: " + e.body; }
             i = i + 1;
         }
-        if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
-        if !authority_satisfies(v.authority, self.required_authority) { return "authority " + v.authority + " does not satisfy " + self.required_authority; }
-        if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
         if v.verdict != "approve" && v.verdict != "reject" && v.verdict != "revise" && v.verdict != "abstain" { return "unknown verdict: " + v.verdict; }
+        return self.refusal(v);
+    }
+    // Why a verdict on this candidate is not admitted, "" when it is: the
+    // digest it names, the reviewer's standing, independence from the
+    // author, and the evidence it cites. One rule for the membrane, a
+    // command and a restart.
+    @unbounded
+    fn refusal(v: Verdict) -> String {
+        if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
+        if len(self.signers) > 0 {
+            if len(signer_positions(self.signers, v.reviewer)) == 0 { return "reviewer " + v.reviewer + " holds no position this Review requires (" + approver_owners(self.signers) + ")"; }
+        } else if !authority_satisfies(v.authority, self.required_authority) { return "authority " + v.authority + " does not satisfy " + self.required_authority; }
+        if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
         if len(self.approvers) > 0 && len(approver_owner(self.approvers, v.reviewer)) == 0 { return "reviewer " + v.reviewer + " is a member of no owner this change affects (" + approver_owners(self.approvers) + ")"; }
+        return self.evidence_refusal(v);
+    }
+    // GH #1089: each run a verdict cites is a gate run of a gate guarding
+    // the change, at the candidate, that passed. A run at another commit
+    // is stale and a run that did not pass is rejected; either refuses the
+    // verdict whole.
+    @unbounded
+    fn evidence_refusal(v: Verdict) -> String {
+        let mut i = 0;
+        while len(nth_word(v.evidence, i)) > 0 {
+            let d = nth_word(v.evidence, i);
+            i = i + 1;
+            let doc = self.receipts.read(if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
+            if len(doc) == 0 { return "evidence " + d + " is no receipt this organization holds"; }
+            if native_json_string(doc, "kind") != "gate.run" { return "evidence " + d + " is no gate run (kind `" + native_json_string(doc, "kind") + "`)"; }
+            let gate = gate_id(native_json_string(doc, "gate"));
+            if !word_in(gate, self.gates) { return "evidence " + d + " is a run of " + gate + ", which guards nothing this change touches" + (if len(self.gates) > 0 { " (" + self.gates + ")" } else { "" }); }
+            let sha = native_json_string(doc, "sha");
+            if sha != self.subject_digest { return "evidence " + d + " is stale: " + gate + " ran at " + sha + ", not at the candidate " + self.subject_digest; }
+            let conclusion = native_json_string(doc, "conclusion");
+            if conclusion != "success" { return "evidence " + d + " is rejected: " + gate + " concluded `" + conclusion + "` at the candidate"; }
+        }
         return "";
     }
+    // The gates `v`'s evidence runs, space-separated (its evidence admitted).
     @unbounded
-    fn command_settles(v: Verdict) -> Bool {
-        if v.verdict == "abstain" { return false; }
-        if v.verdict != "approve" || len(self.approvers) == 0 { return true; }
-        let owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
+    fn evidence_gates(v: Verdict) -> String {
+        let mut out = "";
         let mut i = 0;
-        while len(nth_word(approver_owners(self.approvers), i)) > 0 {
-            if !word_in(nth_word(approver_owners(self.approvers), i), owners) { return false; }
+        while len(nth_word(v.evidence, i)) > 0 {
+            let d = nth_word(v.evidence, i);
+            out = word_add(out, gate_id(native_json_string(self.receipts.read(if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d }), "gate")));
             i = i + 1;
         }
-        return true;
+        return out;
     }
+    // Whether an admitted `v` settles the Review: anything but an
+    // abstention or an approval settles it; an approval does once every
+    // required position, every affected owner and every gate is in.
+    @unbounded
+    fn settles_with(v: Verdict) -> Bool {
+        if v.verdict == "abstain" { return false; }
+        if v.verdict != "approve" { return true; }
+        let owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
+        let signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
+        let evidenced = words_add(self.evidenced, self.evidence_gates(v));
+        return words_within(approver_owners(self.approvers), owners) && words_within(approver_owners(self.signers), signed) && words_within(self.gates, evidenced);
+    }
+    // An admitted verdict's standing and evidence, kept.
+    @unbounded
+    fn note(v: Verdict) {
+        self.evidenced = words_add(self.evidenced, self.evidence_gates(v));
+        if v.verdict != "approve" { return; }
+        self.approved_owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
+        self.signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
+    }
+    @unbounded
+    fn command_settles(v: Verdict) -> Bool { return self.settles_with(v); }
     // The exact append is the decision. No live state changes before it. On
     // an ambiguous error, re-read the same identity before reporting nothing;
     // redelivery can then recover the original acceptance instead of refusing
@@ -323,9 +418,8 @@ locus Review {
         self.refused = self.refused + 1;
         if self.outcome != "approve" { self.last_refusal = "already settled: " + self.outcome; return false; }
         if v.verdict != "approve" { self.last_refusal = "already settled: approve; a " + v.verdict + " does not reopen it"; return false; }
-        if v.subject_digest != self.subject_digest { self.last_refusal = "already settled; digest mismatch: " + v.subject_digest + " != " + self.subject_digest; return false; }
-        if !authority_satisfies(v.authority, self.required_authority) { self.last_refusal = "already settled; authority " + v.authority + " does not satisfy " + self.required_authority; return false; }
-        if v.reviewer == self.author { self.last_refusal = "already settled; reviewer " + v.reviewer + " authored the candidate"; return false; }
+        let why = self.refusal(v);
+        if len(why) > 0 { self.last_refusal = "already settled; " + why; return false; }
         self.refused = self.refused - 1;
         return true;
     }
@@ -339,60 +433,50 @@ locus Review {
             self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;
         }
         if self.settled { self.last_refusal = "already settled"; self.refused = self.refused + 1; return false; }
-        if v.subject_digest != self.subject_digest {
-            self.last_refusal = "digest mismatch: " + v.subject_digest + " != " + self.subject_digest;
+        let why = self.refusal(v);
+        if len(why) > 0 {
+            self.last_refusal = why;
             self.refused = self.refused + 1;
             return false;
-        }
-        if !authority_satisfies(v.authority, self.required_authority) {
-            self.last_refusal = "authority " + v.authority + " does not satisfy " + self.required_authority;
-            self.refused = self.refused + 1;
-            return false;
-        }
-        if v.reviewer == self.author {
-            self.last_refusal = "reviewer " + v.reviewer + " authored the candidate";
-            self.refused = self.refused + 1;
-            return false;
-        }
-        if len(self.approvers) > 0 {
-            // GH #664: the change touches who owns what; each affected owner
-            // approves through one of its members, and one rejection settles
-            let owner = approver_owner(self.approvers, v.reviewer);
-            if len(owner) == 0 {
-                self.last_refusal = "reviewer " + v.reviewer + " is a member of no owner this change affects (" + approver_owners(self.approvers) + ")";
-                self.refused = self.refused + 1;
-                return false;
-            }
-            self.verdicts.push(v);
-            if v.verdict == "abstain" { return true; }
-            if v.verdict != "approve" {
-                self.settled = true;
-                self.outcome = v.verdict;
-                self.decided_by = v.reviewer;
-                self.comment = v.comment;
-                return true;
-            }
-            self.approved_owners = word_add(self.approved_owners, owner);
-            let mut i = 0;
-            while len(nth_word(approver_owners(self.approvers), i)) > 0 {
-                if !word_in(nth_word(approver_owners(self.approvers), i), self.approved_owners) { return true; }
-                i = i + 1;
-            }
-            self.settled = true;
-            self.outcome = "approve";
-            self.decided_by = v.reviewer;
-            self.comment = v.comment + " (every affected owner approved: " + self.approved_owners + ")";
-            return true;
         }
         self.verdicts.push(v);
-        if v.verdict == "abstain" { return true; }
+        let settles = self.settles_with(v);
+        self.note(v);
+        if !settles { return true; }
         self.settled = true;
         self.outcome = v.verdict;
         self.decided_by = v.reviewer;
-        self.comment = v.comment;
+        self.comment = v.comment + (if v.verdict == "approve" && (len(self.approvers) > 0 || len(self.signers) > 0) { " (" + self.approvals() + ")" } else { "" });
         return true;
     }
+    // What the approval that settled it gathered, said.
+    @unbounded
+    fn approvals() -> String {
+        let mut out = "";
+        if len(self.approvers) > 0 { out = "every affected owner approved: " + self.approved_owners; }
+        if len(self.signers) > 0 { out = out + (if len(out) > 0 { "; " } else { "" }) + "every required position approved: " + self.signed; }
+        if len(self.gates) > 0 { out = out + "; evidenced by " + self.evidenced; }
+        return out;
+    }
     fn verdict_count() -> Int { return self.verdicts.len(); }
+    // GH #1089: what an approval still waits for — the required positions
+    // not in, the gates with no passing run cited — "" when nothing.
+    @unbounded
+    fn awaiting() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while len(nth_word(approver_owners(self.signers), i)) > 0 {
+            let w = nth_word(approver_owners(self.signers), i);
+            if !word_in(w, self.signed) { out = word_add(out, w); }
+            i = i + 1;
+        }
+        i = 0;
+        while len(nth_word(self.gates, i)) > 0 {
+            if !word_in(nth_word(self.gates, i), self.evidenced) { out = word_add(out, nth_word(self.gates, i)); }
+            i = i + 1;
+        }
+        return words_add(out, self.awaiting_owners());
+    }
     // GH #664: the owners still to approve, "" when none or not an owners change.
     @unbounded
     fn awaiting_owners() -> String {

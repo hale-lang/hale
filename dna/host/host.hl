@@ -490,7 +490,8 @@ locus NodeRelay {
                 verdict: dna::native_json_string(body, "verdict"),
                 reviewer: dna::native_json_string(body, "reviewer"),
                 authority: dna::native_json_string(body, "authority"),
-                comment: dna::native_json_string(body, "comment")
+                comment: dna::native_json_string(body, "comment"),
+                evidence: dna::native_json_string(body, "evidence")
             };
         } else if kind == "observed" {
             dna::ExpressionObserved <- dna::Observation {

@@ -933,6 +933,7 @@ fn dna_fixture_set_is_complete() {
             "retired_admission_test.hl",
             "review_authority_test.hl",
             "review_command_test.hl",
+            "review_signers_test.hl",
             "routing_test.hl",
             "row_admission_test.hl",
             "schedule_cli_test.hl",

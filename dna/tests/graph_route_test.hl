@@ -131,14 +131,14 @@ locus App {
         let api = self.dna("route\n--json\nspec/openapi.yaml");
         std::test::assert_eq_int(api.code, 0, "route openapi.yaml: " + api.stderr);
         std::test::assert_eq_str(field_of(std::json::find_field_raw(api.stdout, "signers"), "position"), "position:api/reviewer\nposition:node/reviewer\n", "api's reviewer signs it, node's consumes it, and advice bound to it is no law the board signs: " + api.stdout);
-        std::test::assert_eq_str(ops::show_strings(std::json::find_field_raw(api.stdout, "evidence")), "gate:ci/api\ngate:ci/contracts\n", "judged against ci/api and ci/contracts: " + api.stdout);
+        std::test::assert_eq_str(dna::show_strings(std::json::find_field_raw(api.stdout, "evidence")), "gate:ci/api\ngate:ci/contracts\n", "judged against ci/api and ci/contracts: " + api.stdout);
         std::test::assert(std::str::contains(api.stdout, "\"node\": \"seed:ui\"") && std::str::contains(api.stdout, "consumes openapi.yaml; no position reviews it"), "ui consumes it and no position reviews ui: said, not dropped: " + api.stdout);
         std::test::assert(std::str::contains(api.stdout, "[grace] signs openapi.yaml"), "a signer with who holds it: " + api.stdout);
 
         // ---- a change under api/: api's reviewer alone, against ci/api
         let code = self.dna("route\n--json\napi/endpoints.hl");
         std::test::assert_eq_str(field_of(std::json::find_field_raw(code.stdout, "signers"), "position"), "position:api/reviewer\n", "api's reviewer alone: " + code.stdout);
-        std::test::assert_eq_str(ops::show_strings(std::json::find_field_raw(code.stdout, "evidence")), "gate:ci/api\n", "against ci/api: " + code.stdout);
+        std::test::assert_eq_str(dna::show_strings(std::json::find_field_raw(code.stdout, "evidence")), "gate:ci/api\n", "against ci/api: " + code.stdout);
 
         // ---- a contract that is law: the board signs too
         let store = self.dna("route\n--json\nspec/store.md");
@@ -154,7 +154,7 @@ locus App {
         // ---- a deployment's file: its operator signs, against its gate
         let compose = self.dna("route\n--json\ncompose.yaml");
         std::test::assert_eq_str(field_of(std::json::find_field_raw(compose.stdout, "signers"), "position"), "position:compose/operator\n", "compose's operator signs compose.yaml: " + compose.stdout);
-        std::test::assert(std::str::contains(ops::show_strings(std::json::find_field_raw(compose.stdout, "evidence")), "gate:ci/image\n") && std::str::contains(compose.stdout, "operates compose"), "against ci/image, which gates compose: " + compose.stdout);
+        std::test::assert(std::str::contains(dna::show_strings(std::json::find_field_raw(compose.stdout, "evidence")), "gate:ci/image\n") && std::str::contains(compose.stdout, "operates compose"), "against ci/image, which gates compose: " + compose.stdout);
 
         // ---- from a subdirectory: a path is the repository's
         let sub = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1/api\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\nroute\n--json\nendpoints.hl\n../spec/store.md");
@@ -186,6 +186,23 @@ locus App {
 
         // ---- no dev ever signs
         std::test::assert(!std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"), "a process's dev never signs for it");
+
+        // ---- what a Review of a change requires (GH #1089): every position
+        // the route names, each with who holds it, and the gates; a route
+        // whose positions nobody holds defines none (the fallback), and the
+        // Board is practice-ratify's while someone holds it
+        let spine = dna::migrated(self.owner, self.identity);
+        let q = dna::Pq { conn: dna::pq_conn(spine), record_id: self.identity };
+        std::test::assert(q.open(), "memory opens: " + q.last_error());
+        let data = q.graph_perspective("routing");
+        let law_now = dna::route_law(dna::route_bound(data), dna::GitReceipts { repo: self.repo });
+        let need = dna::route_requirement(data, dna::graph_route(data, "spec/openapi.yaml\n", law_now));
+        std::test::assert_eq_str(need.signers, "position:api/reviewer=grace position:node/reviewer=", "api's reviewer, held by grace, and node's, held by nobody and required all the same: " + need.signers);
+        std::test::assert_eq_str(need.gates, "gate:ci/api gate:ci/contracts", "against ci/api and ci/contracts: " + need.gates);
+        let unheld = dna::route_requirement(data, dna::graph_route(data, "node/main.hl\n", law_now));
+        std::test::assert_eq_str(unheld.signers + unheld.gates, "", "a route whose positions nobody holds is the fallback");
+        std::test::assert_eq_str(dna::board_requirement(data).signers, "", "nobody holds the board: practice-ratify falls back");
+        q.close();
 
         std::test::assert_eq_str(dna::unmigrate(self.owner, self.identity), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);

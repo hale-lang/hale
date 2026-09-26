@@ -361,6 +361,41 @@ locus App {
         std::test::assert(std::str::contains(held, "  api         dev [ada], reviewer(openapi.yaml) [ada]\n") && std::str::contains(held, "  board\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
         std::test::assert(self.logged("warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev", 240), "memory says so where it projects it: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
 
+        // ---- once the Board has a holder, a proposal's Review requires it
+        // (GH #1089): the organization records the route's signers when it
+        // opens the Review, and a verdict from anyone else is refused
+        // whatever authority it claims
+        let seat = self.dna("fill\nboard\nada\n--as\ngrace");
+        std::test::assert_eq_int(seat.code, 0, "grace proposes ada for the board: " + seat.stderr);
+        let seated = self.decide(self.review_of("ada holding the position `board`, as grace proposes"), "approve\n--as\nbob\n--authority\nboard", 300);
+        std::test::assert(std::str::starts_with(seated, "settled: approve"), "nobody holds the board yet, so its authority ratifies: " + seated);
+        let boarded = self.show_until(head, "  board [ada]\n", 240);
+        std::test::assert(std::str::contains(boarded, "  board [ada]\n"), "ada holds the board: " + boarded);
+        let proposed = self.dna("practice\npropose\nsmall-commits\n--text\nkeep each commit to one change\n--as\ngrace");
+        std::test::assert_eq_int(proposed.code, 0, "grace proposes a practice: " + proposed.stderr);
+        // the organization proposes it and opens its Review: its id from the
+        // record, and the route it recorded
+        let jr = dna::GitJournal { repo: self.repo };
+        let mut practice = "";
+        let mut routed = "";
+        let deadline = std::time::now() + 120;
+        while len(routed) == 0 && std::time::now() <= deadline {
+            let moved = jr.refresh();
+            let mut ri = 0;
+            while ri < jr.revision() {
+                let e = jr.read(ri);
+                if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "name") == "small-commits" { practice = std::json::find_string_field(e.body, "review_id"); }
+                if e.kind == "review.routed" && len(practice) > 0 && e.entity == practice { routed = e.body; }
+                ri = ri + 1;
+            }
+            if len(routed) == 0 { std::time::sleep(500ms); }
+        }
+        std::test::assert_eq_str(dna::native_json_string(routed, "signers"), "position:board=ada", "the Review records the Board's holder as its signer: " + routed);
+        let outsider = self.decide(practice, "approve\n--as\nbob\n--authority\nboard", 300);
+        std::test::assert(std::str::starts_with(outsider, "refused: ") && std::str::contains(outsider, "reviewer bob holds no position this Review requires (position:board)"), "bob claims the board's authority and is refused: " + outsider);
+        let board_verdict = self.decide(practice, "approve\n--as\nada", 300);
+        std::test::assert(std::str::starts_with(board_verdict, "settled: approve by ada"), "ada, who holds it, ratifies it: " + board_verdict);
+
         // ---- under any other trust the same holder is refused
         let bob = self.dna("fill\nnode/dev\nada\n--as\ngrace");
         std::test::assert_eq_int(bob.code, 0, "ada proposed for node/dev: " + bob.stderr);

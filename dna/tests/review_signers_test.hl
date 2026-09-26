@@ -1,0 +1,123 @@
+// dna/tests/review_signers_test.hl — a Review takes its signers from the
+// route, and its evidence is checked against the candidate (GH #1089).
+//
+// A Review whose route names held positions is decided by them and by no
+// one else: a verdict from anyone holding none of them is refused, with
+// the positions it needed, whatever authority it claims. It settles
+// approved only when every required position has approved and every gate
+// guarding the change has a passing run at the candidate cited as
+// evidence; a run at another commit is stale, a run that did not pass is
+// rejected, and either refuses the verdict whole. A command verdict is
+// decided once: redelivered after a lost response, or asked again of the
+// Review a restart rebuilds from the record, it answers the same decision
+// and writes nothing new. A Review whose route defines no signers keeps
+// its own required authority. graph_route_test computes the requirement
+// from memory's graph; this fixture holds the Review to it.
+
+import "../core" as dna;
+
+const CANDIDATE: String = "c0ffee0000000000000000000000000000000001";
+const OTHER: String = "c0ffee0000000000000000000000000000000002";
+const SIGNERS: String = "position:api/reviewer=grace position:node/reviewer=hopper,ada";
+
+fn run_doc(gate: String, sha: String, conclusion: String) -> String {
+    return "{\"kind\": \"gate.run\", \"gate\": \"" + gate + "\", \"sha\": \"" + sha + "\", \"conclusion\": \"" + conclusion + "\", \"url\": \"https://ci.example/runs/1\"}";
+}
+
+// A Review of `id` requiring SIGNERS and `gates`, over the one record.
+fn review(rj: dna::ReviewJournal, rr: dna::ReviewReceipts, id: String, gates: String) -> dna::Review {
+    return dna::Review { journal: rj, receipts: rr, review_id: id, question: "apply " + id + "?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1", signers: SIGNERS, gates: gates };
+}
+
+main locus App {
+    params {
+        journal: dna::MemJournal = dna::MemJournal { };
+        rj: dna::ReviewJournal = dna::ReviewJournal { };
+        files: dna::FileReceipts = dna::FileReceipts { dir: "" };
+        rr: dna::ReviewReceipts = dna::ReviewReceipts { };
+    }
+    fn verdict(id: String, command: String, who: String, word: String, evidence: String) -> dna::Verdict {
+        return dna::Verdict { command_id: command, review_id: id, subject_digest: CANDIDATE, verdict: word, reviewer: who, authority: "board", comment: "", evidence: evidence };
+    }
+    run() {
+        let scratch = dna::scratch_root("review-signers");
+        self.files.dir = scratch;
+        self.rj.bind(self.journal);
+        self.rr.bind(self.files);
+        let good = self.files.store(run_doc("ci/api", CANDIDATE, "success"));
+        let stale = self.files.store(run_doc("ci/api", OTHER, "success"));
+        let failed = self.files.store(run_doc("gate:ci/api", CANDIDATE, "failure"));
+        let elsewhere = self.files.store(run_doc("ci/web", CANDIDATE, "success"));
+        let prose = self.files.store("{\"kind\": \"practice\", \"text\": \"ship it\"}");
+
+        // ---- an unauthorized claim: whatever authority it names, a verdict
+        // from no required position is refused, saying which were required
+        let r1 = review(self.rj, self.rr, "m1", "");
+        std::test::assert(!r1.consider(self.verdict("m1", "", "mallory", "approve", "")), "mallory holds no required position");
+        std::test::assert_eq_str(r1.last_refusal, "reviewer mallory holds no position this Review requires (position:api/reviewer position:node/reviewer)", "refused with the positions it needed");
+        std::test::assert(!r1.consider(self.verdict("m1", "", "dev1", "approve", "")), "the author is refused too");
+        std::test::assert(!r1.settled, "nothing settled it");
+
+        // ---- an incomplete required review: one position approving is not
+        // enough; the Review waits for the rest, and says for what
+        std::test::assert(r1.consider(self.verdict("m1", "", "grace", "approve", "")), "grace signs for api's reviewer");
+        std::test::assert(!r1.settled, "node's reviewer has not approved");
+        std::test::assert_eq_str(r1.awaiting(), "position:node/reviewer", "it waits for node's reviewer");
+        std::test::assert(r1.consider(self.verdict("m1", "", "ada", "approve", "")), "ada signs for node's reviewer");
+        std::test::assert(r1.settled && r1.outcome == "approve", "every required position approved: settled");
+        std::test::assert(std::str::contains(r1.comment, "every required position approved: position:api/reviewer position:node/reviewer"), "and it says so: " + r1.comment);
+        // one required position's rejection settles it, like any rejection
+        let r2 = review(self.rj, self.rr, "m2", "");
+        std::test::assert(r2.consider(self.verdict("m2", "", "hopper", "reject", "")) && r2.settled && r2.outcome == "reject", "a required position rejects: settled rejected");
+
+        // ---- stale or rejected evidence: each run cited is a gate run of a
+        // gate guarding the change, at the candidate, that passed
+        let r3 = review(self.rj, self.rr, "m3", "gate:ci/api");
+        std::test::assert(!r3.consider(self.verdict("m3", "", "grace", "approve", stale)), "a run at another commit is refused");
+        std::test::assert_eq_str(r3.last_refusal, "evidence " + stale + " is stale: gate:ci/api ran at " + OTHER + ", not at the candidate " + CANDIDATE, "stale, naming both commits");
+        std::test::assert(!r3.consider(self.verdict("m3", "", "grace", "approve", failed)), "a failed run is refused");
+        std::test::assert_eq_str(r3.last_refusal, "evidence " + failed + " is rejected: gate:ci/api concluded `failure` at the candidate", "rejected, naming the conclusion");
+        std::test::assert(!r3.consider(self.verdict("m3", "", "grace", "approve", elsewhere)) && std::str::contains(r3.last_refusal, "a run of gate:ci/web, which guards nothing this change touches"), "a run of another gate is refused: " + r3.last_refusal);
+        std::test::assert(!r3.consider(self.verdict("m3", "", "grace", "approve", "sha256:" + prose)) && std::str::contains(r3.last_refusal, "is no gate run"), "a receipt that is no run is refused: " + r3.last_refusal);
+        std::test::assert(!r3.consider(self.verdict("m3", "", "grace", "approve", "feedface")) && std::str::contains(r3.last_refusal, "is no receipt this organization holds"), "a digest nobody filed is refused: " + r3.last_refusal);
+        std::test::assert_eq_int(r3.verdict_count(), 0, "a refused verdict counts for nothing, its approval included");
+        // every position approving is not enough without the run
+        std::test::assert(r3.consider(self.verdict("m3", "", "grace", "approve", "")) && r3.consider(self.verdict("m3", "", "hopper", "approve", "")), "both positions approve, citing nothing");
+        std::test::assert(!r3.settled, "no passing run at the candidate: not settled");
+        std::test::assert_eq_str(r3.awaiting(), "gate:ci/api", "it waits for ci/api's run");
+        std::test::assert(r3.consider(self.verdict("m3", "", "hopper", "approve", "sha256:" + good)), "hopper cites ci/api's passing run at the candidate");
+        std::test::assert(r3.settled && r3.outcome == "approve" && std::str::contains(r3.comment, "evidenced by gate:ci/api"), "settled, evidenced: " + r3.comment);
+
+        // ---- restart or a lost response: a command is decided once
+        let r4 = review(self.rj, self.rr, "m4", "gate:ci/api");
+        let first = r4.command_decide(self.verdict("m4", "c1", "grace", "approve", good));
+        std::test::assert(std::json::find_bool_field(first, "accepted") && !std::json::find_bool_field(first, "settled"), "grace's approval is accepted and settles nothing yet: " + first);
+        let rows = self.journal.revision();
+        std::test::assert_eq_str(r4.command_decide(self.verdict("m4", "c1", "grace", "approve", good)), first, "the response lost, the same command answers the same decision");
+        std::test::assert_eq_int(self.journal.revision(), rows, "and writes nothing new");
+        let refused = r4.command_decide(self.verdict("m4", "c2", "mallory", "approve", ""));
+        std::test::assert(!std::json::find_bool_field(refused, "accepted") && std::str::contains(refused, "holds no position this Review requires"), "mallory's command is refused: " + refused);
+        // the organization restarts: the Review is rebuilt from the record
+        let again = review(self.rj, self.rr, "m4", "gate:ci/api");
+        std::test::assert_eq_str(again.signed, "position:api/reviewer", "grace's signature comes back from the record");
+        std::test::assert_eq_str(again.evidenced, "gate:ci/api", "and the run she cited");
+        std::test::assert_eq_int(again.refused, 1, "and mallory's refusal");
+        std::test::assert_eq_str(again.command_decide(self.verdict("m4", "c1", "grace", "approve", good)), first, "c1 asked of the rebuilt Review answers the same decision");
+        std::test::assert_eq_str(again.command_decide(self.verdict("m4", "c2", "mallory", "approve", "")), refused, "and so does c2");
+        std::test::assert_eq_int(self.journal.revision(), rows + 1, "still nothing new: the one row is mallory's refusal");
+        let last = again.command_decide(self.verdict("m4", "c3", "ada", "approve", ""));
+        std::test::assert(std::json::find_bool_field(last, "settled") && again.settled && again.outcome == "approve", "ada's approval completes it: " + last);
+        let after = review(self.rj, self.rr, "m4", "gate:ci/api");
+        std::test::assert(after.settled && after.outcome == "approve", "a second restart finds it settled approved");
+        std::test::assert_eq_str(after.command_decide(self.verdict("m4", "c3", "ada", "approve", "")), last, "and c3 redelivered answers the settlement it made");
+
+        // ---- no route: the Review keeps its own required authority
+        let r5 = dna::Review { journal: self.rj, receipts: self.rr, review_id: "m5", question: "apply m5?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1" };
+        std::test::assert(!r5.consider(dna::Verdict { review_id: "m5", subject_digest: CANDIDATE, verdict: "approve", reviewer: "mallory", authority: "leader" }) && std::str::contains(r5.last_refusal, "authority leader does not satisfy board"), "with no signers, the authority decides: " + r5.last_refusal);
+        std::test::assert(r5.consider(dna::Verdict { review_id: "m5", subject_digest: CANDIDATE, verdict: "approve", reviewer: "mallory", authority: "board" }) && r5.settled, "and the board's settles it");
+
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

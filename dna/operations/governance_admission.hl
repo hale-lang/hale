@@ -540,7 +540,13 @@ locus GovernanceCommands {
             if e.kind == "review.command_decided" && codec.string(e.body, "review_id") == command.target_id && codec.string(e.body, "subject_digest") == command.subject_digest && std::json::find_bool_field(e.body, "accepted") && std::json::find_bool_field(e.body, "settled") { return "stale_subject"; }
             i = i + 1;
         }
-        if context.principal_name == review.author || !dna::authority_satisfies(grant.authority, review.required_authority) { return "forbidden"; }
+        if context.principal_name == review.author { return "forbidden"; }
+        // GH #1089: a Review its route routed is decided by the positions it
+        // names; the grant's authority is the fallback for one it did not
+        let routed = projection_view.fact(j, "review.routed", command.target_id, false);
+        let signers = dna::native_json_string(routed.body, "signers");
+        if len(signers) > 0 { return if len(dna::signer_positions(signers, context.principal_name)) > 0 { "" } else { "forbidden" }; }
+        if !dna::authority_satisfies(grant.authority, review.required_authority) { return "forbidden"; }
         return "";
     }
     fn result(s: GovernanceSnapshot, j: GovernanceJournal, admission: GovernanceAdmission) -> GovernanceResult {

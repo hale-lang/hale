@@ -285,6 +285,7 @@ locus Dna {
     params {
         journal: Journal = MemJournal { };
         review_journal: ReviewJournal = ReviewJournal { };
+        review_receipts: ReviewReceipts = ReviewReceipts { };
         leases: Coordination = MemLeases { };
         knowledge: Knowledge = Knowledge { };
         work: WorkSystem = WorkSystem { };
@@ -440,6 +441,7 @@ locus Dna {
             self.executions = Executions { scope: self.org_id };
         }
         self.review_journal.bind(self.journal);
+        self.review_receipts.bind(self.verification.receipts);
         self.organization_source_review_facts.bind(self.organization_source_facts);
         self.rehydrate();
         // GH #610: the optimize pass is a schedule, not a special case
@@ -784,6 +786,32 @@ locus Dna {
         }
         return false;
     }
+    // GH #1089: what a Review requires, routed once and recorded. Opening
+    // it (`open`), the organization asks memory's graph for the route its
+    // definition names — change-deliver the route of the paths its
+    // candidate changes, practice-ratify the Board — and writes
+    // `review.routed`; afterwards, a restart included, the row is what the
+    // Review requires. With no memory, or before a held position signs,
+    // the requirement is empty, nothing is written, and the Review falls
+    // back to its own required authority until a restart finds a route.
+    @unbounded
+    fn review_routing(review_id: String, definition: String, paths: String, open: Bool) -> RouteRequirement {
+        let row = self.governance_event("review.routed", review_id);
+        if len(row.kind) > 0 { return RouteRequirement { signers: native_json_string(row.body, "signers"), gates: native_json_string(row.body, "gates") }; }
+        if !open || !self.knowledge_client.ready() { return RouteRequirement { }; }
+        let data = self.knowledge_client.routing();
+        if len(data) == 0 { return RouteRequirement { }; }
+        let need = if definition == "practice-ratify" { board_requirement(data) } else { route_requirement(data, graph_route(data, paths, route_law(route_bound(data), self.verification.receipts))) };
+        if len(need.signers) == 0 { return need; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("definition", definition);
+        b.string_field("signers", need.signers);
+        b.string_field("gates", need.gates);
+        b.end_object();
+        let x = self.governance_once("review.routed", review_id, b.result());
+        return need;
+    }
     @unbounded
     fn ensure_knowledge_review(review_id: String) -> Bool {
         let req = self.knowledge_request_of(review_id);
@@ -795,13 +823,15 @@ locus Dna {
         }
         let settlement = self.governance_event("review.settled", review_id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
+        let need = self.review_routing(review_id, "practice-ratify", "", len(settlement.kind) == 0);
         Review {
-            journal: self.review_journal, review_id: review_id,
+            journal: self.review_journal, receipts: self.review_receipts, review_id: review_id,
             question: native_json_string(req, "question"),
             subject_digest: native_json_string(req, "subject_digest"),
             required_authority: native_json_string(req, "required_authority"),
             author: native_json_string(req, "author"),
             approvers: native_json_string(req, "approvers"),
+            signers: need.signers, gates: need.gates,
             settled: len(settlement.kind) > 0, outcome: outcome
         };
         self.knowledge_reviews.push(review_id);
@@ -2838,8 +2868,9 @@ locus Dna {
         if !codec.valid(codec.request_of(self.journal, id)) { return false; }
         let settlement = self.governance_event("review.settled", id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
-        Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
-            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, settled: len(settlement.kind) > 0, outcome: outcome };
+        let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0);
+        Review { journal: self.review_journal, receipts: self.review_receipts, review_id: id, question: native_json_string(codec.review_request(r), "question"),
+            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, settled: len(settlement.kind) > 0, outcome: outcome };
         self.knowledge_reviews.push(id); return true;
     }
     @unbounded
@@ -2922,8 +2953,9 @@ locus Dna {
         if !codec.valid(codec.request_of(self.journal, id)) { return false; }
         let settlement = self.governance_event("review.settled", id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
-        Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
-            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, settled: len(settlement.kind) > 0, outcome: outcome };
+        let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0);
+        Review { journal: self.review_journal, receipts: self.review_receipts, review_id: id, question: native_json_string(codec.review_request(r), "question"),
+            subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, settled: len(settlement.kind) > 0, outcome: outcome };
         self.knowledge_reviews.push(id); return true;
     }
     @unbounded
@@ -3052,8 +3084,10 @@ locus Dna {
         let settled = codec.fact(self.journal, "review.settled", id);
         if settled.kind == "invalid" { return false; }
         let outcome = if std::str::starts_with(settled.body, "approve by ") { "approve" } else if std::str::starts_with(settled.body, "reject by ") { "reject" } else if std::str::starts_with(settled.body, "revise by ") { "revise" } else { "" };
+        let need = self.review_routing(id, "change-deliver", "", false);
         Review {
-            journal: self.review_journal, review_id: id, question: native_json_string(req.body, "question"), subject_digest: candidate,
+            journal: self.review_journal, receipts: self.review_receipts, review_id: id, question: native_json_string(req.body, "question"), subject_digest: candidate,
+            signers: need.signers, gates: need.gates,
             organization_source_request: r, organization_source_facts: self.organization_source_review_facts,
             required_authority: native_json_string(req.body, "required_authority"), author: r.by, approvers: native_json_string(req.body, "approvers"),
             settled: len(outcome) > 0, outcome: outcome
@@ -4811,11 +4845,16 @@ locus Dna {
             if !exact.ok { return "pending: exact ownership quorum unavailable"; }
             approvers = exact.approvers;
         }
+        // GH #1089: the positions the candidate's route requires, and the
+        // gates whose runs are its evidence, recorded before the Review opens
+        let changed = if len(m.base_commit) > 0 { run_tool("git\n-C\n" + m.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + m.base_commit + "\n" + m.candidate_commit).stdout } else { "" };
+        let need = self.review_routing(m.id, "change-deliver", changed, true);
         if !prepared {
             Review {
-                journal: self.review_journal,
+                journal: self.review_journal, receipts: self.review_receipts,
                 review_id: m.id, question: question, subject_digest: m.candidate_commit,
-                required_authority: authority, author: author, approvers: approvers
+                required_authority: authority, author: author, approvers: approvers,
+                signers: need.signers, gates: need.gates
             };
         }
         let b = std::json::Builder { };
@@ -4847,13 +4886,13 @@ locus Dna {
         if prepared {
             if !self.governance_once("review.requested", "review:" + m.id, b.result()) || !self.ensure_organization_source_review(source, m.candidate_commit) { return "pending"; }
         } else { let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result()); }
-        self.membrane.notify("review", authority + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
+        self.membrane.notify("review", (if len(need.signers) > 0 { "signers " + approver_owners(need.signers) } else { authority }) + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
         // GH #583 M1: a model-backed position decides only while there is
         // budget; on an exhausted window the Review waits for the Board
         // (`hale dna review`), which needs no model.
         if !self.budget_exhausted(std::time::now()) {
             ReviewRequested <- ReviewRequest {
-                review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority,
+                review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority, signers: need.signers,
                 mutation_id: m.id, change_class: m.change_class, seed: m.seed, disposition: name, base_commit: m.base_commit,
                 diff_text: r.diff_text, evidence: r.steps, magnitude: magnitude_json(r.magnitude)
             };
@@ -4919,8 +4958,10 @@ locus Dna {
                     let restored = self.ensure_knowledge_review(id);
                     if restored && !settled { self.rehydrated = self.rehydrated + 1; }
                 } else if !settled {
+                    let need = self.review_routing(id, "change-deliver", "", false);
                     Review {
-                        journal: self.review_journal,
+                        journal: self.review_journal, receipts: self.review_receipts,
+                        signers: need.signers, gates: need.gates,
                         review_id: id,
                         question: std::json::find_string_field(e.body, "question"),
                         subject_digest: std::json::find_string_field(e.body, "subject_digest"),
@@ -4939,8 +4980,10 @@ locus Dna {
                     // second approval met nothing at all).
                     let d = self.disposition_of(id);
                     if d != "applied" && d != "retained" && d != "rejected" && d != "rolled_back" {
+                        let need = self.review_routing(id, "change-deliver", "", false);
                         Review {
-                            journal: self.review_journal,
+                            journal: self.review_journal, receipts: self.review_receipts,
+                            signers: need.signers, gates: need.gates,
                             review_id: id,
                             question: std::json::find_string_field(e.body, "question"),
                             subject_digest: std::json::find_string_field(e.body, "subject_digest"),
