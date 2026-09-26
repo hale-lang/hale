@@ -91,9 +91,16 @@ fn record_head_verb(root: String) -> Answer {
 // Append every row of a file (one JSON object per line: kind, entity,
 // body) in order, in the identity of whoever runs this. The count.
 @unbounded
-fn record_seed_verb(root: String, path: String, memory: dna::Memory) -> Answer {
+fn record_seed_verb(root: String, path: String, purpose_path: String, memory: dna::Memory) -> Answer {
     if len(path) == 0 { return fail("record-seed: a file of rows"); }
-    return seed_rows(root, std::io::fs::read_file(path) or "", "record-seed", memory);
+    let rows = std::io::fs::read_file(path) or "";
+    // GH #995: the declared purpose's proposal in the same seed, so a
+    // record never exists without it
+    let purpose = if len(purpose_path) > 0 { std::io::fs::read_file(purpose_path) or "" } else { "" };
+    if len(purpose_path) > 0 && len(purpose) == 0 { return fail("record-seed: no purpose at " + purpose_path); }
+    let proposed = if len(purpose) > 0 { purpose_rows(root, purpose) } else { "" };
+    if len(purpose) > 0 && len(proposed) == 0 { return fail("record-seed: the purpose's receipt could not be kept; nothing was seeded"); }
+    return seed_rows(root, rows + (if len(rows) > 0 && !std::str::ends_with(rows, "\n") { "\n" } else { "" }) + proposed, "record-seed", memory);
 }
 
 // Rows into the record, one JSON object per line (`kind`, `entity`,
@@ -374,20 +381,6 @@ fn purpose_rows(root: String, text: String) -> String {
     q.string_field("name", "purpose");
     q.end_object();
     return hole_row("knowledge.proposed", digest, b.result()) + hole_row("review.requested", "review:" + review_id, q.result());
-}
-
-// `purpose-propose <file>`: the declared purpose proposed into an
-// application's record, seeded before it. Prints the Review's id.
-fn purpose_propose_verb(root: String, path: String, memory: dna::Memory) -> Answer {
-    let no_head = record_refusal(root);
-    if len(no_head) > 0 { return fail(no_head); }
-    let text = std::io::fs::read_file(path) or "";
-    if len(text) == 0 { return fail("purpose-propose: no purpose at " + path); }
-    let rows = purpose_rows(root, text);
-    if len(rows) == 0 { return fail("purpose-propose: the purpose's receipt could not be kept"); }
-    let seeded = seed_rows(root, rows, "purpose-propose", memory);
-    if !seeded.ok { return seeded; }
-    return answer(dna::knowledge_review_id(std::json::find_string_field(rows[0..std::str::index_of(rows, "\n")], "entity")) + "\n");
 }
 
 // `design-upgrade <practices>`: the practices as the toolchain states

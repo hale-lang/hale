@@ -26,7 +26,7 @@ fn dna_cli(app: String, args: String) -> String {
 main locus App {
     params {
         // receipts outside the working directory: a proposal files its document
-        one: dna::Dna = dna::Dna { planned: true, org_id: "prac", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-practice-receipts" } } };
+        one: dna::Dna = dna::Dna { planned: true, org_id: "prac", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("practice-receipts") } } };
         script: dna::FakeModel = dna::FakeModel {
             name: "script",
             rules: "plan|bill B-1|kind: person\\nassignee: mara\nonce:optimize||proposal: change the intake\noptimize||proposal: none"
@@ -44,7 +44,6 @@ main locus App {
         return out;
     }
     run() {
-        std::io::fs::mkdir("/tmp/dna-practice-receipts") or discard;
 
         // ---- the organization proposes it, for the Board
         dna::PracticeRequested <- dna::PracticeRequest { request_id: "p1", name: "acceptance/expense-receipt", text: "An expense closes with its receipt.\nevidence: required", by: "riley", because: "three bills arrived without receipts" };
@@ -106,7 +105,7 @@ main locus App {
         std::test::assert(std::str::contains(listed, "design/principles ") && std::str::contains(listed, "[awaiting the Board (k:"), "the seeded design practices, awaiting the Board: " + listed);
 
         dna::scratch_done(scratch);
-        let rm = dna::run_tool("rm\n-rf\n/tmp/dna-practice-receipts");
+        dna::scratch_done("/tmp/dna-practice-receipts-" + to_string(std::process::pid()));
     }
 }
 

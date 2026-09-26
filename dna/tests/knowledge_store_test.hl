@@ -37,7 +37,7 @@ fn doc(kind: String, text: String, author: String, target: String) -> String {
 locus App {
     params {
         j: dna::MemJournal = dna::MemJournal { };
-        receipts: dna::FileReceipts = dna::FileReceipts { dir: "/tmp/dna-know-receipts" };
+        receipts: dna::FileReceipts = dna::FileReceipts { dir: dna::scratch_root("know-receipts") };
         pg: dna::Pq = dna::Pq { };
     }
     @unbounded
@@ -156,7 +156,6 @@ locus App {
         fidelity_cases::run_cases(owner);
         visibility_cases::run_cases(owner);
         graph_store_cases::run_cases(owner);
-        std::io::fs::mkdir("/tmp/dna-know-receipts") or discard;
 
         // the embedding: deterministic, normalized, lexical
         let e1 = dna::embed_text("retry a mail send once");
@@ -227,7 +226,7 @@ locus App {
         // the receipts directory is a fixed path (a param default, so it
         // cannot carry this process's pid): removed here, not registered
         // with the slice, since another run may be inside it
-        let rm = dna::run_tool("rm\n-rf\n/tmp/dna-know-receipts");
+        dna::scratch_done("/tmp/dna-know-receipts-" + to_string(std::process::pid()));
     }
 }
 
