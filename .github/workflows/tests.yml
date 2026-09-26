@@ -137,7 +137,7 @@ jobs:
           changed=$(git diff --name-only "$base"...HEAD)
           echo "changed files:"; echo "$changed"
           # Paths that cannot reach the runtime, the models, or codegen.
-          prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents)/|\.md$'
+          prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents|unreleased)/|\.md$'
           # Counted, not `grep -q`: an empty match makes grep exit 1,
           # so the exit code alone cannot distinguish "no code files"
           # from "grep failed" — and getting that backwards would skip

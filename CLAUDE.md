@@ -177,6 +177,23 @@ The in-tree `.hl` corpus lives at
 acceptance surface — `crates/hale-syntax/tests/examples.rs`
 parses all of them).
 
+## CHANGELOG entries are fragments
+
+A user-visible change gets a CHANGELOG entry, but not in
+`CHANGELOG.md`: it goes in `unreleased/<pr-number>.md`, one file
+per PR, worded exactly as the bullet would read under
+`## Unreleased` (a `### heading` line and its bullets, or bullets
+alone). Open the PR, then add the file under its number in a
+second push. Two PRs that land the same day then touch two files
+instead of one hunk, so neither rebases over the other's entry.
+
+At release, `scripts/changelog-fold.sh vX.Y.Z "headline"` folds
+the fragments in PR order under the next version's heading and
+`git rm`s them; the release page is written above that
+item-level list by hand. `hale fmt` walks only `.hl` files and the
+CI `scope` job classifies the directory as prose, so a fragment
+alone is a docs-only diff.
+
 ## Downstream projects are never named
 
 `hale` is public. Downstream users' project names, app names, venue
