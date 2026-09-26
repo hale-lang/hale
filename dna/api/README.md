@@ -640,7 +640,8 @@ gets a receipt, never `stale_subject`), and carries a filter in `arguments`:
 for one worker of several — a position the graph names or one of the
 organization's own, else refused), `effect_class` (the performer's:
 `effect_free`, `idempotent` or `uncertain`; the head admits an attempt only if
-its Work's requirement allows the class, GH #946), `capabilities` (words the
+its Work admits the class — an edit admits no `effect_free` — and never one an
+uncertain performer holds or held with no outcome, GH #946), `capabilities` (words the
 leg has; a Work's `requires` must all be among them), `data_classes` (classes it
 may see; none is no class, and nothing is handed over), `organizations` (owners it works for on a shared Record,
 `-` for the sole owner; none is any) and `ttl` (1..86400 seconds). The head picks

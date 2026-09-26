@@ -47,9 +47,6 @@ type Hat {
     digest: String = "";
 }
 
-// The kind a Work's request selects before an attempt is admitted, as the
-// engine selects it (`kinds_of`, capability-first): a person's, an edit,
-// else by what it requires.
 // The effect classes a performer declares (GH #946, the voice split's
 // review): what a failed settle may have left behind. `effect_free`
 // answered and touched nothing; `idempotent` may be run again to the
@@ -58,16 +55,21 @@ type Hat {
 // attempt stays unresolved until evidence or a person decides.
 const EFFECT_CLASSES: String = "effect_free idempotent uncertain";
 fn effect_class_ok(c: String) -> Bool { return word_in(c, EFFECT_CLASSES); }
-// The classes a Work admits of its performer, by what it requires: a
-// judgment or an analysis is answered, never acted on, so an uncertain
-// performer is not given one; an edit changes source, so an effect-free
-// performer cannot do it; a person's job, and anything else, admits any.
+// The classes a Work admits of its performer, by what it requires. The
+// class decides what a failed settle becomes, never what the performer
+// may do — that is the hat's tool grant — so a Work that is answered
+// admits any class: an uncertain performer's lost answer is unresolved,
+// which is the safe side. An edit changes source, which a performer
+// that touches nothing cannot do, so an edit admits no `effect_free`.
+// Judged on the words, in the kind's order (`hat_kind_of`).
 fn hat_effects_of(requires: String) -> String {
-    if std::str::contains(requires, "judgment") || std::str::contains(requires, "analysis") { return "effect_free idempotent"; }
-    if std::str::contains(requires, "edit") { return "idempotent uncertain"; }
+    if word_in("edit", requires) { return "idempotent uncertain"; }
     return EFFECT_CLASSES;
 }
 
+// The kind a Work's request selects before an attempt is admitted, as the
+// engine selects it (`kinds_of`, capability-first): a person's, an edit,
+// else by what it requires.
 fn hat_kind_of(requires: String) -> String {
     if std::str::contains(requires, "edit") { return "edit"; }
     if std::str::contains(requires, "human") || std::str::contains(requires, "person") { return "human"; }

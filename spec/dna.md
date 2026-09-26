@@ -1711,8 +1711,8 @@ memory is named to it.
   in-process performers go as each stage lands), and `RelayReplay` is
   its reconciler: an owner that restarts with a leg's attempt in flight
   leaves it to its claim — nothing is asked of it while the lease is
-  live, and it is never `effect.result unknown` — and asks it again
-  once the lease expires with no outcome (`effect.redelivered`, once per
+  live — and asks it again once the lease expires with no outcome
+  (`effect.redelivered`, once per
   lease), when a leg claims it anew.
 - **The verbs** (`hale dna work`, GH #946 slice 4; `dna/core/legs`,
   vendored as `vendor/dna/legs`) are a leg as API clients: `next` is
@@ -1736,7 +1736,9 @@ memory is named to it.
   lease is neither renewed nor given back, and the attempt awaits no
   other leg; without memory the record numbers the leases (the next
   claim row is the next token). Exit codes: 0 admitted, 1 refused (the
-  receipt printed) or unreachable, 2 usage.
+  receipt printed), unreachable, or a `run` that ends `unsettled` or
+  `unresolved`; 2 usage, or a catalog with a performer declaring no
+  effect class.
   `run` is one cycle through the project's performers
   (`dna/org/work.hl`, generated at init): a person's leg renders the
   brief and leaves the outcome to `submit`; a deterministic performer
@@ -1758,23 +1760,38 @@ memory is named to it.
   class** — `effect_free` (answered, touched nothing), `idempotent`
   (may be run again to the same end) or `uncertain` (an agent's seat
   with tools: may have acted once already) — with no default: a
-  performer declaring none is refused when the leg starts. The class
-  rides on the claim (`effect_class`), where the head admits an attempt
-  only if its Work's requirement allows the class — a judgment or an
-  analysis admits `effect_free` and `idempotent`, an edit `idempotent`
-  and `uncertain`, anything else all three; the hat says so in
-  `effects` — and on the outcome, where it is evidence
-  (`effect_class` on `attempt.outcome_requested`). A settle that fails
-  (the outcome read back neither settled nor requested, or unreadable)
-  on an `effect_free` or `idempotent` performer is `unsettled` and the
-  loop runs the child again; on an `uncertain` performer the leg files
-  friction naming the attempt, the request id and the lease, keeps the
-  lease, answers `unresolved`, and the loop stops that slot: nothing is
-  retried by a program until evidence or a person decides. The model
-  leg treats a lost reply (the call may have been made) the same way:
-  `unresolved` behind an `uncertain` performer, never retried or failed
-  over; a `failed` outcome behind the other two. A rate-limited call was
-  never made, so its backoff holds for every class. `loop --parallel N` is a worker: N
+  catalog with a performer declaring none is refused by the verbs
+  that claim or hand back (exit 2) and read by the rest. The class
+  rides on the claim (`effect_class`), which the head admits only if
+  the Work admits the class — the class decides what a failed settle
+  becomes, never what a performer may do, so a Work that is answered
+  admits every class and an edit admits no `effect_free`; the hat
+  says so in `effects` — is recorded on `attempt.claimed` (a renewal
+  carries it on), must be named again by an outcome under the lease,
+  and is evidence on the outcome (`effect_class` on
+  `attempt.outcome_requested`). A settle that fails (the outcome
+  cannot be handed back or read back, was refused, or the owner
+  refused it) on an `effect_free` or `idempotent` performer is
+  `unsettled`: the lease is given back when still the leg's, and the
+  loop runs the slot again after a rest, performing anew. On an
+  `uncertain` performer nothing is retried by a program: the leg
+  marks the attempt unresolved at the head — an outcome of
+  disposition `unresolved`, its calls as evidence, admitted past the
+  lease's end — which lands `attempt.unresolved` and `effect.result
+  unknown` on the attempt; friction names the attempt, the holder,
+  the lease and the resolution; the leg answers `unresolved` (exit 1)
+  and the loop stops that slot. A marked attempt awaits no leg (its
+  holder included) until a person resolves it (`hale dna effect
+  resolve attempt:<id> --outcome ok|failed`), on which the owner
+  settles it. An `uncertain` claim whose lease lapses with no outcome
+  is never asked again either: the owner records `effect.result
+  unknown` itself; such a claim's lease is an hour by default. The
+  model leg judges a refusal by whether the backend may have acted
+  (`ModelResult.made`, false only for a refusal before anything was
+  sent or run): behind an `uncertain` performer one that may have is
+  `unresolved`, never retried or failed over; behind the other two a
+  `failed` outcome; a rate-limited call is asked again only when it
+  was never made. `loop --parallel N` is a worker: N
   supervised child processes, each `run` as its own holder
   `position:<name>#<n>` (two workers of one position never share a
   lease), each answer one JSON line as the child ends, started again

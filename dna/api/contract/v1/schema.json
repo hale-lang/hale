@@ -11753,7 +11753,8 @@
                 "done",
                 "failed",
                 "declined",
-                "timeout"
+                "timeout",
+                "unresolved"
               ]
             },
             "result": {
@@ -11905,6 +11906,7 @@
             "released",
             "filed",
             "requested",
+            "unresolved",
             "settled",
             "refused",
             "unknown"
@@ -11944,7 +11946,8 @@
             "done",
             "failed",
             "declined",
-            "timeout"
+            "timeout",
+            "unresolved"
           ]
         },
         "reason": {

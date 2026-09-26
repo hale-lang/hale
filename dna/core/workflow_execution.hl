@@ -384,9 +384,24 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         // The owner asks nothing of it while the lease is live — the leg
         // is at work, and its outcome comes back under that lease — and
         // asks again once the lease has expired with no outcome: the relay
-        // answers pending as before, and a leg claims it anew. Never
-        // `effect.result unknown`: a leg's claim says exactly what stands.
+        // answers pending as before, and a leg claims it anew. A leg's
+        // claim says exactly what stands, and what it declared decides the
+        // lapse: a claim of effect class `uncertain` (a performer that may
+        // have acted) is never asked again by a program — the lapse is
+        // `effect.result unknown`, durably and visibly, and the attempt
+        // waits for a person (`hale dna effect resolve`), exactly as an
+        // incarnation that died with its effect unreconciled does.
         let leg = recorded_leg_claim(j, id, rev);
+        if leg.present && leg.effect_class == "uncertain" && leg.expires <= std::time::now() {
+            let u = j.append_exact(rev, "effect.result", key, "unknown (the lease " + leg.holder + " took at token " + to_string(leg.token) + " as an uncertain performer ended with no outcome; whether it acted is a person's to say: `hale dna effect resolve " + key + " --outcome ok|failed`)");
+            if u.ok {
+                return Executed { unresolved: true, why: "attempt " + id + " was " + leg.holder + "'s as an uncertain performer and its lease ended with no outcome; it waits, unresolved, for a person: `hale dna effect resolve " + key + " --outcome ok|failed`" };
+            }
+            if u.error != "stale_revision" && u.error != "claimed" {
+                return Executed { why: "the record would not take the unknown result of attempt " + id + " (" + u.error + "); nothing ran" };
+            }
+            continue;
+        }
         if leg.present && leg.expires > std::time::now() {
             return Executed { ok: true, attached: true, why: "attempt " + id + " is " + leg.holder + "'s under a lease until " + to_string(leg.expires) + "; it waits for the leg's outcome, and is asked again when the lease expires" };
         }
@@ -458,6 +473,7 @@ type LegClaim {
     expires: Int = 0;
     principal_mode: String = "";
     principal_name: String = "";
+    effect_class: String = ""; // the performer's, as the claim declared it (GH #946): what a lapse leaves behind
 }
 
 @unbounded
@@ -469,12 +485,13 @@ fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
         if e.kind == "attempt.claimed" && e.entity == attempt_id {
             out = LegClaim {
                 present: true, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"),
-                principal_mode: std::json::find_string_field(e.body, "principal_mode"), principal_name: std::json::find_string_field(e.body, "principal_name")
+                principal_mode: std::json::find_string_field(e.body, "principal_mode"), principal_name: std::json::find_string_field(e.body, "principal_name"),
+                effect_class: std::json::find_string_field(e.body, "effect_class")
             };
         }
         // given back by its holder at that token (`dna.attempt.release`): nobody's again
         if e.kind == "attempt.released" && e.entity == attempt_id && out.present && std::json::find_string_field(e.body, "holder") == out.holder && std::json::find_int_field(e.body, "token") == out.token {
-            out = LegClaim { holder: out.holder, token: out.token, principal_mode: out.principal_mode, principal_name: out.principal_name };
+            out = LegClaim { holder: out.holder, token: out.token, principal_mode: out.principal_mode, principal_name: out.principal_name, effect_class: out.effect_class };
         }
         i = i + 1;
     }

@@ -63,15 +63,6 @@ fn sleep_for_ms(ms: Int) {
 fn rate_limited(refused: String) -> Bool {
     return std::str::contains(refused, "http 429") || std::str::contains(refused, "rate limit") || std::str::contains(refused, "rate-limit") || std::str::contains(refused, "too many requests");
 }
-// Whether a refusal is a reply that was lost — the call may have been
-// made and acted on: the connection went, the answer never came, the
-// gateway gave up — as opposed to the endpoint refusing before doing
-// anything (a 4xx, a policy, a missing credential).
-fn reply_lost(refused: String) -> Bool {
-    let r = std::str::lower(refused);
-    return std::str::contains(r, "timeout") || std::str::contains(r, "timed out") || std::str::contains(r, "connection") || std::str::contains(r, "reset") || std::str::contains(r, "eof")
-        || std::str::contains(r, "unreachable") || std::str::contains(r, "lost") || std::str::contains(r, "http 502") || std::str::contains(r, "http 503") || std::str::contains(r, "http 504");
-}
 
 // The role a request carries, by the work kind: what the selection
 // policy weighs.
@@ -143,7 +134,10 @@ locus ModelPerformer {
         let mut r = self.asked(brief, req);
         let mut tries = 0;
         let mut wait = self.backoff_ms;
-        while !r.ok && rate_limited(r.refused) && tries < self.retries {
+        // a rate-limited call that was never made is asked again after a
+        // wait; one the backend may have acted on (a harness session cut
+        // short by a limit) is not a call to repeat
+        while !r.ok && rate_limited(r.refused) && !r.made && tries < self.retries {
             // the lease outlives the wait: renewed for the wait and a margin
             let kept = hands.lease.renew(wait / 1000 + 60);
             self.waited(brief, r.refused, wait, if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error });
@@ -155,10 +149,12 @@ locus ModelPerformer {
             r = self.asked(brief, req);
         }
         let calls = "[" + self.calls + "]";
-        if !r.ok && self.effect == "uncertain" && reply_lost(r.refused) {
-            // the call may have acted: no retry, no failover, nothing handed
-            // back — the attempt stays unresolved until evidence or a person decides
-            return Performance { unresolved: "the reply was lost and the performer is uncertain: " + r.refused, calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+        if !r.ok && self.effect == "uncertain" && r.made {
+            // the backend says the call may have acted (`ModelResult.made`:
+            // anything past the pre-flight refusals): no retry, no failover,
+            // nothing handed back — the attempt is marked unresolved and waits
+            // for evidence or a person
+            return Performance { unresolved: "the call may have acted and no answer came back; the performer is uncertain: " + r.refused, calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
         }
         if !r.ok {
             return Performance { disposition: "failed", narrative: "the model did not answer: " + r.refused + (if tries > 0 { " (after " + to_string(tries) + " backed-off retries, " + to_string(self.waited_ms) + "ms)" } else { "" }), calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };

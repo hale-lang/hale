@@ -356,7 +356,10 @@ locus Leg {
         b.field("capabilities", words_json(flag_or(self.a, "--capabilities", default_capabilities(kind))));
         b.field("data_classes", words_json(flag_or(self.a, "--classes", "public internal")));
         b.field("organizations", words_json(flag(self.a, "--orgs")));
-        b.int_field("ttl", int_flag(self.a, "--ttl", 600));
+        // an uncertain performer's lease is taken for an hour by default: its
+        // work is not re-run, so a lease that lapses under it is a person's
+        // question, and a session with tools outlives ten minutes
+        b.int_field("ttl", int_flag(self.a, "--ttl", if self.catalog.effect_of(who) == "uncertain" { 3600 } else { 600 }));
         b.end_object();
         let claimed = self.head.submit(request, "dna.attempt.claim", "dna.work", self.head.application, self.head.head_conditions(), b.result());
         if !claimed.ok { return self.fail("run", claimed.error); }
@@ -401,10 +404,10 @@ locus Leg {
         out.string_field("renderer", performance.renderer);
         out.string_field("effect_class", self.catalog.effect_of(who));
         if len(performance.unresolved) > 0 {
-            // an uncertain performer's reply was lost: nothing is handed back and
-            // the lease is kept; friction names the attempt and its request id,
-            // and nothing but evidence or a person moves it on
-            return self.unresolved("run", out, attempt, token, "work-submit:" + attempt + ":" + to_string(token), performance.unresolved);
+            // an uncertain performer's call may have acted and no answer came:
+            // nothing is handed back; the attempt is marked unresolved at the
+            // head, with the calls as evidence, and friction names it
+            return self.unresolved("run", out, attempt, token, brief, performance, performance.unresolved);
         }
         if performance.pending {
             // a person's: the lease is theirs, the brief is printed, the outcome comes back through `submit`
@@ -428,17 +431,30 @@ locus Leg {
         let submit_request = "work-submit:" + attempt + ":" + to_string(token);
         let arguments = self.outcome_arguments(self.catalog.effect_of(who), performance.disposition, performance.result, performance.result_ref, performance.narrative, performance.calls, performance.receipts,
             brief.hat_digest, brief.hat_head, brief.hat_watermark, performance.prompt_digest, performance.renderer);
-        let submitted = self.head.submit(submit_request, "dna.attempt.outcome", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), arguments);
-        if !submitted.ok { return self.fail("run", submitted.error); }
+        let uncertain = self.catalog.effect_of(who) == "uncertain";
+        let mut submitted = self.head.submit(submit_request, "dna.attempt.outcome", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), arguments);
+        if !submitted.ok {
+            // the answer to the submit was lost: the outcome may have landed. It
+            // is read back by its request id before anything is decided; an
+            // uncertain performer's is unresolved if it cannot be, the others'
+            // unsettled
+            let read = self.read_back(submit_request, 5);
+            if !read.ok {
+                let why = "the outcome could not be handed back: " + submitted.error + "; nor read back: " + read.error;
+                if uncertain { return self.unresolved("run", out, attempt, token, brief, performance, why); }
+                return self.unsettled(out, attempt, token, submit_request, why, false);
+            }
+            submitted = read;
+        }
         let receipt = std::json::find_field_raw(submitted.body, "data");
         if std::json::find_string_field(std::json::find_field_raw(receipt, "attempt"), "state") == "refused" {
-            // the outcome was not taken (the lease expired, or another's): the receipt, exit 1
-            out.string_field("state", "refused");
-            out.string_field("reason", std::json::find_string_field(receipt, "reason"));
-            out.string_field("request_id", submit_request);
-            out.end_object();
-            println(out.result());
-            return 1;
+            // the outcome was not taken (the lease expired, or another's). An
+            // uncertain performer performed all the same: unresolved, and the
+            // mark is heard past the lease's end. The others: unsettled, and
+            // the lease is not this leg's to give back
+            let why = "the outcome was refused: " + std::json::find_string_field(receipt, "reason");
+            if uncertain { return self.unresolved("run", out, attempt, token, brief, performance, why); }
+            return self.unsettled(out, attempt, token, submit_request, why, false);
         }
         let deadline = std::time::now() + int_flag(self.a, "--wait", 30);
         let mut reply = self.head.lookup(submit_request);
@@ -446,19 +462,18 @@ locus Leg {
             std::time::sleep(500ms);
             reply = self.head.lookup(submit_request);
         }
+        if !reply.ok { reply = self.read_back(submit_request, 5); }
         let settled = std::json::find_field_raw(reply.body, "data");
         let state = std::json::find_string_field(std::json::find_field_raw(settled, "attempt"), "state");
         if !reply.ok || (state != "settled" && state != "requested") {
-            // the settle failed: what the performer may have left behind decides
+            // the settle failed — the outcome cannot be read back, or the owner
+            // refused it: what the performer may have left behind decides. An
+            // uncertain performer's attempt is marked unresolved; the others'
+            // lease is given back so the owner asks again under a fresh token,
+            // and the loop runs it again after a rest
             let why = if !reply.ok { "the settle could not be read: " + reply.error } else { "the outcome was " + state + ": " + std::json::find_string_field(settled, "reason") };
-            if self.catalog.effect_of(who) == "uncertain" { return self.unresolved("run", out, attempt, token, submit_request, why); }
-            // effect-free or idempotent: the loop may run it again
-            out.string_field("state", "unsettled");
-            out.string_field("reason", why);
-            out.string_field("request_id", submit_request);
-            out.end_object();
-            println(out.result());
-            return 1;
+            if uncertain { return self.unresolved("run", out, attempt, token, brief, performance, why); }
+            return self.unsettled(out, attempt, token, submit_request, why, state == "refused");
         }
         out.string_field("state", state);
         out.string_field("reason", std::json::find_string_field(settled, "reason"));
@@ -467,22 +482,66 @@ locus Leg {
         println(out.result());
         return 0;
     }
-    // An uncertain performer's failed settle or lost reply: friction is
-    // filed naming the attempt and the request id, the lease is kept, and
-    // the state is `unresolved`, exit 1 — the loop does not run it again.
-    fn unresolved(verb: String, out: std::json::Builder, attempt: String, token: Int, request_id: String, why: String) -> Int {
-        let text = "unresolved: " + why + " (attempt " + attempt + ", request " + request_id + ", lease token " + to_string(token) + "); the performer is uncertain, so nothing is retried until evidence or a person decides";
+    // A command read back by its request id, a few times over a short
+    // rest: the head answers the recorded command, or says it never saw it.
+    fn read_back(request_id: String, times: Int) -> Reply {
+        let mut reply = self.head.lookup(request_id);
+        let mut tries = 1;
+        while !reply.ok && tries < times {
+            std::time::sleep(500ms);
+            reply = self.head.lookup(request_id);
+            tries = tries + 1;
+        }
+        return reply;
+    }
+    // An effect-free or idempotent performer's failed settle: `unsettled`,
+    // exit 1. When the owner refused the outcome the lease is given back,
+    // so the owner asks again under a fresh token and the loop, after a
+    // rest, performs anew — never a second submit under the same request.
+    fn unsettled(out: std::json::Builder, attempt: String, token: Int, request_id: String, why: String, give_back: Bool) -> Int {
+        let mut given = "kept";
+        if give_back {
+            let g = self.head.submit("work-release:" + attempt + ":" + to_string(token), "dna.attempt.release", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), "{\"why\": " + dna::record_json_quote("the outcome was refused; the loop may perform again") + "}");
+            given = if g.ok { std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(g.body, "data"), "attempt"), "state") } else { "not given back: " + g.error };
+        }
+        out.string_field("state", "unsettled");
+        out.string_field("reason", why);
+        out.string_field("request_id", request_id);
+        out.string_field("lease", given);
+        out.end_object();
+        println(out.result());
+        return 1;
+    }
+    // An uncertain performer's call that may have acted with no outcome to
+    // hand back — the answer never came, the submit was lost, the outcome
+    // was refused or the settle failed: the attempt is marked unresolved
+    // at the head (an outcome of disposition `unresolved`, carrying the
+    // calls as evidence; the head records `effect.result unknown`, which
+    // no program runs on), friction names it, and the state is
+    // `unresolved`, exit 1. The loop does not run it again; a person
+    // resolves it: `hale dna effect resolve attempt:<id> --outcome ok|failed`.
+    fn unresolved(verb: String, out: std::json::Builder, attempt: String, token: Int, brief: Brief, performance: Performance, why: String) -> Int {
+        let mark_request = "work-unresolved:" + attempt + ":" + to_string(token);
+        let arguments = self.outcome_arguments("uncertain", "unresolved", "", "", why, performance.calls, "[]",
+            brief.hat_digest, brief.hat_head, brief.hat_watermark, performance.prompt_digest, if len(performance.renderer) > 0 { performance.renderer } else { RENDERER_VERSION });
+        let marked = self.head.submit(mark_request, "dna.attempt.outcome", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), arguments);
+        let mark_receipt = std::json::find_field_raw(marked.body, "data");
+        let mark_state = if marked.ok { std::json::find_string_field(std::json::find_field_raw(mark_receipt, "attempt"), "state") } else { "error" };
+        let mark = if mark_state == "unresolved" { "marked" } else if marked.ok { "not marked: " + std::json::find_string_field(mark_receipt, "reason") } else { "not marked: " + marked.error };
+        let text = "unresolved: " + why + ". Attempt " + attempt + ", held by " + self.holder + " at lease token " + to_string(token) + " as an uncertain performer; no outcome was handed back (the mark is request " + mark_request + ": " + mark + "). Nothing is retried by a program: a person resolves it with `hale dna effect resolve attempt:" + attempt + " --outcome ok|failed`";
         let f = std::json::Builder { };
         f.begin_object();
         f.string_field("position", self.as_position);
         f.string_field("attempt_id", attempt);
         f.string_field("text", text);
         f.end_object();
-        let friction_id = "work-friction:" + self.as_position + ":" + dna::digest_of(attempt + "\n" + text)[7..23];
+        // keyed on the lease: the same loss filed again is the same row
+        let friction_id = "work-friction:" + self.as_position + ":" + attempt + ":" + to_string(token);
         let filed = self.head.submit(friction_id, "dna.friction.file", "dna.friction", self.head.application, self.head.head_conditions(), f.result());
         out.string_field("state", "unresolved");
         out.string_field("reason", why);
-        out.string_field("request_id", request_id);
+        out.string_field("request_id", mark_request);
+        out.string_field("mark", mark);
         out.string_field("friction", if filed.ok { std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(filed.body, "data"), "attempt"), "state") } else { "not filed: " + filed.error });
         out.end_object();
         println(out.result());
@@ -552,8 +611,9 @@ locus Leg {
                             ran = ran + 1;
                             println("{\"verb\": \"loop\", \"worker\": " + to_string(slot) + ", \"holder\": " + dna::record_json_quote(self.holder + "#" + to_string(slot)) + ", \"ran\": " + ended + "}");
                             let state = std::json::find_string_field(ended, "state");
-                            // nothing to do, or the Work left to a person, or given back: idle
-                            let idle = state == "refused" || state == "error" || state == "pending" || state == "released" || len(state) == 0;
+                            // nothing to do, the Work left to a person, given back, or a settle
+                            // that failed behind a performer that may run again: after a rest
+                            let idle = state == "refused" || state == "error" || state == "pending" || state == "released" || state == "unsettled" || len(state) == 0;
                             // an uncertain performer's unresolved attempt is nobody's to retry: the slot stops
                             if once || draining || state == "unresolved" { pool.finish(slot); done = done + 1; }
                             else { pool.plan(slot, if idle { now + pool.backoff(slot) } else { now }); if !idle { pool.rested(slot); } }
@@ -580,6 +640,7 @@ locus Leg {
         if verb == "loop" && has_flag(self.a, "--drain") { return ""; }
         if verb == "loop" && (int_flag(self.a, "--parallel", 1) < 1 || int_flag(self.a, "--parallel", 1) > 64) { return "--parallel is 1..64"; }
         if len(flag(self.a, "--effect")) > 0 && !dna::effect_class_ok(flag(self.a, "--effect")) { return "--effect is effect_free, idempotent or uncertain"; }
+        if len(flag(self.a, "--effect")) > 0 && verb != "next" && verb != "submit" { return "--effect is `next` and `submit`'s: `run` and `loop` claim with their performer's class"; }
         if (verb == "loop" || verb == "run") && len(flag(self.a, "--performer")) > 0 && flag(self.a, "--performer") != "person" && flag(self.a, "--performer") != "deterministic" && flag(self.a, "--performer") != "model" { return "--performer is person, deterministic or model"; }
         if (verb == "next" || verb == "friction" || verb == "run" || verb == "loop") && !is_position(position) { return "`" + verb + "` names the position it works as: --as position:<name> (the graph's id)"; }
         if len(position) > 0 && !is_position(position) { return "--as is a position: position:<name>"; }
@@ -598,6 +659,17 @@ locus Leg {
         if len(self.a.error) > 0 { return self.usage(self.a.error); }
         let verb = self.a.verb;
         if verb != "next" && verb != "brief" && verb != "renew" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
+        // no default effect class: a catalog with a performer that declares
+        // none is refused before a claim or an outcome — the verbs that
+        // carry a class — and nowhere else, so a leg rebuilt under a
+        // stricter seed can still read, settle, file friction, and drain
+        if (verb == "next" || verb == "submit" || verb == "run" || (verb == "loop" && !has_flag(self.a, "--drain"))) {
+            let unseated = self.catalog.unseated();
+            if len(unseated) > 0 {
+                eprintln("hale dna work: dna/org/work.hl: ", unseated, "; every performer declares one: effect_free, idempotent or uncertain");
+                return 2;
+            }
+        }
         let wrong = self.precheck(verb);
         if len(wrong) > 0 { return self.usage(wrong); }
         if verb == "loop" && has_flag(self.a, "--drain") { return self.worker_loop(); }
@@ -729,12 +801,6 @@ locus LegPool {
 
 // The leg's entry: the project's performers and hands, one run, the exit code.
 fn leg_main(catalog: PerformerCatalog, hands: Hands) -> Int {
-    // no default effect class: a performer that declares none is refused here
-    let unseated = catalog.unseated();
-    if len(unseated) > 0 {
-        eprintln("hale dna work: dna/org/work.hl: ", unseated, "; every performer declares one: effect_free, idempotent or uncertain");
-        return 2;
-    }
     let leg = Leg { catalog: catalog, hands: hands };
     return leg.go();
 }
