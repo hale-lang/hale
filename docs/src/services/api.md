@@ -177,6 +177,45 @@ reads that agree on it saw the same state and a later command can
 say "only if it is still this". A live view is what a stream is
 for; the two verbs are different on purpose.
 
+## Who is calling
+
+The binding knows, and a handler can ask. Every answer carries the
+principal the binding established for the connection: on the Unix
+socket that is the peer's credentials, as the kernel vouches for
+them.
+
+```text
+{"request_id": 7, "id": 1, "ok": true, "value": {...},
+ "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
+```
+
+A handler that wants the caller declares it, and nothing on the
+`subscribe` line changes:
+
+```hale
+type RefundResult { ok: Bool; by: String; }
+
+locus Billing {
+    bus { subscribe Refunds as on_refund; }
+    fn on_refund(r: Refund, ctx: std::api::Context) -> RefundResult {
+        // ctx.caller is who; ctx.via says "api" through the binding
+        // and "local" for a publish inside the program.
+        return RefundResult { ok: true, by: ctx.caller.name };
+    }
+}
+```
+
+The second parameter is `std::api::Context`: the caller, the
+request id, `via` (the binding's name, or `local`), and, once roles
+exist, the role that authorized the message. A message that did not
+come through the binding hands the handler the local principal, so a
+handler never asks whether it was reached from outside; it reads
+`via`. `local` says where a message did not come from, never that
+it is trusted: a topic bound to another transport in `bindings { }`
+cannot take a context handler at all. Both `Context` and `Principal` are ordinary structs: build
+one in a test, forward one in a payload. A bearer token for HTTP
+callers is the third mode and arrives with the HTTP transport.
+
 ## What is left out, and why
 
 - A topic whose payload has a field with no JSON form yet
@@ -188,6 +227,6 @@ for; the two verbs are different on purpose.
 - A `Drain<T>` batch handler is not reached through the binding
   yet; bulk requests wait on batch delivery over the cooperative
   queue.
-- Who is calling, and roles, are the next pieces. Today every
-  connection is trusted equally, so put the socket where only the
-  right processes can open it.
+- Roles are the next piece. Today the binding knows who is calling
+  but refuses nobody for it, so put the socket where only the right
+  processes can open it.

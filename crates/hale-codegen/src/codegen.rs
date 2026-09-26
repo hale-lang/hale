@@ -8877,6 +8877,148 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// GH #1108: the `std::api::Context` a handler reached without the
+    /// api binding receives — `std::api::local_context()`, built by the
+    /// stdlib fn in a subregion of the locus's own arena opened for
+    /// this delivery, so each delivery gets its own value and the
+    /// subregion goes when the handler returns (a handler that stores
+    /// the context copies it, as it copies any struct). The thread's
+    /// caller-arena is not used: on an async pool it is unset at
+    /// dispatch.
+    fn emit_local_context_value(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_arg: PointerValue<'ctx>,
+    ) -> Result<(inkwell::values::BasicMetadataValueEnum<'ctx>, PointerValue<'ctx>), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_field_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_arg, info.arena_field_idx, "ctx.self.__arena.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let self_arena = self
+            .builder
+            .build_load(ptr_t, arena_field_ptr, "ctx.self.__arena")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let create = self
+            .module
+            .get_function("lotus_arena_create_subregion")
+            .expect("lotus_arena_create_subregion declared");
+        let sub = self
+            .builder
+            .build_call(create, &[self_arena.into()], "ctx.sub")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr")
+            .into_pointer_value();
+        let local = self
+            .user_fns
+            .get("__api_local_context")
+            .map(|sig| sig.func)
+            .ok_or_else(|| {
+                CodegenError::Unsupported(
+                    "a handler takes `std::api::Context` but the stdlib's \
+                     `__api_local_context` is not in this build"
+                        .to_string(),
+                )
+            })?;
+        let ctx = self
+            .builder
+            .build_call(local, &[sub.into()], "ctx.local")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns the context");
+        Ok((ctx.into(), sub))
+    }
+
+    fn emit_local_context_release(&mut self, sub: PointerValue<'ctx>) -> Result<(), CodegenError> {
+        let destroy = self
+            .module
+            .get_function("lotus_arena_destroy")
+            .expect("lotus_arena_destroy declared");
+        self.builder
+            .build_call(destroy, &[sub.into()], "ctx.sub.destroy")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// GH #1108: `__ctxwrap_<L>_<handler>(self, payload)` for every
+    /// subscribed handler that declares a second `std::api::Context`
+    /// parameter and has no reclaim wrapper (which passes the context
+    /// itself). Registered in place of the handler wherever a
+    /// subscription is registered, so the author's handler stays the
+    /// subscriber by name in every analysis and only the dispatch
+    /// pointer changes. Bus dispatch hands a handler one payload; the
+    /// wrapper adds the local context.
+    fn synthesize_context_wrappers(&mut self) -> Result<(), CodegenError> {
+        let saved_block = self.builder.get_insert_block();
+        let void_t = self.context.void_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let types: Vec<String> = self.user_loci.keys().cloned().collect();
+        for locus_name in &types {
+            let info = match self.user_loci.get(locus_name) {
+                Some(i) => i.clone(),
+                None => continue,
+            };
+            let mut handlers: Vec<(String, String)> = info
+                .subscriptions
+                .iter()
+                .map(|(_, h, pt, _)| (h.clone(), pt.clone()))
+                .collect();
+            handlers.sort();
+            handlers.dedup();
+            for (handler_name, payload_ty) in handlers {
+                let handler_fn = match info.user_methods.get(&handler_name) {
+                    Some(f) => *f,
+                    None => continue,
+                };
+                if handler_fn.count_params() != 3 {
+                    continue;
+                }
+                let key = (locus_name.clone(), handler_name.clone());
+                if self.handler_reclaim_wrappers.contains_key(&key) {
+                    continue;
+                }
+                let wname = format!("__ctxwrap_{}_{}", locus_name, handler_name);
+                let wty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                let wrap = self.module.add_function(&wname, wty, None);
+                let entry = self.context.append_basic_block(wrap, "entry");
+                self.builder.position_at_end(entry);
+                self.di_begin_function();
+                let self_arg = wrap.get_nth_param(0).expect("ctxwrap self").into_pointer_value();
+                let payload_arg = wrap.get_nth_param(1).expect("ctxwrap payload");
+                let is_view_payload = payload_ty == "BytesView" || payload_ty == "StringView";
+                let payload_arg: inkwell::values::BasicMetadataValueEnum =
+                    match handler_fn.get_type().get_param_types().get(1) {
+                        Some(inkwell::types::BasicTypeEnum::StructType(vt)) if is_view_payload => self
+                            .builder
+                            .build_load(*vt, payload_arg.into_pointer_value(), "ctxwrap.view.load")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into(),
+                        _ => payload_arg.into(),
+                    };
+                let (ctx, sub) = self.emit_local_context_value(&info, self_arg)?;
+                self.builder
+                    .build_call(
+                        handler_fn,
+                        &[self_arg.into(), payload_arg, ctx],
+                        &format!("{}.ctxwrap.call", handler_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.emit_local_context_release(sub)?;
+                self.builder
+                    .build_return(None)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.handler_reclaim_wrappers.insert(key, wrap);
+            }
+        }
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(())
+    }
+
     /// 2026-06-01: synthesize `__hwrap_<L>_<handler>(self, payload)`
     /// for each subscribed handler. The wrapper calls the user handler
     /// then, if the handler set `__drain_requested` via `terminate;`,
@@ -8961,14 +9103,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .into(),
                         _ => payload_arg.into(),
                     };
-                // Run the user handler.
+                // Run the user handler. GH #1108: a handler that takes a
+                // `std::api::Context` gets the local context here.
+                let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+                    vec![self_arg.into(), payload_arg];
+                let mut ctx_sub = None;
+                if handler_fn.count_params() == 3 {
+                    let (ctx, sub) = self.emit_local_context_value(&info, self_arg)?;
+                    call_args.push(ctx);
+                    ctx_sub = Some(sub);
+                }
                 self.builder
                     .build_call(
                         handler_fn,
-                        &[self_arg.into(), payload_arg],
+                        &call_args,
                         &format!("{}.hwrap.call", handler_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                if let Some(sub) = ctx_sub {
+                    self.emit_local_context_release(sub)?;
+                }
                 // if __drain_requested != 0 → reclaim
                 let dr_ptr = self
                     .builder
@@ -10320,7 +10474,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the run-wrappers + handler-wrappers, which call
         // `__reclaim_<L>` on run-completion / terminate.
         self.synthesize_reclaim_fns()?;
-        self.synthesize_handler_reclaim_wrappers()?;
         self.declare_restart_fns();
         self.synthesize_coop_pool_run_wrappers()?;
 
@@ -10339,6 +10492,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for f in &user_fn_decls {
             self.declare_user_fn(f)?;
         }
+        // The handler wrappers call user fns (`__api_local_context`
+        // for a handler that takes a `std::api::Context`), so they
+        // are synthesized once every fn is declared; nothing
+        // registers a subscription before pass C.
+        self.synthesize_handler_reclaim_wrappers()?;
+        self.synthesize_context_wrappers()?;
 
         // m62: register every generic fn template so
         // lower_call_expr can find them at call sites and
@@ -28584,6 +28743,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "process", "dump_pool_residency"] => {
                 self.lower_std_process_dump_pool_residency(args)
+            }
+            // GH #1108: the api binding's caller identity.
+            ["std", "io", "unix", "peer_uid"] => self.lower_std_io_unix_peer("uid", args, scope),
+            ["std", "io", "unix", "peer_gid"] => self.lower_std_io_unix_peer("gid", args, scope),
+            ["std", "io", "unix", "peer_pid"] => self.lower_std_io_unix_peer("pid", args, scope),
+            // GH #1108: `std::api::local_context()`, the context a handler
+            // reached in-process receives (Hale source in api.hl).
+            ["std", "api", "local_context"] => {
+                let result = self.lower_user_fn_call("__api_local_context", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::api::local_context returns Context but called in a position that expects no value".to_string()))
             }
             ["std", "io", "tcp", "__listen_socket"] => {
                 self.lower_std_io_tcp_listen_socket(args, scope)

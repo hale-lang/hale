@@ -2847,6 +2847,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_unix_connect_wait", unix_connect_ty, None);
 
+        // GH #1108: declare i64 @lotus_unix_peer_{uid,gid,pid}(i32 fd)
+        let peer_ty = i64_t.fn_type(&[i32_t.into()], false);
+        for name in ["lotus_unix_peer_uid", "lotus_unix_peer_gid", "lotus_unix_peer_pid"] {
+            self.module.add_function(name, peer_ty, None);
+        }
+
         // declare i32 @lotus_tcp_connect(ptr host, i16 port)
         // socket + one connect attempt, returns conn_fd or -1.
         let tcp_connect_ty =

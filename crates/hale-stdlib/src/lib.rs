@@ -75,6 +75,10 @@ pub const AP_SOURCE: &str = concat!(
     // std::str), which resolve at codegen time, so order is free.
     include_str!("../hl/secret.hl"),
     "\n",
+    // std::api (GH #1108): the principal and the handler context.
+    // Two types and one fn; order is free.
+    include_str!("../hl/api.hl"),
+    "\n",
     include_str!("../hl/test.hl"),
     "\n",
     include_str!("../hl/log.hl"),
@@ -188,6 +192,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("metrics.hl", include_str!("../hl/metrics.hl")),
     ("text.hl", include_str!("../hl/text.hl")),
     ("secret.hl", include_str!("../hl/secret.hl")),
+    ("api.hl", include_str!("../hl/api.hl")),
     ("test.hl", include_str!("../hl/test.hl")),
     ("log.hl", include_str!("../hl/log.hl")),
     ("ts.hl", include_str!("../hl/ts.hl")),
@@ -332,6 +337,9 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // surface callers should be pinning.
     (&["std", "log", "kv"], "__std_log_kv"),
     // std::secret (GH #436).
+    // std::api (GH #1108).
+    (&["std", "api", "Principal"], "__StdApiPrincipal"),
+    (&["std", "api", "Context"], "__StdApiContext"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
     // std::metrics (promoted from pond/metrics, 2026-07-18).

@@ -33,7 +33,7 @@
 //! literal-subject form (or, for optimized intra-locus topics,
 //! direct method calls instead of Send statements).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
 use crate::Span;
@@ -889,6 +889,55 @@ fn rewrite_expr(e: &mut Expr, topics: &BTreeMap<String, TopicEntry>) {
 struct EligibleRewrite {
     publisher_locus: String,
     access_chain: Vec<String>,
+    /// GH #1108: the handler takes a second `std::api::Context`; the
+    /// direct call passes `std::api::local_context()`, as the bus
+    /// wrapper would.
+    takes_context: bool,
+}
+
+/// `(locus, handler)` pairs whose handler declares a second
+/// `std::api::Context` parameter.
+fn context_handlers(items: &[TopDecl]) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for item in crate::ast::flat_decls(items) {
+        let TopDecl::Locus(l) = item else { continue };
+        for m in &l.members {
+            if let LocusMember::Fn(f) = m {
+                if f.params.len() == 2 && crate::api_gen::is_context_type(&f.params[1].ty) {
+                    out.insert((l.name.name.clone(), f.name.name.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The expression `std::api::local_context()`, at `span`.
+fn local_context_expr(span: Span) -> Expr {
+    let prog = crate::parse_source("fn __t() { let x = std::api::local_context(); }")
+        .expect("a fixed snippet parses");
+    for item in prog.items {
+        if let TopDecl::Fn(f) = item {
+            for st in f.body.stmts {
+                if let Stmt::Let { value, .. } = st {
+                    return respan_expr(value, span);
+                }
+            }
+        }
+    }
+    unreachable!("the snippet holds one let");
+}
+
+fn respan_expr(e: Expr, span: Span) -> Expr {
+    match e {
+        Expr::Call { id, callee, args, .. } => Expr::Call {
+            id,
+            callee: Box::new(respan_expr(*callee, span)),
+            args: args.into_iter().map(|a| respan_expr(a, span)).collect(),
+            span,
+        },
+        other => other,
+    }
 }
 
 /// Intra-locus / intra-tower closed-world optimization entry
@@ -900,6 +949,7 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
     let (pubs, subs) = collect_pub_sub(&program.items);
     let locus_types = collect_locus_type_names(&program.items);
     let locus_fields = collect_locus_typed_fields(&program.items, &locus_types);
+    let ctx_handlers = context_handlers(&program.items);
     // F.31 pool-safety (2026-05-31): the set of (owner_locus,
     // field) pairs whose `placement { }` puts the field-child on
     // a thread OTHER than its owner's (a named cooperative pool
@@ -993,6 +1043,7 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
                 EligibleRewrite {
                     publisher_locus: pub_locus,
                     access_chain: vec![handler.clone()],
+                    takes_context: ctx_handlers.contains(&(sub_locus.clone(), handler.clone())),
                 },
             );
             continue;
@@ -1029,6 +1080,7 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
             EligibleRewrite {
                 publisher_locus: pub_locus,
                 access_chain: vec![field, handler.clone()],
+                takes_context: ctx_handlers.contains(&(sub_locus.clone(), handler.clone())),
             },
         );
     }
@@ -1241,7 +1293,7 @@ fn intra_rewrite_block(
 /// from an access chain. The chain's final segment is the method
 /// name; all preceding segments are field accesses through which
 /// the receiver is traversed.
-fn build_chained_call(access_chain: &[String], value: Expr, span: Span) -> Expr {
+fn build_chained_call(access_chain: &[String], value: Expr, takes_context: bool, span: Span) -> Expr {
     // Start from `self`, walk all but the last segment as field
     // accesses, then call the last segment as a method on the
     // accumulated receiver.
@@ -1263,7 +1315,11 @@ fn build_chained_call(access_chain: &[String], value: Expr, span: Span) -> Expr 
             name: Ident { name: method_name.clone(), span },
             span,
         }),
-        args: vec![value],
+        args: if takes_context {
+            vec![value, local_context_expr(span)]
+        } else {
+            vec![value]
+        },
         span,
     }
 }
@@ -1282,7 +1338,7 @@ fn intra_rewrite_stmt(
                         value,
                         Expr::Literal(Literal::Bool(false), span),
                     );
-                    let call_expr = build_chained_call(&rw.access_chain, value_expr, span);
+                    let call_expr = build_chained_call(&rw.access_chain, value_expr, rw.takes_context, span);
                     *s = Stmt::Expr(call_expr);
                     return;
                 }

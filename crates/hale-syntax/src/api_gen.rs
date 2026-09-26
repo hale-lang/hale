@@ -50,6 +50,8 @@ pub struct ApiSubscriber {
     pub ret: Option<TypeExpr>,
     /// The handler takes `Drain<T>`: a batch consumer.
     pub is_drain: bool,
+    /// The handler declares a second `std::api::Context` parameter.
+    pub takes_context: bool,
     /// The subscription's `where key ==` filter, cloned onto the
     /// synthesized subscription so a keyed command routes as its
     /// topic does.
@@ -191,6 +193,17 @@ fn named_type(te: &TypeExpr) -> Option<String> {
     }
 }
 
+/// `std::api::Context`, in either of its spellings.
+pub fn is_context_type(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            segs == ["std", "api", "Context"] || segs == ["__StdApiContext"]
+        }
+        _ => false,
+    }
+}
+
 /// `alias::Topic` → `alias__Topic`: a name usable inside an identifier.
 pub fn mangle(name: &str) -> String {
     name.replace("::", "__")
@@ -315,17 +328,20 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
                 match member {
                     BusMember::Subscribe { subject, handler, .. } => {
                         let Some(name) = subject_name(subject) else { continue };
-                        let Some(f) = fns.get(handler.name.as_str()) else { continue };
+                        let hname = handler.name.as_str();
+                        let Some(f) = fns.get(hname) else { continue };
                         let is_drain = f.params.first().is_some_and(|p| {
                             matches!(&p.ty, TypeExpr::Named { path, .. }
                                 if path.segments.len() == 1 && path.segments[0].name == "Drain")
                         });
+                        let takes_context = f.params.len() == 2 && is_context_type(&f.params[1].ty);
                         subs.entry(name).or_default().push(ApiSubscriber {
                             locus: l.name.name.clone(),
-                            handler: handler.name.clone(),
+                            handler: hname.to_string(),
                             handler_span: f.name.span,
                             ret: f.ret.clone(),
                             is_drain,
+                            takes_context,
                             member: member.clone(),
                         });
                     }
@@ -831,12 +847,12 @@ fn common_src(watch_bound: i64) -> String {
     let mut b = String::new();
     b.push_str(
         r#"
-type __ApiRead { peer: Int; request_id: Int; client_id: String; }
-type __ApiReply { peer: Int; request_id: Int; client_id: String; ok: Bool; counted: Bool; body: String; as_of: String; }
+type __ApiRead { peer: Int; request_id: Int; client_id: String; caller: std::api::Principal; }
+type __ApiReply { peer: Int; request_id: Int; client_id: String; ok: Bool; counted: Bool; body: String; as_of: String; caller: std::api::Principal; }
 topic __ApiReplyT { payload: __ApiReply; subject: "__api.reply"; keyed_by peer; }
 type __ApiFrame { subject: String; body: String; }
 topic __ApiFrameT { payload: __ApiFrame; subject: "__api.frame"; }
-type __ApiIngress { peer: Int; client_id: String; verb: String; subject: String; body: String; }
+type __ApiIngress { peer: Int; client_id: String; verb: String; subject: String; body: String; caller: std::api::Principal; }
 topic __ApiIngressT { payload: __ApiIngress; subject: "__api.ingress"; }
 
 fn __api_hex(b: Bytes) -> String {
@@ -866,7 +882,12 @@ fn __api_reply_line(r: __ApiReply) -> String {
     if r.ok { line = line + ",\"ok\":true,"; } else { line = line + ",\"ok\":false,"; }
     line = line + r.body;
     if len(r.as_of) > 0 { line = line + ",\"as_of\":" + __api_json_str(r.as_of); }
+    line = line + ",\"caller\":{\"mode\":" + __api_json_str(r.caller.mode) + ",\"name\":" + __api_json_str(r.caller.name)
+        + ",\"uid\":" + to_string(r.caller.uid) + ",\"gid\":" + to_string(r.caller.gid) + ",\"pid\":" + to_string(r.caller.pid) + "}";
     return line + "}";
+}
+fn __api_context(caller: std::api::Principal, request_id: Int) -> std::api::Context {
+    return std::api::Context { caller: caller, role: "", request_id: request_id, via: "api" };
 }
 "#,
     );
@@ -879,7 +900,7 @@ fn __api_reply_line(r: __ApiReply) -> String {
 
 fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
     let mut b = String::new();
-    b.push_str("locus __ApiPeer {\n    params {\n        peer: Int = 0;\n        fd: Int = -1;\n        buf: String = \"\";\n        dropped: Int = 0;\n        flushing: Bool = false;\n        frames: __ApiFrameQ = __ApiFrameQ { };\n        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };\n");
+    b.push_str("locus __ApiPeer {\n    params {\n        peer: Int = 0;\n        fd: Int = -1;\n        buf: String = \"\";\n        dropped: Int = 0;\n        flushing: Bool = false;\n        frames: __ApiFrameQ = __ApiFrameQ { };\n        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };\n        caller: std::api::Principal = std::api::Principal { };\n");
     for s in &surface.streams {
         b.push_str(&format!("        watch_{}: Bool = false;\n", mangle(&s.name)));
     }
@@ -887,6 +908,11 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
     b.push_str(
         r#"    birth() {
         self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: true };
+        // The peer's credentials, as its kernel vouches for them, once
+        // per connection. -1 means the kernel would not say: the peer
+        // is then unauthenticated, not anyone.
+        let uid = std::io::unix::peer_uid(self.fd);
+        self.caller = std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: std::io::unix::peer_gid(self.fd), pid: std::io::unix::peer_pid(self.fd) };
     }
     @unbounded
     run() {
@@ -912,7 +938,7 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
         }
     }
     fn refuse_here(client_id: String, kind: String, reason: String) {
-        self.write_line(__api_reply_line(__ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "" }));
+        self.write_line(__api_reply_line(__ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "", caller: self.caller }));
     }
     fn handle_line(line: String) {
         let t = std::str::trim(line);
@@ -929,21 +955,21 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
                 self.refuse_here(client_id, "malformed", "a call carries a \"payload\" object");
                 return;
             }
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body, caller: self.caller };
             return;
         }
         let rd = std::json::string_field(t, "read");
         if rd.kind == "string" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "" };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "", caller: self.caller };
             return;
         }
         let w = std::json::string_field(t, "watch");
         if w.kind == "string" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "" };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "", caller: self.caller };
             return;
         }
         if std::json::find_field_raw(t, "describe") == "true" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "" };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "", caller: self.caller };
             return;
         }
         self.refuse_here(client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
@@ -1010,7 +1036,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     b.push_str(&format!("        bound: Int = {};\n", bound));
     b.push_str(&format!("        description: String = {};\n", q(&describe(surface))));
     b.push_str(
-        "        listen_fd: Int = -1;\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
+        "        listen_fd: Int = -1;\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
     );
     for s in &surface.streams {
         b.push_str(&format!(
@@ -1054,7 +1080,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
         std::io::fs::unlink(self.path) or discard;
     }
     fn reply(peer: Int, rid: Int, cid: String, ok: Bool, body: String) {
-        __ApiReplyT <- __ApiReply { peer: peer, request_id: rid, client_id: cid, ok: ok, counted: false, body: body, as_of: "" };
+        __ApiReplyT <- __ApiReply { peer: peer, request_id: rid, client_id: cid, ok: ok, counted: false, body: body, as_of: "", caller: self.cur_caller };
     }
     fn on_reply_seen(r: __ApiReply) {
         if r.counted { self.in_flight = self.in_flight - 1; }
@@ -1066,6 +1092,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     fn on_ingress(i: __ApiIngress) {
         let rid = self.next_request;
         self.next_request = rid + 1;
+        self.cur_caller = i.caller;
         if i.verb == "describe" {
             self.reply(i.peer, rid, i.client_id, true, "\"value\":" + self.description);
             return;
@@ -1120,7 +1147,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     for r in &surface.reads {
         let m = mangle(&r.name).replace('.', "_");
         b.push_str(&format!(
-            "            if i.subject == {} {{\n                __ApiReadT_{} <- __ApiRead {{ peer: i.peer, request_id: rid, client_id: i.client_id }};\n                self.in_flight = self.in_flight + 1;\n                return;\n            }}\n",
+            "            if i.subject == {} {{\n                __ApiReadT_{} <- __ApiRead {{ peer: i.peer, request_id: rid, client_id: i.client_id, caller: i.caller }};\n                self.in_flight = self.in_flight + 1;\n                return;\n            }}\n",
             q(&r.name),
             m
         ));
@@ -1130,7 +1157,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     for c in &surface.commands {
         let m = mangle(&c.name);
         b.push_str(&format!(
-            "    fn __api_try_{m}(peer: Int, rid: Int, cid: String, body: String) fallible(JsonError) {{\n        let p = __api_decode_{p}(body) or raise;\n        __ApiCallT_{m} <- __ApiCall_{m} {{ peer: peer, request_id: rid, client_id: cid, {key}payload: p }};\n    }}\n",
+            "    fn __api_try_{m}(peer: Int, rid: Int, cid: String, body: String) fallible(JsonError) {{\n        let p = __api_decode_{p}(body) or raise;\n        __ApiCallT_{m} <- __ApiCall_{m} {{ peer: peer, request_id: rid, client_id: cid, caller: self.cur_caller, {key}payload: p }};\n    }}\n",
             m = m,
             p = c.payload,
             key = match &c.key {
@@ -1161,7 +1188,7 @@ fn envelopes_src(surface: &ApiSurface) -> String {
             None => String::new(),
         };
         b.push_str(&format!(
-            "type __ApiCall_{m} {{ peer: Int; request_id: Int; client_id: String;{key} payload: {p}; }}\ntopic __ApiCallT_{m} {{ payload: __ApiCall_{m}; subject: \"__api.call.{m}\";{keyed} }}\n",
+            "type __ApiCall_{m} {{ peer: Int; request_id: Int; client_id: String; caller: std::api::Principal;{key} payload: {p}; }}\ntopic __ApiCallT_{m} {{ payload: __ApiCall_{m}; subject: \"__api.call.{m}\";{keyed} }}\n",
             m = m,
             key = key_field,
             p = c.payload,
@@ -1184,15 +1211,21 @@ fn envelopes_src(surface: &ApiSurface) -> String {
 fn subscriber_members(c: &ApiCommand, s: &ApiSubscriber, replies: bool) -> Result<(BusMember, Vec<LocusMember>), String> {
     let m = mangle(&c.name);
     let thunk = format!("__api_{}_{}", s.handler, m);
+    let args = if s.takes_context {
+        "r.payload, __api_context(r.caller, r.request_id)".to_string()
+    } else {
+        "r.payload".to_string()
+    };
     let body = if replies {
         let ret = s.ret.as_ref().expect("replier has a return type");
         format!(
-            "let v = self.{h}(r.payload);\n        __ApiReplyT <- __ApiReply {{ peer: r.peer, request_id: r.request_id, client_id: r.client_id, ok: true, counted: true, body: \"\\\"value\\\":\" + {enc}, as_of: \"\" }};",
+            "let v = self.{h}({args});\n        __ApiReplyT <- __ApiReply {{ peer: r.peer, request_id: r.request_id, client_id: r.client_id, ok: true, counted: true, body: \"\\\"value\\\":\" + {enc}, as_of: \"\", caller: r.caller }};",
             h = s.handler,
+            args = args,
             enc = encode_expr(ret, "v")
         )
     } else {
-        format!("self.{}(r.payload);", s.handler)
+        format!("self.{}({});", s.handler, args)
     };
     let src = format!(
         "locus __ApiTmp {{\n    fn {thunk}(r: __ApiCall_{m}) {{\n        {body}\n    }}\n}}\n",
@@ -1225,7 +1258,7 @@ fn read_members(r: &ApiRead) -> Result<(BusMember, Vec<LocusMember>), String> {
         format!("self.{}", r.member)
     };
     let src = format!(
-        "locus __ApiTmp {{\n    bus {{ subscribe __ApiReadT_{m} as __api_read_{m}; }}\n    fn __api_read_{m}(r: __ApiRead) {{\n        let j = {enc};\n        __ApiReplyT <- __ApiReply {{ peer: r.peer, request_id: r.request_id, client_id: r.client_id, ok: true, counted: true, body: \"\\\"value\\\":\" + j, as_of: __api_digest(j) }};\n    }}\n}}\n",
+        "locus __ApiTmp {{\n    bus {{ subscribe __ApiReadT_{m} as __api_read_{m}; }}\n    fn __api_read_{m}(r: __ApiRead) {{\n        let j = {enc};\n        __ApiReplyT <- __ApiReply {{ peer: r.peer, request_id: r.request_id, client_id: r.client_id, ok: true, counted: true, body: \"\\\"value\\\":\" + j, as_of: __api_digest(j), caller: r.caller }};\n    }}\n}}\n",
         m = m,
         enc = encode_expr(&r.ty, &access)
     );
