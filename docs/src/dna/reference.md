@@ -3,7 +3,8 @@
 ## The CLI
 
 ```text
-hale dna init [app-dir]      generate the organization (dna/org) for an existing application
+hale dna init [app-dir]      generate the organization (dna/org) for an existing application, or for a
+                             repository with none at its root, whose holdings it reads into the graph
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
                              a greenfield application with its organization; the profile sets pieces
 hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain (and write a catalog for an organization from before it)
@@ -41,6 +42,9 @@ hale dna review <id> [--iris] render a Review: source diff, semantic diff, evide
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
+hale dna show org|processes [--json] [project]
+                             the graph's two perspectives, read from memory under the head's role:
+                             the org chart, the process model; `--json` is the query's answer
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
 hale dna ledger [status | rows | adopt | abandon --why <w>]
                              the operational memory: where the day's work lives, the ledger as JSON

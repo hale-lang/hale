@@ -190,6 +190,19 @@ the edges that named it. A row that names a kind the vocabulary does not
 have, or an edge with one member, stops the projection at that row and
 says why.
 
+Read the two perspectives with `hale dna show org` and `hale dna show
+processes` (`--json` for the answer as data). They read memory as the
+head does, so they show the graph as far as the spine has projected
+it, and say so when the record is ahead:
+
+```text
+$ hale dna show processes
+callers, ui, node  --HTTP: openapi.yaml-->  api
+api  --NATS: protocol.yaml-->  node  (carried by nats)
+api, brain  --SQL: store.md-->  postgres
+compose runs { postgres, nats, api, brain, node }
+```
+
 ## Ranking inside the bound
 
 A package is bounded first: only ideas bound to the target or above

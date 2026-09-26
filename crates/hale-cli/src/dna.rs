@@ -14,6 +14,7 @@
 //!   hale dna status [--json]    the status projection, from the Journal
 //!   hale dna task create <outcome…>  ask for an outcome: a Task, a row a node relays to the organism
 //!   hale dna history [<entity>] walk the Journal by causal links
+//!   hale dna show org|processes [--json]  the graph's two perspectives, from memory
 //!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
@@ -482,6 +483,20 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("retire") => host_exec("retire", Path::new("."), &args[1..]),
         // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
         Some("effect") => host_exec("effect", Path::new("."), &args[1..]),
+        // GH #1086: `hale dna show org | processes [--json] [project]`, the
+        // two perspectives over the graph, read from memory
+        Some("show") => match args.get(1).map(String::as_str) {
+            Some(what @ ("org" | "processes")) => {
+                let (dir, rest) = project_arg(&args[2..], false);
+                let mut forwarded = vec![what.to_string()];
+                forwarded.extend(rest);
+                host_exec("show", &dir, &forwarded)
+            }
+            _ => {
+                eprintln!("usage: hale dna show org | processes [--json] [project]");
+                ExitCode::from(2)
+            }
+        },
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
@@ -636,6 +651,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
+    eprintln!("       hale dna show org|processes [--json]  the org chart and the process model, as queries over memory");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna ledger [status | rows | adopt | abandon --why <w>]");
     eprintln!("                                    the operational memory: where the day's work lives, its rows as JSON lines, and the one-way");
