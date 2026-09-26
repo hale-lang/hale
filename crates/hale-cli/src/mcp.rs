@@ -33,12 +33,18 @@ use serde_json::{json, Value};
 
 include!(concat!(env!("OUT_DIR"), "/spec_embed.rs"));
 
-pub fn run_mcp() -> ExitCode {
+/// A JSON-RPC error: code and message.
+pub struct RpcError(pub i64, pub String);
+
+/// The stdio loop both servers share: one JSON-RPC request per line,
+/// notifications consumed silently, `handle` answering each method
+/// with a result or an error (an unknown method is `-32601`, so a
+/// host learns it asked for something this server does not do).
+pub fn serve_stdio(mut handle: impl FnMut(&str, &Value) -> Result<Value, RpcError>) -> ExitCode {
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
-
     let mut line = String::new();
     loop {
         line.clear();
@@ -55,11 +61,26 @@ pub fn run_mcp() -> ExitCode {
             continue;
         };
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-        let id = msg.get("id").cloned();
         // Notifications (no id) are consumed silently.
-        let Some(id) = id else { continue };
+        let Some(id) = msg.get("id").cloned() else { continue };
+        let resp = match handle(method, &msg) {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err(RpcError(code, message)) => json!({ "jsonrpc": "2.0", "id": id,
+                "error": { "code": code, "message": message } }),
+        };
+        let _ = writeln!(writer, "{}", resp);
+        let _ = writer.flush();
+    }
+    ExitCode::SUCCESS
+}
 
-        let result = match method {
+fn method_not_found(method: &str) -> RpcError {
+    RpcError(-32601, format!("method not found: {}", method))
+}
+
+pub fn run_mcp() -> ExitCode {
+    serve_stdio(|method, msg| {
+        Ok(match method {
             "initialize" => {
                 let proto = msg
                     .pointer("/params/protocolVersion")
@@ -97,13 +118,9 @@ pub fn run_mcp() -> ExitCode {
                     }),
                 }
             }
-            _ => Value::Null,
-        };
-        let resp = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-        let _ = writeln!(writer, "{}", resp);
-        let _ = writer.flush();
-    }
-    ExitCode::SUCCESS
+            other => return Err(method_not_found(other)),
+        })
+    })
 }
 
 fn path_schema(desc: &str) -> Value {
@@ -444,7 +461,7 @@ fn dispatch(name: &str, args: &Value) -> Result<(String, bool), String> {
 /// refusal with `isError`. Streams have no MCP shape; the server's
 /// instructions name them for `hale watch`.
 pub fn run_mcp_app(sock: &str) -> ExitCode {
-    use crate::api_client::{answer_value, mcp as mcp_form, Client};
+    use crate::api_client::{answer_value, mcp as mcp_form, tool_name, Client};
     let desc = match Client::connect(sock).and_then(|mut c| c.describe()) {
         Ok(d) => d,
         Err(e) => {
@@ -456,6 +473,18 @@ pub fn run_mcp_app(sock: &str) -> ExitCode {
     let tools = form.get("tools").cloned().unwrap_or_else(|| json!([]));
     let resources = form.get("resources").cloned().unwrap_or_else(|| json!([]));
     let app = desc.get("app").and_then(Value::as_str).unwrap_or("app").to_string();
+    // Tool name -> topic name, since a cross-seed topic's `::` is
+    // outside the characters a tool name may use.
+    let topics: Vec<String> = desc
+        .get("commands")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_string)).collect())
+        .unwrap_or_default();
+    let reads: Vec<String> = desc
+        .get("reads")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_string)).collect())
+        .unwrap_or_default();
     let streams: Vec<String> = form
         .get("streams")
         .and_then(Value::as_array)
@@ -471,29 +500,9 @@ pub fn run_mcp_app(sock: &str) -> ExitCode {
         notes.get("gates").and_then(Value::as_str).unwrap_or(""),
         notes.get("reads").and_then(Value::as_str).unwrap_or("")
     );
-
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(msg) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-        let Some(id) = msg.get("id").cloned() else { continue };
-        let result = match method {
+    let sock = sock.to_string();
+    serve_stdio(move |method, msg| {
+        Ok(match method {
             "initialize" => {
                 let proto = msg
                     .pointer("/params/protocolVersion")
@@ -511,50 +520,42 @@ pub fn run_mcp_app(sock: &str) -> ExitCode {
             "resources/list" => json!({ "resources": resources }),
             "resources/read" => {
                 let uri = msg.pointer("/params/uri").and_then(Value::as_str).unwrap_or("");
-                match uri.strip_prefix("hale://read/") {
-                    Some(name) => {
-                        let mut req = serde_json::Map::new();
-                        req.insert("read".to_string(), json!(name));
-                        let got = Client::connect(sock).and_then(|mut c| c.request(req, |_| {}));
-                        match got {
-                            Ok(ans) => match answer_value(&ans) {
-                                Ok(v) => json!({ "contents": [{ "uri": uri, "mimeType": "application/json",
-                                    "text": json!({ "value": v, "as_of": ans.get("as_of").cloned().unwrap_or(Value::Null) }).to_string() }] }),
-                                Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
-                            },
-                            Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
-                        }
-                    }
-                    None => json!({ "contents": [] }),
+                let Some(name) = uri.strip_prefix("hale://read/").filter(|n| reads.iter().any(|r| r == n)) else {
+                    return Err(RpcError(-32002, format!("resource not found: {}", uri)));
+                };
+                let mut req = serde_json::Map::new();
+                req.insert("read".to_string(), json!(name));
+                let got = Client::connect(&sock).and_then(|mut c| c.request(req, |_| {}));
+                match got {
+                    Ok(ans) => match answer_value(&ans) {
+                        Ok(v) => json!({ "contents": [{ "uri": uri, "mimeType": "application/json",
+                            "text": json!({ "value": v, "as_of": ans.get("as_of").cloned().unwrap_or(Value::Null) }).to_string() }] }),
+                        Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
+                    },
+                    Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
                 }
             }
             "tools/call" => {
                 let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
                 let args = msg.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
-                let known = tools
-                    .as_array()
-                    .map(|a| a.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(name)))
-                    .unwrap_or(false);
-                let outcome = if !known {
-                    Err(format!("`{}` is not a command of {}", name, app))
-                } else {
-                    let mut req = serde_json::Map::new();
-                    req.insert("call".to_string(), json!(name));
-                    req.insert("payload".to_string(), args);
-                    Client::connect(sock)
-                        .and_then(|mut c| c.request(req, |_| {}))
-                        .and_then(|ans| answer_value(&ans))
+                let topic = topics.iter().find(|t| tool_name(t) == name);
+                let outcome = match topic {
+                    None => Err(format!("`{}` is not a command of {}", name, app)),
+                    Some(topic) => {
+                        let mut req = serde_json::Map::new();
+                        req.insert("call".to_string(), json!(topic));
+                        req.insert("payload".to_string(), args);
+                        Client::connect(&sock)
+                            .and_then(|mut c| c.request(req, |_| {}))
+                            .and_then(|ans| answer_value(&ans))
+                    }
                 };
                 match outcome {
                     Ok(v) => json!({ "content": [{ "type": "text", "text": v.to_string() }], "isError": false }),
                     Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
                 }
             }
-            _ => Value::Null,
-        };
-        let resp = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-        let _ = writeln!(writer, "{}", resp);
-        let _ = writer.flush();
-    }
-    ExitCode::SUCCESS
+            other => return Err(method_not_found(other)),
+        })
+    })
 }

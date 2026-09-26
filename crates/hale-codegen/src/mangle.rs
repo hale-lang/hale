@@ -565,6 +565,32 @@ pub fn apply_qualified_path_renames(
     for item in &mut prog.items {
         walker.walk_top_decl(item);
     }
+    // GH #1107: the declarations those paths name keep the author's
+    // spelling beside their mangled name, so the api description can
+    // say `lib::Orders` where the program says `__lib_…_Orders`.
+    let display: HashMap<&str, String> = renames
+        .iter()
+        .map(|(path, mangled)| (mangled.as_str(), path.join("::")))
+        .collect();
+    fn record(items: &mut [TopDecl], display: &HashMap<&str, String>) {
+        for item in items {
+            match item {
+                TopDecl::Topic(t) => {
+                    if let Some(d) = display.get(t.name.name.as_str()) {
+                        t.display = Some(d.clone());
+                    }
+                }
+                TopDecl::Type(t) => {
+                    if let Some(d) = display.get(t.name.name.as_str()) {
+                        t.display = Some(d.clone());
+                    }
+                }
+                TopDecl::Module(m) => record(&mut m.items, display),
+                _ => {}
+            }
+        }
+    }
+    record(&mut prog.items, &display);
 }
 
 struct QualifiedRenameApplier<'a> {

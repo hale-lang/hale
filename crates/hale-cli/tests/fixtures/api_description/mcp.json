@@ -11,6 +11,12 @@
       "uri": "hale://read/billing.ledger"
     },
     {
+      "description": "Read ticks: a snapshot of a Int with its as_of digest, never a live view.",
+      "mimeType": "application/json",
+      "name": "ticks",
+      "uri": "hale://read/ticks"
+    },
+    {
       "description": "Read uptime: a snapshot of a Uptime with its as_of digest, never a live view.",
       "mimeType": "application/json",
       "name": "uptime",
@@ -35,6 +41,21 @@
         "type": "object"
       },
       "name": "Audits"
+    },
+    {
+      "description": "Command Counts: sends a Count to the program and returns the Int its handler answers with.",
+      "inputSchema": {
+        "properties": {
+          "by": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by"
+        ],
+        "type": "object"
+      },
+      "name": "Counts"
     },
     {
       "description": "Command Refunds: sends a Refund to the program and returns the RefundResult its handler answers with.",

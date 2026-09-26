@@ -88,11 +88,135 @@ impl Client {
     }
 
     pub fn describe(&mut self) -> Result<Value, String> {
+        let raw = self.describe_raw()?;
+        serde_json::from_str(&raw).map_err(|e| format!("the description is not JSON: {}", e))
+    }
+
+    /// The description as the binding wrote it, byte for byte: the
+    /// `value` of the answer line, not a re-serialization of it.
+    pub fn describe_raw(&mut self) -> Result<String, String> {
         let mut req = Map::new();
         req.insert("describe".to_string(), json!(true));
-        let ans = self.request(req, |_| {})?;
-        answer_value(&ans)
+        let (ans, line) = self.request_line(req)?;
+        answer_value(&ans)?;
+        raw_field(&line, "value").ok_or_else(|| "the answer carries no value".to_string())
     }
+
+    /// `request`, also returning the answer's raw line.
+    pub fn request_line(&mut self, mut req: Map<String, Value>) -> Result<(Value, String), String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        req.insert("id".to_string(), json!(id));
+        let line = Value::Object(req).to_string();
+        writeln!(self.writer, "{}", line).map_err(|e| format!("write failed: {}", e))?;
+        self.writer.flush().map_err(|e| format!("write failed: {}", e))?;
+        loop {
+            let raw = self.next_raw_line()?.ok_or_else(|| "the binding closed the connection".to_string())?;
+            let v: Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("the binding sent a line that is not JSON: {} ({})", raw, e))?;
+            if v.get("stream").is_some() {
+                continue;
+            }
+            if v.get("id") == Some(&json!(id)) {
+                return Ok((v, raw));
+            }
+        }
+    }
+
+    fn next_raw_line(&mut self) -> Result<Option<String>, String> {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = self
+                .reader
+                .read_line(&mut line)
+                .map_err(|e| format!("read failed: {}", e))?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if !line.trim().is_empty() {
+                return Ok(Some(line.trim().to_string()));
+            }
+        }
+    }
+}
+
+/// The raw text of a top-level field of one JSON object line, with
+/// its bytes untouched (a value re-serialized through `Value` would
+/// come back with sorted keys, and the description's order is part
+/// of what a binding promises to serve).
+pub fn raw_field(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":", key);
+    let bytes = line.as_bytes();
+    // Find the key at depth 1, outside strings.
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => {
+                if depth == 1 && line[i..].starts_with(&needle) {
+                    let start = i + needle.len();
+                    return Some(raw_value(&line[start..]));
+                }
+                in_str = true;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The first complete JSON value at the head of `s`.
+fn raw_value(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, &c) in bytes.iter().enumerate() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+                if depth == 0 {
+                    return s[..=i].to_string();
+                }
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_str = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return s[..=i].to_string();
+                }
+            }
+            b',' if depth == 0 => return s[..i].to_string(),
+            _ => {}
+        }
+    }
+    s.to_string()
 }
 
 /// The `value` of an `ok` answer, or the refusal as an error line.
@@ -156,6 +280,24 @@ fn rewrite_refs(v: &Value, base: &str) -> Value {
     }
 }
 
+/// A reference to a named type under `base`, or the inline schema of
+/// a scalar (`Int`, `Float`, `Bool`, `String` have no component).
+fn type_schema(ty: &str, base: &str) -> Value {
+    match ty {
+        "Int" => json!({ "type": "integer" }),
+        "Float" => json!({ "type": "number" }),
+        "Bool" => json!({ "type": "boolean" }),
+        "String" => json!({ "type": "string" }),
+        other => json!({ "$ref": format!("{}{}", base, other) }),
+    }
+}
+
+/// An MCP tool name: the topic's name with `::` (a cross-seed topic)
+/// spelled `__`, inside the character set tool names allow.
+pub fn tool_name(topic: &str) -> String {
+    topic.replace("::", "__")
+}
+
 /// The OpenAPI 3.1 form: a `post /call/<name>` per command, a `get
 /// /read/<name>` per read, a `get /watch/<name>` per stream, the
 /// schemas under `components`, the refusal and the two notes.
@@ -173,7 +315,7 @@ pub fn openapi(desc: &Value) -> Value {
         let payload = c.get("payload").and_then(Value::as_str).unwrap_or("");
         let reply = c.get("reply").and_then(Value::as_str);
         let ok_schema = match reply {
-            Some(r) => json!({ "$ref": format!("#/components/schemas/{}", r) }),
+            Some(r) => type_schema(r, "#/components/schemas/"),
             None => json!({ "$ref": "#/components/schemas/Accepted" }),
         };
         let mut op = json!({
@@ -181,7 +323,7 @@ pub fn openapi(desc: &Value) -> Value {
             "summary": format!("command {}: publish a {} on subject {}", name, payload,
                 c.get("subject").and_then(Value::as_str).unwrap_or("")),
             "requestBody": { "required": true, "content": { "application/json": {
-                "schema": { "$ref": format!("#/components/schemas/{}", payload) } } } },
+                "schema": type_schema(payload, "#/components/schemas/") } } },
             "responses": {
                 "200": { "description": match reply {
                     Some(r) => format!("the value {} the handler returned", r),
@@ -204,7 +346,7 @@ pub fn openapi(desc: &Value) -> Value {
             "responses": {
                 "200": { "description": "a snapshot; never a live view", "content": { "application/json": {
                     "schema": { "type": "object", "properties": {
-                        "value": { "$ref": format!("#/components/schemas/{}", ty) },
+                        "value": type_schema(ty, "#/components/schemas/"),
                         "as_of": { "type": "string", "description": "sha256 digest of the answered value" } },
                         "required": ["value", "as_of"] } } } },
                 "4XX": refusal.clone()
@@ -226,7 +368,7 @@ pub fn openapi(desc: &Value) -> Value {
                 "200": { "description": "frames, one per line, for the life of the connection", "content": { "application/jsonl": {
                     "schema": { "type": "object", "properties": {
                         "stream": { "type": "string" },
-                        "value": { "$ref": format!("#/components/schemas/{}", payload) },
+                        "value": type_schema(payload, "#/components/schemas/"),
                         "dropped": { "type": "integer", "description": "frames the watcher's queue shed since the last one" } },
                         "required": ["stream"] } } } },
                 "4XX": refusal.clone()
@@ -264,7 +406,12 @@ pub fn openapi(desc: &Value) -> Value {
         "servers": [{ "url": "unix:{socket}", "description": "the api binding's socket, a deployment choice; paths name the request verbs of its line protocol",
             "variables": { "socket": { "default": "/run/app.sock", "description": "where this copy of the program listens" } } }],
         "paths": Value::Object(paths),
-        "components": { "schemas": Value::Object(schemas) }
+        "components": {
+            "schemas": Value::Object(schemas),
+            "securitySchemes": { "role": {
+                "type": "http", "scheme": "bearer",
+                "description": format!("The principal the binding established: the peer's credentials on the Unix socket, a bearer token on HTTP. An operation's scopes are the roles the principal must hold. {}", gates) } }
+        }
     })
 }
 
@@ -275,7 +422,7 @@ fn self_contained_schema(desc: &Value, ty: &str) -> Value {
     let mut root = schemas
         .and_then(|m| m.get(ty))
         .map(|v| rewrite_refs(v, "#/$defs/"))
-        .unwrap_or_else(|| json!({ "type": "object" }));
+        .unwrap_or_else(|| type_schema(ty, "#/$defs/"));
     // Collect every reachable nested type.
     let mut defs = Map::new();
     let mut todo: Vec<String> = Vec::new();
@@ -336,7 +483,7 @@ pub fn mcp(desc: &Value) -> Value {
             d.push_str(&format!(" Needs the role {}; {}.", r, gates));
         }
         tools.push(json!({
-            "name": name,
+            "name": tool_name(name),
             "description": d,
             "inputSchema": self_contained_schema(desc, payload)
         }));
@@ -413,19 +560,29 @@ pub fn run_describe(rest: &[String]) -> ExitCode {
         eprintln!("usage: hale describe <socket | file.hl | dir> [--openapi | --mcp] [-o <path>]");
         return ExitCode::from(2);
     };
-    let desc = match description_of(&target) {
+    let raw = match description_raw_of(&target) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("hale describe: {}", e);
             return ExitCode::from(1);
         }
     };
-    let doc = match form {
-        "openapi" => openapi(&desc),
-        "mcp" => mcp(&desc),
-        _ => desc,
+    // The native form is the binding's own bytes, never re-serialized:
+    // spec/model.md promises the served and the emitted document agree
+    // byte for byte, and a `Value` round trip would sort the keys.
+    let text = if form == "native" {
+        raw.trim().to_string() + "\n"
+    } else {
+        let desc: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("hale describe: the description is not JSON: {}", e);
+                return ExitCode::from(1);
+            }
+        };
+        let doc = if form == "openapi" { openapi(&desc) } else { mcp(&desc) };
+        pretty(&doc) + "\n"
     };
-    let text = pretty(&doc) + "\n";
     match out {
         Some(path) => {
             if let Err(e) = std::fs::write(&path, text) {
@@ -440,10 +597,10 @@ pub fn run_describe(rest: &[String]) -> ExitCode {
 
 /// The description of a running binding (a socket path) or of a
 /// program (`hale check --dump-api`, self-exec'd so the two spellings
-/// cannot drift).
-pub fn description_of(target: &str) -> Result<Value, String> {
+/// cannot drift), as bytes.
+pub fn description_raw_of(target: &str) -> Result<String, String> {
     if is_socket(target) {
-        return Client::connect(target)?.describe();
+        return Client::connect(target)?.describe_raw();
     }
     let me = std::env::current_exe().map_err(|e| format!("current exe: {}", e))?;
     let out = std::process::Command::new(me)
@@ -457,25 +614,40 @@ pub fn description_of(target: &str) -> Result<Value, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+    // The description is the first line; `hale check` reports its own
+    // verdict after it.
     let text = String::from_utf8_lossy(&out.stdout);
-    let t = text.trim();
-    if t.is_empty() {
+    let t = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if t.is_empty() || !t.starts_with('{') {
         return Err(format!(
             "{} has no `api:` entry on its main locus (add one, or run it under `hale run --api`)",
             target
         ));
     }
-    serde_json::from_str(t).map_err(|e| format!("the description is not JSON: {}", e))
+    Ok(t.to_string())
 }
 
 /// `hale call <socket> <name> [<json>]`: a command (its payload, `{}`
 /// when omitted) or a read, decided by the description.
 pub fn run_call(rest: &[String]) -> ExitCode {
-    let (sock, name, body) = match rest {
+    let mut receipt = false;
+    let rest: Vec<String> = rest
+        .iter()
+        .filter(|a| {
+            if *a == "--receipt" {
+                receipt = true;
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    let (sock, name, body) = match rest.as_slice() {
         [s, n] => (s, n, "{}".to_string()),
         [s, n, b] => (s, n, b.clone()),
         _ => {
-            eprintln!("usage: hale call <socket> <command-or-read> [<json payload>]");
+            eprintln!("usage: hale call <socket> <command-or-read> [<json payload>] [--receipt]");
             return ExitCode::from(2);
         }
     };
@@ -518,13 +690,20 @@ pub fn run_call(rest: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    let ans = match client.request(req, |_| {}) {
+    let (ans, line) = match client.request_line(req) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("hale call: {}", e);
             return ExitCode::from(1);
         }
     };
+    if receipt {
+        // The whole receipt, as the binding wrote it: request_id,
+        // the echoed id, the value or refusal, as_of, and whatever
+        // later pieces add (the caller, the authorizing role).
+        println!("{}", line);
+        return if ans.get("ok") == Some(&json!(true)) { ExitCode::SUCCESS } else { ExitCode::from(1) };
+    }
     match answer_value(&ans) {
         Ok(v) => {
             let mut shown = v;
@@ -536,6 +715,7 @@ pub fn run_call(rest: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("hale call: {}", e);
+            eprintln!("{}", line);
             ExitCode::from(1)
         }
     }
@@ -638,13 +818,54 @@ pub fn run_admin(rest: &[String]) -> ExitCode {
         }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    // A per-launch token the page carries and every /api request
+    // must present, so a page on another origin cannot drive the
+    // binding through this process (and a Host other than this
+    // listener's is refused outright, against DNS rebinding).
+    let token = launch_token();
     println!("hale admin: http://127.0.0.1:{}/  (over {})", port, sock);
+    let _ = std::io::stdout().flush();
+    let shared = std::sync::Arc::new(AdminShared { sock, token, port });
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
-        let sock = sock.clone();
-        std::thread::spawn(move || serve_admin_conn(conn, &sock));
+        let shared = shared.clone();
+        std::thread::spawn(move || serve_admin_conn(conn, &shared));
     }
     ExitCode::SUCCESS
+}
+
+struct AdminShared {
+    sock: String,
+    token: String,
+    port: u16,
+}
+
+fn launch_token() -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut h);
+    std::process::id().hash(&mut h);
+    let a = h.finish();
+    std::time::Instant::now().hash(&mut h);
+    let b = h.finish();
+    format!("{:016x}{:016x}", a, b)
+}
+
+/// The request's Host is this listener; its Origin, when it sends
+/// one, is this listener's page. Anything else is another site
+/// reaching for the binding through this process.
+fn admin_origin_ok(shared: &AdminShared, host: &str, origin: Option<&str>) -> bool {
+    let mine = [
+        format!("127.0.0.1:{}", shared.port),
+        format!("localhost:{}", shared.port),
+    ];
+    if !mine.iter().any(|m| m == host.trim()) {
+        return false;
+    }
+    match origin {
+        None => true,
+        Some(o) => mine.iter().any(|m| o.trim() == format!("http://{}", m)),
+    }
 }
 
 fn http_reply(conn: &mut std::net::TcpStream, status: &str, ctype: &str, body: &[u8]) {
@@ -659,7 +880,8 @@ fn http_reply(conn: &mut std::net::TcpStream, status: &str, ctype: &str, body: &
     let _ = conn.flush();
 }
 
-fn serve_admin_conn(mut conn: std::net::TcpStream, sock: &str) {
+fn serve_admin_conn(mut conn: std::net::TcpStream, shared: &AdminShared) {
+    let sock = shared.sock.as_str();
     let mut reader = BufReader::new(match conn.try_clone() {
         Ok(c) => c,
         Err(_) => return,
@@ -670,16 +892,30 @@ fn serve_admin_conn(mut conn: std::net::TcpStream, sock: &str) {
     }
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
-    let path = parts.next().unwrap_or("/").to_string();
+    let full_path = parts.next().unwrap_or("/").to_string();
+    let (path, query) = match full_path.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (full_path.clone(), String::new()),
+    };
     let mut content_length = 0usize;
+    let mut host = String::new();
+    let mut origin: Option<String> = None;
+    let mut content_type = String::new();
+    let mut header_token = String::new();
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
             break;
         }
-        let lower = h.to_ascii_lowercase();
-        if let Some(v) = lower.strip_prefix("content-length:") {
-            content_length = v.trim().parse().unwrap_or(0);
+        let Some((k, v)) = h.split_once(':') else { continue };
+        let v = v.trim().to_string();
+        match k.trim().to_ascii_lowercase().as_str() {
+            "content-length" => content_length = v.parse().unwrap_or(0),
+            "host" => host = v,
+            "origin" => origin = Some(v),
+            "content-type" => content_type = v.to_ascii_lowercase(),
+            "x-hale-admin" => header_token = v,
+            _ => {}
         }
     }
     let mut body = vec![0u8; content_length];
@@ -687,18 +923,33 @@ fn serve_admin_conn(mut conn: std::net::TcpStream, sock: &str) {
         return;
     }
     let body = String::from_utf8_lossy(&body).to_string();
-    let json_err = |conn: &mut std::net::TcpStream, e: String| {
+    let json_err = |conn: &mut std::net::TcpStream, status: &str, e: String| {
         let v = json!({ "error": e });
-        http_reply(conn, "502 Bad Gateway", "application/json", v.to_string().as_bytes());
+        http_reply(conn, status, "application/json", v.to_string().as_bytes());
     };
+    if !admin_origin_ok(shared, &host, origin.as_deref()) {
+        json_err(&mut conn, "403 Forbidden", "this page serves 127.0.0.1 only: the request's Host or Origin is another site".to_string());
+        return;
+    }
     if path == "/" {
-        http_reply(&mut conn, "200 OK", "text/html; charset=utf-8", ADMIN_PAGE.as_bytes());
+        let page = ADMIN_PAGE
+            .replace("{{SOCKET}}", sock)
+            .replace("{{TOKEN}}", &shared.token);
+        http_reply(&mut conn, "200 OK", "text/html; charset=utf-8", page.as_bytes());
+        return;
+    }
+    let query_token = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("token="))
+        .unwrap_or("");
+    if header_token != shared.token && query_token != shared.token {
+        json_err(&mut conn, "403 Forbidden", "missing or wrong admin token: open the page this process printed and act from it".to_string());
         return;
     }
     if path == "/api/describe" {
-        match Client::connect(sock).and_then(|mut c| c.describe()) {
-            Ok(d) => http_reply(&mut conn, "200 OK", "application/json", d.to_string().as_bytes()),
-            Err(e) => json_err(&mut conn, e),
+        match Client::connect(sock).and_then(|mut c| c.describe_raw()) {
+            Ok(d) => http_reply(&mut conn, "200 OK", "application/json", d.as_bytes()),
+            Err(e) => json_err(&mut conn, "502 Bad Gateway", e),
         };
         return;
     }
@@ -707,44 +958,58 @@ fn serve_admin_conn(mut conn: std::net::TcpStream, sock: &str) {
             http_reply(&mut conn, "405 Method Not Allowed", "text/plain", b"POST");
             return;
         }
-        let payload: Value = serde_json::from_str(if body.trim().is_empty() { "{}" } else { &body })
-            .unwrap_or(json!({}));
+        if !content_type.starts_with("application/json") {
+            json_err(&mut conn, "415 Unsupported Media Type", "a call's body is JSON: send Content-Type: application/json".to_string());
+            return;
+        }
+        let payload: Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                json_err(&mut conn, "400 Bad Request", format!("the payload is not JSON: {}", e));
+                return;
+            }
+        };
         let mut req = Map::new();
         req.insert("call".to_string(), json!(name));
         req.insert("payload".to_string(), payload);
-        match Client::connect(sock).and_then(|mut c| c.request(req, |_| {})) {
-            Ok(a) => http_reply(&mut conn, "200 OK", "application/json", a.to_string().as_bytes()),
-            Err(e) => json_err(&mut conn, e),
+        match Client::connect(sock).and_then(|mut c| c.request_line(req)) {
+            Ok((_, line)) => http_reply(&mut conn, "200 OK", "application/json", line.as_bytes()),
+            Err(e) => json_err(&mut conn, "502 Bad Gateway", e),
         };
         return;
     }
     if let Some(name) = path.strip_prefix("/api/read/") {
         let mut req = Map::new();
         req.insert("read".to_string(), json!(name));
-        match Client::connect(sock).and_then(|mut c| c.request(req, |_| {})) {
-            Ok(a) => http_reply(&mut conn, "200 OK", "application/json", a.to_string().as_bytes()),
-            Err(e) => json_err(&mut conn, e),
+        match Client::connect(sock).and_then(|mut c| c.request_line(req)) {
+            Ok((_, line)) => http_reply(&mut conn, "200 OK", "application/json", line.as_bytes()),
+            Err(e) => json_err(&mut conn, "502 Bad Gateway", e),
         };
         return;
     }
     if let Some(name) = path.strip_prefix("/api/watch/") {
         let mut client = match Client::connect(sock) {
             Ok(c) => c,
-            Err(e) => return json_err(&mut conn, e),
+            Err(e) => return json_err(&mut conn, "502 Bad Gateway", e),
         };
         let mut req = Map::new();
         req.insert("watch".to_string(), json!(name));
-        let ans = match client.request(req, |_| {}) {
+        let (ans, line) = match client.request_line(req) {
             Ok(a) => a,
-            Err(e) => return json_err(&mut conn, e),
+            Err(e) => return json_err(&mut conn, "502 Bad Gateway", e),
         };
+        if answer_value(&ans).is_err() {
+            // A refused attach is an answer, not a stream: say so and close.
+            http_reply(&mut conn, "403 Forbidden", "application/json", line.as_bytes());
+            return;
+        }
         let _ = write!(
             conn,
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         );
-        let _ = write!(conn, "data: {}\n\n", ans);
+        let _ = write!(conn, "data: {}\n\n", line);
         let _ = conn.flush();
-        while let Ok(Some(v)) = client.next_line() {
+        while let Ok(Some(v)) = client.next_raw_line() {
             if write!(conn, "data: {}\n\n", v).is_err() || conn.flush().is_err() {
                 break;
             }

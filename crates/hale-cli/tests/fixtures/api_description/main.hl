@@ -11,11 +11,13 @@ type Audit { line: String; }
 type Tick { order_id: Int; n: Int; }
 type Ledger { balance: Int; entries: Int; }
 type Uptime { seconds: Int; }
+type Count { by: Int; }
 
 topic Refunds { payload: Refund; subject: "shop.refund"; }
 topic Audits { payload: Audit; subject: "shop.audit"; }
 topic Ticks { payload: Tick; subject: "shop.tick"; keyed_by order_id; }
 topic Moved { payload: Ledger; subject: "shop.moved"; }
+topic Counts { payload: Count; subject: "shop.count"; }
 
 locus Billing {
     contract { expose ledger: Ledger; }
@@ -24,6 +26,7 @@ locus Billing {
         subscribe Refunds as on_refund;
         subscribe Audits as on_audit;
         subscribe Ticks as on_tick where key == 7;
+        subscribe Counts as on_count;
         publish Moved;
     }
     fn on_refund(r: Refund) -> RefundResult {
@@ -34,12 +37,21 @@ locus Billing {
     }
     fn on_audit(a: Audit) { println(a.line); }
     fn on_tick(t: Tick) { self.ledger.entries = self.ledger.entries + t.n; }
+    // A scalar reply: the description inlines its schema.
+    fn on_count(c: Count) -> Int {
+        self.ledger.entries = self.ledger.entries + c.by;
+        return self.ledger.entries;
+    }
 }
 
 main locus Shop {
-    contract { expose uptime: Uptime; }
+    contract {
+        expose uptime: Uptime;
+        expose ticks: Int;
+    }
     params {
         uptime: Uptime = Uptime { seconds: 0 };
+        ticks: Int = 0;
         billing: Billing = Billing { };
     }
     placement { billing: cooperative(pool = work) where async_io; }
@@ -48,6 +60,7 @@ main locus Shop {
         while !self.draining && self.uptime.seconds < 30 {
             std::time::sleep(1s);
             self.uptime.seconds = self.uptime.seconds + 1;
+            self.ticks = self.ticks + 1;
         }
     }
 }

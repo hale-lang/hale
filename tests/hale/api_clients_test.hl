@@ -126,9 +126,9 @@ fn main() {
     // hale describe: the running program's surface.
     let d = run_tool(hale + "\ndescribe\n" + sock);
     std::test::assert_eq_int(d.code, 0, "describe: " + d.stderr);
-    std::test::assert(std::str::contains(d.stdout, "\"name\": \"Claims\""), "describe lists the command: " + d.stdout);
-    std::test::assert(std::str::contains(d.stdout, "\"name\": \"head.stats\""), "describe lists the read: " + d.stdout);
-    std::test::assert(std::str::contains(d.stdout, "\"name\": \"Ticks\""), "describe lists the stream: " + d.stdout);
+    std::test::assert(std::str::contains(d.stdout, "\"name\":\"Claims\""), "describe lists the command: " + d.stdout);
+    std::test::assert(std::str::contains(d.stdout, "\"name\":\"head.stats\""), "describe lists the read: " + d.stdout);
+    std::test::assert(std::str::contains(d.stdout, "\"name\":\"Ticks\""), "describe lists the stream: " + d.stdout);
 
     // hale call: a command answered by its handler's value.
     let c1 = run_tool(hale + "\ncall\n" + sock + "\nClaims\n{\"task\": 7, \"who\": \"dev\"}");
