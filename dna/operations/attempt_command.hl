@@ -64,6 +64,7 @@ type AttemptCandidates {
     awaiting: Int = 0; // ... whose outcome is handed back and awaits the owner
     lacking: Int = 0; // ... whose `requires` the leg's capabilities do not cover
     effected: Int = 0; // ... that do not admit the leg's effect class
+    unresolved: Int = 0; // ... an uncertain performer holds or held with no outcome: a person's to resolve
     classed: Int = 0; // ... of a data class the leg may not see
     owned: Int = 0; // ... under an owner the leg does not work for
 }
@@ -133,7 +134,10 @@ locus AttemptCommandCodec {
         }
         return true;
     }
-    fn disposition_ok(d: String) -> Bool { return d == "done" || d == "failed" || d == "declined" || d == "timeout"; }
+    // `unresolved` is an uncertain performer's alone: its call may have
+    // acted and no answer came back, so nothing is handed back and the
+    // attempt is marked for a person (GH #946)
+    fn disposition_ok(d: String) -> Bool { return d == "done" || d == "failed" || d == "declined" || d == "timeout" || d == "unresolved"; }
     // The hat an outcome names (GH #946 hardening): a digest or none,
     // the head and watermark it was rendered at, the prompt's digest and
     // the renderer's version — each bounded, the digests well-formed.
@@ -213,7 +217,7 @@ locus AttemptCommandCodec {
         }
         // the outcome names its performer's effect class: what a failed settle may have left behind
         return lease && c.ttl == 0 && dna::effect_class_ok(c.effect_class)
-            && self.disposition_ok(c.disposition) && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
+            && self.disposition_ok(c.disposition) && (c.disposition != "unresolved" || c.effect_class == "uncertain") && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
             && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts) && self.hat_ok(c);
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
@@ -366,12 +370,25 @@ locus AttemptCommandCodec {
         if a.performer_kind != c.performer_kind { return "kind"; }
         if !self.has_row(j, "effect.requested", "attempt:" + a.attempt_id) || self.has_row(j, "attempt.outcome", a.attempt_id) { return "settled"; }
         if self.outcome_awaiting(j, a.attempt_id) { return "awaiting"; }
+        if self.unresolved(j, a.attempt_id) { return "unresolved"; }
         if !attempt_words_within(a.request.requires, c.capabilities) { return "capabilities"; }
         if !dna::word_in(c.effect_class, dna::hat_effects_of(a.request.requires)) { return "effect"; }
         if !dna::word_in(a.request.data_class, c.data_classes) { return "class"; }
         let owner = dna::id_owner(a.task_id);
         if len(c.organizations) > 0 && !dna::word_in(if len(owner) == 0 { "-" } else { owner }, c.organizations) { return "organization"; }
         return "";
+    }
+    // Whether the attempt is nobody's to claim again (GH #946, effect
+    // classes): its effect resulted unknown — a leg marked it so, or the
+    // owner did when an uncertain performer's lease ended with no outcome —
+    // or an uncertain performer's claim stands on it with no outcome, its
+    // holder included: what such a performer may have done is never
+    // retried by a program, and the lapse of its lease is the owner's
+    // `effect.result unknown`, not a second claim.
+    fn unresolved(j: dna::Journal, attempt_id: String) -> Bool {
+        if std::str::starts_with(dna::effect_result_body(j, "attempt:" + attempt_id), "unknown") { return true; }
+        let claim = dna::recorded_leg_claim(j, attempt_id, j.revision());
+        return claim.present && claim.effect_class == "uncertain";
     }
     // Whether an outcome handed back under this lease still awaits the
     // owner (hardening, B3): an `attempt.outcome_requested` row naming this
@@ -421,6 +438,7 @@ locus AttemptCommandCodec {
                     if why == "awaiting" { out.awaiting = out.awaiting + 1; }
                     if why == "capabilities" { out.lacking = out.lacking + 1; }
                     if why == "effect" { out.effected = out.effected + 1; }
+                    if why == "unresolved" { out.unresolved = out.unresolved + 1; }
                     if why == "class" { out.classed = out.classed + 1; }
                     if why == "organization" { out.owned = out.owned + 1; }
                 }
@@ -437,6 +455,7 @@ locus AttemptCommandCodec {
         if found.awaiting > 0 { why = why + ", " + to_string(found.awaiting) + " with an outcome handed back that awaits the owner"; }
         if found.lacking > 0 { why = why + ", " + to_string(found.lacking) + " needing a capability the leg lacks"; }
         if found.effected > 0 { why = why + ", " + to_string(found.effected) + " not admitting a performer of effect class `" + c.effect_class + "`"; }
+        if found.unresolved > 0 { why = why + ", " + to_string(found.unresolved) + " unresolved (an uncertain performer holds or held it with no outcome; a person resolves it: `hale dna effect resolve attempt:<id> --outcome ok|failed`)"; }
         if found.classed > 0 { why = why + ", " + to_string(found.classed) + " of a data class the leg may not see (it named " + (if len(c.data_classes) > 0 { "`" + c.data_classes + "`" } else { "none" }) + ")"; }
         if found.owned > 0 { why = why + ", " + to_string(found.owned) + " under an owner the leg does not work for (it named `" + c.organizations + "`)"; }
         return why;
@@ -451,11 +470,14 @@ locus AttemptCommandCodec {
     // The `attempt.claimed` row: the lease as granted, the attempt it is
     // on, and the command that took it.
     // A renewal is the same row with the same token and a later `until`.
-    fn claim_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, a: dna::AdmittedAttempt, lease: dna::Lease) -> String {
+    // `effect_class` is the claim's own; a renewal carries the class the
+    // lease was taken with, so the row always says what a lapse leaves.
+    fn claim_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, a: dna::AdmittedAttempt, lease: dna::Lease, effect_class: String) -> String {
         let common = GovernanceCommandCodec { };
         if !self.valid(context, c) || !(self.claim(c.operation) || self.renew(c.operation)) || !grant.allowed || !common.bounded(head, 256, true, false) || len(a.attempt_id) == 0 { return ""; }
+        if !dna::effect_class_ok(effect_class) || (self.claim(c.operation) && effect_class != c.effect_class) { return ""; }
         let b = std::json::Builder { }; b.begin_object();
-        b.string_field("holder", lease.holder); b.int_field("token", lease.token); b.int_field("until", lease.expires);
+        b.string_field("holder", lease.holder); b.int_field("token", lease.token); b.int_field("until", lease.expires); b.string_field("effect_class", effect_class);
         b.string_field("task_id", a.task_id); b.string_field("work_id", a.work_id); b.string_field("performer_kind", a.performer_kind); b.string_field("performer", if self.claim(c.operation) { c.performer } else { c.holder });
         // the principal that claimed it: whose outcome the lease admits (GH #946 hardening)
         b.string_field("principal_mode", context.principal_mode); b.string_field("principal_name", context.principal_name);
@@ -509,7 +531,7 @@ locus AttemptCommandCodec {
     fn decode_fact(e: dna::Event) -> AttemptCommandFact {
         let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { };
         let claimed = e.kind == "attempt.claimed";
-        if (!claimed && e.kind != "attempt.outcome_requested" && e.kind != "attempt.released" && e.kind != "friction.filed") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
+        if (!claimed && e.kind != "attempt.outcome_requested" && e.kind != "attempt.unresolved" && e.kind != "attempt.released" && e.kind != "friction.filed") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
         let payload = common.string(e.body, "command_payload");
         if len(payload) > 131072 || !syntax.valid(payload) { return AttemptCommandFact { }; }
         let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
@@ -520,7 +542,7 @@ locus AttemptCommandCodec {
         let same = if claimed {
             (self.claim(c.operation) || (self.renew(c.operation) && c.attempt_id == e.entity)) && e.body == self.claim_fact(context, c, grant, head,
                 dna::AdmittedAttempt { attempt_id: e.entity, work_id: common.string(e.body, "work_id"), task_id: common.string(e.body, "task_id"), performer_kind: common.string(e.body, "performer_kind") },
-                dna::Lease { holder: common.string(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until") })
+                dna::Lease { holder: common.string(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until") }, common.string(e.body, "effect_class"))
         } else if e.kind == "attempt.released" {
             self.releasing(c.operation) && c.attempt_id == e.entity && e.body == self.release_fact(context, c, grant, head)
         } else if e.kind == "friction.filed" {
@@ -568,7 +590,8 @@ locus AttemptCommandCodec {
         if self.friction(c.operation) {
             return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome { state: "filed", attempt_id: c.attempt_id, work_id: usage_work_of(c.attempt_id), holder: c.performer, token: -1, event_id: a.event_id });
         }
-        let mut state = "requested"; let mut disposition = ""; let mut reason = "";
+        // an unresolved mark is `unresolved` until a person's resolution settles the attempt
+        let mut state = if c.disposition == "unresolved" { "unresolved" } else { "requested" }; let mut disposition = ""; let mut reason = "";
         let mut i = if a.sequence < 0 { 0 } else { a.sequence + 1 };
         while i < j.revision() {
             let e = j.read(i);

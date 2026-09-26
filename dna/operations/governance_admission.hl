@@ -307,7 +307,7 @@ locus GovernanceCommands {
         let mut i = 0;
         while i < rj.revision() {
             let e = rj.read(i);
-            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.released" || e.kind == "friction.filed" {
+            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "friction.filed" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
                 if codec.string(e.body, "command_id") == id {
                     let fact = attempts.decode_fact(e); let c = fact.command;
@@ -387,7 +387,7 @@ locus GovernanceCommands {
                         || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: create.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
-            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.released" || e.kind == "friction.filed" {
+            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "friction.filed" {
                 // GH #946: a leg's claim or renewal, the outcome it handed back,
                 // the lease it gave back, or the friction a position filed
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
@@ -677,7 +677,7 @@ locus GovernanceCommands {
                     if len(taken) == 0 { return self.refusal(s, attempts.refused(context, command, "every attempt that awaits such a leg is held by another leg whose lease is live")); }
                     let admitted = dna::recorded_attempt_admission(rj, taken, rj.revision());
                     let head = self.attempt_row_head(s, ledger, adopted);
-                    let fact = attempts.claim_fact(context, command, grant, head, admitted.value, lease);
+                    let fact = attempts.claim_fact(context, command, grant, head, admitted.value, lease, command.effect_class);
                     if fact == "" { let given = leases.release_claim(lease.key, command.performer); return GovernanceResult { code: "invalid_command" }; }
                     // every path that leaves this pass without a row gives memory's
                     // claim back first (hardening, B4): the next pass takes it again —
@@ -722,12 +722,17 @@ locus GovernanceCommands {
                 let claim = dna::recorded_leg_claim(rj, a, rj.revision());
                 if !claim.present { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never claimed by a leg")); }
                 if claim.holder != command.holder || claim.token != command.token { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + command.holder + "'s at token " + to_string(command.token))); }
-                if claim.expires <= now { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " expired at " + to_string(claim.expires))); }
+                // an uncertain performer marking its attempt unresolved is heard past
+                // its lease's end: the mark is what stops a retry, and the lease
+                // that lapsed is exactly when one would start (GH #946)
+                let marking = command.operation == "dna.attempt.outcome" && command.disposition == "unresolved";
+                if !marking && claim.expires <= now { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " expired at " + to_string(claim.expires))); }
+                if command.operation == "dna.attempt.outcome" && claim.effect_class != command.effect_class { return self.refusal(s, attempts.refused(context, command, "the lease on attempt " + a + " was taken as a performer of effect class `" + claim.effect_class + "`; an outcome under it names that class, not `" + command.effect_class + "`")); }
                 if claim.principal_mode != context.principal_mode || claim.principal_name != context.principal_name { return self.refusal(s, attempts.refused(context, command, "the lease on attempt " + a + " was taken by " + claim.principal_mode + " " + claim.principal_name + "; an outcome from " + context.principal_mode + " " + context.principal_name + " under it is refused")); }
                 if leases.ready() {
                     let live = leases.current("attempt:" + a);
                     if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to fence the lease: " + leases.last_error)); }
-                    if !live.present || live.holder != command.holder || live.token != command.token || live.expires <= now { return self.refusal(s, attempts.refused(context, command, "stale: memory's claim on attempt " + a + " is not " + command.holder + "'s at token " + to_string(command.token) + " now")); }
+                    if !live.present || live.holder != command.holder || live.token != command.token || (!marking && live.expires <= now) { return self.refusal(s, attempts.refused(context, command, "stale: memory's claim on attempt " + a + " is not " + command.holder + "'s at token " + to_string(command.token) + " now")); }
                 }
                 if command.operation == "dna.attempt.renew" || command.operation == "dna.attempt.release" {
                     // the lease renewed — memory's claim taken again by its holder,
@@ -745,7 +750,7 @@ locus GovernanceCommands {
                         }
                     }
                     let head = self.attempt_row_head(s, ledger, adopted);
-                    let fact = if command.operation == "dna.attempt.renew" { attempts.claim_fact(context, command, grant, head, admitted.value, renewed) } else { attempts.release_fact(context, command, grant, head) };
+                    let fact = if command.operation == "dna.attempt.renew" { attempts.claim_fact(context, command, grant, head, admitted.value, renewed, claim.effect_class) } else { attempts.release_fact(context, command, grant, head) };
                     if fact == "" { return GovernanceResult { code: "invalid_command" }; }
                     if !self.unchanged(s) { continue; }
                     let landed = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: if command.operation == "dna.attempt.renew" { "attempt.claimed" } else { "attempt.released" }, entity: a, author: context.principal_name, body: fact }, id);
@@ -765,13 +770,28 @@ locus GovernanceCommands {
                 }
                 let filed = self.file_receipts(context, command);
                 if std::str::starts_with(filed, "!") { return self.refusal(s, attempts.refused(context, command, filed[1..len(filed)])); }
-                let head = self.attempt_row_head(s, ledger, adopted);
+                let mut base = s;
+                if marking {
+                    // the mark the owner reads (`effect.result unknown` on the attempt's
+                    // key: nothing runs on it until a person resolves it), then the
+                    // leg's account of it — the evidence a person decides on — as
+                    // `attempt.unresolved`; landed twice is still one mark
+                    if std::str::starts_with(dna::effect_result_body(rj, "attempt:" + a), "unknown") { return self.refusal(s, attempts.refused(context, command, "duplicate: attempt " + a + " is marked unresolved already; a person resolves it")); }
+                    let mark = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: "effect.result", entity: "attempt:" + a, author: context.principal_name, body: "unknown (" + command.holder + " at token " + to_string(command.token) + ", an uncertain performer, marked it: " + command.narrative + "; whether it acted is a person's to say: `hale dna effect resolve attempt:" + a + " --outcome ok|failed`)" }, id + ":mark");
+                    if !mark.ok {
+                        if mark.error == "stale" { continue; }
+                        return self.refusal(s, attempts.refused(context, command, "the record would not take the unresolved mark: " + mark.error));
+                    }
+                    let moved_mark = rj.refresh();
+                    base = GovernanceSnapshot { ok: true, application_id: s.application_id, head: if adopted { s.head } else { mark.id }, revision: if adopted { s.revision } else { s.revision + 1 } };
+                }
+                let head = self.attempt_row_head(base, ledger, adopted);
                 let fact = attempts.outcome_fact(context, command, grant, head, filed);
                 if fact == "" { return GovernanceResult { code: "invalid_command" }; }
-                if !self.unchanged(s) { continue; }
-                let landed = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: "attempt.outcome_requested", entity: a, author: context.principal_name, body: fact }, id);
+                if !marking && !self.unchanged(s) { continue; }
+                let landed = self.land_attempt_row(base, ledger, adopted, dna::Row { kind: if marking { "attempt.unresolved" } else { "attempt.outcome_requested" }, entity: a, author: context.principal_name, body: fact }, id);
                 if landed.ok {
-                    let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: if adopted { s.head } else { landed.id }, revision: if adopted { s.revision } else { s.revision + 1 } };
+                    let after = GovernanceSnapshot { ok: true, application_id: base.application_id, head: if adopted { base.head } else { landed.id }, revision: if adopted { base.revision } else { base.revision + 1 } };
                     let moved = rj.refresh();
                     return self.result_attempt(after, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: rj.revision() - 1, event_id: landed.id, native_body: fact, entity: a });
                 }

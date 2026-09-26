@@ -124,6 +124,13 @@ locus App {
         std::test::assert(!self.has_row("attempt.outcome", attempt), "the relay answered pending: nothing settled");
         return attempt;
     }
+    fn renewal_of(request: String, identity: String, attempt: String, holder: String, token: Int) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: request, operation: "dna.attempt.renew", operation_version: "1", application_id: identity, position_id: "org",
+            target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
+            attempt_id: attempt, holder: holder, token: token, ttl: 600
+        };
+    }
     fn claim_of(request: String, identity: String, head: String, kind: String, performer: String, classes: String) -> ops::GovernanceCommand {
         return ops::GovernanceCommand {
             request_id: request, operation: "dna.attempt.claim", operation_version: "1", application_id: identity, position_id: "org",
@@ -175,6 +182,55 @@ locus App {
         // is another leg's and is not raced for
         let pass = if label == "record" { "1" } else { "2" };
         let alice_leg = "position:agent#" + pass; let bob_leg = "position:editor#" + pass; let carol_leg = "position:leader#" + pass;
+        // ---- t0: the effect classes, on a judgment of their own
+        let head_c = record.head("journal").id;
+        // the classes a Work admits: an edit, which changes source, admits no
+        // effect-free performer; a Work that is answered admits any, since the
+        // class decides what a failed settle becomes, not what a performer may do
+        std::test::assert_eq_str(dna::hat_effects_of("edit"), "idempotent uncertain", l + "an edit admits no effect-free performer");
+        std::test::assert_eq_str(dna::hat_effects_of("judgment"), "effect_free idempotent uncertain", l + "a judgment admits every class");
+        std::test::assert_eq_str(dna::hat_effects_of(""), "effect_free idempotent uncertain", l + "a chore admits every class");
+        // a judgment claimed by an uncertain performer
+        let ae = self.ask();
+        let mut cu2 = self.claim_of(label + "cu2", identity, head_c, "agent", bob_leg, "internal public"); cu2.effect_class = "uncertain";
+        let ru2 = commands.submit(bob, cu2);
+        std::test::assert(ru2.ok && ru2.receipt.attempt.state == "claimed", l + "an uncertain performer claims a judgment: " + ru2.code + " " + ru2.receipt.reason);
+        std::test::assert(std::str::contains(self.row_body("attempt.claimed", ru2.receipt.attempt.attempt_id), "\"effect_class\": \"uncertain\""), l + "the claim row carries the class");
+        let ae_claimed = ru2.receipt.attempt.attempt_id;
+        let ue_token = ru2.receipt.attempt.token;
+        let ae = ae_claimed;
+        // a renewal carries no class of its own (the lease's stands), and an
+        // outcome names the class the lease was taken with
+        let mut renew_classed = self.renewal_of(label + "rc", identity, ae, bob_leg, ue_token); renew_classed.effect_class = "uncertain";
+        let rrc = commands.submit(bob, renew_classed);
+        std::test::assert(!rrc.ok && rrc.code == "invalid_command", l + "a renewal names no class: " + rrc.code);
+        let renewed_e = commands.submit(bob, self.renewal_of(label + "rr", identity, ae, bob_leg, ue_token));
+        std::test::assert(renewed_e.ok && renewed_e.receipt.attempt.state == "renewed", l + "renewed: " + renewed_e.code + " " + renewed_e.receipt.reason);
+        std::test::assert(std::str::contains(self.row_body("attempt.claimed", ae), "\"effect_class\": \"uncertain\""), l + "and the renewal row carries the lease's class");
+        let mut oe_free = self.outcome_of(label + "oe1", identity, ae, bob_leg, ue_token, self.hat_of(ae)); oe_free.effect_class = "effect_free";
+        let roe = commands.submit(bob, oe_free);
+        std::test::assert(roe.ok && roe.receipt.state == "refused" && std::str::contains(roe.receipt.reason, "names that class"), l + "an outcome of another class than the lease's is refused: " + roe.code + " " + roe.receipt.reason);
+        let mut oe_none = self.outcome_of(label + "oe2", identity, ae, bob_leg, ue_token, self.hat_of(ae)); oe_none.effect_class = "";
+        let roen = commands.submit(bob, oe_none);
+        std::test::assert(!roen.ok && roen.code == "invalid_command", l + "an outcome without a class is no outcome: " + roen.code);
+        // the uncertain performer's call may have acted and no answer came: it
+        // marks the attempt unresolved — an outcome of that disposition — and
+        // the head records the effect unknown; nobody claims it again, its
+        // holder included, until a person resolves it
+        let mut mark = self.outcome_of(label + "mark", identity, ae, bob_leg, ue_token, self.hat_of(ae)); mark.effect_class = "uncertain"; mark.disposition = "unresolved"; mark.result = ""; mark.result_ref = ""; mark.narrative = "the harness session went away after the request was sent";
+        let rm = commands.submit(bob, mark);
+        std::test::assert(rm.ok && rm.receipt.attempt.state == "unresolved", l + "the mark is admitted: " + rm.code + " " + rm.receipt.state + " " + rm.receipt.reason);
+        std::test::assert(std::str::starts_with(self.row_body("effect.result", "attempt:" + ae), "unknown") && self.has_row("attempt.unresolved", ae) && !self.has_row("attempt.outcome_requested", ae), l + "the effect resulted unknown and nothing was handed back");
+        let mut mark_free = self.outcome_of(label + "markfree", identity, ae, bob_leg, ue_token, self.hat_of(ae)); mark_free.effect_class = "idempotent"; mark_free.disposition = "unresolved";
+        std::test::assert(!commands.submit(bob, mark_free).ok, l + "unresolved is an uncertain performer's alone");
+        let mut again_e = self.claim_of(label + "ce2", identity, head_c, "agent", bob_leg, "internal public"); again_e.effect_class = "uncertain";
+        let rae = commands.submit(bob, again_e);
+        std::test::assert(rae.ok && rae.receipt.state == "refused" && std::str::contains(rae.receipt.reason, "unresolved"), l + "its holder is not given it again: " + rae.code + " " + rae.receipt.state + " " + rae.receipt.reason);
+        let mut other_e = self.claim_of(label + "ce3", identity, head_c, "agent", carol_leg, "internal public"); other_e.effect_class = "uncertain";
+        let roe3 = commands.submit(alice, other_e);
+        std::test::assert(roe3.ok && roe3.receipt.state == "refused" && std::str::contains(roe3.receipt.reason, "unresolved"), l + "nor another leg: " + roe3.receipt.reason);
+        let rmark2 = commands.lookup(bob, label + "mark");
+        std::test::assert(rmark2.ok && rmark2.receipt.attempt.state == "unresolved", l + "the mark reads back as unresolved: " + rmark2.code + " " + rmark2.receipt.attempt.state);
         // ---- t1: claim, outcome, relay, settled
         let a1 = self.ask();
         let head0 = record.head("journal").id;
@@ -182,12 +238,7 @@ locus App {
         let r0 = commands.submit(alice, self.claim_of(label + "c0", identity, head0, "agent", alice_leg, ""));
         std::test::assert(r0.ok && r0.receipt.state == "refused", l + "no class named is no class: " + r0.code + " " + r0.receipt.state);
         std::test::assert(std::str::contains(r0.receipt.reason, "data class the leg may not see"), l + "and the refusal names it: " + r0.receipt.reason);
-        // a performer of a class the Work does not admit: a judgment is answered,
-        // never acted on, so an uncertain performer is refused, and the refusal says so
-        let mut cu = self.claim_of(label + "cu", identity, head0, "agent", alice_leg, "internal public"); cu.effect_class = "uncertain";
-        let ru = commands.submit(alice, cu);
-        std::test::assert(ru.ok && ru.receipt.state == "refused" && std::str::contains(ru.receipt.reason, "effect class `uncertain`"), l + "a judgment admits no uncertain performer: " + ru.code + " " + ru.receipt.state + " " + ru.receipt.reason);
-        // and a claim naming no class at all is not a claim
+        // a claim naming no class at all is not a claim
         let mut cn = self.claim_of(label + "cn", identity, head0, "agent", alice_leg, "internal public"); cn.effect_class = "";
         let rn = commands.submit(alice, cn);
         std::test::assert(!rn.ok && rn.code == "invalid_command", l + "no class is no claim: " + rn.code + " " + rn.receipt.state);
@@ -278,7 +329,7 @@ locus App {
             std::test::assert(taken.present && taken.holder == carol_leg, l + "carol's lease in memory: " + leases.last_error);
             carol_token = taken.token;
         }
-        let stray = "{\"holder\": \"" + carol_leg + "\", \"token\": " + to_string(carol_token) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
+        let stray = "{\"holder\": \"" + carol_leg + "\", \"token\": " + to_string(carol_token) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
         let put = self.journal.append(self.journal.revision(), "attempt.claimed", a2, stray);
         std::test::assert(put.ok, l + "a later lease row: " + put.error);
         let relay2 = relay_once(self.app, "\n");

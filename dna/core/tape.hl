@@ -246,7 +246,7 @@ locus RecordedModel {
     // Forward to the inner (its evidence is the call's), then write the
     // answer and, for a workspace, the patch of what changed in it.
     fn record(req: ModelRequest, key: String) -> ModelResult {
-        if !self.ensure_dir() { return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss }; }
+        if !self.ensure_dir() { return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false }; }
         let mut snap = "";
         if len(req.workspace) > 0 {
             let t = run_tool("mktemp\n-d\n/tmp/hale-dna-tape.XXXXXX");
@@ -268,14 +268,14 @@ locus RecordedModel {
                 // entry: a replay would find the entry and no patch
                 if !self.put(self.patch_path(key), d.stdout) {
                     let rmf = run_tool("rm\n-rf\n" + snap);
-                    return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss };
+                    return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false };
                 }
                 e.patched = true;
             }
             let rm = run_tool("rm\n-rf\n" + snap);
         }
         if !self.write_entry(e) {
-            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss };
+            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false };
         }
         self.recorded = self.recorded + 1;
         return r;
@@ -301,7 +301,7 @@ locus RecordedModel {
             ev.refused = self.last_miss;
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss };
+            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false };
         }
         self.hits = self.hits + 1;
         if e.patched && len(req.workspace) > 0 {

@@ -23,7 +23,7 @@ locus RecoveryCases {
     }
     fn outcome(id: String, attempt: String, token: Int, hat: String) -> api::Outcome {
         let evidence = "[{\"backend\": \"deep\", \"requested_model\": \"deep-1\", \"input_tokens\": 12, \"output_tokens\": 3, \"cost_micros\": 5}]";
-        let mut o = api::Outcome { request_id: id, attempt_id: attempt, holder: "position:agent", token: token, effect_class: "effect_free", disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1",
+        let mut o = api::Outcome { request_id: id, attempt_id: attempt, holder: "position:agent", token: token, effect_class: "idempotent", disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1",
             narrative: "one call on the deep tier", evidence: evidence, receipts: "[]" };
         if len(hat) > 0 { o.hat_digest = hat; o.hat_head = self.f.journal.head(); o.prompt_digest = dna::digest_of("the prompt as sent"); o.renderer = "legs-render/1"; }
         return o;
