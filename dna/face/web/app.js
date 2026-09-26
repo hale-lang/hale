@@ -153,6 +153,10 @@
   const KNOWLEDGE_UNLINK = "dna.knowledge.edge.unlink";
   const KNOWLEDGE_NODES = ["dna.knowledge.node.propose", "dna.knowledge.node.revise", "dna.knowledge.node.retire"];
   const KNOWLEDGE_BINDINGS = ["dna.knowledge.binding.bind", "dna.knowledge.binding.unbind"];
+  // The head's Knowledge topics (dna/api/knowledge_commands.hl): each
+  // operation's call, and the recovery call.
+  const KNOWLEDGE_CALLS = { "dna.knowledge.edge.link": "KnowledgeEdgeLink", "dna.knowledge.edge.unlink": "KnowledgeEdgeUnlink", "dna.knowledge.node.propose": "KnowledgeNodePropose", "dna.knowledge.node.revise": "KnowledgeNodeRevise", "dna.knowledge.node.retire": "KnowledgeNodeRetire", "dna.knowledge.binding.bind": "KnowledgeBindingBind", "dna.knowledge.binding.unbind": "KnowledgeBindingUnbind" };
+  const KNOWLEDGE_LOOKUP = "KnowledgeLookup";
   const KNOWLEDGE_REMOVAL_PAGES = 32;
   const KNOWLEDGE_STORAGE = "face.knowledge-recovery.v1:";
   let knowledgeCommand = { scope: "", metadata: null, result: null, capability: null, phase: "idle", error: "", projection: "unread", blocked: false };
@@ -1113,24 +1117,42 @@
       knowledgeCommand.error = "Knowledge recovery storage is unavailable or invalid. New Knowledge submissions are blocked until the saved identity can be checked.";
     }
   }
-  function validKnowledgeCapability(body, appId, principal, operation) {
-    assert(closedObject(body, ["api_version", "source", "data"]) && body.api_version === "hale.v1"); validSource(body.source, appId);
-    const c = body.data;
-    const isNode = knowledgeNodeOperation(operation), isBinding = knowledgeBindingOperation(operation);
-    assert(closedObject(c, ["profile", "application_id", "principal", "position_id", "available", "authorized", "mode", "reason", "policy_basis", "recovery", isNode ? "max_text_bytes" : isBinding ? "max_locus_bytes" : "max_rel_bytes", "max_rationale_bytes", "max_request_bytes"]));
-    if (c.application_id !== appId || c.principal?.mode !== principal.mode || c.principal?.name !== principal.name) throw new ReadError(409, "command_context_changed", "The signed-in identity changed. The draft cannot be submitted.");
-    assert(closedObject(c.principal, ["mode", "name"]) && c.profile === operation + ".v1" && c.position_id === "org" && typeof c.available === "boolean" && typeof c.authorized === "boolean"
-      && ["direct", "review", "unavailable"].includes(c.mode) && unicodeText(c.reason) && unicodeText(c.policy_basis) && c.recovery === "record_lifetime"
-      && (isNode ? c.max_text_bytes === "8192" : isBinding ? c.max_locus_bytes === "256" : c.max_rel_bytes === "256") && c.max_rationale_bytes === "2048" && c.max_request_bytes === (isNode ? "98304" : "32768"));
-    return { ...c, operation, enabled: c.available && c.authorized && (isNode || isBinding ? c.mode === "review" : ["direct", "review"].includes(c.mode)) };
+  // What this session may send for `operation`: its call and the recovery
+  // call in the head's describe slice, read fresh. Node and binding changes
+  // always go to Review; whether a relationship is recorded directly or
+  // reviewed is the policy's, and its receipt says which.
+  async function readKnowledgeCapability(appId, capabilities, operation, signal) {
+    const slice = await readCommandSlice(appId, capabilities, signal);
+    const enabled = Array.isArray(slice) && slice.includes(KNOWLEDGE_CALLS[operation]) && slice.includes(KNOWLEDGE_LOOKUP);
+    return { operation, enabled, mode: reviewedKnowledgeOperation(operation) ? "review" : "policy", reason: enabled ? "" : "This session may not send this Knowledge change." };
   }
-  async function readKnowledgeCapability(appId, principal, operation, signal) {
-    const body = await request(API + "/" + encodeURIComponent(appId) + "/dna/knowledge/commands/capability" + (operation === KNOWLEDGE_OPERATION ? "" : "?" + new URLSearchParams({ operation })), signal);
-    return { capability: validKnowledgeCapability(body, appId, principal, operation), source: body.source };
+  const KNOWLEDGE_RECEIPT_TEXT = ["command_id", "request_id", "application_id", "principal_mode", "principal_name", "operation", "operation_version", "position_id", "target_id", "fingerprint", "state", "edge_id", "event_id", "admission_head", "authority", "authority_basis"];
+  const KNOWLEDGE_OUTCOMES = {
+    node: ["proposal_state", "candidate_digest", "review_id", "review_state", "review_outcome", "activation_state", "activation_reason", "reason"],
+    binding: ["binding_id", "proposal_state", "candidate_digest", "review_id", "review_state", "review_outcome", "effect_state", "effect_reason", "reason"],
+    relationship: ["proposal_state", "candidate_digest", "review_id", "review_state", "review_outcome", "effect_state", "effect_reason", "reason"]
+  };
+  // The head's KnowledgeReply, strictly: every branch of the typed receipt
+  // present, and in the face's own terms only the operation's own branch
+  // (a relationship only when the edge was reviewed).
+  function knowledgeReceiptView(reply, metadata) {
+    assert(closedObject(reply, ["ok", "code", "application_id", "head", "revision", "receipt"]) && reply.ok === true && reply.code === "" && reply.application_id === metadata.application_id && commandID(reply.head) && Number.isSafeInteger(reply.revision) && reply.revision >= 1);
+    const t = reply.receipt;
+    assert(closedObject(t, [...KNOWLEDGE_RECEIPT_TEXT, "sequence", "details_visible", "reviewed", ...Object.keys(KNOWLEDGE_OUTCOMES)]) && KNOWLEDGE_RECEIPT_TEXT.every(key => unicodeText(t[key])) && Number.isSafeInteger(t.sequence) && t.sequence >= 0 && typeof t.details_visible === "boolean" && typeof t.reviewed === "boolean");
+    for (const [branch, keys] of Object.entries(KNOWLEDGE_OUTCOMES)) assert(closedObject(t[branch], keys) && keys.every(key => unicodeText(t[branch][key])));
+    const operation = knowledgeOperation(metadata), isNode = knowledgeNodeOperation(operation), isBinding = knowledgeBindingOperation(operation);
+    assert(!t.reviewed || !isNode && !isBinding);
+    return {
+      command_id: t.command_id, request_id: t.request_id, application_id: t.application_id, operation: t.operation, operation_version: t.operation_version,
+      principal: { mode: t.principal_mode, name: t.principal_name }, context: { application_id: t.application_id, position_id: t.position_id },
+      target: { application_id: t.application_id, kind: knowledgeTargetKind(metadata), id: t.target_id }, fingerprint: t.fingerprint, state: t.state, details_visible: t.details_visible,
+      edge_id: t.edge_id, event_id: t.event_id, sequence: String(t.sequence), admission_head: t.admission_head, authority: t.authority, authority_basis: t.authority_basis,
+      ...(isNode ? { node: { ...t.node } } : isBinding ? { binding: { ...t.binding } } : t.reviewed ? { relationship: { ...t.relationship } } : {})
+    };
   }
-  function validKnowledgeCommandReceipt(body, metadata, method, status) {
-    assert(closedObject(body, ["api_version", "source", "data"]) && body.api_version === "hale.v1"); validSource(body.source, metadata.application_id);
-    const r = body.data;
+  function validKnowledgeCommandReceipt(reply, metadata) {
+    const r = knowledgeReceiptView(reply, metadata);
+    const source = { record_id: reply.application_id, record_head: reply.head, record_revision: String(reply.revision) };
     const isNode = knowledgeNodeOperation(knowledgeOperation(metadata)), isBinding = knowledgeBindingOperation(knowledgeOperation(metadata)), isRelationship = !isNode && !isBinding && Object.prototype.hasOwnProperty.call(r, "relationship");
     assert(closedObject(r, ["command_id", "request_id", "application_id", "operation", "operation_version", "principal", "context", "target", "fingerprint", "state", "details_visible", "edge_id", "event_id", "sequence", "admission_head", "authority", "authority_basis", ...(isNode ? ["node"] : isBinding ? ["binding"] : isRelationship ? ["relationship"] : [])]));
     assert(commandID(r.command_id) && commandID(r.fingerprint) && r.request_id === metadata.request_id && r.application_id === metadata.application_id && r.operation === knowledgeOperation(metadata) && r.operation_version === "1");
@@ -1138,7 +1160,7 @@
     assert(closedObject(r.context, ["application_id", "position_id"]) && r.context.application_id === metadata.application_id && r.context.position_id === "org");
     assert(closedObject(r.target, ["application_id", "kind", "id"]) && r.target.application_id === metadata.application_id && r.target.kind === knowledgeTargetKind(metadata) && typeof r.details_visible === "boolean");
     assert(r.details_visible ? r.target.id === metadata.target_id && (isNode || isBinding ? r.edge_id === "" : receiptID(r.edge_id)) : r.target.id === "" && r.edge_id === "");
-    assert([r.event_id, r.admission_head, r.authority].every(value => commandID(value, 256)) && commandID(r.authority_basis, 2048) && r.admission_head === metadata.record_head && decimal(r.sequence) && BigInt(body.source.record_revision) > BigInt(r.sequence));
+    assert([r.event_id, r.admission_head, r.authority].every(value => commandID(value, 256)) && commandID(r.authority_basis, 2048) && r.admission_head === metadata.record_head && decimal(r.sequence) && BigInt(source.record_revision) > BigInt(r.sequence));
     if (isNode) {
       const n = r.node;
       assert(closedObject(n, ["proposal_state", "candidate_digest", "review_id", "review_state", "review_outcome", "activation_state", "activation_reason", "reason"]));
@@ -1150,7 +1172,6 @@
       if (r.details_visible && n.proposal_state === "created") assert(receiptID(n.candidate_digest) && commandID(n.review_id));
       if (!r.details_visible) assert(n.proposal_state === "unknown" && n.candidate_digest === "" && n.review_id === "" && n.review_state === "unavailable" && n.activation_state === "unknown");
       if (n.activation_state !== "unknown") assert(n.proposal_state === "created" && n.review_state === "settled" && n.review_outcome === "approve");
-      assert(status === (method === "POST" ? 202 : 200));
     } else if (isBinding) {
       const b = r.binding;
       assert(closedObject(b, ["binding_id", "proposal_state", "candidate_digest", "review_id", "review_state", "review_outcome", "effect_state", "effect_reason", "reason"]));
@@ -1166,7 +1187,6 @@
       if (b.effect_state === "bound") assert(r.operation === "dna.knowledge.binding.bind");
       if (b.effect_state === "unbound") assert(r.operation === "dna.knowledge.binding.unbind");
       if (b.effect_state === "declined") assert(b.proposal_state === "created" && b.review_state === "settled" && ["reject", "revise"].includes(b.review_outcome));
-      assert(status === (method === "POST" ? 202 : 200));
     } else if (isRelationship) {
       const e = r.relationship;
       assert(closedObject(e, ["proposal_state", "candidate_digest", "review_id", "review_state", "review_outcome", "effect_state", "effect_reason", "reason"]));
@@ -1184,25 +1204,37 @@
       if (e.effect_state === "linked") assert(r.operation === KNOWLEDGE_OPERATION);
       if (e.effect_state === "unlinked") assert(r.operation === KNOWLEDGE_UNLINK);
       if (e.effect_state === "declined") assert(e.proposal_state === "created" && e.review_state === "settled" && ["reject", "revise"].includes(e.review_outcome));
-      assert(status === (method === "POST" ? 202 : 200));
-    } else { assert(r.state === "recorded"); assert(status === (method === "POST" ? 202 : 200)); }
-    return { receipt: r, source: body.source };
+    } else assert(r.state === "recorded");
+    return { receipt: r, source };
   }
+  // One Knowledge exchange over the head's forwarding route: the
+  // operation's call (POST) or its recovery by request identity (GET),
+  // both a line of the api wire.
   async function knowledgeCommandRequest(method, metadata, payload, signal) {
-    const pending = new AbortController(), abort = () => pending.abort();
-    signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
-    const timeout = setTimeout(abort, READ_TIMEOUT_MS);
-    try {
-      const path = API + "/" + encodeURIComponent(metadata.application_id) + "/dna/knowledge/commands" + (method === "GET" ? "?" + new URLSearchParams({ request_id: metadata.request_id }) : "");
-      const response = await fetch(path, { method, signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json", "X-Hale-Command": "1" } : {}) }, ...(method === "POST" ? { body: JSON.stringify(payload) } : {}) });
-      const body = await response.json();
-      if (!response.ok) {
-        assert(closedObject(body, ["api_version", "error"]) && body.api_version === "hale.v1" && closedObject(body.error, ["code", "message", "retryable"]) && unicodeText(body.error.code) && unicodeText(body.error.message) && typeof body.error.retryable === "boolean");
-        throw new ReadError(response.status, body.error.code, body.error.message);
-      }
-      return validKnowledgeCommandReceipt(body, metadata, method, response.status);
-    } finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); }
+    const line = method === "POST" ? { call: KNOWLEDGE_CALLS[knowledgeOperation(metadata)], payload } : { call: KNOWLEDGE_LOOKUP, payload: { request_id: metadata.request_id } };
+    const { status, body } = await commandExchange(metadata.application_id, "POST", line, signal);
+    if (status === 401) throw new ReadError(401, "unauthenticated", "Sign in again to recover this Knowledge request.");
+    if (!isReceiptLine(body)) {
+      const known = closedObject(body, ["api_version", "error"]) && body.api_version === "hale.v1" && closedObject(body.error, ["code", "message", "retryable"]) && commandID(body.error.code) && unicodeText(body.error.message);
+      throw new ReadError(status >= 400 ? status : 502, known ? body.error.code : "command_unconfirmed", known ? body.error.message : "The Knowledge request outcome could not be confirmed.");
+    }
+    validReceiptLine(body, status);
+    // A call outside this session's slice is not its to send.
+    if (!body.ok) throw new ReadError(["unknown", "unauthorized"].includes(body.refusal.kind) ? 403 : REFUSAL_STATUS[body.refusal.kind] || 400, body.refusal.kind === "unauthenticated" ? "unauthenticated" : ["unknown", "unauthorized"].includes(body.refusal.kind) ? "forbidden" : "command_unconfirmed", "This session may not send this Knowledge request.");
+    const reply = body.value;
+    if (reply?.ok === false) {
+      assert(closedObject(reply, ["ok", "code", "application_id", "head", "revision", "receipt"]) && commandID(reply.code));
+      if (reply.code === "command_context_changed") throw new ReadError(409, "command_context_changed", "The signed-in identity changed before submission.");
+      throw new ReadError(REPLY_STATUS[reply.code] || 400, reply.code, KNOWLEDGE_REFUSALS[reply.code] || "The Knowledge request outcome could not be confirmed.");
+    }
+    return validKnowledgeCommandReceipt(reply, metadata);
   }
+  // What a provider's refusal tells the person, as the route's messages did.
+  const KNOWLEDGE_REFUSALS = {
+    invalid_command: "invalid command fields or values", forbidden: "this command operation is not authorized", stale_subject: "the selected subject is no longer eligible; load its current state",
+    request_conflict: "this request identity belongs to different command content", command_not_found: "no visible command was found for this request identity",
+    commands_unsupported: "this application does not configure Knowledge command submission"
+  };
   function knowledgeCommandCurrent(token, scope, signal) {
     return token === knowledgeCommandGeneration && !signal.aborted && scope === knowledgeCommand.scope && scope === commandScope();
   }
@@ -1518,8 +1550,10 @@
         assert(validKnowledgeRecovery(metadata));
         const a = draft.arguments;
         const arguments_ = draft.operation === "edge.unlink" ? { edge_id: a.id, from_id: a.from_id, to_id: a.to_id, rel: a.rel, rationale: a.rationale } : draft.operation === "binding.unbind" ? { binding_id: a.id, idea_id: a.idea_id, author: a.author, target: a.target, rationale: a.rationale } : { ...a };
-        const payload = { request_id: metadata.request_id, operation: metadata.operation, operation_version: "1", context: { application_id: metadata.application_id, position_id: "org" }, target: { application_id: metadata.application_id, kind: knowledgeTargetKind(metadata), id: metadata.target_id }, preconditions: { principal: metadata.principal, record_head: metadata.record_head }, arguments: arguments_ };
-        if (byteLength(JSON.stringify(payload)) > (isNode ? 98304 : 32768)) throw new Error("The encoded Knowledge request exceeds " + (isNode ? "96" : "32") + " KiB. Nothing was submitted.");
+        // The call's flat payload: the head supplies the record and the
+        // principal, and derives the target of every change but an edge's.
+        const payload = { request_id: metadata.request_id, record_head: metadata.record_head, ...(isNode || isBinding ? {} : { target_id: metadata.target_id }), ...arguments_ };
+        if (byteLength(JSON.stringify({ call: KNOWLEDGE_CALLS[metadata.operation], payload })) > (isNode ? 98304 : 32768)) throw new Error("The encoded Knowledge request exceeds " + (isNode ? "96" : "32") + " KiB. Nothing was submitted.");
         const saved = JSON.stringify(metadata); localStorage.setItem(key, saved);
         if (localStorage.getItem(key) !== saved) throw new Error("The recovery identity could not be saved. Nothing was submitted.");
         return { metadata, payload };
@@ -3608,10 +3642,8 @@
             knowledgeCommand.capability = null;
             document.querySelector(".read-only").textContent = knowledgeAccessLabel();
             try {
-              const response = await readKnowledgeCapability(appId, principal, nativeKnowledgeOperation(operation), signal);
+              commandCapability = await readKnowledgeCapability(appId, capability.data, nativeKnowledgeOperation(operation), signal);
               ensureCurrent(token, signal);
-              if (response.source.record_head !== source.record_head) throw new ReadError(409, "snapshot_changed", "The Record changed while checking relationship authority. Refresh before submitting.");
-              commandCapability = response.capability;
               knowledgeCommand.capability = commandCapability;
             } catch (error) {
               if (signal.aborted || error.status === 401 || error.code === "command_context_changed" || error.status === 409) throw error;

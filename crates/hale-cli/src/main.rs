@@ -5415,7 +5415,7 @@ fn bind_build_env(
         let gated = surface.commands.iter().filter(|c| c.role.is_some()).count()
             + surface.reads.iter().filter(|r| r.role.is_some()).count()
             + surface.streams.iter().filter(|s| s.role.is_some()).count();
-        if gated > 0 && options.api_roles.is_none() {
+        if gated > 0 && options.api_roles.is_none() && surface.binding.roles.is_none() {
             eprintln!(
                 "note: {} gated operation(s) and no role table: pass `--env <name>` to bake \
                  `[environments.<name>.roles]` from hale.toml, or set LOTUS_API_ROLES at run \

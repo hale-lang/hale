@@ -134,8 +134,8 @@ locus Cases {
     fn capabilities_cases() {
         let response = self.example("read-only-capabilities");
         self.expect("CapabilitiesResponse", response, true, "a read-only head names its api socket");
-        self.expect("CapabilitiesResponse", self.example("knowledge-only-writable-capabilities"), true, "Knowledge commands alone make the listener writable");
         let data = std::json::find_field_raw(response, "data");
+        self.expect("Capabilities", self.field(data, "read_only", "false"), false, "HTTP writes nothing itself: every command is the binding's");
         let api = std::json::find_field_raw(data, "api");
         self.expect("Capabilities", self.field(data, "api", ""), false, "where the commands are is required");
         self.expect("Capabilities", self.field(data, "api", self.field(api, "transport", "\"tcp\"")), false, "the api binding is a unix socket");
@@ -226,7 +226,7 @@ locus Cases {
     // is not a Record envelope, the request's arguments are closed (a
     // secret request can never carry a value), the state set is fixed,
     // and the OpenAPI describes the command headers, the count and the
-    // read-only recovery exactly as for the Knowledge commands.
+    // read-only recovery.
     fn head_cases() {
         self.expect("HeadResponse", self.example("head-detached"), true, "detached head state");
         self.expect("HeadResponse", self.example("head-attached"), true, "attached head state");
@@ -284,7 +284,7 @@ locus Cases {
         let body = std::json::find_field_raw(post, "requestBody");
         let get_body = self.field(command, "get", self.field(get, "requestBody", body));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, get_body)), self.schema).ok, "head recovery is a read without a command body");
-        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/KnowledgeCommandRequest\"}}}");
+        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/DefinitionDraftRequest\"}}}");
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, self.field(command, "post", self.field(post, "requestBody", wrong_body)))), self.schema).ok, "the head request is its own envelope");
         let projects_path = "/api/hale/v1/head/projects";
         let projects = std::json::find_field_raw(paths, projects_path);
@@ -324,7 +324,10 @@ locus Cases {
         std::test::assert(!unsupported_fixtures.ok && std::str::contains(unsupported_fixtures.error, "format"), "fixture batch rejects unsupported schema before evaluating examples");
         let gone = self.field(paths, "/api/hale/v1/applications/{application_id}/commands", std::json::find_field_raw(paths, "/api/hale/v1/head/commands"));
         std::test::assert(!files.openapi(self.field(spec, "paths", gone), self.schema).ok, "the record's commands are the api binding, not an HTTP route");
-        let command_path = "/api/hale/v1/applications/{application_id}/dna/knowledge/commands";
+        // Every command-route rule, on the one command route this contract
+        // keeps: the head's own.
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, "/api/hale/v1/applications/{application_id}/dna/knowledge/commands", std::json::find_field_raw(paths, "/api/hale/v1/head/commands"))), self.schema).ok, "Knowledge commands are the api binding, not an HTTP route");
+        let command_path = "/api/hale/v1/head/commands";
         let command = std::json::find_field_raw(paths, command_path);
         let post = std::json::find_field_raw(command, "post");
         let get = std::json::find_field_raw(command, "get");
@@ -332,7 +335,7 @@ locus Cases {
         let no_accepted = self.field(command, "post", self.field(post, "responses", self.field(post_responses, "202", "")));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_accepted)), self.schema).ok, "command submission must describe its recorded receipt");
         let body = std::json::find_field_raw(post, "requestBody");
-        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/KnowledgeCommandResponse\"}}}");
+        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/HeadCommandResponse\"}}}");
         let wrong_post = self.field(command, "post", self.field(post, "requestBody", wrong_body));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, wrong_post)), self.schema).ok, "command request reference cannot be a receipt");
         let optional_body = self.field(command, "post", self.field(post, "requestBody", self.field(body, "required", "false")));
@@ -341,8 +344,6 @@ locus Cases {
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_headers)), self.schema).ok, "command headers must be advertised");
         let no_lookup = self.field(command, "get", self.field(get, "parameters", "[]"));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_lookup)), self.schema).ok, "recovery requires caller request identity");
-        let get_body = self.field(command, "get", self.field(get, "requestBody", body));
-        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, get_body)), self.schema).ok, "recovery is a read without a command body");
         let unexpected_put = self.field(command, "put", post);
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, unexpected_put)), self.schema).ok, "other command mutation methods remain unsupported");
         let draft_path = "/api/hale/v1/applications/{application_id}/dna/definitions/draft";

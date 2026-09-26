@@ -7,8 +7,19 @@
 // an app that imports it, and drives the binding: the gate answers and
 // refuses by the library's word, and the receipt names the role.
 
-fn lib_source() -> String {
+fn lib_source(lib_sock: String) -> String {
     return "// A source whose table is `role=member,member;…` over principal names.\n"
+    // The library is a program of its own too: a main locus with an api
+    // entry of its own. Imported, that main is inert — the app's binding
+    // is the app's, and this socket never appears (GH #1104 piece 5).
+        + "type Ping { n: Int; }\n"
+        + "topic Pings { payload: Ping; subject: \"lib.ping\"; }\n"
+        + "main locus LibHead {\n"
+        + "    bus { subscribe Pings as on_ping; }\n"
+        + "    fn on_ping(p: Ping) { }\n"
+        + "    bindings { api: unix(\"" + lib_sock + "\", bound: 8, on_full: refuse); }\n"
+        + "}\n"
+        + "fn main() { LibHead { }; }\n"
         + "locus TableRoles {\n"
         + "    params { table: String = \"\"; asked: Int = 0; }\n"
         + "    fn holds(p: std::api::Principal, r: String) -> Bool {\n"
@@ -30,8 +41,14 @@ fn app_source(sock: String, me: String) -> String {
         + "    @gated(role: support)\n"
         + "    fn on_refund(r: Refund, ctx: std::api::Context) -> Done { return Done { by: ctx.caller.name, role: ctx.role }; }\n"
         + "}\n"
+    // The app's own locus relays an imported topic: that command is the
+    // app's, described as `lib::Pings`, and a caller may write `Pings`.
+        + "locus Relay {\n"
+        + "    bus { subscribe lib::Pings as on_ping; }\n"
+        + "    fn on_ping(p: lib::Ping) -> lib::Ping { return p; }\n"
+        + "}\n"
         + "main locus App {\n"
-        + "    params { desk: Desk = Desk { }; }\n"
+        + "    params { desk: Desk = Desk { }; relay: Relay = Relay { }; }\n"
         + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse, roles: lib::TableRoles { table: \"support=uid:" + me + ";owner=uid:" + me + "\" }); }\n"
         + "    run() { std::time::sleep(8s); }\n"
         + "}\n"
@@ -112,10 +129,11 @@ fn main() {
     let tag = to_string(std::process::pid());
     let root = "/tmp/hale-1109-xseed-" + tag;
     let sock = root + "/app.sock";
+    let lib_sock = root + "/lib.sock";
     std::io::fs::mkdir(root) or discard;
     std::io::fs::mkdir(root + "/lib") or discard;
     std::io::fs::mkdir(root + "/app") or discard;
-    std::io::fs::write_file(root + "/lib/roles.hl", lib_source()) or discard;
+    std::io::fs::write_file(root + "/lib/roles.hl", lib_source(lib_sock)) or discard;
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me)) or discard;
     let checked = run_tool(hale + "\ncheck\n" + root + "/app");
     std::test::assert_eq_int(checked.code, 0, "the app with an imported source checks: " + checked.stderr);
@@ -130,6 +148,14 @@ fn main() {
     std::test::assert(std::str::contains(r1, "\"role\":\"support\"}"), "the handler's context carries it: " + r1);
     let d = api.ask("{\"id\":2,\"describe\":\"full\"}");
     std::test::assert(std::str::contains(d, "\"ok\":true") && std::str::contains(d, "\"role\":\"support\""), "owner by the library's word reads the full description: " + d);
+    // the imported main's api entry is inert: its socket never appears,
+    // and its topic is not the app's command
+    std::test::assert(!std::io::fs::file_exists(lib_sock), "an imported main's binding binds nothing: " + lib_sock);
+    std::test::assert(!std::str::contains(d, "\"name\":\"Pings\"") && std::str::contains(d, "\"name\":\"lib::Pings\""), "the imported topic the app relays is the app's command, spelled by its seed: " + d);
+    let bare = api.ask("{\"id\":5,\"call\":\"Pings\",\"payload\":{\"n\":7}}");
+    std::test::assert(std::str::contains(bare, "\"ok\":true") && std::str::contains(bare, "\"n\":7"), "the bare tail names it when it is the only one: " + bare);
+    let qualified = api.ask("{\"id\":6,\"call\":\"lib::Pings\",\"payload\":{\"n\":8}}");
+    std::test::assert(std::str::contains(qualified, "\"ok\":true") && std::str::contains(qualified, "\"n\":8"), "and so does the description's spelling: " + qualified);
     p.stop();
     std::io::fs::unlink(sock) or discard;
 

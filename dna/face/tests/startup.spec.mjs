@@ -83,7 +83,12 @@ const test = base.extend({
           try {
             const response = await fetch(origin + '/api/hale/v1/applications', { signal: AbortSignal.timeout(1000) });
             const body = await response.json();
-            if (response.ok && body.source.record_id === await git(['rev-list', '--max-parents=0', 'refs/dna/journal'])) return { child, origin, application: body.source.record_id, log: () => log, tmpdir: childEnv.TMPDIR };
+            if (response.ok && body.source.record_id === await git(['rev-list', '--max-parents=0', 'refs/dna/journal'])) {
+              // The launch token the head minted into its state directory
+              // (GH #989), and the URL it printed with it.
+              const token = (await readFile(path.join(childEnv.HALE_DNA_HEAD_STATE, 'head.token'), 'utf8')).trim();
+              return { child, origin, token, shell: `${origin}/?token=${token}`, application: body.source.record_id, log: () => log, tmpdir: childEnv.TMPDIR };
+            }
           } catch { }
           await sleep(50);
         }
@@ -99,7 +104,13 @@ test('One-command startup builds the native face for a fresh DNA project without
   const before = await project.state(); const service = await project.start({ build: true, drafts: true });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const organization = page.waitForResponse(r => r.url().includes('/dna/organization?') && !new URL(r.url()).searchParams.has('id'));
-  await page.goto(service.origin + '/#/organization');
+  // The shell opens only with the launch token: bare, it is refused; at the
+  // URL the head printed, it opens and sets the session cookie.
+  const bare = await page.request.get(service.origin + '/');
+  expect(bare.status()).toBe(401);
+  expect(service.log()).toContain('/?token=' + service.token);
+  expect((await page.goto(service.shell + '#/organization')).status()).toBe(200);
+  expect((await page.request.get(service.origin + '/')).status(), 'the cookie the URL set opens the shell again').toBe(200);
   const response = await organization; expect(response.status(), await response.text()).toBe(200);
   const data = await response.json();
   expect(data.data.basis.dependency_source).toBe('local_vendor_snapshot');
@@ -109,11 +120,10 @@ test('One-command startup builds the native face for a fresh DNA project without
   const capabilities = await page.request.get(`${service.origin}/api/hale/v1/applications/${service.application}/capabilities`);
   // Record commands are the head socket's gated topics (GH #1104 piece 5):
   // capabilities name that socket and the HTTP route that forwards one wire
-  // line to it, and carry no command profile; read_only is Knowledge writing
-  // alone, which a fresh project does not have.
+  // line to it, and carry no command profile; HTTP itself writes nothing.
   const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(true);
   expect(caps.data.writes).toBeUndefined(); expect(caps.data.commands).toBeUndefined();
-  expect(caps.data.api.transport).toBe('unix'); expect(caps.data.api.socket).toMatch(new RegExp('/' + service.application + '\\.sock$'));
+  expect(caps.data.api.transport).toBe('unix'); expect(caps.data.api.socket).toMatch(new RegExp('/' + service.application.slice(0, 12) + '\\.sock$'));
   expect(caps.data.api.http).toBe(`/api/hale/v1/applications/${service.application}/commands`);
   expect(await project.state()).toEqual(before); expect(errors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath('fresh-project-face.png') });
@@ -123,7 +133,7 @@ test('One-command startup builds the native face for a fresh DNA project without
 
 test('An existing native API starts separately and one face stopping leaves the other running', async ({ page, project }) => {
   const before = await project.state(), first = await project.start(), second = await project.start();
-  await page.goto(first.origin + '/#/practices');
+  await page.goto(first.shell + '#/practices');
   await expect(page.getByRole('heading', { name: 'Practices', exact: true })).toBeVisible();
   await stop(second.child);
   const alive = await page.request.get(first.origin + '/api/hale/v1/applications');

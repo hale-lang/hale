@@ -1,7 +1,9 @@
 // Real binding proposals, canonical Reviews, native effects and graph readback.
+// Binding changes and their recovery are forwarded lines of the head's api
+// wire on …/commands (GH #1129); a refusal is the reply's code.
 import { test as base, expect } from '@playwright/test';
 import { startBindingService, bindingEnvironmentPresent, bindingGrant } from './native-knowledge-binding-harness.mjs';
-import { isWrite } from './command-wire.mjs';
+import { callOf, isKnowledgeCall, settleKnowledge } from './command-wire.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
@@ -10,7 +12,7 @@ const test = base.extend({
     try { await use(service); }
     finally { await service.stop(); await testInfo.attach('native-binding-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
   },
-  page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
+  page: async ({ page, service }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await service.attach(page); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
 test.setTimeout(120_000);
@@ -20,7 +22,9 @@ const decision = page => page.getByRole('region', { name: 'Review intervention',
 const verdictReceipt = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const rationale = 'Apply exact evidence — café 東京 🧭. Keep <img src=x onerror="window.__bindingInjected=true"> literal.';
 const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
-const trackPosts = page => { const values = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/dna/knowledge/commands')) values.push(request.postDataJSON()); }); return values; };
+const trackPosts = page => { const values = []; page.on('request', request => { if (isKnowledgeCall(request)) values.push(request.postDataJSON()); }); return values; };
+// A payload's change, without the request identity and prepared head.
+const change = ({ request_id, record_head, ...rest }) => rest;
 
 async function prepare(page, service, { idea = service.practice, target = 'org/support', bindingId = '', filter = '' } = {}) {
   await service.quiesce(); await page.goto(service.url('knowledge', { id: idea, ...(filter ? { target: filter } : {}) }));
@@ -35,29 +39,30 @@ async function prepare(page, service, { idea = service.practice, target = 'org/s
   await expect(editor(page).getByRole('status')).toContainText('Draft reviewed against the current visible snapshot');
 }
 async function send(page, service) {
-  const pending = page.waitForResponse(response => new URL(response.url()).pathname === service.commandPath && response.request().method() === 'POST');
+  const pending = page.waitForResponse(response => new URL(response.url()).pathname === service.commandPath && isKnowledgeCall(response.request()));
   await editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true }).click();
-  const response = await pending; return { status: response.status(), body: await response.json(), command: response.request().postDataJSON() };
+  const response = await pending; const line = response.request().postDataJSON();
+  return { ...settleKnowledge(response.status(), await response.json()), line, request_id: line.payload.request_id };
 }
 async function propose(page, service, options) {
-  await prepare(page, service, options); const sent = await send(page, service); expect(sent.status).toBe(202);
-  const native = await service.waitBinding(sent.command.request_id, value => value.binding.proposal_state === 'created'); await service.quiesce();
+  await prepare(page, service, options); const sent = await send(page, service); expect(sent.status).toBe(200); expect(sent.code).toBe('');
+  const native = await service.waitBinding(sent.request_id, value => value.binding.proposal_state === 'created'); await service.quiesce();
   await receipt(page).getByRole('button', { name: 'Check binding request', exact: true }).click(); await expect(receipt(page)).toContainText('Proposal created');
   return { ...sent, native, canonical: service.candidate(native.binding.candidate_digest) };
 }
-async function decide(page, service, proposal, { verdict = 'approve', effect = proposal.command.operation.endsWith('.unbind') ? 'unbound' : 'bound' } = {}) {
+async function decide(page, service, proposal, { verdict = 'approve', effect = proposal.line.call === 'KnowledgeBindingUnbind' ? 'unbound' : 'bound' } = {}) {
   await service.quiesce(); await page.goto(service.url('reviews', { id: proposal.native.binding.review_id }));
   await expect(decision(page).getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled(); await expect(decision(page)).toContainText('You are its recorded proposer');
   await service.asActor('bob'); await page.reload();
   await expect(decision(page).getByRole('button', { name: 'Prepare decision', exact: true })).toBeEnabled();
   expect(JSON.parse(await decision(page).locator('.binding-canonical-document').textContent())).toEqual(proposal.canonical);
-  expect(proposal.canonical.format).toBe('dna.knowledge-binding-change/1'); expect(proposal.canonical.idea_id).toBe(proposal.command.target.id);
-  await expect(decision(page)).toContainText(proposal.command.arguments.target); await expect(decision(page).locator('img')).toHaveCount(0);
+  expect(proposal.canonical.format).toBe('dna.knowledge-binding-change/1'); expect(proposal.canonical.idea_id).toBe(proposal.line.payload.idea_id);
+  await expect(decision(page)).toContainText(proposal.line.payload.target); await expect(decision(page).locator('img')).toHaveCount(0);
   await decision(page).getByRole('button', { name: 'Prepare decision', exact: true }).click();
   await decision(page).getByRole('radio', { name: verdict === 'approve' ? 'Approve' : 'Reject', exact: true }).check();
   await decision(page).getByRole('textbox', { name: 'Decision note', exact: true }).fill('Decide the exact binding tuple and unchanged original idea.');
   await decision(page).getByRole('button', { name: 'Review decision', exact: true }).click();
-  const pending = page.waitForResponse(response => new URL(response.url()).pathname === service.apiPath + '/commands' && isWrite(response.request()));
+  const pending = page.waitForResponse(response => new URL(response.url()).pathname === service.apiPath + '/commands' && callOf(response.request()) === 'ReviewVerdict');
   await decision(page).getByRole('button', { name: 'Submit decision', exact: true }).click();
   const response = await pending; expect(response.status()).toBe(200);
   await service.waitCommand(response.request().postDataJSON().payload.request_id, value => value.verdict.state === 'accepted');
@@ -66,10 +71,10 @@ async function decide(page, service, proposal, { verdict = 'approve', effect = p
   await verdictReceipt(page).getByRole('button', { name: 'Dismiss completed request', exact: true }).click();
   await expect(verdictReceipt(page)).toHaveCount(0); await expect(decision(page).getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
   expect(JSON.parse(await decision(page).locator('.binding-canonical-document').textContent())).toEqual(proposal.canonical);
-  await service.asActor('alice'); return service.waitBinding(proposal.command.request_id, value => value.binding.effect_state === effect);
+  await service.asActor('alice'); return service.waitBinding(proposal.request_id, value => value.binding.effect_state === effect);
 }
 async function openResult(page, service, proposal, extra = {}) {
-  await service.quiesce(); await page.goto(service.url('knowledge', { id: proposal.command.target.id, ...extra }));
+  await service.quiesce(); await page.goto(service.url('knowledge', { id: proposal.line.payload.idea_id, ...extra }));
   await expect(receipt(page).getByRole('button', { name: 'Check binding request', exact: true })).toBeEnabled();
 }
 async function dismiss(page) { await receipt(page).getByRole('button', { name: 'Dismiss binding request', exact: true }).click(); await expect(receipt(page)).toHaveCount(0); }
@@ -79,7 +84,8 @@ test('native bindings: reviewed applicability reaches a new branch and exact rem
   expect((await service.bindings(idea, 'org/support')).length).toBe(0);
   const binding = await propose(page, service, { idea });
   const graph = await service.request(service.apiPath + '/dna/knowledge/nodes?limit=25'); expect(graph.status).toBe(200); expect(graph.body.data.items.some(row => row.id === binding.native.binding.candidate_digest)).toBe(false);
-  expect(binding.command.arguments).toEqual({ idea_id: idea, author: 'org', target: 'org/support', rationale });
+  expect(binding.line.call).toBe('KnowledgeBindingBind');
+  expect(change(binding.line.payload)).toEqual({ idea_id: idea, author: 'org', target: 'org/support', rationale });
   expect((await saved(page))[0]).toMatchObject({ version: 4, operation: 'dna.knowledge.binding.bind', target_id: idea, binding: { author: 'org', target: 'org/support' } });
   expect(JSON.stringify(await saved(page))).not.toContain(rationale); await expect(receipt(page)).not.toContainText('Binding observed');
   await decide(page, service, binding); await openResult(page, service, binding, { target: 'org/support' });
@@ -87,8 +93,8 @@ test('native bindings: reviewed applicability reaches a new branch and exact rem
   await receipt(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('binding-observed-desktop.png') }); await dismiss(page);
   const descendant = await service.applyBinding(idea, 'org/support/urgent');
   const removal = await propose(page, service, { idea, bindingId: binding.native.binding.binding_id, filter: 'org/support' });
-  expect(removal.command.arguments).toEqual({ binding_id: binding.native.binding.binding_id, idea_id: idea, author: 'org', target: 'org/support', rationale });
-  expect(removal.command.arguments).not.toHaveProperty('class'); expect(removal.command.arguments).not.toHaveProperty('applicability');
+  expect(change(removal.line.payload)).toEqual({ binding_id: binding.native.binding.binding_id, idea_id: idea, author: 'org', target: 'org/support', rationale });
+  expect(removal.line.payload).not.toHaveProperty('class'); expect(removal.line.payload).not.toHaveProperty('applicability');
   await decide(page, service, removal); await openResult(page, service, removal, { target: 'org/support/urgent' });
   await expect(receipt(page)).toContainText('Binding removal observed');
   const rows = await service.bindings(idea); expect(rows.some(row => row.id === binding.native.binding.binding_id)).toBe(false); expect(rows.some(row => row.id === descendant.receipt.binding.binding_id)).toBe(true);
@@ -99,12 +105,12 @@ test('native bindings: reviewed applicability reaches a new branch and exact rem
 test('native bindings: lost unbind reply restarts all services and recovers by GET with original tuple', async ({ page, service }) => {
   const initial = await service.applyBinding(service.practice, 'org/support'), posts = trackPosts(page);
   await prepare(page, service, { bindingId: initial.receipt.binding.binding_id }); await service.pauseDelivery(); let admitted;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue(); const response = await route.fetch(); expect(response.status()).toBe(202); admitted = route.request().postDataJSON(); await route.abort('failed');
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback(); const response = await route.fetch(); expect(response.status()).toBe(200); admitted = route.request().postDataJSON().payload; await route.abort('failed');
   });
   await editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true }).click(); await expect(receipt(page)).toContainText('could not be confirmed');
   expect((await saved(page))[0]).toMatchObject({ version: 4, operation: 'dna.knowledge.binding.unbind', request_id: admitted.request_id });
-  await page.unroute('**/dna/knowledge/commands'); await service.restart(); await service.waitBinding(admitted.request_id, value => value.binding.proposal_state === 'created'); await service.quiesce();
+  await page.unroute('**/commands'); await service.restart(); await service.waitBinding(admitted.request_id, value => value.binding.proposal_state === 'created'); await service.quiesce();
   await page.reload(); await expect(receipt(page)).toContainText('Proposal created'); await expect(receipt(page)).toContainText('org/support'); expect(posts).toHaveLength(1);
   expect((await service.bindings(service.practice)).some(row => row.id === initial.receipt.binding.binding_id)).toBe(true);
 });
@@ -118,9 +124,9 @@ test('native bindings: rejected Review leaves the binding effect declined and gr
 test('native bindings: stale admission preserves the graph and sends no replacement request', async ({ page, service }) => {
   const posts = trackPosts(page); await prepare(page, service); await service.pauseDelivery();
   const command = await service.command('binding.bind', { idea_id: service.practice, author: 'org', target: 'org/elsewhere', rationale: 'Advance native Record.' }, service.practice);
-  expect((await service.post(command)).status).toBe(202); const head = service.journal().head;
-  const refused = await send(page, service); expect(refused.status).toBe(409); expect(refused.body.error.code).toBe('stale_subject'); await expect(receipt(page)).toContainText('refused');
-  expect(service.journal().head).toBe(head); expect((await service.lookup(refused.command.request_id)).status).toBe(404); expect(posts).toHaveLength(1); service.resumeDelivery();
+  expect((await service.post(command)).code).toBe(''); const head = service.journal().head;
+  const refused = await send(page, service); expect(refused.status).toBe(200); expect(refused.code).toBe('stale_subject'); await expect(receipt(page)).toContainText('refused');
+  expect(service.journal().head).toBe(head); expect((await service.lookup(refused.request_id)).code).toBe('command_not_found'); expect(posts).toHaveLength(1); service.resumeDelivery();
 });
 
 test('native bindings: approved competing candidate reports refused effect rather than graph success', async ({ page, service }) => {
@@ -158,8 +164,12 @@ test('native bindings: removal absence requires complete unfiltered pagination a
 
 test.describe('Independent binding permissions', () => {
   test.use({ grants: [{ ...bindingGrant, binding_bind: 'deny', binding_unbind: 'deny' }] });
+  // The seat opens the call (the `position` gate); the policy, which grants
+  // nodes and edges only, refuses the binding change and admits nothing.
   test('native bindings: node and edge authority do not authorize binding changes', async ({ page, service }) => {
-    const posts = trackPosts(page); await prepare(page, service); await expect(editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true })).toBeDisabled();
-    expect((await service.capability('dna.knowledge.binding.bind')).body.data.authorized).toBe(false); expect(posts).toEqual([]); expect(await saved(page)).toEqual([]);
+    expect(await service.slice()).toEqual(expect.arrayContaining(['KnowledgeBindingBind', 'KnowledgeLookup']));
+    const posts = trackPosts(page); await prepare(page, service); const head = service.journal().head;
+    const refused = await send(page, service); expect(refused.status).toBe(200); expect(refused.code).toBe('forbidden');
+    expect(service.journal().head).toBe(head); expect(posts).toHaveLength(1); expect(service.facts('knowledge.binding.requested')).toEqual([]);
   });
 });

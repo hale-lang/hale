@@ -8,6 +8,7 @@ test('exact assignee list follows native reassignment while the same Task detail
  const service=await startTaskService({taskPolicy:(application_id,name)=>({format:'dna.task-authority/1',application_id,owner:'operations',members:['alex','blair'],grants:[{mode:'local',name,reassign:true,retire:true,recover:true}]})}); // retire: the person read carries the recipients
  const errors=[],posts=[],gets=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(isWrite(r))posts.push(r.url());if(r.method()==='GET'&&r.url().includes('/dna/tasks'))gets.push(new URL(r.url()));});
  try {
+  await service.attach(page); // the session cookie of this launch (GH #989)
   await page.goto(service.origin+'/#/tasks?'+new URLSearchParams({app:service.application,assignee:'alex',id:service.task}));
   const list=page.getByRole('region',{name:'Handed Tasks',exact:true}),detail=page.getByRole('region',{name:'Handed Task administration',exact:true});
   await expect(list.getByRole('region',{name:'Assignments for alex',exact:true})).toContainText('recorded assignee');

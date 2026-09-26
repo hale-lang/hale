@@ -90,7 +90,7 @@ locus RecordRoles {
             let now = std::time::monotonic_ns();
             if self.scanned >= 0 && now - self.looked < 1000000000 { return; }
             self.looked = now;
-            let moved = self.git.refresh();
+            self.git.refresh();
         }
         let rev = self.revision();
         if rev == self.scanned { return; }

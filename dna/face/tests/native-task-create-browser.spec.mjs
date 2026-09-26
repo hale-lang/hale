@@ -15,7 +15,7 @@ const test = base.extend({
     try { await use(service); }
     finally { await service.stop(); await info.attach('native-task-create-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); }
   },
-  page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
+  page: async ({ page, service }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await service.attach(page); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!nativeTaskEnvironmentPresent(), 'Supply matching native Task seed and configured command API binaries.');
 test.setTimeout(45_000);

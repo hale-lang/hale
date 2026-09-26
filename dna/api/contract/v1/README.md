@@ -1,8 +1,8 @@
-# Hale API read and Knowledge command contract
+# Hale API read contract
 
-This experimental contract describes the DNA reads, the Knowledge command
-adapter, the drafts and the project service head's own commands at
-`/api/hale/v1`. The record's commands are not here: they are the head's api
+This experimental contract describes the DNA reads, the drafts and the
+project service head's own commands at `/api/hale/v1`. The record's commands,
+Knowledge changes included, are not here: they are the head's api
 binding (see [Record commands](#record-commands-the-heads-api-binding)). Product scope and acceptance remain tracked in
 [#690](https://github.com/hale-lang/hale/issues/690). `openapi.json` lists the
 routes; `schema.json` supplies JSON Schema 2020-12 request and response definitions
@@ -152,8 +152,8 @@ Organization proposal) were once `POST/GET /applications/{application_id}/comman
 with per-operation capability profiles. They are now gated topics on the head's
 api binding, a unix socket. `/capabilities` says where it is,
 `api:{transport:"unix",socket}` (the socket is empty when no head serves the
-listener), and carries no write flags or command profiles; `read_only` speaks
-only for the Knowledge commands. The socket's own description is the contract:
+listener), and carries no write flags or command profiles; `read_only` is
+always true, since HTTP writes nothing itself. The socket's own description is the contract:
 `hale describe <socket>` lists the calls a caller holds, and
 `hale check --dump-api dna/api` (the head also forwards one line of that wire per `POST …/commands`, and a `GET …/commands?request_id=` as a `CommandLookup`, under the CSRF headers every mutation here carries, in the local session only — a forwarding transport until the binding grows an HTTP one, GH #1135; it is the wire's contract, not this file's) prints the full description.
 
@@ -174,8 +174,9 @@ only for the Knowledge commands. The socket's own description is the contract:
 
 `position` holds any live position, `reviewer` holds `position:reviewer`, and
 `owner` is the board. Every call answers a `CommandReply` (`ok`, `code`,
-`application_id`, `head`, `revision`, `receipt`). This contract now covers the
-reads, the Knowledge commands and the head's own commands only.
+`application_id`, `head`, `revision`, `receipt`). The Knowledge changes are topics of the same
+binding ([Knowledge commands](#knowledge-commands)). This contract now covers the
+reads, the drafts and the head's own commands only.
 
 ## Usage
 
@@ -228,139 +229,24 @@ practices unavailable. Null `source_provenance` and empty historical metadata
 are preserved. Error fixtures distinguish unsupported, unavailable, missing and
 changed views without claiming an empty successful result.
 
-## Optional Knowledge relationship command
+## Knowledge commands
 
-These profiles implement `dna.knowledge.edge.link@1` and
-`dna.knowledge.edge.unlink@1`. Link ensures one directed `(from_id, to_id, rel)`
-relationship between exact visible, ratified, unretired Knowledge receipt
-identities. Unlink records removal of that exact directed tuple and can clean
-relationships involving a retired endpoint when both endpoints remain visible.
-Node and binding changes use separate reviewed profiles below. The API admits
-these commands in its own process under an explicit authority policy; the
-[API README](../../README.md#knowledge-commands) describes that policy, and
-the [DNA spec](../../../../spec/dna.md) Record admission and projection.
+Knowledge changes are not HTTP routes of this contract. They are the head's
+gated topics on its api binding, like the record's other commands:
+`KnowledgeEdgeLink`, `KnowledgeEdgeUnlink`, `KnowledgeNodePropose`,
+`KnowledgeNodeRevise`, `KnowledgeNodeRetire`, `KnowledgeBindingBind` and
+`KnowledgeBindingUnbind` (gate `position`, subjects
+`dna.commands.knowledge.edge.link` … `dna.commands.knowledge.binding.unbind`),
+and `KnowledgeLookup` (ungated, `dna.commands.knowledge.lookup`). Each answers a
+`KnowledgeReply` (`ok`, `code`, `application_id`, `head`, `revision`,
+`receipt`). The browser reaches them through the forwarded `POST …/commands`
+like every other command. Their contract is the binding's description,
+`hale check --dump-api dna/api`; the
+[API README](../../README.md#knowledge-commands) has the payloads and the
+authority policy. What this contract keeps of Knowledge changes is what the
+reads show of them.
 
-The application routes are:
-
-- `GET /applications/{application_id}/dna/knowledge/commands/capability[?operation=…]`
-- `POST /applications/{application_id}/dna/knowledge/commands`
-- `GET /applications/{application_id}/dna/knowledge/commands?request_id=…`
-
-`KnowledgeCommandCapabilityResponse` uses the usual success envelope. Its closed
-data object names profile `dna.knowledge.edge.link.v1` or
-`dna.knowledge.edge.unlink.v1`, application, authenticated
-principal, position `org`, `available`, `authorized`, `mode`, `reason`,
-`policy_basis`, recovery `record_lifetime` and decimal byte limits. Submission
-requires `available && authorized` with mode `direct` or an implemented `review`
-path. The provider owns this choice; a Review-required policy never falls back to
-direct admission. The optional `operation` query selects an exact supported operation;
-omission defaults to link. Empty, unknown or duplicate fields are rejected.
-Permission is operation-specific: omitted `edge_unlink` policy denies removal.
-Provider absence preserves read-only behavior. The global capability includes
-either authorized available Knowledge operation in `read_only`.
-
-`KnowledgeCommandRequest` is the union of closed `KnowledgeLinkCommandRequest`
-and `KnowledgeUnlinkCommandRequest` relationship envelopes (plus the node variants
-below) containing `request_id`,
-`operation`, `operation_version`, `context:{application_id,position_id}`,
-`target:{application_id,kind:"dna.knowledge.node",id}`,
-`preconditions:{principal:{mode,name},record_head}` and
-`arguments:{from_id,to_id,rel,rationale}` for link. Unlink additionally requires
-`arguments.edge_id`, equal to the exact graph identity of the directed endpoints
-and label. Reversed endpoints or another label do not name the same edge. Link
-rejects this removal-only field; its canonical bytes and existing request
-fingerprints are unchanged. The target remains a node equal to one endpoint.
-The API resolves the actual actor and application; the expected principal is
-checked before provider dispatch and never selects authority. POST requires the
-configured exact Origin, JSON content type and `X-Hale-Command: 1`, with no query.
-Unknown, duplicate and escaped object keys are rejected.
-
-Admission compares the **exact Record head** and appends atomically against it.
-Unrelated Record changes therefore invalidate a new request's checked draft;
-there is no automatic rebase. Endpoint membership, visibility and authority use
-that captured Record. Graph generation and snapshot describe read provenance;
-they are not mutation preconditions or a transaction across Record and graph.
-The current provider supports complete Record authority with a policy fixed for
-its lifetime; new admission after Ledger adoption or abandonment is unavailable.
-
-Request identity is scoped to application, authenticated mode/name and the
-Knowledge namespace, separately from the record's commands on the api binding.
-The fingerprint includes all exact typed fields, including rationale and expected
-Record head. Identical retry recovers the existing fact before checking new
-eligibility; a changed operation or other validated content under the same key
-conflicts. Link and unlink share this namespace. After an
-uncertain reply, retain the key and use GET lookup. No POST is automatically retried.
-
-POST returns **202**, and lookup **200**, with `KnowledgeCommandResponse`.
-For direct relationship admission its only successful receipt state is `recorded`:
-a durable Record effect, not proof of graph projection. Reviewed relationships
-use the additional outcome variant below. The receipt names scoped command/request identities,
-principal, context, target, fingerprint, `event_id`, decimal-string `sequence`,
-`admission_head`, authority and authority basis. Source is the native capture
-after the operation; it may be newer during lookup. The adapter checks sequence
-against source revision and on POST verifies exact fingerprint, admission head
-and visible edge identity. Lookup returns the original stored operation without
-an operation query; clients compare it with their saved metadata. These
-cross-field checks, digest syntax and UTF-8 byte
-bounds remain native adapter checks outside the limited schema profile.
-
-Current recovery authority is checked independently. If endpoint details are
-unavailable, `details_visible=false` requires empty `target.id` and `edge_id`.
-The receipt never echoes rationale, endpoint labels or content. A fresh graph
-read is required to establish observation. A removal receipt does not prove the
-tuple previously existed or is absent from the current graph. Observing absence
-requires complete applicable edge-page coverage at one fresh snapshot; hidden,
-failed or truncated reads cannot establish removal. Projection failure cannot undo the
-recorded effect. Direct admission uncertainty is a 503 error; reviewed proposals may
-report `outcome_unknown` when their durable request is known but later evidence is
-ambiguous.
-
-Bounds are UTF-8 bytes: request ID 128; application/principal/Record head 256;
-relationship label 256; rationale 2048; encoded HTTP body 32768. Identifiers and
-labels exclude control characters; rationale preserves non-NUL controls and
-Unicode. Endpoints are `sha256:` plus 64 lowercase hex digits. Stale subject,
-request conflict or principal change returns 409; policy denial 403; absent
-receipt 404; unsupported, unavailable, busy, invalid history or uncertain outcome 503.
-
-The API admits commands in its own process, under the authority policy
-`HALE_DNA_KNOWLEDGE_COMMAND_POLICY` names, read once at startup; there is no
-Knowledge service, URL or command key. Private capability, submit and lookup
-keep their encoded requests with trusted context and typed results, handled
-in-process. Private capability accepts an optional operation alongside context;
-link retains the original context-only body and unlink explicitly names its
-operation. Private fallback errors use a 200 envelope so that typed codes such as
-Review-required and uncertain outcome survive; the public API maps the typed
-error to its actual 503 status, distinct from an authenticated actor's policy
-denial 403.
-
-## Reviewed Knowledge relationships
-
-The edge profiles also support policy-selected Review admission without changing
-request arguments, canonical bytes, fingerprints, request identity or limits.
-Direct receipts retain their exact existing fields. A reviewed edge receipt adds
-one required, closed `relationship` outcome object; no `reviewed` boolean appears
-on either wire. The private receipt has 19 fields on this branch and 18 for direct
-receipts. Recovery uses the original fact path, even if current policy mode changes.
-The presence of `relationship`, rather than the operation or current capability,
-is the receipt discriminator. Node/binding outcomes cannot accompany it.
-
-The eight fields are `proposal_state`, `candidate_digest`, `review_id`,
-`review_state`, `review_outcome`, `effect_state`, `effect_reason`, and `reason`.
-Proposal pending/created/refused/unknown maps to outer
-recorded/succeeded/refused/outcome_unknown. Created supplies exact candidate and
-Review identities; it means proposal creation, not an applied relationship.
-Visible receipts retain the exact top-level `edge_id` at every stage, including
-pending and refused. Hidden receipts retain the relationship object and durable
-outer state but clear target/edge/candidate/Review identifiers and reasons, with
-unknown proposal/effect and unavailable Review.
-
-Effects are unknown/pending/linked/unlinked/declined/refused. Linked and unlinked
-must match the submitted operation and an exact approved Review. Refused means
-an approved native effect was refused. Declined requires an explicit native
-reject/revise consequence. Pending can follow any settled verdict while its
-consequence remains unestablished. Bounded service explanations are permitted for
-declined and refused; other effect stages have an empty explanation. Approval,
-Record effect, and fresh graph observation remain separate evidence.
+## Reviewed Knowledge changes: the reads
 
 The existing `/dna/reviews/candidate?id=<Review>&snapshot=<Record-head>` returns
 `kind:"knowledge_edge_change"` and the exact canonical JSON string described by
@@ -380,90 +266,6 @@ receipt reports the relationship effect. A captured per-tuple `edge_basis`
 prevents later direct or reviewed changes, including ABA, from being overwritten
 by delayed approval. It does not introduce a graph-generation precondition or
 invalidate a candidate merely because unrelated Record rows were appended.
-
-## Optional Knowledge node commands
-
-The same Knowledge submit/lookup namespace additionally supports
-`dna.knowledge.node.propose@1`, `dna.knowledge.node.revise@1` and
-`dna.knowledge.node.retire@1`. Select the corresponding capability operation;
-the profile is the operation followed by `.v1`. Node capabilities require
-`available && authorized && mode === "review"`: this is the implemented native
-proposal/Review path, independently authorized from relationship policies.
-They advertise `max_text_bytes="8192"`, `max_rationale_bytes="2048"` and
-`max_request_bytes="98304"`, replacing the edge-only relationship limit.
-Any available authorized node operation makes global `read_only=false`.
-
-All variants keep the existing application, position `org`, expected principal,
-request identity and exact Record-head precondition. Propose arguments are
-`{kind,name,text,author,target,rationale}` and the envelope target is
-`{application_id,kind:"dna.knowledge.collection",id:arguments.target}`.
-Revise adds `arguments.supersedes` and targets that exact node digest. Retire
-accepts only `{id,rationale}` and targets that exact node; the command admission
-derives its retirement proposal from the canonical predecessor. Propose/revise
-kinds are `idea`, `concept`, `practice` and `task_concept`; callers cannot supply
-kind `retirement`. New proposal/revision names are nonempty, at most 256 UTF-8
-bytes. Existing unnamed candidates remain readable and reviewable, and may be
-retired. Policy explicitly grants author/target
-pairs, and revision requires both predecessor and requested pairs to be granted.
-Position `org` in the API context does not rewrite the requested binding target.
-
-Node requests use the same per-application/principal Knowledge request namespace
-as relationships. Changed operation or validated content conflicts under an
-existing key. Public and private node requests have a 98304-byte encoded budget;
-edge requests retain 32768. Decoded text remains at most 8192 UTF-8 bytes and
-rationale 2048. Canonical payload identity preserves Unicode, CRLF and non-NUL
-controls. A recorded admission is not a created candidate or an adopted node.
-
-Node receipts preserve common identities and Record evidence, have empty
-`edge_id`, and add the closed `node` outcome object. `proposal_state=pending`
-corresponds to outer `state=recorded`; `created` to `succeeded`; `refused` to
-`refused`; `unknown` to `outcome_unknown`. Created supplies exact
-`candidate_digest` and `review_id`. `review_state` is unavailable/pending/settled,
-with approve/reject/revise only when settled. `activation_state` is
-unknown/pending/adopted/refused; approval may succeed while adoption is refused.
-Only exact candidate ratification plus any required predecessor retirement proves
-adoption. `reason` and `activation_reason` are service-controlled summaries.
-Hidden details clear target/candidate/Review identities and expose unknown proposal,
-unavailable Review and unknown activation with empty reasons. GET recovery checks
-current authority; graph projection is established separately by fresh reads.
-
-Exact `GET /dna/practices?id=<digest>` also reads recognized unnamed Knowledge
-and retirement candidates using the existing row shape and canonical receipt
-validation. It does not add those candidates to the named Practice list. Generic
-Review pages use this exact source-bound document, not graph projection text.
-
-## Optional reviewed binding commands
-
-`dna.knowledge.binding.bind@1` and `dna.knowledge.binding.unbind@1` use the same
-Knowledge submit/lookup namespace, authenticated principal, position `org`, and
-exact Record-head admission precondition. Both target the exact underlying item
-with `{application_id,kind:"dna.knowledge.node",id:idea_id}`. Bind arguments are
-`{idea_id,author,target,rationale}`; unbind additionally requires the exact existing
-`binding_id`. The native tuple identity remains the digest of `[idea_id,target,author]`.
-Callers cannot supply derived class or applicability. `author` and `target` are
-requested loci, never principal or authority overrides. Lateral pairs are refused.
-
-Each capability uses its operation plus `.v1`, `mode="review"`,
-`max_locus_bytes="256"`, `max_rationale_bytes="2048"`, and
-`max_request_bytes="32768"`. Both available and authorized must hold. Either
-profile makes global `read_only=false`. Missing policy grants deny; the owning
-policy grants each operation and exact author/target pairs independently. Bind
-requires a visible active ratified item; unbind permits a visible retired item so
-historical applicability can be removed. All Knowledge operations share request
-identity: reuse with different operation or validated content conflicts.
-
-Binding receipts retain common identities and Record evidence, empty `edge_id`,
-and a closed `binding` object containing `binding_id`, `proposal_state`,
-`candidate_digest`, `review_id`, `review_state`, `review_outcome`, `effect_state`,
-`effect_reason`, and `reason`. Proposal stages match node receipts. A visible
-receipt always retains its exact binding identity, even before candidate creation.
-Effects are `unknown`, `pending`, `bound`, `unbound`, `declined`, or `refused`.
-`bound`/`unbound` require the corresponding native operation and exact approved
-Review plus native effect; `refused` distinguishes an approved but refused effect.
-`declined` requires an explicit rejection/revision terminal fact. Review approval
-alone proves neither a binding effect nor graph observation. Hidden receipts clear
-all target/binding/candidate/Review identifiers and reasons and expose unknown
-proposal/effect and unavailable Review. Reasons are service-controlled summaries.
 
 A binding Review has `knowledge_binding_digest`, empty `knowledge_digest`, and
 an exact canonical JSON document, not a Knowledge node. Read it with
@@ -487,6 +289,11 @@ the original Knowledge command receipt. At effect time, the native per-tuple
 `binding_basis` guard refuses intervening/ABA tuple changes. Unrelated Record
 movement does not invalidate a pending Review. These are Record-owned decisions;
 there is no atomic Record/graph promise. Fresh graph reads establish observation.
+
+Exact `GET /dna/practices?id=<digest>` also reads recognized unnamed Knowledge
+and retirement candidates using the existing row shape and canonical receipt
+validation. It does not add those candidates to the named Practice list. Generic
+Review pages use this exact source-bound document, not graph projection text.
 
 ## Workflows and ownership drafts
 
@@ -579,8 +386,8 @@ operation-specific `outcome` that carries `record:{head_before,head_after,rows}`
 on row-writing operations. Submission answers 200 on a terminal receipt and 202
 otherwise; recovery is `GET …?request_id=` under the head's own principal.
 
-`openapi.json` pins 27 paths: the head command path has the Knowledge command
-path's shape (required `Origin` and `X-Hale-Command` headers, a required
+`openapi.json` pins 25 paths: the head command path is its one command
+route (required `Origin` and `X-Hale-Command` headers, a required
 `HeadCommandRequest` body, 202 declared on submission only, recovery without a
 body), the projects read declares one optional `id`, and the logs read
 `run`, `child` and `offset`. Fixtures cover a detached and an attached state,

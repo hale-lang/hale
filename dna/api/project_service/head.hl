@@ -38,6 +38,7 @@ type HeadConfig {
     sources_dir: String = "";
     principal_mode: String = "local";
     principal_name: String = "local";
+    token: String = ""; // the local session's launch token (`<state_dir>/head.token`, 0600), in the URL the head prints
 }
 
 // How an attach ended: refused (a reason_code), failed (`ok` false
@@ -746,7 +747,10 @@ locus Head {
             let origin = wire.header(req.headers, "Origin");
             if !origin.valid || origin.count > 1 || (origin.count == 1 && origin.value != head_origin(self.cfg)) { return self.command_error("invalid_origin"); }
         }
-        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg));
+        // the child's own launch token rides on a proxied POST: the head
+        // started the child and can read its file, the browser cannot
+        let child_token = if req.method == "POST" { dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "") } else { "" };
+        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token);
         if up.ok { self.api_ready_pid = child.pid; }
         else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
         return proxied_response(up);
@@ -757,6 +761,27 @@ locus Head {
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
         if req.method != "GET" && req.method != "POST" { return self.error(405, "method_not_allowed", "the head answers GET and POST only", false); }
+        // The local session's trust until OIDC (GH #989): the shell at `/`
+        // and every POST carry the launch token — the URL once, then the
+        // cookie it set, or X-Hale-Token from a tool that read the file.
+        if len(self.cfg.token) > 0 {
+            if path == "/" {
+                let given = api::query_token(raw_query);
+                if len(given) > 0 && !api::token_matches(given, self.cfg.token) { return self.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }
+                if len(given) > 0 {
+                    let mut shell = self.web.response(path);
+                    shell.headers = shell.headers + "\r\nSet-Cookie: dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Strict; Path=/";
+                    return shell;
+                }
+                if !api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token) { return self.error(401, "unauthenticated", "open the URL the head printed (the launch token is in the head's state directory)", false); }
+            }
+            // a mutation — the head's own command, or one proxied to the
+            // child — carries it; a POST to a read is still a 405 below
+            if req.method == "POST" && (path == HEAD_PREFIX + "/commands" || path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/")) {
+                let sent = std::http::header(req, "X-Hale-Token");
+                if !api::token_matches(sent, self.cfg.token) && !api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token) { return self.error(401, "unauthenticated", "a mutation carries the launch token: the dna_local cookie the head's URL set, or X-Hale-Token", false); }
+            }
+        }
         if req.method == "GET" && self.web.serves(path) { return self.web.response(path); }
         settle_all(self.cfg);
         if path == HEAD_PREFIX || path == HEAD_PREFIX + "/projects" || path == HEAD_PREFIX + "/logs" {

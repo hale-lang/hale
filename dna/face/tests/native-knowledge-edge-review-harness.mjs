@@ -19,7 +19,7 @@ export async function startEdgeReviewService(options = {}) {
     const deadline = Date.now() + 20_000; let last;
     while (Date.now() < deadline) {
       last = await service.lookup(id);
-      if (last.status === 200 && predicate(last.body.data)) return last.body.data;
+      if (last.code === '' && predicate(last.receipt)) return last.receipt;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error('Native relationship outcome timed out: ' + JSON.stringify(last));
@@ -32,7 +32,7 @@ export async function startEdgeReviewService(options = {}) {
   }
   async function createItem() {
     const command = await service.command('node.propose', { kind: 'idea', name: 'Relationship endpoint', text: 'The second exact endpoint remains independent of its relationships.', author: 'org', target: 'org', rationale: 'Prepare a real second endpoint.' }, 'org');
-    assert.equal((await service.post(command)).status, 202);
+    const posted = await service.post(command); assert.equal(posted.code, '', JSON.stringify(posted));
     const created = await service.waitNode(command.request_id, r => r.node.proposal_state === 'created'); await decide(created.node.candidate_digest, created.node.review_id);
     await service.waitNode(command.request_id, r => r.node.activation_state === 'adopted'); await service.quiesce(); return created.node.candidate_digest;
   }

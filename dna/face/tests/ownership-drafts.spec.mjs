@@ -128,7 +128,8 @@ test('Ownership draft HTTP boundary binds principal and source and rejects inval
   const before = await service.projectState();
   const get = await page.request.get(path(service)); expect(get.status()).toBe(200); const data = (await get.json()).data;
   const body = payload(service, data, data.module.text);
-  const headers = { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' };
+  // the launch token a tool sends, as the head printed it (GH #989)
+  const headers = { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1', 'X-Hale-Token': service.token };
   for (const [change, status] of [[{ principal: { mode: 'local', name: 'different-person' } }, 409], [{ base: { ...data.base, module_digest: 'changed' } }, 409], [{ extra: true }, 400], [{ source_text: 'not an ownership statement' }, 422], [{ source_text: 'host = a\nhost = b\n' }, 422], [{ source_text: 'x'.repeat(16385) }, 413]]) {
     const response = await page.request.post(path(service), { headers, data: { ...body, ...change } }); expect(response.status(), await response.text()).toBe(status);
   }

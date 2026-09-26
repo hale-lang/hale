@@ -1,450 +1,217 @@
-// Focused public/private wire conformance with a scripted structural provider.
-// No graph, Record admission, HTTP transport, or durability is simulated here.
+// The head's Knowledge handlers (api::KnowledgeAdmission, and the
+// Commands topics over it) over a real Record, called in-process with a
+// scripted provider: what the head supplies — the Record's identity, the
+// target each operation implies, the caller as the Record maps them —
+// and what it refuses before the provider (the operations' own codec).
+// The receipts are the scripted provider's; native admission is
+// knowledge_local_test's, and the gate is the binding's
+// (dna/tests/head_roles_test.hl).
 import ".." as api;
-import "../../operations" as ops;
 import "../../core" as dna;
+import "../../operations" as ops;
+import "./fixture" as fixture;
 
 const FROM: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TO: String = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const ORIGIN: String = "http://127.0.0.1:8792";
-const HEADERS: String = "Origin: http://127.0.0.1:8792\r\nContent-Type: application/json\r\nX-Hale-Command: 1";
+const HEAD: String = "cccccccccccccccccccccccccccccccccccccccc";
+const RATIONALE: String = "Exact é 🧭\r\n <script>literal</script>";
 
-locus KnowledgeCommandHost {
+// Answers what it is told, echoing the command it was handed.
+locus ScriptedKnowledge {
     params {
-        support_calls: Int = 0; calls: Int = 0; hidden: Bool = false; mode: String = "direct"; unlink_mode: String = "unavailable"; node_mode: String = "unavailable"; code: String = "";
-        node_state: String = "recorded"; node_result: ops::KnowledgeNodeOutcome = ops::KnowledgeNodeOutcome { };
-        reviewed: Bool = false; edge_state: String = "recorded"; edge_result: ops::KnowledgeEdgeOutcome = ops::KnowledgeEdgeOutcome { };
-        binding_mode: String = "unavailable"; binding_state: String = "recorded"; binding_result: ops::KnowledgeBindingOutcome = ops::KnowledgeBindingOutcome { };
-        saved: ops::KnowledgeCommand = ops::KnowledgeCommand { }; reader: String = ""; private_body: String = "";
+        code: String = "";
+        hidden: Bool = false;
+        submit_calls: Int = 0;
+        lookup_calls: Int = 0;
+        last_context: api::CommandContext = api::CommandContext { };
+        last_command: ops::KnowledgeCommand = ops::KnowledgeCommand { };
     }
-    fn supported() -> Bool { self.support_calls = self.support_calls + 1; return true; }
-    fn capability(context: api::CommandContext) -> api::KnowledgeUpstream {
-        return self.capability_for(context, "dna.knowledge.edge.link");
+    fn supported() -> Bool { return true; }
+    fn submit(context: api::CommandContext, command: ops::KnowledgeCommand) -> ops::KnowledgeResult {
+        self.submit_calls = self.submit_calls + 1; self.last_context = context; self.last_command = command;
+        return self.result(context, command);
     }
-    fn capability_for(context: api::CommandContext, operation: String) -> api::KnowledgeUpstream {
-        self.calls = self.calls + 1;
-        let wire = api::KnowledgeCommandWire { }; self.private_body = wire.private_request(context, "capability", ops::KnowledgeCommand { operation: operation }, "");
-        let mode = if wire.binding(operation) { self.binding_mode } else if wire.node(operation) { self.node_mode } else if operation == "dna.knowledge.edge.unlink" { self.unlink_mode } else { self.mode };
-        let b = std::json::Builder { }; b.begin_object(); b.bool_field("available", if wire.node(operation) || wire.binding(operation) { mode == "review" } else { mode == "direct" || (mode == "review" && self.reviewed) }); b.bool_field("authorized", mode != "unavailable");
-        b.string_field("mode", mode); b.string_field("reason", if mode == "review" && wire.edge(operation) && !self.reviewed { "This policy requires a Review, which this provider cannot admit." } else { "" }); b.string_field("policy_basis", if mode == "unavailable" { "" } else { "policy:one" }); b.end_object();
-        return api::KnowledgeUpstream { transport_ok: true, status: 200, body: b.result() };
+    fn lookup(context: api::CommandContext, request_id: String) -> ops::KnowledgeResult {
+        self.lookup_calls = self.lookup_calls + 1; self.last_context = context;
+        let mut found = self.last_command; found.request_id = request_id;
+        return self.result(context, found);
     }
-    fn submit(context: api::CommandContext, command: ops::KnowledgeCommand) -> api::KnowledgeUpstream {
-        self.calls = self.calls + 1; self.saved = command; self.reader = context.principal_name;
-        let wire = api::KnowledgeCommandWire { }; self.private_body = wire.private_request(context, "submit", command, "");
-        return self.result(context);
-    }
-    fn lookup(context: api::CommandContext, request_id: String) -> api::KnowledgeUpstream {
-        self.calls = self.calls + 1; self.reader = context.principal_name;
-        let wire = api::KnowledgeCommandWire { }; self.private_body = wire.private_request(context, "lookup", ops::KnowledgeCommand { }, request_id);
-        return self.result(context);
-    }
-    fn result(context: api::CommandContext) -> api::KnowledgeUpstream {
-        let wire = api::KnowledgeCommandWire { }; let codec = ops::KnowledgeCommandCodec { }; let trusted = wire.context(context); let c = self.saved;
-        let b = std::json::Builder { }; b.begin_object();
-        b.bool_field("ok", self.code == ""); b.string_field("code", self.code); b.string_field("application_id", context.source.identity); b.string_field("head", "record-after"); b.int_field("revision", 7);
-        b.begin_object_field("receipt");
-        b.string_field("command_id", codec.identity(trusted, c.request_id)); b.string_field("request_id", c.request_id); b.string_field("application_id", context.source.identity);
-        b.string_field("principal_mode", context.principal_mode); b.string_field("principal_name", context.principal_name); b.string_field("operation", c.operation); b.string_field("operation_version", c.operation_version);
-        b.string_field("position_id", c.position_id); b.string_field("target_id", if self.hidden { "" } else { c.target_id }); b.string_field("fingerprint", codec.fingerprint(trusted, c)); b.string_field("state", if wire.binding(c.operation) { self.binding_state } else if wire.node(c.operation) { self.node_state } else if self.reviewed { self.edge_state } else { "recorded" });
-        b.string_field("edge_id", if self.hidden || wire.node(c.operation) || wire.binding(c.operation) { "" } else { codec.edge_id(c.from_id, c.to_id, c.rel) }); b.string_field("event_id", "record-after"); b.string_field("admission_head", c.record_head); b.int_field("sequence", 6);
-        b.string_field("authority", "curator"); b.string_field("authority_basis", "policy:one"); b.bool_field("details_visible", !self.hidden);
-        if wire.node(c.operation) { b.field("node", wire.node_json(if self.hidden { ops::KnowledgeNodeOutcome { proposal_state: "unknown" } } else { self.node_result })); }
-        if wire.binding(c.operation) { b.field("binding", wire.binding_json(if self.hidden { ops::KnowledgeBindingOutcome { proposal_state: "unknown" } } else { self.binding_result })); }
-        if self.reviewed && wire.edge(c.operation) { b.field("relationship", wire.relationship_json(if self.hidden { ops::KnowledgeEdgeOutcome { proposal_state: "unknown" } } else { self.edge_result })); }
-        b.end_object(); b.end_object();
-        return api::KnowledgeUpstream { transport_ok: true, status: 200, body: b.result() };
+    fn result(context: api::CommandContext, c: ops::KnowledgeCommand) -> ops::KnowledgeResult {
+        if len(self.code) > 0 { return ops::KnowledgeResult { code: self.code }; }
+        let codec = ops::KnowledgeCommandCodec { };
+        let trusted = ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
+        let node = ops::KnowledgeNodeCommandCodec { }; let binding = ops::KnowledgeBindingCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
+        let edge = !node.known(c.operation) && !binding.known(c.operation);
+        let receipt = ops::KnowledgeReceipt {
+            command_id: codec.identity(trusted, c.request_id), request_id: c.request_id, application_id: context.source.identity,
+            principal_mode: context.principal_mode, principal_name: context.principal_name, operation: c.operation, operation_version: c.operation_version,
+            position_id: c.position_id, target_id: if self.hidden { "" } else { c.target_id }, fingerprint: codec.fingerprint(trusted, c), state: "recorded",
+            edge_id: if self.hidden || !edge { "" } else { codec.edge_id(c.from_id, c.to_id, c.rel) }, event_id: "event-after", admission_head: c.record_head, sequence: 6,
+            authority: "curator", authority_basis: "policy:one", details_visible: !self.hidden,
+            binding: ops::KnowledgeBindingOutcome { binding_id: if binding.known(c.operation) && !self.hidden { native.identity(c.idea_id, c.target, c.author) } else { "" } }
+        };
+        return ops::KnowledgeResult { ok: true, code: "", application_id: context.source.identity, head: "record-after", revision: 7, receipt: receipt };
     }
 }
 
-locus KnowledgeCommandCases {
-    params { host: KnowledgeCommandHost = KnowledgeCommandHost { }; }
-    fn context() -> api::CommandContext {
-        return api::CommandContext { root: "/not-read-by-wire-test", source: api::Source { ok: true, identity: "application-one", head: "record-before", revision: 6 }, principal_mode: "local", principal_name: "alice" };
-    }
-    fn repeated(count: Int, byte: Int) -> String {
+locus KnowledgeCases {
+    params { f: fixture::Fixture; host: ScriptedKnowledge; knowledge: api::KnowledgeAdmission; commands: api::Commands; }
+    fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
+    fn repeat(count: Int) -> String {
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
-        while i < count { b.append_u8(byte); i = i + 1; }
+        while i < count { b.append_u8(120); i = i + 1; }
         return std::str::from_bytes(b.snapshot());
     }
-    fn body(rel: String, rationale: String) -> String {
-        let quote = ops::GovernanceCommandCodec { };
-        let b = std::json::Builder { }; b.begin_object();
-        b.string_field("request_id", "request/équipe:1"); b.string_field("operation", "dna.knowledge.edge.link"); b.string_field("operation_version", "1");
-        b.field("context", "{\"application_id\":\"application-one\",\"position_id\":\"org\"}");
-        b.begin_object_field("target"); b.string_field("application_id", "application-one"); b.string_field("kind", "dna.knowledge.node"); b.string_field("id", FROM); b.end_object();
-        b.field("preconditions", "{\"principal\":{\"mode\":\"local\",\"name\":\"alice\"},\"record_head\":\"record-before\"}");
-        b.begin_object_field("arguments"); b.string_field("from_id", FROM); b.string_field("to_id", TO); b.field("rel", quote.quote(rel)); b.field("rationale", quote.quote(rationale)); b.end_object();
-        b.end_object(); return b.result();
+    fn link(id: String, rel: String) -> api::KnowledgeLink { return api::KnowledgeLink { request_id: id, record_head: HEAD, target_id: FROM, from_id: FROM, to_id: TO, rel: rel, rationale: RATIONALE }; }
+    fn proposal(id: String, text: String) -> api::KnowledgeNodeProposal {
+        return api::KnowledgeNodeProposal { request_id: id, record_head: HEAD, kind: "idea", name: "Support équipe", text: text, author: "org", target: "org/support", rationale: RATIONALE };
     }
-    fn field(object: String, key: String, value: String) -> String {
-        let b = std::json::Builder { }; b.begin_object(); let mut it = std::json::object_first(object);
-        while !it.done {
-            let name = std::json::obj_key_string(it, object);
-            if name != key { b.field(name, std::json::obj_value_raw(it, object)); }
-            it = std::json::object_next(it, object);
-        }
-        b.field(key, value); b.end_object(); return b.result();
+    fn bind(id: String) -> api::KnowledgeBind { return api::KnowledgeBind { request_id: id, record_head: HEAD, idea_id: FROM, author: "org", target: "org/support", rationale: RATIONALE }; }
+    fn stopped(reply: api::KnowledgeReply, code: String, label: String) {
+        std::test::assert(!reply.ok && reply.code == code, label + ": expected " + code + ", got " + reply.code);
     }
-    fn call(method: String, query: String, body: String, headers: String, status: Int, code: String) -> String {
-        let wire = api::KnowledgeCommandWire { }; let common = api::CommandWire { }; let context = self.context();
-        let response = wire.handle(std::http::Request { method: method, path: "/commands", body: body, headers: headers }, query, false, context, self.host, ORIGIN);
-        std::test::assert_eq_int(response.status, status, response.body);
-        if code != "" { std::test::assert_eq_str(common.text(common.raw(response.body, "error"), "code"), code, response.body); }
-        return response.body;
-    }
-    fn malformed(body: String) {
-        let previous = self.host.calls; let supported = self.host.support_calls;
-        self.call("POST", "", body, HEADERS, 400, "invalid_command");
-        std::test::assert_eq_int(self.host.calls, previous, "invalid request never reaches provider");
-        std::test::assert_eq_int(self.host.support_calls, supported, "invalid request precedes support call");
-    }
-    fn malformed_receipt(context: api::CommandContext, command: ops::KnowledgeCommand, body: String) {
-        let wire = api::KnowledgeCommandWire { };
-        let response = wire.response(context, command, command.request_id, api::KnowledgeUpstream { transport_ok: true, status: 200, body: body }, true);
-        std::test::assert_eq_int(response.status, 503, "malformed native result fails closed");
-        std::test::assert(!std::str::contains(response.body, "PRIVATE-CANARY"), "private receipt data never enters error text");
-    }
-    fn run_cases() {
-        let wire = api::KnowledgeCommandWire { }; let common = api::CommandWire { }; let codec = ops::KnowledgeCommandCodec { }; let quote = ops::GovernanceCommandCodec { }; let context = self.context();
-        let rationale = "Exact é 🧭\r\n" + self.repeated(1, 1) + " <script>literal</script>";
-        let body = self.body("précise 🧭", rationale);
-        let parsed = wire.parse(body, context);
-        std::test::assert(parsed.valid, "closed edge.link request accepted");
-        std::test::assert_eq_str(parsed.command.rel, "précise 🧭", "Unicode label stays exact");
-        std::test::assert_eq_str(parsed.command.rationale, rationale, "CRLF, supplementary Unicode and non-NUL control preserved");
-        std::test::assert_eq_str(parsed.command.record_head, "record-before", "Record precondition is copied without substituting current head");
-        let args = common.raw(body, "arguments"); let conditions = common.raw(body, "preconditions"); let target = common.raw(body, "target");
-        self.malformed(self.field(body, "actor", "\"mallory\""));
-        self.malformed(self.field(body, "operation", "\"dna.knowledge.edge.unlink\""));
-        self.malformed(self.field(body, "operation_version", "\"2\""));
-        self.malformed(self.field(body, "request_id", "4"));
-        self.malformed(self.field(body, "target", self.field(target, "id", "\"other\"")));
-        self.malformed(self.field(body, "arguments", self.field(args, "rationale", "7")));
-        self.malformed(self.field(body, "arguments", self.field(args, "from_id", "\"sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"")));
-        self.malformed(self.field(body, "preconditions", self.field(conditions, "snapshot", "\"graph-generation-is-not-a-command-fence\"")));
-        self.malformed(std::str::replace(body, "\"request_id\":", "\"request_id\":\"duplicate\",\"request_id\":"));
-        self.malformed(std::str::replace(body, "\"request_id\":", "\"request_\\u0069d\":"));
-        self.malformed(self.field(body, "arguments", self.field(args, "rationale", "\"\\u0000\"")));
-        self.malformed(self.body(self.repeated(257, 120), "why"));
-        self.malformed(self.body("link", self.repeated(2049, 120)));
-        std::test::assert(wire.parse(self.body(self.repeated(254, 120) + "é", self.repeated(2046, 120) + "é"), context).valid, "UTF8 byte limits include exact boundary");
-        let mismatch = self.field(body, "preconditions", self.field(conditions, "principal", "{\"mode\":\"local\",\"name\":\"bob\"}"));
-        self.call("POST", "", mismatch, HEADERS, 409, "command_context_changed");
-        std::test::assert_eq_int(self.host.calls, 0, "expected identity never replaces authenticated actor");
-        std::test::assert_eq_int(self.host.support_calls, 0, "identity mismatch precedes every provider call");
-        self.call("POST", "", body, HEADERS + "\r\nX-Hale-Command: 1", 400, "invalid_command");
-        self.call("POST", "", body, HEADERS + "\r\nOrigin: " + ORIGIN, 403, "invalid_origin");
-        self.call("POST", "", body, std::str::replace(HEADERS, ORIGIN, "http://untrusted.invalid"), 403, "invalid_origin");
-        self.call("POST", "", body, HEADERS + "\r\nContent-Length: 1", 400, "invalid_command");
-        self.call("POST", "", body, HEADERS + "\r\nTransfer-Encoding: chunked", 400, "invalid_command");
-        self.call("POST", "request_id=other", body, HEADERS, 400, "invalid_query");
-        self.call("POST", "", self.repeated(32769, 32), HEADERS, 413, "command_too_large");
-        std::test::assert_eq_int(self.host.calls, 0, "framing/origin checks precede transport");
-        let locked = api::Api { mode: "oidc", knowledge_commands: self.host, command_origin: ORIGIN };
-        let denied = locked.handle(std::http::Request { method: "POST", path: "/api/hale/v1/applications/application-one/dna/knowledge/commands", body: body, headers: HEADERS });
-        std::test::assert_eq_int(denied.status, 401, "normal session authentication precedes Knowledge submission");
-        std::test::assert_eq_int(self.host.calls, 0, "unauthenticated request never reaches provider");
-        let capability = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, self.host, ORIGIN);
-        std::test::assert_eq_int(capability.status, 200, capability.body);
-        let data = common.raw(capability.body, "data");
-        std::test::assert_eq_str(common.text(data, "profile"), "dna.knowledge.edge.link.v1", "separate operation capability");
-        std::test::assert_eq_str(common.raw(data, "authorized"), "true", "authorization remains distinct");
-        std::test::assert_eq_str(common.text(common.raw(self.host.private_body, "context"), "principal_name"), "alice", "private capability receives only authenticated context");
-        let reads = api::Wire { };
-        let writable = wire.writable(context, self.host, ORIGIN);
-        std::test::assert(writable, "authorized direct capability enables Knowledge writes");
-        let capabilities = reads.capabilities(context.source, "local", "alice", false, false, true, writable, false, ORIGIN, "/run/head.sock");
-        std::test::assert_eq_str(common.raw(capabilities, "read_only"), "false", "global capability reflects Knowledge writes");
-        std::test::assert_eq_str(common.raw(capabilities, "writes"), "", "record commands are the api socket's, never a capability field");
-        self.host.mode = "review";
-        let reviewed = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, self.host, ORIGIN);
-        std::test::assert_eq_int(reviewed.status, 200, reviewed.body);
-        std::test::assert_eq_str(common.raw(common.raw(reviewed.body, "data"), "available"), "false", "required Review never silently becomes direct");
-        std::test::assert(!wire.writable(context, self.host, ORIGIN), "review policy does not grant a direct write");
-        self.host.mode = "direct";
-        let submitted = self.call("POST", "", body, HEADERS, 202, "");
-        let receipt = common.raw(submitted, "data");
-        std::test::assert_eq_str(common.text(receipt, "state"), "recorded", "Record effect does not claim projected success");
-        std::test::assert_eq_str(common.text(receipt, "sequence"), "6", "public sequence is exact decimal string");
-        std::test::assert_eq_str(common.text(common.raw(submitted, "source"), "record_head"), "record-after", "post-operation source is retained");
-        std::test::assert_eq_str(common.text(receipt, "edge_id"), codec.edge_id(FROM, TO, "précise 🧭"), "native edge identity checked");
-        std::test::assert(!std::str::contains(receipt, "rationale") && !std::str::contains(receipt, "projected"), "receipt contains no payload or invented projection");
-        std::test::assert_eq_str(self.host.reader, "alice", "actor remains trusted");
-        let payload = common.raw(self.host.private_body, "command");
-        std::test::assert_eq_str(payload, codec.canonical(wire.context(context), parsed.command), "private submit uses native canonical command object");
-        self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        std::test::assert_eq_str(common.text(self.host.private_body, "request_id"), parsed.command.request_id, "lookup uses only exact caller request identity");
-        self.call("GET", "request_id=a&request_id=b", "", "", 400, "invalid_query");
-        self.call("GET", "id=" + FROM, "", "", 400, "invalid_query");
-        let good = self.host.result(context).body; let flat = common.raw(good, "receipt");
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "fingerprint", quote.quote(FROM))));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "edge_id", quote.quote(FROM))));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "principal_name", "\"PRIVATE-CANARY\"")));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "state", "\"succeeded\"")));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "sequence", "\"6\"")));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "sequence", "7")));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "admission_head", "\"other-head\"")));
-        self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(flat, "details_visible", "false")));
-        self.malformed_receipt(context, parsed.command, self.field(good, "application_id", "\"PRIVATE-CANARY\""));
-        self.malformed_receipt(context, parsed.command, self.field(good, "revision", "9223372036854775808"));
-        self.host.hidden = true;
-        let hidden = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        std::test::assert_eq_str(common.text(common.raw(hidden, "data"), "edge_id"), "", "hidden edge identity suppressed");
-        std::test::assert_eq_str(common.text(common.raw(common.raw(hidden, "data"), "target"), "id"), "", "hidden target suppressed");
-        self.host.code = "request_conflict"; self.call("POST", "", body, HEADERS, 409, "request_conflict");
-        self.host.code = "stale_subject"; self.call("POST", "", body, HEADERS, 409, "stale_subject");
-        self.host.code = "forbidden"; self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 403, "forbidden");
-        self.host.code = "command_not_found"; self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 404, "command_not_found");
-        self.host.code = "command_outcome_unknown"; self.call("POST", "", body, HEADERS, 503, "command_outcome_unknown");
-        self.host.code = "PRIVATE-CANARY";
-        let private_error = self.call("POST", "", body, HEADERS, 503, "commands_unavailable");
-        std::test::assert(!std::str::contains(private_error, "PRIVATE-CANARY"), "unknown private error sanitized");
-        let private_auth = wire.response(context, parsed.command, parsed.command.request_id, api::KnowledgeUpstream { transport_ok: true, status: 401, body: good }, true);
-        std::test::assert_eq_int(private_auth.status, 503, "an upstream 401 is not an actor permission denial");
-        let absent = api::NoKnowledgeCommands { };
-        let missing = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, absent, ORIGIN);
-        std::test::assert_eq_str(common.raw(common.raw(missing.body, "data"), "available"), "false", "default provider cannot advertise writes");
-        std::test::assert(!wire.writable(context, absent, ORIGIN), "default provider keeps global capability read-only");
-        let no_origin = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, self.host, "");
-        std::test::assert_eq_str(common.raw(common.raw(no_origin.body, "data"), "authorized"), "false", "no configured origin cannot enable writes");
-        std::test::assert(!wire.writable(context, self.host, ""), "no command origin keeps global capability read-only");
-        self.unlink_cases();
-        self.node_cases();
-        self.binding_cases();
-        self.relationship_cases();
-    }
-    fn unlink_cases() {
-        let wire = api::KnowledgeCommandWire { }; let common = api::CommandWire { }; let codec = ops::KnowledgeCommandCodec { }; let quote = ops::GovernanceCommandCodec { }; let context = self.context();
-        self.host.hidden = false; self.host.code = "";
-        let link_body = self.body("precise 🧭", "Exact removal\r\n" + self.repeated(1, 1));
-        let link = wire.parse(link_body, context);
-        std::test::assert_eq_str(link.command.edge_id, "", "link has no removal-only field");
-        std::test::assert_eq_str(common.raw(codec.canonical(wire.context(context), link.command), "edge_id"), "", "link canonical shape stays unchanged");
-        let args = common.raw(link_body, "arguments");
-        let edge = codec.edge_id(FROM, TO, "precise 🧭");
-        let unlink_args = self.field(args, "edge_id", quote.quote(edge));
-        let unlink_body = self.field(self.field(link_body, "operation", "\"dna.knowledge.edge.unlink\""), "arguments", unlink_args);
-        let unlink = wire.parse(unlink_body, context);
-        std::test::assert(unlink.valid, "exact unlink accepted");
-        std::test::assert_eq_str(unlink.command.edge_id, edge, "captured edge identity preserved");
-        std::test::assert_eq_str(unlink.command.rationale, link.command.rationale, "unlink rationale stays byte-exact");
-        std::test::assert_eq_str(codec.identity(wire.context(context), unlink.command.request_id), codec.identity(wire.context(context), link.command.request_id), "link and unlink share one scoped Knowledge request namespace");
-        std::test::assert(codec.fingerprint(wire.context(context), unlink.command) != codec.fingerprint(wire.context(context), link.command), "operation and exact edge identity distinguish command content");
-        self.malformed(self.field(link_body, "arguments", unlink_args));
-        self.malformed(self.field(link_body, "arguments", self.field(args, "edge_id", "\"\"")));
-        self.malformed(self.field(unlink_body, "arguments", args));
-        self.malformed(self.field(unlink_body, "arguments", self.field(unlink_args, "edge_id", quote.quote(FROM))));
-        self.malformed(self.field(unlink_body, "arguments", self.field(unlink_args, "edge_id", "4")));
-        self.malformed(self.field(unlink_body, "arguments", self.field(unlink_args, "rel", "\"other-label\"")));
-        let reverse = self.field(self.field(unlink_args, "from_id", quote.quote(TO)), "to_id", quote.quote(FROM));
-        self.malformed(self.field(unlink_body, "arguments", reverse));
-        let previous = self.host.calls;
-        let invalid = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "operation=dna.knowledge.edge.unlink&operation=dna.knowledge.edge.link", true, context, self.host, ORIGIN);
-        std::test::assert_eq_int(invalid.status, 400, "duplicate capability operation refused");
-        std::test::assert_eq_int(self.host.calls, previous, "invalid capability query never reaches provider");
-        std::test::assert_eq_str(wire.capability_operation(""), "dna.knowledge.edge.link", "omitted operation remains link");
-        std::test::assert_eq_str(wire.capability_operation("operation=dna%2Eknowledge%2Eedge%2Eunlink"), "dna.knowledge.edge.unlink", "operation query decoded exactly");
-        std::test::assert_eq_str(wire.capability_operation("operation="), "", "empty capability operation refused");
-        std::test::assert_eq_str(wire.capability_operation("operation=dna.knowledge.node.replace"), "", "unknown capability refused");
-        std::test::assert_eq_str(wire.capability_operation("actor=alice"), "", "query cannot select actor");
-        self.host.mode = "unavailable"; self.host.unlink_mode = "direct";
-        std::test::assert(wire.writable(context, self.host, ORIGIN), "unlink-only authorization makes global capability writable");
-        let capability = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "operation=dna.knowledge.edge.unlink", true, context, self.host, ORIGIN);
-        std::test::assert_eq_int(capability.status, 200, capability.body);
-        std::test::assert_eq_str(common.text(common.raw(capability.body, "data"), "profile"), "dna.knowledge.edge.unlink.v1", "unlink has its own capability profile");
-        std::test::assert_eq_str(common.text(self.host.private_body, "operation"), "dna.knowledge.edge.unlink", "private capability explicitly selects unlink");
-        let legacy = wire.private_request(context, "capability", ops::KnowledgeCommand { }, "");
-        std::test::assert_eq_str(common.raw(legacy, "operation"), "", "link private capability bytes omit operation as before");
-        self.host.unlink_mode = "review";
-        std::test::assert(!wire.writable(context, self.host, ORIGIN), "Review-required unlink cannot imply direct write");
-        self.host.unlink_mode = "direct";
-        let accepted = self.call("POST", "", unlink_body, HEADERS, 202, "");
-        std::test::assert_eq_str(common.text(common.raw(accepted, "data"), "operation"), "dna.knowledge.edge.unlink", "receipt names exact removal operation");
-        std::test::assert_eq_str(common.text(common.raw(accepted, "data"), "edge_id"), edge, "receipt identifies the removed tuple");
-        std::test::assert_eq_str(common.text(common.raw(self.host.private_body, "command"), "edge_id"), edge, "private canonical removal includes edge identity");
-        let recovered = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        std::test::assert_eq_str(common.text(common.raw(recovered, "data"), "operation"), "dna.knowledge.edge.unlink", "lookup returns original recorded operation without a new command body");
-        let good = self.host.result(context).body;
-        self.malformed_receipt(context, unlink.command, self.field(good, "receipt", self.field(common.raw(good, "receipt"), "operation", "\"dna.knowledge.edge.link\"")));
-        self.host.code = "request_conflict";
-        self.call("POST", "", link_body, HEADERS, 409, "request_conflict");
-    }
-    fn node_body(operation: String, text: String) -> String {
-        let common = api::CommandWire { }; let quote = ops::GovernanceCommandCodec { };
-        let base = self.field(self.body("unused", "why"), "operation", quote.quote(operation));
-        let propose = operation == "dna.knowledge.node.propose"; let retire = operation == "dna.knowledge.node.retire";
-        let b = std::json::Builder { }; b.begin_object();
-        if retire { b.string_field("id", FROM); } else {
-            if !propose { b.string_field("supersedes", FROM); }
-            b.string_field("kind", "concept"); b.string_field("name", "intake/evidence"); b.field("text", quote.quote(text)); b.string_field("author", "org/support"); b.string_field("target", "org/support/intake");
-        }
-        b.field("rationale", quote.quote("Reason é\r\n" + self.repeated(1, 1))); b.end_object();
-        let target = self.field(self.field(common.raw(base, "target"), "kind", quote.quote(if propose { "dna.knowledge.collection" } else { "dna.knowledge.node" })), "id", quote.quote(if propose { "org/support/intake" } else { FROM }));
-        return self.field(self.field(base, "target", target), "arguments", b.result());
-    }
-    fn node_cases() {
-        let wire = api::KnowledgeCommandWire { }; let common = api::CommandWire { }; let codec = ops::KnowledgeCommandCodec { }; let quote = ops::GovernanceCommandCodec { }; let context = self.context();
-        self.host.hidden = false; self.host.code = ""; self.host.mode = "unavailable"; self.host.unlink_mode = "unavailable"; self.host.node_mode = "review";
-        std::test::assert(wire.writable(context, self.host, ORIGIN), "node-only Review admission makes the connection writable");
-        let text = "Exact é 🧭\r\n" + self.repeated(1, 1); let operations = "dna.knowledge.node.propose dna.knowledge.node.revise dna.knowledge.node.retire";
-        let mut index = 0;
-        while index < 3 {
-            let operation = if index == 0 { "dna.knowledge.node.propose" } else if index == 1 { "dna.knowledge.node.revise" } else { "dna.knowledge.node.retire" };
-            let body = self.node_body(operation, text); let parsed = wire.parse(body, context);
-            std::test::assert(parsed.valid, "each exact node variant accepted");
-            std::test::assert_eq_str(parsed.command.text, if index == 2 { "" } else { text }, "node payload preserves exact controls and Unicode; retirement is service-derived");
-            let capability = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "operation=" + operation, true, context, self.host, ORIGIN);
-            std::test::assert_eq_int(capability.status, 200, capability.body);
-            let data = common.raw(capability.body, "data");
-            std::test::assert_eq_str(common.text(data, "profile"), operation + ".v1", "operation-specific node profile");
-            std::test::assert_eq_str(common.raw(data, "available"), "true", "node Review mode is implemented");
-            std::test::assert_eq_str(common.text(data, "max_text_bytes"), "8192", "node text limit");
-            std::test::assert_eq_str(common.text(data, "max_request_bytes"), "98304", "node encoded request limit");
-            std::test::assert_eq_str(common.raw(data, "max_rel_bytes"), "", "node capability never borrows an edge profile");
-            let submitted = self.call("POST", "", body, HEADERS, 202, "");
-            std::test::assert_eq_str(common.text(common.raw(common.raw(submitted, "data"), "node"), "proposal_state"), "pending", "admission alone leaves node proposal pending");
-            std::test::assert_eq_str(common.raw(self.host.private_body, "command"), codec.canonical(wire.context(context), parsed.command), "node private payload is the native exact canonical command");
-            let args = common.raw(body, "arguments");
-            self.malformed(self.field(body, "arguments", self.field(args, "edge_id", quote.quote(FROM))));
-            self.malformed(self.field(body, "target", self.field(common.raw(body, "target"), "id", quote.quote(TO))));
-            if index == 2 { self.malformed(self.field(body, "arguments", self.field(args, "text", "\"untrusted retirement content\""))); }
-            else {
-                self.malformed(self.field(body, "arguments", self.field(args, "kind", "\"retirement\"")));
-                self.malformed(self.field(body, "arguments", self.field(args, "name", "\"\"")));
-                self.malformed(self.field(body, "arguments", self.field(args, "text", "3")));
-                self.malformed(self.field(body, "arguments", self.field(args, "text", quote.quote(self.repeated(8193, 120)))));
-            }
-            index = index + 1;
-        }
-        let large = self.node_body("dna.knowledge.node.propose", self.repeated(8192, 1));
-        std::test::assert(len(large) > 32768 && len(large) < 98304, "node fixture exercises the independent larger encoded profile");
-        self.call("POST", "", large, HEADERS, 202, "");
-        self.call("POST", "", self.repeated(98305, 32), HEADERS, 413, "command_too_large");
-        let command = wire.parse(large, context).command;
-        self.host.node_state = "succeeded"; self.host.node_result = ops::KnowledgeNodeOutcome { proposal_state: "created", candidate_digest: TO, review_id: "k:bbbbbbbbbbbb", review_state: "pending" };
-        let created = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        std::test::assert_eq_str(common.text(common.raw(common.raw(created, "data"), "node"), "candidate_digest"), TO, "lookup returns exact created candidate without command resubmission");
-        let good = self.host.result(context).body; let flat = common.raw(good, "receipt"); let node = common.raw(flat, "node");
-        self.malformed_receipt(context, command, self.field(good, "receipt", self.field(flat, "node", self.field(node, "activation_state", "\"adopted\""))));
-        self.malformed_receipt(context, command, self.field(good, "receipt", self.field(flat, "edge_id", quote.quote(FROM))));
-        self.malformed_receipt(context, command, self.field(good, "receipt", self.field(flat, "node", self.field(node, "candidate_digest", "\"\""))));
-        self.host.node_result = ops::KnowledgeNodeOutcome { proposal_state: "created", candidate_digest: TO, review_id: "k:bbbbbbbbbbbb", review_state: "settled", review_outcome: "approve", activation_state: "refused", activation_reason: "The owning service refused adoption." };
-        self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        self.host.hidden = true;
-        let hidden = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        std::test::assert_eq_str(common.text(common.raw(common.raw(hidden, "data"), "node"), "candidate_digest"), "", "hidden node candidate is cleared");
-        std::test::assert(!std::str::contains(hidden, "k:bbbbbbbbbbbb"), "hidden review identity cannot leak");
-    }
-    fn binding_body(operation: String) -> String {
-        let common = api::CommandWire { }; let quote = ops::GovernanceCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
-        let base = self.field(self.body("unused", "why"), "operation", quote.quote(operation));
-        let b = std::json::Builder { }; b.begin_object(); b.string_field("idea_id", FROM); b.string_field("author", "org"); b.string_field("target", "org/support"); b.field("rationale", quote.quote("Exact é\r\n" + self.repeated(1, 1)));
-        if operation == "dna.knowledge.binding.unbind" { b.string_field("binding_id", native.identity(FROM, "org/support", "org")); }
-        b.end_object(); return self.field(base, "arguments", b.result());
-    }
-    fn binding_cases() {
-        let wire = api::KnowledgeCommandWire { }; let common = api::CommandWire { }; let quote = ops::GovernanceCommandCodec { }; let codec = ops::KnowledgeCommandCodec { }; let native = dna::KnowledgeBindingCodec { }; let context = self.context();
-        self.host.hidden = false; self.host.mode = "unavailable"; self.host.unlink_mode = "unavailable"; self.host.node_mode = "unavailable"; self.host.binding_mode = "review";
-        std::test::assert(wire.writable(context, self.host, ORIGIN), "binding-only Review grant makes capability writable");
-        let mut index = 0;
-        while index < 2 {
-            let operation = if index == 0 { "dna.knowledge.binding.bind" } else { "dna.knowledge.binding.unbind" };
-            self.host.binding_state = "recorded"; self.host.binding_result = ops::KnowledgeBindingOutcome { binding_id: native.identity(FROM, "org/support", "org") };
-            let body = self.binding_body(operation); let parsed = wire.parse(body, context);
-            std::test::assert(parsed.valid, "closed native binding request is valid");
-            std::test::assert_eq_str(parsed.command.idea_id, FROM, "exact item is retained");
-            std::test::assert_eq_str(parsed.command.author, "org", "locus author is not authenticated human");
-            let capability = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "operation=" + operation, true, context, self.host, ORIGIN);
-            let data = common.raw(capability.body, "data");
-            std::test::assert_eq_str(common.text(data, "profile"), operation + ".v1", "operation-specific binding profile");
-            std::test::assert_eq_str(common.text(data, "max_locus_bytes"), "256", "locus byte bound advertised");
-            std::test::assert_eq_str(common.text(data, "max_request_bytes"), "32768", "bindings preserve small encoded envelope cap");
-            self.call("POST", "", body, HEADERS, 202, "");
-            std::test::assert_eq_str(common.raw(self.host.private_body, "command"), codec.canonical(wire.context(context), parsed.command), "private binding command retains native canonical bytes");
-            let args = common.raw(body, "arguments");
-            self.malformed(self.field(body, "arguments", self.field(args, "class", "\"goal\"")));
-            self.malformed(self.field(body, "arguments", self.field(args, "applicability", "\"exact\"")));
-            self.malformed(self.field(body, "arguments", self.field(args, "target", "\"sibling\"")));
-            self.malformed(self.field(body, "arguments", self.field(args, "author", quote.quote(self.repeated(257, 120)))));
-            self.malformed(self.field(body, "target", self.field(common.raw(body, "target"), "id", quote.quote(TO))));
-            self.malformed(self.field(body, "arguments", self.field(args, "binding_id", quote.quote(TO))));
-            self.host.binding_state = "succeeded";
-            self.host.binding_result = ops::KnowledgeBindingOutcome { binding_id: native.identity(FROM, "org/support", "org"), proposal_state: "created", candidate_digest: TO, review_id: "binding:bbbb", review_state: "pending" };
-            self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            let good = self.host.result(context).body; let receipt = common.raw(good, "receipt"); let binding = common.raw(receipt, "binding");
-            self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(receipt, "node", "{}")));
-            self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(receipt, "binding", self.field(binding, "effect_state", "\"bound\""))));
-            self.host.binding_result = ops::KnowledgeBindingOutcome { binding_id: native.identity(FROM, "org/support", "org"), proposal_state: "created", candidate_digest: TO, review_id: "binding:bbbb", review_state: "settled", review_outcome: "approve", effect_state: if index == 0 { "bound" } else { "unbound" } };
-            let approved_result = self.host.result(context).body;
-            let approved_receipt = common.raw(approved_result, "receipt"); let approved_binding = common.raw(approved_receipt, "binding");
-            self.malformed_receipt(context, parsed.command, self.field(approved_result, "receipt", self.field(approved_receipt, "binding", self.field(approved_binding, "effect_reason", "\"Unexpected effect reason\""))));
-            self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            self.host.binding_result = ops::KnowledgeBindingOutcome { binding_id: native.identity(FROM, "org/support", "org"), proposal_state: "created", candidate_digest: TO, review_id: "binding:bbbb", review_state: "settled", review_outcome: if index == 0 { "reject" } else { "revise" }, effect_state: "declined", effect_reason: "The Review declined this binding change." };
-            let declined = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            std::test::assert_eq_str(common.text(common.raw(common.raw(declined, "data"), "binding"), "effect_reason"), "The Review declined this binding change.", "native rejected/revised effect reason survives recovery");
-            let declined_result = self.host.result(context).body; let declined_receipt = common.raw(declined_result, "receipt"); let declined_binding = common.raw(declined_receipt, "binding");
-            self.malformed_receipt(context, parsed.command, self.field(declined_result, "receipt", self.field(declined_receipt, "binding", self.field(declined_binding, "review_outcome", "\"approve\""))));
-            self.malformed_receipt(context, parsed.command, self.field(declined_result, "receipt", self.field(declined_receipt, "binding", self.field(declined_binding, "effect_reason", quote.quote(self.repeated(513, 120))))));
-            self.host.hidden = true;
-            let hidden = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            std::test::assert(!std::str::contains(hidden, "binding:bbbb") && !std::str::contains(hidden, native.identity(FROM, "org/support", "org")), "hidden binding receipt clears tuple and Review identity");
-            self.host.hidden = false; index = index + 1;
-        }
-    }
-    fn relationship_cases() {
-        let wire = api::KnowledgeCommandWire { }; let common = api::CommandWire { }; let codec = ops::KnowledgeCommandCodec { }; let quote = ops::GovernanceCommandCodec { }; let context = self.context();
-        self.host.hidden = false; self.host.code = ""; self.host.mode = "review"; self.host.unlink_mode = "review"; self.host.node_mode = "unavailable"; self.host.binding_mode = "unavailable"; self.host.reviewed = true;
-        std::test::assert(wire.writable(context, self.host, ORIGIN), "implemented relationship Review mode makes the application writable");
-        let mut index = 0;
-        while index < 2 {
-            let operation = if index == 0 { "dna.knowledge.edge.link" } else { "dna.knowledge.edge.unlink" };
-            let base = self.body("exact é 🧭", "Review relationship\r\n" + self.repeated(1, 1));
-            let edge_id = codec.edge_id(FROM, TO, "exact é 🧭");
-            let body = if index == 0 { base } else { self.field(self.field(base, "operation", quote.quote(operation)), "arguments", self.field(common.raw(base, "arguments"), "edge_id", quote.quote(edge_id))) };
-            let parsed = wire.parse(body, context); std::test::assert(parsed.valid, "reviewed operation uses the unchanged public arguments");
-            self.host.edge_state = "recorded"; self.host.edge_result = ops::KnowledgeEdgeOutcome { };
-            let cap = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "operation=" + operation, true, context, self.host, ORIGIN);
-            std::test::assert_eq_int(cap.status, 200, cap.body);
-            std::test::assert_eq_str(common.raw(common.raw(cap.body, "data"), "available"), "true", "reviewed edge profile is available");
-            let accepted = self.call("POST", "", body, HEADERS, 202, ""); let pending = common.raw(accepted, "data");
-            std::test::assert_eq_str(common.text(pending, "edge_id"), edge_id, "pending request preserves exact tuple without implying effect");
-            std::test::assert_eq_str(common.raw(pending, "reviewed"), "", "internal reviewed flag is not a public field");
-            std::test::assert_eq_str(common.text(common.raw(pending, "relationship"), "proposal_state"), "pending", "relationship object distinguishes reviewed admission");
-            self.host.mode = "direct"; self.host.unlink_mode = "direct";
-            let recovered = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            std::test::assert(common.raw(common.raw(recovered, "data"), "relationship") != "", "recorded reviewed variant survives current direct mode");
-            self.host.edge_state = "succeeded"; self.host.edge_result = ops::KnowledgeEdgeOutcome { proposal_state: "created", candidate_digest: TO, review_id: "knowledge-edge:" + TO, review_state: "pending" };
-            self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            let good = self.host.result(context).body; let receipt = common.raw(good, "receipt"); let relationship = common.raw(receipt, "relationship");
-            self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(receipt, "binding", "{}")));
-            self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(receipt, "node", "{}")));
-            self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(receipt, "relationship", "null")));
-            self.malformed_receipt(context, parsed.command, self.field(good, "receipt", self.field(receipt, "relationship", self.field(relationship, "effect_state", "\"linked\""))));
-            self.host.edge_result = ops::KnowledgeEdgeOutcome { proposal_state: "created", candidate_digest: TO, review_id: "knowledge-edge:" + TO, review_state: "settled", review_outcome: "approve", effect_state: if index == 0 { "linked" } else { "unlinked" } };
-            self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            let terminal = self.host.result(context).body; let terminal_receipt = common.raw(terminal, "receipt"); let terminal_outcome = common.raw(terminal_receipt, "relationship");
-            self.malformed_receipt(context, parsed.command, self.field(terminal, "receipt", self.field(terminal_receipt, "relationship", self.field(terminal_outcome, "effect_state", quote.quote(if index == 0 { "unlinked" } else { "linked" })))));
-            self.host.edge_result = ops::KnowledgeEdgeOutcome { proposal_state: "created", candidate_digest: TO, review_id: "knowledge-edge:" + TO, review_state: "settled", review_outcome: if index == 0 { "reject" } else { "revise" }, effect_state: "pending" };
-            self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            self.host.edge_result = ops::KnowledgeEdgeOutcome { proposal_state: "created", candidate_digest: TO, review_id: "knowledge-edge:" + TO, review_state: "settled", review_outcome: if index == 0 { "reject" } else { "revise" }, effect_state: "declined", effect_reason: "The Review declined this relationship change." };
-            self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-            self.host.hidden = true;
-            let hidden = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, ""); let masked = common.raw(hidden, "data");
-            std::test::assert(common.raw(masked, "relationship") != "" && common.text(masked, "edge_id") == "" && !std::str::contains(masked, "knowledge-edge:"), "hidden receipt retains reviewed variant and clears tuple/candidate details");
-            self.host.hidden = false; self.host.mode = "review"; self.host.unlink_mode = "review"; index = index + 1;
-        }
-        self.host.reviewed = false; self.host.mode = "direct"; self.host.unlink_mode = "direct";
-        let direct = self.call("POST", "", self.body("historical direct", "Keep legacy shape."), HEADERS, 202, "");
-        let direct_data = common.raw(direct, "data");
-        std::test::assert_eq_str(common.raw(direct_data, "relationship"), "", "direct public receipt has no new field");
-        let private_direct = common.raw(self.host.result(context).body, "receipt");
-        std::test::assert(common.fields(private_direct, "command_id request_id application_id principal_mode principal_name operation operation_version position_id target_id fingerprint state edge_id event_id admission_head sequence authority authority_basis details_visible", 18), "direct private receipt keeps its exact eighteen-field profile");
-        self.host.mode = "review"; self.host.unlink_mode = "review";
-        let historic = self.call("GET", "request_id=request%2F%C3%A9quipe%3A1", "", "", 200, "");
-        std::test::assert_eq_str(common.raw(common.raw(historic, "data"), "relationship"), "", "recorded direct variant survives current Review mode");
+    // A refusal the provider never saw.
+    fn invalid(reply: api::KnowledgeReply, before: Int, label: String) {
+        self.stopped(reply, "invalid_command", label);
+        std::test::assert_eq_int(self.host.submit_calls, before, label + ": never reaches the provider");
     }
 
+    fn edge_cases() {
+        let refs = self.f.refs();
+        let codec = ops::KnowledgeCommandCodec { };
+        let linked = self.commands.link_knowledge(self.link("request/équipe:1", "précise 🧭"), self.caller());
+        std::test::assert(linked.ok, "an admissible link is submitted: " + linked.code);
+        std::test::assert_eq_str(linked.application_id, self.f.identity, "the reply names this Record");
+        std::test::assert_eq_str(linked.head, "record-after", "the provider's post-operation basis is the reply's");
+        std::test::assert_eq_int(linked.revision, 7, "with its revision");
+        std::test::assert_eq_str(linked.receipt.edge_id, codec.edge_id(FROM, TO, "précise 🧭"), "the receipt comes back typed");
+        std::test::assert_eq_int(linked.receipt.sequence, 6, "its sequence an integer");
+        let sent = self.host.last_command;
+        std::test::assert(sent.operation == "dna.knowledge.edge.link" && sent.operation_version == "1" && sent.position_id == "org", "the head names the operation");
+        std::test::assert_eq_str(sent.application_id, self.f.identity, "the application is the Record's, never the caller's");
+        std::test::assert(sent.target_id == FROM && sent.from_id == FROM && sent.to_id == TO && sent.edge_id == "", "a link targets the endpoint it is made from");
+        std::test::assert_eq_str(sent.rel, "précise 🧭", "Unicode label stays exact");
+        std::test::assert_eq_str(sent.rationale, RATIONALE, "CRLF and supplementary Unicode preserved");
+        std::test::assert_eq_str(sent.record_head, HEAD, "the prepared head is carried, never the current one");
+        std::test::assert_eq_str(self.host.last_context.principal_name, "alice", "the caller is the person the Record maps them to");
+        std::test::assert_eq_str(self.host.last_context.principal_mode, "local", "a local account the kernel vouched for");
+        std::test::assert_eq_str(self.host.last_context.root, self.f.root, "the provider receives the head's own root");
+        // the codec's rule, before the provider
+        let before = self.host.submit_calls;
+        let mut l = self.link("bad", "rel"); l.target_id = "other"; self.invalid(self.knowledge.link(l, self.caller()), before, "the target is one of the endpoints");
+        l = self.link("bad", "rel"); l.from_id = "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; l.target_id = l.from_id; self.invalid(self.knowledge.link(l, self.caller()), before, "endpoints are exact digests");
+        self.invalid(self.knowledge.link(self.link("bad", ""), self.caller()), before, "a relationship has a label");
+        self.invalid(self.knowledge.link(self.link("bad", self.repeat(257)), self.caller()), before, "257 label bytes");
+        l = self.link("bad", "rel"); l.rationale = self.repeat(2049); self.invalid(self.knowledge.link(l, self.caller()), before, "2049 rationale bytes");
+        l = self.link("bad", "rel"); l.rationale = ""; self.invalid(self.knowledge.link(l, self.caller()), before, "an empty rationale");
+        l = self.link("bad", "rel"); l.record_head = ""; self.invalid(self.knowledge.link(l, self.caller()), before, "a change names the head it was prepared at");
+        self.invalid(self.knowledge.link(self.link(self.repeat(129), "rel"), self.caller()), before, "129 request-ID bytes");
+        self.invalid(self.knowledge.link(self.link("bad\nkey", "rel"), self.caller()), before, "control bytes in a request identity");
+        std::test::assert(self.knowledge.link(self.link(self.repeat(128), self.repeat(254) + "é"), self.caller()).ok, "the byte bounds are exact");
+        // removal names the exact tuple it removes
+        let edge = codec.edge_id(FROM, TO, "rel");
+        let removal = api::KnowledgeUnlink { request_id: "remove/1", record_head: HEAD, target_id: TO, edge_id: edge, from_id: FROM, to_id: TO, rel: "rel", rationale: "Remove it." };
+        let removed = self.commands.unlink_knowledge(removal, self.caller());
+        std::test::assert(removed.ok && removed.receipt.operation == "dna.knowledge.edge.unlink", "an exact removal is submitted: " + removed.code);
+        std::test::assert(self.host.last_command.edge_id == edge && self.host.last_command.target_id == TO, "the removal carries its tuple's identity");
+        let before_unlink = self.host.submit_calls;
+        let mut u = removal; u.edge_id = FROM; self.invalid(self.knowledge.unlink(u, self.caller()), before_unlink, "an identity that is not the tuple's");
+        u = removal; u.rel = "other"; self.invalid(self.knowledge.unlink(u, self.caller()), before_unlink, "a label the identity does not name");
+        u = removal; u.edge_id = ""; self.invalid(self.knowledge.unlink(u, self.caller()), before_unlink, "a removal names its identity");
+        std::test::assert_eq_str(self.f.refs(), refs, "admission conformance never writes the Record");
+    }
+
+    fn node_cases() {
+        let text = "Première ligne\r\n" + self.repeat(8000) + " 🧭";
+        let proposed = self.commands.propose_knowledge(self.proposal("node/propose", text), self.caller());
+        std::test::assert(proposed.ok, "an admissible node proposal is submitted: " + proposed.code);
+        let sent = self.host.last_command;
+        std::test::assert(sent.operation == "dna.knowledge.node.propose" && sent.target_id == "org/support" && sent.target == "org/support", "a proposal targets the collection it names");
+        std::test::assert(sent.node_kind == "idea" && sent.name == "Support équipe" && sent.text == text && sent.author == "org", "the node's fields are the payload's");
+        let before = self.host.submit_calls;
+        self.invalid(self.knowledge.propose_node(self.proposal("node/over", self.repeat(8193)), self.caller()), before, "8193 text bytes");
+        std::test::assert(self.knowledge.propose_node(self.proposal("node/exact", self.repeat(8190) + "é"), self.caller()).ok, "8192 UTF-8 text bytes accepted exactly");
+        let mut p = self.proposal("node/kind", "t"); p.kind = "retirement"; self.invalid(self.knowledge.propose_node(p, self.caller()), before + 1, "an unknown node kind");
+        p = self.proposal("node/name", "t"); p.name = ""; self.invalid(self.knowledge.propose_node(p, self.caller()), before + 1, "a node has a name");
+        let revision = api::KnowledgeNodeRevision { request_id: "node/revise", record_head: HEAD, supersedes: FROM, kind: "concept", name: "Revised", text: "t", author: "org", target: "org/support", rationale: "why" };
+        std::test::assert(self.commands.revise_knowledge(revision, self.caller()).ok, "a revision is submitted");
+        std::test::assert(self.host.last_command.target_id == FROM && self.host.last_command.supersedes == FROM, "a revision targets the node it supersedes");
+        let mut r = revision; r.supersedes = "not-a-digest"; self.invalid(self.knowledge.revise_node(r, self.caller()), before + 2, "a revision supersedes an exact node");
+        let retirement = api::KnowledgeNodeRetirement { request_id: "node/retire", record_head: HEAD, id: TO, rationale: "why" };
+        std::test::assert(self.commands.retire_knowledge(retirement, self.caller()).ok, "a retirement is submitted");
+        let retired = self.host.last_command;
+        std::test::assert(retired.target_id == TO && retired.text == "" && retired.name == "", "a retirement targets its node and carries no content");
+        let mut t = retirement; t.id = "org/support"; self.invalid(self.knowledge.retire_node(t, self.caller()), before + 3, "a retirement names an exact node");
+    }
+
+    fn binding_cases() {
+        let native = dna::KnowledgeBindingCodec { };
+        let bound = self.commands.bind_knowledge(self.bind("binding/1"), self.caller());
+        std::test::assert(bound.ok, "an admissible binding is submitted: " + bound.code);
+        std::test::assert_eq_str(bound.receipt.binding.binding_id, native.identity(FROM, "org/support", "org"), "the binding outcome comes back typed");
+        let sent = self.host.last_command;
+        std::test::assert(sent.operation == "dna.knowledge.binding.bind" && sent.target_id == FROM && sent.idea_id == FROM && sent.binding_id == "", "a binding targets its item");
+        std::test::assert(sent.author == "org" && sent.target == "org/support", "the locus author is the payload's, not the caller");
+        let before = self.host.submit_calls;
+        let mut b = self.bind("binding/lateral"); b.author = "org/finance"; self.invalid(self.knowledge.bind(b, self.caller()), before, "siblings never bind laterally");
+        b = self.bind("binding/long"); b.author = self.repeat(257); self.invalid(self.knowledge.bind(b, self.caller()), before, "257 locus bytes");
+        b = self.bind("binding/item"); b.idea_id = "org/support"; self.invalid(self.knowledge.bind(b, self.caller()), before, "a binding names an exact item");
+        let unbinding = api::KnowledgeUnbind { request_id: "binding/2", record_head: HEAD, binding_id: native.identity(FROM, "org/support", "org"), idea_id: FROM, author: "org", target: "org/support", rationale: "why" };
+        std::test::assert(self.commands.unbind_knowledge(unbinding, self.caller()).ok, "an exact unbinding is submitted");
+        std::test::assert_eq_str(self.host.last_command.binding_id, unbinding.binding_id, "the unbinding carries the binding's identity");
+        let mut u = unbinding; u.binding_id = TO; self.invalid(self.knowledge.unbind(u, self.caller()), before + 1, "an identity that is not the binding's");
+    }
+
+    fn recovery_cases() {
+        let submitted = self.host.submit_calls;
+        let found = self.commands.lookup_knowledge(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller());
+        std::test::assert(found.ok && found.receipt.request_id == "request/équipe:1", "lookup recovers by the caller's request identity: " + found.code);
+        std::test::assert_eq_int(self.host.submit_calls, submitted, "lookup never submits");
+        std::test::assert_eq_str(self.host.last_context.principal_name, "alice", "recovery is scoped to the caller");
+        let looked = self.host.lookup_calls;
+        self.stopped(self.knowledge.lookup(api::KnowledgeRecovery { request_id: "" }, self.caller()), "invalid_query", "lookup needs a request identity");
+        self.stopped(self.knowledge.lookup(api::KnowledgeRecovery { request_id: self.repeat(129) }, self.caller()), "invalid_query", "lookup identity is bounded");
+        std::test::assert_eq_int(self.host.lookup_calls, looked, "an invalid lookup never reaches the provider");
+        // the provider's refusals are the reply's code
+        self.host.code = "forbidden"; self.stopped(self.knowledge.link(self.link("refused", "rel"), self.caller()), "forbidden", "the policy's refusal");
+        self.host.code = "stale_subject"; self.stopped(self.knowledge.link(self.link("refused", "rel"), self.caller()), "stale_subject", "a head that moved");
+        self.host.code = "request_conflict"; self.stopped(self.knowledge.link(self.link("refused", "rel"), self.caller()), "request_conflict", "a reused request identity");
+        self.host.code = "command_not_found"; self.stopped(self.knowledge.lookup(api::KnowledgeRecovery { request_id: "missing" }, self.caller()), "command_not_found", "nothing under that identity");
+        self.host.code = "";
+        // details the Record hides stay hidden
+        self.host.hidden = true;
+        let hidden = self.knowledge.lookup(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller());
+        std::test::assert(hidden.ok && !hidden.receipt.details_visible && hidden.receipt.target_id == "" && hidden.receipt.edge_id == "", "a hidden receipt carries no tuple");
+        self.host.hidden = false;
+        // an unmapped peer is named by its uid, never by $USER
+        let stranger = api::KnowledgeAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "" }, provider: self.host };
+        std::test::assert(stranger.link(self.link("stranger", "rel"), self.caller()).ok, "in-process nothing gates the call");
+        std::test::assert_eq_str(self.host.last_context.principal_name, "uid:1000", "an unmapped caller is recorded as its uid");
+        // a head composed without Knowledge commands admits and recovers nothing
+        let absent = api::KnowledgeAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" } };
+        self.stopped(absent.link(self.link("absent", "rel"), self.caller()), "commands_unsupported", "the default provider admits nothing");
+        self.stopped(absent.lookup(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller()), "commands_unsupported", "nor recovers anything");
+        // a Record that cannot be read refuses before the provider
+        let before = self.host.submit_calls;
+        let nowhere = api::KnowledgeAdmission { root: self.f.root + "/absent", roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: self.host };
+        let unread = nowhere.link(self.link("nowhere", "rel"), self.caller());
+        std::test::assert(!unread.ok && len(unread.code) > 0, "an unreadable Record refuses: " + unread.code);
+        std::test::assert_eq_int(self.host.submit_calls, before, "and the provider never sees it");
+    }
 }
 
-fn main() { let cases = KnowledgeCommandCases { }; cases.run_cases(); }
+fn main() {
+    if std::env::var("HALE_KNOWLEDGE_COMMAND_TEST_CLEAN") != "1" {
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_COMMAND_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-knowledge-command-api.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, made.stderr);
+    let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
+    let host = ScriptedKnowledge { };
+    let knowledge = api::KnowledgeAdmission { root: f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: host };
+    let commands = api::Commands { knowledge: api::KnowledgeAdmission { root: f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: host } };
+    let cases = KnowledgeCases { f: f, host: host, knowledge: knowledge, commands: commands };
+    cases.edge_cases(); cases.node_cases(); cases.binding_cases(); cases.recovery_cases();
+}

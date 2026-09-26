@@ -346,6 +346,9 @@ page shows the rest greyed out with the role each item needs.
   field. Adding the entry never breaks a build.
 - A topic two handlers both answer is an error at the entry: one
   reply per command.
+- An item another seed declared is described qualified (`api::Claim`);
+  a caller may write the bare tail (`Claim`) when exactly one item
+  bears it, and gets `unknown` otherwise.
 - A `Drain<T>` batch handler is not reached through the binding
   yet; bulk requests wait on batch delivery over the cooperative
   queue.

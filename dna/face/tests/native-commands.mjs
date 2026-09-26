@@ -9,7 +9,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { settle, wireLine } from './command-wire.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
 
@@ -47,7 +47,8 @@ const requests = [];
 const receipts = {};
 const cases = [];
 const started = Date.now();
-let application = '', origin = '', actor = 'alice';
+// `token`: the launch token the running API minted (GH #989); every POST carries it.
+let application = '', origin = '', actor = 'alice', token = '';
 let body, relay, api, interrupted = '';
 let serial = 0;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -142,7 +143,7 @@ function httpRequest(method, suffix, value, { discard = false } = {}) {
     const request = http.request(origin + suffix, {
       method, agent: false,
       headers: encoded ? {
-        Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1',
+        Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1', 'X-Hale-Token': token,
         'Content-Length': encoded.length, Connection: 'close',
       } : { Connection: 'close' },
     }, response => {
@@ -214,6 +215,7 @@ async function startApi(name = 'alice') {
     try { return await httpRequest('GET', '/api/hale/v1/applications'); }
     catch (error) { if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET') return null; throw error; }
   }, result => result?.status === 200 && result.json.source?.record_id === application);
+  token = await launchToken(fixture);
   const capabilities = await read(prefix() + '/capabilities');
   assert.equal(capabilities.status, 200);
   assert.deepEqual(capabilities.json.data.principal, { mode: 'local', name });

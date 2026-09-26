@@ -135,7 +135,7 @@ locus Startup {
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             projects = projects + 1;
         }
-        return "hale dna head: " + head_origin(self.cfg) + "/ (trusted local; " + to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" }) + ")";
+        return "hale dna head: " + head_origin(self.cfg) + "/?token=" + self.cfg.token + " (trusted local; " + to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" }) + "; the token is in " + self.cfg.state_dir + "/head.token)";
     }
 }
 
@@ -200,8 +200,11 @@ fn main() {
         std::process::exit(2);
     }
     let user = std::env::var("USER");
+    // the local session's trust until OIDC (GH #989): a launch token in
+    // the state directory, printed in the head's URL
+    let token = api::launch_token(state_dir);
     let cfg = HeadConfig { port: port, api_port: api_port, api_binary: api_binary, hale: hale, state_dir: state_dir, sources_dir: sources_dir_of(),
-        principal_mode: "local", principal_name: if len(user) > 0 { user } else { "local" } };
+        principal_mode: "local", principal_name: if len(user) > 0 { user } else { "local" }, token: token };
     std::io::fs::write_file(state_dir + "/head.pid", to_string(std::process::pid()) + "\n") or discard;
     let boot = Startup { cfg: cfg };
     let fatal = boot.prepare(if count > 5 { project_root } else { "" });
