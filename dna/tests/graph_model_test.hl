@@ -2,13 +2,15 @@
 // record, projected into memory (GH #1085).
 //
 // The record is written with the graph voice's GRAPH.md lists "as they
-// stand" — the nodes and the hyperedges — plus its holes filled (a board,
-// a dev and a reviewer under every process, an operator under compose,
-// who holds them and what they sign), and three of its practices as
+// stand" — the nodes and the hyperedges — plus its holes filled as its org
+// chart renders them (a board, a dev and a reviewer under every process,
+// an operator under every deployment, who holds them and what they sign),
+// and three of its practices as
 // knowledge ideas, two of them ratified and bound. The tail projects it,
 // and memory answers with GRAPH.md's counts and both perspectives: the
 // org chart and the process model. A row re-put replaces its edge's
-// members, a retired one leaves, and a malformed one stops the projection
+// members, a retired one leaves (a retired node leaves the perspectives),
+// a rebuild reproduces both perspectives, and a malformed one stops the projection
 // at its row with the reason. The checks on rows run without memory;
 // memory is Postgres, and without the owner's DSN in
 // HALE_DNA_MEMORY_DSN_OWNER the projection half is not exercised.
@@ -16,37 +18,40 @@
 import "../core" as dna;
 import "../operations" as ops;
 
-// GRAPH.md at hale-lang/voice 98ecf78, "The nodes, as they stand" and
-// "The edges, as they stand", one row per line: `N|kind|name|text` or
-// `E|kind|role=node|…|via=…|outside=…`. Practices are not here: they are
-// knowledge ideas (below).
-const VOICE: String = "N|purpose|voice|one inference endpoint over many backends, standalone, with its own admin UI
-N|axiom|1|The caller API is an open standard (Open Responses).
-N|axiom|2|Voice extends the standard only in the ways it allows.
-N|axiom|3|Chat Completions is a compatibility surface.
-N|axiom|4|Every request belongs to one project and one key.
-N|axiom|5|Responses report what actually served them.
-N|axiom|6|Callers never name a node; they may name the account that pays.
-N|axiom|7|Nothing is discovered; everything that serves is configured.
-N|axiom|8|The node decides what is possible; the coordinator decides what runs.
-N|axiom|9|Local controls only restrict.
-N|axiom|10|The protocol and the node plane are the seam.
-N|axiom|11|One admin UI, served by the api from its own origin; the api is the trust boundary.
-N|axiom|12|Only the api is exposed; NATS and the nodes are on the private network.
-N|axiom|13|The MVP runs the real process model.
-N|axiom|14|State never travels as events; it stays in Postgres.
-N|axiom|15|Real development is delivered through a DNA organization.
-N|axiom|16|No bypass flags for agent CLIs.
+// GRAPH.md at hale-lang/voice 2b1cb565 (hale-lang/voice#3, the commit
+// #1090 vendors), "The nodes, as they stand" and "The edges, as they
+// stand", one row per line: `N|kind|name|text` or `E|kind|role=node|…|
+// via=…|outside=…`. Practices are not here: they are knowledge ideas
+// (below), and the constrains edge of "Only the api is exposed", which
+// names one, is written beside them.
+const VOICE: String = "N|purpose|voice|one inference endpoint in front of many model backends
+N|axiom|The caller API is an open standard|
+N|axiom|Voice extends the standard only in the ways it allows|
+N|axiom|Chat Completions is a compatibility surface|
+N|axiom|Every request belongs to one project and one key|
+N|axiom|Responses report what actually served them|
+N|axiom|Callers never name a node|
+N|axiom|Nothing is discovered|
+N|axiom|Only the api is exposed|
+N|axiom|The node decides what is possible; the coordinator decides what runs|
+N|axiom|Local controls only restrict|
+N|axiom|The protocol is the seam|
+N|axiom|One admin UI|
+N|axiom|No bypass flags|
+N|axiom|Logins stay with the official binaries|
+N|axiom|The MVP runs the real process model|
+N|axiom|State never travels as events; it stays in Postgres|
+N|axiom|Real development is delivered through a DNA organization|
+N|process|postgres|
+N|process|nats|
 N|process|api|
 N|process|brain|
 N|process|node|
-N|process|postgres|
-N|process|nats|
 N|seed|api|
 N|seed|brain|
 N|seed|node|
-N|seed|ui|
 N|seed|spec/validate|
+N|seed|ui|
 N|contract|spec/openapi.yaml|
 N|contract|spec/node.yaml|
 N|contract|spec/protocol.yaml|
@@ -72,12 +77,13 @@ N|noun|route table|
 N|noun|change|
 N|noun|policy change|
 N|noun|admin event|
-N|deployment|compose|built and verified
+N|deployment|compose|built
 N|deployment|personal|
 N|deployment|scaled-out|
 N|gate|ci/api|
 N|gate|ci/brain|
 N|gate|ci/node|
+N|gate|ci/ui|
 N|gate|ci/contracts|
 N|gate|ci/image|
 N|document|README.md|
@@ -87,24 +93,36 @@ N|document|GRAPH.md|
 N|document|ui/README.md|
 N|document|ui/DESIGN.md|
 N|document|spec/store.md|
-N|document|spec/validate/*|
-N|witness|FRICTION.md 1|a Router.add handler dangles
-N|witness|FRICTION.md 2|no triple-quoted strings
-N|witness|FRICTION.md 3|no reason phrases
-N|witness|hale#1048|
-N|witness|voice#2|
+N|witness|A stateful handler literal given to Router.add in a builder fn dangles|
+N|witness|Triple-quoted and raw strings are in the grammar's comment, not the lexer|
+N|witness|std::http has no reason phrase for most statuses|
+N|witness|hale-lang/hale#1048|
+E|unfold|parent=purpose:voice|child=axiom:The caller API is an open standard
+E|unfold|parent=purpose:voice|child=axiom:Voice extends the standard only in the ways it allows
+E|unfold|parent=purpose:voice|child=axiom:Chat Completions is a compatibility surface
+E|unfold|parent=purpose:voice|child=axiom:Every request belongs to one project and one key
+E|unfold|parent=purpose:voice|child=axiom:Responses report what actually served them
+E|unfold|parent=purpose:voice|child=axiom:Callers never name a node
+E|unfold|parent=purpose:voice|child=axiom:Nothing is discovered
+E|unfold|parent=purpose:voice|child=axiom:Only the api is exposed
+E|unfold|parent=purpose:voice|child=axiom:The node decides what is possible; the coordinator decides what runs
+E|unfold|parent=purpose:voice|child=axiom:Local controls only restrict
+E|unfold|parent=purpose:voice|child=axiom:The protocol is the seam
+E|unfold|parent=purpose:voice|child=axiom:One admin UI
+E|unfold|parent=purpose:voice|child=axiom:No bypass flags
+E|unfold|parent=purpose:voice|child=axiom:Logins stay with the official binaries
+E|unfold|parent=purpose:voice|child=axiom:The MVP runs the real process model
+E|unfold|parent=purpose:voice|child=axiom:State never travels as events; it stays in Postgres
+E|unfold|parent=purpose:voice|child=axiom:Real development is delivered through a DNA organization
 E|unfold|parent=process:api|child=seed:api
 E|unfold|parent=process:brain|child=seed:brain
 E|unfold|parent=process:node|child=seed:node
-E|unfold|parent=process:postgres|child=contract:spec/store.md
-E|unfold|parent=process:nats|child=contract:spec/protocol.yaml
-E|unfold|parent=process:nats|child=contract:spec/internal.yaml
 E|meets|contract=contract:spec/openapi.yaml|server=process:api|consumer=seed:ui|consumer=process:node|via=HTTP|outside=callers
 E|meets|contract=contract:spec/node.yaml|server=process:node|via=HTTP|outside=the machine's operator
 E|meets|contract=contract:spec/protocol.yaml|server=process:node|consumer=process:api|carrier=process:nats|via=NATS
-E|meets|contract=contract:spec/internal.yaml|server=process:brain|consumer=process:api|carrier=process:nats|via=NATS
-E|meets|contract=contract:spec/store.md|server=process:postgres|consumer=process:api|consumer=process:brain|via=SQL
 E|meets|contract=contract:spec/vendor/open-responses|consumer=contract:spec/openapi.yaml|consumer=contract:spec/protocol.yaml
+E|meets|contract=contract:spec/store.md|server=process:postgres|consumer=process:api|consumer=process:brain|via=SQL
+E|meets|contract=contract:spec/internal.yaml|server=process:brain|consumer=process:api|carrier=process:nats|via=NATS
 E|names|contract=contract:spec/openapi.yaml|noun=noun:model|noun=noun:account|noun=noun:node|noun=noun:seat|noun=noun:project|noun=noun:key|noun=noun:request|noun=noun:usage record
 E|names|contract=contract:spec/store.md|noun=noun:reservation|noun=noun:usage record|noun=noun:change|noun=noun:policy change
 E|refers|from=noun:seat|to=noun:engine
@@ -113,62 +131,71 @@ E|refers|from=noun:seat|to=noun:model
 E|refers|from=noun:request|to=noun:project
 E|refers|from=noun:request|to=noun:key
 E|refers|from=noun:usage record|to=noun:request
-E|constrains|axiom=axiom:14|shaped=contract:spec/internal.yaml|shaped=contract:spec/store.md
-E|constrains|axiom=axiom:13|shaped=process:brain|shaped=process:nats
-E|constrains|axiom=axiom:7|shaped=contract:spec/node.yaml|shaped=contract:spec/protocol.yaml
-E|constrains|axiom=axiom:11|shaped=document:ui/README.md|shaped=document:ui/DESIGN.md|shaped=contract:spec/openapi.yaml
-E|constrains|axiom=axiom:6|shaped=contract:spec/openapi.yaml
-E|constrains|axiom=axiom:16|shaped=witness:voice#2
-E|constrains|axiom=axiom:15|shaped=document:GRAPH.md
+E|constrains|axiom=axiom:The caller API is an open standard|shaped=contract:spec/vendor/open-responses
+E|constrains|axiom=axiom:Callers never name a node|shaped=contract:spec/openapi.yaml
+E|constrains|axiom=axiom:Nothing is discovered|shaped=contract:spec/openapi.yaml|shaped=contract:spec/node.yaml|shaped=contract:spec/protocol.yaml
+E|constrains|axiom=axiom:The node decides what is possible; the coordinator decides what runs|shaped=contract:spec/node.yaml|shaped=contract:spec/protocol.yaml
+E|constrains|axiom=axiom:Local controls only restrict|shaped=contract:spec/node.yaml
+E|constrains|axiom=axiom:The protocol is the seam|shaped=contract:spec/protocol.yaml
+E|constrains|axiom=axiom:One admin UI|shaped=document:ui/README.md|shaped=document:ui/DESIGN.md|shaped=contract:spec/openapi.yaml
+E|constrains|axiom=axiom:No bypass flags|shaped=seed:node
+E|constrains|axiom=axiom:Logins stay with the official binaries|shaped=seed:node
+E|constrains|axiom=axiom:The MVP runs the real process model|shaped=seed:brain|shaped=deployment:compose
+E|constrains|axiom=axiom:State never travels as events; it stays in Postgres|shaped=contract:spec/internal.yaml|shaped=contract:spec/store.md
+E|constrains|axiom=axiom:Real development is delivered through a DNA organization|shaped=document:GRAPH.md
 E|runs|deployment=deployment:compose|process=process:postgres|process=process:nats|process=process:api|process=process:brain|process=process:node
 E|runs|deployment=deployment:personal|process=process:api|process=process:brain|process=process:postgres|process=process:nats|process=process:node
 E|runs|deployment=deployment:scaled-out|process=process:api|process=process:brain|process=process:postgres|process=process:nats|process=process:node
-E|gates|gate=gate:ci/api|guarded=seed:api|guarded=contract:spec/openapi.yaml
+E|gates|gate=gate:ci/api|guarded=seed:api|guarded=contract:spec/openapi.yaml|guarded=seed:spec/validate
 E|gates|gate=gate:ci/brain|guarded=seed:brain
-E|gates|gate=gate:ci/node|guarded=seed:node|guarded=contract:spec/node.yaml
-E|gates|gate=gate:ci/contracts|guarded=contract:spec/openapi.yaml|guarded=contract:spec/node.yaml|guarded=contract:spec/protocol.yaml|guarded=contract:spec/internal.yaml|guarded=contract:spec/store.md|guarded=contract:spec/vendor/open-responses
+E|gates|gate=gate:ci/node|guarded=seed:node|guarded=contract:spec/node.yaml|guarded=seed:spec/validate
+E|gates|gate=gate:ci/ui|guarded=seed:ui
+E|gates|gate=gate:ci/contracts|guarded=contract:spec/openapi.yaml|guarded=contract:spec/node.yaml|guarded=contract:spec/protocol.yaml|guarded=contract:spec/internal.yaml|guarded=seed:spec/validate
 E|gates|gate=gate:ci/image|guarded=deployment:compose
-E|witnesses|witness=witness:hale#1048|about=seed:api|about=seed:node
-E|witnesses|witness=witness:FRICTION.md 1|about=seed:api|about=seed:node
-E|witnesses|witness=witness:FRICTION.md 2|about=seed:api
-E|witnesses|witness=witness:voice#2|about=axiom:16
+E|witnesses|witness=witness:A stateful handler literal given to Router.add in a builder fn dangles|about=seed:api
+E|witnesses|witness=witness:hale-lang/hale#1048|about=seed:api
+E|witnesses|witness=witness:Triple-quoted and raw strings are in the grammar's comment, not the lexer|about=seed:api
 ";
 
-// The holes, filled: GRAPH.md's org chart made to agree with its rule — a
-// dev and a reviewer under every process, nats among them; a board under
-// the purpose; an operator under compose.
+// The holes, filled as GRAPH.md renders its org chart: a board under the
+// purpose, a dev and a reviewer under every process, an operator under
+// every deployment; each reviewer signs the contracts its process serves.
 const HOLES: String = "N|position|board|
+N|position|postgres/dev|
+N|position|postgres/reviewer|
+N|position|nats/dev|
+N|position|nats/reviewer|
 N|position|api/dev|
 N|position|api/reviewer|
 N|position|brain/dev|
 N|position|brain/reviewer|
 N|position|node/dev|
 N|position|node/reviewer|
-N|position|postgres/dev|
-N|position|postgres/reviewer|
-N|position|nats/dev|
-N|position|nats/reviewer|
 N|position|compose/operator|
+N|position|personal/operator|
+N|position|scaled-out/operator|
 E|unfold|parent=purpose:voice|child=position:board
+E|unfold|parent=process:postgres|child=position:postgres/dev
+E|unfold|parent=process:postgres|child=position:postgres/reviewer
+E|unfold|parent=process:nats|child=position:nats/dev
+E|unfold|parent=process:nats|child=position:nats/reviewer
 E|unfold|parent=process:api|child=position:api/dev
 E|unfold|parent=process:api|child=position:api/reviewer
 E|unfold|parent=process:brain|child=position:brain/dev
 E|unfold|parent=process:brain|child=position:brain/reviewer
 E|unfold|parent=process:node|child=position:node/dev
 E|unfold|parent=process:node|child=position:node/reviewer
-E|unfold|parent=process:postgres|child=position:postgres/dev
-E|unfold|parent=process:postgres|child=position:postgres/reviewer
-E|unfold|parent=process:nats|child=position:nats/dev
-E|unfold|parent=process:nats|child=position:nats/reviewer
 E|unfold|parent=deployment:compose|child=position:compose/operator
+E|unfold|parent=deployment:personal|child=position:personal/operator
+E|unfold|parent=deployment:scaled-out|child=position:scaled-out/operator
 E|holds|position=position:board|holder=ada
 E|holds|position=position:api/dev|holder=ada
 E|holds|position=position:api/reviewer|holder=grace
-E|reviews|position=position:api/reviewer|contract=contract:spec/openapi.yaml
-E|reviews|position=position:brain/reviewer|contract=contract:spec/internal.yaml
-E|reviews|position=position:node/reviewer|contract=contract:spec/protocol.yaml
-E|reviews|position=position:node/reviewer|contract=contract:spec/node.yaml
-E|reviews|position=position:postgres/reviewer|contract=contract:spec/store.md
+E|reviews|position=position:postgres/reviewer|subject=contract:spec/store.md
+E|reviews|position=position:api/reviewer|subject=contract:spec/openapi.yaml
+E|reviews|position=position:brain/reviewer|subject=contract:spec/internal.yaml
+E|reviews|position=position:node/reviewer|subject=contract:spec/node.yaml
+E|reviews|position=position:node/reviewer|subject=contract:spec/protocol.yaml
 ";
 
 // Postgres spaces its JSON separators; compare without them.
@@ -259,9 +286,29 @@ locus App {
         std::test::assert(std::str::contains(ops::graph_edge_row(wrong.id(), wrong.body()).why, "is not a process node id"), "a role's node kind is checked");
         let pair = ops::GraphEdge { kind: "reviews" };
         pair.member("position", "position:api/reviewer");
-        pair.member("contract", "contract:spec/openapi.yaml");
-        pair.member("contract", "contract:spec/node.yaml");
-        std::test::assert(std::str::contains(ops::graph_edge_row(pair.id(), pair.body()).why, "exactly (position, contract)"), "a pair edge is a pair");
+        pair.member("subject", "contract:spec/openapi.yaml");
+        pair.member("subject", "contract:spec/node.yaml");
+        std::test::assert(std::str::contains(ops::graph_edge_row(pair.id(), pair.body()).why, "exactly (position, subject)"), "a pair edge is a pair");
+        let design = ops::GraphEdge { kind: "reviews" };
+        design.member("position", "position:ui/reviewer");
+        design.member("subject", "document:ui/DESIGN.md");
+        std::test::assert(ops::graph_edge_row(design.id(), design.body()).ok, "a design document is reviewed too");
+        let code = ops::GraphEdge { kind: "reviews" };
+        code.member("position", "position:api/reviewer");
+        code.member("subject", "seed:api");
+        std::test::assert(std::str::contains(ops::graph_edge_row(code.id(), code.body()).why, "is not a contract or document node id"), "what a position reviews is a contract or a document");
+        let twice = ops::GraphEdge { kind: "runs" };
+        twice.member("deployment", "deployment:compose");
+        twice.member("process", "process:api");
+        twice.member("process", "process:api");
+        std::test::assert(std::str::contains(ops::graph_edge_row(twice.id(), twice.body()).why, "names `process:api` once"), "a member is named once");
+        let barred = ops::GraphEdge { kind: "holds" };
+        barred.member("position", "position:api/dev");
+        barred.member("holder", "ada|grace");
+        std::test::assert(!ops::graph_edge_row(barred.id(), barred.body()).ok, "a name holds no `|`, so a pair's id reads one way");
+        let empty = ops::GraphEdge { kind: "gates" };
+        std::test::assert_eq_str(empty.id(), "gates:", "an edge with no members has an id no check admits");
+        std::test::assert(!ops::graph_edge_row(empty.id(), empty.body()).ok, "and is refused");
         std::test::assert(std::str::contains(ops::graph_edge_row("meets:contract:x", meets.body()).why, "is not its id"), "the entity is the id the body implies");
         let bound = ops::GraphEdge { kind: "binds" };
         bound.member("practice", "practice:sha256:00");
@@ -273,8 +320,12 @@ locus App {
         std::test::assert(std::str::contains(ops::graph_node_row("widget:x", ops::graph_node_body("widget", "x", "", "")).why, "not a node kind"), "the vocabulary is closed");
         std::test::assert(std::str::contains(ops::graph_node_row("process:web", ops::graph_node_body("process", "api", "", "")).why, "is not its id"), "a node's entity is its id");
         std::test::assert(ops::graph_retired_row("runs:deployment:personal").ok, "an edge can be retired");
+        std::test::assert(ops::graph_retired_row("holds:position:api/dev|ada").ok, "a pair edge can be retired by its id");
+        std::test::assert(!ops::graph_retired_row("runs:deployment:personal|process:api").ok, "a keyed-by-anchor edge's id has no second");
         std::test::assert(!ops::graph_retired_row("callers").ok, "a retirement names a node or an edge");
     }
+    // Both perspectives, compacted, as one text.
+    fn perspectives(store: dna::Pq) -> String { return compact(store.graph_perspective("org")) + "\n" + compact(store.graph_perspective("processes")); }
     run() {
         self.checks();
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
@@ -288,10 +339,10 @@ locus App {
         let advice = self.practice("the contract comes before the code", "document:DIRECTION.md", false);
         let broadcasts = self.practice("per-node and per-request subjects use the NATS client; only broadcasts bind", "seed:api", true);
         let migrations = self.practice("a change to a contract is a new migration, never an edit", "contract:spec/store.md", true);
-        // axiom 12 shaped a practice too: one constrains per axiom, its
-        // members nodes and a practice by its idea
+        // "Only the api is exposed" shaped a practice too: one constrains
+        // per axiom, its members nodes and a practice by its idea
         let privately = ops::GraphEdge { kind: "constrains" };
-        privately.member("axiom", "axiom:12");
+        privately.member("axiom", "axiom:Only the api is exposed");
         privately.member("shaped", "contract:spec/protocol.yaml");
         privately.member("shaped", "deployment:compose");
         privately.member("shaped", "practice:" + broadcasts);
@@ -310,7 +361,7 @@ locus App {
 
         // ---- GRAPH.md, "Checkable": the counts, and the holes filled
         let kinds = "purpose axiom process seed contract noun deployment gate document witness position work";
-        let want = "1 16 5 5 6 19 3 5 8 5 12 0";
+        let want = "1 17 5 5 6 19 3 6 7 4 14 0";
         let mut k = 0;
         while len(dna::nth_word(kinds, k)) > 0 {
             let kind = dna::nth_word(kinds, k);
@@ -318,9 +369,9 @@ locus App {
             k = k + 1;
         }
         std::test::assert_eq_int(store.graph_nodes_count("practice"), 3, "three practices, read from the knowledge ideas");
-        std::test::assert_eq_int(store.graph_edges_count("binds"), 2, "two binds, read from the ratified practices' bindings");
+        std::test::assert_eq_int(store.graph_edges_count("binds"), 2, "two binds, one per ratified practice, read from their bindings");
         let edges = "unfold meets names refers constrains runs gates witnesses holds reviews";
-        let counted = "18 6 2 6 8 3 5 4 3 5";
+        let counted = "34 6 2 6 13 3 6 3 3 5";
         k = 0;
         while len(dna::nth_word(edges, k)) > 0 {
             let kind = dna::nth_word(edges, k);
@@ -332,33 +383,47 @@ locus App {
 
         // ---- the process model: processes, where they meet, what runs them
         let processes = compact(store.graph_perspective("processes"));
-        std::test::assert(std::str::contains(processes, "\"processes\":[{\"id\":\"process:api\",\"name\":\"api\"},{\"id\":\"process:brain\",\"name\":\"brain\"},{\"id\":\"process:node\",\"name\":\"node\"},{\"id\":\"process:postgres\",\"name\":\"postgres\"},{\"id\":\"process:nats\",\"name\":\"nats\"}]"), "the five processes, in the record's order: " + processes);
-        std::test::assert(std::str::contains(processes, "{\"contract\":\"contract:spec/openapi.yaml\",\"via\":\"HTTP\",\"servers\":[\"process:api\"],\"consumers\":[\"seed:ui\",\"process:node\"],\"carriers\":[],\"outside\":[\"callers\"]}"), "openapi.yaml: served by api, consumed by callers, ui and node, over HTTP: " + processes);
+        std::test::assert(std::str::contains(processes, "\"processes\":[{\"id\":\"process:postgres\",\"name\":\"postgres\"},{\"id\":\"process:nats\",\"name\":\"nats\"},{\"id\":\"process:api\",\"name\":\"api\"},{\"id\":\"process:brain\",\"name\":\"brain\"},{\"id\":\"process:node\",\"name\":\"node\"}]"), "the five processes, in the record's order: " + processes);
+        std::test::assert(std::str::contains(processes, "\"meets\":[{\"contract\":\"contract:spec/openapi.yaml\",\"via\":\"HTTP\",\"servers\":[\"process:api\"],\"consumers\":[\"seed:ui\",\"process:node\"],\"carriers\":[],\"outside\":[\"callers\"]}"), "openapi.yaml first: served by api, consumed by callers, ui and node, over HTTP: " + processes);
         std::test::assert(std::str::contains(processes, "{\"contract\":\"contract:spec/protocol.yaml\",\"via\":\"NATS\",\"servers\":[\"process:node\"],\"consumers\":[\"process:api\"],\"carriers\":[\"process:nats\"],\"outside\":[]}"), "protocol.yaml: node serves, api consumes, nats carries: " + processes);
         std::test::assert(std::str::contains(processes, "{\"contract\":\"contract:spec/store.md\",\"via\":\"SQL\",\"servers\":[\"process:postgres\"],\"consumers\":[\"process:api\",\"process:brain\"],\"carriers\":[],\"outside\":[]}"), "store.md: api and brain over SQL to postgres: " + processes);
         std::test::assert(std::str::contains(processes, "{\"deployment\":\"deployment:compose\",\"processes\":[\"process:postgres\",\"process:nats\",\"process:api\",\"process:brain\",\"process:node\"]}"), "compose runs the five: " + processes);
 
-        // ---- the org chart: positions, what each is under, holders, what each signs
+        // ---- the org chart, as GRAPH.md renders it: the board, a dev and a
+        // reviewer under every process, an operator under every deployment
         let org = compact(store.graph_perspective("org"));
-        std::test::assert(std::str::starts_with(org, "[{\"id\":\"position:board\",\"name\":\"board\",\"under\":\"purpose:voice\",\"holders\":[\"ada\"],\"reviews\":[]}"), "the board first, under the purpose: " + org);
+        std::test::assert(std::str::starts_with(org, "[{\"id\":\"position:board\",\"name\":\"board\",\"under\":\"purpose:voice\",\"holders\":[\"ada\"],\"reviews\":[]},{\"id\":\"position:postgres/dev\",\"name\":\"postgres/dev\",\"under\":\"process:postgres\",\"holders\":[],\"reviews\":[]},{\"id\":\"position:postgres/reviewer\",\"name\":\"postgres/reviewer\",\"under\":\"process:postgres\",\"holders\":[],\"reviews\":[\"contract:spec/store.md\"]},{\"id\":\"position:nats/dev\""), "the board, then postgres's dev and reviewer, then nats's: " + org);
+        std::test::assert(std::str::contains(org, "{\"id\":\"position:nats/reviewer\",\"name\":\"nats/reviewer\",\"under\":\"process:nats\",\"holders\":[],\"reviews\":[]}"), "nats's reviewer signs nothing: nats serves no contract: " + org);
         std::test::assert(std::str::contains(org, "{\"id\":\"position:api/reviewer\",\"name\":\"api/reviewer\",\"under\":\"process:api\",\"holders\":[\"grace\"],\"reviews\":[\"contract:spec/openapi.yaml\"]}"), "api's reviewer signs openapi.yaml: " + org);
-        std::test::assert(std::str::contains(org, "{\"id\":\"position:node/reviewer\",\"name\":\"node/reviewer\",\"under\":\"process:node\",\"holders\":[],\"reviews\":[\"contract:spec/protocol.yaml\",\"contract:spec/node.yaml\"]}"), "node's reviewer signs protocol.yaml and node.yaml: " + org);
-        std::test::assert(std::str::contains(org, "{\"id\":\"position:nats/dev\",\"name\":\"nats/dev\",\"under\":\"process:nats\""), "nats has its dev: " + org);
-        std::test::assert(std::str::contains(org, "{\"id\":\"position:compose/operator\",\"name\":\"compose/operator\",\"under\":\"deployment:compose\",\"holders\":[],\"reviews\":[]}]"), "compose's operator last, under the deployment: " + org);
+        std::test::assert(std::str::contains(org, "{\"id\":\"position:node/reviewer\",\"name\":\"node/reviewer\",\"under\":\"process:node\",\"holders\":[],\"reviews\":[\"contract:spec/node.yaml\",\"contract:spec/protocol.yaml\"]}"), "node's reviewer signs node.yaml and protocol.yaml: " + org);
+        std::test::assert(std::str::ends_with(org, "{\"id\":\"position:compose/operator\",\"name\":\"compose/operator\",\"under\":\"deployment:compose\",\"holders\":[],\"reviews\":[]},{\"id\":\"position:personal/operator\",\"name\":\"personal/operator\",\"under\":\"deployment:personal\",\"holders\":[],\"reviews\":[]},{\"id\":\"position:scaled-out/operator\",\"name\":\"scaled-out/operator\",\"under\":\"deployment:scaled-out\",\"holders\":[],\"reviews\":[]}]"), "an operator under every deployment, last: " + org);
         std::test::assert_eq_str(store.graph_perspective("nobody"), "", "a perspective no query answers is empty");
 
         // ---- a change moves through the edges: a meets re-observed with a
-        // consumer fewer, and a deployment no longer named
+        // consumer fewer, a deployment no longer named, and a seed gone
         let narrower = ops::GraphEdge { kind: "meets" };
         narrower.member("contract", "contract:spec/vendor/open-responses");
         narrower.member("consumer", "contract:spec/openapi.yaml");
         self.append("graph.edge", narrower.id(), narrower.body());
         self.append("graph.retired", "runs:deployment:scaled-out", "{}");
+        self.append("graph.retired", "seed:ui", "{}");
         let again = ops::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_str(again.error, "", "the change projects clean");
-        std::test::assert_eq_int(again.graph, 2, "two graph rows");
-        std::test::assert(std::str::contains(compact(store.graph_perspective("processes")), "{\"contract\":\"contract:spec/vendor/open-responses\",\"via\":\"\",\"servers\":[],\"consumers\":[\"contract:spec/openapi.yaml\"],\"carriers\":[],\"outside\":[]}"), "the edge's members are the latest row's");
+        std::test::assert_eq_int(again.graph, 3, "three graph rows");
+        let changed = compact(store.graph_perspective("processes"));
+        std::test::assert(std::str::contains(changed, "{\"contract\":\"contract:spec/vendor/open-responses\",\"via\":\"\",\"servers\":[],\"consumers\":[\"contract:spec/openapi.yaml\"],\"carriers\":[],\"outside\":[]}"), "the edge's members are the latest row's: " + changed);
         std::test::assert_eq_int(store.graph_edges_count("runs"), 2, "the retired deployment's runs is gone");
+        std::test::assert(std::str::contains(changed, "\"consumers\":[\"process:node\"],\"carriers\":[],\"outside\":[\"callers\"]"), "a retired node leaves the perspective, its edge as the record left it: " + changed);
+        std::test::assert_eq_int(store.graph_edges_count("meets"), 6, "the edge that named it stays");
+
+        // ---- the graph is derived: rebuilt from row 0, it is the same graph
+        let before = self.perspectives(store);
+        let basis = store.projection_basis();
+        std::test::assert(store.rebuild(basis.watermark, basis.head), "the projection emptied");
+        std::test::assert_eq_int(store.graph_nodes_count(""), 0, "nothing of the graph is left");
+        let rebuilt = ops::apply_record(store, self.j, self.receipts);
+        std::test::assert_eq_str(rebuilt.error, "", "the rebuild projects clean");
+        std::test::assert_eq_str(self.perspectives(store), before, "a rebuild reproduces both perspectives");
 
         // ---- a malformed row stops the projection at its row, with why
         let at = self.j.revision();
@@ -366,6 +431,14 @@ locus App {
         let refused = ops::apply_record(store, self.j, self.receipts);
         std::test::assert(std::str::contains(refused.error, "invalid graph.edge (row " + to_string(at) + "): a meets edge joins two or more members"), "the reason, at its row: " + refused.error);
         std::test::assert_eq_int(store.watermark(), at, "nothing of the refused row landed");
+
+        // ---- a memory migrated before the graph is refused at open, never
+        // left to stall: version 3 has no graph tables
+        let admin = dna::pq_conn(dna::parse_dsn(owner));
+        std::test::assert(admin.open().ok, "the owner connects");
+        std::test::assert(admin.exec("UPDATE " + dna::schema_for(record) + ".memory_meta SET value = '3' WHERE key = 'schema_version'").ok, "a version-3 memory");
+        admin.close();
+        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 3; this toolchain needs version 4"), "refused at open, naming both versions: " + store.last_error());
 
         store.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");

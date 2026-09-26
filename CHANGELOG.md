@@ -20,6 +20,20 @@ behavior.
   attempt ids `locate` and `plan`, so their tokens were nobody's. They
   carry the Work's attempt id now; the tape key does not include it,
   so nothing is re-recorded.
+### DNA: the repository as one graph, in the record and in memory (GH #1085)
+
+- **Added:** the record holds the repository as one recursive hypergraph
+  (`graph.node`, `graph.edge`, `graph.retired`): purpose, axioms,
+  processes, seeds, contracts, nouns, deployments, gates, documents,
+  witnesses, positions and work, joined by `unfold`, `meets`, `names`,
+  `refers`, `constrains`, `runs`, `gates`, `witnesses`, `holds` and
+  `reviews`. The spine projects it into memory with everything else, and
+  the org chart and the process model are queries over it
+  (`graph_perspective("org")`, `("processes")`). Practices and `binds`
+  are the knowledge ideas and bindings they already were.
+- **Changed:** memory's schema version is 4 and its projection protocol 4:
+  run `hale dna memory migrate` with the owner's DSN; the graph is emptied
+  once and rebuilt from the record.
 
 ### A param default's child is supervised by its holder wherever the holder is built (GH #1074)
 

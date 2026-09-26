@@ -3108,12 +3108,14 @@ The live half is memory's, projected from the record by the spine
   `names(contract; noun…)`, `refers(from, to)`, `constrains(axiom;
   shaped…)`, `runs(deployment; process…)`, `gates(gate; guarded…)`,
   `binds`, `witnesses(witness; about…)`, `holds(position, holder)`,
-  `reviews(position, contract)`. A pair kind (`unfold`, `refers`,
+  `reviews(position, subject)` — the subject a contract or a document, a
+  design document being signed too. A pair kind (`unfold`, `refers`,
   `holds`, `reviews`) is exactly its two members and is keyed by both,
   so an unfold is one edge per child; any other kind is keyed by its
   anchor, so there is one `meets` per contract and the latest row says
   who meets there. An edge's id is `<kind>:<anchor>` or
-  `<kind>:<anchor>|<second>`. A role may require a node kind (a
+  `<kind>:<anchor>|<second>`, and no name or holder holds a `|`, so an id
+  reads one way. A role may require a node kind (a
   `meets` contract is a `contract:` node, a `runs` process a
   `process:`); a `holder` is a person, not a node; `meets` also
   carries its transport (`via`) and the parties it reaches that are
@@ -3126,11 +3128,18 @@ The live half is memory's, projected from the record by the spine
   members, via?, outside?}`) and `graph.retired` (entity the id).
   **The tail checks a graph row whole** before memory takes it — the
   kind is the vocabulary's, the anchor comes first, every member names
-  a node of the kind its role requires, the arity is two or more, and
-  the entity is the id the body implies — and a row that fails stops
+  a node of the kind its role requires and no node twice, the arity is
+  two or more, and the entity is the id the body implies — and a row that fails stops
   the projection at that row, `invalid graph.<kind> (row n): <why>`,
   like any invalid fact. A node or edge is replaced by a later row with
-  its id (an edge's members with it) and taken out by `graph.retired`.
+  its id (an edge's members with it) and taken out by `graph.retired`; a
+  retired node's edges stay as the record left them, and the perspectives
+  leave its memberships out (an edge whose anchor is gone is not shown).
+  **There is one org chart, and it is the graph**: its `position` nodes
+  and their `holds` edges. The organization's generated `dna/org` files
+  and the owners map are renderings of it, never its source; until the
+  holes are proposed and ratified into the graph (GH #1091) they are
+  written beside it.
   **Perspectives are queries over memory**:
   `KnowledgeStore.graph_perspective("org")` is the positions in the
   record's order, each with the node it unfolds from (`under`), its
@@ -3140,7 +3149,7 @@ The live half is memory's, projected from the record by the spine
   (`deployment`, `processes`), each as JSON the server builds.
   `graph_nodes_count(kind)` and `graph_edges_count(kind)` count them;
   `practice` counts the practices proposed or ratified and `binds` the
-  bindings of the ratified ones.
+  ratified practices that bind something, one hyperedge each.
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the

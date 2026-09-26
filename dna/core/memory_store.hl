@@ -105,20 +105,24 @@ interface KnowledgeStore {
     // rows of their own.
     fn put_graph_node(id: String, kind: String, name: String, seq: Int, body: String) -> Bool;
     fn put_graph_edge(id: String, kind: String, seq: Int, body: String, members: String) -> Bool;
-    // The node or edge `id` leaves the graph; absent is a success.
+    // The node or edge `id` leaves the graph; absent is a success. A
+    // retired node's edges stay as the record left them; the perspectives
+    // leave its memberships out.
     fn retire_graph(id: String) -> Bool;
     // Nodes of `kind` ("" = every graph row's node); `practice` counts
     // the practices proposed or ratified.
     fn graph_nodes_count(kind: String) -> Int;
     // Edges of `kind` ("" = every graph row's edge); `binds` counts the
-    // bindings of ratified practices.
+    // ratified practices that bind something, one hyperedge each.
     fn graph_edges_count(kind: String) -> Int;
     // A perspective (Π) over the graph, as JSON built by the server:
     // `org` — the positions, what each sits under (`unfold`), who holds
-    // it (`holds`) and what it signs (`reviews`); `processes` — the
+    // it (`holds`) and what it signs (`reviews`: a contract or a
+    // document); `processes` — the
     // processes, where they meet (`meets`: the contract, its servers,
     // consumers and carriers, the transport) and what runs them (`runs`).
-    // "" for a perspective no query answers.
+    // A member whose node was retired is not shown. "" for a perspective
+    // no query answers.
     fn graph_perspective(name: String) -> String;
 }
 
@@ -126,12 +130,17 @@ type Signal { kind: String = ""; source: String = ""; what: String = ""; count: 
 type Structure { kind: String = ""; name: String = ""; seq: Int = 0; }
 
 // The nodes the edge `e` joins in `role`, as a JSON array in member
-// order; and the first of them, as text.
+// order; and the first of them, as text. A member whose node was retired
+// is left out (GH #1085): `graph.retired` takes a node out and leaves the
+// edges that named it, so a perspective shows only nodes the graph holds.
+fn graph_live_sql(column: String) -> String {
+    return "EXISTS (SELECT 1 FROM graph_nodes g WHERE g.id = " + column + ")";
+}
 fn graph_members_sql(role: String) -> String {
-    return "coalesce((SELECT json_agg(m.node ORDER BY m.pos) FROM graph_members m WHERE m.edge = e.id AND m.role = '" + role + "'), '[]'::json)";
+    return "coalesce((SELECT json_agg(m.node ORDER BY m.pos) FROM graph_members m WHERE m.edge = e.id AND m.role = '" + role + "' AND " + graph_live_sql("m.node") + "), '[]'::json)";
 }
 fn graph_member_sql(role: String) -> String {
-    return "coalesce((SELECT m.node FROM graph_members m WHERE m.edge = e.id AND m.role = '" + role + "' ORDER BY m.pos LIMIT 1), '')";
+    return "coalesce((SELECT m.node FROM graph_members m WHERE m.edge = e.id AND m.role = '" + role + "' AND " + graph_live_sql("m.node") + " ORDER BY m.pos LIMIT 1), '')";
 }
 
 // GH #1085, the org chart: every position, the node it unfolds from, its
@@ -140,14 +149,15 @@ fn graph_org_sql() -> String {
     let of_position = "FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.role = 'position' AND a.node = p.id JOIN graph_members x ON x.edge = e.id";
     return "SELECT coalesce(json_agg(json_build_object('id', p.id, 'name', p.name, 'under', coalesce(u.parent, ''), "
         + "'holders', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'holder' WHERE e.kind = 'holds'), '[]'::json), "
-        + "'reviews', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'contract' WHERE e.kind = 'reviews'), '[]'::json)) "
+        + "'reviews', coalesce((SELECT json_agg(x.node ORDER BY e.seq, x.node) " + of_position + " AND x.role = 'subject' AND " + graph_live_sql("x.node") + " WHERE e.kind = 'reviews'), '[]'::json)) "
         + "ORDER BY coalesce(u.pseq, -1), p.seq, p.id), '[]'::json) FROM graph_nodes p "
-        + "LEFT JOIN LATERAL (SELECT pm.node AS parent, coalesce((SELECT n.seq FROM graph_nodes n WHERE n.id = pm.node), -1) AS pseq FROM graph_edges e JOIN graph_members cm ON cm.edge = e.id AND cm.role = 'child' AND cm.node = p.id JOIN graph_members pm ON pm.edge = e.id AND pm.role = 'parent' WHERE e.kind = 'unfold' ORDER BY e.seq LIMIT 1) u ON true "
+        + "LEFT JOIN LATERAL (SELECT pm.node AS parent, n.seq AS pseq FROM graph_edges e JOIN graph_members cm ON cm.edge = e.id AND cm.role = 'child' AND cm.node = p.id JOIN graph_members pm ON pm.edge = e.id AND pm.role = 'parent' JOIN graph_nodes n ON n.id = pm.node WHERE e.kind = 'unfold' ORDER BY e.seq LIMIT 1) u ON true "
         + "WHERE p.kind = 'position'";
 }
 
 // GH #1085, the process model: the processes, every `meets` with its
-// transport and the parties outside the graph, and every `runs`.
+// transport and the parties outside the graph, and every `runs` — an edge
+// whose anchor was retired is not shown.
 fn graph_processes_sql() -> String {
     return "SELECT json_build_object("
         + "'processes', coalesce((SELECT json_agg(json_build_object('id', n.id, 'name', n.name) ORDER BY n.seq, n.id) FROM graph_nodes n WHERE n.kind = 'process'), '[]'::json), "
@@ -156,9 +166,9 @@ fn graph_processes_sql() -> String {
         + "'servers', " + graph_members_sql("server") + ", "
         + "'consumers', " + graph_members_sql("consumer") + ", "
         + "'carriers', " + graph_members_sql("carrier") + ", "
-        + "'outside', coalesce(e.body::json -> 'outside', '[]'::json)) ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'meets'), '[]'::json), "
+        + "'outside', coalesce(e.body::json -> 'outside', '[]'::json)) ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'meets' AND " + graph_member_sql("contract") + " <> ''), '[]'::json), "
         + "'runs', coalesce((SELECT json_agg(json_build_object('deployment', " + graph_member_sql("deployment") + ", "
-        + "'processes', " + graph_members_sql("process") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'runs'), '[]'::json))";
+        + "'processes', " + graph_members_sql("process") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'runs' AND " + graph_member_sql("deployment") + " <> ''), '[]'::json))";
 }
 
 fn signal_json(x: Signal) -> String {
@@ -869,7 +879,7 @@ locus Pq {
     fn graph_edges_count(kind: String) -> Int {
         let a = db::Args { };
         a.add(kind);
-        let sql = if kind == "binds" { "SELECT count(*) FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.kind = 'practice' AND i.accepted AND $1 = 'binds'" } else { "SELECT count(*) FROM graph_edges WHERE $1 = '' OR kind = $1" };
+        let sql = if kind == "binds" { "SELECT count(DISTINCT b.idea) FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.kind = 'practice' AND i.accepted AND $1 = 'binds'" } else { "SELECT count(*) FROM graph_edges WHERE $1 = '' OR kind = $1" };
         let rows = self.conn.query_params(sql, a);
         if !rows.ok { self.note("graph count", rows.err); return 0; }
         return std::str::parse_int(trim_nl(line_one(rows.csv))) or 0;
