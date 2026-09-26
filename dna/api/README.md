@@ -599,6 +599,75 @@ organism admits one Task per id; this head steps an id its Record already holds
 to the next millisecond, which the CLI does not. A CLI ask beside a face ask
 carries no command fields and is invisible to command lookup.
 
+## The hat
+
+`GET /api/hale/v1/applications/{application_id}/dna/context?id=<work>` answers one
+Work's context as structure (GH #946): the position's identity and charter, the
+practices ratified for the Work's target resolved to text with their ids, the
+knowledge bindings the owner named, the tool grant, the output contract, the data
+class, the Work's history as facts, the Record head and memory's projection
+watermark it was rendered at, and a `digest` over all of it. It is never a
+prompt: rendering is a leg's, and the renderer's version is evidence of its own.
+
+The read is trusted-local, like the executions it is drawn from, and `id` is
+required. The position is the graph's `position:<name>` id (GH #1085): the
+performer kind of the attempt admitted last, or the kind the request selects
+before one is (`edit` is `position:editor`; a judgment is `position:agent`; a
+person's work `position:human`); its `charter` is the record's `graph.node`
+text for that id, `""` until the graph names it. The practices come from memory
+under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`); `practices_status` says
+`resolved`, `no memory` or `unavailable`, and `watermark` is `-1` when none was
+read. `digest` is sha256 over the canonical body with the digest itself left
+out: rendered twice at one head it is one digest, and a row that moves the head
+moves it. An attempt records the hat digest and the head and watermark it was
+rendered at; replay renders from the recorded hat, never the live graph.
+
+## Attempts: a leg's claim and outcome
+
+Two operations on the shared `POST /commands` route are the spine's whole API
+to a leg (GH #946): `dna.attempt.claim@1` and `dna.attempt.outcome@1`. A leg
+holds nothing between tasks and has no database role: the head takes the claim
+in memory for it and writes the rows; the owner still admits and settles.
+
+`dna.attempt.claim` targets `dna.work` with the application's id, is conditioned
+on the Record head the request was prepared against (`record_head`;
+`stale_subject` when it moved), and carries a filter in `arguments`:
+`performer_kind`, `performer` (the leg's identity), `capabilities` (words the
+leg has; a Work's `requires` must all be among them), `data_classes` (classes it
+may see; none is any), `organizations` (owners it works for on a shared Record,
+`-` for the sole owner; none is any) and `ttl` (1..86400 seconds). The head picks
+the first admitted, outstanding attempt of that kind that fits — asked to run,
+no outcome, not held by another leg under a live lease — takes memory's claim
+`attempt:<id>` for `performer` with the TTL under the head's role (the store
+decides between two legs racing; without memory nothing races and the claim is
+granted), and appends `attempt.claimed` naming the holder, its token and until
+when. The receipt's `attempt` object is the lease as a value: `state: claimed`,
+`attempt_id`, `work_id`, `task_id`, `performer_kind`, `holder`, `token`, `until`,
+`event_id`. Nothing fitting, or everything held, is `state: refused` with the
+`reason` and no row.
+
+`dna.attempt.outcome` targets `dna.attempt` with the attempt id, under the lease
+in `preconditions` (`holder`, `token`; `subject_digest` is `lease:<holder>@<token>`),
+and carries the outcome in `arguments`: `disposition` (`done`, `failed`,
+`declined`, `timeout`), `result` (at most 16384 bytes) or `result_ref`,
+`narrative`, `evidence` (the calls the leg made, as `model.called` evidence
+objects: adapter, backend, models, digests, tokens, cost) and `receipts`
+(`{class, body}`: a `customer` or `confidential` body goes to memory alone
+through `receipt_file`, the rest are git receipts). The head refuses — a
+receipt with the reason, no row — an attempt never admitted or never asked to
+run, one already settled (`duplicate`), and a lease that is not this holder's at
+this token now, in the record or in memory (`stale`). Otherwise it files the
+receipts and appends `attempt.outcome_requested`; the receipt is `requested`. A
+node relays the row onto the nerves (`dna.work.submit`); the owner journals the
+calls on the attempt (tokens per task hold out of process), settles it as it
+settles every reply (`attempt.outcome`) or refuses it with
+`attempt.outcome_refused` naming why; `GET /commands?request_id=` re-derives
+`settled` with the disposition, or `refused` with the reason.
+
+`/capabilities` exposes `attempt_commands` (`dna.attempt.v1`, both operations and
+their bounds) and `writes.attempt_claim` / `writes.attempt_outcome`;
+`reads.context` says the hat is readable.
+
 ## Identity and content
 
 With no configured principal source, or `dna.principal=local`, loopback access is

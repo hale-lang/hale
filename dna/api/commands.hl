@@ -37,6 +37,22 @@ type CommandRequest {
     // Raising work: the intent's outcome and the position it is for.
     outcome: String = "";
     to: String = "";
+    // A leg's claim and outcome (GH #946): typed copies of the wire.
+    performer_kind: String = "";
+    performer: String = "";
+    capabilities: String = "";
+    data_classes: String = "";
+    organizations: String = "";
+    ttl: Int = 0;
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    disposition: String = "";
+    result: String = "";
+    result_ref: String = "";
+    narrative: String = "";
+    evidence: String = "";
+    receipts: String = "";
 }
 type CommandCapability {
     available: Bool = false;
@@ -48,6 +64,11 @@ type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""
 type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
 // The admitted ask and, re-derived on every read, the organism's answer to it.
 type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; }
+// A leg's claim or outcome as it reads back (GH #946): the attempt and its lease, or the refusal.
+type AttemptCommandOutcome {
+    state: String = ""; attempt_id: String = ""; work_id: String = ""; task_id: String = ""; performer_kind: String = "";
+    holder: String = ""; token: Int = -1; until: Int = 0; disposition: String = ""; reason: String = ""; event_id: String = "";
+}
 type OrganizationCommandCapabilities {
     configured: Bool = false;
     proposal: CommandCapability = CommandCapability { };
@@ -93,6 +114,7 @@ type CommandReceipt {
     task: TaskCommandOutcome = TaskCommandOutcome { };
     person: PersonRetirementOutcome = PersonRetirementOutcome { };
     task_create: TaskCreateOutcome = TaskCreateOutcome { };
+    attempt: AttemptCommandOutcome = AttemptCommandOutcome { };
 }
 type CommandResult {
     ok: Bool = false;
@@ -203,7 +225,7 @@ locus CommandWire {
         return true;
     }
     fn known_operation(operation: String, version: String) -> Bool {
-        return version == "1" && (operation == "dna.practice.propose" || operation == "dna.review.verdict" || operation == "dna.organization.propose" || operation == "dna.task.reassign" || operation == "dna.person.retire" || operation == "dna.task.create");
+        return version == "1" && (operation == "dna.practice.propose" || operation == "dna.review.verdict" || operation == "dna.organization.propose" || operation == "dna.task.reassign" || operation == "dna.person.retire" || operation == "dna.task.create" || operation == "dna.attempt.claim" || operation == "dna.attempt.outcome");
     }
     fn known_request(operation: String, version: String) -> Bool {
         return self.known_operation(operation, version);
@@ -224,7 +246,13 @@ locus CommandWire {
         let task = operation == "dna.task.reassign";
         let person = operation == "dna.person.retire";
         let create = operation == "dna.task.create";
-        if create {
+        let claim = operation == "dna.attempt.claim";
+        let submit = operation == "dna.attempt.outcome";
+        if claim {
+            if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "performer_kind performer capabilities data_classes organizations ttl", 6) { return CommandRequest { }; }
+        } else if submit {
+            if !self.fields(conditions, "holder token principal", 3) || !self.fields(arguments, "disposition result result_ref narrative evidence receipts", 6) { return CommandRequest { }; }
+        } else if create {
             if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "outcome to", 2) { return CommandRequest { }; }
         } else if person {
             if !self.fields(conditions, "subject_digest principal", 2) || !self.fields(arguments, "to", 1) { return CommandRequest { }; }
@@ -238,7 +266,7 @@ locus CommandWire {
             if !self.fields(conditions, "subject_digest principal review_state", 3) || self.text(conditions, "review_state") != "pending" || !self.fields(arguments, "verdict comment", 2) { return CommandRequest { }; }
         }
         let kind = self.text(target, "kind");
-        if self.text(context, "position_id") != "org" || kind != if create { "dna.record" } else if person { "dna.person" } else if task { "dna.task" } else if organization { "dna.organization.module" } else if practice { "dna.practice" } else { "dna.review" } { return CommandRequest { }; }
+        if self.text(context, "position_id") != "org" || kind != if claim { "dna.work" } else if submit { "dna.attempt" } else if create { "dna.record" } else if person { "dna.person" } else if task { "dna.task" } else if organization { "dna.organization.module" } else if practice { "dna.practice" } else { "dna.review" } { return CommandRequest { }; }
         if self.text(context, "application_id") != application_id || self.text(target, "application_id") != application_id || !self.bounded(application_id, 256, true, false) { return CommandRequest { }; }
         let expected = self.raw(conditions, "principal");
         if !self.fields(expected, "mode name", 2) { return CommandRequest { }; }
@@ -250,10 +278,35 @@ locus CommandWire {
         let base = self.raw(conditions, "base");
         // A create is conditioned on the Record head it was prepared against;
         // that head is its subject.
-        let digest = if organization { self.text(base, "module_digest") } else if create { self.text(conditions, "record_head") } else { self.text(conditions, "subject_digest") };
+        let token_raw = if submit { std::str::trim(self.raw(conditions, "token")) } else { "0" };
+        if submit && !std::str::can_parse_int(token_raw) { return CommandRequest { }; }
+        let token = std::str::parse_int(token_raw) or 0;
+        let digest = if organization { self.text(base, "module_digest") } else if create || claim { self.text(conditions, "record_head") } else if submit { "lease:" + self.text(conditions, "holder") + "@" + to_string(token) } else { self.text(conditions, "subject_digest") };
         if !self.bounded(request_id, 128, true, false) || !self.bounded(digest, 256, true, false) || !self.bounded(target_id, 256, true, false) { return CommandRequest { }; }
         let mut command = CommandRequest { valid: true, request_id: request_id, operation: operation, application_id: application_id, target_kind: kind, target_id: target_id, subject_digest: digest, expected_principal_mode: expected_mode, expected_principal_name: expected_name };
-        if create {
+        if claim || submit {
+            if claim {
+                command.record_head = digest;
+                command.performer_kind = self.text(arguments, "performer_kind"); command.performer = self.text(arguments, "performer");
+                command.capabilities = self.words(self.raw(arguments, "capabilities")); command.data_classes = self.words(self.raw(arguments, "data_classes")); command.organizations = self.words(self.raw(arguments, "organizations"));
+                let ttl_raw = std::str::trim(self.raw(arguments, "ttl"));
+                if !std::str::can_parse_int(ttl_raw) || !self.is_text(self.raw(arguments, "performer_kind")) || !self.is_text(self.raw(arguments, "performer")) { return CommandRequest { }; }
+                command.ttl = std::str::parse_int(ttl_raw) or 0;
+                if target_id != application_id || command.capabilities == "!" || command.data_classes == "!" || command.organizations == "!" { return CommandRequest { }; }
+            } else {
+                command.attempt_id = target_id; command.holder = self.text(conditions, "holder"); command.token = token;
+                command.disposition = self.text(arguments, "disposition"); command.result = self.text(arguments, "result"); command.result_ref = self.text(arguments, "result_ref"); command.narrative = self.text(arguments, "narrative");
+                let evidence = std::str::trim(self.raw(arguments, "evidence")); let receipts = std::str::trim(self.raw(arguments, "receipts"));
+                if !std::str::starts_with(evidence, "[") || !std::str::starts_with(receipts, "[") || !self.is_text(self.raw(conditions, "holder")) || !self.is_text(self.raw(arguments, "disposition"))
+                    || !self.is_text(self.raw(arguments, "result")) || !self.is_text(self.raw(arguments, "result_ref")) || !self.is_text(self.raw(arguments, "narrative")) { return CommandRequest { }; }
+                command.evidence = if evidence == "[]" { "" } else { evidence }; command.receipts = if receipts == "[]" { "" } else { receipts };
+            }
+            // the codec's own rules — a lease's token, a disposition the
+            // outcome contract carries, bounded evidence — refuse here too
+            let attempts = ops::AttemptCommandCodec { };
+            let native_context = ops::GovernanceContext { application_id: application_id, principal_mode: expected_mode, principal_name: expected_name };
+            if !attempts.valid(native_context, attempt_native(command)) { return CommandRequest { }; }
+        } else if create {
             command.record_head = digest; command.outcome = self.text(arguments, "outcome"); command.to = self.text(arguments, "to");
             if target_id != application_id || !self.bounded(command.outcome, 8192, true, true) || !self.bounded(command.to, 256, true, false) { return CommandRequest { }; }
         } else if person {
@@ -358,6 +411,52 @@ locus CommandWire {
         b.string_field("reason", if !self.origin_valid(origin) { "Command submission has no configured origin." } else if !valid { "Task authority is unavailable." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Task capability is unavailable." });
         b.end_object(); return b.result();
     }
+    // A JSON array of strings as one word list, "" for none, "!" when it
+    // is not one.
+    fn words(raw: String) -> String {
+        let value = std::str::trim(raw);
+        if !std::str::starts_with(value, "[") || !std::json::valid(value) { return "!"; }
+        let syntax = ops::OrganizationJson { };
+        let mut out = ""; let mut it = std::json::array_first(value); let mut n = 0;
+        while !it.done {
+            if !self.is_text(it.element) || n >= 64 { return "!"; }
+            let word = syntax.decode(it.element);
+            if !self.bounded(word, 128, true, false) || std::str::contains(word, " ") { return "!"; }
+            out = out + (if len(out) > 0 { " " } else { "" }) + word; n = n + 1; it = std::json::array_next(it);
+        }
+        return out;
+    }
+    fn attempt_capability_json(capability: CommandCapability, origin: String) -> String {
+        let available = capability.available && self.origin_valid(origin);
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", "dna.attempt.v1"); b.string_field("operations", "dna.attempt.claim dna.attempt.outcome");
+        b.bool_field("available", available); b.bool_field("authorized", available && capability.authorized);
+        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
+        b.string_field("max_ttl_seconds", "86400"); b.string_field("max_result_bytes", "16384"); b.string_field("max_evidence_bytes", "32768"); b.string_field("max_receipts_bytes", "65536");
+        b.string_field("max_identity_bytes", "256"); b.string_field("max_request_bytes", "32768");
+        b.string_field("reason", if !self.origin_valid(origin) { "Command submission has no configured origin." } else if self.bounded(capability.reason, 512, false, true) { capability.reason } else { "Attempt command capability is unavailable." });
+        b.end_object(); return b.result();
+    }
+    fn inactive_attempt(r: CommandReceipt) -> Bool {
+        let a = r.attempt;
+        return a.state == "" && a.attempt_id == "" && a.work_id == "" && a.task_id == "" && a.performer_kind == "" && a.holder == "" && a.token == -1 && a.until == 0 && a.disposition == "" && a.reason == "" && a.event_id == "";
+    }
+    // A claim reads back its lease, or its refusal; an outcome reads back
+    // `requested` until the owner settles or refuses it.
+    fn attempt_valid(r: CommandReceipt) -> Bool {
+        let a = r.attempt; let source = ops::OrganizationCommandCodec { }; let claim = r.operation == "dna.attempt.claim";
+        if r.target_kind != if claim { "dna.work" } else { "dna.attempt" } || !self.bounded(r.subject_digest, 256, true, false)
+            || r.proposal_state != "" || r.verdict_value != "" || r.verdict_state != "" || r.candidate_digest != "" || r.review_id != ""
+            || r.review_state != "unavailable" || r.activation_state != "unknown" || r.activation_reason != "" { return false; }
+        if claim && r.target_id != r.application_id { return false; }
+        if !claim && (r.target_id != a.attempt_id || !self.bounded(a.attempt_id, 256, true, false)) { return false; }
+        if a.state == "unknown" { return r.state == "outcome_unknown" && a.event_id == "" && a.until == 0; }
+        if a.state == "refused" { return r.state == "refused" && self.bounded(a.reason, 2048, true, true) && a.reason == r.reason && a.event_id == ""; }
+        if r.state != "succeeded" || !source.commit_id(a.event_id) || !self.bounded(a.holder, 256, true, false) || a.token < 0 { return false; }
+        if claim { return a.state == "claimed" && self.bounded(a.attempt_id, 256, true, false) && self.bounded(a.work_id, 256, true, false) && self.bounded(a.task_id, 256, true, false) && self.bounded(a.performer_kind, 64, true, false) && a.until > 0; }
+        if a.state != "requested" && a.state != "settled" { return false; }
+        return a.until == 0 && (a.disposition == "done" || a.disposition == "failed" || a.disposition == "declined" || a.disposition == "timeout");
+    }
     fn task_create_capability_json(capability: CommandCapability, origin: String) -> String {
         let available = capability.available && self.origin_valid(origin);
         let b = std::json::Builder { }; b.begin_object();
@@ -446,11 +545,16 @@ locus CommandWire {
         if r.state != "recorded" && r.state != "admitted" && r.state != "running" && r.state != "succeeded" && r.state != "refused" && r.state != "failed" && r.state != "outcome_unknown" { return false; }
         let practice = r.operation == "dna.practice.propose"; let organization = r.operation == "dna.organization.propose"; let task = r.operation == "dna.task.reassign";
         let person = r.operation == "dna.person.retire"; let create = r.operation == "dna.task.create";
+        let attempt = r.operation == "dna.attempt.claim" || r.operation == "dna.attempt.outcome";
+        if !attempt && !self.inactive_attempt(r) { return false; }
         if !person && !self.inactive_person(r) { return false; }
         if !task && !self.inactive_task(r) { return false; }
         if !organization && !self.inactive_organization(r) { return false; }
         if !create && !self.inactive_task_create(r) { return false; }
-        if create {
+        if attempt {
+            if !self.attempt_valid(r) { return false; }
+            if submitting && (r.attempt.holder != if r.operation == "dna.attempt.claim" { command.performer } else { command.holder }) { return false; }
+        } else if create {
             if !self.task_create_valid(r) { return false; }
         } else if person {
             if !self.person_valid(r) || (submitting && r.person.to != command.new_assignee) { return false; }
@@ -498,6 +602,11 @@ locus CommandWire {
             let t = r.task; b.begin_object_field("task"); b.string_field("state", t.state); b.string_field("from", t.from); b.string_field("to", t.to); b.string_field("event_id", t.event_id); b.end_object();
         } else if r.operation == "dna.task.create" {
             let t = r.task_create; b.begin_object_field("task_create"); b.string_field("intent_id", t.intent_id); b.string_field("intent_state", t.intent_state); b.string_field("task_id", t.task_id); b.string_field("event_id", t.event_id); b.end_object();
+        } else if r.operation == "dna.attempt.claim" || r.operation == "dna.attempt.outcome" {
+            let a = r.attempt; b.begin_object_field("attempt"); b.string_field("state", a.state); b.string_field("attempt_id", a.attempt_id); b.string_field("work_id", a.work_id);
+            b.string_field("task_id", a.task_id); b.string_field("performer_kind", a.performer_kind); b.string_field("holder", a.holder);
+            b.string_field("token", if a.token < 0 { "" } else { to_string(a.token) }); b.string_field("until", to_string(a.until)); b.string_field("disposition", a.disposition);
+            b.string_field("reason", a.reason); b.string_field("event_id", a.event_id); b.end_object();
         } else if r.operation == "dna.practice.propose" {
             b.begin_object_field("proposal"); b.string_field("state", r.proposal_state); b.string_field("candidate_digest", r.candidate_digest); b.string_field("review_id", r.review_id); b.end_object();
         } else if r.operation == "dna.organization.propose" {
@@ -537,4 +646,18 @@ locus CommandWire {
         if submitting && state != "succeeded" && state != "refused" && state != "failed" { response.status = 202; }
         return response;
     }
+}
+
+// The typed request as the operations' command, for the attempt codec's
+// own rules (GH #946); the provider maps the same fields.
+fn attempt_native(command: CommandRequest) -> ops::GovernanceCommand {
+    return ops::GovernanceCommand {
+        request_id: command.request_id, operation: command.operation, operation_version: command.operation_version,
+        application_id: command.application_id, position_id: command.position_id, target_kind: command.target_kind, target_id: command.target_id,
+        subject_digest: command.subject_digest, record_head: command.record_head,
+        performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
+        organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
+        disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
+        evidence: command.evidence, receipts: command.receipts
+    };
 }

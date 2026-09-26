@@ -37,6 +37,41 @@ type GovernanceCommand {
     // variant requires both empty.
     outcome: String = "";
     to: String = "";
+    // A leg's claim (dna.attempt.claim, GH #946): what it performs and
+    // may see, and for how long the lease is asked. A leg's outcome
+    // (dna.attempt.outcome): the attempt, the lease it settles under, the
+    // outcome and its evidence. Every other variant requires all empty.
+    performer_kind: String = "";
+    performer: String = "";
+    capabilities: String = "";
+    data_classes: String = "";
+    organizations: String = "";
+    ttl: Int = 0;
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    disposition: String = "";
+    result: String = "";
+    result_ref: String = "";
+    narrative: String = "";
+    evidence: String = ""; // a JSON array of the calls made, evidence objects
+    receipts: String = ""; // a JSON array of {class, body} to file
+}
+
+// What a claim or an outcome command reads back (GH #946): the attempt
+// and its lease as a value, or the refusal with its reason.
+type AttemptCommandOutcome {
+    state: String = ""; // claimed | requested | settled | refused | unknown
+    attempt_id: String = "";
+    work_id: String = "";
+    task_id: String = "";
+    performer_kind: String = "";
+    holder: String = "";
+    token: Int = -1;
+    until: Int = 0;
+    disposition: String = "";
+    reason: String = "";
+    event_id: String = "";
 }
 
 locus GovernanceCommandCodec {

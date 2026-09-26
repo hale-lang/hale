@@ -445,6 +445,7 @@ locus NodeRelay {
         publish dna::KnowledgeNodeRequested;
         publish dna::KnowledgeBindingRequested;
         publish dna::KnowledgeEdgeRequested;
+        publish dna::WorkSubmit;
         publish dna::RowLanded;
     }
     // Every row this node's view gained since it last looked, onto the
@@ -535,6 +536,21 @@ locus NodeRelay {
             let request = codec.decode(body);
             if !codec.valid(request) { return "an invalid knowledge-edge request"; }
             dna::KnowledgeEdgeRequested <- request;
+        } else if kind == "work-submit" {
+            // a leg's outcome, handed back at the head (GH #946): the row's
+            // fields, and the attempt id spliced in by the relay
+            dna::WorkSubmit <- dna::WorkSubmission {
+                attempt_id: std::json::find_string_field(body, "attempt_id"),
+                holder: std::json::find_string_field(body, "holder"),
+                token: std::json::find_int_field(body, "token"),
+                disposition: std::json::find_string_field(body, "disposition"),
+                result: std::json::find_string_field(body, "result"),
+                result_ref: std::json::find_string_field(body, "result_ref"),
+                narrative: std::json::find_string_field(body, "narrative"),
+                evidence_ref: std::json::find_string_field(body, "evidence_ref"),
+                calls: std::json::find_string_field(body, "calls"),
+                request: std::json::find_string_field(body, "request")
+            };
         } else {
             return "no fact of kind `" + kind + "`";
         }
@@ -571,8 +587,8 @@ locus NodeRelay {
                 let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
                 request.request_id == r.entity && edge_admits_here(self.root, request)
             } else { true };
-            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested");
-            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else { " review.settled review.refused " };
+            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested" || r.kind == "attempt.outcome_requested");
+            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else if r.kind == "attempt.outcome_requested" { " attempt.outcome attempt.outcome_refused " } else { " review.settled review.refused " };
             if requested && trust == "signed" && !row_verified(self.root, r.digest) {
                 // Verification gates EVERY attempt. Even when writing the refusal
                 // failed, an expired retry marker must never admit an unsigned row.
@@ -600,7 +616,7 @@ locus NodeRelay {
                             let ok = append_as(self.root, "knowledge.edge.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
                         }
                     } else {
-                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "observation.requested" { "observation.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
+                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "observation.requested" { "observation.refused" } else if r.kind == "practice.requested" { "practice.refused" } else if r.kind == "attempt.outcome_requested" { "attempt.outcome_refused" } else { "review.refused" };
                         // a request with an id of its own (a concern's, a
                         // pressure signal's) is answered only by a row naming
                         // that id; the refusal names it, so it answers
@@ -626,6 +642,12 @@ locus NodeRelay {
                         let close = last_index_of(inner, "}");
                         if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
                     }
+                    if r.kind == "attempt.outcome_requested" {
+                        // the row's entity is the attempt id (GH #946)
+                        let inner = dna::trim_nl(body);
+                        let close = last_index_of(inner, "}");
+                        if close > 0 { body = inner[0..close] + ", \"attempt_id\": " + quote(r.entity) + "}"; }
+                    }
                     if r.kind == "knowledge.node.requested" {
                         // Admission metadata stays in Record. Transport only the
                         // exact eleven native fields after trust/owner checks;
@@ -635,7 +657,7 @@ locus NodeRelay {
                     }
                     if r.kind == "knowledge.binding.requested" { let codec = dna::KnowledgeBindingCodec { }; body = codec.started(codec.decode(r.body)); }
                     if r.kind == "knowledge.edge.requested" { let codec = dna::KnowledgeEdgeCodec { }; body = codec.started(codec.decode(r.body)); }
-                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "observation.requested" { "observed" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else { "verdict" }, body);
+                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "observation.requested" { "observed" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else if r.kind == "attempt.outcome_requested" { "work-submit" } else { "verdict" }, body);
                     if len(e) == 0 { state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now()); state.count = state.count + 1; }
                     else { state.error = r.kind + " (" + r.entity + "): " + e; }
                 }
@@ -729,6 +751,7 @@ main locus Host {
         dna::KnowledgeNodeRequested: nats::NatsAdapter { };
         dna::KnowledgeBindingRequested: nats::NatsAdapter { };
         dna::KnowledgeEdgeRequested: nats::NatsAdapter { };
+        dna::WorkSubmit: nats::NatsAdapter { };
         dna::RowLanded: nats::NatsAdapter { };
     }
     // A publish the stream did not acknowledge within the connection's

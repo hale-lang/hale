@@ -327,6 +327,9 @@ locus Dna {
         claims: MemoryLeases = MemoryLeases { };
         node: String = "";
         claim_ttl: Int = 300;
+        // GH #946 slice 3: what came back from legs through the head
+        submissions_settled: Int = 0;
+        submissions_refused: Int = 0;
         claimed: Lease = Lease { }; // the claim this node took last
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
@@ -466,6 +469,7 @@ locus Dna {
         subscribe KnowledgeBindingRequested as on_knowledge_binding_requested;
         subscribe KnowledgeEdgeRequested as on_knowledge_edge_requested;
         subscribe OrganizationSourceRequested as on_organization_source_requested;
+        subscribe WorkSubmit as on_work_submit;
         // GH #566 F2: a Review is announced as a typed fact, so a position
         // in the org (the Leader) can decide it inside its grant
         publish ReviewRequested;
@@ -2038,6 +2042,125 @@ locus Dna {
     fn report(e: EditAsk, disposition: String, result: String, narrative: String) {
         self.edits_reported = self.edits_reported + 1;
         self.report_attempt(e.scope, e.attempt_id, WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id });
+    }
+    // ---- GH #946 slice 3: a leg's outcome, through the head ---------------
+    // The latest `attempt.claimed` row of an attempt: who holds the lease,
+    // its token and until when (0 when none was taken).
+    @unbounded
+    fn recorded_claim(attempt_id: String) -> Lease {
+        let mut out = Lease { key: "attempt:" + attempt_id };
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.claimed" && e.entity == attempt_id {
+                out = Lease { key: out.key, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"), present: true };
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Whether this submission's request was refused already (a relay
+    // after a lost publish is answered once).
+    @unbounded
+    fn submission_answered(s: WorkSubmission) -> Bool {
+        if len(s.request) == 0 { return false; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.outcome_refused" && e.entity == s.attempt_id && request_named(e.body) == s.request { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    fn refuse_submission(s: WorkSubmission, why: String) {
+        self.submissions_refused = self.submissions_refused + 1;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("why", why);
+        b.string_field("holder", s.holder);
+        b.int_field("token", s.token);
+        b.string_field("request", s.request);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "attempt.outcome_refused", s.attempt_id, b.result());
+        self.membrane.notify("attempt", "attempt " + s.attempt_id + ": the outcome " + s.holder + " handed back is refused: " + why);
+    }
+    // The calls a leg made under the attempt, as it reported them: each
+    // is one `model.called` row on the attempt id, accounted by the
+    // budget like a call made here (the prompt and the context are the
+    // leg's receipts, named by digest; no body travels in a submission).
+    @unbounded
+    fn journal_calls(attempt_id: String, calls: String) {
+        if len(calls) == 0 || !std::json::valid(calls) { return; }
+        let mut it = std::json::array_first(calls);
+        let mut n = 0;
+        while !it.done && n < 256 {
+            let c = it.element;
+            let refused = std::json::find_string_field(c, "refused");
+            self.on_model_called(ModelEvidence {
+                attempt_id: attempt_id,
+                adapter: std::json::find_string_field(c, "adapter"),
+                backend: std::json::find_string_field(c, "backend"),
+                endpoint: std::json::find_string_field(c, "endpoint"),
+                credential: std::json::find_string_field(c, "credential"),
+                requested_model: std::json::find_string_field(c, "requested_model"),
+                reported_model: std::json::find_string_field(c, "reported_model"),
+                params: std::json::find_string_field(c, "params"),
+                prompt_digest: std::json::find_string_field(c, "prompt_digest"),
+                context_digest: std::json::find_string_field(c, "context_digest"),
+                knowledge_bindings: std::json::find_string_field(c, "knowledge_bindings"),
+                tool_grant: std::json::find_string_field(c, "tool_grant"),
+                response_digest: std::json::find_string_field(c, "response_digest"),
+                input_tokens: std::json::find_int_field(c, "input_tokens"),
+                output_tokens: std::json::find_int_field(c, "output_tokens"),
+                elapsed: std::json::find_string_field(c, "elapsed"),
+                cost_micros: std::json::find_int_field(c, "cost_micros"),
+                retry_of: std::json::find_string_field(c, "retry_of"),
+                data_class: std::json::find_string_field(c, "data_class"),
+                ok: len(refused) == 0,
+                refused: refused
+            });
+            n = n + 1;
+            it = std::json::array_next(it);
+        }
+    }
+    // A leg's outcome for the attempt it claimed, relayed from its
+    // `attempt.outcome_requested` row. The lease is checked here as the
+    // head checked it — the recorded claim, and memory's when there is
+    // memory: this holder, this token, live — so a stale leg settles
+    // nothing; the calls it made are journaled on the attempt; the runtime
+    // settles the attempt as it settles every reply, or the refusal is a
+    // row naming why. Either answers the request.
+    @unbounded
+    fn on_work_submit(s: WorkSubmission) {
+        let moved = self.journal.refresh();
+        if len(s.attempt_id) == 0 { return; }
+        let adm = recorded_attempt_admission(self.journal, s.attempt_id, self.journal.revision());
+        if !adm.ok || !owned_by(self.ownership.me, adm.value.task_id) { return; }
+        if self.has_row("attempt.outcome", s.attempt_id) || self.submission_answered(s) { return; }
+        let claim = self.recorded_claim(s.attempt_id);
+        let now = std::time::now();
+        let mut why = "";
+        if !claim.present { why = "attempt " + s.attempt_id + " was never claimed by a leg"; }
+        else if claim.holder != s.holder || claim.token != s.token { why = "the lease on attempt " + s.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + s.holder + "'s at token " + to_string(s.token) + ": stale"; }
+        else if claim.expires <= now { why = "the lease on attempt " + s.attempt_id + " expired at " + to_string(claim.expires) + "; " + s.holder + " settles nothing on it"; }
+        else if self.claims.ready() {
+            let live = self.claims.current(claim.key);
+            if !self.claims.reachable { why = "memory cannot be reached to fence the lease on attempt " + s.attempt_id; }
+            else if !live.present || live.holder != s.holder || live.token != s.token || live.expires <= now { why = "memory's claim on attempt " + s.attempt_id + " is not " + s.holder + "'s at token " + to_string(s.token) + " now: stale"; }
+        }
+        if len(why) > 0 { self.refuse_submission(s, why); return; }
+        self.journal_calls(s.attempt_id, s.calls);
+        let r = WorkResult {
+            disposition: s.disposition, result: s.result, narrative: s.narrative, evidence: s.evidence_ref,
+            performer: self.work.identity_of(adm.value.performer_kind), attempt_id: s.attempt_id
+        };
+        let x = self.runtime.settle(s.attempt_id, r);
+        if !x.ok { self.refuse_submission(s, x.why); return; }
+        self.submissions_settled = self.submissions_settled + 1;
+        if self.claims.ready() { let released = self.claims.release_claim(claim.key, s.holder); }
     }
     // An attempt's outcome, reported to the runtime of its scope (an edit
     // leaf's, card 15; a case's completion, card 17). A published report

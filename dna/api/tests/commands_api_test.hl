@@ -44,6 +44,125 @@ locus CommandCases {
         b.begin_object_field("arguments"); b.string_field("outcome", outcome); b.string_field("to", to); b.end_object();
         b.end_object(); return b.result();
     }
+    fn claim_body(id: String, kind: String, performer: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("request_id", id); b.string_field("operation", "dna.attempt.claim"); b.string_field("operation_version", "1");
+        b.begin_object_field("context"); b.string_field("application_id", self.f.identity); b.string_field("position_id", "org"); b.end_object();
+        b.begin_object_field("target"); b.string_field("application_id", self.f.identity); b.string_field("kind", "dna.work"); b.string_field("id", self.f.identity); b.end_object();
+        b.begin_object_field("preconditions"); b.string_field("record_head", RECORD_HEAD);
+        b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "alice"); b.end_object(); b.end_object();
+        b.begin_object_field("arguments"); b.string_field("performer_kind", kind); b.string_field("performer", performer);
+        b.begin_array_field("capabilities"); b.string_value("judgment"); b.end_array();
+        b.begin_array_field("data_classes"); b.string_value("internal"); b.end_array();
+        b.begin_array_field("organizations"); b.end_array();
+        b.int_field("ttl", 600); b.end_object();
+        b.end_object(); return b.result();
+    }
+    fn outcome_body(id: String, attempt: String, holder: String, token: Int, disposition: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("request_id", id); b.string_field("operation", "dna.attempt.outcome"); b.string_field("operation_version", "1");
+        b.begin_object_field("context"); b.string_field("application_id", self.f.identity); b.string_field("position_id", "org"); b.end_object();
+        b.begin_object_field("target"); b.string_field("application_id", self.f.identity); b.string_field("kind", "dna.attempt"); b.string_field("id", attempt); b.end_object();
+        b.begin_object_field("preconditions"); b.string_field("holder", holder); b.int_field("token", token);
+        b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "alice"); b.end_object(); b.end_object();
+        b.begin_object_field("arguments"); b.string_field("disposition", disposition); b.string_field("result", "assessment: ship it"); b.string_field("result_ref", ""); b.string_field("narrative", "one call on the deep tier");
+        b.begin_array_field("evidence"); b.begin_object(); b.string_field("backend", "deep"); b.string_field("requested_model", "deep-1"); b.int_field("input_tokens", 1200); b.int_field("output_tokens", 340); b.int_field("cost_micros", 55); b.end_object(); b.end_array();
+        b.begin_array_field("receipts"); b.end_array(); b.end_object();
+        b.end_object(); return b.result();
+    }
+    // A leg's claim and outcome over HTTP (GH #946): the same envelope, gate
+    // and identity; the lease rides back in `attempt`, a refusal is a
+    // receipt with the reason.
+    fn attempt_cases() {
+        let wire = api::CommandWire { };
+        self.host.attempt_authorized = true; self.host.attempt_supported = true;
+        let service = api::Api { root: self.f.root, local_name: "alice", commands: self.host, command_origin: ORIGIN };
+        let body = self.claim_body("claim-request", "agent", "leg:alice");
+        let args = wire.raw(body, "arguments"); let conditions = wire.raw(body, "preconditions");
+        let refs = self.f.refs();
+        let data = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.text(wire.raw(data, "attempt_commands"), "profile"), "dna.attempt.v1", "attempt profile advertised");
+        std::test::assert_eq_str(wire.text(wire.raw(data, "attempt_commands"), "operations"), "dna.attempt.claim dna.attempt.outcome", "both operations named");
+        std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "attempt_claim"), "true", "claim write flag");
+        std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "attempt_outcome"), "true", "outcome write flag");
+        std::test::assert_eq_str(wire.raw(wire.raw(data, "reads"), "context"), "true", "the hat is readable");
+        self.host.attempt_authorized = false;
+        let denied = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.raw(wire.raw(denied, "writes"), "attempt_claim"), "false", "authorization separate from support");
+        self.call(service, "POST", "/commands", HEADERS, body, 403, "forbidden");
+        self.host.attempt_authorized = true; self.host.attempt_supported = false;
+        let unsupported = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.raw(unsupported, "attempt_commands"), "", "unsupported profile omitted");
+        self.no_dispatch(service, HEADERS, body, 503, "commands_unsupported");
+        self.host.attempt_supported = true;
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "ttl", "0")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "ttl", "\"600\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "capabilities", "\"judgment\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "data_classes", "[\"secret\"]")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "performer", "\"\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", "{\"performer_kind\":\"agent\"}"), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "preconditions", self.field(conditions, "record_head", "\"\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "target", self.field(wire.raw(body, "target"), "kind", "\"dna.attempt\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "target", self.field(wire.raw(body, "target"), "id", "\"another-record\"")), 400, "invalid_command");
+        let switched = api::Api { root: self.f.root, local_name: "bob", commands: self.host, command_origin: ORIGIN };
+        self.no_dispatch(switched, HEADERS, body, 409, "command_context_changed");
+        let claimed = wire.raw(self.call(service, "POST", "/commands", HEADERS, body, 200, ""), "data");
+        std::test::assert_eq_str(wire.text(claimed, "operation"), "dna.attempt.claim", "receipt selects the claim variant");
+        std::test::assert_eq_str(wire.text(wire.raw(claimed, "attempt"), "state"), "claimed", "the lease comes back as a value");
+        std::test::assert_eq_str(wire.text(wire.raw(claimed, "attempt"), "attempt_id"), "t1/wf1/s0/j/a0", "the attempt it is on");
+        std::test::assert_eq_str(wire.text(wire.raw(claimed, "attempt"), "holder"), "leg:alice", "held by the performer that asked");
+        std::test::assert_eq_str(wire.text(wire.raw(claimed, "attempt"), "token"), "3", "with its fencing token");
+        std::test::assert_eq_str(wire.raw(claimed, "task_create"), "", "claim receipt has no create fields");
+        std::test::assert_eq_str(wire.text(wire.raw(claimed, "target"), "kind"), "dna.work", "the target is the Work family");
+        std::test::assert_eq_str(self.host.last_command.performer_kind, "agent", "kind forwarded");
+        std::test::assert_eq_str(self.host.last_command.performer, "leg:alice", "performer forwarded");
+        std::test::assert_eq_str(self.host.last_command.capabilities, "judgment", "capabilities as one word list");
+        std::test::assert_eq_str(self.host.last_command.data_classes, "internal", "data classes as one word list");
+        std::test::assert_eq_int(self.host.last_command.ttl, 600, "ttl forwarded");
+        std::test::assert_eq_str(self.host.last_command.record_head, RECORD_HEAD, "head precondition forwarded");
+        let context = self.host.saved_context; let command = self.host.saved_command;
+        let good = self.host.result(context, command);
+        let mut bad1 = good; bad1.receipt.attempt.state = "done"; self.bad_receipt(context, command, bad1);
+        let mut bad2 = good; bad2.receipt.attempt.token = -1; self.bad_receipt(context, command, bad2);
+        let mut bad3 = good; bad3.receipt.target_kind = "dna.record"; self.bad_receipt(context, command, bad3);
+        let mut bad4 = good; bad4.receipt.proposal_state = "pending"; self.bad_receipt(context, command, bad4);
+        let mut bad5 = good; bad5.receipt.attempt.holder = "leg:mallory"; self.bad_receipt(context, command, bad5);
+        let mut bad6 = good; bad6.receipt.state = "recorded"; self.bad_receipt(context, command, bad6);
+        self.host.mode = "claim_refused";
+        let refused = wire.raw(self.call(service, "POST", "/commands", HEADERS, self.claim_body("claim-none", "agent", "leg:alice"), 200, ""), "data");
+        std::test::assert_eq_str(wire.text(refused, "state"), "refused", "a refusal is a receipt");
+        std::test::assert_eq_str(wire.text(wire.raw(refused, "attempt"), "state"), "refused", "and names no lease");
+        std::test::assert(std::str::contains(wire.text(refused, "reason"), "no admitted attempt"), "with the reason: " + wire.text(refused, "reason"));
+        self.host.mode = "recorded";
+        // the outcome
+        let outcome = self.outcome_body("outcome-request", "t1/wf1/s0/j/a0", "leg:alice", 3, "done");
+        let oargs = wire.raw(outcome, "arguments"); let oconditions = wire.raw(outcome, "preconditions");
+        self.no_dispatch(service, HEADERS, self.field(outcome, "arguments", self.field(oargs, "disposition", "\"pending\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(outcome, "arguments", self.field(oargs, "evidence", "\"none\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(outcome, "arguments", self.field(oargs, "receipts", "[{\"class\":\"secret\",\"body\":\"x\"}]")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(outcome, "preconditions", self.field(oconditions, "token", "\"3\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(outcome, "preconditions", self.field(oconditions, "holder", "\"\"")), 400, "invalid_command");
+        let requested = wire.raw(self.call(service, "POST", "/commands", HEADERS, outcome, 200, ""), "data");
+        std::test::assert_eq_str(wire.text(requested, "operation"), "dna.attempt.outcome", "receipt selects the outcome variant");
+        std::test::assert_eq_str(wire.text(wire.raw(requested, "attempt"), "state"), "requested", "requested until the owner settles it");
+        std::test::assert_eq_str(wire.text(requested, "subject_digest"), "lease:leg:alice@3", "the subject is the lease");
+        std::test::assert_eq_str(self.host.last_command.attempt_id, "t1/wf1/s0/j/a0", "attempt forwarded");
+        std::test::assert_eq_str(self.host.last_command.holder, "leg:alice", "holder forwarded");
+        std::test::assert_eq_int(self.host.last_command.token, 3, "token forwarded");
+        std::test::assert_eq_str(self.host.last_command.disposition, "done", "disposition forwarded");
+        std::test::assert(std::str::contains(self.host.last_command.evidence, "\"deep-1\""), "the calls travel as evidence: " + self.host.last_command.evidence);
+        std::test::assert_eq_str(self.host.last_command.receipts, "", "no receipts is none");
+        self.host.mode = "attempt_settled";
+        let settled = wire.raw(self.call(service, "GET", "/commands?request_id=outcome-request", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.text(wire.raw(settled, "attempt"), "state"), "settled", "the owner's settlement observed through lookup");
+        std::test::assert_eq_str(wire.text(wire.raw(settled, "attempt"), "disposition"), "done", "with its disposition");
+        self.host.mode = "attempt_stale";
+        let stale = wire.raw(self.call(service, "POST", "/commands", HEADERS, self.outcome_body("outcome-stale", "t1/wf1/s0/j/a0", "leg:alice", 3, "done"), 200, ""), "data");
+        std::test::assert_eq_str(wire.text(stale, "state"), "refused", "a stale outcome is refused");
+        std::test::assert(std::str::contains(wire.text(stale, "reason"), "stale"), "with the reason: " + wire.text(stale, "reason"));
+        self.host.mode = "recorded";
+        std::test::assert_eq_str(self.f.refs(), refs, "attempt command conformance never writes native Record");
+    }
     // Raising work over HTTP: the same envelope, gate, identity and recovery
     // as the other operations; the organism's answer rides in `task_create`.
     fn create_cases() {
@@ -163,7 +282,7 @@ locus CommandCases {
         let data = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.text(wire.raw(data, "review_commands"), "profile"), "dna.review.verdict.v1", "optional independent verdict profile");
         std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "review_verdict"), "true", "review support independently advertised");
-        self.host.practice_authorized = false; self.host.create_authorized = false;
+        self.host.practice_authorized = false; self.host.create_authorized = false; self.host.attempt_authorized = false;
         let review_only = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.raw(review_only, "read_only"), "false", "review authorization alone permits writes");
         std::test::assert_eq_str(wire.raw(wire.raw(review_only, "writes"), "practice_propose"), "false", "practice grant remains independent");
@@ -460,5 +579,5 @@ fn main() {
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-command-api.XXXXXX");
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
-    let cases = CommandCases { f: f }; cases.run_cases(); cases.review_cases(); cases.create_cases();
+    let cases = CommandCases { f: f }; cases.run_cases(); cases.review_cases(); cases.create_cases(); cases.attempt_cases();
 }

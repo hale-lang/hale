@@ -146,6 +146,8 @@ macro_rules! at {
 /// Typed query operations shared by the host and service API. These must
 /// travel with the host: a source-tree import alone would break the installed CLI.
 pub const OPERATION_FILES: &[EmbeddedFile] = at![
+    "dna/operations/attempt_command.hl",
+    "dna/operations/context.hl",
     "dna/operations/definition_drafts.hl",
     "dna/operations/definitions.hl",
     "dna/operations/governance_admission.hl",

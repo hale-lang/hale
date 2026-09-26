@@ -99,6 +99,9 @@ locus Wire {
         return self.capabilities_with_task_create(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, people, person_capability, false, CommandCapability { });
     }
     fn capabilities_with_task_create(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability, task_create: Bool, task_create_capability: CommandCapability) -> String {
+        return self.capabilities_with_attempts(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, people, person_capability, task_create, task_create_capability, false, CommandCapability { });
+    }
+    fn capabilities_with_attempts(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability, task_create: Bool, task_create_capability: CommandCapability, attempts: Bool, attempt_capability: CommandCapability) -> String {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("application_id", source.identity);
@@ -110,7 +113,8 @@ locus Wire {
         let can_reassign = tasks && command_wire.task_writable(task_capability, command_origin);
         let can_retire = people && command_wire.task_writable(person_capability, command_origin);
         let can_create = task_create && task_create_capability.available && task_create_capability.authorized && command_wire.origin_valid(command_origin);
-        b.bool_field("read_only", !(can_propose || can_verdict || knowledge_write || can_source || can_source_review || can_reassign || can_retire || can_create));
+        let can_claim = attempts && attempt_capability.available && attempt_capability.authorized && command_wire.origin_valid(command_origin);
+        b.bool_field("read_only", !(can_propose || can_verdict || knowledge_write || can_source || can_source_review || can_reassign || can_retire || can_create || can_claim));
         b.begin_object_field("principal");
         b.string_field("mode", mode);
         b.string_field("name", name);
@@ -123,6 +127,7 @@ locus Wire {
         b.bool_field("knowledge", knowledge);
         b.bool_field("workflows", mode == "local");
         b.bool_field("tasks", mode == "local");
+        b.bool_field("context", mode == "local");
         if people { b.bool_field("people", mode == "local"); }
         b.end_object();
         b.begin_object_field("writes");
@@ -131,6 +136,7 @@ locus Wire {
         if tasks { b.bool_field("task_reassign", can_reassign); }
         if people { b.bool_field("person_retire", can_retire); }
         if task_create { b.bool_field("task_create", can_create); }
+        if attempts { b.bool_field("attempt_claim", can_claim); b.bool_field("attempt_outcome", can_claim); }
         if source_commands.configured { b.bool_field("organization_propose", can_source); b.bool_field("organization_review_verdict", can_source_review); }
         b.end_object();
         if source_commands.configured {
@@ -142,6 +148,7 @@ locus Wire {
         if tasks { b.field("task_commands", command_wire.task_capability_json(task_capability, command_origin)); }
         if people { let person_wire = PersonWire { }; b.field("person_commands", person_wire.capability(person_capability, command_origin)); }
         if task_create { b.field("task_create_commands", command_wire.task_create_capability_json(task_create_capability, command_origin)); }
+        if attempts { b.field("attempt_commands", command_wire.attempt_capability_json(attempt_capability, command_origin)); }
         if definitions && command_wire.origin_valid(command_origin) {
             let drafts = DefinitionDraftWire { };
             b.field("definition_drafts", drafts.capability());
@@ -193,7 +200,7 @@ locus Api {
         // Preserve the standalone head's existing unsupported-mutation behavior.
         // A command provider opens command submission. Draft POST is separate
         // read preparation and requires a real catalog plus a configured origin.
-        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path || (commands_path && (self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1"))))) { return http.error(405, "method_not_allowed", "this mutation route is not supported", false); }
+        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path || (commands_path && (self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1") || self.commands.supported("dna.attempt.claim", "1"))))) { return http.error(405, "method_not_allowed", "this mutation route is not supported", false); }
         // The optional shell is public and static, so Runtime inspection can
         // work without a DNA session. Every Record read still passes auth below.
         if self.web.serves(path) { return self.web.response(path); }
@@ -268,7 +275,9 @@ locus Api {
             let person_capability = if people { self.commands.capability(command_context, "dna.person.retire", "1") } else { CommandCapability { } };
             let creates = self.commands.supported("dna.task.create", "1");
             let create_capability = if creates { self.commands.capability(command_context, "dna.task.create", "1") } else { CommandCapability { } };
-            let capabilities = wire.capabilities_with_task_create(source, self.mode, actor, self.organization.declared(), self.definitions.supported(), self.knowledge.supported(), supported, capability, review_supported, review_capability, self.command_origin, knowledge_write, source_capabilities, tasks, task_capability, people, person_capability, creates, create_capability);
+            let attempts = self.commands.supported("dna.attempt.claim", "1");
+            let attempt_capability = if attempts { self.commands.capability(command_context, "dna.attempt.claim", "1") } else { CommandCapability { } };
+            let capabilities = wire.capabilities_with_attempts(source, self.mode, actor, self.organization.declared(), self.definitions.supported(), self.knowledge.supported(), supported, capability, review_supported, review_capability, self.command_origin, knowledge_write, source_capabilities, tasks, task_capability, people, person_capability, creates, create_capability, attempts, attempt_capability);
             let authoring = OrganizationDraftWire { };
             let command_wire = CommandWire { };
             if self.organization.allow_drafts && self.organization.declared() && command_wire.origin_valid(self.command_origin) {
@@ -282,6 +291,7 @@ locus Api {
             if !std::str::starts_with(path, knowledge_prefix) { return http.error(404, "not_found", "no such read endpoint", false); }
             return self.knowledge_read(source, actor, path[len(knowledge_prefix)..len(path)], raw_query);
         }
+        if path == prefix + "/dna/context" { let hat = ContextWire { }; return hat.read(self.root, self.mode, source, query); }
         if path == prefix + "/dna/workflows" { let work = WorkflowWire { }; return work.read(self.root, self.mode, source, query); }
         if path == prefix + "/dna/tasks" { let tasks = TaskWire { }; return tasks.read(command_context, query); }
         if path == prefix + "/dna/people" { let people = PersonWire { }; return people.read(command_context, query, self.people); }
@@ -344,7 +354,7 @@ locus Api {
     }
     fn command_handle(req: std::http::Request, query: String, context: CommandContext) -> std::http::Response {
         let wire = CommandWire { };
-        if !(self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1")) { return wire.error("commands_unsupported"); }
+        if !(self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1") || self.commands.supported("dna.attempt.claim", "1")) { return wire.error("commands_unsupported"); }
         if req.method == "GET" {
             let request_id = wire.lookup_id(query);
             if len(request_id) == 0 { return wire.error("invalid_query"); }

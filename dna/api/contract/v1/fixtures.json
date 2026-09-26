@@ -24282,6 +24282,996 @@
     }
   },
   {
+    "name": "attempt-claim-request",
+    "schema": "AttemptClaimCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "claim-1",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "performer_kind": "agent",
+        "performer": "leg:alice@build-1",
+        "capabilities": [
+          "judgment",
+          "analysis"
+        ],
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "organizations": [],
+        "ttl": 600
+      }
+    }
+  },
+  {
+    "name": "attempt-claim-shared-command-request",
+    "schema": "CommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "claim-1",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "performer_kind": "agent",
+        "performer": "leg:alice@build-1",
+        "capabilities": [
+          "judgment",
+          "analysis"
+        ],
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "organizations": [],
+        "ttl": 600
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-claim-zero-ttl",
+    "schema": "AttemptClaimCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "claim-1",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "performer_kind": "agent",
+        "performer": "leg:alice@build-1",
+        "capabilities": [
+          "judgment",
+          "analysis"
+        ],
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "organizations": [],
+        "ttl": 0
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-claim-capabilities-not-a-list",
+    "schema": "AttemptClaimCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "claim-1",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "performer_kind": "agent",
+        "performer": "leg:alice@build-1",
+        "capabilities": "judgment",
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "organizations": [],
+        "ttl": 600
+      }
+    }
+  },
+  {
+    "name": "attempt-outcome-request",
+    "schema": "AttemptOutcomeCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "outcome-1",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "leg:alice@build-1",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "disposition": "done",
+        "result": "assessment: ship it",
+        "result_ref": "",
+        "narrative": "one call on the deep tier",
+        "evidence": [
+          {
+            "adapter": "anthropic-messages",
+            "backend": "deep",
+            "requested_model": "claude-opus-5-5",
+            "reported_model": "claude-opus-5-5",
+            "prompt_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "context_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "input_tokens": 1200,
+            "output_tokens": 340,
+            "cost_micros": 55,
+            "elapsed": "2.1s",
+            "data_class": "internal"
+          }
+        ],
+        "receipts": [
+          {
+            "class": "internal",
+            "body": "the prompt as sent"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "attempt-outcome-shared-command-request",
+    "schema": "CommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "outcome-1",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "leg:alice@build-1",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "disposition": "done",
+        "result": "assessment: ship it",
+        "result_ref": "",
+        "narrative": "one call on the deep tier",
+        "evidence": [
+          {
+            "adapter": "anthropic-messages",
+            "backend": "deep",
+            "requested_model": "claude-opus-5-5",
+            "reported_model": "claude-opus-5-5",
+            "prompt_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "context_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "input_tokens": 1200,
+            "output_tokens": 340,
+            "cost_micros": 55,
+            "elapsed": "2.1s",
+            "data_class": "internal"
+          }
+        ],
+        "receipts": [
+          {
+            "class": "internal",
+            "body": "the prompt as sent"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-outcome-pending-disposition",
+    "schema": "AttemptOutcomeCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "outcome-1",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "leg:alice@build-1",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "disposition": "pending",
+        "result": "assessment: ship it",
+        "result_ref": "",
+        "narrative": "one call on the deep tier",
+        "evidence": [
+          {
+            "adapter": "anthropic-messages",
+            "backend": "deep",
+            "requested_model": "claude-opus-5-5",
+            "reported_model": "claude-opus-5-5",
+            "prompt_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "context_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "input_tokens": 1200,
+            "output_tokens": 340,
+            "cost_micros": 55,
+            "elapsed": "2.1s",
+            "data_class": "internal"
+          }
+        ],
+        "receipts": [
+          {
+            "class": "internal",
+            "body": "the prompt as sent"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-outcome-negative-tokens",
+    "schema": "AttemptOutcomeCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "outcome-1",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "preconditions": {
+        "holder": "leg:alice@build-1",
+        "token": 3,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "disposition": "done",
+        "result": "assessment: ship it",
+        "result_ref": "",
+        "narrative": "one call on the deep tier",
+        "evidence": [
+          {
+            "adapter": "anthropic-messages",
+            "backend": "deep",
+            "requested_model": "claude-opus-5-5",
+            "reported_model": "claude-opus-5-5",
+            "prompt_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "context_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "input_tokens": -1,
+            "output_tokens": 340,
+            "cost_micros": 55,
+            "elapsed": "2.1s",
+            "data_class": "internal"
+          }
+        ],
+        "receipts": [
+          {
+            "class": "internal",
+            "body": "the prompt as sent"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "attempt-claim-receipt",
+    "schema": "AttemptClaimCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.claim",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "subject_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "claimed",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "t1",
+        "performer_kind": "agent",
+        "holder": "leg:alice@build-1",
+        "token": "3",
+        "until": "1790500000",
+        "disposition": "",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "attempt-claim-refused-receipt",
+    "schema": "AttemptClaimCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.claim",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "subject_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "refused",
+      "reason": "no admitted attempt awaits a agent leg with capabilities `judgment analysis`",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "refused",
+        "attempt_id": "",
+        "work_id": "",
+        "task_id": "",
+        "performer_kind": "agent",
+        "holder": "leg:alice@build-1",
+        "token": "",
+        "until": "0",
+        "disposition": "",
+        "reason": "no admitted attempt awaits a agent leg with capabilities `judgment analysis`",
+        "event_id": ""
+      }
+    }
+  },
+  {
+    "name": "attempt-claim-shared-command-response",
+    "schema": "CommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "record_revision": "12"
+      },
+      "data": {
+        "command_id": "cmd:dna.attempt.claim",
+        "request_id": "r-1",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "operation": "dna.attempt.claim",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "position_id": "org"
+        },
+        "target": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "dna.work",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "subject_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "state": "succeeded",
+        "reason": "",
+        "review": {
+          "state": "unavailable",
+          "outcome": "",
+          "subject_digest": ""
+        },
+        "activation": {
+          "state": "unknown",
+          "reason": ""
+        },
+        "attempt": {
+          "state": "claimed",
+          "attempt_id": "t1/wf1/s0/j/a0",
+          "work_id": "t1/wf1/s0/j",
+          "task_id": "t1",
+          "performer_kind": "agent",
+          "holder": "leg:alice@build-1",
+          "token": "3",
+          "until": "1790500000",
+          "disposition": "",
+          "reason": "",
+          "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    }
+  },
+  {
+    "name": "attempt-outcome-requested-receipt",
+    "schema": "AttemptOutcomeCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.outcome",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:leg:alice@build-1@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "requested",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "leg:alice@build-1",
+        "token": "3",
+        "until": "0",
+        "disposition": "done",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "attempt-outcome-settled-receipt",
+    "schema": "AttemptOutcomeCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.outcome",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:leg:alice@build-1@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "settled",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "leg:alice@build-1",
+        "token": "3",
+        "until": "0",
+        "disposition": "done",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "attempt-outcome-stale-receipt",
+    "schema": "AttemptOutcomeCommandReceipt",
+    "valid": true,
+    "value": {
+      "command_id": "cmd:dna.attempt.outcome",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:leg:alice@build-1@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "refused",
+      "reason": "stale: the lease on attempt t1/wf1/s0/j/a0 is leg:bob@build-2's at token 4, not leg:alice@build-1's at token 3",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "refused",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "leg:alice@build-1",
+        "token": "3",
+        "until": "0",
+        "disposition": "done",
+        "reason": "stale: the lease on attempt t1/wf1/s0/j/a0 is leg:bob@build-2's at token 4, not leg:alice@build-1's at token 3",
+        "event_id": ""
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-receipt-extra-lease-field",
+    "schema": "AttemptClaimCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "cmd:dna.attempt.claim",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.claim",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.work",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "subject_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "claimed",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "t1",
+        "performer_kind": "agent",
+        "holder": "leg:alice@build-1",
+        "token": "3",
+        "until": "1790500000",
+        "disposition": "",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc",
+        "lease": "x"
+      }
+    }
+  },
+  {
+    "name": "invalid-attempt-receipt-unknown-state",
+    "schema": "AttemptOutcomeCommandReceipt",
+    "valid": false,
+    "value": {
+      "command_id": "cmd:dna.attempt.outcome",
+      "request_id": "r-1",
+      "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation": "dna.attempt.outcome",
+      "operation_version": "1",
+      "principal": {
+        "mode": "local",
+        "name": "riley"
+      },
+      "context": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "position_id": "org"
+      },
+      "target": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "dna.attempt",
+        "id": "t1/wf1/s0/j/a0"
+      },
+      "subject_digest": "lease:leg:alice@build-1@3",
+      "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "state": "succeeded",
+      "reason": "",
+      "review": {
+        "state": "unavailable",
+        "outcome": "",
+        "subject_digest": ""
+      },
+      "activation": {
+        "state": "unknown",
+        "reason": ""
+      },
+      "attempt": {
+        "state": "done",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "",
+        "performer_kind": "",
+        "holder": "leg:alice@build-1",
+        "token": "3",
+        "until": "0",
+        "disposition": "done",
+        "reason": "",
+        "event_id": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  {
+    "name": "attempt-capabilities",
+    "schema": "CapabilitiesResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "record_revision": "12"
+      },
+      "data": {
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "read_only": false,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "reads": {
+          "practices": true,
+          "reviews": true,
+          "definitions": false,
+          "knowledge": false,
+          "workflows": true,
+          "tasks": true,
+          "context": true
+        },
+        "writes": {
+          "practice_propose": false,
+          "review_verdict": false,
+          "attempt_claim": true,
+          "attempt_outcome": true
+        },
+        "attempt_commands": {
+          "profile": "dna.attempt.v1",
+          "operations": "dna.attempt.claim dna.attempt.outcome",
+          "available": true,
+          "authorized": true,
+          "position_id": "org",
+          "recovery": "record_lifetime",
+          "max_ttl_seconds": "86400",
+          "max_result_bytes": "16384",
+          "max_evidence_bytes": "32768",
+          "max_receipts_bytes": "65536",
+          "max_identity_bytes": "256",
+          "max_request_bytes": "32768",
+          "reason": ""
+        },
+        "runtime_observation": false,
+        "recursive_workflows": false,
+        "receipt_text": "record_visibility_only"
+      }
+    }
+  },
+  {
+    "name": "context-hat",
+    "schema": "ContextResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "record_revision": "12"
+      },
+      "data": {
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "t1",
+        "step_id": "t1/wf1/s0",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "performer_kind": "agent",
+        "position": {
+          "id": "position:agent",
+          "charter": "Judges what the organization asks of it, by its ratified practices."
+        },
+        "objective": "assess the storage migration",
+        "target": "org",
+        "output_contract": "Assessment",
+        "data_class": "internal",
+        "requires": "judgment",
+        "cost_ceiling": "0",
+        "tool_grant": "",
+        "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
+        "practices": [
+          {
+            "id": "k:0123456789ab",
+            "text": "practice: prefer the smallest change that closes the ask (riley)"
+          }
+        ],
+        "practices_status": "resolved",
+        "history": [
+          {
+            "kind": "attempt.admitted",
+            "id": "t1/wf1/s0/j/a0",
+            "order": "2"
+          }
+        ],
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "watermark": "41",
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    }
+  },
+  {
+    "name": "invalid-context-hat-without-digest",
+    "schema": "ContextResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "record_revision": "12"
+      },
+      "data": {
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "t1",
+        "step_id": "t1/wf1/s0",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "performer_kind": "agent",
+        "position": {
+          "id": "position:agent",
+          "charter": "Judges what the organization asks of it, by its ratified practices."
+        },
+        "objective": "assess the storage migration",
+        "target": "org",
+        "output_contract": "Assessment",
+        "data_class": "internal",
+        "requires": "judgment",
+        "cost_ceiling": "0",
+        "tool_grant": "",
+        "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
+        "practices": [
+          {
+            "id": "k:0123456789ab",
+            "text": "practice: prefer the smallest change that closes the ask (riley)"
+          }
+        ],
+        "practices_status": "resolved",
+        "history": [
+          {
+            "kind": "attempt.admitted",
+            "id": "t1/wf1/s0/j/a0",
+            "order": "2"
+          }
+        ],
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "watermark": "41"
+      }
+    }
+  },
+  {
+    "name": "invalid-context-hat-practices-status",
+    "schema": "ContextResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "record_revision": "12"
+      },
+      "data": {
+        "work_id": "t1/wf1/s0/j",
+        "task_id": "t1",
+        "step_id": "t1/wf1/s0",
+        "attempt_id": "t1/wf1/s0/j/a0",
+        "performer_kind": "agent",
+        "position": {
+          "id": "position:agent",
+          "charter": "Judges what the organization asks of it, by its ratified practices."
+        },
+        "objective": "assess the storage migration",
+        "target": "org",
+        "output_contract": "Assessment",
+        "data_class": "internal",
+        "requires": "judgment",
+        "cost_ceiling": "0",
+        "tool_grant": "",
+        "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
+        "practices": [
+          {
+            "id": "k:0123456789ab",
+            "text": "practice: prefer the smallest change that closes the ask (riley)"
+          }
+        ],
+        "practices_status": "stale",
+        "history": [
+          {
+            "kind": "attempt.admitted",
+            "id": "t1/wf1/s0/j/a0",
+            "order": "2"
+          }
+        ],
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "watermark": "41",
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    }
+  },
+  {
     "name": "person-retire-request",
     "schema": "PersonCommandRequest",
     "valid": true,

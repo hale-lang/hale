@@ -144,6 +144,26 @@ locus AgentPerformer {
     }
 }
 
+// ---- GH #946 slice 3: an attempt a leg performs -------------------------
+// A performer for Work done out of process: it answers pending, and the
+// attempt stays outstanding under the engine's claim until a leg claims
+// it at the head (`dna.attempt.claim`) and hands its outcome back
+// (`dna.attempt.outcome`), which the assembly settles for this exact
+// attempt as it settles an edit's or a case's. Its identity is what a
+// leg's reply is recorded under (card 08); the leg itself is named by
+// the claim. Stage 1 of the legs (GH #946): a program wires it for the
+// kinds its legs perform; the in-process performers go as each stage
+// lands.
+locus LegRelay {
+    params { name: String = "legs"; performer_kind: String = "agent"; relayed: Int = 0; }
+    fn kind() -> String { return self.performer_kind; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.relayed = self.relayed + 1;
+        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt_id_of(req.work_id, req.attempt_no) };
+    }
+}
+
 // An external API is a performer only when it fulfils the Work
 // contract (an assessment). Anything that changes the world stays an
 // effect behind a gateway — see dna/tests/dna_law.rs.

@@ -553,3 +553,28 @@ topic AttemptReported { payload: AttemptReport; subject: "dna.attempt.reported";
 // the person reports the case done.
 type CaseAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
 topic CaseRequested { payload: CaseAsk; subject: "dna.case.requested"; keyed_by scope; }
+
+// ---- GH #946 slice 3: a leg's outcome for the attempt it claimed --------
+// A leg claims an admitted, outstanding attempt at the head
+// (`dna.attempt.claim`: memory's claim on the attempt id with a TTL,
+// and an `attempt.claimed` row naming the holder, its token and until
+// when) and hands its outcome back through `dna.attempt.outcome`: an
+// `attempt.outcome_requested` row the head writes once the lease still
+// holds, which a node relays here. The owner settles it as it settles
+// every reply (`AttemptReported`), or refuses it with an
+// `attempt.outcome_refused` row naming why; either answers the row. The
+// calls the leg made are its evidence, journaled as `model.called` on
+// the attempt id, so tokens per task hold out of process.
+type WorkSubmission {
+    attempt_id: String = "";
+    holder: String = ""; // the performer the claim was taken for
+    token: Int = 0; // the claim's fencing token, as the lease was granted
+    disposition: String = ""; // done | failed | declined | timeout
+    result: String = "";
+    result_ref: String = "";
+    narrative: String = "";
+    evidence_ref: String = ""; // the receipts filed with the outcome, digests space-separated
+    calls: String = ""; // the model calls made under the attempt, a JSON array of evidence objects
+    request: String = ""; // the command id the row answers
+}
+topic WorkSubmit { payload: WorkSubmission; subject: "dna.work.submit"; }
