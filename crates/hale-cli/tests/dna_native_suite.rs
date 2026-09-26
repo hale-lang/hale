@@ -34,7 +34,7 @@ fn repo_root() -> PathBuf {
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
-/// slice's fifteen minutes. One wedged fixture still ends in a named
+/// fifteen minutes a slice had then. One wedged fixture still ends in a named
 /// failure within the group's timeout.
 const SLICES: usize = 20;
 
@@ -48,7 +48,7 @@ const SLICES: usize = 20;
 /// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test,
 /// which builds a head. The sorted listing's modulo paired them by
 /// accident — adding or removing any fixture reshuffled which shared a
-/// slice, and two of them run past a slice's fifteen minutes — so they
+/// slice, and two of them ran past the fifteen minutes a slice had then — so they
 /// lead the order: each opens a slice of its own, and the rest follow
 /// round-robin.
 const HEAVY: [&str; 8] = [

@@ -4,8 +4,9 @@
 //
 // On hale-lang/voice at 6ad244d2 (dna/tests/onboarding/voice), on a record
 // of its own: graph_holes_test holds the proposals and the Board's round
-// over all 35; here the Board ratifies the three holes the holds need,
-// each by its own Review (the board, api's dev and api's reviewer), so the
+// over all 35; here the Board ratifies the four holes the holds need,
+// each by its own Review (the board, api's dev and reviewer, and compose's
+// support, which is retired once stated), so the
 // two halves each lead a slice of the native suite. `hale dna fill` asks
 // the organization to propose a holder: a person the record knows, for a
 // position it states; the proposer may not ratify it; a process's dev and
@@ -134,6 +135,14 @@ locus App {
         }
         return false;
     }
+    @unbounded
+    fn count_rows(kind: String) -> Int {
+        let j = dna::GitJournal { repo: self.repo };
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
+        return n;
+    }
     // The Review whose question carries `text`: its id.
     @unbounded
     fn review_of(text: String) -> String {
@@ -201,7 +210,7 @@ locus App {
         std::test::assert(self.logged("a repository: no application runs under this host", 240), "with no application to express: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
 
         // ---- the Board ratifies the holes the holds need, each by its own Review
-        let seats = "board\napi/dev\napi/reviewer\n";
+        let seats = "board\napi/dev\napi/reviewer\ncompose/support\n";
         let mut rest = seats;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
@@ -210,10 +219,14 @@ locus App {
             let decided = self.decide(self.review_of("ratify the position `" + seat + "`"), "approve\n--as\nada\n--authority\nboard", 300);
             std::test::assert(std::str::starts_with(decided, "settled: approve"), "the Board ratifies " + seat + ": " + decided);
         }
-        // (the chart pads its names to the widest it shows, and here api's
-        // is the only one)
-        let seated = self.show_until(head, "  api  dev, reviewer(openapi.yaml)\n", 240);
-        std::test::assert(std::str::contains(seated, "  board\n") && std::str::contains(seated, "  api  dev, reviewer(openapi.yaml)\n"), "the three holes are the org chart's: " + seated);
+        // a verdict answers at `review.settled`; each ratification is the
+        // practice-ratify execution it adopts (GH #995), waited for, bounded
+        let ratify_by = std::time::now() + 600;
+        while self.count_rows("knowledge.ratified") < 4 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
+        std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 4, "the four holes ratified by the organism");
+        // (the chart pads its names to the widest it shows: compose's)
+        let seated = self.show_until(head, "  compose  support\n", 240);
+        std::test::assert(std::str::contains(seated, "  board\n") && std::str::contains(seated, "  api      dev, reviewer(openapi.yaml)\n") && std::str::contains(seated, "  compose  support\n"), "the four holes are the org chart's: " + seated);
 
         // ---- fill: a holder asked of the organization
         let dev = self.dna("fill\napi/dev\nada\n--as\ngrace");
@@ -239,6 +252,7 @@ locus App {
         std::test::assert(std::str::starts_with(approve_dev, "settled: approve"), "grace's proposal ratified: " + approve_dev);
         let approve_rev = self.decide(self.review_of("ada holding the position `api/reviewer`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 300);
         std::test::assert(std::str::starts_with(approve_rev, "settled: approve"), "and the same holder's: " + approve_rev);
+        // (compose/support retired, the chart pads to api's name again)
         let held = self.show_until(head, "  api  dev [ada], reviewer(openapi.yaml) [ada]\n", 240);
         std::test::assert(std::str::contains(held, "  api  dev [ada], reviewer(openapi.yaml) [ada]\n") && std::str::contains(held, "  board\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
         std::test::assert(self.logged("warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev", 240), "memory says so where it projects it: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
