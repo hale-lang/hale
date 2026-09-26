@@ -61,7 +61,8 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
 // head reads it (graph_route.hl): who signs each path, the gates whose run
 // is the evidence a verdict is given against, the consumers no position
 // reviews, and the paths left to the fallback. `--diff <range>` takes the
-// paths `git diff --name-only <range>` names.
+// paths `git diff --name-only --no-renames <range>` names: a rename is its
+// old path and its new, so a contract moved away still reaches its signers.
 
 // Lines as a JSON array of strings; with `pairs`, `<a>\t<b>` lines as
 // objects named by `first` and `second`.
@@ -109,7 +110,7 @@ fn route_verb(root: String, args: Args) -> Answer {
     let range = flag(args, "--diff");
     let mut paths = "";
     if len(range) > 0 {
-        let d = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n" + range);
+        let d = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + range);
         if d.code != 0 { return fail("route: git diff " + range + ": " + dna::trim_nl(d.stderr)); }
         paths = d.stdout;
     }

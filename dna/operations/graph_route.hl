@@ -124,21 +124,26 @@ locus Router {
         }
         return out;
     }
-    // A signer, once, with the first reason it signs; never a dev.
+    // A signer, once, with the first reason it signs; never a dev. Whether
+    // the position signs: a dev is refused, and one already signing for
+    // another path signs this one too.
     @unbounded
-    fn sign(position: String, because: String) {
-        if std::str::ends_with(position, "/dev") { return; }
-        if std::str::contains("\n" + self.route.signers, "\n" + position + "\t") { return; }
+    fn sign(position: String, because: String) -> Bool {
+        if std::str::ends_with(position, "/dev") { return false; }
+        if std::str::contains("\n" + self.route.signers, "\n" + position + "\t") { return true; }
         self.route.signers = self.route.signers + position + "\t" + because + "\n";
+        return true;
     }
+    // How many of `positions` sign: only those `sign` accepts count, so a
+    // reviews row naming a dev leaves its node to the fallback, never to
+    // nobody.
     fn sign_all(positions: String, because: String) -> Int {
         let mut n = 0;
         let mut rest = positions;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
-            self.sign(rest[0..nl], because);
+            if self.sign(rest[0..nl], because) { n = n + 1; }
             rest = rest[(nl + 1)..len(rest)];
-            n = n + 1;
         }
         return n;
     }
@@ -191,7 +196,7 @@ locus Router {
                 }
                 it = std::json::array_next(it);
             }
-            if route_has(self.law, node) { self.sign("position:board", show_name(node) + " is law"); signed = signed + 1; }
+            if route_has(self.law, node) && self.sign("position:board", show_name(node) + " is law") { signed = signed + 1; }
         }
         // the evidence: every gate guarding the node
         let mut g = std::json::array_first(self.gates);

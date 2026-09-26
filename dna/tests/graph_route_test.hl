@@ -147,6 +147,23 @@ locus App {
         std::test::assert_eq_int(diff.code, 0, "route --diff: " + diff.stderr);
         std::test::assert(std::str::starts_with(diff.stdout, "signed by\n  api/reviewer") && std::str::contains(diff.stdout, "\n  node/reviewer") && std::str::contains(diff.stdout, "against\n  ci/api") && std::str::contains(diff.stdout, "\n  ci/node"), "both processes' reviewers, against both gates: " + diff.stdout);
 
+        // ---- a renamed contract: its old path still reaches its signers
+        let moved = dna::run_tool("sh\n-c\ncd \"$1\" && git mv spec/openapi.yaml openapi.yaml && git commit -qm move\nsh\n" + self.repo);
+        std::test::assert_eq_int(moved.code, 0, "a commit moving openapi.yaml out of spec/: " + moved.stderr);
+        let rename = self.dna("route\n--json\n--diff\nHEAD~1..HEAD");
+        std::test::assert(std::str::contains(rename.stdout, "position:api/reviewer") && std::str::contains(rename.stdout, "position:node/reviewer"), "the moved contract keeps its signers: " + rename.stdout);
+
+        // ---- a reviews row naming a dev: the node goes to the fallback,
+        // never silently to nobody
+        let jr = dna::GitJournal { repo: self.repo };
+        let bad = ops::GraphEdge { kind: "reviews" };
+        bad.member("position", "position:api/dev");
+        bad.member("subject", "document:DIRECTION.md");
+        std::test::assert(jr.append(jr.revision(), "graph.edge", bad.id(), bad.body()).ok, "api/dev reviews DIRECTION.md, by hand");
+        self.project();
+        let direction = self.dna("route\n--json\nDIRECTION.md");
+        std::test::assert(std::str::contains(direction.stdout, "\"signers\": []") && std::str::contains(direction.stdout, "\"path\": \"DIRECTION.md\""), "a dev signs nothing, so the fallback has it: " + direction.stdout);
+
         // ---- no dev ever signs
         std::test::assert(!std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"), "a process's dev never signs for it");
 
