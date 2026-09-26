@@ -239,15 +239,18 @@ locus App {
         // ---- the Board decides through the review path, in the listing's order
         let listed = self.dna("review");
         std::test::assert(std::str::contains(listed.stdout, "holes — 31 hole(s) the repository leaves, each its own Review:") && std::str::contains(listed.stdout, "practices — 4 practice(s) its documents mark"), "the holes and practices, each group listed together: " + listed.stdout);
-        let holes = self.dna("review\nholes\napprove\n--as\nada\n--authority\nboard");
+        // every verdict is written at once and the answers are followed in
+        // the record, not in the CLI's wait: the organization answers behind
+        // the practice-ratify execution each decision is (GH #995), a commit
+        // per row on this record, so a loaded runner answers late
+        let holes = self.dna("review\nholes\napprove\n--as\nada\n--authority\nboard\n--no-wait");
         std::test::assert_eq_int(holes.code, 0, "the Board ratifies the holes: " + holes.stdout + holes.stderr);
-        let practices = self.dna("review\npractices\napprove\n--as\nada\n--authority\nboard");
+        let practices = self.dna("review\npractices\napprove\n--as\nada\n--authority\nboard\n--no-wait");
         std::test::assert_eq_int(practices.code, 0, "and the practices: " + practices.stdout + practices.stderr);
         // a verdict answers at `review.settled`; the ratification is the
         // practice-ratify execution each verdict adopts (GH #995), so it
-        // is waited for, bounded
-        let ratify_from = std::time::now();
-        let ratify_by = std::time::now() + 600;
+        // is waited for, bounded by what the slice allows
+        let ratify_by = std::time::now() + 1200;
         while self.count_rows("knowledge.ratified") < 35 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
         std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 35, "35 proposals ratified by the organism");
         std::test::assert_eq_str(self.show_org(head, 240), ORG, "ratified in another order than proposed, the org chart is still GRAPH.md's");
