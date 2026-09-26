@@ -17,8 +17,9 @@
 // its author, with its lease live, and past the checks the spine's
 // admission ran; the org chart it checks against is projected into
 // `org_members` and `org_retired`. 4 (GH #1085): the repository's graph —
-// its nodes, its hyperedges and their members — beside the ideas.
-const MEMORY_SCHEMA_VERSION: Int = 4;
+// its nodes, its hyperedges and their members — beside the ideas. 5 (GH
+// #946): `hats`, hats by digest, which a head may keep and read.
+const MEMORY_SCHEMA_VERSION: Int = 5;
 
 type Migrated {
     ok: Bool = false;
@@ -144,6 +145,10 @@ fn ledger_ddl() -> String {
         + "CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS protected_redactions (digest text PRIMARY KEY, erased_at bigint NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS memory_keys (name text PRIMARY KEY, value text NOT NULL);"
+    // GH #946: hats by digest, kept once (insert if absent) by the owner
+    // that built one or the head that read one, so replay renders from
+    // the recorded hat and never the live graph
+        + "CREATE TABLE IF NOT EXISTS hats (digest text PRIMARY KEY, head text NOT NULL, watermark bigint NOT NULL, body text NOT NULL, kept_at timestamptz NOT NULL DEFAULT now());"
         + ledger_gate_ddl();
 }
 
@@ -334,6 +339,7 @@ fn head_grants(sch: String, role: String) -> String {
         + sch + ".graph_nodes, " + sch + ".graph_edges, " + sch + ".graph_members, "
         + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
         + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
+        + "GRANT SELECT, INSERT ON " + sch + ".hats TO " + role + ";"
         + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
         + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text) TO " + role;
 }

@@ -327,9 +327,10 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
+| `hat.hl` | `Hat` (GH #946): one content-addressed context per Work — position and charter, practices as structure, bindings, grant, contract, class, history, head and watermark — `hat_body` / `hat_digest` / `hat_json`, `hat_position_of` (one id for a position wherever it is keyed), `hat_with_package`, `hat_sealed`; the owner builds one for the edits it asks, a head reads one for a leg (`dna/operations/context.hl`), memory keeps each by digest |
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
 
-| `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables, the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
+| `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables — `hats` among them since version 5 — the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
 | `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres, the repository's graph and its two perspectives), `Dsn` / `parse_dsn`, `schema_for` |
 | `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
 | `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |

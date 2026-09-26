@@ -84,6 +84,14 @@ interface KnowledgeStore {
     // `embed_text` literal) so the budget keeps the most relevant;
     // an empty literal is `context_ids` (GH #583 K3).
     fn ranked_ids(target: String, budget: Int, query_vec: String) -> String;
+    // GH #946: the same bound, with the watermark it was read at, in one
+    // transaction — a package names the projection it was drawn from,
+    // never one a tick moved between the two reads
+    fn ranked_at(target: String, budget: Int, query_vec: String) -> Ranked;
+    // GH #946: a hat by its digest, kept once (insert if absent), and read
+    // back ("" when memory holds none under the digest)
+    fn keep_hat(digest: String, head: String, watermark: Int, body: String) -> Bool;
+    fn hat(digest: String) -> String;
     // "ideas" | "ratified" | "proposed" | "bindings" | "edges"
     fn count(what: String) -> Int;
     // ---- projections (K3): the code's structure by record row, and the
@@ -127,6 +135,9 @@ interface KnowledgeStore {
 }
 
 type Signal { kind: String = ""; source: String = ""; what: String = ""; count: Int = 0; last_seq: Int = 0; }
+// The ids a bounded, ranked read answered and the watermark it answered
+// at, from one transaction (GH #946).
+type Ranked { ok: Bool = false; ids: String = ""; watermark: Int = 0; }
 type Structure { kind: String = ""; name: String = ""; seq: Int = 0; }
 
 // The nodes the edge `e` joins in `role`, as a JSON array in member
@@ -765,6 +776,39 @@ locus Pq {
         let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
         if !rows.ok { self.note("ranked", rows.err); return ""; }
         return ids_of(rows.csv);
+    }
+    // The ranked bound and the watermark under one REPEATABLE READ
+    // snapshot: what the spine's tick applies between the two reads is
+    // not seen by either.
+    @unbounded
+    fn ranked_at(target: String, budget: Int, query_vec: String) -> Ranked {
+        if !self.opened || self.conn.tx_status() != "idle" { self.error = "ranked read: store is not idle and open"; return Ranked { }; }
+        let begun = self.conn.exec("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        if !begun.ok { self.note("ranked read", begun.err); return Ranked { }; }
+        let at = self.watermark();
+        let ids = self.ranked_ids(target, budget, query_vec);
+        let failed = len(self.error) > 0;
+        let done = self.conn.commit();
+        if !done.ok { self.note("ranked read", done.err); self.abort_row(); return Ranked { }; }
+        if failed { return Ranked { }; }
+        return Ranked { ok: true, ids: ids, watermark: at };
+    }
+    fn keep_hat(digest: String, head: String, watermark: Int, body: String) -> Bool {
+        let a = db::Args { };
+        a.add(digest);
+        a.add(head);
+        a.add(to_string(watermark));
+        a.add(body);
+        let r = self.conn.exec_params("INSERT INTO hats (digest, head, watermark, body) VALUES ($1, $2, $3::bigint, $4) ON CONFLICT (digest) DO NOTHING", a);
+        return if r.ok { true } else { self.fail("keep hat", r.err) };
+    }
+    fn hat(digest: String) -> String {
+        let a = db::Args { };
+        a.add(digest);
+        let rows = self.conn.query_params("SELECT body FROM hats WHERE digest = $1", a);
+        if !rows.ok { self.note("hat", rows.err); return ""; }
+        if rows.n == 0 { return ""; }
+        return trim_nl(line_one(rows.csv));
     }
     fn put_structure(kind: String, name: String, seq: Int, body: String) -> Bool {
         let a = db::Args { };

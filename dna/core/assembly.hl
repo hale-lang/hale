@@ -271,6 +271,7 @@ locus Dna {
         executions: Executions = Executions { };
         minted: Int = 0; // durable Task ids continue from the record
         executions_asked: Int = 0; // roots started or resumed through `ExecutionAsked`
+        reopened: String = ""; // leg claims (`<attempt>@<token>`) this incarnation asked again after they expired (GH #946)
         executions_settled: Int = 0; // roots whose workflow settled, heard
         boundary: AutonomyBoundary = AutonomyBoundary { child: "app" };
         // GH #596, layering: the grant above the child's — the
@@ -297,7 +298,8 @@ locus Dna {
         // rehydrated from the record at birth.
         budget: Budget = Budget { };
         // GH #583 K2: the owner's line to the knowledge service; the
-        // package it answers is folded into the objective the editor gets
+        // package it answers becomes the hat the attempt carries by digest
+        // and the brief the editor gets (GH #946)
         knowledge_client: MemoryKnowledge = MemoryKnowledge { };
         // GH #664: who admits which position. One owner unless the genome's
         // owners map says otherwise; then only this owner's positions.
@@ -1356,6 +1358,7 @@ locus Dna {
             // case, and must not stand for the examination
             if self.journal.revision() > self.cases_examined { let completed = self.revisit_cases(); }
             self.reconcile_governance();
+            let reopened = self.reopen_expired_claims();
         }
         // GH #667: a transfer another owner's member accepted for this
         // owner becomes this owner's handed Task
@@ -2048,17 +2051,8 @@ locus Dna {
     // its token and until when (0 when none was taken).
     @unbounded
     fn recorded_claim(attempt_id: String) -> Lease {
-        let mut out = Lease { key: "attempt:" + attempt_id };
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "attempt.claimed" && e.entity == attempt_id {
-                out = Lease { key: out.key, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"), present: true };
-            }
-            i = i + 1;
-        }
-        return out;
+        let c = recorded_leg_claim(self.journal, attempt_id, self.journal.revision());
+        return Lease { key: "attempt:" + attempt_id, holder: c.holder, token: c.token, expires: c.expires, present: c.present };
     }
     // Whether this submission's request was refused already (a relay
     // after a lost publish is answered once).
@@ -2139,9 +2133,21 @@ locus Dna {
         if len(s.attempt_id) == 0 { return; }
         let adm = recorded_attempt_admission(self.journal, s.attempt_id, self.journal.revision());
         if !adm.ok || !owned_by(self.ownership.me, adm.value.task_id) { return; }
-        if self.has_row("attempt.outcome", s.attempt_id) || self.submission_answered(s) { return; }
+        if self.submission_answered(s) { return; }
+        let settled = recorded_attempt_outcome(self.journal, s.attempt_id, self.journal.revision());
+        if settled.ok {
+            // the outcome that settled it answers its own request; a second
+            // outcome under the lease changes nothing, and says so as a row
+            // that answers the request it came on, so the relay stops
+            if settled.value.request == s.request { return; }
+            self.refuse_submission(s, "duplicate: attempt " + s.attempt_id + " is settled (" + settled.value.disposition + "); this outcome changes nothing");
+            return;
+        }
         let claim = self.recorded_claim(s.attempt_id);
-        let now = std::time::now();
+        // the lease is judged as of the head's admission (hardening, B3): a
+        // relay that arrives after the lease ran out settles what was
+        // handed back while it was live
+        let now = if s.at > 0 { s.at } else { std::time::now() };
         let mut why = "";
         if !claim.present { why = "attempt " + s.attempt_id + " was never claimed by a leg"; }
         else if claim.holder != s.holder || claim.token != s.token { why = "the lease on attempt " + s.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + s.holder + "'s at token " + to_string(s.token) + ": stale"; }
@@ -2154,8 +2160,9 @@ locus Dna {
         if len(why) > 0 { self.refuse_submission(s, why); return; }
         self.journal_calls(s.attempt_id, s.calls);
         let r = WorkResult {
-            disposition: s.disposition, result: s.result, narrative: s.narrative, evidence: s.evidence_ref,
-            performer: self.work.identity_of(adm.value.performer_kind), attempt_id: s.attempt_id
+            disposition: s.disposition, result: s.result, result_ref: s.result_ref, narrative: s.narrative, evidence: s.evidence_ref,
+            performer: self.work.identity_of(adm.value.performer_kind), attempt_id: s.attempt_id,
+            request: s.request, hat_digest: s.hat_digest, hat_head: s.hat_head, hat_watermark: s.hat_watermark, prompt_digest: s.prompt_digest, renderer: s.renderer
         };
         let x = self.runtime.settle(s.attempt_id, r);
         if !x.ok { self.refuse_submission(s, x.why); return; }
@@ -2359,10 +2366,49 @@ locus Dna {
     // a held engine attempt (card 15) through `on_edit_requested`. One
     // round: what the record refuses again is held again, for the next.
     // How many were driven.
+    // GH #946 hardening (D3): a leg's claim that expired with no outcome
+    // is asked again, once per lease — the attempt is redelivered pending,
+    // and a leg claims it anew. Nothing is asked of an attempt whose
+    // lease is live, or that has settled, or that another owner holds.
+    @unbounded
+    fn reopen_expired_claims() -> Int {
+        let now = std::time::now();
+        let n = self.journal.revision();
+        // one pass: the attempts a leg ever claimed, and those since settled
+        let mut claimed = "";
+        let mut settled = "";
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.claimed" { claimed = set_add(claimed, e.entity); }
+            if e.kind == "attempt.outcome" { settled = set_add(settled, e.entity); }
+            i = i + 1;
+        }
+        let mut count = 0;
+        let mut rest = claimed;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let attempt = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            if len(attempt) == 0 || set_has(settled, attempt) { continue; }
+            let c = recorded_leg_claim(self.journal, attempt, n);
+            let key = attempt + "@" + to_string(c.token);
+            if c.present && c.expires <= now && !set_has(self.reopened, key) {
+                let adm = recorded_attempt_admission(self.journal, attempt, n);
+                if adm.ok && owned_by(self.ownership.me, adm.value.task_id) {
+                    self.reopened = set_add(self.reopened, key);
+                    let x = self.runtime.reopen(attempt);
+                    count = count + 1;
+                }
+            }
+        }
+        return count;
+    }
     @unbounded
     fn redrive() -> Int {
         let moved = self.journal.refresh();
         let mut n = self.retry_reports();
+        n = n + self.reopen_expired_claims();
         n = n + self.retry_rows();
         n = n + self.revisit_cases();
         self.revisit_waiting();
@@ -4239,10 +4285,25 @@ locus Dna {
         // objective; the editor never reaches knowledge, it receives a
         // package by way of its owner, and its evidence names the package
         let pkg = self.knowledge_client.package_for(knowledge_target(change_class, self.boundary.child, seed), objective);
+        // GH #946 hardening: the ask stays the ask. The practices reach the
+        // editor as its brief, and the attempt carries the hat — the
+        // position, the practices as structure, the bindings, the grant,
+        // the contract, the class, the head and watermark — by its digest;
+        // the body is kept in memory under that digest, so replay renders
+        // from the recorded hat and never the live graph.
+        let hat = hat_sealed(hat_with_package(Hat {
+            ok: true, work_id: id, task_id: task_id, step_id: req.step_id, attempt_id: attempt_id_of(id, req.attempt_no), performer_kind: "edit",
+            position_id: hat_position_of("edit"), charter: hat_node_text(self.journal, hat_position_of("edit")),
+            objective: objective, target: req.target, output_contract: req.output_contract, data_class: req.data_class, requires: req.requires,
+            cost_ceiling: req.cost_ceiling, tool_grant: hat_tool_grant("edit"), knowledge_bindings: bindings_of(pkg), head: self.journal.head()
+        }, pkg, self.knowledge_client.ready()));
+        if self.knowledge_client.ready() { let kept = self.knowledge_client.keep_hat(hat.digest, hat.head, hat.watermark, hat_body(hat)); }
+        self.editor.brief(objective_with("", pkg));
         if self.knowledge_client.ready() {
             let kb = std::json::Builder { };
             kb.begin_object();
             kb.string_field("target", pkg.target);
+            kb.string_field("hat", hat.digest);
             kb.string_field("digest", pkg.digest);
             kb.int_field("revision", pkg.revision);
             kb.int_field("included_n", pkg.included_n);
@@ -4251,9 +4312,6 @@ locus Dna {
             kb.end_object();
             let kx = self.journal.append(self.journal.revision(), "knowledge.consulted", id, kb.result());
         }
-        // what the editor gets: the ask with the practices under it. The
-        // record, the commit message and the Mutation keep the ask itself.
-        let handed = objective_with(objective, pkg);
         // the grant is the seed this change edits, inside THIS worktree;
         // the worktree is what a harness's export copies, the repository
         // what it must never reach (GH #583 M3)
@@ -4284,10 +4342,10 @@ locus Dna {
         // (card 14): the editor works the ask as it was asked, and its
         // evidence is classed as the ask was
         let r = self.editor.perform(WorkRequest {
-            work_id: id, task_id: task_id, step_id: req.step_id, objective: handed, target: file,
+            work_id: id, task_id: task_id, step_id: req.step_id, objective: objective, target: file,
             requires: req.requires, data_class: req.data_class, attempt_no: req.attempt_no,
             output_contract: req.output_contract, cost_ceiling: req.cost_ceiling,
-            context_digest: pkg.digest, knowledge_bindings: bindings_of(pkg)
+            context_digest: hat.digest, knowledge_bindings: bindings_of(pkg)
         });
         if self.gateway.head() != head_before || self.gateway.repo.head(wt) != wt_before {
             let x = self.gateway.remove(self.journal, id, lease.token, now);

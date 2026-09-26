@@ -1,0 +1,146 @@
+// A leg's commands through the real provider (GH #946 hardening): the
+// real GovernanceCommands over a fresh Git Record, the practice_review
+// adapter and the real Api — no scripted receipts. A claim and an outcome
+// are admitted over HTTP; the owner's answers are explicit fixture rows.
+// A refused outcome reads back as `refused` with the row that refused it
+// (B2: the validator used to require no row and answered 503); a settled
+// one reads back `settled`; the outcome carries the hat the leg wore.
+import ".." as api;
+import "../practice_review" as head;
+import "../../core" as dna;
+import "../../operations" as ops;
+import "./fixture" as fixture;
+
+const ORIGIN: String = "http://127.0.0.1:8792";
+const HEADERS: String = "Origin: http://127.0.0.1:8792\r\nContent-Type: application/json\r\nX-Hale-Command: 1";
+const ROOT: String = "leg-close";
+const STEP: String = "leg-close/wf1/s0";
+const WORK: String = "leg-close/wf1/s0/judge";
+
+locus RecoveryCases {
+    params { f: fixture::Fixture; json: fixture::Json = fixture::Json { }; }
+    fn envelope(id: String, operation: String, kind: String, target: String, preconditions: String, arguments: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("request_id", id); b.string_field("operation", operation); b.string_field("operation_version", "1");
+        b.begin_object_field("context"); b.string_field("application_id", self.f.identity); b.string_field("position_id", "org"); b.end_object();
+        b.begin_object_field("target"); b.string_field("application_id", self.f.identity); b.string_field("kind", kind); b.string_field("id", target); b.end_object();
+        b.field("preconditions", preconditions); b.field("arguments", arguments);
+        b.end_object(); return b.result();
+    }
+    fn principal() -> String { return "{\"mode\": \"local\", \"name\": \"riley\"}"; }
+    fn claim_body(id: String, head: String, performer: String) -> String {
+        let a = std::json::Builder { }; a.begin_object();
+        a.string_field("performer_kind", "agent"); a.string_field("performer", performer);
+        a.begin_array_field("capabilities"); a.string_value("judgment"); a.end_array();
+        a.begin_array_field("data_classes"); a.string_value("internal"); a.end_array();
+        a.begin_array_field("organizations"); a.end_array();
+        a.int_field("ttl", 600); a.end_object();
+        return self.envelope(id, "dna.attempt.claim", "dna.work", self.f.identity, "{\"record_head\": " + dna::record_json_quote(head) + ", \"principal\": " + self.principal() + "}", a.result());
+    }
+    fn outcome_body(id: String, attempt: String, token: Int, hat: String) -> String {
+        let a = std::json::Builder { }; a.begin_object();
+        a.string_field("disposition", "done"); a.string_field("result", "assessment: ship it"); a.string_field("result_ref", "receipt:assessment-1"); a.string_field("narrative", "one call on the deep tier");
+        a.begin_array_field("evidence"); a.begin_object(); a.string_field("backend", "deep"); a.string_field("requested_model", "deep-1"); a.int_field("input_tokens", 12); a.int_field("output_tokens", 3); a.int_field("cost_micros", 5); a.end_object(); a.end_array();
+        a.begin_array_field("receipts"); a.end_array();
+        if len(hat) > 0 { a.string_field("hat_digest", hat); a.string_field("hat_head", self.f.journal.head()); a.int_field("hat_watermark", -1); a.string_field("prompt_digest", dna::digest_of("the prompt as sent")); a.string_field("renderer", "legs-render/1"); }
+        a.end_object();
+        return self.envelope(id, "dna.attempt.outcome", "dna.attempt", attempt, "{\"holder\": \"position:agent\", \"token\": " + to_string(token) + ", \"principal\": " + self.principal() + "}", a.result());
+    }
+    fn call(service: api::Api, method: String, suffix: String, body: String, status: Int, schema: String) -> String {
+        let response = service.handle(std::http::Request { method: method, path: self.f.prefix + suffix, headers: if method == "POST" { HEADERS } else { "" }, body: body });
+        std::test::assert_eq_int(response.status, status, response.body);
+        if len(schema) > 0 { let checked = self.f.validator.validate(schema, response.body); std::test::assert(checked.ok, checked.error + "\n" + response.body); }
+        return response.body;
+    }
+    fn seed() {
+        let cat = dna::WorkflowCatalog { };
+        std::test::assert_eq_str(cat.define("judge", 1, 1, "one judgment"), "", "definition");
+        let request = dna::WorkRequest { objective: "assess the storage migration", target: "org", requires: "judgment", output_contract: "Assessment" };
+        std::test::assert_eq_str(cat.leaf("judge", 1, 0, "judge", request, 2), "", "leaf");
+        let limits = dna::AdmissionLimits { };
+        let bound = cat.expand(ROOT, "judge", 1, limits);
+        std::test::assert(bound.ok, "bound recipe: " + bound.why);
+        let attempt = dna::attempt_id_of(WORK, 0);
+        self.f.append("task.born", ROOT, "leg-ask: judge (workflow)");
+        self.f.append("workflow.admitted", ROOT, dna::encode_admission(dna::AdmittedWorkflow { task_id: ROOT, definition: "judge", revision: 1, recipe: cat.encode_bound(), limits: limits, works: 1, tasks: 1, steps: 1, depth: 1 }));
+        self.f.append("step.registered", STEP, dna::encode_members(dna::RegisteredMembers { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, members: "judge:leaf:" + WORK }));
+        self.f.append("step.activated", STEP, dna::encode_activation(dna::ActivatedStep { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, dispatched: "judge" }));
+        self.f.append("attempt.admitted", attempt, dna::encode_attempt(dna::AdmittedAttempt { attempt_id: attempt, work_id: WORK, step_id: STEP, task_id: ROOT, attempt_no: 0, performer_kind: "agent", request: request }));
+        // the owner asked a leg relay for it: outstanding, no outcome
+        self.f.append("effect.requested", "attempt:" + attempt, "{\"performer\": \"legs\"}");
+    }
+    fn run_cases() {
+        self.seed();
+        let record = dna::GitRecord { repo: self.f.root };
+        let codec = ops::AuthorityPolicyCodec { };
+        let policy = codec.decode("{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.f.identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}", self.f.identity, "local");
+        std::test::assert(policy.valid, "recover-only authority policy");
+        let native = ops::GovernanceCommands { record: record, authority: ops::FixedAuthority { policy: policy } };
+        let commands = head::PracticeReviewCommands { root: self.f.root, application_id: self.f.identity, service: native, source_capabilities: native, people: native };
+        let service = api::Api { root: self.f.root, local_name: "riley", commands: commands, command_origin: ORIGIN };
+        let attempt = dna::attempt_id_of(WORK, 0);
+        let caps = self.json.data(self.call(service, "GET", "/capabilities", "", 200, "CapabilitiesResponse"));
+        self.json.is_bool(self.json.raw(caps, "writes"), "attempt_claim", true);
+        // the hat, as the leg reads it before it works
+        let hat = self.json.data(self.call(service, "GET", "/dna/context?id=" + dna::url_encode(WORK), "", 200, "ContextResponse"));
+        let hat_digest = self.json.string(hat, "digest");
+        std::test::assert_eq_str(self.json.raw(hat, "practices"), "[]", "no memory: no practices, as structure");
+        // the claim: the lease as a value, through the real provider
+        let head = self.f.journal.head();
+        let claimed = self.json.data(self.call(service, "POST", "/commands", self.claim_body("claim-1", head, "position:agent"), 200, "CommandResponse"));
+        self.json.eq(self.json.raw(claimed, "attempt"), "state", "claimed");
+        self.json.eq(self.json.raw(claimed, "attempt"), "attempt_id", attempt);
+        self.json.eq(self.json.raw(claimed, "attempt"), "holder", "position:agent");
+        let token = std::str::parse_int(self.json.string(self.json.raw(claimed, "attempt"), "token")) or - 1;
+        std::test::assert(token >= 0, "a token");
+        // the claim is not fenced on the record head the leg read (B4): a
+        // row landed since, and another leg's claim at the old head still
+        // answers with a receipt — refused, since the first leg holds it
+        self.f.append("task.born", "leg-other", "leg-ask-2: another (workflow)");
+        let again = self.json.data(self.call(service, "POST", "/commands", self.claim_body("claim-2", head, "position:reviewer"), 200, "CommandResponse"));
+        self.json.eq(again, "state", "refused");
+        std::test::assert(std::str::contains(self.json.string(again, "reason"), "held by another leg") || std::str::contains(self.json.string(again, "reason"), "no admitted attempt"), "a refusal receipt at a moved head, not stale_subject: " + self.json.string(again, "reason"));
+        // the outcome, with the hat the leg wore: requested until the owner answers
+        let requested = self.json.data(self.call(service, "POST", "/commands", self.outcome_body("outcome-1", attempt, token, hat_digest), 200, "CommandResponse"));
+        self.json.eq(self.json.raw(requested, "attempt"), "state", "requested");
+        let command_id = self.json.string(requested, "command_id");
+        let row = self.last("attempt.outcome_requested");
+        std::test::assert_eq_str(std::json::find_string_field(row.body, "hat_digest"), hat_digest, "the row carries the hat digest");
+        std::test::assert_eq_str(std::json::find_string_field(row.body, "renderer"), "legs-render/1", "and the renderer's version");
+        std::test::assert_eq_str(std::json::find_string_field(row.body, "result_ref"), "receipt:assessment-1", "and the result reference");
+        // a second outcome under the lease is a duplicate (B3)
+        let second = self.json.data(self.call(service, "POST", "/commands", self.outcome_body("outcome-2", attempt, token, ""), 200, "CommandResponse"));
+        self.json.eq(second, "state", "refused");
+        std::test::assert(std::str::contains(self.json.string(second, "reason"), "duplicate"), "a second outcome is a duplicate: " + self.json.string(second, "reason"));
+        // the owner refuses it: the refusal names the request, and the lookup reads `refused` with the row (B2)
+        let r = std::json::Builder { }; r.begin_object(); r.string_field("why", "the lease moved under it"); r.string_field("holder", "position:agent"); r.int_field("token", token); r.string_field("request", command_id); r.int_field("at", 1); r.end_object();
+        self.f.append("attempt.outcome_refused", attempt, r.result());
+        let refused = self.json.data(self.call(service, "GET", "/commands?request_id=outcome-1", "", 200, "CommandResponse"));
+        self.json.eq(refused, "state", "refused");
+        self.json.eq(self.json.raw(refused, "attempt"), "state", "refused");
+        self.json.eq(self.json.raw(refused, "attempt"), "reason", "the lease moved under it");
+        std::test::assert(len(self.json.string(self.json.raw(refused, "attempt"), "event_id")) == 40, "the refusal reads back with the row it answers");
+        // a settlement naming the request reads back `settled` with its disposition
+        self.f.append("attempt.outcome", attempt, dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: attempt, work_id: WORK, disposition: "done", performer: "legs", result: "assessment: ship it", result_ref: "receipt:assessment-1", request: command_id, hat_digest: hat_digest, renderer: "legs-render/1" }));
+        let settled = self.json.data(self.call(service, "GET", "/commands?request_id=outcome-1", "", 200, "CommandResponse"));
+        self.json.eq(self.json.raw(settled, "attempt"), "state", "settled");
+        self.json.eq(self.json.raw(settled, "attempt"), "disposition", "done");
+        eprintln("PASS a leg's commands through the real provider");
+    }
+    fn last(kind: String) -> dna::Event {
+        let refreshed = self.f.journal.refresh(); let mut found = dna::Event { }; let mut i = 0;
+        while i < self.f.journal.revision() { let e = self.f.journal.read(i); if e.kind == kind { found = e; } i = i + 1; }
+        return found;
+    }
+}
+
+fn main() {
+    if std::env::var("HALE_COMMAND_API_TEST_CLEAN") != "1" {
+        let clean = dna::run_tool("env\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let f = fixture::Fixture { root: "/tmp/hale-api-attempt-recovery." + to_string(std::process::pid()) };
+    let cases = RecoveryCases { f: f };
+    cases.run_cases();
+}

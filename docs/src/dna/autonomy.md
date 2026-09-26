@@ -210,8 +210,14 @@ classes, and the lease it works under — memory's claim on the attempt,
 with a token and an expiry — as a value; nothing fitting, or an
 attempt another leg holds, is a refusal with the reason. **The
 outcome**, `dna.attempt.outcome`, hands the result back under that
-lease with the calls it made and the receipts to file; the owner
-journals the calls on the attempt (tokens per task hold out of
-process), settles it as it settles every reply, and refuses a stale
-lease or a duplicate with the reason. Positions are the graph's
-`position:<name>` ids.
+lease with the calls it made, the receipts to file and the hat it
+wore; the owner journals the calls on the attempt (tokens per task
+hold out of process), settles it as it settles every reply — the
+outcome names the request, so the relay stops — and refuses a stale
+lease, a second outcome under the lease, or an outcome from a
+principal other than the one that claimed, with the reason. A leg
+that names no data class is handed nothing. An owner that restarts
+with a leg's attempt in flight leaves it to its claim and asks again
+when the lease expires. Once the organism has adopted the ledger, a
+leg's rows live there, written under the head's role. Positions are
+the graph's `position:<name>` ids.

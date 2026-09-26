@@ -358,7 +358,7 @@ locus Usage {
             if len(admitted) > 0 {
                 let sp = std::str::index_of(admitted, " ");
                 let kind = admitted[(sp + 1)..len(admitted)];
-                return UsageOwner { attempt: attempt, owner: work, task: admitted[0..sp], position: if len(kind) > 0 { "position:" + kind } else { "" } };
+                return UsageOwner { attempt: attempt, owner: work, task: admitted[0..sp], position: if len(kind) > 0 { dna::hat_position_of(kind) } else { "" } };
             }
             let task = self.task_of_mutation(work);
             return UsageOwner { attempt: attempt, owner: work, task: task, position: if len(task) > 0 { "position:editor" } else { "" } };

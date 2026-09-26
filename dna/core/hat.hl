@@ -1,0 +1,156 @@
+// dna/core/hat.hl — the hat (GH #946): one content-addressed context per
+// Work, as a value the owner builds and a head reads.
+//
+// The hat is what a position wears to a Work: the position's identity
+// and charter, the practices the organization ratified for the Work's
+// target as structure (id, name, text, kind, author), the knowledge
+// bindings the owner named, the tool grant, the output contract, the
+// data class, and the Work's history as facts. It is structure, never a
+// prompt: rendering is a leg's, and the renderer's version is evidence
+// of its own. A hat is a point-in-time render fenced to a record head
+// and a projection watermark, recorded by its digest — sha256 over the
+// canonical body, excluding nothing that is in it — so two attempts of
+// one task may wear different hats, correctly, and an attempt records
+// which. What is forbidden is unrecorded variation: nothing here reads a
+// clock, an environment value or a random id. The body is kept in
+// memory by its digest (`keep_hat`, insert if absent), so replay renders
+// from the recorded hat, never the live graph. The owner builds one for
+// the edits it asks of its editor (the assembly); a head builds one for
+// the leg that asks (`HatReader`, dna/operations/context.hl).
+
+type Hat {
+    ok: Bool = false;
+    code: String = ""; // work_not_found | context_read_limit | context_source_invalid | context_source_unavailable
+    why: String = "";
+    work_id: String = "";
+    task_id: String = "";
+    step_id: String = "";
+    attempt_id: String = ""; // the attempt admitted last; "" before one is
+    performer_kind: String = "";
+    position_id: String = ""; // the graph's id for the position, `position:<name>`
+    charter: String = ""; // the position node's text; "" when the record holds no node for it
+    objective: String = "";
+    target: String = "";
+    output_contract: String = "";
+    data_class: String = "internal";
+    requires: String = "";
+    cost_ceiling: Int = 0;
+    tool_grant: String = "";
+    knowledge_bindings: String = "";
+    practices: String = "[]"; // a JSON array of {id, name, text, kind, author}
+    practices_n: Int = 0;
+    practices_status: String = ""; // resolved | no memory | unavailable
+    history: String = "[]"; // a JSON array of {kind, id, order}
+    head: String = "";
+    watermark: Int = -1; // memory's projection watermark the practices were read at; -1 without memory
+    digest: String = "";
+}
+
+// The kind a Work's request selects before an attempt is admitted, as the
+// engine selects it (`kinds_of`, capability-first): a person's, an edit,
+// else by what it requires.
+fn hat_kind_of(requires: String) -> String {
+    if std::str::contains(requires, "edit") { return "edit"; }
+    if std::str::contains(requires, "human") || std::str::contains(requires, "person") { return "human"; }
+    if std::str::contains(requires, "judgment") { return "agent"; }
+    if std::str::contains(requires, "analysis") { return "service"; }
+    return "software";
+}
+
+// The graph's id for the position a performer kind names (GH #1085):
+// the generated organization's instances are `leader`, `editor` and
+// `agent`; a human Work is the people's; a service or software
+// performer is named by its kind. One id for the edit position, wherever
+// a position is keyed (the hat, usage): `position:editor`.
+fn hat_position_of(kind: String) -> String {
+    return "position:" + (if kind == "edit" { "editor" } else if len(kind) == 0 { "agent" } else { kind });
+}
+
+// The tools a position may use on the Work: the editor's hands on an
+// edit; nothing else is granted until #987 hands the rest over.
+fn hat_tool_grant(kind: String) -> String {
+    return if kind == "edit" { "read edit fmt check" } else { "" };
+}
+
+// The locus path knowledge is drawn for: the Work's target when it is
+// one (`org`, `org/<child>`, …), else the organization's own.
+fn hat_knowledge_target(target: String) -> String {
+    return if target == "org" || std::str::starts_with(target, "org/") { target } else { "org" };
+}
+
+// The text of the record's graph node for an id ("" when none): the
+// latest `graph.node` row for it, a retirement taking it back.
+@unbounded
+fn hat_node_text(j: Journal, id: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "graph.node" && e.entity == id { out = std::json::find_string_field(e.body, "text"); }
+        if e.kind == "graph.retired" && e.entity == id { out = ""; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The practices of a hat from the package memory answered: the
+// structure the package carries, and how it was read.
+fn hat_with_package(h: Hat, pkg: ContextPackage, ready: Bool) -> Hat {
+    let mut out = h;
+    if !ready { out.practices_status = "no memory"; return out; }
+    if len(pkg.error) > 0 { out.practices_status = "unavailable"; return out; }
+    out.watermark = pkg.revision;
+    out.practices_status = "resolved";
+    out.practices = if len(pkg.practices) > 0 { pkg.practices } else { "[]" };
+    out.practices_n = pkg.included_n;
+    return out;
+}
+
+// The canonical body of a hat — everything but the digest, in a fixed
+// order — and the digest over it.
+fn hat_body(h: Hat) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("work_id", h.work_id);
+    b.string_field("task_id", h.task_id);
+    b.string_field("step_id", h.step_id);
+    b.string_field("attempt_id", h.attempt_id);
+    b.string_field("performer_kind", h.performer_kind);
+    b.begin_object_field("position");
+    b.string_field("id", h.position_id);
+    b.string_field("charter", h.charter);
+    b.end_object();
+    b.string_field("objective", h.objective);
+    b.string_field("target", h.target);
+    b.string_field("output_contract", h.output_contract);
+    b.string_field("data_class", h.data_class);
+    b.string_field("requires", h.requires);
+    b.string_field("cost_ceiling", to_string(h.cost_ceiling));
+    b.string_field("tool_grant", h.tool_grant);
+    b.string_field("knowledge_bindings", h.knowledge_bindings);
+    b.field("practices", h.practices);
+    b.string_field("practices_status", h.practices_status);
+    b.field("history", h.history);
+    b.string_field("head", h.head);
+    b.string_field("watermark", to_string(h.watermark));
+    b.end_object();
+    return b.result();
+}
+
+fn hat_digest(h: Hat) -> String { return digest_of(hat_body(h)); }
+
+// The hat on the wire: its body, then the digest over that body.
+fn hat_json(h: Hat) -> String {
+    let body = hat_body(h);
+    return body[0..(len(body) - 1)] + ", \"digest\": " + record_json_quote(h.digest) + "}";
+}
+
+// The hat, digested, and kept in memory by that digest when memory is
+// there: the same body under one digest is one row, so a hat read twice
+// at one head is kept once, and a hat built by the owner and read by a
+// head is the same hat.
+fn hat_sealed(h: Hat) -> Hat {
+    let mut out = h;
+    out.digest = hat_digest(out);
+    return out;
+}

@@ -70,6 +70,24 @@ locus CommandCases {
         b.begin_array_field("receipts"); b.end_array(); b.end_object();
         b.end_object(); return b.result();
     }
+    // The outcome with the hat the leg wore (GH #946 hardening).
+    fn hat_outcome_body(id: String, attempt: String, holder: String, token: Int) -> String {
+        let plain = self.outcome_body(id, attempt, holder, token, "done");
+        let args = std::json::find_field_raw(plain, "arguments");
+        let worn = args[0..(len(args) - 1)] + ", \"hat_digest\": \"sha256:" + self.repeat(64) + "\", \"hat_head\": \"" + RECORD_HEAD + "\", \"hat_watermark\": 12, \"prompt_digest\": \"sha256:" + self.repeat(64) + "\", \"renderer\": \"legs-render/1\"}";
+        return self.field(plain, "arguments", worn);
+    }
+    // `object` without its `name` field.
+    fn without(object: String, key: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        let mut it = std::json::object_first(object);
+        while !it.done {
+            let name = std::json::obj_key_string(it, object);
+            if name != key { b.field(name, std::json::obj_value_raw(it, object)); }
+            it = std::json::object_next(it, object);
+        }
+        b.end_object(); return b.result();
+    }
     // A leg's claim and outcome over HTTP (GH #946): the same envelope, gate
     // and identity; the lease rides back in `attempt`, a refusal is a
     // receipt with the reason.
@@ -152,6 +170,7 @@ locus CommandCases {
         std::test::assert_eq_str(self.host.last_command.disposition, "done", "disposition forwarded");
         std::test::assert(std::str::contains(self.host.last_command.evidence, "\"deep-1\""), "the calls travel as evidence: " + self.host.last_command.evidence);
         std::test::assert_eq_str(self.host.last_command.receipts, "", "no receipts is none");
+        std::test::assert_eq_str(self.host.last_command.hat_digest, "", "an outcome without a hat wore none");
         self.host.mode = "attempt_settled";
         let settled = wire.raw(self.call(service, "GET", "/commands?request_id=outcome-request", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.text(wire.raw(settled, "attempt"), "state"), "settled", "the owner's settlement observed through lookup");
@@ -161,6 +180,18 @@ locus CommandCases {
         std::test::assert_eq_str(wire.text(stale, "state"), "refused", "a stale outcome is refused");
         std::test::assert(std::str::contains(wire.text(stale, "reason"), "stale"), "with the reason: " + wire.text(stale, "reason"));
         self.host.mode = "recorded";
+        // the hat the leg wore rides on the outcome: the five fields together (GH #946 hardening), or none
+        let worn = self.hat_outcome_body("outcome-hat", "t1/wf1/s0/j/a0", "leg:alice", 3);
+        let wargs = wire.raw(worn, "arguments");
+        self.no_dispatch(service, HEADERS, self.field(worn, "arguments", self.field(wargs, "hat_watermark", "\"12\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(worn, "arguments", self.field(wargs, "hat_digest", "\"not-a-digest\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(worn, "arguments", self.without(wargs, "renderer")), 400, "invalid_command");
+        let hatted = wire.raw(self.call(service, "POST", "/commands", HEADERS, worn, 200, ""), "data");
+        std::test::assert_eq_str(wire.text(wire.raw(hatted, "attempt"), "state"), "requested", "an outcome with its hat is admitted");
+        std::test::assert_eq_str(self.host.last_command.hat_digest, "sha256:" + self.repeat(64), "the hat digest forwarded");
+        std::test::assert_eq_str(self.host.last_command.hat_head, RECORD_HEAD, "the head it was rendered at forwarded");
+        std::test::assert_eq_int(self.host.last_command.hat_watermark, 12, "the watermark forwarded");
+        std::test::assert_eq_str(self.host.last_command.renderer, "legs-render/1", "the renderer's version forwarded");
         std::test::assert_eq_str(self.f.refs(), refs, "attempt command conformance never writes native Record");
     }
     // Raising work over HTTP: the same envelope, gate, identity and recovery

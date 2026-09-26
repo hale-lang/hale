@@ -165,9 +165,17 @@ main locus App {
         // the owner consulted memory, and the record says what it got
         let consulted = self.last("knowledge.consulted", "m1");
         std::test::assert(std::str::contains(consulted, "\"target\": \"org/app\"") && std::str::contains(consulted, "\"digest\": \"" + app_package + "\"") && std::str::contains(consulted, "\"included_n\": 1") && std::str::contains(consulted, "\"revision\": 7"), "consulted: " + consulted);
-        // the editor got the practice in its objective…
-        std::test::assert(std::str::contains(self.dna.editor.last.rationale, "PRACTICES (ratified knowledge for org/app, package " + app_package + ")") && std::str::contains(self.dna.editor.last.rationale, IDEA_TEXT), "the objective the editor got: " + self.dna.editor.last.rationale);
-        std::test::assert(std::str::starts_with(self.dna.editor.last.rationale, "document the pings"), "the objective first");
+        // the ask stays the ask (GH #946 hardening): the practice reaches the
+        // editor as its brief, under the objective in what a model is shown…
+        std::test::assert_eq_str(self.dna.editor.last.rationale, "document the pings", "the objective the editor got is the ask itself");
+        std::test::assert(std::str::contains(self.dna.editor.practices, "PRACTICES (ratified knowledge for org/app, package " + app_package + ")") && std::str::contains(self.dna.editor.practices, IDEA_TEXT), "the brief the editor got: " + self.dna.editor.practices);
+        std::test::assert(std::str::starts_with(self.dna.editor.with_practices("document the pings"), "document the pings\n\nPRACTICES"), "the objective first, the brief under it");
+        // …and the attempt carries the hat by its digest, which memory keeps
+        let hat_digest = std::json::find_string_field(consulted, "hat");
+        std::test::assert(std::str::starts_with(hat_digest, "sha256:"), "the consultation names the hat by its digest: " + consulted);
+        let memory = dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV };
+        let kept = memory.hat(hat_digest);
+        std::test::assert(std::str::contains(kept, "\"work_id\"") && std::str::contains(kept, IDEA), "memory keeps the hat under its digest, practices as structure: " + kept);
         // …and its evidence names the package and the practice
         let ev = self.last("model.called", "m1/a0");
         std::test::assert(std::str::contains(ev, "\"knowledge_bindings\": \"package:" + app_package + " " + IDEA + "\""), "the evidence names the package: " + ev);

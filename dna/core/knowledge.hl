@@ -49,6 +49,9 @@ type ContextPackage {
     omitted_n: Int = 0; // what this projection left out, stated
     data_class: String = "";
     text: String = ""; // the ideas rendered, one per line, for an objective (GH #583 K2)
+    // the same ideas as structure (GH #946): a JSON array of {id, name,
+    // text, kind, author}, what a hat carries — never lines split again
+    practices: String = "[]";
     error: String = ""; // why the service could not answer, when it could not
 }
 

@@ -290,13 +290,14 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 4 (GH #1026: 2 made the
+- **The version fence.** The schema version is 5 (GH #1026: 2 made the
   lease table `claims` and the graph's projection one transaction per
   record row — migrating a version-1 memory renames the table in place,
   its rows kept; 3 adds the Ledger's gate, `ledger_append`, with the
   org chart it checks and the roles' principals; GH #1085: 4 adds the
-  repository's graph, `graph_nodes`, `graph_edges` and `graph_members`.
-  Each moves the projection protocol, so the graph is emptied once for
+  repository's graph, `graph_nodes`, `graph_edges` and `graph_members`;
+  GH #946: 5 adds `hats`, hats by digest, which moves no projection.
+  Each protocol move empties the graph once for
   the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
@@ -1192,8 +1193,8 @@ record's.
 | `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node stops and exits 75 for its unit to start it again, and the next node relays every unanswered request again (GH #986) |
 | `observation.requested` / `observation.refused` | record | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it; refused, unrelayed, when the row is not verified under `signed` trust (GH #986) |
 | `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
-| `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the attempt's task, work and performer kind, and the command that took it |
-| `attempt.outcome_requested` | ledger | the outcome a leg handed back under its lease: the disposition, the result, the receipts it filed (`evidence_ref`), the calls it made (`calls`) and the command (`request`); relayed until `attempt.outcome` or `attempt.outcome_refused` answers it |
+| `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the principal that took it (`principal_mode`, `principal_name`: whose outcome the lease admits), the attempt's task, work and performer kind, and the command that took it |
+| `attempt.outcome_requested` | ledger | the outcome a leg handed back under its lease: the disposition, the result (`result`, `result_ref`), the receipts it filed (`evidence_ref`), the calls it made (`calls`), the hat it wore (`hat_digest`, `hat_head`, `hat_watermark`, `prompt_digest`, `renderer`) and the command (`request`); relayed until `attempt.outcome` or `attempt.outcome_refused` answers it |
 | `attempt.outcome_refused` | ledger | why the owner would not settle a leg's outcome (`why`, `holder`, `token`, `request`) |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
@@ -1506,7 +1507,11 @@ admitted attempt to the performer of the kind the admission names.
 The spine's whole API to a leg is three things (GH #946): the hat as a
 read, `dna.attempt.claim`, and `dna.attempt.outcome`. A leg holds
 nothing between tasks and has no database role; the owner still admits
-and settles.
+and settles. Once the organism has adopted the ledger the attempt kinds
+live there: the head reads them and writes a leg's rows there under its
+role (`HALE_DNA_MEMORY_DSN_HEAD`; memory's insert function is the gate,
+keyed by the request), and refuses the commands and the hat only when no
+memory is named to it.
 
 - **The hat** (`GET …/dna/context?id=<work>`; `dna/operations/context.hl`)
   is one Work's context as structure, never a prompt: the position's
@@ -1525,7 +1530,14 @@ and settles.
   correctly: what is forbidden is unrecorded variation, so the hat reads
   no clock, no environment value and no random id, and replay renders
   from the recorded hat, never the live graph. Rendering is a leg's,
-  and the renderer's version is evidence of its own.
+  and the renderer's version is evidence of its own. The practices are
+  structure — `{id, name, text, kind, author}` from one snapshot of
+  memory, the watermark read in the same transaction as the ranked
+  bound — never rendered lines split again; and every hat built, by the
+  owner for an edit it asks (the attempt carries the hat's digest as its
+  `context_digest`; the practices reach the editor as its brief, the
+  ask stays the ask) or by a head for a leg, is kept in memory by its
+  digest (`hats`, insert if absent).
 - **The claim** is taken at the head. The filter names the performer
   kind and identity, the capabilities the leg has, the data classes it
   may see, the owners it works for and a TTL. The head picks the first
@@ -1534,28 +1546,45 @@ and settles.
   is not held by another leg under a live lease; takes memory's claim
   `attempt:<id>` for the performer with the TTL under the head's role
   (GH #1026: the store decides between two legs racing; without memory
-  nothing races); and appends `attempt.claimed` naming the lease. The
+  nothing races); and appends `attempt.claimed` naming the lease and
+  the principal that took it. The claim is not fenced on the record
+  head the leg read — memory's conditional insert is the race, so a leg
+  a row behind is not turned away with `stale_subject` — and a claim
+  memory took that ends in no row is given back. A leg that names no
+  data class is handed nothing: no class is no class. The
   receipt returns the task and the lease as a value. Nothing fitting,
-  or everything held, is a refusal: a receipt with the reason and no
+  or everything held, is a refusal: a receipt with the reason — which
+  names the class or the owner that stood in the way — and no
   row, since legs ask often and an empty answer is not a fact.
-- **The outcome** comes back under the lease. The head refuses — a
-  receipt with the reason, no row — an attempt never admitted or never
-  asked to run, one already settled (`duplicate`), and a lease that is
-  not this holder's at this token now, by the recorded claim and, with
-  memory, by memory's (`stale`); files the receipts (a protected body
-  in memory alone, the rest as git receipts); and appends
-  `attempt.outcome_requested`. A node relays the row onto the nerves
-  (`WorkSubmit`, `dna.work.submit`) until the record answers it. The
-  owner checks the same lease, journals the calls the leg made as
-  `model.called` rows on the attempt id — tokens per task hold out of
-  process — and settles the attempt through the path every reply
-  takes: `attempt.outcome` by exact append, the Work and the task
-  after it; a submission it will not settle is an
-  `attempt.outcome_refused` row naming why, which answers the request
-  too. A `LegRelay` performer answers pending for the kinds a program
-  hands to legs, so the attempt waits for one instead of running in
-  process (stage 1 of the legs; the in-process performers go as each
-  stage lands).
+- **The outcome** comes back under the lease, with the hat the leg
+  wore (its digest, the head and watermark it was rendered at, the
+  digest of what was rendered, the renderer's version — the five
+  together or none). The head refuses — a receipt with the reason, no
+  row — an attempt never admitted or never asked to run, one already
+  settled or already handed back (`duplicate`: one outcome under one
+  lease), a lease that is not this holder's at this token now, by the
+  recorded claim and, with memory, by memory's (`stale`), and an
+  outcome from a principal other than the one that took the lease;
+  files the receipts (a protected body in memory alone, the rest as git
+  receipts); and appends `attempt.outcome_requested`. A node relays the
+  row onto the nerves (`WorkSubmit`, `dna.work.submit`) until the
+  record answers it. The owner checks the same lease, journals the
+  calls the leg made as `model.called` rows on the attempt id — tokens
+  per task hold out of process — and settles the attempt through the
+  path every reply takes: `attempt.outcome` by exact append, naming
+  the request it answers and carrying `result_ref` and the hat, the
+  Work and the task after it; a submission it will not settle — a
+  stale lease, a second outcome after settlement — is an
+  `attempt.outcome_refused` row naming why and the request, which
+  answers it, so the relay stops. A `LegRelay` performer answers
+  pending for the kinds a program hands to legs, so the attempt waits
+  for one instead of running in process (stage 1 of the legs; the
+  in-process performers go as each stage lands), and `RelayReplay` is
+  its reconciler: an owner that restarts with a leg's attempt in flight
+  leaves it to its claim — nothing is asked of it while the lease is
+  live, and it is never `effect.result unknown` — and asks it again
+  once the lease expires with no outcome (`effect.redelivered`, once per
+  lease), when a leg claims it anew.
 
 ## Workflow execution: one step
 
@@ -3116,16 +3145,18 @@ The live half is memory's, projected from the record by the spine
   target in the
   tower — `org` for an organization change, `org/<child>` for the
   application, `org/<child>/<seed>` for a seed inside it — and
-  journals `knowledge.consulted <mutation>` (`target`, `digest`,
+  journals `knowledge.consulted <mutation>` (`target`, `hat`, `digest`,
   `revision`, `included_n`, `included`, `error`) whenever memory is
-  named (`HALE_DNA_MEMORY_DSN_SPINE`), answer or not. The package's ideas are folded into the
-  objective the editor receives (`objective_with`: the ask, then a
+  named (`HALE_DNA_MEMORY_DSN_SPINE`), answer or not. The package
+  becomes the hat the attempt wears (GH #946): built by the owner,
+  kept in memory by its digest, and named on the request as its
+  `context_digest`; the editor is briefed with the package's ideas
+  (`SourceEditor.brief`: what a model is shown is the ask, then a
   `PRACTICES (ratified knowledge for <target>, package <digest>):`
-  block, one idea per line) — the record, the commit message and the
-  Mutation keep the ask itself — and the request names the package
-  (`context_digest`, `knowledge_bindings: package:<digest> <id>…`),
-  which every model call of the attempt carries into its `model.called`
-  row. No memory named is an empty package that says so, and nothing
+  block, one idea per line) while the record, the commit message and
+  the Mutation keep the ask itself; and the request names the package
+  (`knowledge_bindings: package:<digest> <id>…`), which every model
+  call of the attempt carries into its `model.called` row. No memory named is an empty package that says so, and nothing
   waits on it; memory that cannot answer, or whose projection has not
   reached the record's head within 20 s, is a package refused with the
   reason (**The spine projects; readers read**).
@@ -3355,8 +3386,8 @@ The live half is memory's, projected from the record by the spine
   rule); the Board ratifies the exact digest (`hale dna review k:…
   approve --authority board`); the spine projects it into memory on
   its tick; and the next change to the trio consults memory
-  (`knowledge.consulted m1` with the digest included),
-  hands the editor the objective with the concern under it, and every
+  (`knowledge.consulted m1` with the digest and the hat's digest),
+  briefs the editor with the concern under the objective, and every
   `model.called` row of the attempt names the package and the digest.
   Something observed and ratified today informs the work done
   tomorrow, and the receipt says so.
