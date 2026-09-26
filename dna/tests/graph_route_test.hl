@@ -103,7 +103,7 @@ locus App {
         // ratified as law bound to store.md, and one ratified as advice
         // bound to openapi.yaml: advice is not law
         // (a hold is asked of a running organization, `hale dna fill`, which
-        // graph_holes_test drives; here the ratified hold is its graph row)
+        // graph_holds_test drives; here the ratified hold is its graph row)
         self.ratify("hale dna init");
         let receipts = dna::GitReceipts { repo: self.repo };
         let law = "sha256:" + receipts.store("{\"kind\": \"practice\", \"text\": \"a change to a contract is a new migration, never an edit\", \"author\": \"board\", \"target\": \"contract:spec/store.md\", \"provenance\": \"proposed\", \"law\": true}");
