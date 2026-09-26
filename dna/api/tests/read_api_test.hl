@@ -22,8 +22,10 @@ locus Cases {
         self.json.is_bool(self.json.raw(data, "reads"), "practices", true);
         self.json.is_bool(self.json.raw(data, "reads"), "reviews", true);
         self.json.is_bool(self.json.raw(data, "reads"), "organization", false);
-        self.json.is_bool(self.json.raw(data, "writes"), "practice_propose", false);
-        self.json.is_bool(self.json.raw(data, "writes"), "review_verdict", false);
+        // the record's commands are the api socket's, named here and never offered over HTTP
+        std::test::assert_eq_str(self.json.raw(data, "writes"), "", "no HTTP write flags: " + capability);
+        self.json.eq(self.json.raw(data, "api"), "transport", "unix");
+        std::test::assert(std::str::ends_with(self.json.string(self.json.raw(data, "api"), "socket"), ".sock"), "the head names its socket: " + capability);
         self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
         self.json.eq(self.json.raw(data, "principal"), "mode", "local");
     }

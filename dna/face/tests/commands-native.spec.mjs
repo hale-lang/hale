@@ -3,6 +3,7 @@
 import { test, expect } from './harness.mjs';
 
 test.use({ commandSubject: true, commandAdapter: true });
+test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!process.env.HALE_FACE_COMMAND_BIN, 'Supply the explicit scripted native command-adapter fixture.');
 
 async function submit(page, service) {

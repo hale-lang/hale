@@ -47,6 +47,7 @@ async function fixture(page, options = {}) {
   page.on('pageerror', error => script.errors.push(error.message));
   const capabilities = () => {
     const data = structuredClone(native.capabilities.data);
+    data.writes ??= {}; // a capture from a head after GH #1104 piece 5 carries no command profile
     data.writes.organization_propose = script.authorized && script.available; data.writes.organization_review_verdict = false;
     data.read_only = !data.writes.organization_propose;
     data.organization_commands = {

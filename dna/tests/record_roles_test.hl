@@ -5,7 +5,8 @@
 // a principal mapped to a known person holds a role when the graph has
 // a live `holds` edge from the position the role names to that person.
 // The mapping is the `dna.unix.member` shape (`uid:<n>=<person>`);
-// `owner` is the board; a role's `_` is the position's `/`, and only that; a
+// `owner` is the board; `position` is any live position; `reviewer` is
+// position:reviewer; a role's `_` is the position's `/`, and only that; a
 // retired edge, position, or person holds nothing; an unmapped or
 // unauthenticated principal holds nothing; and the source re-reads a
 // record that moved, never one that did not.
@@ -40,6 +41,7 @@ locus App {
         self.position("api/dev");
         self.position("api/reviewer");
         self.position("ops_desk");
+        self.position("reviewer");
         let ada_board = self.holds("board", "ada");
         let ada_dev = self.holds("api/dev", "ada");
         let grace_rev = self.holds("api/reviewer", "grace");
@@ -59,6 +61,18 @@ locus App {
         std::test::assert(!self.roles.holds(nobody, "owner"), "an unmapped principal holds nothing");
         std::test::assert(!self.roles.holds(std::api::Principal { }, "owner"), "an unauthenticated principal holds nothing");
         std::test::assert(!self.roles.holds(ada, ""), "no role is no role");
+        // `position` is any live position; `reviewer` is position:reviewer
+        std::test::assert(self.roles.holds(ada, "position"), "the board is a position");
+        std::test::assert(self.roles.holds(grace, "position"), "so is api/reviewer");
+        std::test::assert(!self.roles.holds(ghost, "position"), "a person the graph never seats holds no position");
+        std::test::assert(!self.roles.holds(grace, "reviewer"), "api/reviewer is not the reviewer position");
+        self.holds("reviewer", "grace");
+        std::test::assert(self.roles.holds(grace, "reviewer"), "position:reviewer is");
+        // the person a principal is recorded as
+        std::test::assert_eq_str(self.roles.person(ada), "ada", "the mapped person");
+        std::test::assert_eq_str(self.roles.person(ghost), "ghost", "mapped, seated or not");
+        std::test::assert_eq_str(self.roles.person(nobody), "", "unmapped is nobody");
+        std::test::assert_eq_str(self.roles.person(std::api::Principal { }), "", "unauthenticated is nobody");
 
         // ---- the record moves: an edge retired, a person retired, a
         // position retired; each read fresh
@@ -66,9 +80,11 @@ locus App {
         std::test::assert(!self.roles.holds(ada, "api_dev"), "a retired edge no longer holds");
         std::test::assert(self.roles.holds(ada, "owner"), "the other edge stands");
         self.append("person.retired", "grace", "{}");
-        std::test::assert(!self.roles.holds(grace, "api_reviewer") && !self.roles.holds(grace, "ops_desk"), "a retired person holds nothing");
+        std::test::assert(!self.roles.holds(grace, "api_reviewer") && !self.roles.holds(grace, "ops_desk") && !self.roles.holds(grace, "position"), "a retired person holds nothing");
+        std::test::assert_eq_str(self.roles.person(grace), "", "and is nobody to a command");
         self.append("graph.retired", "position:board", "{}");
         std::test::assert(!self.roles.holds(ada, "owner"), "a retired position holds nobody");
+        std::test::assert(!self.roles.holds(ada, "position"), "and ada, seated nowhere else, holds no position");
         let ada_again = self.holds("board", "ada");
         std::test::assert(self.roles.holds(ada, "owner"), "a holds edge written again holds again: " + ada_again + " " + ada_board + " " + grace_rev);
     }

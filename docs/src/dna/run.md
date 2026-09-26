@@ -284,6 +284,12 @@ a role the peer holds: `role api_dev;` is `position:api/dev`, and
 Generic clients (`hale call`, `hale mcp --app`, `hale admin`) see
 exactly that principal's slice.
 
+The record's own commands (`dna/api`) are gated topics on this same
+socket: `owner` is the board, `reviewer` is `position:reviewer`, and
+`position` is any position the peer holds. `git config --local --add
+dna.unix.member "uid:<n>=<person>"` is how a peer becomes a person
+these gates can name.
+
 Then nothing is served without signing in, a verdict from the page is
 recorded in the name the subject maps to — with the board's authority
 if `dna.oidc.board` lists that name — and a subject you have not mapped

@@ -64,7 +64,7 @@ Use the returned id in the following routes:
 
 | GET route | Result |
 | --- | --- |
-| `/api/hale/v1/applications/{id}/capabilities` | Principal mode, implemented reads and explicit command capabilities |
+| `/api/hale/v1/applications/{id}/capabilities` | Principal mode, implemented reads and the head's socket transport |
 | `/api/hale/v1/applications/{id}/dna/practices` | Named practice proposals, lifecycle, attribution and available canonical text |
 | `/api/hale/v1/applications/{id}/dna/reviews` | Review identity, exact subject, required authority and recorded decision |
 | `/api/hale/v1/applications/{id}/dna/tasks` | Current handed Tasks, preserved responsibility and exact assignment history |
@@ -263,56 +263,92 @@ among them needs its `node_scopes` or `binding_scopes` (`{author, target}`
 pairs, at most 32, never lateral). The public contract is in
 [contract/v1](contract/v1/README.md#optional-knowledge-relationship-command).
 
+## Commands
+
+The record's commands are gated topics on the head's api binding, not
+HTTP routes: one Unix socket per record,
+`$XDG_RUNTIME_DIR/hale/dna/<record id>.sock`, else `<root>/.hale/dna/<id>.sock`
+(`LOTUS_API` overrides). `hale describe <socket>` lists a caller's
+slice — the calls it may use; `hale check --dump-api dna/api` prints the
+full description, which is the contract for these calls (`contract/v1`
+remains the contract for the HTTP reads and the knowledge commands).
+
+| call name | subject | payload type (fields) | gate |
+|---|---|---|---|
+| `PracticePropose` | `dna.commands.practice.propose` | `PracticeProposal { request_id, subject_digest, text, rationale }` | `position` |
+| `ReviewVerdict` | `dna.commands.review.verdict` | `ReviewDecision { request_id, review_id, subject_digest, verdict, comment }` | `reviewer` |
+| `OrganizationPropose` | `dna.commands.organization.propose` | `OrganizationProposal { request_id, source_head, module_digest, dependency_source, dependency_digest, record_head, source_text, rationale }` | `owner` |
+| `TaskCreate` | `dna.commands.task.create` | `TaskCreation { request_id, record_head, outcome, to }` | any authenticated peer |
+| `TaskReassign` | `dna.commands.task.reassign` | `TaskReassignment { request_id, task_id, assignment_digest, assignee, to }` | `owner` |
+| `PersonRetire` | `dna.commands.person.retire` | `PersonRetirement { request_id, person, subject_digest, to }` | `owner` |
+| `AttemptClaim` | `dna.commands.attempt.claim` | `Claim { request_id, record_head, performer_kind, performer, capabilities, data_classes, organizations, ttl: Int }` (the three lists are space-separated words) | `position` |
+| `AttemptOutcome` | `dna.commands.attempt.outcome` | `Outcome { request_id, attempt_id, holder, token: Int, disposition, result, result_ref, narrative, evidence, receipts, hat_digest, hat_head, hat_watermark: Int = -1, prompt_digest, renderer }` (evidence/receipts are JSON arrays as text) | `position` |
+| `AttemptRenew` | `dna.commands.attempt.renew` | `Renewal { request_id, attempt_id, holder, token: Int, ttl: Int }` | `position` |
+| `AttemptRelease` | `dna.commands.attempt.release` | `Release { request_id, attempt_id, holder, token: Int, why }` | `position` |
+| `FrictionFile` | `dna.commands.friction.file` | `Friction { request_id, record_head, position, attempt_id, text }` | `position` |
+| `CommandLookup` | `dna.commands.lookup` | `Lookup { request_id }` | any authenticated peer |
+
+The caller is the socket peer: `dna.unix.member` maps its uid to a
+person, and rows record `local/<person>`. `TaskCreate` and
+`CommandLookup` need no role — any authenticated peer may call them;
+the other calls are outside a caller's slice (`unknown`) unless the
+mapped person holds the named role. Every reply is a `CommandReply { ok, code, application_id, head,
+revision, receipt }`, its receipt exactly what an HTTP command receipt
+used to carry. `CommandLookup { request_id }` is recovery, in place of
+the old `GET /commands?request_id=`. The HTTP head answers 405 to every
+mutation now, except a knowledge command or a draft POST.
+`/capabilities` no longer carries `writes` or any command profile; it
+carries `api{transport,socket}` instead.
+
+`hale dna work`, the legs client, is being switched from the HTTP route
+to this socket by the DNA line; the socket is its target.
+
 ## Practice and Review command providers
 
-The standalone executable and `serve` continue to compose `NoCommands`. They
-advertise no writes and reject POST with 405. An application can instead call
-`serve_with_commands(root, port, web, definitions, commands)` with its native
-`CommandProvider`, using the same startup and authentication path. This does not
-install a durable command implementation: the application owns it.
-Bind the provider to a named locus in the hosting scope and keep it alive for
-the server's lifetime before passing it to `serve_with_commands`.
+`PracticePropose` and `ReviewVerdict` ([Commands](#commands)) are gated
+`position` and `reviewer`. `api::Commands` composes `NoCommands` by
+default, which supports neither: an application binds its own native
+`CommandProvider`, using the same startup and authentication path. This
+does not install a durable command implementation: the application owns
+it. Bind the provider to a named locus in the hosting scope and keep it
+alive for the head's lifetime.
 
-The provider exposes operation/version-aware `supported` and `capability`,
-typed `submit(context, CommandRequest)` and shared `lookup(context, request_id)`.
+The provider exposes operation/version-aware `supported`, typed
+`submit(context, CommandRequest)` and shared `lookup(context, request_id)`.
 Supported operations occupy the same application/principal/request namespace; reusing
 a key with different operation/content must conflict. Trusted context carries
-the resolved principal and the application's Record binding.
-The HTTP head validates closed versioned command envelopes, byte limits,
-expected principal, exact application/subject consistency and browser origin.
-The expected principal is a precondition only; it cannot set the authenticated
+the resolved principal — the socket peer, mapped through `dna.unix.member` —
+and the application's Record binding.
+The gate validates closed `CommandRequest` values, byte limits,
+expected principal and exact application/subject consistency. The
+expected principal is a precondition only; it cannot set the authenticated
 actor. An identity change returns `command_context_changed` before dispatch.
 Unknown fields, caller-supplied authority, duplicate keys and invalid Unicode
 are rejected. No CLI command, domain history repair or generic bus publication
 occurs in this adapter.
 
-Submission requires JSON Content-Type, `X-Hale-Command: 1`, and an exact Origin
-matching the trusted command origin. The loopback composition derives it from
-its configured listener; `Api` compositions set `command_origin` explicitly.
-Request Host never selects the trusted origin. Missing configuration disables
-submission. Duplicate safety headers and ambiguous framing are refused. Recovery
-GET accepts exactly one `request_id` and still requires current receipt access.
-The command-ID lookup path is not implemented by these profiles.
+`CommandLookup { request_id }` is the recovery call: it still requires
+current receipt access and resolves exactly one request.
 
 The provider owns current authorization, canonical request equivalence, durable
 principal/application/key scoping, exact-head admission and interrupted proposal
 and verdict progression. It must resolve an existing request before applying fresh-subject
-preconditions to a retry. Unrelated Record movement is not a browser draft lock;
+preconditions to a retry. Unrelated Record movement is not a lock;
 the provider checks the pinned subject and performs its internal admission CAS.
 Receipt lookup joins the exact native request, not the latest practice metadata.
 
-Typed provider results include their captured source basis. The head checks
-scope, identity and receipt-state consistency before serialization, and uses
-that basis rather than the pre-submit Record head. HTTP 202 means a recorded or
+Typed provider results include their captured source basis. The gate checks
+scope, identity and receipt-state consistency before replying, and uses
+that basis rather than the pre-submit Record head. A recorded reply means a recorded or
 unresolved command state, never Review approval or practice adoption. A successful
 proposal proves candidate and Review creation. A successful verdict command proves
 that this specific verdict was accepted. Review settlement and activation remain
-separate fields in both cases. The [executable wire contract](contract/v1/README.md)
-defines the request, response and independent optional capability profiles.
+separate fields in both cases. `hale check --dump-api dna/api` is the
+contract for the call's request and reply shapes.
 
 `dna.review.verdict@1` targets an exact pending practice-candidate Review with
 separate candidate-digest, expected-principal and pending-state preconditions.
-Its literal comment may be empty and is bounded to2048 UTF-8 bytes; supported
+Its literal comment may be empty and is bounded to 2048 UTF-8 bytes; supported
 choices are approve, reject and revise. The provider derives reviewer authority
 from trusted policy, checks eligibility and current authority at the delayed
 decision, and must not reinterpret an already-settled approval as permission to
@@ -326,11 +362,10 @@ the provider must correlate the exact request, including refusal beside another
 command's approval. Existing Review-ID-only native joins do not establish that
 durable correlation. Unsupported providers advertise no verdict capability.
 
-`tests/commands_api_test.hl` exercises the adapter with scripted providers.
-`tests/commands/main.hl` is an explicitly opted-in HTTP conformance fixture,
-requiring `HALE_FACE_SCRIPTED_COMMANDS=1`. It appends no native command facts
-and provides no restart durability. It must not be used as an application writer
-or as proof that the administration loop is complete.
+`tests/commands_api_test.hl` and `tests/commands/main.hl` exercise the
+handlers with scripted providers, in-process. Neither appends native
+command facts nor provides restart durability; neither is proof that the
+administration loop is complete.
 
 ## Handed Tasks and reassignment
 
@@ -360,7 +395,7 @@ return 404. A later page still requires `snapshot`; other read routes reject
 `assignee`. This does not establish position ownership, complete personal
 responsibility or permission to reassign.
 
-The [native command head](practice_review/README.md) can additionally enable
+The [native command provider](practice_review/README.md) can additionally enable
 `dna.task.reassign@1` with `HALE_DNA_TASK_POLICY`. Its existing
 `HALE_DNA_COMMAND_POLICY` remains required; Task authority is independently
 configured. For example, this is the complete closed Task policy shape; replace
@@ -407,28 +442,10 @@ under `<root>/.hale/dna/face/` when the operator wrote none:
 dna/face/start.sh /absolute/path/project --api /absolute/path/practice_review --port 8792
 ```
 
-`/capabilities` exposes the optional `task_commands` profile
-`dna.task.reassign.v1`, explicit `writes.task_reassign`, eligible `recipients`
-and separate availability/authorization. Read access or a selected working locus
-does not grant this operation. Submit to the shared
-`POST /api/hale/v1/applications/{id}/commands` route with the usual Origin,
-JSON and `X-Hale-Command: 1` requirements. The closed envelope is:
-
-```json
-{
-  "request_id": "reassign-1",
-  "operation": "dna.task.reassign",
-  "operation_version": "1",
-  "context": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "position_id": "org"},
-  "target": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "dna.task", "id": "task-id"},
-  "preconditions": {
-    "subject_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "principal": {"mode": "local", "name": "riley"},
-    "assignee": "mara"
-  },
-  "arguments": {"to": "dev"}
-}
-```
+`TaskReassign` ([Commands](#commands)) is gated `owner`; `/capabilities`
+carries no profile for it. Read access or a selected working locus
+does not grant this operation. Its payload is `TaskReassignment {
+request_id, task_id, assignment_digest, assignee, to }`.
 
 Use the exact returned Task ID, assignment digest and current assignee. The
 service checks these and current eligibility in the captured Record, then admits
@@ -440,11 +457,11 @@ The whole request is bounded to 32768 encoded bytes, request keys to 128 bytes
 and person/Task identities to 256 bytes.
 
 The receipt's `task` fields distinguish `applied` from `unknown`, preserving
-exact `from`, `to` and native `event_id`. HTTP 202 alone proves no effect. Fresh
+exact `from`, `to` and native `event_id`. A recorded reply alone proves no effect. Fresh
 Task readback is separate from the recorded receipt and may show later changes.
 The application/principal/request key shares the existing Practice/Review/Organization
 namespace; different operation or content conflicts. Recover only through
-`GET /commands?request_id=...`, with the same application prefix and current
+`CommandLookup { request_id }`, with the same application prefix and current
 receipt grant. `recover` is independent of `reassign`, so an operator may retain
 lookup after new writes are denied. Lookup does not repeat the mutation and
 resolves the original receipt even after the Task changes.
@@ -453,7 +470,7 @@ This profile does not retire people, transfer responsibility across owners,
 modify source ownership, complete Tasks or control workflow execution. OIDC,
 signed trust, Ledger-backed administration and source-to-live ownership joins
 need their own supported service contract. Existing CLI Task commands are not
-made part of this provider by these routes.
+made part of this provider by this call.
 
 ## Head: project service
 
@@ -549,35 +566,19 @@ principal) and `to`, followed by the command fields the other operations carry
 publishes nothing on the nerves, and a node's relay splices the id in before
 the last brace when it publishes.
 
-Every [native command head](practice_review/README.md) supports it; there is no
+Every [native command provider](practice_review/README.md) supports it; there is no
 policy grant. The authority is the authenticated principal, as with the CLI,
 and whether `to` is this organization's to admit is the organism's judgment,
-recorded as an `intent.refused` row. `/capabilities` exposes
-`task_create_commands` (`dna.task.create.v1`, `max_outcome_bytes` 8192,
-`max_identity_bytes` 256, `max_request_bytes` 32768) and `writes.task_create`,
-which contributes to `read_only`. Submit to the shared `POST /commands` route
-with the usual Origin, JSON and `X-Hale-Command: 1` requirements:
-
-```json
-{
-  "request_id": "create-1",
-  "operation": "dna.task.create",
-  "operation_version": "1",
-  "context": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "position_id": "org"},
-  "target": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "dna.record", "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-  "preconditions": {
-    "record_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "principal": {"mode": "local", "name": "riley"}
-  },
-  "arguments": {"outcome": "Confirm the supplier handover", "to": "org"}
-}
-```
+recorded as an `intent.refused` row. `TaskCreate` ([Commands](#commands))
+is open to any authenticated peer; `/capabilities` carries no profile for
+it, and it contributes nothing to `read_only`. Its payload is
+`TaskCreation { request_id, record_head, outcome, to }`.
 
 The target is the Record itself: the Task is minted by the organism after the
 ask is admitted, so the request can name only the application. `record_head`
 follows the `dna.organization.propose` precedent: the row lands at exactly the
 head the request was prepared against, or the request is refused with
-`stale_subject` (409) and must be prepared again against the current head.
+`stale_subject` and must be prepared again against the current head.
 `outcome` is 1..8192 UTF-8 bytes with control bytes preserved; `to` is a
 position, 1..256 bytes. The whole request is bounded to 32768 encoded bytes.
 
@@ -589,7 +590,7 @@ against. Its `task_create` object names the minted `intent_id`, the row's
 `intent_state` is `requested` until the organism answers, then `offered`,
 `refused`, or `born` with `task_id` filled from the `task.born` row whose body
 starts with `<intent_id>: `. A born-but-unhanded Task is absent from
-`/dna/tasks`, so `GET /commands?request_id=...` is how the face follows the
+`/dna/tasks`, so `CommandLookup { request_id }` is how the face follows the
 ask; nothing else is re-read. After `ledger.adopted` new asks are refused
 (`commands_unsupported`) like every other operation here; recorded asks stay
 recoverable.
@@ -627,15 +628,17 @@ rendered at; replay renders from the recorded hat, never the live graph.
 
 ## Attempts: a leg's claim and outcome
 
-Two operations on the shared `POST /commands` route are the spine's whole API
-to a leg (GH #946): `dna.attempt.claim@1` and `dna.attempt.outcome@1`. A leg
-holds nothing between tasks and has no database role: the head takes the claim
-in memory for it and writes the rows; the owner still admits and settles.
+Two gated topics ([Commands](#commands)) are the spine's whole API to a
+leg (GH #946): `AttemptClaim` and `AttemptOutcome`, both gated `position`.
+A leg holds nothing between tasks and has no database role: the head
+takes the claim in memory for it and writes the rows; the owner still
+admits and settles.
 
-`dna.attempt.claim` targets `dna.work` with the application's id, names the
-Record head the request was prepared against (`record_head`; the claim is not
+`AttemptClaim`'s `Claim` payload targets `dna.work` with the
+application's id, names the Record head the request was prepared
+against (`record_head`; the claim is not
 fenced on it — memory's conditional insert is the race, and a leg a row behind
-gets a receipt, never `stale_subject`), and carries a filter in `arguments`:
+gets a receipt, never `stale_subject`), and carries a filter:
 `performer_kind`, `performer` (the leg's identity: `position:<name>`, with `#<n>`
 for one worker of several — a position the graph names or one of the
 organization's own, else refused), `capabilities` (words the
@@ -652,9 +655,9 @@ when, and the principal that took it. The receipt's `attempt` object is the leas
 `event_id`. Nothing fitting, or everything held, is `state: refused` with the
 `reason` — which names the class or the owner that stood in the way — and no row.
 
-`dna.attempt.outcome` targets `dna.attempt` with the attempt id, under the lease
-in `preconditions` (`holder`, `token`; `subject_digest` is `lease:<holder>@<token>`),
-and carries the outcome in `arguments`: `disposition` (`done`, `failed`,
+`AttemptOutcome`'s `Outcome` payload targets `dna.attempt` with the attempt id, under the lease
+(`holder`, `token`; `subject_digest` is `lease:<holder>@<token>`),
+and carries the outcome: `disposition` (`done`, `failed`,
 `declined`, `timeout`), `result` (at most 16384 bytes) or `result_ref`,
 `narrative`, `evidence` (the calls the leg made, as `model.called` evidence
 objects: adapter, backend, models, digests, tokens, cost), `receipts`
@@ -672,27 +675,27 @@ node relays the row onto the nerves (`dna.work.submit`); the owner journals the
 calls on the attempt (tokens per task hold out of process), settles it as it
 settles every reply (`attempt.outcome`, naming the request and carrying
 `result_ref` and the hat) or refuses it with
-`attempt.outcome_refused` naming why and the request; `GET /commands?request_id=`
+`attempt.outcome_refused` naming why and the request; `CommandLookup { request_id }`
 re-derives `settled` with the disposition, or `refused` with the reason and the
-refusing row's id. Once the organism has adopted the ledger, both commands and
+refusing row's id. Once the organism has adopted the ledger, both calls and
 the hat read and write it under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`);
 without it they answer `commands_unsupported` / `context_source_unavailable`.
 
-Three more operations ride the same route for a leg's loop (GH #946 slice 4):
-`dna.attempt.renew@1` (target `dna.attempt`, the lease in `preconditions`,
-`arguments.ttl` 1..86400; the lease extended and the token kept, `state:
-renewed`), `dna.attempt.release@1` (the lease in `preconditions`,
-`arguments.why`; `attempt.released`, `state: released`, and the attempt is
-another leg's to claim) and `dna.friction.file@1` (target `dna.friction` with the
-application's id, `record_head` in `preconditions`, `arguments.position`
+Three more gated topics carry a leg's loop (GH #946 slice 4), all gated
+`position`: `AttemptRenew` (its `Renewal` payload targets `dna.attempt`, the
+lease, `ttl` 1..86400; the lease extended and the token kept, `state:
+renewed`), `AttemptRelease` (its `Release` payload carries the lease and
+`why`; `attempt.released`, `state: released`, and the attempt is
+another leg's to claim) and `FrictionFile` (its `Friction` payload targets `dna.friction` with the
+application's id, `record_head`, `position`
 (`position:<name>`), `attempt_id` (or `""`) and `text`; `friction.filed` on the
 attempt, else on the position, `state: filed`; nobody admits it). A lease that is
 not this principal's, this holder's at this token now is refused as for an
-outcome. `hale dna work` is the client of all five ([Legs](../../docs/src/dna/legs.md)).
+outcome. `hale dna work` targets this socket ([Legs](../../docs/src/dna/legs.md)).
 
-`/capabilities` exposes `attempt_commands` (`dna.attempt.v1`, the five operations and
-their bounds) and `writes.attempt_claim` / `writes.attempt_outcome`;
-`reads.context` says the hat is readable.
+`/capabilities` no longer carries a profile for these five calls; `hale
+describe <socket>` lists a caller's gated slice. `reads.context` says the
+hat is readable.
 
 ## Identity and content
 
@@ -753,6 +756,9 @@ database or organization body is involved. `HALE_API_BIN` selects an already
 built service. CI builds with the checkout's compiler and runs this suite.
 The native contract checker supports the schema profile used by this API and
 rejects unsupported schema constructs; it is not a general JSON Schema validator.
+`hale check --dump-api dna/api` prints the socket's full description — the
+contract for its gated commands ([Commands](#commands)); `contract/v1`
+stays the contract for the HTTP reads and the knowledge commands.
 
 ### Organization source preparation
 
@@ -827,7 +833,7 @@ own. The projection is `dna/operations/usage.hl`, and `hale dna history` prints
 the same sums.
 # Person retirement
 
-The composed local command head accepts an optional `retire` boolean alongside
+The composed local command provider accepts an optional `retire` boolean alongside
 `reassign` and `recover` in each `dna.task-authority/1` grant. Omission preserves
 the existing policy and disables retirement. Keep an explicit `retire: false`
 with `recover: true` when revoking writes but retaining request recovery.
@@ -836,9 +842,10 @@ with `recover: true` when revoking writes but retaining request recovery.
 the exact person state, complete supported responsibility plan, plan digest and
 eligible successors. An optional `snapshot` pins its Record head. The read
 refuses protected or unsupported affected history instead of reporting a partial
-plan. `dna.person.retire@1` uses the shared `/commands` identity namespace, target
-`dna.person`, preconditions `{subject_digest, principal}`, and arguments `{to}`.
-An empty successor is permitted only for a complete plan with no held Tasks.
+plan. `PersonRetire` ([Commands](#commands)), gated `owner`, uses the same
+identity namespace as the record's other commands: payload
+`PersonRetirement { request_id, person, subject_digest, to }`, targeting
+`dna.person`. An empty successor is permitted only for a complete plan with no held Tasks.
 
 Publication creates ordinary Task reassignment facts and a retirement fact
 off-ref, then publishes the complete chain with one Record compare-and-swap.

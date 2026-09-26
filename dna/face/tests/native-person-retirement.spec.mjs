@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { startTaskService, nativeTaskEnvironmentPresent } from './native-task-harness.mjs';
+test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!nativeTaskEnvironmentPresent(),'Supply matching native API and actual-handoff seed');
 const policy=(application_id,name)=>({format:'dna.task-authority/1',application_id,owner:'operations',members:['alex','blair'],grants:[{mode:'local',name,reassign:true,retire:true,recover:true}]});
 const panel=page=>page.getByRole('region',{name:'Person administration',exact:true});
