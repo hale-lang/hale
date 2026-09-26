@@ -439,6 +439,14 @@ locus MemoryKnowledge {
         if !s.present || !s.idea.accepted { self.last_error = "memory does not hold " + digest + " ratified yet"; return -1; }
         return s.ratified_seq;
     }
+    // The graph's routing perspective (GH #1089): what a Review's route is
+    // computed over, "" when memory is not there or does not answer.
+    @unbounded
+    fn routing() -> String {
+        if !self.ready() || !self.ensure_open() { return ""; }
+        self.store.forget_error();
+        return self.store.graph_perspective("routing");
+    }
     // The body memory keeps under a hat's digest, "" when none.
     @unbounded
     fn hat(digest: String) -> String {

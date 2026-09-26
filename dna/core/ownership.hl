@@ -40,6 +40,24 @@ fn word_add(list: String, word: String) -> String {
     if len(word) == 0 || word_in(word, list) { return list; }
     return if len(list) == 0 { word } else { list + " " + word };
 }
+// Every word of `words` added to `list`, once each.
+@unbounded
+fn words_add(list: String, words: String) -> String {
+    let mut out = list;
+    let mut i = 0;
+    while len(nth_word(words, i)) > 0 { out = word_add(out, nth_word(words, i)); i = i + 1; }
+    return out;
+}
+// Whether every word of `words` is in `list`.
+@unbounded
+fn words_within(words: String, list: String) -> Bool {
+    let mut i = 0;
+    while len(nth_word(words, i)) > 0 {
+        if !word_in(nth_word(words, i), list) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
 // Commas and runs of blanks made into single spaces: "alice, carol" -> "alice carol".
 @unbounded
 fn words_of(s: String) -> String {

@@ -212,6 +212,32 @@ contract; advice binds nothing it must sign. A process's dev never signs
 for it, and a path the graph does not hold is left to the Review's own
 authority, which the route names.
 
+A Review takes its signers from the same route. When the organization
+opens a Review for a change, it records the positions the route names,
+with their holders at that moment, and the gates guarding the change.
+From then on:
+
+- A verdict from anyone who holds none of those positions is refused.
+  Claiming the board's authority does not change that.
+- The Review settles approved only once every required position has
+  approved.
+- Every gate needs a passing run at the candidate. You cite a run as
+  evidence: file its result as a receipt, then give its digest with
+  `hale dna review <id> approve --evidence <receipt>`.
+
+The receipt is a small document:
+
+```json
+{"kind": "gate.run", "gate": "ci/api", "sha": "<the candidate commit>", "conclusion": "success", "url": "<the run>"}
+```
+
+A run at another commit is stale, and a run that did not pass is
+rejected. Either refuses the verdict, saying why.
+
+A proposal's Review requires the `board` position once someone holds it.
+Until someone holds a signing position, the Review keeps its own
+authority. That is how the Board's first holder is ratified.
+
 Practices are not repeated there: a practice in the graph is the
 knowledge idea it already is — advice, unless the Board ratifies it as
 law (its document says `law: true`) — and what it binds to is its

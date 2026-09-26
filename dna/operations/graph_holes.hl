@@ -178,7 +178,7 @@ fn graph_holes(g: GraphIngest) -> HolesAnswer {
             e.member("position", reviewer);
             e.member("subject", c);
             rev.row("graph.edge", e.id(), e.body());
-            shown = shown + (if len(shown) > 0 { ", " } else { "" }) + show_name(c);
+            shown = shown + (if len(shown) > 0 { ", " } else { "" }) + dna::show_name(c);
         }
         rev.question = "ratify the position `" + p + "/reviewer` under process " + p + (if len(shown) > 0 { ", signing " + shown } else { ", which serves no contract yet" });
         if len(rev.error) > 0 { return HolesAnswer { error: rev.error }; }
@@ -191,7 +191,7 @@ fn graph_holes(g: GraphIngest) -> HolesAnswer {
         let nl = std::str::index_of(deps, "\n");
         let deployment = deps[0..nl];
         deps = deps[(nl + 1)..len(deps)];
-        let d = show_name(deployment);
+        let d = dna::show_name(deployment);
         let mut k = -1;
         while k < 0 || len(dna::nth_word(HOLE_OPERATIONAL, k)) > 0 {
             let role = if k < 0 { "operator" } else { dna::nth_word(HOLE_OPERATIONAL, k) };
