@@ -211,6 +211,7 @@ fn payload_of(operation: String, request_id: String, target_id: String, precondi
         b.string_field("record_head", std::json::find_string_field(preconditions, "record_head"));
         b.string_field("performer_kind", std::json::find_string_field(arguments, "performer_kind"));
         b.string_field("performer", std::json::find_string_field(arguments, "performer"));
+        b.string_field("effect_class", std::json::find_string_field(arguments, "effect_class"));
         b.string_field("capabilities", words_of(std::json::find_field_raw(arguments, "capabilities")));
         b.string_field("data_classes", words_of(std::json::find_field_raw(arguments, "data_classes")));
         b.string_field("organizations", words_of(std::json::find_field_raw(arguments, "organizations")));
@@ -229,6 +230,7 @@ fn payload_of(operation: String, request_id: String, target_id: String, precondi
         } else if operation == "dna.attempt.release" {
             b.string_field("why", std::json::find_string_field(arguments, "why"));
         } else {
+            b.string_field("effect_class", std::json::find_string_field(arguments, "effect_class"));
             b.string_field("disposition", std::json::find_string_field(arguments, "disposition"));
             b.string_field("result", std::json::find_string_field(arguments, "result"));
             b.string_field("result_ref", std::json::find_string_field(arguments, "result_ref"));

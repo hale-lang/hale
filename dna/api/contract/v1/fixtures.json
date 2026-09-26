@@ -612,6 +612,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -643,6 +644,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -673,6 +675,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -703,6 +706,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -743,7 +747,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -781,7 +785,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -818,6 +822,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "inspect",
@@ -850,7 +855,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -999,6 +1004,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -1030,6 +1036,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -1060,6 +1067,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -1090,6 +1098,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -1130,7 +1139,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1167,6 +1176,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -1198,6 +1208,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -1228,6 +1239,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -1258,6 +1270,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -1298,7 +1311,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1335,6 +1348,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -1366,6 +1380,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -1396,6 +1411,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -1426,6 +1442,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -1466,7 +1483,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1503,6 +1520,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -1538,6 +1556,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -1568,6 +1587,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -1598,6 +1618,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -1638,7 +1659,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1675,6 +1696,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -1706,6 +1728,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -1736,6 +1759,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -1766,6 +1790,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -1828,6 +1853,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -1859,6 +1885,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -1889,6 +1916,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -1919,6 +1947,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -1959,7 +1988,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "",
           "source_path": "app/workflows.hl",
@@ -1996,6 +2025,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "reconcile",
@@ -2027,6 +2057,7 @@
               },
               {
                 "index": "1",
+                "store": "record",
                 "members": [
                   {
                     "key": "post",
@@ -2058,6 +2089,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "replacement",
@@ -2088,6 +2120,7 @@
             "steps": [
               {
                 "index": "0",
+                "store": "record",
                 "members": [
                   {
                     "key": "contact",
@@ -2128,7 +2161,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3455,7 +3488,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3477,6 +3510,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -3508,6 +3542,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -3546,7 +3581,7 @@
         "id": "close@-2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3568,6 +3603,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -3599,6 +3635,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -3642,7 +3679,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3705,7 +3742,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3757,7 +3794,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3779,6 +3816,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -3810,6 +3848,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -3845,7 +3884,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3867,6 +3906,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -3898,6 +3938,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -3937,7 +3978,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3959,6 +4000,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -3990,6 +4032,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4028,7 +4071,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4050,6 +4093,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4081,6 +4125,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4120,7 +4165,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4142,6 +4187,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4173,6 +4219,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4211,7 +4258,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4233,6 +4280,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4264,6 +4312,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4302,7 +4351,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4324,6 +4373,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4355,6 +4405,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4393,7 +4444,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4415,6 +4466,7 @@
         "steps": [
           {
             "index": "-1",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4446,6 +4498,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4484,7 +4537,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4506,6 +4559,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4538,6 +4592,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4576,7 +4631,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4598,6 +4653,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4629,6 +4685,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4667,7 +4724,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4689,6 +4746,7 @@
         "steps": [
           {
             "index": "0",
+            "store": "record",
             "members": [
               {
                 "key": "reconcile",
@@ -4720,6 +4778,7 @@
           },
           {
             "index": "1",
+            "store": "record",
             "members": [
               {
                 "key": "post",
@@ -4763,7 +4822,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4820,7 +4879,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4883,7 +4942,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4946,7 +5005,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5003,7 +5062,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5066,7 +5125,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5129,7 +5188,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/1",
+          "format": "dna.workflow-definitions/2",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -11318,6 +11377,7 @@
         "output_contract": "Assessment",
         "data_class": "internal",
         "requires": "judgment",
+        "effects": "effect_free idempotent",
         "cost_ceiling": "0",
         "tool_grant": "",
         "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
@@ -11370,6 +11430,7 @@
         "output_contract": "Assessment",
         "data_class": "internal",
         "requires": "judgment",
+        "effects": "effect_free idempotent",
         "cost_ceiling": "0",
         "tool_grant": "",
         "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
@@ -11421,6 +11482,7 @@
         "output_contract": "Assessment",
         "data_class": "internal",
         "requires": "judgment",
+        "effects": "effect_free idempotent",
         "cost_ceiling": "0",
         "tool_grant": "",
         "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
