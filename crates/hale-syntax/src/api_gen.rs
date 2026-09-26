@@ -299,7 +299,10 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         walk_items(&p.items, &mut |item| match item {
             TopDecl::Locus(l) => {
                 loci.insert(l.name.name.clone(), l);
-                if l.is_main && main.is_none() {
+                // An imported seed's main locus is not the entrypoint
+                // (its bindings are inert): a composed head that imports
+                // one carrying an api entry gets no binding from it.
+                if l.is_main && !l.imported && main.is_none() {
                     for m in &l.members {
                         if let LocusMember::Bindings(bb) = m {
                             if let Some(api) = &bb.api {
@@ -723,7 +726,7 @@ pub fn declared_roles(programs: &[&Program]) -> Vec<String> {
     for p in programs {
         walk_items(&p.items, &mut |i| match i {
             TopDecl::Role(r) => out.push(r.name.name.clone()),
-            TopDecl::Locus(l) if l.is_main => {
+            TopDecl::Locus(l) if l.is_main && !l.imported => {
                 if l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())) {
                     has_api = true;
                 }

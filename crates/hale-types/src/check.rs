@@ -6097,7 +6097,11 @@ fn check_main_and_bindings(
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
-                if l.is_main {
+                // An imported seed's main locus is renamed `__lib_*` and
+                // is not this program's entry (its bindings are inert),
+                // so it does not count: a composed head imports the
+                // standalone head, main locus and all (GH #1104 piece 5).
+                if l.is_main && !l.imported {
                     mains.push((l.name.name.clone(), l.span));
                 }
                 for member in &l.members {
