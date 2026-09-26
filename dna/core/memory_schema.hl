@@ -17,7 +17,8 @@
 // its author, with its lease live, and past the checks the spine's
 // admission ran; the org chart it checks against is projected into
 // `org_members` and `org_retired`. 4 (GH #1085): the repository's graph —
-// its nodes, its hyperedges and their members — beside the ideas.
+// its nodes, its hyperedges and their members — beside the ideas. 5 (GH
+// #946): `hats`, hats by digest, which a head may keep and read.
 const MEMORY_SCHEMA_VERSION: Int = 5;
 
 type Migrated {

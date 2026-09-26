@@ -296,8 +296,6 @@ locus GovernanceCommands {
         b.append_str("}"); return std::str::from_bytes(b.snapshot());
     }
     fn attempt_operation(operation: String) -> Bool { return operation == "dna.attempt.claim" || operation == "dna.attempt.outcome"; }
-    // The ledger under the head's role (GH #946 hardening, D5): where a
-    // leg's rows go once the organism has adopted it. Unopened until asked.
     // A leg's command found in the journal the attempt kinds live in — the
     // record, or the record with the adopted ledger (rows the record holds
     // of those kinds are read there, so a row is found once). A record
@@ -656,17 +654,26 @@ locus GovernanceCommands {
                     let head = self.attempt_row_head(s, ledger, adopted);
                     let fact = attempts.claim_fact(context, command, grant, head, admitted.value, lease);
                     if fact == "" { let given = leases.release_claim(lease.key, command.performer); return GovernanceResult { code: "invalid_command" }; }
-                    if !self.unchanged(s) { continue; }
+                    // every path that leaves this pass without a row gives memory's
+                    // claim back first (hardening, B4): the next pass takes it again —
+                    // a same-holder renewal keeps the token — and a command that runs
+                    // out of passes holds nothing
+                    if !self.unchanged(s) { let given = leases.release_claim(lease.key, command.performer); continue; }
                     let landed = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: "attempt.claimed", entity: taken, author: context.principal_name, body: fact }, id);
                     if landed.ok {
                         let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: if adopted { s.head } else { landed.id }, revision: if adopted { s.revision } else { s.revision + 1 } };
                         let moved = rj.refresh();
                         return self.result_attempt(after, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: rj.revision() - 1, event_id: landed.id, native_body: fact, entity: taken });
                     }
-                    if landed.error == "stale" { continue; }
-                    // no row: the claim memory took is given back, whatever else stands
-                    let given = leases.release_claim(lease.key, command.performer);
-                    if adopted { return self.refusal(s, attempts.refused(context, command, "memory refused the claim's row: " + landed.error)); }
+                    if landed.error == "stale" { let given = leases.release_claim(lease.key, command.performer); continue; }
+                    // refused: no row landed, and the claim is given back. An
+                    // ambiguous append (an io failure after the write may have
+                    // landed) keeps it: the next pass finds the row or takes the
+                    // claim again, and a row without a claim would be worse
+                    if adopted || std::str::starts_with(landed.error, "refused") || landed.error == "the record would not take the row" {
+                        let given = leases.release_claim(lease.key, command.performer);
+                        return self.refusal(s, attempts.refused(context, command, "memory refused the claim's row: " + landed.error));
+                    }
                     uncertain = true;
                     continue;
                 }
@@ -682,7 +689,7 @@ locus GovernanceCommands {
                 if !attempts.has_row(rj, "effect.requested", "attempt:" + a) { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never asked to run; nothing is outstanding on it")); }
                 let settled = dna::recorded_attempt_outcome(rj, a, rj.revision());
                 if settled.ok { return self.refusal(s, attempts.refused(context, command, "duplicate: attempt " + a + " is settled (" + settled.value.disposition + "); this outcome changes nothing")); }
-                if attempts.has_row(rj, "attempt.outcome_requested", a) { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back and awaits the owner; a second under the lease changes nothing")); }
+                if attempts.outcome_outstanding(rj, a, command.holder, command.token) { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
                 let claim = dna::recorded_leg_claim(rj, a, rj.revision());
                 if !claim.present { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never claimed by a leg")); }
                 if claim.holder != command.holder || claim.token != command.token { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + command.holder + "'s at token " + to_string(command.token))); }

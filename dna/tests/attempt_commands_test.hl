@@ -256,7 +256,16 @@ locus App {
         std::test::assert(o2.ok && o2.receipt.attempt.state == "requested", l + "t2 outcome requested");
         // the record says another leg holds it now (a later lease): the owner's lease check refuses the relayed outcome
         let moved = self.journal.refresh();
-        let stray = "{\"holder\": \"leg:carol\", \"token\": " + to_string(c2.receipt.attempt.token + 1) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
+        // with memory the later lease is memory's too: alice's given back, carol's taken (the token moves on)
+        let mut carol_token = c2.receipt.attempt.token + 1;
+        if self.with_memory {
+            let leases = dna::MemoryLeases { repo: self.app, dsn_env: dna::SPINE_DSN_ENV };
+            let gone = leases.release_claim("attempt:" + a2, alice_leg);
+            let taken = leases.claim("attempt:" + a2, "leg:carol", 600);
+            std::test::assert(taken.present && taken.holder == "leg:carol", l + "carol's lease in memory: " + leases.last_error);
+            carol_token = taken.token;
+        }
+        let stray = "{\"holder\": \"leg:carol\", \"token\": " + to_string(carol_token) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
         let put = self.journal.append(self.journal.revision(), "attempt.claimed", a2, stray);
         std::test::assert(put.ok, l + "a later lease row: " + put.error);
         let relay2 = relay_once(self.app, "\n");
@@ -271,6 +280,13 @@ locus App {
         let p2 = host::open_projection(self.app, ".", "", dna::Memory { repo: self.app, dsn_env: dna::own_dsn_env() });
         let expired2 = host::relay_mark("\n", host::fact_key(p2, requested_at(p2, a2)), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
         std::test::assert_eq_int(relay_once(self.app, expired2).relayed_count, 0, l + "a refused request is answered: not relayed again");
+        // the lease's holder now hands an outcome back: a refused request under
+        // the earlier lease is nobody's duplicate (B3), and the owner settles it
+        let carol = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "carol" };
+        let o2c = commands.submit(carol, self.outcome_of(label + "o3c", identity, a2, "leg:carol", carol_token, hat2));
+        std::test::assert(o2c.ok && o2c.receipt.attempt.state == "requested", l + "the lease's holder hands an outcome back after a refusal: " + o2c.code + " " + o2c.receipt.state + " " + o2c.receipt.reason);
+        std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "and it is relayed");
+        self.wait_row("attempt.outcome", a2, l + "and settles the attempt");
         // ---- t3: an owner restart with a leg attempt in flight (D3)
         let a3 = self.ask();
         let head3 = record.head("journal").id;
@@ -288,9 +304,27 @@ locus App {
         while tries < 40 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a3) { let n = self.core.redrive(); std::time::sleep(250ms); tries = tries + 1; }
         std::test::assert(self.has_row("effect.redelivered", "attempt:" + a3), l + "past the lease the attempt is asked of a leg again");
         std::test::assert(!self.has_row("effect.result", "attempt:" + a3), l + "never unknown");
+        // an owner restart asks nothing more: once per lease
+        self.start();
+        std::time::sleep(300ms);
+        let n0 = self.core.redrive();
+        std::test::assert_eq_int(self.count_rows("effect.redelivered", "attempt:" + a3), 1, l + "one redelivery per lease, whatever restarts since");
         let head3b = record.head("journal").id;
         let c3b = commands.submit(bob, self.claim_of(label + "c6", identity, head3b, "agent", bob_leg, "internal"));
         std::test::assert(c3b.ok && c3b.receipt.attempt.state == "claimed" && c3b.receipt.attempt.attempt_id == a3, l + "another leg claims it once the lease expired: " + c3b.code + " " + c3b.receipt.state + " " + c3b.receipt.reason + " attempt=" + c3b.receipt.attempt.attempt_id);
+        // ---- t4: an outcome handed back while the lease was live settles, however late the relay (B3)
+        let a4 = self.ask();
+        let head4 = record.head("journal").id;
+        let mut brief4 = self.claim_of(label + "c7", identity, head4, "agent", alice_leg, "internal");
+        brief4.ttl = 2;
+        let c4 = commands.submit(alice, brief4);
+        std::test::assert(c4.ok && c4.receipt.attempt.state == "claimed" && c4.receipt.attempt.attempt_id == a4, l + "t4 claimed under a short lease");
+        let hat4 = self.hat_of(a4);
+        let o4 = commands.submit(alice, self.outcome_of(label + "o4", identity, a4, alice_leg, c4.receipt.attempt.token, hat4));
+        std::test::assert(o4.ok && o4.receipt.attempt.state == "requested", l + "t4 outcome requested while the lease was live");
+        std::time::sleep(2500ms);
+        std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "relayed after the lease ran out");
+        self.wait_row("attempt.outcome", a4, l + "the owner judges the lease as of the head's admission and settles it");
         // tokens per task hold out of process
         let usage = ops::Usage { j: self.journal };
         let t = usage.under(task_of(a1));

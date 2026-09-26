@@ -550,6 +550,7 @@ locus NodeRelay {
                 evidence_ref: std::json::find_string_field(body, "evidence_ref"),
                 calls: std::json::find_string_field(body, "calls"),
                 request: std::json::find_string_field(body, "request"),
+                at: std::json::find_int_field(body, "at"),
                 hat_digest: std::json::find_string_field(body, "hat_digest"),
                 hat_head: std::json::find_string_field(body, "hat_head"),
                 hat_watermark: if std::str::contains(body, "\"hat_watermark\"") { std::json::find_int_field(body, "hat_watermark") } else { -1 },

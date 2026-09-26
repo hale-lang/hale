@@ -288,9 +288,10 @@ fn count_ids(ids: String) -> Int {
 
 // What a position's OWNER holds to read a bounded package from memory:
 // never the editor, which the law keeps away from knowledge
-// (`editors_never_learn`). The owner folds the package into the objective
-// it hands down and names the package on the request, so the editor's
-// `model.called` rows carry its digest and bindings. The graph is the
+// (`editors_never_learn`). The owner builds the hat the attempt carries
+// by digest from the package, briefs the editor with it and names the
+// package on the request, so the editor's `model.called` rows carry its
+// digest and bindings (GH #946). The graph is the
 // spine's projection of the record (the host applies it on its tick);
 // without a DSN the package is empty and says so, and nothing waits on it.
 // How long a package waits for the spine's projection to reach the

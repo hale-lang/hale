@@ -3145,16 +3145,18 @@ The live half is memory's, projected from the record by the spine
   target in the
   tower — `org` for an organization change, `org/<child>` for the
   application, `org/<child>/<seed>` for a seed inside it — and
-  journals `knowledge.consulted <mutation>` (`target`, `digest`,
+  journals `knowledge.consulted <mutation>` (`target`, `hat`, `digest`,
   `revision`, `included_n`, `included`, `error`) whenever memory is
-  named (`HALE_DNA_MEMORY_DSN_SPINE`), answer or not. The package's ideas are folded into the
-  objective the editor receives (`objective_with`: the ask, then a
+  named (`HALE_DNA_MEMORY_DSN_SPINE`), answer or not. The package
+  becomes the hat the attempt wears (GH #946): built by the owner,
+  kept in memory by its digest, and named on the request as its
+  `context_digest`; the editor is briefed with the package's ideas
+  (`SourceEditor.brief`: what a model is shown is the ask, then a
   `PRACTICES (ratified knowledge for <target>, package <digest>):`
-  block, one idea per line) — the record, the commit message and the
-  Mutation keep the ask itself — and the request names the package
-  (`context_digest`, `knowledge_bindings: package:<digest> <id>…`),
-  which every model call of the attempt carries into its `model.called`
-  row. No memory named is an empty package that says so, and nothing
+  block, one idea per line) while the record, the commit message and
+  the Mutation keep the ask itself; and the request names the package
+  (`knowledge_bindings: package:<digest> <id>…`), which every model
+  call of the attempt carries into its `model.called` row. No memory named is an empty package that says so, and nothing
   waits on it; memory that cannot answer, or whose projection has not
   reached the record's head within 20 s, is a package refused with the
   reason (**The spine projects; readers read**).
@@ -3330,8 +3332,8 @@ The live half is memory's, projected from the record by the spine
   rule); the Board ratifies the exact digest (`hale dna review k:…
   approve --authority board`); the spine projects it into memory on
   its tick; and the next change to the trio consults memory
-  (`knowledge.consulted m1` with the digest included),
-  hands the editor the objective with the concern under it, and every
+  (`knowledge.consulted m1` with the digest and the hat's digest),
+  briefs the editor with the concern under the objective, and every
   `model.called` row of the attempt names the package and the digest.
   Something observed and ratified today informs the work done
   tomorrow, and the receipt says so.

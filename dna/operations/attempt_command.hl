@@ -45,7 +45,6 @@ fn attempt_words_ok(s: String, max: Int) -> Bool {
     return true;
 }
 
-// Whether every word of `needs` is a word of `has`.
 // What a claim's scan of the record found (GH #946 hardening): the
 // attempts that await such a leg, one id per line, and why the rest of
 // the outstanding attempts of that kind did not — so a refusal names the
@@ -58,6 +57,7 @@ type AttemptCandidates {
     owned: Int = 0; // ... under an owner the leg does not work for
 }
 
+// Whether every word of `needs` is a word of `has`.
 fn attempt_words_within(needs: String, has: String) -> Bool {
     let mut i = 0;
     while i < dna::word_count(needs) {
@@ -97,8 +97,10 @@ locus AttemptCommandCodec {
         let common = GovernanceCommandCodec { };
         if len(c.hat_digest) > 0 && !dna::digest_well_formed(c.hat_digest) { return false; }
         if len(c.prompt_digest) > 0 && !dna::digest_well_formed(c.prompt_digest) { return false; }
-        return common.bounded(c.hat_head, 256, false, false) && c.hat_watermark >= -1 && common.bounded(c.renderer, 128, false, false)
-            && (len(c.hat_digest) > 0 || (len(c.hat_head) == 0 && c.hat_watermark == -1 && len(c.prompt_digest) == 0 && len(c.renderer) == 0));
+        if !common.bounded(c.hat_head, 256, false, false) || c.hat_watermark < -1 || !common.bounded(c.renderer, 128, false, false) { return false; }
+        // five together, or none: a hat named is a hat rendered at a head with a prompt by a renderer
+        if len(c.hat_digest) == 0 { return len(c.hat_head) == 0 && c.hat_watermark == -1 && len(c.prompt_digest) == 0 && len(c.renderer) == 0; }
+        return len(c.hat_head) > 0 && len(c.prompt_digest) > 0 && len(c.renderer) > 0;
     }
     // The calls a leg reports: "" or a JSON array of at most 256 objects.
     fn evidence_ok(text: String) -> Bool {
@@ -243,6 +245,30 @@ locus AttemptCommandCodec {
         if len(c.organizations) > 0 && !dna::word_in(if len(owner) == 0 { "-" } else { owner }, c.organizations) { return "organization"; }
         return "";
     }
+    // Whether an outcome handed back under this lease still awaits the
+    // owner (hardening, B3): an `attempt.outcome_requested` row naming this
+    // holder and token that no `attempt.outcome_refused` names. One the
+    // owner refused, or one under an earlier lease, stands in nobody's way.
+    @unbounded
+    fn outcome_outstanding(j: dna::Journal, attempt_id: String, holder: String, token: Int) -> Bool {
+        let mut requests = "\n";
+        let mut refused = "\n";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "attempt.outcome_requested" && e.entity == attempt_id && std::json::find_string_field(e.body, "holder") == holder && std::json::find_int_field(e.body, "token") == token {
+                requests = requests + dna::request_named(e.body) + "\n";
+            }
+            if e.kind == "attempt.outcome_refused" && e.entity == attempt_id { refused = refused + dna::request_named(e.body) + "\n"; }
+            i = i + 1;
+        }
+        let mut rest = requests[1..len(requests)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n"); let r = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+            if len(r) > 0 && !std::str::contains(refused, "\n" + r + "\n") { return true; }
+        }
+        return false;
+    }
     // Whether the record says another leg holds the attempt under a lease
     // that is still live.
     fn held_by_another(j: dna::Journal, attempt_id: String, performer: String, now: Int) -> Bool {
@@ -308,12 +334,17 @@ locus AttemptCommandCodec {
     // `request` names the command, so the row is answered by the outcome
     // or the refusal that names it.
     fn outcome_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, evidence_ref: String) -> String {
+        return self.outcome_fact_at(context, c, grant, head, evidence_ref, std::time::now());
+    }
+    fn outcome_fact_at(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, evidence_ref: String, at: Int) -> String {
         let common = GovernanceCommandCodec { };
         if !self.valid(context, c) || !self.outcome(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) { return ""; }
         let b = std::json::Builder { }; b.begin_object();
         b.string_field("disposition", c.disposition); b.string_field("result", c.result); b.string_field("result_ref", c.result_ref); b.string_field("narrative", c.narrative);
         b.string_field("evidence_ref", evidence_ref); b.string_field("holder", c.holder); b.int_field("token", c.token); b.string_field("calls", c.evidence);
         b.string_field("request", common.identity(context, c.request_id));
+        // when the head admitted it: the owner judges the lease as of then, not of its own tick (hardening, B3)
+        b.int_field("at", at);
         b.string_field("hat_digest", c.hat_digest); b.string_field("hat_head", c.hat_head); b.int_field("hat_watermark", c.hat_watermark);
         b.string_field("prompt_digest", c.prompt_digest); b.string_field("renderer", c.renderer);
         self.command_fields(b, context, c, grant, head, ATTEMPT_OUTCOME_FORMAT);
@@ -335,7 +366,7 @@ locus AttemptCommandCodec {
                 dna::AdmittedAttempt { attempt_id: e.entity, work_id: common.string(e.body, "work_id"), task_id: common.string(e.body, "task_id"), performer_kind: common.string(e.body, "performer_kind") },
                 dna::Lease { holder: common.string(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until") })
         } else {
-            self.outcome(c.operation) && c.attempt_id == e.entity && e.body == self.outcome_fact(context, c, grant, head, common.string(e.body, "evidence_ref"))
+            self.outcome(c.operation) && c.attempt_id == e.entity && self.outcome_fact_at(context, c, grant, head, common.string(e.body, "evidence_ref"), std::json::find_int_field(e.body, "at")) == e.body
         };
         if !same { return AttemptCommandFact { }; }
         return AttemptCommandFact { valid: true, context: context, command: c, grant: grant, head: head, attempt_id: e.entity };

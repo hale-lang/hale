@@ -298,7 +298,8 @@ locus Dna {
         // rehydrated from the record at birth.
         budget: Budget = Budget { };
         // GH #583 K2: the owner's line to the knowledge service; the
-        // package it answers is folded into the objective the editor gets
+        // package it answers becomes the hat the attempt carries by digest
+        // and the brief the editor gets (GH #946)
         knowledge_client: MemoryKnowledge = MemoryKnowledge { };
         // GH #664: who admits which position. One owner unless the genome's
         // owners map says otherwise; then only this owner's positions.
@@ -2143,7 +2144,10 @@ locus Dna {
             return;
         }
         let claim = self.recorded_claim(s.attempt_id);
-        let now = std::time::now();
+        // the lease is judged as of the head's admission (hardening, B3): a
+        // relay that arrives after the lease ran out settles what was
+        // handed back while it was live
+        let now = if s.at > 0 { s.at } else { std::time::now() };
         let mut why = "";
         if !claim.present { why = "attempt " + s.attempt_id + " was never claimed by a leg"; }
         else if claim.holder != s.holder || claim.token != s.token { why = "the lease on attempt " + s.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + s.holder + "'s at token " + to_string(s.token) + ": stale"; }
@@ -2370,23 +2374,33 @@ locus Dna {
     fn reopen_expired_claims() -> Int {
         let now = std::time::now();
         let n = self.journal.revision();
+        // one pass: the attempts a leg ever claimed, and those since settled
+        let mut claimed = "";
+        let mut settled = "";
         let mut i = 0;
-        let mut count = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "attempt.claimed" {
-                let c = recorded_leg_claim(self.journal, e.entity, n);
-                let key = e.entity + "@" + to_string(c.token);
-                if c.present && c.expires <= now && !set_has(self.reopened, key) && !self.has_row("attempt.outcome", e.entity) {
-                    let adm = recorded_attempt_admission(self.journal, e.entity, n);
-                    if adm.ok && owned_by(self.ownership.me, adm.value.task_id) {
-                        self.reopened = set_add(self.reopened, key);
-                        let x = self.runtime.reopen(e.entity);
-                        count = count + 1;
-                    }
+            if e.kind == "attempt.claimed" { claimed = set_add(claimed, e.entity); }
+            if e.kind == "attempt.outcome" { settled = set_add(settled, e.entity); }
+            i = i + 1;
+        }
+        let mut count = 0;
+        let mut rest = claimed;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let attempt = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            if len(attempt) == 0 || set_has(settled, attempt) { continue; }
+            let c = recorded_leg_claim(self.journal, attempt, n);
+            let key = attempt + "@" + to_string(c.token);
+            if c.present && c.expires <= now && !set_has(self.reopened, key) {
+                let adm = recorded_attempt_admission(self.journal, attempt, n);
+                if adm.ok && owned_by(self.ownership.me, adm.value.task_id) {
+                    self.reopened = set_add(self.reopened, key);
+                    let x = self.runtime.reopen(attempt);
+                    count = count + 1;
                 }
             }
-            i = i + 1;
         }
         return count;
     }

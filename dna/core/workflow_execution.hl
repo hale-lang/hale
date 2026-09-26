@@ -390,6 +390,11 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         if leg.present && leg.expires > std::time::now() {
             return Executed { ok: true, attached: true, why: "attempt " + id + " is " + leg.holder + "'s under a lease until " + to_string(leg.expires) + "; it waits for the leg's outcome, and is asked again when the lease expires" };
         }
+        // asked again once per lease: a lease that expired and was already
+        // redelivered awaits a leg, and an owner restart asks nothing more
+        if leg.present && redelivered_since_claim(j, id, rev) {
+            return Executed { ok: true, attached: true, why: "attempt " + id + " was asked of a leg again after " + leg.holder + "'s lease expired; it awaits a leg" };
+        }
         // the claim was an incarnation's that died, and the invocation may
         // have acted before the outcome was saved: recovery reconciles
         // before it decides on a redelivery (card 12c). The adapter says
@@ -470,6 +475,23 @@ fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
         i = i + 1;
     }
     return out;
+}
+
+// Whether the attempt was redelivered (`effect.redelivered`) after its
+// latest leg claim was taken: once per lease, whatever restarts since.
+@unbounded
+fn redelivered_since_claim(j: Journal, attempt_id: String, rev: Int) -> Bool {
+    let key = execution_key(attempt_id);
+    let mut claimed_at = -1;
+    let mut redelivered_at = -1;
+    let mut i = 0;
+    while i < rev {
+        let e = j.read(i);
+        if e.kind == "attempt.claimed" && e.entity == attempt_id { claimed_at = i; }
+        if e.kind == "effect.redelivered" && e.entity == key { redelivered_at = i; }
+        i = i + 1;
+    }
+    return claimed_at >= 0 && redelivered_at > claimed_at;
 }
 
 // A reply that arrives later, for an attempt that ran and was left
