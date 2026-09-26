@@ -411,14 +411,26 @@ export async function startService(options = {}) {
         fs.writeFileSync(path.join(evidence, `candidate-${digest.slice(7)}.json`), raw);
         return JSON.parse(raw);
       },
-      waitCommand: async (requestId, predicate) => wait(`command ${requestId}`, async () => {
-        const response = await read(apiPath() + '/commands?' + new URLSearchParams({ request_id: requestId }));
-        const settled = settle(response.status, response.json);
-        assert.equal(settled.code, '', JSON.stringify(response));
-        assert.equal(settled.reply.application_id, application);
-        assert.equal(settled.receipt.request_id, requestId);
-        return settled.receipt;
-      }, predicate),
+      waitCommand: async (requestId, predicate) => {
+        // The head's lookup reads the record under its fence and gives up
+        // when the record keeps moving — on the real host it moves on the
+        // host's tick — answering command_busy (or snapshot_changed from its
+        // read). That is not the receipt: ask again until the deadline.
+        let transient = '';
+        try {
+          return await wait(`command ${requestId}`, async () => {
+            const response = await read(apiPath() + '/commands?' + new URLSearchParams({ request_id: requestId }));
+            const settled = settle(response.status, response.json);
+            if (['command_busy', 'snapshot_changed'].includes(settled.code)) { transient = settled.code; return null; }
+            assert.equal(settled.code, '', JSON.stringify(response));
+            assert.equal(settled.reply.application_id, application);
+            assert.equal(settled.receipt.request_id, requestId);
+            return settled.receipt;
+          }, receipt => receipt !== null && predicate(receipt));
+        } catch (error) {
+          throw transient ? new Error(`${error.message} (the last lookup answered ${transient})`) : error;
+        }
+      },
     };
     exportEvidence();
     return service;
