@@ -13,8 +13,12 @@ import "../operations" as ops;
 // exact append, slower still on a loaded machine; sixteen back-to-back
 // attempts could all land inside the organism's writes and give up with
 // "the Record kept changing" (the full DNA suite on a laptop did, GH #970).
-// Waiting a little longer each time lets one land; the sixteen together
-// wait about twelve seconds at most.
+// Waiting a little longer each time lets one land. Every decision and
+// every concern is an execution of a few steps (GH #995), and an
+// organization that restarts resumes each unfinished one at once: on a
+// git-backed record that burst is a commit per row, so the attempts
+// together wait up to about fifty seconds.
+const STALE_TRIES: Int = 32;
 fn stale_pause(tries: Int) {
     let mut w = 1;
     while w < tries {
@@ -113,7 +117,7 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
     if len(no_head) > 0 { return fail(no_head); }
     let mut stage = 0;
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -225,7 +229,7 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -283,7 +287,7 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -404,7 +408,7 @@ fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_fl
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -455,7 +459,7 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
