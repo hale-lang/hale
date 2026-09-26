@@ -242,7 +242,10 @@ jobs:
     name: cli ${{ matrix.part }}/3
     needs: scope
     if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # The paid 8-core runner (org group Large, label L1) only for this
+    # repo's own pushes and PRs; a fork's PR runs the same job on the
+    # free runner, so nobody else's build spends the org's minutes.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && 'L1' || 'ubuntu-latest' }}
     strategy:
       # Don't short-circuit other partitions on first failure —
       # we want to see the full failure picture across the suite.
@@ -571,7 +574,10 @@ jobs:
     name: dna ${{ matrix.part }}/2
     needs: scope
     if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # The paid 8-core runner (org group Large, label L1) only for this
+    # repo's own pushes and PRs; a fork's PR runs the same job on the
+    # free runner, so nobody else's build spends the org's minutes.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && 'L1' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -656,6 +662,7 @@ jobs:
         run: |
           cargo nextest run --release -p hale-cli --features dynamic-llvm \
             --test dna_native_suite \
+            --profile ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && 'large' || 'default' }} \
             --partition hash:${{ matrix.part }}/2
 
       - name: sccache stats
