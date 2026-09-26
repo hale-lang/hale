@@ -38,8 +38,10 @@ hale dna ui [project] [--port N]
                              the surface in a browser, from the record alone
 hale dna status [project] [--json]
                              the status projection, from the record
-hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>
-                             ask for an outcome, as a Task: a row in the record, which a node relays to the organism
+hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>
+                             ask for an outcome, as a Task: a row in the record, which a node relays to the organism;
+                             --judgment asks for an assessment rather than a change: one judgment leaf, a leg's
+                             to perform (hale dna work), no plan asked of the leader
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (offline)
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]

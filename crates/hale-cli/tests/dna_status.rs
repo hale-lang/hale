@@ -110,6 +110,10 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let (ok3, out3) = run(&["dna", "status"]);
     let (ok4, out4) = run(&["dna", "status", "--json"]);
     let (ok5, out5) = run(&["dna", "history", "t1"]);
+    // GH #946: an ask for a judgment is admitted as one judgment leaf, an
+    // agent's — the legs' relay answers pending for a leg to claim
+    let (ok6, out6) = run(&["dna", "task", "create", "--judgment", "assess", "whether", "the", "queue", "is", "bounded"]);
+    let (ok7, out7) = run(&["dna", "history", "t2"]);
     finish(&mut host);
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
@@ -124,5 +128,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let purpose = st["reviews"].as_array().unwrap().iter().find(|r| r["id"] == "purpose").expect("the purpose review in the projection");
     assert_eq!(purpose["state"], "settled");
     assert!(ok5 && out5.contains("history of t1") && out5.contains("task.born") && out5.contains("intent.offered"), "history:\n{out5}");
+    assert!(ok6 && out6.contains("task t2 born"), "a judgment asked: {out6}");
+    assert!(ok7 && out7.contains("\"definition\": \"ask-judge\"") && out7.contains("attempt t2/wf1/s0/j/a0 by agent"), "the judgment is one leaf for an agent, pending for a leg:\n{out7}");
     let _ = std::fs::remove_dir_all(&d);
 }

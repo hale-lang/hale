@@ -3137,9 +3137,15 @@ The live half is memory's, projected from the record by the spine
   editor as class and target the word names — the target only when it
   names a file the genome has under the seed the class edits; a
   model's prose is not a path — else class `application` at the ask's
-  own target; card 15 reports its outcome). Class `organization` for a
-  child that is not the organism is a contradiction and is refused
-  before anything is admitted (`intent.refused`). The execution is
+  own target; card 15 reports its outcome). An ask for a judgment
+  (`hale dna task create --judgment`; the intent row carries `kind:
+  judgment`, GH #946) is the asker's word: no plan is asked, and it is
+  admitted under `ask-judge` — one leaf requiring judgment under the
+  `Assessment` contract, which capability-first routing hands to an
+  agent on the first attempt (the legs' relay: a leg claims it through
+  `hale dna work`) and to a person on the second. Class `organization`
+  for a child that is not the organism is a contradiction and is
+  refused before anything is admitted (`intent.refused`). The execution is
   asked of the engine with the performer kind of every leaf of the
   whole bound tree, named for the exact Work — its bound id, never its
   key, which two Works of different steps or workflows may share — the
