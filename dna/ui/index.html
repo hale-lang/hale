@@ -44,14 +44,7 @@
   <section>
     <h2>Reviews</h2>
     <ul id="reviews" class="reviews"></ul>
-    <form id="verdict">
-      <span class="tag">verdict on <b id="review-id">—</b></span>
-      <select name="verdict"><option>approve</option><option>revise</option><option>reject</option><option>abstain</option></select>
-      <input name="as" placeholder="as (your name)" size="14">
-      <input name="comment" placeholder="comment" size="28">
-      <button type="submit">send</button>
-    </form>
-    <div id="verdict-answer" class="answer"></div>
+    <p class="tag">verdicts are the api head's (<code>hale dna review</code>, or the socket); this head reads — parked until GH #989</p>
   </section>
   <section>
     <h2>Review</h2>
@@ -62,20 +55,8 @@
     <pre id="fleet">…</pre>
   </section>
   <section>
-    <h2>New task</h2>
-    <form id="task-create">
-      <textarea name="outcome" placeholder="what should happen"></textarea>
-      <input name="to" placeholder="to (a locus, optional)" size="18">
-      <button type="submit">create task</button>
-    </form>
-    <div id="task-create-answer" class="answer"></div>
-    <h2 style="margin-top:14px">Pressure</h2>
-    <form id="pressure">
-      <input name="source" placeholder="source" size="14">
-      <input name="what" placeholder="what it saw" size="30">
-      <button type="submit">raise</button>
-    </form>
-    <div id="pressure-answer" class="answer"></div>
+    <h2>Writes</h2>
+    <p class="tag">a task, a verdict or a pressure signal is the api head's command (<code>hale dna task create</code>, <code>hale dna review</code>, <code>hale dna pressure raise</code>, or the socket); this head reads only, parked until GH #989</p>
   </section>
   <section class="wide">
     <h2>History</h2>
@@ -89,9 +70,6 @@
   // a hosted head (GH #612) answers 401 without a session: sign in
   function answer(r) { if (r.status === 401) { location.href = '/auth/login'; } return r.text(); }
   function get(path) { return fetch(path, { cache: 'no-store' }).then(answer); }
-  function post(path, body) {
-    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(answer);
-  }
   function refresh() {
     get('/api/status').then(function (t) {
       var s; try { s = JSON.parse(t); } catch (e) { $('organism').textContent = t.slice(0, 200); return; }
@@ -115,22 +93,7 @@
     if (open) showReview();
   }
   function showReview() { get('/api/review/' + encodeURIComponent(open)).then(function (t) { $('review').textContent = t; }); }
-  $('verdict').onsubmit = function (ev) {
-    ev.preventDefault();
-    if (!open) { $('verdict-answer').textContent = 'pick a Review first'; return; }
-    var f = ev.target;
-    post('/api/verdict', { id: open, verdict: f.verdict.value, as: f.as.value, comment: f.comment.value }).then(function (t) { $('verdict-answer').textContent = t; setTimeout(refresh, 1500); });
-  };
-  $('task-create').onsubmit = function (ev) {
-    ev.preventDefault();
-    var f = ev.target;
-    post('/api/task/create', { outcome: f.outcome.value, to: f.to.value }).then(function (t) { $('task-create-answer').textContent = t; f.outcome.value = ''; setTimeout(refresh, 1500); });
-  };
-  $('pressure').onsubmit = function (ev) {
-    ev.preventDefault();
-    var f = ev.target;
-    post('/api/pressure', { source: f.source.value, what: f.what.value }).then(function (t) { $('pressure-answer').textContent = t; setTimeout(refresh, 1500); });
-  };
+
   refresh();
   setInterval(refresh, 4000);
 })();

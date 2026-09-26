@@ -99,7 +99,7 @@ locus DraftCases {
         let caps = service.handle(std::http::Request { method: "GET", path: self.f.prefix + "/capabilities" });
         std::test::assert_eq_int(caps.status, 200, caps.body);
         self.json.is_bool(self.json.data(caps.body), "read_only", true);
-        self.json.is_bool(self.json.raw(self.json.data(caps.body), "writes"), "practice_propose", false);
+        std::test::assert_eq_str(self.json.raw(self.json.data(caps.body), "writes"), "", "record commands are never an HTTP capability");
         self.json.is_bool(self.json.raw(self.json.data(caps.body), "definition_drafts"), "publication", false);
         std::test::assert_eq_int(self.host.calls, 0, "capabilities never capture catalog");
         let cap_contract = self.f.validator.validate("CapabilitiesResponse", caps.body);

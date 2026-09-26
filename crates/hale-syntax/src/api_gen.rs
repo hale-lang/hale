@@ -29,8 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     ApiBinding, ApiTransport, ApiUnauthorizedPolicy, BusMember, BusSubject, ContractDirection,
-    ContractKind, ContractName, Expr, Ident, LocusDecl, LocusMember, ParamInit, PlacementBlock,
-    Program, ShedPolicy, StructField, TopDecl, TopicDecl, TypeDeclBody, TypeExpr,
+    ContractKind, ContractName, Expr, Ident, Literal, LocusDecl, LocusMember, ParamInit,
+    PlacementBlock, Program, ShedPolicy, StructField, TopDecl, TopicDecl, TypeDeclBody, TypeExpr,
 };
 use crate::span::Span;
 use crate::json_gen;
@@ -39,6 +39,12 @@ use crate::parse_source;
 /// The dev defaults `hale run --api` fills in, and the wording a
 /// missing knob's diagnostic quotes.
 pub const DEV_BOUND: i64 = 64;
+
+/// The parse space of the synthesized source (GH #1109 review): every
+/// span of a generated item starts here, past any file of a bundle, so
+/// a diagnostic about the binding is rendered as such rather than at a
+/// position in whatever file the bundle lists first.
+pub const API_SYNTH_BASE: u32 = 0x7000_0000;
 
 /// A subscriber of a command topic.
 #[derive(Debug, Clone)]
@@ -299,7 +305,10 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         walk_items(&p.items, &mut |item| match item {
             TopDecl::Locus(l) => {
                 loci.insert(l.name.name.clone(), l);
-                if l.is_main && main.is_none() {
+                // An imported seed's main locus is not the entrypoint
+                // (its bindings are inert): a composed head that imports
+                // one carrying an api entry gets no binding from it.
+                if l.is_main && !l.imported && main.is_none() {
                     for m in &l.members {
                         if let LocusMember::Bindings(bb) = m {
                             if let Some(api) = &bb.api {
@@ -341,7 +350,10 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     // every publisher of one topic agree, so the first is the one.
     let mut pubs: BTreeMap<String, Option<String>> = BTreeMap::new();
     for l in loci.values() {
-        if l.name.name.starts_with("__Api") {
+        // A library's loci are not the application's API (GH #1104
+        // piece 5): the head that imports its core must not serve the
+        // core's internal bus.
+        if l.name.name.starts_with("__Api") || l.imported {
             continue;
         }
         let fns: BTreeMap<&str, &crate::ast::FnDecl> = l
@@ -539,6 +551,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     }
     for (tn, params) in &param_types {
         let Some(l) = loci.get(tn) else { continue };
+        if l.imported {
+            continue;
+        }
         if params.len() != 1 {
             if l.members.iter().any(|m| matches!(m, LocusMember::Contract(_))) {
                 excluded.push(ApiExcluded {
@@ -717,7 +732,7 @@ pub fn declared_roles(programs: &[&Program]) -> Vec<String> {
     for p in programs {
         walk_items(&p.items, &mut |i| match i {
             TopDecl::Role(r) => out.push(r.name.name.clone()),
-            TopDecl::Locus(l) if l.is_main => {
+            TopDecl::Locus(l) if l.is_main && !l.imported => {
                 if l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())) {
                     has_api = true;
                 }
@@ -976,7 +991,7 @@ pub fn inject_api_entry(program: &mut Program, path: &str) -> Result<(), String>
         main_seen = true;
         let span = l.name.span;
         let entry = ApiBinding {
-            transport: ApiTransport::Unix { path: path.clone(), span },
+            transport: ApiTransport::Unix { path: Expr::Literal(Literal::String(path.clone()), span), span },
             roles: None,
             bound: Some((DEV_BOUND, span)),
             on_full: Some((crate::ast::ApiFullPolicy::Refuse, span)),
@@ -1037,7 +1052,7 @@ fn q(s: &str) -> String {
 }
 
 /// The one-time helpers, types and topics every api program carries.
-fn common_src(watch_bound: i64) -> String {
+fn common_src(surface: &ApiSurface, watch_bound: i64) -> String {
     let mut b = String::new();
     b.push_str(
         r#"
@@ -1077,7 +1092,9 @@ fn __api_reply_line(r: __ApiReply) -> String {
     line = line + r.body;
     if len(r.as_of) > 0 { line = line + ",\"as_of\":" + __api_json_str(r.as_of); }
     line = line + ",\"caller\":{\"mode\":" + __api_json_str(r.caller.mode) + ",\"name\":" + __api_json_str(r.caller.name)
-        + ",\"uid\":" + to_string(r.caller.uid) + ",\"gid\":" + to_string(r.caller.gid) + ",\"pid\":" + to_string(r.caller.pid) + "}";
+        + ",\"uid\":" + to_string(r.caller.uid) + ",\"gid\":" + to_string(r.caller.gid) + ",\"pid\":" + to_string(r.caller.pid);
+    if len(r.caller.via) > 0 { line = line + ",\"via\":" + __api_json_str(r.caller.via); }
+    line = line + "}";
     if len(r.role) > 0 { line = line + ",\"role\":" + __api_json_str(r.role); }
     return line + "}";
 }
@@ -1088,11 +1105,35 @@ fn __api_join(acc: String, item: String) -> String {
     if len(acc) == 0 { return item; }
     return acc + "," + item;
 }
+__API_CANONICAL__
 fn __api_context(caller: std::api::Principal, role: String, request_id: Int) -> std::api::Context {
-    return std::api::Context { caller: caller, role: role, request_id: request_id, via: "api" };
+    return std::api::Context { caller: caller, role: role, request_id: request_id, via: if len(caller.via) > 0 { caller.via } else { "api" } };
 }
 "#,
     );
+    // GH #1104 piece 5: a composed head serves topics another seed
+    // declared, whose description names are qualified (`api::Claim`); a
+    // caller that knows the head, not the seed, writes the tail. It is
+    // accepted when exactly one item of the surface bears it.
+    {
+        let mut names: Vec<String> = Vec::new();
+        for c in &surface.commands { names.push(c.name.clone()); }
+        for r in &surface.reads { names.push(r.name.clone()); }
+        for st in &surface.streams { names.push(st.name.clone()); }
+        let mut tails: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for n in &names {
+            let tail = n.rsplit("::").next().unwrap_or(n).to_string();
+            tails.entry(tail).or_default().push(n.clone());
+        }
+        let mut canon = String::from("fn __api_canonical(name: String) -> String {\n");
+        for (tail, fulls) in &tails {
+            if fulls.len() == 1 && fulls[0] != *tail && !names.iter().any(|n| n == tail) {
+                canon.push_str(&format!("    if name == {} {{ return {}; }}\n", q(tail), q(&fulls[0])));
+            }
+        }
+        canon.push_str("    return name;\n}\n");
+        b = b.replace("__API_CANONICAL__\n", &canon);
+    }
     b.push_str(&format!(
         "@form(ring_buffer, cap = {})\nlocus __ApiFrameQ {{\n    capacity {{ pool q of __ApiFrame; }}\n}}\n",
         watch_bound
@@ -1150,53 +1191,65 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             nl = std::str::index_of(self.buf, "\n");
         }
     }
-    fn refuse_here(client_id: String, kind: String, reason: String) {
-        self.write_line(__api_reply_line(__ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "", caller: self.caller, role: "" }));
+    fn refuse_here(who: std::api::Principal, client_id: String, kind: String, reason: String) {
+        self.write_line(__api_reply_line(__ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "", caller: who, role: "" }));
     }
     fn handle_line(line: String) {
         let t = std::str::trim(line);
         if len(t) == 0 { return; }
         if !std::json::valid_object(t) {
-            self.refuse_here("", "malformed", "a request is one JSON object per line");
+            self.refuse_here(self.caller, "", "malformed", "a request is one JSON object per line");
             return;
         }
         let client_id = std::json::find_field_raw(t, "id");
         // An unauthenticated peer is refused everything, gated or not:
         // the binding vouches for who is calling, and -1 is nobody.
         if self.caller.uid < 0 {
-            self.refuse_here(client_id, "unauthenticated", "the kernel would not say who the peer is");
+            self.refuse_here(self.caller, client_id, "unauthenticated", "the kernel would not say who the peer is");
             return;
+        }
+        // `via`: a transport of the program's own (the process's uid)
+        // forwarding a line says how it arrived; from anyone else the
+        // mark is refused, never silently dropped.
+        let mut who = self.caller;
+        let via = std::json::string_field(t, "via");
+        if len(std::json::find_field_raw(t, "via")) > 0 {
+            if via.kind != "string" || self.caller.uid != std::process::uid() || len(via.text) == 0 || len(via.text) > 64 {
+                self.refuse_here(self.caller, client_id, "malformed", "\"via\" is set by the program's own transports only");
+                return;
+            }
+            who = std::api::Principal { mode: self.caller.mode, name: self.caller.name, uid: self.caller.uid, gid: self.caller.gid, pid: self.caller.pid, groups: self.caller.groups, via: via.text };
         }
         let call = std::json::string_field(t, "call");
         if call.kind == "string" {
             let body = std::json::find_field_raw(t, "payload");
             if len(body) == 0 {
-                self.refuse_here(client_id, "malformed", "a call carries a \"payload\" object");
+                self.refuse_here(who, client_id, "malformed", "a call carries a \"payload\" object");
                 return;
             }
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body, caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body, caller: who };
             return;
         }
         let rd = std::json::string_field(t, "read");
         if rd.kind == "string" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "", caller: who };
             return;
         }
         let w = std::json::string_field(t, "watch");
         if w.kind == "string" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "", caller: who };
             return;
         }
         let d = std::json::find_field_raw(t, "describe");
         if d == "true" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "", caller: who };
             return;
         }
         if d == "\"full\"" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "full", body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "full", body: "", caller: who };
             return;
         }
-        self.refuse_here(client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
+        self.refuse_here(who, client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
     }
     fn on_reply(r: __ApiReply) {
 "#,
@@ -1269,10 +1322,11 @@ fn gate_src(role: &Option<String>) -> String {
     }
 }
 
-fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>) -> String {
+fn binding_src(surface: &ApiSurface, bound: i64, table: Option<&str>) -> String {
     let mut b = String::new();
     b.push_str("locus __ApiBinding {\n    params {\n");
-    b.push_str(&format!("        path: String = {};\n", q(path)));
+    // The path comes in from the main locus (the entry's expression).
+    b.push_str("        path: String = \"\";\n");
     b.push_str(&format!("        bound: Int = {};\n", bound));
     // GH #1109: the membership source, typed by the interface so the
     // program's own (`roles: <expr>` on the entry, handed in by the main
@@ -1290,7 +1344,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     let drop = matches!(surface.binding.on_unauthorized, Some((ApiUnauthorizedPolicy::Drop, _)));
     b.push_str(&format!("        unauthorized_drop: Bool = {};\n", drop));
     b.push_str(
-        "        listen_fd: Int = -1;\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        cur_role: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
+        "        listen_fd: Int = -1;\n        bind_failed: String = \"\";\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        cur_role: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
     );
     for s in &surface.streams {
         b.push_str(&format!(
@@ -1307,17 +1361,21 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     }
     b.push_str(
         r#"    }
-    closure listen_failed {
-        captures: path;
-        epoch inline;
-    }
     birth() {
         if std::env::var_exists("LOTUS_API") { self.path = std::env::var("LOTUS_API"); }
         self.listen_fd = std::io::unix::listen_socket(self.path) or -1;
-        if self.listen_fd < 0 { violate listen_failed; }
+        // A socket that cannot be bound (the path is held by a live
+        // process, or cannot be made) does not take the program with it:
+        // the rest of the program serves, and the binding says why it does
+        // not (review B3).
+        if self.listen_fd < 0 {
+            self.bind_failed = "the api binding could not listen on " + self.path;
+            eprintln("api: " + self.bind_failed + "; the program runs without its socket");
+        }
     }
     @unbounded
     run() {
+        if self.listen_fd < 0 { return; }
         while !self.draining {
             let conn = std::io::tcp::__accept_one(self.listen_fd);
             if conn < 0 { break; }
@@ -1329,6 +1387,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     accept(c: __ApiPeer) { }
     release(c: __ApiPeer) { }
     dissolve() {
+        if self.listen_fd < 0 { return; }
         std::io::tcp::__shutdown_listen_socket(self.listen_fd);
         std::io::tcp::__close_fd(self.listen_fd);
         std::io::fs::unlink(self.path) or discard;
@@ -1352,12 +1411,15 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
         self.reply(self.cur_peer, self.cur_request, self.cur_client, false, __api_refusal("malformed", e.kind + ": " + e.field));
     }
     fn on_ingress(i: __ApiIngress) {
+        // the name as the description spells it: an imported item's
+        // unqualified tail is accepted when exactly one item bears it
+        let subject = __api_canonical(i.subject);
         let rid = self.next_request;
         self.next_request = rid + 1;
         self.cur_caller = i.caller;
         self.cur_role = "";
         if i.verb == "describe" {
-            if i.subject == "full" {
+            if subject == "full" {
                 let g = self.__api_gate_owner(i.caller);
                 if len(g) == 0 { self.unauthorized(i.peer, rid, i.client_id, "owner"); return; }
                 self.cur_role = g;
@@ -1372,7 +1434,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     );
     for s in &surface.streams {
         b.push_str(&format!(
-            "            if i.subject == {} {{\n                {gate}self.reply(i.peer, rid, i.client_id, true, \"\\\"attached\\\":\\\"{}\\\"\"); return; }}\n",
+            "            if subject == {} {{\n                {gate}self.reply(i.peer, rid, i.client_id, true, \"\\\"attached\\\":\\\"{}\\\"\"); return; }}\n",
             q(&s.name),
             s.name,
             gate = gate_src(&s.role)
@@ -1383,7 +1445,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
             continue;
         }
         b.push_str(&format!(
-            "            if i.subject == {} {{ self.reply(i.peer, rid, i.client_id, false, __api_refusal(\"not_a_stream\", i.subject)); return; }}\n",
+            "            if subject == {} {{ self.reply(i.peer, rid, i.client_id, false, __api_refusal(\"not_a_stream\", i.subject)); return; }}\n",
             q(&c.name)
         ));
     }
@@ -1393,7 +1455,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     for c in &surface.commands {
         let m = mangle(&c.name);
         b.push_str(&format!(
-            "            if i.subject == {} {{\n                {gate}self.__api_try_{}(i.peer, rid, i.client_id, i.body) or self.decode_refused(err);\n",
+            "            if subject == {} {{\n                {gate}self.__api_try_{}(i.peer, rid, i.client_id, i.body) or self.decode_refused(err);\n",
             q(&c.name),
             m,
             gate = gate_src(&c.role)
@@ -1410,7 +1472,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
             continue;
         }
         b.push_str(&format!(
-            "            if i.subject == {} {{ self.reply(i.peer, rid, i.client_id, false, __api_refusal(\"not_a_command\", i.subject)); return; }}\n",
+            "            if subject == {} {{ self.reply(i.peer, rid, i.client_id, false, __api_refusal(\"not_a_command\", i.subject)); return; }}\n",
             q(&s.name)
         ));
     }
@@ -1419,7 +1481,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     for r in &surface.reads {
         let m = mangle(&r.name).replace('.', "_");
         b.push_str(&format!(
-            "            if i.subject == {} {{\n                {gate}__ApiReadT_{} <- __ApiRead {{ peer: i.peer, request_id: rid, client_id: i.client_id, caller: i.caller, role: self.cur_role }};\n                self.in_flight = self.in_flight + 1;\n                return;\n            }}\n",
+            "            if subject == {} {{\n                {gate}__ApiReadT_{} <- __ApiRead {{ peer: i.peer, request_id: rid, client_id: i.client_id, caller: i.caller, role: self.cur_role }};\n                self.in_flight = self.in_flight + 1;\n                return;\n            }}\n",
             q(&r.name),
             m,
             gate = gate_src(&r.role)
@@ -1603,7 +1665,7 @@ fn read_members(r: &ApiRead) -> Result<(BusMember, Vec<LocusMember>), String> {
 }
 
 fn parse_locus_members(src: &str) -> Result<Vec<LocusMember>, String> {
-    let prog = parse_source(src).map_err(|ds| {
+    let prog = crate::parse_source_at(src, API_SYNTH_BASE).map_err(|ds| {
         format!(
             "api_gen: generated source did not parse: {}\n{}",
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; "),
@@ -1711,16 +1773,17 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         let drop_old = !matches!(b.on_watch_full, Some((ShedPolicy::DropNew, _)));
         (path.clone(), bound, watch_bound, drop_old)
     };
+    let path_span = surface.binding.transport_span();
 
     // JSON codecs for every type that reaches the binding, strict.
     json_gen::generate_api_codecs(programs, main_idx, &surface.json_types);
 
     // Top-level items beside the main locus.
-    let mut src = common_src(watch_bound);
+    let mut src = common_src(&surface, watch_bound);
     src.push_str(&envelopes_src(&surface));
     src.push_str(&peer_src(&surface, drop_old));
-    src.push_str(&binding_src(&surface, &path, bound, roles_table));
-    match parse_source(&src) {
+    src.push_str(&binding_src(&surface, bound, roles_table));
+    match crate::parse_source_at(&src, API_SYNTH_BASE) {
         Ok(generated) => programs[main_idx].items.extend(generated.items),
         Err(ds) => {
             // A generator bug, never user error; leave the program as
@@ -1771,8 +1834,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     // The main locus holds the binding as its last param, on a pool
     // of its own.
     let param_src = format!(
-        "main locus __ApiTmp {{\n    params {{ __api: __ApiBinding = __ApiBinding {{ path: {}, bound: {} }}; }}\n    placement {{ __api: cooperative(pool = __api_io) where async_io; }}\n}}\n",
-        q(&path),
+        "main locus __ApiTmp {{\n    params {{ __api: __ApiBinding = __ApiBinding {{ bound: {} }}; }}\n    placement {{ __api: cooperative(pool = __api_io) where async_io; }}\n}}\n",
         bound
     );
     let members = match parse_locus_members(&param_src) {
@@ -1792,6 +1854,19 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         }
     }
     let (mut new_param, new_placement) = (new_param?, new_placement?);
+    // The socket path is the entry's expression, evaluated on the main
+    // locus like every param default there (a literal, or `self.socket`
+    // the program computed) — review B3.
+    if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
+        inits.push(crate::ast::StructInit {
+            name: Ident {
+                name: "path".to_string(),
+                span: path_span,
+            },
+            value: path,
+            span: path_span,
+        });
+    }
     // GH #1109: the program's own membership source rides into the
     // binding as the expression the entry wrote, evaluated on the main
     // locus like every param default there (`self.roles` names a main

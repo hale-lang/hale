@@ -178,6 +178,19 @@ fn main() {
     std::test::assert(std::str::contains(note, "|" + my_pid + "|api|1|outside\""), "the handler saw the caller's pid, the binding and the request id: " + note);
     std::test::assert(std::str::contains(r1, "\"caller\":{\"mode\":\"unix\",\"name\":\"uid:" + me + "\",\"uid\":" + me + ","), "the receipt carries the principal: " + r1);
 
+    // A forwarding transport of the program's own marks how the request
+    // arrived: `via` is honoured from the program's uid — this test's,
+    // since it spawned the app — carried on the receipt's caller and in
+    // ctx.via; the principal stays the peer's own.
+    let r1b = api.ask("{\"id\":11,\"call\":\"Claims\",\"payload\":{\"task\":3,\"who\":\"browser\"},\"via\":\"http-session\"}");
+    std::test::assert(std::str::contains(r1b, "\"ok\":true") && std::str::contains(r1b, "\"via\":\"http-session\"}"), "the receipt's caller carries the mark: " + r1b);
+    let marked = std::json::find_field_raw(std::json::find_field_raw(r1b, "value"), "note");
+    std::test::assert(std::str::starts_with(marked, expect_head) && std::str::contains(marked, "|http-session|2|browser\""), "the handler's ctx.via is the mark, the principal the peer's: " + marked);
+    let r1c = api.ask("{\"id\":12,\"call\":\"Claims\",\"payload\":{\"task\":4,\"who\":\"x\"},\"via\":\"\"}");
+    std::test::assert(std::str::contains(r1c, "\"kind\":\"malformed\""), "an empty mark is refused: " + r1c);
+    let r1d = api.ask("{\"id\":13,\"call\":\"Claims\",\"payload\":{\"task\":5,\"who\":\"y\"},\"via\":5}");
+    std::test::assert(std::str::contains(r1d, "\"kind\":\"malformed\""), "a mark that is not a string is refused, never dropped: " + r1d);
+
     // A refusal carries it too.
     let r2 = api.ask("{\"id\":2,\"call\":\"Nope\",\"payload\":{}}");
     std::test::assert(std::str::contains(r2, "\"kind\":\"unknown\"") && std::str::contains(r2, "\"caller\":{\"mode\":\"unix\""), "a refusal names the caller: " + r2);
@@ -186,12 +199,12 @@ fn main() {
     // the two-parameter one counted both as well, and the in-process
     // one carried the local principal and `via: local`.
     let r3 = api.ask("{\"id\":3,\"read\":\"head.seen\"}");
-    std::test::assert(std::str::contains(r3, "\"count\":2"), "both messages reached the context handler: " + r3);
+    std::test::assert(std::str::contains(r3, "\"count\":3"), "every message reached the context handler: " + r3);
     std::test::assert(std::str::contains(r3, "\"last_local\":\"local|local|-1|-1|-1|local|0|inside\""), "the in-process message carried the local context: " + r3);
 
     p.stop();
     std::io::fs::unlink(sock) or discard;
-    std::test::assert(std::str::contains(p.out, "tally 2"), "the one-parameter handler heard both: " + p.out);
+    std::test::assert(std::str::contains(p.out, "tally 3"), "the one-parameter handler heard every message: " + p.out);
     std::io::fs::unlink(src) or discard;
     std::io::fs::unlink(bin) or discard;
 

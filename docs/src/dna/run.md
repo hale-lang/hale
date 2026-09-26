@@ -239,7 +239,9 @@ fleet](./operating.md).
 
 ## The surface
 
-`hale dna ui` is a Hale program from the toolchain cache serving one
+`hale dna ui` is parked until OIDC lands on the api head (GH #989): it
+reads, and takes no command — the record's commands are the api head's
+gated topics. It is a Hale program from the toolchain cache serving one
 page and a small API. Every request runs one offline verb of `hale
 dna` in the project root and returns what it printed; the forms send
 a verdict, an intent or a pressure signal the way the CLI does — a
@@ -266,6 +268,46 @@ git config --add dna.oidc.member "109876543210=riley"
 git config dna.oidc.board riley
 hale dna secret set HALE_DNA_OIDC_SECRET
 ```
+
+The head's socket (the api binding on `dna/api`, one per record under
+`$XDG_RUNTIME_DIR/hale/dna/<id12>.sock` — the record id's first twelve
+characters — or the record's own
+`.hale/dna`, `LOTUS_API` overriding it) knows a peer by its Unix
+credentials instead, and the record says what that peer may do: map
+the uid to a person the record knows, in the record's own local config,
+
+```text
+git config --local --add dna.unix.member "uid:1000=riley"
+```
+
+(never a global or an included file; the head reads it again whenever
+the record moves), and a position the graph says that person holds is
+a role the peer holds: `role api_dev;` is `position:api/dev`, and
+`owner`, which reads the full description, is the board.
+Generic clients (`hale call`, `hale mcp --app`, `hale admin`) see
+exactly that principal's slice.
+
+The record's own commands (`dna/api`) are gated topics on this same
+socket: `owner` is the board, `reviewer` is `position:reviewer`, and
+`position` is any position the peer holds. `git config --local --add
+dna.unix.member "uid:<n>=<person>"` is how a peer becomes a person
+these gates can name. The face reaches the same gates over HTTP: the
+head forwards its `POST …/commands` line to its own socket marked
+`via: http-session`, as the head's own uid, so map that uid too; a
+head uid the record maps to nobody is recorded as `uid:<n>`, never
+`$USER`. Revoking a mapping (`git config --local --unset`) takes
+effect when the record next moves, since the source re-reads the
+mapping with the edges then.
+
+**The local session's trust, until OIDC (GH #989).** A local head
+mints a launch token into `<root>/.hale/dna/head.token` (mode 0600)
+and prints its URL with it, `http://127.0.0.1:8792/?token=…`, Jupyter
+style. The shell at `/` opens only with that token (the URL sets the
+`dna_local` cookie for the rest of the session), and every POST
+carries it — the cookie, or `X-Hale-Token` from a tool that read the
+file. A process that can read the file is the user; any local process
+is not, and a bare `GET /` or a POST without the token is refused. The
+reads over HTTP stay as they were.
 
 Then nothing is served without signing in, a verdict from the page is
 recorded in the name the subject maps to — with the board's authority

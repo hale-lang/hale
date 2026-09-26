@@ -47,7 +47,7 @@ async function propose(operation, text, old = '') {
     ...(old ? { supersedes: old } : {}),
   };
   const command = await service.command(operation, args, old || 'org/elsewhere');
-  const response = await service.post(command); assert.equal(response.status, 202, JSON.stringify(response));
+  const response = await service.post(command); assert.equal(response.code, '', JSON.stringify(response));
   const receipt = await service.waitNode(command.request_id, value => value.node.proposal_state === 'created');
   await service.quiesce(); await save(`${operation}-command.json`, command); await save(`${operation}-created.json`, receipt);
   return { command, receipt, id: receipt.node.candidate_digest, review: receipt.node.review_id };

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { test, expect, errorBody } from './harness.mjs';
+import { isDescribe } from './command-wire.mjs';
 
 test.skip(!process.env.HALE_FACE_CATALOG_BIN, 'Definition authoring needs an explicitly supplied native application catalog.');
 test.use({ definitions: true });
@@ -71,7 +72,7 @@ test('Definition draft validates a full native catalog and exports exact Hale wi
 
 test('Definition draft edits Steps and members with local checks before any native request', async ({ page, service }) => {
   let posts = 0;
-  page.on('request', request => { if (request.method() === 'POST') posts += 1; });
+  page.on('request', request => { if (request.method() === 'POST' && !isDescribe(request)) posts += 1; });
   await draft(page, service);
   await workspace(page).getByRole('button', { name: 'Add Step', exact: true }).click();
   await expect(validation(page)).toContainText('Step 2 requires at least one member');
@@ -184,7 +185,7 @@ test('Definition drafts do not infer validation capability from read access', as
     await route.fulfill({ response, json: body });
   });
   let posts = 0;
-  page.on('request', request => { if (request.method() === 'POST') posts += 1; });
+  page.on('request', request => { if (request.method() === 'POST' && !isDescribe(request)) posts += 1; });
   await draft(page, service);
   await expect(validation(page)).toContainText('Native validation is unavailable');
   await expect(validation(page).getByRole('button', { name: 'Validate draft', exact: true })).toBeDisabled();

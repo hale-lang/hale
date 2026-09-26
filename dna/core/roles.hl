@@ -1,0 +1,182 @@
+// dna/core/roles.hl — the record as a membership source (GH #1109,
+// #1104 piece 5).
+//
+// Positions are roles. The head's api binding names this locus as its
+// `roles:` source, and a principal holds a role when the record's
+// graph has a live `holds` edge from the position the role names to a
+// known person that principal is mapped to:
+//
+//   - the mapping is `git config --local --add dna.unix.member
+//     "uid:1000=ada"` in the record's own config (never a global or an
+//     included file), the shape `dna.oidc.member` has for an identity
+//     provider's subjects: the principal as the binding names it
+//     (`uid:<n>`), then the person the record knows. It is read again
+//     whenever the record moves. A principal nobody mapped holds
+//     nothing; a principal the binding could not authenticate holds
+//     nothing whatever the mapping says.
+//   - a person is known while the record holds no `person.retired` row
+//     for them.
+//   - a `holds` edge is live from its `graph.edge` row until a
+//     `graph.retired` row names the edge, its position or its holder.
+//   - a role names a position: `_` in the role is `/` in the position
+//     (`role api_dev;` is `position:api/dev`; a position spelled with
+//     `_` cannot be named by a role). `owner`, the role the full
+//     description is gated on, is the board: `position:board`.
+//     `position` is any live position at all: the role a leg's verbs
+//     are gated on.
+//
+// The hierarchy (`role owner includes …`) is the program's and the
+// binding walks it; this source answers only the direct question. The
+// record is re-read when it has moved, so a holder changes only by the
+// governed decision that wrote the row.
+
+// A holds edge as the record wrote it: the position, its holder, the
+// row's id — and whether a later row took it out.
+type Holds {
+    position: String = "";
+    holder: String = "";
+    id: String = "";
+    gone: Bool = false;
+}
+@form(vec)
+locus HoldsRows { capacity { heap rows of Holds; } }
+
+locus RecordRoles {
+    params {
+        root: String = "."; // the record; given where the source is built
+        mapping: String = ""; // `uid:<n>=<person>` per line (fixtures); "" = the record's own `git config --local dna.unix.member`, re-read when the record moves
+        memory: Bool = false; // a fixture's record: the rows `remember` was given, never git
+        rows: EventRows = EventRows { };
+        git: GitJournal = GitJournal { };
+        opened: Bool = false;
+        given: Bool = false; // the mapping was handed in, not read from the record
+        scanned: Int = -1; // the revision the live edges were read at
+        looked: Int = 0; // when the git record was last asked whether it moved (monotonic ns)
+        live: HoldsRows = HoldsRows { };
+        retired_people: String = ""; // one name per line
+    }
+    fn open() {
+        if self.opened { return; }
+        self.opened = true;
+        self.given = len(self.mapping) > 0;
+        if len(self.root) == 0 { self.root = "."; }
+        if !self.memory { self.git = GitJournal { repo: self.root }; }
+    }
+    fn revision() -> Int { return if self.memory { self.rows.len() } else { self.git.revision() }; }
+    fn row(i: Int) -> Event { return if self.memory { self.rows.get(i) or Event { } } else { self.git.read(i) }; }
+    // A fixture's row: the record in memory grows by what the fixture
+    // writes, which is its domain bound.
+    @unbounded
+    fn remember(kind: String, entity: String, body: String) {
+        self.rows.push(Event { seq: self.rows.len(), kind: kind, entity: entity, body: body });
+    }
+    // The mapping as the record's own local config holds it — `--local`
+    // only, never a global or an included file — read again whenever the
+    // record moves.
+    fn read_mapping() {
+        if self.given || self.memory { return; }
+        let r = self.git.record.git("config\n--local\n--get-all\ndna.unix.member");
+        self.mapping = if r.code == 0 { r.stdout } else { "" };
+    }
+    // The live holds edges and the retired people, as of the record now.
+    // A git record is asked whether it moved at most once a second: the
+    // question is a git call on the binding's own pool, and a holder
+    // changes by a governed decision, not per request. The rows are
+    // rebuilt in place, bounded by the record.
+    @unbounded
+    fn scan() {
+        self.open();
+        if !self.memory {
+            let now = std::time::monotonic_ns();
+            if self.scanned >= 0 && now - self.looked < 1000000000 { return; }
+            self.looked = now;
+            self.git.refresh();
+        }
+        let rev = self.revision();
+        if rev == self.scanned { return; }
+        self.scanned = rev;
+        self.read_mapping();
+        self.live = HoldsRows { };
+        self.retired_people = "";
+        let mut i = 0;
+        while i < rev {
+            let e = self.row(i);
+            if e.kind == "graph.edge" && std::json::find_string_field(e.body, "kind") == "holds" {
+                let position = graph_member(e.body, "position");
+                let holder = graph_member(e.body, "holder");
+                if len(position) > 0 && len(holder) > 0 {
+                    self.live.push(Holds { position: position, holder: holder, id: e.entity });
+                }
+            }
+            if e.kind == "graph.retired" {
+                self.retire(e.entity);
+            }
+            if e.kind == "person.retired" {
+                self.retired_people = self.retired_people + e.entity + "\n";
+            }
+            i = i + 1;
+        }
+    }
+    // The edges a `graph.retired` row's entity takes out: the edge itself
+    // by id, or every edge naming the node (a position, a holder) —
+    // marked in place, since a row already read stays where it is.
+    @unbounded
+    fn retire(entity: String) {
+        let mut k = 0;
+        while k < self.live.len() {
+            let h = self.live.get(k) or Holds { };
+            if !h.gone && (h.id == entity || h.position == entity || h.holder == entity) {
+                self.live.set(k, Holds { position: h.position, holder: h.holder, id: h.id, gone: true }) or discard;
+            }
+            k = k + 1;
+        }
+    }
+    // Whether `p` holds `r` directly: mapped to a known person who holds
+    // the position the role names — `owner` is the board, `position` any
+    // live position at all, any other role the position spelled with `/`
+    // where the role has `_`.
+    @unbounded
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        if p.uid < 0 || len(r) == 0 { return false; }
+        self.scan();
+        let person = member_of(self.mapping, p.name);
+        if len(person) == 0 || std::str::contains("\n" + self.retired_people, "\n" + person + "\n") { return false; }
+        let any = r == "position";
+        let want = if r == "owner" { "position:board" } else { "position:" + std::str::replace(r, "_", "/") };
+        let mut k = 0;
+        while k < self.live.len() {
+            let h = self.live.get(k) or Holds { };
+            if !h.gone && h.holder == person && (any || h.position == want) { return true; }
+            k = k + 1;
+        }
+        return false;
+    }
+    // The person the record maps `p` to ("" when it maps nobody, or the
+    // person was retired): who a command is recorded as coming from.
+    fn person(p: std::api::Principal) -> String {
+        if p.uid < 0 { return ""; }
+        self.scan();
+        let person = member_of(self.mapping, p.name);
+        if len(person) == 0 || std::str::contains("\n" + self.retired_people, "\n" + person + "\n") { return ""; }
+        return person;
+    }
+}
+
+// The node a member of `role` names in a `graph.edge` body ("" when
+// none): the first `{"role": …, "node": …}` object of `members` whose
+// role is `role`.
+@unbounded
+fn graph_member(body: String, role: String) -> String {
+    let members = std::json::find_field_raw(body, "members");
+    let mut rest = members;
+    while len(rest) > 0 {
+        let open = std::str::index_of(rest, "{");
+        if open < 0 { return ""; }
+        let close = std::str::index_of(rest, "}");
+        if close < open { return ""; }
+        let obj = rest[open..(close + 1)];
+        rest = rest[(close + 1)..len(rest)];
+        if std::json::find_string_field(obj, "role") == role { return std::json::find_string_field(obj, "node"); }
+    }
+    return "";
+}

@@ -131,7 +131,8 @@ test('Native draft boundary requires exact identity, source basis, framing and m
   const url = service.origin + service.apiPath + '/dna/organization/draft';
   const read = await page.request.get(url), data = (await read.json()).data;
   const request = { profile: data.profile, application_id: service.application, principal: data.principal, base: data.base, source_text: data.module.text };
-  const headers = { Origin: service.origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json' };
+  // the launch token a tool sends, as the head printed it (GH #989)
+  const headers = { Origin: service.origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json', 'X-Hale-Token': service.token };
   async function post(body = request, overrides = {}, query = '') { return page.request.post(url + query, { headers: { ...headers, ...overrides }, data: JSON.stringify(body) }); }
   expect((await post(request, { Origin: 'http://example.invalid' })).status()).toBe(403);
   expect((await post(request, { 'X-Hale-Command': '0' })).status()).toBe(400);

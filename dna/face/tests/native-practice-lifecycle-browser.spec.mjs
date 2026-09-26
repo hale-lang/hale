@@ -2,6 +2,7 @@
 // Each case is a small fresh Record; no browser-owned outcome or graph fixtures.
 import { test as base, expect } from '@playwright/test';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
+import { KNOWLEDGE_CALLS, callOf, isKnowledgeCall, settleKnowledge } from './command-wire.mjs';
 
 const grant = { mode: 'local', name: 'alice', authority: 'board', edge_link: 'direct', edge_unlink: 'direct',
   node_propose: 'review', node_revise: 'review', node_retire: 'review', node_scopes: [{ author: 'org', target: 'org/elsewhere' }],
@@ -12,7 +13,7 @@ const test = base.extend({
     try { await use(service); }
     finally { await service.stop(); await info.attach('native-practice-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
   },
-  page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
+  page: async ({ page, service }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await service.attach(page); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service.');
 test.setTimeout(90_000);
@@ -22,15 +23,25 @@ const intervention = page => page.getByRole('region', { name: 'Review interventi
 const recovery = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const text = 'A Practice with exact café 🧭 evidence.\nKeep <literal> source history.';
 const reason = 'Preserve this scoped Practice and its human rationale.';
-const responseFor = (page, path, method) => page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === method);
+// The answer to a Knowledge call (`knowledge`) or to a named call.
+const responseFor = (page, path, call) => page.waitForResponse(response => new URL(response.url()).pathname === path && (call === 'knowledge' ? isKnowledgeCall(response.request()) : callOf(response.request()) === call));
+// A forwarded Knowledge line in the old envelope's terms (GH #1129): the
+// operation, its target and its arguments, so the Record assertions stay.
+const OPERATION_OF = Object.fromEntries(Object.entries(KNOWLEDGE_CALLS).map(([operation, call]) => [call, operation]));
+function envelopeOf(line) {
+  const { request_id, record_head, target_id, ...args } = line.payload, operation = OPERATION_OF[line.call];
+  const target = operation === 'dna.knowledge.node.propose' ? args.target : operation === 'dna.knowledge.node.revise' ? args.supersedes : operation === 'dna.knowledge.node.retire' ? args.id : operation.startsWith('dna.knowledge.binding.') ? args.idea_id : target_id;
+  return { request_id, operation, target: { id: target }, preconditions: { record_head }, arguments: args };
+}
 async function reviewAndSubmit(page, service, binding = false) {
   await editor(page).getByLabel('Reason for practice change', { exact: true }).fill(reason);
   await editor(page).getByRole('button', { name: 'Review practice draft', exact: true }).click();
   await expect(editor(page).getByRole('status')).toContainText('Draft reviewed against the current visible snapshot');
-  const pending = responseFor(page, service.commandPath, 'POST');
+  const pending = responseFor(page, service.commandPath, 'knowledge');
   await editor(page).getByRole('button', { name: 'Submit practice change', exact: true }).click();
-  const response = await pending; expect(response.status()).toBe(202);
-  const command = response.request().postDataJSON();
+  const response = await pending; const settled = settleKnowledge(response.status(), await response.json());
+  expect(settled.status).toBe(200); expect(settled.code).toBe('');
+  const command = envelopeOf(response.request().postDataJSON());
   const native = binding ? await service.waitBinding(command.request_id, value => value.binding.proposal_state === 'created') : await service.waitNode(command.request_id, value => value.node.proposal_state === 'created');
   await service.quiesce();
   await receipt(page).getByRole('button', { name: binding ? 'Check binding request' : 'Check knowledge request', exact: true }).click();
@@ -44,10 +55,10 @@ async function approve(page, service, proposal) {
   await intervention(page).getByRole('radio', { name: 'Approve', exact: true }).check();
   await intervention(page).getByLabel('Decision note', { exact: true }).fill('Independently approve the exact Practice lifecycle candidate.');
   await intervention(page).getByRole('button', { name: 'Review decision', exact: true }).click();
-  const pending = responseFor(page, service.apiPath + '/commands', 'POST');
+  const pending = responseFor(page, service.apiPath + '/commands', 'ReviewVerdict');
   await intervention(page).getByRole('button', { name: 'Submit decision', exact: true }).click();
-  const response = await pending; expect([200, 202]).toContain(response.status());
-  await service.waitCommand(response.request().postDataJSON().request_id, value => value.verdict.state === 'accepted');
+  const response = await pending; expect(response.status()).toBe(200);
+  await service.waitCommand(response.request().postDataJSON().payload.request_id, value => value.verdict.state === 'accepted');
   await service.quiesce();
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await recovery(page).getByRole('button', { name: 'Dismiss completed request', exact: true }).click();
@@ -69,7 +80,7 @@ async function openPractice(page, service, id) {
 }
 async function precreate(service) {
   const command = await service.command('node.propose', { kind: 'practice', name: 'practice/browser-applicability', text, author: 'org', target: 'org/elsewhere', rationale: reason }, 'org/elsewhere');
-  expect((await service.post(command)).status).toBe(202);
+  expect((await service.post(command)).code).toBe('');
   const created = await service.waitNode(command.request_id, value => value.node.proposal_state === 'created');
   await service.decide(created.node.candidate_digest, created.node.review_id); await service.waitNode(command.request_id, value => value.node.activation_state === 'adopted');
   return created.node.candidate_digest;

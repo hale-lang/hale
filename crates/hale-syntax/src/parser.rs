@@ -3306,6 +3306,7 @@ impl Parser {
             }
         }
         Ok(LocusDecl {
+            imported: false,
             phase_effects: None,
             depends: None,
             supervised: false,
@@ -3839,7 +3840,9 @@ impl Parser {
         }
         self.expect(TokenKind::LParen, "(")?;
         let path_tok = self.peek_token().clone();
-        let path = self.expect_string_literal("api socket path")?;
+        // The path is an expression on the main locus (review B3): a
+        // literal, or a param the program computed.
+        let path = self.parse_expr()?;
         let mut bound: Option<(i64, Span)> = None;
         let mut on_full: Option<(ApiFullPolicy, Span)> = None;
         let mut watch_bound: Option<(i64, Span)> = None;

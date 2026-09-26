@@ -1,5 +1,6 @@
 // Build: hale build dna/api
 // Run: dna/api/api <project-root> <port> [face-webroot]
+// Commands: the api binding, `hale describe <socket>` (commands.hl)
 // A single-Record surface, always loopback. Explicitly configured or composed
 // command providers own native authority and durable recovery. No legacy
 // UI mutation route is proxied.
@@ -86,35 +87,15 @@ locus Wire {
         b.end_object();
         return b.result();
     }
-    fn capabilities(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool) -> String {
-        return self.capabilities_with_source(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, OrganizationCommandCapabilities { });
-    }
-    fn capabilities_with_source(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities) -> String {
-        return self.capabilities_with_tasks(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, false, CommandCapability { });
-    }
-    fn capabilities_with_tasks(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability) -> String {
-        return self.capabilities_with_people(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, false, CommandCapability { });
-    }
-    fn capabilities_with_people(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability) -> String {
-        return self.capabilities_with_task_create(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, people, person_capability, false, CommandCapability { });
-    }
-    fn capabilities_with_task_create(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability, task_create: Bool, task_create_capability: CommandCapability) -> String {
-        return self.capabilities_with_attempts(source, mode, name, organization, definitions, knowledge, commands, capability, review_commands, review_capability, command_origin, knowledge_write, source_commands, tasks, task_capability, people, person_capability, task_create, task_create_capability, false, CommandCapability { });
-    }
-    fn capabilities_with_attempts(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, commands: Bool, capability: CommandCapability, review_commands: Bool, review_capability: CommandCapability, command_origin: String, knowledge_write: Bool, source_commands: OrganizationCommandCapabilities, tasks: Bool, task_capability: CommandCapability, people: Bool, person_capability: CommandCapability, task_create: Bool, task_create_capability: CommandCapability, attempts: Bool, attempt_capability: CommandCapability) -> String {
+    // What this head serves over HTTP: the reads, and where its commands
+    // are (`api`: the binding's socket, described by `hale describe`).
+    fn capabilities(source: Source, mode: String, name: String, organization: Bool, definitions: Bool, knowledge: Bool, people: Bool, command_origin: String, socket: String) -> String {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("application_id", source.identity);
-        let command_wire = CommandWire { };
-        let can_propose = commands && capability.available && capability.authorized && command_wire.origin_valid(command_origin);
-        let can_verdict = review_commands && review_capability.available && review_capability.authorized && command_wire.origin_valid(command_origin);
-        let can_source = source_commands.configured && source_commands.proposal.available && source_commands.proposal.authorized && command_wire.origin_valid(command_origin);
-        let can_source_review = source_commands.configured && source_commands.review.available && source_commands.review.authorized && command_wire.origin_valid(command_origin);
-        let can_reassign = tasks && command_wire.task_writable(task_capability, command_origin);
-        let can_retire = people && command_wire.task_writable(person_capability, command_origin);
-        let can_create = task_create && task_create_capability.available && task_create_capability.authorized && command_wire.origin_valid(command_origin);
-        let can_claim = attempts && attempt_capability.available && attempt_capability.authorized && command_wire.origin_valid(command_origin);
-        b.bool_field("read_only", !(can_propose || can_verdict || knowledge_write || can_source || can_source_review || can_reassign || can_retire || can_create || can_claim));
+        // HTTP itself writes nothing: every command is the binding's, and
+        // what this session may send is its describe slice
+        b.bool_field("read_only", true);
         b.begin_object_field("principal");
         b.string_field("mode", mode);
         b.string_field("name", name);
@@ -130,26 +111,14 @@ locus Wire {
         b.bool_field("context", mode == "local");
         if people { b.bool_field("people", mode == "local"); }
         b.end_object();
-        b.begin_object_field("writes");
-        b.bool_field("practice_propose", can_propose);
-        b.bool_field("review_verdict", can_verdict);
-        if tasks { b.bool_field("task_reassign", can_reassign); }
-        if people { b.bool_field("person_retire", can_retire); }
-        if task_create { b.bool_field("task_create", can_create); }
-        if attempts { b.bool_field("attempt_claim", can_claim); b.bool_field("attempt_outcome", can_claim); }
-        if source_commands.configured { b.bool_field("organization_propose", can_source); b.bool_field("organization_review_verdict", can_source_review); }
+        b.begin_object_field("api");
+        b.string_field("transport", "unix");
+        b.string_field("socket", socket);
+        // the same wire, one line per POST, for the browser (mode local only)
+        b.string_field("http", if mode == "local" && len(socket) > 0 { API_PREFIX + "/" + source.identity + "/commands" } else { "" });
         b.end_object();
-        if source_commands.configured {
-            b.field("organization_commands", command_wire.organization_capability_json(source_commands.proposal, command_origin, false));
-            b.field("organization_review_commands", command_wire.organization_capability_json(source_commands.review, command_origin, true));
-        }
-        if commands { b.field("commands", command_wire.capability_json(capability, command_origin, "dna.practice.propose")); }
-        if review_commands { b.field("review_commands", command_wire.capability_json(review_capability, command_origin, "dna.review.verdict")); }
-        if tasks { b.field("task_commands", command_wire.task_capability_json(task_capability, command_origin)); }
-        if people { let person_wire = PersonWire { }; b.field("person_commands", person_wire.capability(person_capability, command_origin)); }
-        if task_create { b.field("task_create_commands", command_wire.task_create_capability_json(task_create_capability, command_origin)); }
-        if attempts { b.field("attempt_commands", command_wire.attempt_capability_json(attempt_capability, command_origin)); }
-        if definitions && command_wire.origin_valid(command_origin) {
+        let wire = CommandWire { };
+        if definitions && wire.origin_valid(command_origin) {
             let drafts = DefinitionDraftWire { };
             b.field("definition_drafts", drafts.capability());
         }
@@ -178,10 +147,9 @@ locus Api {
         organization: orgsource::OrganizationSource = orgsource::OrganizationSource { };
         definitions: ops::WorkflowCatalogProvider = ops::NoWorkflowCatalog { };
         knowledge: KnowledgeProvider = NoKnowledge { };
-        knowledge_commands: KnowledgeCommandProvider = NoKnowledgeCommands { };
-        commands: CommandProvider = NoCommands { };
         people: PeopleProvider = NoPeople { };
-        organization_commands: OrganizationCapabilityProvider = NoOrganizationCapabilities { };
+        socket: String = ""; // where the commands are: the head's api binding
+        token: String = ""; // the local session's launch token (see launch_token); "" = no local session
         organization_candidates: OrganizationCandidateWire = OrganizationCandidateWire { };
         organization_runtime: OrganizationRuntimeProvider = NoOrganizationRuntime { };
         command_origin: String = "";
@@ -194,13 +162,37 @@ locus Api {
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
-        let knowledge_commands_path = std::str::starts_with(path, API_PREFIX + "/") && std::str::ends_with(path, "/dna/knowledge/commands");
-        let commands_path = !knowledge_commands_path && std::str::starts_with(path, API_PREFIX + "/") && std::str::ends_with(path, "/commands");
+        // `…/applications/{id}/commands` exactly: no other path takes a line
+        let commands_path = std::str::starts_with(path, API_PREFIX + "/") && std::str::ends_with(path, "/commands") && len(path) > len(API_PREFIX) + 10 && !std::str::contains(path[(len(API_PREFIX) + 1)..(len(path) - 9)], "/");
         let draft_path = std::str::starts_with(path, API_PREFIX + "/") && (std::str::ends_with(path, "/dna/definitions/draft") || std::str::ends_with(path, "/dna/organization/draft") || std::str::ends_with(path, "/dna/organization/ownership/draft"));
         // Preserve the standalone head's existing unsupported-mutation behavior.
         // A command provider opens command submission. Draft POST is separate
         // read preparation and requires a real catalog plus a configured origin.
-        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path || (commands_path && (self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1") || self.commands.supported("dna.attempt.claim", "1"))))) { return http.error(405, "method_not_allowed", "this mutation route is not supported", false); }
+        // The commands are the api binding's (commands.hl,
+        // knowledge_commands.hl); over HTTP a record takes a draft and a
+        // line forwarded to that binding (forward.hl). Everything else is
+        // a read.
+        if req.method != "GET" && !(req.method == "POST" && (draft_path || commands_path)) { return http.error(405, "method_not_allowed", "this head takes commands on its api socket, or forwarded to it at /commands; reads are GET", false); }
+        // The local session's trust (GH #989): the shell at `/` and every
+        // POST carry the launch token — in the URL once, then the cookie it
+        // sets, or the X-Hale-Token header a tool sends.
+        if self.mode == "local" && len(self.token) > 0 {
+            // a head serving no shell has no `/` to open
+            if path == "/" && self.web.serves(path) {
+                let given = query_token(raw_query);
+                if len(given) > 0 && !token_matches(given, self.token) { return http.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }
+                if len(given) > 0 {
+                    let mut shell = self.web.response(path);
+                    shell.headers = shell.headers + "\r\nSet-Cookie: dna_local=" + self.token + "; HttpOnly; SameSite=Strict; Path=/";
+                    return shell;
+                }
+                if !token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.token) { return http.error(401, "unauthenticated", "open the URL the head printed (the launch token is in .hale/dna/head.token)", false); }
+            }
+            if req.method != "GET" {
+                let sent = std::http::header(req, "X-Hale-Token");
+                if !token_matches(sent, self.token) && !token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.token) { return http.error(401, "unauthenticated", "a mutation carries the launch token: the dna_local cookie the head's URL set, or X-Hale-Token", false); }
+            }
+        }
         // The optional shell is public and static, so Runtime inspection can
         // work without a DNA session. Every Record read still passes auth below.
         if self.web.serves(path) { return self.web.response(path); }
@@ -223,7 +215,7 @@ locus Api {
         }
         if !std::str::starts_with(path, API_PREFIX) { return http.error(404, "not_found", "no such read endpoint", false); }
         let knowledge_path = std::str::contains(path, "/dna/knowledge/");
-        let query = if knowledge_path || commands_path || draft_path { Query { } } else if std::str::ends_with(path, "/dna/tasks") { http.task_query(raw_query) } else { http.query(raw_query) };
+        let query = if knowledge_path || draft_path || commands_path { Query { } } else if std::str::ends_with(path, "/dna/tasks") { http.task_query(raw_query) } else { http.query(raw_query) };
         if !query.ok { return http.error(400, "invalid_query", query.error, false); }
         let reader = SourceReader { root: self.root };
         let source = reader.read();
@@ -242,13 +234,7 @@ locus Api {
         if path == prefix + "/dna/reviews/candidate" { return self.review_candidate_read(command_context, query, raw_query); }
         if path == prefix + "/dna/organization/source-status" { let status = OrganizationStatusWire { }; return status.read(command_context, query, raw_query, self.organization_candidates, self.organization_runtime); }
         if path == prefix + "/dna/organization/source-impact" { let impact = OrganizationImpactWire { }; return impact.read(command_context, query, raw_query, self.organization_candidates); }
-        if path == prefix + "/commands" {
-            return self.command_handle(req, raw_query, command_context);
-        }
-        if path == prefix + "/dna/knowledge/commands" || path == prefix + "/dna/knowledge/commands/capability" {
-            let knowledge_wire = KnowledgeCommandWire { };
-            return knowledge_wire.handle(req, raw_query, std::str::ends_with(path, "/capability"), command_context, self.knowledge_commands, self.command_origin);
-        }
+        if path == prefix + "/commands" { return self.forward_command(req, raw_query); }
         if path == prefix + "/dna/definitions/draft" {
             return self.definition_draft_handle(req, cut >= 0, command_context);
         }
@@ -262,22 +248,9 @@ locus Api {
         }
         if path == prefix + "/capabilities" {
             if len(raw_query) > 0 { return http.error(400, "invalid_query", "capabilities takes no query fields", false); }
-            let supported = self.commands.supported("dna.practice.propose", "1");
-            let review_supported = self.commands.supported("dna.review.verdict", "1");
-            let capability = if supported { self.commands.capability(command_context, "dna.practice.propose", "1") } else { CommandCapability { } };
-            let review_capability = if review_supported { self.commands.capability(command_context, "dna.review.verdict", "1") } else { CommandCapability { } };
-            let knowledge_commands = KnowledgeCommandWire { };
-            let knowledge_write = knowledge_commands.writable(command_context, self.knowledge_commands, self.command_origin);
-            let source_capabilities = self.organization_commands.organization_capabilities(command_context);
-            let tasks = self.commands.supported("dna.task.reassign", "1");
-            let task_capability = if tasks { self.commands.capability(command_context, "dna.task.reassign", "1") } else { CommandCapability { } };
-            let people = self.commands.supported("dna.person.retire", "1");
-            let person_capability = if people { self.commands.capability(command_context, "dna.person.retire", "1") } else { CommandCapability { } };
-            let creates = self.commands.supported("dna.task.create", "1");
-            let create_capability = if creates { self.commands.capability(command_context, "dna.task.create", "1") } else { CommandCapability { } };
-            let attempts = self.commands.supported("dna.attempt.claim", "1");
-            let attempt_capability = if attempts { self.commands.capability(command_context, "dna.attempt.claim", "1") } else { CommandCapability { } };
-            let capabilities = wire.capabilities_with_attempts(source, self.mode, actor, self.organization.declared(), self.definitions.supported(), self.knowledge.supported(), supported, capability, review_supported, review_capability, self.command_origin, knowledge_write, source_capabilities, tasks, task_capability, people, person_capability, creates, create_capability, attempts, attempt_capability);
+            // a socket is advertised only while this process answers on it
+            let live = if socket_live(self.socket) { self.socket } else { "" };
+            let capabilities = wire.capabilities(source, self.mode, actor, self.organization.declared(), self.definitions.supported(), self.knowledge.supported(), self.people.present(), self.command_origin, live);
             let authoring = OrganizationDraftWire { };
             let command_wire = CommandWire { };
             if self.organization.allow_drafts && self.organization.declared() && command_wire.origin_valid(self.command_origin) {
@@ -331,6 +304,35 @@ locus Api {
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
         return http.success(source, b.result());
     }
+    // HTTP as a forwarding transport (forward.hl): the browser's line to
+    // the head's own socket, under the CSRF discipline every mutation
+    // here has, in the local session only.
+    fn forward_command(req: std::http::Request, query: String) -> std::http::Response {
+        let http = Http { };
+        let wire = CommandWire { };
+        if self.mode != "local" { return http.error(503, "commands_unsupported", "the HTTP session forwards the local principal only; use the api socket", false); }
+        if len(self.socket) == 0 { return http.error(503, "commands_unavailable", "the head has no api socket to forward to", false); }
+        let mut line = "";
+        if req.method == "GET" {
+            let id = wire.lookup_id(query);
+            if len(id) == 0 { return wire.error("invalid_query"); }
+            line = forwarded_line("{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":" + dna::record_json_quote(id) + "}}");
+        } else {
+            if len(query) > 0 { return wire.error("invalid_query"); }
+            let guard = wire.guard(req, self.command_origin);
+            // a Knowledge node carries up to 8 KiB of text, so its line
+            // keeps the larger budget the node profile always had
+            let call = wire.text(req.body, "call");
+            let node = (call == "KnowledgeNodePropose" || call == "KnowledgeNodeRevise") && len(req.body) <= 98304;
+            if len(guard) > 0 && !(guard == "command_too_large" && node) { return wire.error(guard); }
+            line = forwarded_line(req.body);
+            if len(line) == 0 { return http.error(400, "invalid_command", "one JSON object of the api wire, without a \"via\"", false); }
+        }
+        let forward = Forward { socket: self.socket };
+        let receipt = forward.line(line);
+        if len(receipt) == 0 { return http.error(503, "commands_unavailable", "this head's api socket is not answering; nothing was forwarded", false); }
+        return http.response(forwarded_status(receipt), receipt);
+    }
     fn definition_draft_handle(req: std::http::Request, has_query: Bool, context: CommandContext) -> std::http::Response {
         let http = Http { };
         let wire = DefinitionDraftWire { };
@@ -351,32 +353,6 @@ locus Api {
         if record_now.id != context.source.head { return http.error(409, "snapshot_changed", "the Record changed during definition draft validation", true); }
         if result.status != 200 { return http.error(result.status, result.code, result.message, result.status == 409 || result.status == 503); }
         return http.success(context.source, data);
-    }
-    fn command_handle(req: std::http::Request, query: String, context: CommandContext) -> std::http::Response {
-        let wire = CommandWire { };
-        if !(self.commands.supported("dna.practice.propose", "1") || self.commands.supported("dna.review.verdict", "1") || self.commands.supported("dna.organization.propose", "1") || self.commands.supported("dna.task.reassign", "1") || self.commands.supported("dna.person.retire", "1") || self.commands.supported("dna.task.create", "1") || self.commands.supported("dna.attempt.claim", "1")) { return wire.error("commands_unsupported"); }
-        if req.method == "GET" {
-            let request_id = wire.lookup_id(query);
-            if len(request_id) == 0 { return wire.error("invalid_query"); }
-            // Recovery permission is independent of current write capability.
-            return wire.response(context, CommandRequest { request_id: request_id }, self.commands.lookup(context, request_id), false);
-        }
-        if req.method != "POST" {
-            let http = Http { };
-            return http.error(405, "method_not_allowed", "this command method is not supported", false);
-        }
-        if len(query) > 0 { return wire.error("invalid_query"); }
-        let guard = wire.guard(req, self.command_origin);
-        if len(guard) > 0 { return wire.error(guard); }
-        let command = wire.parse(req.body, context.source.identity);
-        if !command.valid { return wire.error("invalid_command"); }
-        // Expected identity is a precondition, never an authentication source.
-        // A browser session can change after review but before this request.
-        if command.expected_principal_mode != context.principal_mode || command.expected_principal_name != context.principal_name { return wire.error("command_context_changed"); }
-        if !self.commands.supported(command.operation, command.operation_version) { return wire.error("commands_unsupported"); }
-        // Discovery grants no authority: the provider must authorize the native
-        // decision and recover an existing request before considering admission.
-        return wire.response(context, command, self.commands.submit(context, command), true);
     }
     fn review_candidate_read(context: CommandContext, query: Query, raw_query: String) -> std::http::Response {
         let http = Http { };
@@ -505,6 +481,116 @@ locus Api {
     }
 }
 
+// The `token=` of a `/?token=…` query, "" when absent.
+fn query_token(raw_query: String) -> String {
+    if !std::str::starts_with(raw_query, "token=") || std::str::contains(raw_query, "&") || len(raw_query) > 96 { return ""; }
+    return raw_query[6..len(raw_query)];
+}
+
+// The name the local session acts under: the person `dna.unix.member`
+// maps this process's uid to, else `uid:<n>` — never $USER, which is a
+// name nothing vouched for. The forwarder records a command under the
+// same name, so a receipt matches the session `/capabilities` names.
+fn local_person(root: String) -> String {
+    let roles = dna::RecordRoles { root: root };
+    let me = std::process::uid();
+    let person = roles.person(std::api::Principal { mode: "unix", name: "uid:" + to_string(me), uid: me, gid: -1, pid: std::process::pid() });
+    return if len(person) > 0 { person } else { "uid:" + to_string(me) };
+}
+
+// The local session's trust until OIDC (GH #989): a per-launch token,
+// minted into `<root>/.hale/dna/head.token` (0600) and printed in the
+// head's URL, Jupyter style. The shell at `/` and every POST need it;
+// a process that can read the file is the user, which is what "trusted
+// local" meant all along — any local process is not.
+fn launch_token(dir: String) -> String {
+    let drawn = dna::run_tool("od\n-An\n-tx1\n-N16\n/dev/urandom");
+    let token = std::str::replace(std::str::replace(drawn.stdout, " ", ""), "\n", "");
+    if drawn.code != 0 || len(token) != 32 {
+        eprintln("hale dna api: could not draw a launch token from /dev/urandom; refusing to start");
+        std::process::exit(2);
+    }
+    let made = dna::run_tool("mkdir\n-p\n" + dir);
+    let file = dir + "/head.token";
+    std::io::fs::write_file(file, token + "\n") or discard;
+    let tightened = dna::run_tool("chmod\n600\n" + file);
+    if made.code != 0 || tightened.code != 0 {
+        eprintln("hale dna api: could not keep the launch token to this user in ", file, "; refusing to start");
+        std::process::exit(2);
+    }
+    return token;
+}
+
+// A token compared in constant time: the whole of both, whatever
+// matched first.
+fn token_matches(given: String, expected: String) -> Bool {
+    if len(expected) == 0 || len(given) != len(expected) { return false; }
+    let mut differ = 0;
+    let mut i = 0;
+    while i < len(expected) {
+        if std::str::byte_at_unchecked(given, i) != std::str::byte_at_unchecked(expected, i) { differ = differ + 1; }
+        i = i + 1;
+    }
+    return differ == 0;
+}
+
+// The head's socket: one per record, named by the first twelve
+// characters of the record's id, under the user's runtime directory
+// (`$XDG_RUNTIME_DIR/hale/dna/<id12>.sock`), else under the record's own
+// `.hale/dna`, else — when that path would not fit an AF_UNIX address —
+// under a short per-uid directory (`/tmp/hale-<uid>/<id12>.sock`); never
+// a fixed path two projects or two users would steal from each other.
+// `LOTUS_API` overrides it. A path is only advertised once it is bound
+// and answered by this process (see `socket_live`).
+fn head_socket(root: String) -> String {
+    let id = dna::GitRecord { repo: root }.identity();
+    let name = (if len(id) >= 12 { id[0..12] } else if len(id) > 0 { id } else { "head" }) + ".sock";
+    let runtime = std::env::var("XDG_RUNTIME_DIR");
+    let mut dir = if len(runtime) > 0 && len(id) > 0 { runtime + "/hale/dna" } else { root + "/.hale/dna" };
+    if len(dir) + 1 + len(name) > SOCKET_PATH_MAX {
+        dir = "/tmp/hale-" + to_string(std::process::uid());
+        let owned = dna::run_tool("mkdir\n-p\n-m\n700\n" + dir);
+        if owned.code != 0 { return ""; }
+    }
+    let made = std::process::run("mkdir\n-p\n" + dir) or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+    if made.code != 0 { return ""; }
+    return dir + "/" + name;
+}
+// The room an AF_UNIX address has for its path, on the smaller of the
+// platforms served (104 on macOS; 108 on Linux), less the terminator.
+const SOCKET_PATH_MAX: Int = 103;
+
+// GH #1104 piece 5: the head is the binding. Every topic a locus of
+// this seed subscribes is a command a caller may send, every one it
+// publishes a stream, every expose a read; the record's commands are the
+// gated topics of commands.hl (#946, #1110). The record answers who holds which position
+// (`dna::RecordRoles` over this root; `dna.unix.member` maps a socket
+// peer to a person), so `{"describe": "full"}` is the board's, and a
+// tool gated on a position is listed only to a principal the record
+// says holds it. The socket is one per record under XDG_RUNTIME_DIR (or
+// the record's .hale/dna); `LOTUS_API` overrides it.
+main locus Head {
+    params {
+        root: String = ".";
+        socket: String = "";
+        roles: dna::RecordRoles = dna::RecordRoles { };
+        srv: std::http::Server;
+        commands: Commands = Commands { };
+    }
+    // The server off the main pool (a server born as a param on main's
+    // pool would hold its birth thread before the binding is born), a
+    // command's git work on its own. A SIGTERM drains the head: run()
+    // returns, the io pool's shutdown ends the accept, and the binding's
+    // dissolve removes the socket.
+    placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
+    bindings {
+        api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles);
+    }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+    }
+}
+
 fn main() {
     let root = std::env::arg_or(1, ".");
     let raw_port = std::env::arg_or(2, "8792");
@@ -529,7 +615,8 @@ fn serve(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCata
     serve_with_commands(root, port, web, definitions, NoCommands { });
 }
 
-// Explicit application composition only; standalone serve() always uses NoCommands.
+// Explicit application composition only; standalone serve() always uses NoCommands
+// (every command answers `commands_unsupported`).
 // The permitted browser origin comes from our own bound host/port, never Host.
 fn serve_with_commands(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider) {
     let authority = ops::NoGovernanceAuthority { };
@@ -539,23 +626,22 @@ fn serve_with_commands(root: String, port: Int, web: WebAssets, definitions: ops
 // Source evidence read/recovery permission is an explicit separate grant.
 // It enables immutable reads only; Organization publishing remains disabled.
 fn serve_with_source_evidence(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority) {
-    let absent = NoOrganizationCapabilities { };
-    serve_with_source_commands(root, port, web, definitions, commands, authority, absent);
+    serve_with_source_commands(root, port, web, definitions, commands, authority);
 }
 
-// The optional capability facet is bound to the same command provider; it
-// supplies no independent command registry or authority.
-fn serve_with_source_commands(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority, source_capabilities: OrganizationCapabilityProvider) {
+fn serve_with_source_commands(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority) {
     let absent = NoOrganizationRuntime { };
-    serve_with_source_runtime(root, port, web, definitions, commands, authority, source_capabilities, absent);
+    serve_with_source_runtime(root, port, web, definitions, commands, authority, absent);
 }
 
 // Optional trusted host association. Historical status stays useful when absent.
-fn serve_with_source_runtime(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority, source_capabilities: OrganizationCapabilityProvider, runtime: OrganizationRuntimeProvider) {
+fn serve_with_source_runtime(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority, runtime: OrganizationRuntimeProvider) {
     let absent = NoPeople { };
-    serve_with_people(root, port, web, definitions, commands, authority, source_capabilities, runtime, absent);
+    serve_with_people(root, port, web, definitions, commands, authority, runtime, absent);
 }
-fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority, source_capabilities: OrganizationCapabilityProvider, runtime: OrganizationRuntimeProvider, people: PeopleProvider) {
+// The head: the HTTP reads, and the commands on the api binding's socket,
+// gated by the record (dna::RecordRoles) and admitted by `commands`.
+fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::WorkflowCatalogProvider, commands: CommandProvider, authority: ops::GovernanceAuthority, runtime: OrganizationRuntimeProvider, people: PeopleProvider) {
     if port < 1 || port > 65535 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
         eprintln("hale dna api: expected a project root and port 1..65535");
         std::process::exit(2);
@@ -574,6 +660,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     let knowledge_commands = LocalKnowledgeCommands { root: root };
     let organization_candidates = OrganizationCandidateWire { authority: authority };
     let command_label = if commands.supported("dna.practice.propose", "1") || commands.supported("dna.review.verdict", "1") { "composed command provider" } else if knowledge_commands.supported() { "Knowledge commands in-process" } else { "no writes" };
+    let socket = head_socket(root);
     if mode == "oidc" {
         let issuer = record.setting("oidc.issuer");
         let client = record.setting("oidc.client");
@@ -584,14 +671,19 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
-        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
+            srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
         eprintln("hale dna api: unsupported principal source; refusing local fallback");
         std::process::exit(2);
     }
-    let user = std::env::var("USER");
-    println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local; ", command_label, ")");
-    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
+    // The local session is the head's own uid: the person the record maps
+    // it to (what a forwarded command is recorded as), else `uid:<n>`.
+    let user = local_person(root);
+    let token = launch_token(root + "/.hale/dna");
+    println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; ", command_label, "; the token is in ", root, "/.hale/dna/head.token)");
+    Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
+        srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: user, token: token } } };
 }

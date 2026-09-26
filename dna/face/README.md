@@ -548,7 +548,9 @@ edits and navigation invalidate previous review evidence. No draft text enters
 browser storage.
 
 With the native Knowledge command provider configured, **Submit knowledge
-change** uses the capability returned for the selected operation. Node and
+change** sends the operation's call on the head's forwarding route when this
+session's describe slice lists it; the Knowledge policy still decides, per
+person, whether the change is admitted, reviewed or refused. Node and
 binding proposals follow exact native Review and adoption or refusal.
 Relationship link/unlink uses direct or reviewed admission according to policy.
 For reviewed relationships, connected proposal, Review, effect and graph stages
@@ -564,7 +566,7 @@ complete relevant pagination and a final visible receipt at the same source
 basis; a missing row on one page is not proof of removal. No optimistic graph
 change is presented as an observed native effect.
 
-Services without the required command capability retain preparation and
+Sessions whose slice lacks the call retain preparation and
 **Download knowledge draft**. The exported `face.knowledge.change-draft.v1`
 artifact is not a native command, receipt or accepted proposal. Its
 `source_checked` flag means only that the browser rechecked visible service

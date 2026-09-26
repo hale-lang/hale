@@ -9,12 +9,21 @@
 // binary's `project` action (migrate, then one projection under the spine's
 // role) is run in its place after every admission and API restart. `drop`
 // removes the Record's schema and roles when the fixture stops.
+//
+// Knowledge changes are the head's gated topics (GH #1129): a line of the
+// api wire POSTed to …/commands, forwarded to the head's own socket. The
+// head's uid is mapped to the actor, who holds a seat (the `position`
+// gate); the policy grants that person. Every POST carries the launch token
+// the head minted (GH #989), and a page the lane opens is given the session
+// cookie again after each restart.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { boundedNative, isolatedEnvironment, memoryOwner } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, memoryOwner, launchToken } from './environment.mjs';
+import { seatRecord } from './record-seats.mjs';
+import { wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
 
 const webroot = fileURLToPath(new URL('../web', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -58,6 +67,8 @@ export async function startKnowledgeService(options = {}) {
     return result.stdout;
   };
   runSeed(['seed', String(options.count ?? 3)], 'Knowledge seed');
+  // The actor holds a seat: a Knowledge change is gated `position`.
+  seatRecord(root, env, actor, options.seats || ['editor']);
   const refs = JSON.parse(await readFile(resolve(root, 'fixture.json'), 'utf8'));
   const apiPort = options.port || await port();
   const origin = `http://127.0.0.1:${apiPort}`;
@@ -87,7 +98,9 @@ export async function startKnowledgeService(options = {}) {
     dropped = true;
     runSeed(['drop'], 'Knowledge memory drop');
   }
-  let apiChild;
+  let apiChild, token = '';
+  // Pages the lane opened: each gets the session cookie of every launch.
+  const pages = new Set();
   const history = [];
   let stopped = false;
   const emergency = () => {
@@ -119,28 +132,50 @@ export async function startKnowledgeService(options = {}) {
       const response = await fetch(`${origin}/api/hale/v1/applications`, { signal: AbortSignal.timeout(500) });
       return response.ok;
     });
+    token = await launchToken(root);
+    for (const page of pages) await authorize(page);
+  }
+  // The URL the head printed, opened once: it sets the session cookie.
+  async function authorize(page) {
+    const opened = await page.request.get(`${origin}/?token=${token}`);
+    if (opened.status() !== 200) throw new Error('The launch token did not open the shell: ' + opened.status());
   }
   async function request(path, init = {}) {
-    const response = await fetch(origin + apiPath + path, { signal: AbortSignal.timeout(10_000), ...init });
+    const headers = { ...(init.method && init.method !== 'GET' ? { 'X-Hale-Token': token } : {}), ...(init.headers || {}) };
+    const response = await fetch(origin + apiPath + path, { signal: AbortSignal.timeout(10_000), ...init, headers });
     return { status: response.status, body: await response.json() };
+  }
+  // One line of the api wire, forwarded; its receipt settled.
+  async function forward(line) {
+    const response = await request('/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(line) });
+    return { ...settleKnowledge(response.status, response.body), line };
   }
   const service = {
     root, application: refs.application, principal: { mode: 'local', name: actor }, origin, apiPath,
     url(view = 'knowledge', extra = {}) {
       return `${origin}/#/${view}?${new URLSearchParams({ app: refs.application, ...(view === 'knowledge' ? { id: refs.knowledge } : {}), ...extra })}`;
     },
+    // A page this lane drives: given the session cookie now and after every
+    // restart.
+    async attach(page) { pages.add(page); await authorize(page); },
+    get token() { return token; },
     refs: async () => refs, processes, logs,
-    request,
+    request, forward,
     // The spine's tick: the Record as it stands, projected into memory.
     tick,
-    capability: operation => request('/dna/knowledge/commands/capability' + (operation ? '?' + new URLSearchParams({ operation }) : '')),
+    // The session's slice: the calls the head's describe line lists for it.
+    async slice() {
+      const described = await request('/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: '{"describe":true}' });
+      if (described.status !== 200 || !described.body.ok) throw new Error('describe failed ' + JSON.stringify(described));
+      return described.body.value.commands.map(entry => entry.name);
+    },
     // An admission moves the Record; the spine's tick follows it.
     async post(command) {
-      const response = await request('/dna/knowledge/commands', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(command) });
+      const settled = await forward(wireLine(command));
       await tick();
-      return response;
+      return settled;
     },
-    lookup: requestId => request(`/dna/knowledge/commands?request_id=${encodeURIComponent(requestId)}`),
+    lookup: requestId => forward(knowledgeLookupLine(requestId)),
     async recordHead() {
       const value = await request('/capabilities');
       if (value.status !== 200) throw new Error(`Record read failed ${JSON.stringify(value)}`);

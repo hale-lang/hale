@@ -4,6 +4,7 @@
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { httpFixture } from './http-fixture.mjs';
+import { commandReceipt, commandReply, describeLine, receiptLine, refusedReply, routeError } from './command-wire.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), PRINCIPAL = { mode: 'local', name: 'riley' };
 const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), INTENT = 'i1f4';
@@ -32,22 +33,21 @@ async function fixture(page, options = {}) {
   const source = () => ({ record_id: APP, record_head: script.applied ? NEXT : HEAD, record_revision: script.applied ? '11' : '10' });
   const wrap = data => ({ api_version: 'hale.v1', source: source(), data });
   const pageInfo = (items, limit = 25, offset = 0) => ({ limit, offset, total: items.length, next_offset: -1, snapshot: source().record_head });
-  const receipt = command => {
+  const receipt = ({ payload: command }) => {
     const born = script.answer === 'born';
-    const data = { command_id: 'ui-create/' + command.request_id, request_id: command.request_id, application_id: APP, operation: 'dna.task.create', operation_version: '1', principal: PRINCIPAL, context: command.context, target: command.target, subject_digest: command.preconditions.record_head, fingerprint: 'sha256:' + 'f'.repeat(64), state: 'succeeded', reason: '', task_create: { intent_id: INTENT, intent_state: script.answer, task_id: born ? 'org:t9' : '', event_id: EVENT }, review: { state: 'unavailable', outcome: '', subject_digest: '' }, activation: { state: 'unknown', reason: '' } };
+    // The head names the Record as the target of a raised task.
+    const data = { command_id: 'ui-create/' + command.request_id, request_id: command.request_id, application_id: APP, operation: 'dna.task.create', operation_version: '1', principal_mode: PRINCIPAL.mode, principal_name: PRINCIPAL.name, target_kind: 'dna.record', target_id: APP, subject_digest: command.record_head, fingerprint: 'sha256:' + 'f'.repeat(64), state: 'succeeded', proposal_state: '', task_create: { intent_id: INTENT, intent_state: script.answer, task_id: born ? 'org:t9' : '', event_id: EVENT } };
     if (script.badReceipt === 'task') data.task_create.task_id = 'org:t9';
-    if (script.badReceipt === 'target') data.target = { ...data.target, id: 'different-record' };
-    if (script.badReceipt === 'activation') data.activation.state = 'adopted';
-    return wrap(data);
+    if (script.badReceipt === 'target') data.target_id = 'different-record';
+    if (script.badReceipt === 'activation') data.activation_state = 'adopted';
+    return receiptLine(commandReply(commandReceipt(data), source()));
   };
   await page.route('**/api/hale/v1{,/**}', async route => {
     const request = route.request(), url = new URL(request.url());
     const send = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
     if (url.pathname === API) return send(200, wrap({ items: [{ id: APP, kind: 'dna', name: 'Task creation UI contract', capabilities_url: API + '/' + APP + '/capabilities' }], page: pageInfo([{}]) }));
     if (url.pathname.endsWith('/capabilities')) {
-      const write = script.profile && script.available && script.authorized;
-      const data = { application_id: APP, principal: PRINCIPAL, read_only: script.inconsistent ? true : !write, reads: { tasks: true, workflows: false, reviews: false, practices: false, organization: false, definitions: false, knowledge: false }, writes: { practice_propose: false, review_verdict: false, task_create: write } };
-      if (script.profile) data.task_create_commands = { profile: 'dna.task.create.v1', available: script.available, authorized: script.authorized, position_id: 'org', recovery: 'record_lifetime', max_outcome_bytes: '8192', max_identity_bytes: '256', max_request_bytes: '32768', reason: '' };
+      const data = { application_id: APP, principal: PRINCIPAL, read_only: true, reads: { tasks: true, workflows: false, reviews: false, practices: false, organization: false, definitions: false, knowledge: false }, api: { transport: 'unix', socket: '/run/scripted.sock', http: script.profile ? API + '/' + APP + '/commands' : '' } };
       return send(200, wrap(data));
     }
     if (url.pathname.endsWith('/dna/tasks')) {
@@ -57,15 +57,18 @@ async function fixture(page, options = {}) {
     }
     if (url.pathname.endsWith('/commands')) {
       if (request.method() === 'POST') {
-        const command = request.postDataJSON(); script.posts.push({ body: command, headers: request.headers() }); script.savedBefore = await saved(page);
+        const command = request.postDataJSON();
+        // A contract slice: TaskCreate while the script offers it.
+        if (command.describe) return send(200, describeLine(['CommandLookup', ...(script.available && script.authorized ? ['TaskCreate'] : [])]));
+        script.posts.push({ body: command, headers: request.headers() }); script.savedBefore = await saved(page);
         script.applied = true;
         if (script.postMode === 'lost') return route.abort('failed');
         return send(200, receipt(command));
       }
       const requestId = url.searchParams.get('request_id'); script.gets.push(requestId);
-      if (script.getMode === 'unavailable') return send(503, error('commands_unavailable', 'Receipt temporarily unavailable.'));
-      const command = script.posts.find(post => post.body.request_id === requestId)?.body;
-      return command ? send(200, receipt(command)) : send(404, error('command_not_found', 'No fixture receipt.'));
+      if (script.getMode === 'unavailable') return send(503, routeError('commands_unavailable', 'Receipt temporarily unavailable.'));
+      const command = script.posts.find(post => post.body.payload.request_id === requestId)?.body;
+      return send(200, command ? receipt(command) : receiptLine(refusedReply('command_not_found')));
     }
     return send(404, error('not_found', 'Outside this scripted UI contract.'));
   });
@@ -89,15 +92,15 @@ test('New task app contract: exact confirmation stores identity before POST and 
   await confirmation(page).getByRole('button', { name: 'Confirm new task', exact: true }).click();
   await expect(recovery(page)).toHaveAttribute('data-intent-state', 'requested');
   expect(script.posts).toHaveLength(1); const post = script.posts[0];
-  expect(post.body).toEqual({ request_id: expect.any(String), operation: 'dna.task.create', operation_version: '1', context: { application_id: APP, position_id: 'org' }, target: { application_id: APP, kind: 'dna.record', id: APP }, preconditions: { record_head: HEAD, principal: PRINCIPAL }, arguments: { outcome: OUTCOME, to: 'org' } });
+  expect(post.body).toEqual({ call: 'TaskCreate', payload: { request_id: expect.any(String), record_head: HEAD, outcome: OUTCOME, to: 'org' } });
   expect(post.headers['x-hale-command']).toBe('1'); expect(post.headers['content-type']).toContain('application/json');
-  expect(script.savedBefore).toEqual([{ key: KEY, value: { version: 7, application_id: APP, principal: PRINCIPAL, request_id: post.body.request_id, operation: 'dna.task.create', operation_version: '1', position_id: 'org', target_kind: 'dna.record', target_id: APP, subject_digest: HEAD } }]);
+  expect(script.savedBefore).toEqual([{ key: KEY, value: { version: 7, application_id: APP, principal: PRINCIPAL, request_id: post.body.payload.request_id, operation: 'dna.task.create', operation_version: '1', position_id: 'org', target_kind: 'dna.record', target_id: APP, subject_digest: HEAD } }]);
   await expect(recovery(page)).toContainText(INTENT + ' · requested'); await expect(recovery(page)).toContainText('Not yet born');
   await expect(region(page)).toContainText('Check the saved request');
   script.answer = 'born';
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await expect(recovery(page)).toHaveAttribute('data-intent-state', 'born');
-  await expect(recovery(page)).toContainText('org:t9'); expect(script.posts).toHaveLength(1); expect(script.gets).toEqual([post.body.request_id]);
+  await expect(recovery(page)).toContainText('org:t9'); expect(script.posts).toHaveLength(1); expect(script.gets).toEqual([post.body.payload.request_id]);
   await recovery(page).getByRole('button', { name: 'Intent', exact: true }).click(); await expect(recovery(page)).toContainText('minted its Task');
   await recovery(page).getByRole('button', { name: 'Task', exact: true }).click(); await expect(recovery(page)).toContainText('The Task exists');
   await recovery(page).screenshot({ path: info.outputPath('task-create-readback-desktop.png') });
@@ -126,12 +129,12 @@ test('New task app contract: lost POST reply reload recovers with GET only even 
   await expect(region(page).getByRole('textbox', { name: 'What should happen', exact: true })).toBeDisabled();
 });
 
-test('New task app contract: missing or inconsistent capability cannot raise work', async ({ page, host }) => {
+test('New task app contract: no forwarding route, or a slice without TaskCreate, cannot raise work', async ({ page, host }) => {
   const script = await fixture(page);
   await open(page, host); await expect(page.locator('#record-list-panel')).toBeVisible();
-  // No profile or a profile that contradicts read_only is not a supported
-  // surface at all; a denied grant keeps the form visible but disabled.
-  for (const options of [{ profile: false }, { profile: true, inconsistent: true }, { inconsistent: false, authorized: false }]) {
+  // No forwarding route is no command surface at all; a slice without the
+  // call keeps the form visible but disabled.
+  for (const options of [{ profile: false }, { profile: true, authorized: false }]) {
     Object.assign(script, options); await open(page, host); await expect(page.locator('#record-list-panel')).toBeVisible();
     if (options.authorized === false) { await expect(region(page).getByRole('textbox', { name: 'What should happen', exact: true })).toBeDisabled(); await expect(region(page)).toHaveAttribute('data-state', 'unavailable'); }
     else await expect(region(page)).toHaveCount(0);

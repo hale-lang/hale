@@ -9,7 +9,9 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
+import { settle, wireLine } from './command-wire.mjs';
+import { seatRecord } from './record-seats.mjs';
 
 const runFile = promisify(execFile);
 const required = name => {
@@ -195,15 +197,21 @@ try {
 
   if (apiBinary) {
     const port = await freePort(); const origin = `http://127.0.0.1:${port}`;
+    // The API's forwarded commands are its own uid's: seat the actor so a
+    // proposal's gate opens; the policy still decides admission.
+    seatRecord(root, baseEnv, actor, ['board']);
     const api = start('api', apiBinary, [root, String(port)]);
     const endpoint = `${origin}/api/hale/v1/applications/${application}/commands`;
     await until('native command API', async () => {
       if (api.startError || api.exitCode !== null || api.signalCode) throw new Error(api.startError?.message || api.errors || 'API exited');
       try { return (await fetch(`${origin}/api/hale/v1/applications`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; }
     });
+    // the launch token the API minted (GH #989): a tool's POST carries it
+    const token = await launchToken(root);
     const get = async id => {
       const response = await fetch(endpoint + '?' + new URLSearchParams({ request_id: id }), { signal: AbortSignal.timeout(10_000) });
-      const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result)); return result;
+      const result = await response.json(); const settled = settle(response.status, result);
+      assert.equal(settled.status, 200, JSON.stringify(result)); assert.equal(settled.code, '', JSON.stringify(result)); return { ...result, data: settled.receipt };
     };
     const apiReceipt = await unchanged('api-recovers-cli-command', () => get(requestId));
     assert.equal(apiReceipt.data.command_id, commandId); assert.equal(apiReceipt.data.fingerprint, fact.command_fingerprint);
@@ -212,8 +220,11 @@ try {
     const apiRequest = { request_id: 'api-to-cli-request', operation: 'dna.practice.propose', operation_version: '1',
       context: { application_id: application, position_id: 'org' }, target: { application_id: application, kind: 'dna.practice', id: ready.bootstrap_digest },
       preconditions: { subject_digest: ready.bootstrap_digest, principal: { mode: 'local', name: actor } }, arguments: { text, rationale } };
-    const response = await fetch(endpoint, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(apiRequest), signal: AbortSignal.timeout(10_000) });
-    const apiResult = await response.json(); assert.equal(response.status, 202, JSON.stringify(apiResult));
+    // The HTTP route forwards one line of the head's wire to its socket.
+    const response = await fetch(endpoint, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1', 'X-Hale-Token': token }, body: JSON.stringify(wireLine(apiRequest)), signal: AbortSignal.timeout(10_000) });
+    const line = await response.json(); const settledPost = settle(response.status, line);
+    assert.equal(settledPost.status, 200, JSON.stringify(line)); assert.equal(settledPost.code, '', JSON.stringify(line));
+    const apiResult = { ...line, data: settledPost.receipt };
     assert.equal(apiResult.data.state, 'recorded');
     const cliReceipt = await unchanged('cli-recovers-api-command', () => cli('recover-api-command', 'practice', lookup(apiRequest.request_id)));
     assert(cliReceipt.stdout.includes('command_id: ' + apiResult.data.command_id));
