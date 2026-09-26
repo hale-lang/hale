@@ -1,0 +1,272 @@
+// dna/operations/graph.hl — the repository as one recursive hypergraph
+// (GH #1085).
+//
+// An organization and its product are one graph; the org chart and the
+// deployed process model are two perspectives over it, neither its trunk.
+// The record holds the graph as rows — `graph.node`, `graph.edge`,
+// `graph.retired` — and the spine projects them into memory with
+// everything else it projects (memory_tail.hl), one store, one projection.
+// A perspective is a query over memory (`KnowledgeStore.graph_perspective`).
+//
+// Two of the vocabulary's kinds are already in the record under their own
+// rows and are never written here: a `practice` is a knowledge idea of kind
+// `practice` (advice while proposed, law once ratified), and `binds` is a
+// knowledge binding. A member may still name a practice, as
+// `practice:<digest>`.
+
+import "../core" as dna;
+
+// The node kinds (GRAPH.md, "Node kinds"), and the ones a `graph.node`
+// row carries.
+const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work";
+const GRAPH_ROW_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work";
+
+// The hyperedge kinds, arity two or more, and the ones a `graph.edge` row
+// carries.
+const GRAPH_EDGE_KINDS: String = "unfold meets names refers constrains runs gates binds witnesses holds reviews";
+const GRAPH_ROW_EDGE_KINDS: String = "unfold meets names refers constrains runs gates witnesses holds reviews";
+
+// Each edge kind's members, as `<kind>:<anchor>:<second>:<others>`: the
+// anchor role comes first, exactly once. An edge with a `second` role is
+// exactly the pair (anchor, second) and is keyed by both — an unfold is one
+// edge per child, so adding a child restates none of its siblings. An edge
+// without one takes one or more members in the `others` roles (`,`-joined)
+// and is keyed by its anchor alone: one `meets` per contract, and the
+// latest row says who meets there.
+const GRAPH_EDGE_SHAPES: String = "unfold:parent:child: meets:contract::server,consumer,carrier names:contract::noun refers:from:to: constrains:axiom::shaped runs:deployment::process gates:gate::guarded witnesses:witness::about holds:position:holder: reviews:position:contract:";
+
+// The node kind a role requires, where it requires one (`<edge>.<role>:
+// <node kind>`). A `holder` is a person, never a node.
+const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position reviews.position:position reviews.contract:contract";
+
+const GRAPH_NAME_MAX: Int = 512;
+const GRAPH_MEMBERS_MAX: Int = 256;
+
+// A node's id: `<kind>:<name>`, the kind first so two kinds may share a
+// name (`process:api`, `seed:api`).
+fn graph_node_id(kind: String, name: String) -> String { return kind + ":" + name; }
+
+// The kind an id names ("" when it names none).
+fn graph_id_kind(id: String) -> String {
+    let colon = std::str::index_of(id, ":");
+    return if colon > 0 { id[0..colon] } else { "" };
+}
+
+// One field of an edge kind's shape, `n` = 1 anchor, 2 second, 3 others.
+@unbounded
+fn graph_shape(kind: String, n: Int) -> String {
+    let mut i = 0;
+    while len(dna::nth_word(GRAPH_EDGE_SHAPES, i)) > 0 {
+        let s = dna::nth_word(GRAPH_EDGE_SHAPES, i) + ":";
+        if std::str::starts_with(s, kind + ":") {
+            let mut rest = s[(len(kind) + 1)..len(s)];
+            let mut k = 1;
+            while k < n {
+                rest = rest[(std::str::index_of(rest, ":") + 1)..len(rest)];
+                k = k + 1;
+            }
+            return rest[0..std::str::index_of(rest, ":")];
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// The node kind `role` requires on an edge of `kind` ("" = any).
+@unbounded
+fn graph_role_kind(kind: String, role: String) -> String {
+    let want = kind + "." + role + ":";
+    let mut i = 0;
+    while len(dna::nth_word(GRAPH_ROLE_KINDS, i)) > 0 {
+        let w = dna::nth_word(GRAPH_ROLE_KINDS, i);
+        if std::str::starts_with(w, want) { return w[len(want)..len(w)]; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// A name or a holder: present, bounded, one line of printable text.
+@unbounded
+fn graph_text_ok(s: String) -> Bool {
+    if len(s) == 0 || len(s) > GRAPH_NAME_MAX { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c < 32 || c == 127 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A member naming a node: `<node kind>:<name>`, of `want` when one is
+// required.
+fn graph_ref_ok(node: String, want: String) -> Bool {
+    let kind = graph_id_kind(node);
+    if !graph_text_ok(node) || !dna::word_in(kind, GRAPH_NODE_KINDS) || len(node) == len(kind) + 1 { return false; }
+    return len(want) == 0 || kind == want;
+}
+
+// ---- the rows ----------------------------------------------------------
+
+// A `graph.node` row's body. Its entity is `graph_node_id(kind, name)`.
+fn graph_node_body(kind: String, name: String, text: String, source: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("name", name);
+    if len(text) > 0 { b.string_field("text", text); }
+    if len(source) > 0 { b.string_field("source", source); }
+    b.end_object();
+    return b.result();
+}
+
+// A hyperedge being written: its members in order, the transport it is
+// over (`via`), and the parties it reaches that are not nodes (`outside`,
+// e.g. "callers"). `id()` is the row's entity and `body()` its body.
+locus GraphEdge {
+    params {
+        kind: String = "";
+        via: String = "";
+        members: String = ""; // `<role>\t<node>\n` per member, in order
+        outside: String = ""; // one party per line
+    }
+    fn member(role: String, node: String) { self.members = self.members + role + "\t" + node + "\n"; }
+    fn party(name: String) { self.outside = self.outside + name + "\n"; }
+    fn id() -> String { return graph_edge_id(self.kind, self.members); }
+    @unbounded
+    fn body() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("kind", self.kind);
+        b.begin_array_field("members");
+        let mut rest = self.members;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let tab = std::str::index_of(line, "\t");
+            b.begin_object();
+            b.string_field("role", line[0..tab]);
+            b.string_field("node", line[(tab + 1)..len(line)]);
+            b.end_object();
+        }
+        b.end_array();
+        if len(self.via) > 0 { b.string_field("via", self.via); }
+        if len(self.outside) > 0 {
+            b.begin_array_field("outside");
+            rest = self.outside;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                b.string_value(rest[0..nl]);
+                rest = rest[(nl + 1)..len(rest)];
+            }
+            b.end_array();
+        }
+        b.end_object();
+        return b.result();
+    }
+}
+
+// An edge's id: `<kind>:<anchor>`, or `<kind>:<anchor>|<second>` for a
+// kind keyed by both. `members` is `<role>\t<node>\n` per member.
+@unbounded
+fn graph_edge_id(kind: String, members: String) -> String {
+    let first = members[0..std::str::index_of(members, "\n")];
+    let mut id = kind + ":" + first[(std::str::index_of(first, "\t") + 1)..len(first)];
+    if len(graph_shape(kind, 2)) > 0 {
+        let rest = members[(len(first) + 1)..len(members)];
+        let nl = std::str::index_of(rest, "\n");
+        if nl > 0 {
+            let second = rest[0..nl];
+            id = id + "|" + second[(std::str::index_of(second, "\t") + 1)..len(second)];
+        }
+    }
+    return id;
+}
+
+// ---- the checks the projection applies ----------------------------------
+//
+// A graph row is checked whole before memory takes it: the kind is the
+// vocabulary's, every member names a node (a holder, a person), the anchor
+// comes first, the arity is two or more, and the entity is the id the body
+// implies — so the id is the content's, whoever wrote the row.
+
+type GraphRow {
+    ok: Bool = false;
+    why: String = "";
+    id: String = "";
+    kind: String = "";
+    name: String = "";
+    members: String = ""; // the body's members array, as JSON
+}
+
+fn graph_refused(why: String) -> GraphRow { return GraphRow { why: why }; }
+
+fn graph_node_row(entity: String, body: String) -> GraphRow {
+    if !std::json::valid_object(body) { return graph_refused("a graph node's body is not a JSON object"); }
+    let kind = std::json::find_string_field(body, "kind");
+    let name = std::json::find_string_field(body, "name");
+    if kind == "practice" { return graph_refused("a practice is a knowledge idea, proposed and ratified as one; it is not a graph node row"); }
+    if !dna::word_in(kind, GRAPH_ROW_NODE_KINDS) { return graph_refused("`" + kind + "` is not a node kind (" + GRAPH_ROW_NODE_KINDS + ")"); }
+    if !graph_text_ok(name) { return graph_refused("a " + kind + " node needs a name of one printable line"); }
+    let id = graph_node_id(kind, name);
+    if entity != id { return graph_refused("the node's entity `" + entity + "` is not its id `" + id + "`"); }
+    return GraphRow { ok: true, id: id, kind: kind, name: name };
+}
+
+@unbounded
+fn graph_edge_row(entity: String, body: String) -> GraphRow {
+    if !std::json::valid_object(body) { return graph_refused("a graph edge's body is not a JSON object"); }
+    let kind = std::json::find_string_field(body, "kind");
+    if kind == "binds" { return graph_refused("`binds` is a knowledge binding of a practice; it is not a graph edge row"); }
+    if !dna::word_in(kind, GRAPH_ROW_EDGE_KINDS) { return graph_refused("`" + kind + "` is not an edge kind (" + GRAPH_ROW_EDGE_KINDS + ")"); }
+    let anchor = graph_shape(kind, 1);
+    let second = graph_shape(kind, 2);
+    let others = std::str::replace(graph_shape(kind, 3), ",", " ");
+    let raw = std::json::find_field_raw(body, "members");
+    if !std::str::starts_with(raw, "[") { return graph_refused("a " + kind + " edge has no members array"); }
+    let mut lines = "";
+    let mut n = 0;
+    let mut it = std::json::array_first(raw);
+    while !it.done {
+        let role = std::json::find_string_field(it.element, "role");
+        let node = std::json::find_string_field(it.element, "node");
+        if n >= GRAPH_MEMBERS_MAX { return graph_refused("a " + kind + " edge has more than " + to_string(GRAPH_MEMBERS_MAX) + " members"); }
+        if n == 0 && role != anchor { return graph_refused("a " + kind + " edge begins with its `" + anchor + "`"); }
+        if n > 0 && role == anchor { return graph_refused("a " + kind + " edge has one `" + anchor + "`"); }
+        if n > 0 && len(second) > 0 && (n > 1 || role != second) { return graph_refused("a " + kind + " edge is exactly (" + anchor + ", " + second + ")"); }
+        if n > 0 && len(second) == 0 && !dna::word_in(role, others) { return graph_refused("`" + role + "` is not a role of a " + kind + " edge (" + anchor + ", then " + others + ")"); }
+        let ok = if role == "holder" { graph_text_ok(node) && !graph_ref_ok(node, "") } else { graph_ref_ok(node, graph_role_kind(kind, role)) };
+        if !ok {
+            let want = graph_role_kind(kind, role);
+            return graph_refused("the " + kind + " edge's `" + role + "` `" + node + "` " + (if role == "holder" { "is not a person" } else if len(want) > 0 { "is not a " + want + " node id" } else { "is not a node id (<kind>:<name>)" }));
+        }
+        lines = lines + role + "\t" + node + "\n";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    if n < 2 { return graph_refused("a " + kind + " edge joins two or more members; this one has " + to_string(n)); }
+    let via = std::json::find_field_raw(body, "via");
+    if len(via) > 0 && !std::str::starts_with(via, "\"") { return graph_refused("a " + kind + " edge's `via` is a string"); }
+    let outside = std::json::find_field_raw(body, "outside");
+    if len(outside) > 0 {
+        if !std::str::starts_with(outside, "[") { return graph_refused("a " + kind + " edge's `outside` is an array of names"); }
+        let mut o = std::json::array_first(outside);
+        while !o.done {
+            if !std::str::starts_with(o.element, "\"") { return graph_refused("a " + kind + " edge's `outside` is an array of names"); }
+            o = std::json::array_next(o);
+        }
+    }
+    let id = graph_edge_id(kind, lines);
+    if entity != id { return graph_refused("the edge's entity `" + entity + "` is not its id `" + id + "`"); }
+    return GraphRow { ok: true, id: id, kind: kind, members: raw };
+}
+
+// A `graph.retired` row names the node or edge it takes out.
+fn graph_retired_row(entity: String) -> GraphRow {
+    let kind = graph_id_kind(entity);
+    if !graph_text_ok(entity) || len(entity) == len(kind) + 1 || (!dna::word_in(kind, GRAPH_ROW_NODE_KINDS) && !dna::word_in(kind, GRAPH_ROW_EDGE_KINDS)) {
+        return graph_refused("`" + entity + "` names no graph node or edge");
+    }
+    return GraphRow { ok: true, id: entity, kind: kind };
+}

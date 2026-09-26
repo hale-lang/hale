@@ -158,13 +158,15 @@ placeholder equal to its name, so keep the database where only the
 people and machines you trust can reach it.
 
 The migration is one transaction and can be run again at any time.
-It writes a schema version (version 2), and every store checks it when
+It writes a schema version (version 4), and every store checks it when
 it opens: a host whose memory is at another version refuses to start,
 naming both versions and `hale dna memory migrate`, and a migration
 refuses a schema a newer toolchain wrote. Migrating a version-1 memory
 keeps its leases (they become rows of the `claims` table) and empties
 the knowledge graph, which the projectors then rebuild from the record:
-the graph is derived, and version 2 applies it a row at a time.
+the graph is derived, and version 2 applies it a row at a time. Each
+version since has emptied it once the same way — 3 for the org chart
+the Ledger's gate checks, 4 for the repository's graph.
 
 `hale dna dev` migrates first — with `HALE_DNA_MEMORY_DSN_OWNER`, or
 the database `dna/compose.yaml` brings up — and hands the host only
