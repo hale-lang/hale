@@ -3,25 +3,16 @@
 import "../operations" as ops;
 
 interface PeopleProvider {
+    fn present() -> Bool;
     fn person(context: CommandContext, id: String) -> ops::PersonAdministrationRead;
 }
 locus NoPeople {
     params { }
+    fn present() -> Bool { return false; }
     fn person(context: CommandContext, id: String) -> ops::PersonAdministrationRead { return ops::PersonAdministrationRead { code: "commands_unsupported" }; }
 }
 locus PersonWire {
     params { }
-    fn capability(value: CommandCapability, origin: String) -> String {
-        let wire = CommandWire { }; let valid = wire.recipients_valid(value.recipients);
-        let available = value.available && valid && wire.origin_valid(origin);
-        let b = std::json::Builder { }; b.begin_object();
-        b.string_field("profile", "dna.person.retire.v1"); b.bool_field("available", available); b.bool_field("authorized", available && value.authorized);
-        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
-        b.string_field("max_identity_bytes", "256"); b.string_field("max_request_bytes", "32768"); b.string_field("max_transfers", "32");
-        b.field("recipients", if available && value.authorized { value.recipients } else { "[]" });
-        b.string_field("reason", if !wire.origin_valid(origin) { "Command submission has no configured origin." } else if !valid { "Person authority is unavailable." } else if wire.bounded(value.reason, 512, false, true) { value.reason } else { "Person capability is unavailable." });
-        b.end_object(); return b.result();
-    }
     fn read(context: CommandContext, query: Query, provider: PeopleProvider) -> std::http::Response {
         let http = Http { }; let commands = CommandWire { };
         if query.id == "" || query.offset != 0 { return http.error(400, "invalid_query", "person inspection requires an exact id and no offset", false); }

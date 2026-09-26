@@ -146,6 +146,7 @@ struct pollfd { int fd; short events; short revents; };
 typedef unsigned long nfds_t;
 int poll(struct pollfd *, nfds_t, int);
 #define POLLIN  0x001
+#define POLLOUT 0x004
 #define POLLERR 0x008
 #define POLLHUP 0x010
 typedef union { void *ptr; int fd; unsigned u32; unsigned long u64; } epoll_data_t;

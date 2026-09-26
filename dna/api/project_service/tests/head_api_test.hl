@@ -56,10 +56,12 @@ locus HeadCases {
 
     fn guards() {
         let sync = fixture::command("head-guard", "dna.project.sync", self.f.identity, "{}");
-        self.f.error("POST", HEAD + "/commands", "Content-Type: application/json\nX-Hale-Command: 1", sync, 403, "invalid_origin");
-        self.f.error("POST", HEAD + "/commands", "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1", sync, 403, "invalid_origin");
-        self.f.error("POST", HEAD + "/commands", "Origin: " + self.f.url() + "\nContent-Type: text/plain\nX-Hale-Command: 1", sync, 415, "unsupported_media_type");
-        self.f.error("POST", HEAD + "/commands", "Origin: " + self.f.url() + "\nContent-Type: application/json", sync, 400, "invalid_command");
+        // the launch token first: without it nothing is looked at
+        self.f.error("POST", HEAD + "/commands", "Content-Type: application/json\nX-Hale-Command: 1", sync, 401, "unauthenticated");
+        self.f.error("POST", HEAD + "/commands", "Content-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + self.f.token(), sync, 403, "invalid_origin");
+        self.f.error("POST", HEAD + "/commands", "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + self.f.token(), sync, 403, "invalid_origin");
+        self.f.error("POST", HEAD + "/commands", "Origin: " + self.f.url() + "\nContent-Type: text/plain\nX-Hale-Command: 1\nX-Hale-Token: " + self.f.token(), sync, 415, "unsupported_media_type");
+        self.f.error("POST", HEAD + "/commands", "Origin: " + self.f.url() + "\nContent-Type: application/json\nX-Hale-Token: " + self.f.token(), sync, 400, "invalid_command");
         self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-guard", "dna.project.delete", self.f.identity, "{}"), 400, "invalid_command");
         self.f.error("POST", HEAD + "/commands", self.f.command_headers(), "{\"request_id\":\"x\"}", 400, "invalid_command");
         self.f.error("POST", HEAD + "/commands", self.f.command_headers(), "not json", 400, "invalid_command");
@@ -130,10 +132,13 @@ locus HeadCases {
         std::test::assert(std::str::contains(dna::response_header(asset.headers, "Content-Security-Policy"), "script-src 'self'"), "the shell's CSP");
         let child_asset = fixture::curl("GET", "http://127.0.0.1:" + to_string(self.f.api_port) + "/app.js", "", "");
         std::test::assert_eq_int(child_asset.status, 404, "the child has no webroot");
-        // a proxied POST with the head's Origin reaches the child's own guard: the plain API answers 405
+        // a proxied POST with the head's Origin reaches the child's own guard and is
+        // forwarded to its api socket: an empty line is the binding's `malformed`
         let commands = APPLICATIONS + "/" + self.f.identity + "/commands";
-        self.f.error("POST", commands, self.f.command_headers(), "{}", 405, "method_not_allowed");
-        self.f.error("POST", commands, "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1", "{}", 403, "invalid_origin");
+        let forwarded = self.f.http("POST", commands, self.f.command_headers(), "{}");
+        std::test::assert_eq_int(forwarded.status, 400, forwarded.body);
+        std::test::assert(std::str::contains(forwarded.body, "\"kind\":\"malformed\"") && std::str::contains(forwarded.body, "\"via\":\"http-session\""), "the child's binding answered, under the forwarded mark: " + forwarded.body);
+        self.f.error("POST", commands, "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + self.f.token(), "{}", 403, "invalid_origin");
         let missing = self.f.http("GET", APPLICATIONS + "/nope/dna/practices", "", "");
         std::test::assert_eq_int(missing.status, 404, "the child's own 404 passes through: " + missing.body);
         std::test::assert(std::str::contains(dna::response_header(missing.headers, "Cache-Control"), "no-store"), "the child's cache header passes through");

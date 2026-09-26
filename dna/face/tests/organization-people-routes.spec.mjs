@@ -3,6 +3,7 @@
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { httpFixture } from './http-fixture.mjs';
+import { UNGATED, commandReceipt, commandReply, describeLine, receiptLine, refusedReply, routeError } from './command-wire.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), OTHER = '2'.repeat(40);
 const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
@@ -30,7 +31,7 @@ async function fixture(page, options = {}) {
   const source = (app = APP) => ({ record_id: app, record_head: script.applied ? NEXT : HEAD, record_revision: script.applied ? '51' : '50' });
   const wrap = (data, app = APP) => ({ api_version: 'hale.v1', source: source(app), data });
   const pageInfo = (total, offset = 0, limit = 25, snapshot = source().record_head) => ({ total, offset, limit, next_offset: offset + limit < total ? offset + limit : -1, snapshot });
-  const receipt = command => wrap({ command_id: 'scripted/' + command.request_id, request_id: command.request_id, application_id: APP, operation: 'dna.task.reassign', operation_version: '1', principal: PRINCIPAL, context: command.context, target: command.target, subject_digest: command.preconditions.subject_digest, fingerprint: 'sha256:' + 'f'.repeat(64), state: 'succeeded', reason: '', task: { state: 'applied', from: command.preconditions.assignee, to: command.arguments.to, event_id: EVENT }, review: { state: 'unavailable', outcome: '', subject_digest: '' }, activation: { state: 'unknown', reason: '' } });
+  const receipt = ({ payload: command }) => receiptLine(commandReply(commandReceipt({ command_id: 'scripted/' + command.request_id, request_id: command.request_id, application_id: APP, operation: 'dna.task.reassign', operation_version: '1', principal_mode: PRINCIPAL.mode, principal_name: PRINCIPAL.name, target_kind: 'dna.task', target_id: command.task_id, subject_digest: command.assignment_digest, fingerprint: 'sha256:' + 'f'.repeat(64), state: 'succeeded', proposal_state: '', task: { state: 'applied', from: command.assignee, to: command.to, event_id: EVENT } }), source()));
   const org = (url, app) => {
     const id = 'Org', item = { id, declaration: 'Org', parent_id: '', thread_domain: 'main', role: 'position', in_position_outline: true, source_file: 'dna/org/main.hl', sealed: false, parameters: [], methods: [], publishes: [], subscribes: [], supervises: [] };
     return wrap({ items: [item], page: pageInfo(1, Number(url.searchParams.get('offset') || 0)), basis: { source_head: '9'.repeat(40), seed: 'dna/org', artifact_digest: 'scripted-source', dependency_digest: DIGEST, dependency_source: 'none', shape_hash: 'scripted-shape', schema: '1.19', semantics: 2, position_group_declared: true, exact_ownership: true, coverage: 'static_instances', declaration_count: 1, uninstantiated_declaration_count: 0 }, ownership: { mode: 'shared', host_owner: 'support', positions: [{ position: 'org/support', owner: 'support' }], memberships: [{ owner: 'support', members: [PERSON] }, { owner: 'assurance', members: [PERSON, 'dev'] }], instance_binding: 'unavailable' } }, app);
@@ -39,7 +40,7 @@ async function fixture(page, options = {}) {
     const request = route.request(), url = new URL(request.url()), app = url.pathname.includes('/' + OTHER + '/') ? OTHER : APP;
     const send = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
     if (url.pathname === API) return send(200, wrap({ items: [APP, OTHER].map((id, index) => ({ id, kind: 'dna', name: 'Scripted Organization ' + index, capabilities_url: API + '/' + id + '/capabilities' })), page: pageInfo(2) }));
-    if (url.pathname.endsWith('/capabilities')) return send(200, wrap({ application_id: app, principal: PRINCIPAL, read_only: !script.authorized, reads: { tasks: true, organization: true, workflows: false, practices: false, reviews: false, definitions: false, knowledge: false }, writes: { practice_propose: false, review_verdict: false, task_reassign: script.authorized }, task_commands: { profile: 'dna.task.reassign.v1', available: true, authorized: script.authorized, position_id: 'org', recovery: 'record_lifetime', max_identity_bytes: '256', max_request_bytes: '32768', recipients: script.authorized ? [PERSON, 'dev'] : [], reason: '' } }, app));
+    if (url.pathname.endsWith('/capabilities')) return send(200, wrap({ application_id: app, principal: PRINCIPAL, read_only: true, reads: { tasks: true, organization: true, workflows: false, practices: false, reviews: false, definitions: false, knowledge: false }, api: { transport: 'unix', socket: '/run/scripted.sock', http: API + '/' + app + '/commands' } }, app));
     if (url.pathname.endsWith('/dna/organization')) return send(200, org(url, app));
     if (url.pathname.endsWith('/dna/tasks')) {
       script.reads.push({ app, query: [...url.searchParams], source: source(app) });
@@ -55,14 +56,17 @@ async function fixture(page, options = {}) {
     }
     if (url.pathname.endsWith('/commands')) {
       if (request.method() === 'POST') {
-        const command = request.postDataJSON(); script.posts.push(command); script.applied = true;
-        const row = script.rows.find(row => row.id === command.target.id); row.assignee = command.arguments.to; row.assignment_digest = 'sha256:' + '8'.repeat(64);
-        row.history.push({ event_id: EVENT, sequence: '50', kind: 'task.reassigned', from: command.preconditions.assignee, to: command.arguments.to, by: PRINCIPAL.name });
+        const command = request.postDataJSON();
+        // The session's slice: the board's TaskReassign while the script seats it.
+        if (command.describe) return send(200, describeLine([...UNGATED, ...(script.authorized ? ['TaskReassign'] : [])]));
+        script.posts.push(command); script.applied = true;
+        const row = script.rows.find(row => row.id === command.payload.task_id); row.assignee = command.payload.to; row.assignment_digest = 'sha256:' + '8'.repeat(64);
+        row.history.push({ event_id: EVENT, sequence: '50', kind: 'task.reassigned', from: command.payload.assignee, to: command.payload.to, by: PRINCIPAL.name });
         if (script.lost) return route.abort('failed'); return send(200, receipt(command));
       }
       const id = url.searchParams.get('request_id'); script.gets.push(id);
-      if (script.lookupUnavailable) return send(503, error('commands_unavailable', 'Scripted recovery unavailable.'));
-      const command = script.posts.find(value => value.request_id === id); return command ? send(200, receipt(command)) : send(404, error('command_not_found', 'No scripted receipt.'));
+      if (script.lookupUnavailable) return send(503, routeError('commands_unavailable', 'Scripted recovery unavailable.'));
+      const command = script.posts.find(value => value.payload.request_id === id); return send(200, command ? receipt(command) : receiptLine(refusedReply('command_not_found')));
     }
     return send(404, error('not_found', 'Outside this scripted browser contract.'));
   });
@@ -106,14 +110,14 @@ test('Scripted people routes: confirmed reassignment keeps exact selected Task a
   await expect(page.getByText('This Task is now recorded under dev. The list still shows assignments for ' + PERSON + '.', { exact: true })).toBeVisible();
   const current = script.reads.filter(read => read.source.record_head === NEXT); expect(current.some(read => read.query.some(([key, value]) => key === 'assignee' && value === PERSON))).toBe(true);
   expect(current.some(read => read.query.some(([key, value]) => key === 'id' && value === task().id) && !read.query.some(([key]) => key === 'assignee'))).toBe(true);
-  expect(script.posts).toHaveLength(1); expect(script.posts[0].preconditions.assignee).toBe(PERSON); expect(script.posts[0].arguments).toEqual({ to: 'dev' });
+  expect(script.posts).toHaveLength(1); expect(script.posts[0].call).toBe('TaskReassign'); expect(script.posts[0].payload).toMatchObject({ assignee: PERSON, to: 'dev' });
   await page.screenshot({ path: info.outputPath('reassigned-task-retained-selection.png') });
   await page.getByRole('link', { name: 'View assignments for dev', exact: true }).click(); await expect.poll(() => query(page).get('assignee')).toBe('dev');
 });
 
 test('Scripted people routes: lost response reload recovers by GET when the old assignee list is empty', async ({ page, host }) => {
   const script = await fixture(page, { lost: true, lookupUnavailable: true }); await open(page, host, { id: task().id }); await prepare(page); await page.getByRole('button', { name: 'Confirm reassignment', exact: true }).click();
-  await expect(recovery(page)).toContainText('could not be verified'); expect(script.posts).toHaveLength(1); const id = script.posts[0].request_id;
+  await expect(recovery(page)).toContainText('could not be verified'); expect(script.posts).toHaveLength(1); const id = script.posts[0].payload.request_id;
   script.lookupUnavailable = false; script.authorized = false; await page.reload(); await expect(recovery(page)).toHaveAttribute('data-observation', 'observed');
   expect(script.posts).toHaveLength(1); expect(script.gets).toContain(id); expect(query(page).get('assignee')).toBe(PERSON); expect(query(page).get('id')).toBe(task().id);
   await expect(tasks(page).locator('.task-current-assignment strong')).toHaveText('dev'); await expect(tasks(page).getByRole('combobox', { name: 'New assignee', exact: true })).toBeDisabled();

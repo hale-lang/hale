@@ -30,6 +30,7 @@ fn the_entry_parses_with_every_knob() {
         r#"api: unix("/run/app.sock", bound: 64, on_full: refuse, watch_bound: 256, on_watch_full: drop_new);"#,
     ));
     let ApiTransport::Unix { path, .. } = &api.transport;
+    let hale_syntax::ast::Expr::Literal(hale_syntax::ast::Literal::String(path), _) = path else { panic!("a literal path: {:?}", path) };
     assert_eq!(path, "/run/app.sock");
     assert_eq!(api.bound.map(|b| b.0), Some(64));
     assert_eq!(api.on_full.map(|p| p.0), Some(ApiFullPolicy::Refuse));
@@ -85,6 +86,7 @@ fn the_flag_injects_the_dev_entry_and_needs_a_main_locus() {
         bb.api.clone().expect("api entry")
     };
     let ApiTransport::Unix { path, .. } = &api.transport;
+    let hale_syntax::ast::Expr::Literal(hale_syntax::ast::Literal::String(path), _) = path else { panic!("a literal path: {:?}", path) };
     assert_eq!(path, "/run/app.sock");
     assert_eq!(api.bound.map(|b| b.0), Some(hale_syntax::api_gen::DEV_BOUND));
     assert!(api.on_full.is_some());
@@ -206,4 +208,16 @@ fn the_entry_takes_a_refusal_policy_and_a_role_source() {
     let hale_syntax::ast::Expr::Field { receiver, name, .. } = &api.roles.unwrap().expr else { panic!() };
     assert!(matches!(**receiver, hale_syntax::ast::Expr::KwSelf(_)));
     assert_eq!(name.name, "roles");
+}
+
+#[test]
+fn the_socket_path_may_be_an_expression_on_the_main_locus() {
+    // Review B3: a program computes its socket path (a per-record path
+    // under XDG_RUNTIME_DIR, say) and names the param on the entry.
+    let src = "topic T { payload: P; }\ntype P { x: Int; }\nmain locus App { params { socket: String = \"\"; } bindings { api: unix(self.socket, bound: 8, on_full: refuse); } }\nfn main() { App { socket: \"/tmp/x.sock\" }; }\n";
+    let api = api_of(src);
+    let ApiTransport::Unix { path, .. } = &api.transport;
+    let hale_syntax::ast::Expr::Field { receiver, name, .. } = path else { panic!("{:?}", path) };
+    assert!(matches!(**receiver, hale_syntax::ast::Expr::KwSelf(_)));
+    assert_eq!(name.name, "socket");
 }

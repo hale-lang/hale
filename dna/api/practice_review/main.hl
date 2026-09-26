@@ -1,15 +1,136 @@
 // Build: hale build dna/api/practice_review
 // Run: HALE_DNA_COMMAND_POLICY=authority.json practice_review <root> <port> [webroot]
-// One loopback Record/body/host deployment. The ordinary dna/api head remains
-// read-only. This head composes the shared native Governance service explicitly.
+// One loopback Record/body/host deployment. The ordinary dna/api head answers
+// every command `commands_unsupported`. This head composes the shared native
+// Governance service explicitly; the commands are the api binding's (see
+// dna/api/commands.hl), gated by the record's positions and admitted here.
 import ".." as api;
 import "../../core" as dna;
 import "../../operations" as ops;
+import "../../organization_source" as orgsource;
 import "../../organization_runtime" as runtime;
 
-locus PracticeReviewHead {
-    params { root: String = "."; port: Int = 8792; policy_path: String = ""; webroot: String = ""; }
-    run { serve(self.root, self.port, self.policy_path, self.webroot); }
+// The composed head is the binding (GH #1104 piece 5): the surface is
+// the entrypoint seed's own loci, so this seed declares the api entry
+// and subscribes the head's command topics on a locus of its own — the
+// same admission, the same gates — and the HTTP reads run beside it.
+main locus PracticeReviewHead {
+    params {
+        root: String = ".";
+        port: Int = 8792;
+        socket: String = "";
+        roles: dna::RecordRoles = dna::RecordRoles { };
+        srv: std::http::Server;
+        commands: ReviewCommands = ReviewCommands { };
+    }
+    // The server off the main pool, a command's git work on its own; a
+    // SIGTERM drains the head (run() returns, the io pool's shutdown ends
+    // the accept, the binding's dissolve removes the socket).
+    placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
+    bindings {
+        api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles);
+    }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+    }
+}
+
+// The head's command topics, subscribed by this seed over the shared
+// admission (dna/api/commands.hl names the gates: `owner` the board,
+// `reviewer` position:reviewer, `position` any live seat).
+locus ReviewCommands {
+    params {
+        admission: api::CommandAdmission = api::CommandAdmission { };
+        knowledge: api::KnowledgeAdmission = api::KnowledgeAdmission { };
+    }
+    bus {
+        subscribe api::PracticePropose as propose;
+        subscribe api::ReviewVerdict as verdict;
+        subscribe api::OrganizationPropose as propose_organization;
+        subscribe api::TaskCreate as create_task;
+        subscribe api::TaskReassign as reassign_task;
+        subscribe api::PersonRetire as retire_person;
+        subscribe api::AttemptClaim as claim;
+        subscribe api::AttemptOutcome as outcome;
+        subscribe api::AttemptRenew as renew;
+        subscribe api::AttemptRelease as release_attempt;
+        subscribe api::FrictionFile as file_friction;
+        subscribe api::CommandLookup as lookup;
+        subscribe api::KnowledgeEdgeLink as link_knowledge;
+        subscribe api::KnowledgeEdgeUnlink as unlink_knowledge;
+        subscribe api::KnowledgeNodePropose as propose_knowledge;
+        subscribe api::KnowledgeNodeRevise as revise_knowledge;
+        subscribe api::KnowledgeNodeRetire as retire_knowledge;
+        subscribe api::KnowledgeBindingBind as bind_knowledge;
+        subscribe api::KnowledgeBindingUnbind as unbind_knowledge;
+        subscribe api::KnowledgeLookup as lookup_knowledge;
+    }
+    @gated(role: position)
+    fn propose(p: api::PracticeProposal, ctx: std::api::Context) -> api::CommandReply { return self.admission.propose(p, ctx); }
+    @gated(role: reviewer)
+    fn verdict(v: api::ReviewDecision, ctx: std::api::Context) -> api::CommandReply { return self.admission.verdict(v, ctx); }
+    @gated(role: owner)
+    fn propose_organization(o: api::OrganizationProposal, ctx: std::api::Context) -> api::CommandReply { return self.admission.propose_organization(o, ctx); }
+    fn create_task(t: api::TaskCreation, ctx: std::api::Context) -> api::CommandReply { return self.admission.create_task(t, ctx); }
+    @gated(role: owner)
+    fn reassign_task(t: api::TaskReassignment, ctx: std::api::Context) -> api::CommandReply { return self.admission.reassign_task(t, ctx); }
+    @gated(role: owner)
+    fn retire_person(p: api::PersonRetirement, ctx: std::api::Context) -> api::CommandReply { return self.admission.retire_person(p, ctx); }
+    @gated(role: position)
+    fn claim(c: api::Claim, ctx: std::api::Context) -> api::CommandReply { return self.admission.claim(c, ctx); }
+    @gated(role: position)
+    fn outcome(o: api::Outcome, ctx: std::api::Context) -> api::CommandReply { return self.admission.outcome(o, ctx); }
+    @gated(role: position)
+    fn renew(r: api::Renewal, ctx: std::api::Context) -> api::CommandReply { return self.admission.renew(r, ctx); }
+    @gated(role: position)
+    fn release_attempt(r: api::Release, ctx: std::api::Context) -> api::CommandReply { return self.admission.release_attempt(r, ctx); }
+    @gated(role: position)
+    fn file_friction(f: api::Friction, ctx: std::api::Context) -> api::CommandReply { return self.admission.file_friction(f, ctx); }
+    fn lookup(l: api::Lookup, ctx: std::api::Context) -> api::CommandReply { return self.admission.lookup(l, ctx); }
+    @gated(role: position)
+    fn link_knowledge(l: api::KnowledgeLink, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.link(l, ctx); }
+    @gated(role: position)
+    fn unlink_knowledge(u: api::KnowledgeUnlink, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.unlink(u, ctx); }
+    @gated(role: position)
+    fn propose_knowledge(p: api::KnowledgeNodeProposal, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.propose_node(p, ctx); }
+    @gated(role: position)
+    fn revise_knowledge(r: api::KnowledgeNodeRevision, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.revise_node(r, ctx); }
+    @gated(role: position)
+    fn retire_knowledge(r: api::KnowledgeNodeRetirement, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.retire_node(r, ctx); }
+    @gated(role: position)
+    fn bind_knowledge(b: api::KnowledgeBind, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.bind(b, ctx); }
+    @gated(role: position)
+    fn unbind_knowledge(u: api::KnowledgeUnbind, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.unbind(u, ctx); }
+    fn lookup_knowledge(l: api::KnowledgeRecovery, ctx: std::api::Context) -> api::KnowledgeReply { return self.knowledge.lookup(l, ctx); }
+}
+
+// The head, up: the reads over HTTP with the socket named in its
+// capabilities, the commands on the socket. Trusted-local only — a
+// project configured for another principal source is refused here, as
+// the face refuses to attach one.
+fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::WorkflowCatalogProvider, commands: PracticeReviewCommands, authority: ops::GovernanceAuthority, runtime: api::OrganizationRuntimeProvider) {
+    let record = dna::GitRecord { repo: root };
+    let configured = record.git("config\n--get\ndna.principal");
+    let mode = dna::trim_nl(configured.stdout);
+    if len(mode) > 0 && mode != "local" {
+        eprintln("hale dna practice-review api: this head is trusted-local; a project under dna.principal ", mode, " is served by the hosted head");
+        std::process::exit(2);
+    }
+    let user = api::local_person(root);
+    let token = api::launch_token(root + "/.hale/dna");
+    let socket = api::head_socket(root);
+    let knowledge_commands = api::LocalKnowledgeCommands { root: root };
+    println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; composed command provider; the token is in ", root, "/.hale/dna/head.token)");
+    PracticeReviewHead {
+        root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
+        commands: ReviewCommands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
+        srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
+            root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
+            definitions: definitions, knowledge: api::LocalKnowledge { root: root },
+            people: commands, socket: socket, organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
+            command_origin: "http://127.0.0.1:" + to_string(port), local_name: user, token: token
+        } }
+    };
 }
 
 fn serve(root: String, port: Int, policy_path: String, webroot: String) {
@@ -85,7 +206,7 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
     let native = ops::GovernanceCommands { record: record, authority: authority, sign: policy.sign,
         organization_authority: source_authority, organization_enabled: false, organization_reviews_enabled: false,
         tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record };
-    let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, source_capabilities: native, people: native, organization_configured: source_policy.valid };
+    let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, people: native, organization_configured: source_policy.valid };
     println("hale dna practice-review api: authority basis ", policy.basis);
     let definitions = ops::NoWorkflowCatalog { };
     // This optional reader is meaningful only in the same local deployment
@@ -94,10 +215,10 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
     // return unavailable. No configured source policy keeps the old default.
     if source_policy.valid {
         let current = runtime::OrganizationRuntime { root: root };
-        api::serve_with_people(root, port, web, definitions, commands, source_authority, commands, current, commands);
+        head_up(root, port, web, definitions, commands, source_authority, current);
     } else {
         let absent = api::NoOrganizationRuntime { };
-        api::serve_with_people(root, port, web, definitions, commands, source_authority, commands, absent, commands);
+        head_up(root, port, web, definitions, commands, source_authority, absent);
     }
 }
 
@@ -114,5 +235,5 @@ fn main() {
         eprintln("hale dna practice-review api: HALE_DNA_COMMAND_POLICY must name an explicit authority policy file; refusing to start");
         std::process::exit(2);
     }
-    PracticeReviewHead { root: root, port: port, policy_path: policy_path, webroot: std::env::arg_or(3, "") };
+    serve(root, port, policy_path, std::env::arg_or(3, ""));
 }

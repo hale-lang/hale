@@ -1,4 +1,5 @@
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 async function openPractice(page, service) {
   await page.goto(service.url());
@@ -10,7 +11,7 @@ async function openPractice(page, service) {
 test('real Record: practice/review navigation, opaque IDs, literal multiline text and browser back', async ({ page, service }, testInfo) => {
   const before = await service.refs();
   const mutations = [];
-  page.on('request', request => { if (request.method() !== 'GET') mutations.push(request.url()); });
+  page.on('request', request => { if (isWrite(request)) mutations.push(request.url()); });
   await openPractice(page, service);
   await page.screenshot({ path: testInfo.outputPath('desktop-practice.png'), fullPage: true });
   await expect(page.locator('body')).toContainText(service.rationale);

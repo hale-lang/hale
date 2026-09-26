@@ -5,10 +5,11 @@
 // request runs one command in the project root and returns what it
 // printed, so the page shows exactly what the CLI shows — the Board's
 // queue, the pending Reviews with their three views, the fleet, the
-// history — with or without an organization up. A verdict or an
-// intent from the page goes the way the CLI's does: a row in the record,
-// which a node relays onto the nerves (GH #986). Nothing here reads the
-// record itself; nothing here decides.
+// history — with or without an organization up. Parked until OIDC
+// lands on the api head (GH #989): the forms that took a verdict, a task
+// and a pressure signal are gone — the record's commands are the api
+// head's gated topics (dna/api/commands.hl) — and this head reads only.
+// Nothing here reads the record itself; nothing here decides.
 //
 // Who acts is the principal source (GH #612, dna/core/principal.hl).
 // Under `local` (the default) the page's `as` field names the reviewer,
@@ -267,38 +268,11 @@ locus Ui {
         if std::http::is_route(ctx, "GET", "/api/history/:entity") {
             return text(run_dna("history\n" + clean(std::http::path_param(ctx.params, "entity"))));
         }
-        // the forms: a verdict, a task, a pressure signal — each is
-        // the CLI's own verb, sent and not waited for
-        if std::http::is_route(ctx, "POST", "/api/verdict") {
-            let b = req.body;
-            let id = clean(std::json::find_string_field(b, "id"));
-            let verdict = clean(std::json::find_string_field(b, "verdict"));
-            // the session's member under `oidc`; the form's name under `local`
-            let who = if len(signed_in) > 0 { signed_in } else { clean(std::json::find_string_field(b, "as")) };
-            let comment = std::json::find_string_field(b, "comment");
-            let mut args = "review\n" + id + "\n" + verdict + "\n--no-wait";
-            if len(who) > 0 { args = args + "\n--as\n" + who; }
-            if len(signed_in) > 0 { args = args + "\n--authority\n" + self.authority_of(signed_in); }
-            if len(comment) > 0 { args = args + "\n--comment\n" + comment; }
-            return text(run_dna(args));
-        }
-        if std::http::is_route(ctx, "POST", "/api/task/create") {
-            let b = req.body;
-            let outcome = std::json::find_string_field(b, "outcome");
-            let to = clean(std::json::find_string_field(b, "to"));
-            if len(outcome) == 0 { return std::http::Response { status: 400, body: "say what should happen" }; }
-            let mut args = "task\ncreate\n--no-wait";
-            if len(to) > 0 { args = args + "\n--to\n" + to; }
-            if len(signed_in) > 0 { args = args + "\n--as\n" + signed_in; }
-            return text(run_dna(args + "\n" + outcome));
-        }
-        if std::http::is_route(ctx, "POST", "/api/pressure") {
-            let b = req.body;
-            let source = clean(std::json::find_string_field(b, "source"));
-            let what = std::json::find_string_field(b, "what");
-            if len(source) == 0 || len(what) == 0 { return std::http::Response { status: 400, body: "a source and what it saw" }; }
-            return text(run_dna("pressure\nraise\n" + source + "\n" + what));
-        }
+        // The forms took a verdict, a task and a pressure signal here once;
+        // the record's commands are the api head's gated topics now
+        // (dna/api/commands.hl), and this head is parked until OIDC
+        // (GH #989): it reads, and takes nothing.
+        if req.method == "POST" { return std::http::Response { status: 405, body: "this head is parked (GH #989): the record's commands are the api head's socket" }; }
         return std::http::Response { status: 404, body: "not found" };
     }
 }

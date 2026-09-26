@@ -1,4 +1,5 @@
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.use({ organization: true });
 
@@ -52,7 +53,7 @@ test('Organization uses real compiler instances, declaration groups and separate
   const mutations = [];
   const reads = [];
   page.on('request', request => {
-    if (request.method() !== 'GET') mutations.push(request.url());
+    if (isWrite(request)) mutations.push(request.url());
     if (new URL(request.url()).pathname.endsWith('/dna/organization')) reads.push(request.url());
   });
   const response = organizationResponse(page);

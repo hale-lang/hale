@@ -1674,22 +1674,39 @@ main locus App {
 ```
 
 Nothing else in the source changes. The entry binds **every topic
-some locus subscribes** (a *command*), **every topic some locus
-publishes** (a *stream*), and **every `expose` member of the main
-locus or of a param-default child whose type appears once among
-main's params** (a *read*, named `member` on main and
-`param.member` on the child). A subscription by literal subject
+some locus of the entrypoint's own seed subscribes** (a *command*),
+**every topic such a locus publishes** (a *stream*), and **every
+`expose` member of the main locus or of a param-default child of the
+seed's own whose type appears once among main's params** (a *read*,
+named `member` on main and `param.member` on the child). A locus that
+came in through `import` is not part of the surface, however much of
+it the entrypoint composes (GH #1104 piece 5): a library's internal
+bus is not the application's API, and a head importing its core must
+not serve the core's topics as commands. An imported *topic* a seed's
+own locus subscribes or publishes is served as any other, under its
+qualified name. An imported seed's `main locus` is not the entrypoint
+either: renamed with its seed, it does not count toward the one-main
+rule, and an `api:` entry it carries is inert — a composed head that
+imports the standalone head declares its own entry to get a socket. A subscription by literal subject
 (`subscribe "log.**" ...`) names no topic and is not part of the
 API; a command reaches the loci that subscribe the topic by name,
 not those hearing it through a parent topic. `hale run --api
 <path>` (and `hale build --api <path>`, flags before the target)
 synthesizes the entry above with the dev defaults, `bound: 64,
 on_full: refuse`, and needs a `main locus` to put it on: a bare
-`fn main` program is refused with the rule. `LOTUS_API=<path>` at
+`fn main` program is refused with the rule. The path is an expression
+the main locus evaluates as a param default — a literal, or
+`self.<param>` the program computed, so a head may listen at one
+socket per record under `XDG_RUNTIME_DIR` rather than at a fixed
+path two projects would steal from each other. `LOTUS_API=<path>` at
 run time overrides the socket path of an entry the program
 carries and never creates one, so a binary built without the entry
-pays nothing. The socket file is unlinked when the listener binds
-(a crashed predecessor leaves one) and again at dissolve. The
+pays nothing. A stale socket file (nobody answers on it: a crashed
+predecessor's) is unlinked when the listener binds, and the file is
+unlinked again at dissolve; a path a live process holds is refused,
+never stolen. A binding that cannot listen does not take the program
+with it: it says so on stderr and the rest of the program serves
+without its socket. The
 listener is born as the last param of the main locus, so it
 appears once every earlier param is born; a caller that races the
 boot connects with a wait.
@@ -1794,6 +1811,30 @@ carries the principal it established:
 {"request_id": 7, "id": ..., "ok": true, "value": {...},
  "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
 ```
+
+**A forwarding transport (`via`).** A request line may carry `"via":
+"<mark>"` (1..64 bytes). The binding honours it only from a peer whose
+uid is the program's own (`std::process::uid()`), and refuses the line
+as `malformed` from anyone else: the mark says how a transport of the
+program's own — an HTTP handler forwarding a browser's line to its
+own socket, say — received the request, and nobody else may claim
+one. The mark rides on the principal (`Principal.via`), on every
+receipt for that line (`"caller": {..., "via": "http-session"}`), and
+reaches a `Context` handler as `ctx.via` in place of `api`. The
+principal stays the forwarding peer's own (the process's uid), never
+the bare local principal: the gate and the membership source decide
+exactly as for any socket peer. Until the binding has an HTTP
+transport of its own (GH #1135), HTTP is such a forwarding transport,
+written by the program; a bearer token stays the third mode that
+arrives with it.
+
+**Names on the wire.** A call, a read or a watch names an item as the
+description spells it; an item another seed declared is spelled
+qualified (`api::Claim`). A caller that knows the program, not its
+seeds, may write the unqualified tail (`Claim`): the binding accepts
+it when exactly one item of the surface bears that tail and no item is
+spelled bare by it, and answers `unknown` otherwise, as for any name it
+does not serve. The description keeps the qualified spelling.
 
 **The gate (GH #1109).** A role is declared vocabulary
 (`spec/types.md` § "Roles and `@gated`"); `@gated(role: R)` on a
@@ -2437,7 +2478,10 @@ Bundle-wide rules:
 1. At most one `main` locus per bundle. Zero is fine — the
    classic bare `fn main()` shape is still legal.
 2. Each `bindings` entry's topic must name a declared `topic`.
-3. A topic may appear at most once across all bindings.
+3. A topic may appear at most once across the entrypoint's bindings.
+   An imported seed's `main locus` is renamed with its seed and its
+   bindings are inert: they bind nothing, count toward nothing here,
+   and do not make a second `main` (GH #1104 piece 5).
 4. Bindings only legal in a `main`-modified locus. The parser
    rejects them in any other locus position.
 5. Every binding's role must be either explicit (`role:`

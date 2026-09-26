@@ -87,8 +87,25 @@ locus App {
         journal: dna::RoutedJournal = dna::RoutedJournal { };
         asks: Int = 0;
     }
+    // The head's commands are gated by the record (GH #1104 piece 5): the
+    // leg's verbs need `position`, so this process's uid — the head's,
+    // which forwards the verbs — is mapped to riley and riley is seated.
+    fn seat_riley() {
+        let me = std::str::trim(dna::run_tool("id\n-u").stdout);
+        let mapped = dna::run_tool("git\n-C\n" + self.app + "\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=riley");
+        std::test::assert_eq_int(mapped.code, 0, "the record maps this uid to riley: " + mapped.stderr);
+        let j = dna::GitJournal { repo: self.app };
+        let node = j.append(j.revision(), "graph.node", ops::graph_node_id("position", "board"), ops::graph_node_body("position", "board", "", ""));
+        std::test::assert(node.ok, "the board is a position");
+        let e = ops::GraphEdge { kind: "holds" };
+        e.member("position", ops::graph_node_id("position", "board"));
+        e.member("holder", "riley");
+        let seated = j.append(j.revision(), "graph.edge", e.id(), e.body());
+        std::test::assert(seated.ok, "riley holds the board");
+    }
     // ---- the head over the record, watched: it dies with this process
     fn start_head() {
+        self.seat_riley();
         let record = dna::GitRecord { repo: self.app };
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.app + "/.hale/dna/authority.json", policy) or discard;

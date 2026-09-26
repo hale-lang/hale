@@ -33,7 +33,18 @@ HALE_DNA_COMMAND_POLICY=/path/to/authority.json \
 
 The binary accepts the launcher's existing `PROJECT PORT WEBROOT` arguments;
 direct invocation can omit `WEBROOT` for API-only use. The explicit policy path
-comes only from `HALE_DNA_COMMAND_POLICY`, which is required. An application with
+comes only from `HALE_DNA_COMMAND_POLICY`, which is required.
+
+The commands are the api binding's (GH #1104 piece 5): this seed
+declares its own `main locus` with the `api:` entry and a wrapper
+(`ReviewCommands`) subscribing the head's command topics under the
+same gates over the shared admissions (`api::CommandAdmission`, and
+`api::KnowledgeAdmission` for the Knowledge topics), since
+the surface is the entrypoint seed's own loci and an imported main's
+bindings are inert. The socket is one per record under
+`$XDG_RUNTIME_DIR/hale/dna/`, named in `/capabilities` (`api.socket`);
+`LOTUS_API` overrides it. `hale check --dump-api dna/api/practice_review`
+lists them as `api::…`. An application with
 its own Workflow catalog can compose `PracticeReviewCommands` and call
 `api::serve_with_commands` with that catalog instead of this head's
 `NoWorkflowCatalog`. Retain the authority, native service and adapter for the

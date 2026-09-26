@@ -2,6 +2,7 @@
 // The final case explicitly overlays pending-member fields to check that the
 // browser does not invent a destination for an unknown or ambiguous key.
 import { test, expect } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.skip(!process.env.HALE_FACE_WORKFLOWS_BIN, 'Requires the explicitly supplied native recorded workflow fixture.');
 test.use({ workflows: true, organization: true });
@@ -31,7 +32,7 @@ async function open(page, service, extra = {}) {
 
 function watchMutations(page) {
   const writes = [];
-  page.on('request', request => { if (request.method() !== 'GET') writes.push(request.method() + ' ' + request.url()); });
+  page.on('request', request => { if (isWrite(request)) writes.push(request.method() + ' ' + request.url()); });
   return writes;
 }
 

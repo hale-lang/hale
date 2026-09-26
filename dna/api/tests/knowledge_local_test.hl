@@ -1,9 +1,9 @@
-// Knowledge commands handled in the API's own process (GH #985). The
-// knowledge service's private command wire is gone: the API hands each
-// command to `KnowledgeLocalWire`, which admits it into the Record through
-// the operations' `KnowledgeCommands` under an explicit, fixed policy. These
-// are the service's command cases that still mean something without a
-// transport; the bearer-key cases went with the transport.
+// Knowledge commands admitted in the head's own process (GH #985, #1129):
+// the head's Knowledge topics hand each command to `LocalKnowledgeCommands`,
+// which admits it into the Record through the operations' `KnowledgeCommands`
+// under an explicit, fixed policy. The policy's contract, native admission
+// and recovery over a real Record, and the composition the head builds
+// from the policy file, driven the way a topic drives it.
 import ".." as api;
 import "../../operations" as ops;
 import "../../core" as dna;
@@ -19,16 +19,10 @@ locus LocalCommandCases {
     fn context(application_id: String, mode: String, name: String) -> ops::GovernanceContext {
         return ops::GovernanceContext { application_id: application_id, principal_mode: mode, principal_name: name };
     }
-    fn context_json(context: ops::GovernanceContext) -> String {
-        let b = std::json::Builder { }; b.begin_object(); b.string_field("application_id", context.application_id);
-        b.string_field("principal_mode", context.principal_mode); b.string_field("principal_name", context.principal_name); b.end_object(); return b.result();
-    }
-    fn status(commands: ops::KnowledgeCommands, kind: String, body: String, status: Int, why: String) -> String {
-        let wire = api::KnowledgeLocalWire { };
-        let result = wire.handle(kind, body, commands);
-        std::test::assert_eq_int(result.status, status, why + ": " + result.body);
-        std::test::assert(std::str::contains(result.headers, "no-store"), "a command response is never cached");
-        return result.body;
+    // The operations' answer, as the head's reply carries it.
+    fn expect(result: ops::KnowledgeResult, code: String, why: String) -> ops::KnowledgeResult {
+        std::test::assert(result.ok == (code == "") && result.code == code, why + ": expected '" + code + "', got '" + result.code + "'");
+        return result;
     }
     fn reject_policy(document: String, application_id: String, why: String) {
         let codec = ops::KnowledgePolicyCodec { };
@@ -92,117 +86,85 @@ locus LocalCommandCases {
         std::io::fs::mkdir(root) or discard;
         let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "isolated Record: " + init.stderr);
     }
-    fn local_wire(scratch: String) {
+    fn edges(scratch: String) {
         let root = scratch + "/edges"; self.record(root);
         let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
         let from = self.native_node(journal, receipts, "Exact source 🧭."); let to = self.native_node(journal, receipts, "Exact destination 🧭.");
         let record = dna::GitRecord { repo: root }; let before = record.count("journal"); let application_id = record.identity();
-        let context = self.context(application_id, "local", "alice/équipe"); let raw_context = self.context_json(context);
+        let context = self.context(application_id, "local", "alice/équipe");
         let codec = ops::KnowledgePolicyCodec { }; let document = self.policy(application_id, MEMBER);
         let path = root + "/authority.json"; std::io::fs::write_file(path, document) or discard;
         let captured = codec.decode(std::io::fs::read_file(path) or "", application_id, "local");
         let authority = ops::FixedKnowledgeAuthority { policy: captured };
         let commands = ops::KnowledgeCommands { record: record, authority: authority };
-        let cap = "{\"context\":" + raw_context + "}";
-        let available = self.status(commands, "capability", cap, 200, "direct capability");
-        std::test::assert(std::json::find_field_raw(available, "available") == "true" && std::json::find_field_raw(available, "authorized") == "true", "explicit actor policy permits admission");
-        std::test::assert_eq_str(dna::native_json_string(available, "policy_basis"), captured.basis, "capability carries exact captured policy");
-        let unlink_cap = "{\"context\":" + raw_context + ",\"operation\":\"dna.knowledge.edge.unlink\"}";
-        let unavailable = self.status(commands, "capability", unlink_cap, 200, "operation-specific capability");
-        std::test::assert(std::json::find_field_raw(unavailable, "available") == "false", "old policy denies removal capability");
-        self.status(commands, "capability", "{\"context\":" + raw_context + ",\"operation\":17}", 400, "operation name must be a string");
-        self.status(commands, "capability", "{\"context\":" + raw_context + ",\"operation\":\"unknown\"}", 400, "unknown operation cannot discover a different capability");
-        self.status(commands, "unknown", cap, 400, "an unknown command kind is refused");
         let no_grants = ops::KnowledgeCommands { record: record };
-        self.status(no_grants, "lookup", "{\"context\":" + raw_context + ",\"request_id\":\"none\"}", 403, "without an explicit actor grant a command is forbidden");
-        self.status(commands, "lookup", "{\"context\":" + self.context_json(self.context(application_id, "local", "outsider")) + ",\"request_id\":\"none\"}", 403, "an actor outside the policy is denied");
-        self.status(commands, "capability", "not JSON", 400, "a body that is not JSON is refused");
-        self.status(commands, "capability", "{\"context\":[]}", 400, "context must be an object");
-        self.status(commands, "capability", "{\"context\":" + raw_context + ",\"actor\":\"admin\"}", 400, "unknown envelope field refused");
-        self.status(commands, "capability", "{\"context\":" + raw_context + ",\"context\":" + raw_context + "}", 400, "duplicate envelope context refused");
-        self.status(commands, "capability", "{\"context\":" + std::str::replace(raw_context, "\"alice/équipe\"", "27") + "}", 400, "principal requires string type");
-        self.status(commands, "capability", "{\"context\":" + self.context_json(self.context(application_id, "payload", "alice/équipe")) + "}", 400, "principal mode must name supported authentication");
-        self.status(commands, "capability", "{\"context\":" + raw_context[0..(len(raw_context) - 1)] + ",\"principal_name\":\"admin\"}}", 400, "duplicate principal refused");
-        self.status(commands, "lookup", "{\"context\":" + raw_context + ",\"request_id\":17}", 400, "lookup key requires string type");
-        self.status(commands, "submit", "{\"context\":" + raw_context + ",\"command\":[]}", 400, "command must be an object");
-        std::test::assert_eq_int(record.count("journal"), before, "all invalid requests leave Record unchanged");
+        self.expect(no_grants.lookup(context, "none"), "forbidden", "without an explicit actor grant a command is forbidden");
+        self.expect(commands.lookup(self.context(application_id, "local", "outsider"), "none"), "forbidden", "an actor outside the policy is denied");
+        std::test::assert_eq_int(record.count("journal"), before, "refusals leave the Record unchanged");
 
         // The composition captures an explicit document. Editing its file
         // cannot change that composition's authority halfway through.
         std::io::fs::write_file(path, self.policy(application_id, "")) or discard;
-        let unchanged = self.status(commands, "capability", cap, 200, "captured policy survives file edit");
-        std::test::assert_eq_str(dna::native_json_string(unchanged, "policy_basis"), captured.basis, "a composition never silently switches policy basis");
-        std::test::assert(std::json::find_field_raw(unchanged, "available") == "true", "composed grant remains captured");
         let new_authority = ops::FixedKnowledgeAuthority { policy: codec.decode(std::io::fs::read_file(path) or "", application_id, "local") };
         std::test::assert(!new_authority.authorize(context, "dna.knowledge.edge.link", false, journal).allowed, "a fresh composition observes the replacement deny-all document");
         let command_codec = ops::KnowledgeCommandCodec { };
         let command = ops::KnowledgeCommand { request_id: "wire/exact/é", application_id: application_id, target_id: from, record_head: journal.head(), from_id: from, to_id: to, rel: "supports \"équipe 🧭\"", rationale: "Exact\r\nprivate command." };
-        let payload = command_codec.canonical(context, command); let body = "{\"context\":" + raw_context + ",\"command\":" + payload + "}";
-        self.status(commands, "submit", std::str::replace(body, "\"rel\":\"supports", "\"unknown\":true,\"rel\":\"supports"), 400, "unknown command field refused");
-        self.status(commands, "submit", std::str::replace(body, "\"to_id\":", "\"to_id\":\"duplicate\",\"to_id\":"), 400, "duplicate command field refused");
-        let submitted = self.status(commands, "submit", body, 202, "native submit");
-        let receipt = std::json::find_field_raw(submitted, "receipt");
-        std::test::assert_eq_str(dna::native_json_string(receipt, "command_id"), command_codec.identity(context, command.request_id), "receipt preserves scoped command identity");
-        std::test::assert_eq_str(dna::native_json_string(receipt, "edge_id"), command_codec.edge_id(from, to, command.rel), "receipt preserves exact native edge identity");
-        std::test::assert_eq_str(dna::native_json_string(receipt, "authority_basis"), captured.basis, "effect records authority captured before policy file changed");
+        let receipt = self.expect(commands.submit(context, command), "", "native submit").receipt;
+        std::test::assert_eq_str(receipt.state, "recorded", "a direct link is recorded");
+        std::test::assert_eq_str(receipt.command_id, command_codec.identity(context, command.request_id), "receipt preserves scoped command identity");
+        std::test::assert_eq_str(receipt.edge_id, command_codec.edge_id(from, to, command.rel), "receipt preserves exact native edge identity");
+        std::test::assert_eq_str(receipt.authority_basis, captured.basis, "effect records authority captured before policy file changed");
+        std::test::assert(!receipt.reviewed, "a direct link is no reviewed relationship");
         std::test::assert_eq_int(record.count("journal"), before + 1, "submit writes one request row into the Record");
-        let quote = ops::GovernanceCommandCodec { }; let lookup = "{\"context\":" + raw_context + ",\"request_id\":" + quote.quote(command.request_id) + "}";
-        let recovered = self.status(commands, "lookup", lookup, 200, "native lookup");
-        std::test::assert_eq_str(dna::native_json_string(std::json::find_field_raw(recovered, "receipt"), "event_id"), dna::native_json_string(receipt, "event_id"), "lookup returns the original durable event");
-        self.status(commands, "submit", body, 202, "same request recovers its original receipt");
+        let recovered = self.expect(commands.lookup(context, command.request_id), "", "native lookup").receipt;
+        std::test::assert_eq_str(recovered.event_id, receipt.event_id, "lookup returns the original durable event");
+        self.expect(commands.submit(context, command), "", "same request recovers its original receipt");
         std::test::assert_eq_int(record.count("journal"), before + 1, "lookup and retry append no duplicate row");
+        let mut changed = command; changed.rationale = "Different content.";
+        self.expect(commands.submit(context, changed), "request_conflict", "a request identity belongs to one content");
 
         let review_authority = ops::FixedKnowledgeAuthority { policy: codec.decode(self.policy(application_id, std::str::replace(MEMBER, "\"direct\"", "\"review\"")), application_id, "local") };
         let review_commands = ops::KnowledgeCommands { record: record, authority: review_authority };
-        let review_cap = self.status(review_commands, "capability", cap, 200, "Review capability");
-        std::test::assert(std::json::find_field_raw(review_cap, "authorized") == "true" && std::json::find_field_raw(review_cap, "available") == "true" && dna::native_json_string(review_cap, "mode") == "review", "Review policy advertises native reviewed admission");
         let pending = ops::KnowledgeCommand { request_id: "wire/review", application_id: application_id, target_id: from, record_head: record.head("journal").id, from_id: from, to_id: to, rel: "requires Review", rationale: "Policy requires Review." };
-        let reviewed = self.status(review_commands, "submit", "{\"context\":" + raw_context + ",\"command\":" + command_codec.canonical(context, pending) + "}", 202, "reviewed request admitted");
-        let reviewed_receipt = std::json::find_field_raw(reviewed, "receipt"); let relationship = std::json::find_field_raw(reviewed_receipt, "relationship");
-        std::test::assert_eq_str(dna::native_json_string(relationship, "proposal_state"), "pending", "Review request is not a direct effect");
-        std::test::assert_eq_str(dna::native_json_string(relationship, "effect_state"), "unknown", "pending Review never implies relationship success");
-        std::test::assert_eq_str(dna::native_json_string(reviewed_receipt, "edge_id"), command_codec.edge_id(from, to, pending.rel), "pending receipt retains exact tuple identity");
-        std::test::assert(!std::str::contains(reviewed_receipt, "\"reviewed\":") && len(std::json::find_field_raw(receipt, "relationship")) == 0, "internal discriminator is not a wire field and old direct receipt stays unchanged");
+        let reviewed = self.expect(review_commands.submit(context, pending), "", "reviewed request admitted").receipt;
+        std::test::assert(reviewed.reviewed, "a Review policy admits a reviewed relationship");
+        std::test::assert_eq_str(reviewed.relationship.proposal_state, "pending", "Review request is not a direct effect");
+        std::test::assert_eq_str(reviewed.relationship.effect_state, "unknown", "pending Review never implies relationship success");
+        std::test::assert_eq_str(reviewed.edge_id, command_codec.edge_id(from, to, pending.rel), "pending receipt retains exact tuple identity");
         std::test::assert_eq_int(record.count("journal"), before + 2, "Review admission adds only one request");
         let removal_member = std::str::replace(MEMBER, "\"edge_link\":\"direct\"", "\"edge_link\":\"deny\",\"edge_unlink\":\"direct\"");
         let removal_authority = ops::FixedKnowledgeAuthority { policy: codec.decode(self.policy(application_id, removal_member), application_id, "local") };
         let removal_commands = ops::KnowledgeCommands { record: record, authority: removal_authority };
-        let removal_cap = self.status(removal_commands, "capability", unlink_cap, 200, "removal capability");
-        std::test::assert(std::json::find_field_raw(removal_cap, "available") == "true", "explicit removal capability is separate from link");
         let removal = ops::KnowledgeCommand { operation: "dna.knowledge.edge.unlink", edge_id: command_codec.edge_id(from, to, command.rel), request_id: "wire/remove", application_id: application_id, target_id: from, record_head: record.head("journal").id, from_id: from, to_id: to, rel: command.rel, rationale: "Remove selected relationship." };
-        let removal_body = "{\"context\":" + raw_context + ",\"command\":" + command_codec.canonical(context, removal) + "}";
-        self.status(commands, "submit", removal_body, 403, "link-only grant cannot submit removal");
-        let removed_edge = self.status(removal_commands, "submit", removal_body, 202, "explicit removal admitted");
-        std::test::assert_eq_str(dna::native_json_string(std::json::find_field_raw(removed_edge, "receipt"), "operation"), "dna.knowledge.edge.unlink", "receipt returns the exact removal operation");
+        self.expect(commands.submit(context, removal), "forbidden", "link-only grant cannot submit removal");
+        let removed = self.expect(removal_commands.submit(context, removal), "", "explicit removal admitted").receipt;
+        std::test::assert_eq_str(removed.operation, "dna.knowledge.edge.unlink", "receipt returns the exact removal operation");
         std::test::assert_eq_int(record.count("journal"), before + 3, "authorized exact removal adds one row after the separate Review request");
     }
-    fn binding_wire(scratch: String) {
+    fn bindings(scratch: String) {
         let root = scratch + "/bindings"; self.record(root);
         let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
         let idea = self.native_node(journal, receipts, "Keep this exact idea."); let record = dna::GitRecord { repo: root };
-        let context = self.context(record.identity(), "local", "alice/équipe"); let raw_context = self.context_json(context);
+        let context = self.context(record.identity(), "local", "alice/équipe");
         let member = std::str::replace(MEMBER, "\"edge_link\":\"direct\"", "\"edge_link\":\"deny\",\"binding_bind\":\"review\",\"binding_unbind\":\"review\",\"binding_scopes\":[{\"author\":\"org\",\"target\":\"org/support\"}]");
         let policy = ops::KnowledgePolicyCodec { }; let authority = ops::FixedKnowledgeAuthority { policy: policy.decode(self.policy(context.application_id, member), context.application_id, "local") };
         let commands = ops::KnowledgeCommands { record: record, authority: authority };
-        let capability = self.status(commands, "capability", "{\"context\":" + raw_context + ",\"operation\":\"dna.knowledge.binding.bind\"}", 200, "binding capability");
-        std::test::assert(std::json::find_field_raw(capability, "available") == "true" && dna::native_json_string(capability, "mode") == "review", "only real reviewed binding capability");
         let c = ops::KnowledgeCommand { operation: "dna.knowledge.binding.bind", request_id: "binding-wire", application_id: context.application_id, record_head: record.head("journal").id, target_id: idea, idea_id: idea, author: "org", target: "org/support", rationale: "Keep exact scope 🧭\r\nwith Review." };
-        let codec = ops::KnowledgeCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
-        let payload = "{\"context\":" + raw_context + ",\"command\":" + codec.canonical(context, c) + "}";
-        let invalid = std::str::replace(payload, "\"idea_id\":", "\"class\":\"initiative\",\"idea_id\":");
-        self.status(commands, "submit", invalid, 400, "caller cannot set binding class");
+        let native = dna::KnowledgeBindingCodec { };
         let before = record.count("journal");
-        let admitted = self.status(commands, "submit", payload, 202, "binding admission");
-        let receipt = std::json::find_field_raw(admitted, "receipt"); let outcome = std::json::find_field_raw(receipt, "binding");
-        std::test::assert(std::json::find_field_raw(receipt, "node") == "" && dna::native_json_string(receipt, "edge_id") == "", "binding receipt never masquerades as a node or edge");
-        std::test::assert_eq_str(dna::native_json_string(outcome, "binding_id"), native.identity(idea, c.target, c.author), "outcome carries the native tuple identity");
-        std::test::assert(dna::native_json_string(outcome, "proposal_state") == "pending" && dna::native_json_string(outcome, "effect_state") == "unknown", "admission proves no binding effect");
-        let recovered = self.status(commands, "lookup", "{\"context\":" + raw_context + ",\"request_id\":\"binding-wire\"}", 200, "binding lookup");
-        std::test::assert_eq_str(std::json::find_field_raw(recovered, "receipt"), receipt, "lookup recovers exact original pending receipt");
+        let receipt = self.expect(commands.submit(context, c), "", "binding admission").receipt;
+        std::test::assert(receipt.edge_id == "" && !receipt.reviewed, "binding receipt never masquerades as an edge");
+        std::test::assert_eq_str(receipt.binding.binding_id, native.identity(idea, c.target, c.author), "outcome carries the native tuple identity");
+        std::test::assert(receipt.binding.proposal_state == "pending" && receipt.binding.effect_state == "unknown", "admission proves no binding effect");
+        let recovered = self.expect(commands.lookup(context, "binding-wire"), "", "binding lookup").receipt;
+        std::test::assert(recovered.event_id == receipt.event_id && recovered.binding.binding_id == receipt.binding.binding_id && recovered.fingerprint == receipt.fingerprint, "lookup recovers the exact original pending receipt");
         std::test::assert_eq_int(record.count("journal"), before + 1, "binding lookup does not write a second request");
+        let mut lateral = c; lateral.request_id = "binding-outside"; lateral.target = "org"; lateral.record_head = record.head("journal").id;
+        self.expect(commands.submit(context, lateral), "forbidden", "a binding outside the granted scopes is refused");
     }
-    // What the API process composes (`LocalKnowledgeCommands`), in a child
-    // whose environment names the policy file, the way `main` finds it.
+    // What the head composes (`LocalKnowledgeCommands` under a
+    // `KnowledgeAdmission`), in a child whose environment names the policy
+    // file, the way the head finds it.
     fn composed(scratch: String) {
         let root = scratch + "/composed"; self.record(root);
         let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
@@ -216,7 +178,7 @@ locus LocalCommandCases {
         if len(child.stderr) > 0 { eprintln(child.stderr); }
         std::test::assert_eq_int(child.code, 0, "the composed Knowledge commands: " + child.stdout);
     }
-    fn check(scratch: String) { self.policy_contract(); self.local_wire(scratch); self.binding_wire(scratch); self.composed(scratch); }
+    fn check(scratch: String) { self.policy_contract(); self.edges(scratch); self.bindings(scratch); self.composed(scratch); }
 }
 
 // The child half of `composed`: HALE_DNA_KNOWLEDGE_COMMAND_POLICY is set.
@@ -224,24 +186,25 @@ fn composed_child(root: String, from: String, to: String) {
     let record = dna::GitRecord { repo: root }; let before = record.count("journal");
     let provider = api::LocalKnowledgeCommands { root: root };
     std::test::assert(provider.supported(), "a named policy file makes Knowledge commands supported");
-    let context = api::CommandContext { root: root, source: api::Source { ok: true, identity: record.identity(), head: record.head("journal").id, revision: before }, principal_mode: "local", principal_name: "alice/équipe" };
-    let cap = provider.capability(context);
-    std::test::assert(cap.transport_ok && cap.status == 200, "capability answers in-process: " + cap.body);
-    std::test::assert(std::json::find_field_raw(cap.body, "available") == "true", "the file's grant is the composition's grant");
+    let admission = api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice/équipe\n" }, provider: provider };
+    let caller = std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } };
+    let link = api::KnowledgeLink { request_id: "composed/1", record_head: record.head("journal").id, target_id: from, from_id: from, to_id: to, rel: "supports", rationale: "Composed in the head's process." };
+    let submitted = admission.link(link, caller);
+    std::test::assert(submitted.ok, "the topic's command is admitted in-process: " + submitted.code);
+    std::test::assert_eq_str(submitted.application_id, record.identity(), "the reply names the Record");
+    std::test::assert_eq_str(submitted.receipt.principal_name, "alice/équipe", "the row names the mapped person");
     let codec = ops::KnowledgePolicyCodec { };
     let basis = codec.decode(std::io::fs::read_file(std::env::var("HALE_DNA_KNOWLEDGE_COMMAND_POLICY")) or "", record.identity(), "local").basis;
-    std::test::assert_eq_str(dna::native_json_string(cap.body, "policy_basis"), basis, "the capability names the file's exact basis");
-    let command = ops::KnowledgeCommand { request_id: "composed/1", application_id: record.identity(), target_id: from, record_head: record.head("journal").id, from_id: from, to_id: to, rel: "supports", rationale: "Composed in the API process." };
-    let submitted = provider.submit(context, command);
-    std::test::assert(submitted.transport_ok && submitted.status == 202, "submit is admitted in-process: " + submitted.body);
+    std::test::assert_eq_str(submitted.receipt.authority_basis, basis, "the effect names the file's exact basis");
     std::test::assert_eq_int(record.count("journal"), before + 1, "the request is one row in the Record");
-    let wire = api::KnowledgeCommandWire { };
-    let response = wire.response(context, command, command.request_id, submitted, true);
-    std::test::assert_eq_int(response.status, 202, "the public adapter accepts the in-process receipt: " + response.body);
-    let found = provider.lookup(context, command.request_id);
-    std::test::assert(found.transport_ok && found.status == 200, "lookup answers in-process: " + found.body);
-    std::test::assert_eq_str(dna::native_json_string(std::json::find_field_raw(found.body, "receipt"), "event_id"), dna::native_json_string(std::json::find_field_raw(submitted.body, "receipt"), "event_id"), "lookup returns the admitted row");
+    let found = admission.lookup(api::KnowledgeRecovery { request_id: "composed/1" }, caller);
+    std::test::assert(found.ok && found.receipt.event_id == submitted.receipt.event_id, "lookup returns the admitted row: " + found.code);
     std::test::assert_eq_int(record.count("journal"), before + 1, "lookup writes nothing");
+    // the policy grants by person: an unmapped peer holds no grant
+    let stranger = api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:2000=bob\n" }, provider: provider };
+    let refused = stranger.link(api::KnowledgeLink { request_id: "composed/2", record_head: record.head("journal").id, target_id: from, from_id: from, to_id: to, rel: "other", rationale: "Not granted." }, caller);
+    std::test::assert_eq_str(refused.code, "forbidden", "a caller outside the policy is refused");
+    std::test::assert_eq_int(record.count("journal"), before + 1, "and writes nothing");
 }
 
 fn main() {

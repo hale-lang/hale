@@ -1,11 +1,14 @@
 // Real native HTTP acceptance. All candidate, Review and binding outcomes are
 // authored by the native provider/Body; Git is inspected only for assertions.
+// Knowledge changes travel as forwarded lines of the head's api wire (GH
+// #1129): a refusal is the reply's code, never an HTTP status.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
+import { wireLine } from './command-wire.mjs';
 
 assert(bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
@@ -26,11 +29,11 @@ const admissions = key => service.facts('knowledge.binding.requested').filter(ro
 const headers = () => ({ Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' });
 async function asActor(actor) { await service.stopAPI(); await service.startAPI(actor); }
 async function read(path) { const response = await service.read(path); return { status: response.status, body: response.json }; }
-async function refusal(value, status, code) {
+async function refusal(value, code) {
   const before = service.journal().head, response = await service.post(value);
-  assert.equal(response.status, status, JSON.stringify(response)); assert.equal(response.body.error?.code, code, JSON.stringify(response));
+  assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.code, code, JSON.stringify(response));
   assert.equal(service.journal().head, before); assert.equal(admissions(value.request_id).length, 0);
-  return { request_id: value.request_id, status, code };
+  return { request_id: value.request_id, code };
 }
 async function candidate(receipt) {
   await service.quiesce();
@@ -54,8 +57,8 @@ function verdict(receipt, actor) {
 async function decide(receipt) {
   await service.quiesce(); await asActor('bob');
   const command = verdict(receipt, 'bob');
-  const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(command) });
-  assert.equal(response.status, 202, JSON.stringify(response));
+  const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(command)) });
+  assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response));
   const decided = await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted');
   assert.equal(decided.activation.state, 'unknown', 'Review receipt must not claim node adoption for a binding change');
   await service.quiesce(); await asActor('alice'); return decided;
@@ -69,31 +72,29 @@ try {
   const original = service.candidate(service.practice);
   const prefix = 'Café 東京 🧭\r\n'; const rationale = prefix + '\u0001'.repeat(2048 - bytes(prefix)); assert.equal(bytes(rationale), 2048);
 
-  await check('binding profiles advertise reviewed tuple operations and exact limits', async () => {
-    for (const operation of ['dna.knowledge.binding.bind', 'dna.knowledge.binding.unbind']) {
-      const response = await service.capability(operation); assert.equal(response.status, 200, JSON.stringify(response));
-      assert.equal(response.body.data.profile, operation + '.v1'); assert.equal(response.body.data.mode, 'review');
-      assert.equal(response.body.data.available, true); assert.equal(response.body.data.authorized, true);
-      assert.equal(response.body.data.max_locus_bytes, '256'); assert.equal(response.body.data.max_rationale_bytes, '2048'); assert.equal(response.body.data.max_request_bytes, '32768');
-    }
-    const capabilities = await read(service.apiPath + '/capabilities'); assert.equal(capabilities.body.data.read_only, false);
+  await check('the session slice offers the binding calls and their recovery', async () => {
+    const slice = await service.slice();
+    for (const name of ['KnowledgeBindingBind', 'KnowledgeBindingUnbind', 'KnowledgeLookup']) assert(slice.includes(name), name + ' in ' + JSON.stringify(slice));
+    // HTTP itself writes nothing: every change is the binding's.
+    const capabilities = await read(service.apiPath + '/capabilities'); assert.equal(capabilities.body.data.read_only, true);
   });
   await check('ungranted tuple and 2049-byte rationale refuse without admission', async () => {
     await service.quiesce();
     const denied = await service.command('binding.bind', args('org/restricted'), service.practice);
     const oversized = await service.command('binding.bind', args('org/support', rationale + 'x'), service.practice);
-    return { refusals: [await refusal(denied, 403, 'forbidden'), await refusal(oversized, 400, 'invalid_command')] };
+    return { refusals: [await refusal(denied, 'forbidden'), await refusal(oversized, 'invalid_command')] };
   });
   await check('2048 escaped UTF8 rationale creates an exact canonical binding Review', async () => {
     command = await service.command('binding.bind', args('org/support', rationale), service.practice);
-    assert(bytes(JSON.stringify(command)) < 32768);
-    const response = await service.post(command); assert.equal(response.status, 202, JSON.stringify(response));
+    assert(bytes(JSON.stringify(wireLine(command))) < 32768);
+    const response = await service.post(command); assert.equal(response.code, '', JSON.stringify(response));
     created = await service.waitBinding(command.request_id, value => value.binding.proposal_state === 'created');
     const exact = await candidate(created); assert.equal(exact.document.because, rationale); assert.equal(exact.document.idea_id, service.practice);
     assert.equal(exact.document.by, 'alice'); assert.equal(exact.document.author, 'org'); assert.equal(exact.document.target, 'org/support');
     assert.equal(exact.review.state, 'pending'); assert.equal(admissions(command.request_id).length, 1);
-    const self = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(verdict(created, 'alice')) });
-    assert.equal(self.status, 403, JSON.stringify(self)); assert.equal(self.body.error.code, 'forbidden');
+    // The binding answers; the provider refuses the proposer's own verdict.
+    const self = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(verdict(created, 'alice'))) });
+    assert.equal(self.status, 200, JSON.stringify(self)); assert.equal(self.body.value?.code, 'forbidden', JSON.stringify(self));
     await save('candidate-read.json', exact.response); await save('created-receipt.json', created);
     return { request_id: command.request_id, candidate: created.binding.candidate_digest, rationale_bytes: bytes(rationale), rationale_digest: digest(rationale), encoded_request_bytes: bytes(JSON.stringify(command)) };
   });
@@ -108,14 +109,14 @@ try {
   });
   await check('same key recovers and cross-operation reuse conflicts', async () => {
     await service.quiesce(); const before = service.journal().head;
-    const retry = await service.post(command); assert.equal(retry.status, 202, JSON.stringify(retry)); assert.equal(retry.body.data.command_id, bound.command_id); assert.equal(service.journal().head, before);
+    const retry = await service.post(command); assert.equal(retry.code, '', JSON.stringify(retry)); assert.equal(retry.receipt.command_id, bound.command_id); assert.equal(service.journal().head, before);
     const changed = await service.command('binding.unbind', { ...args('org/support'), binding_id: bound.binding.binding_id }, service.practice, command.request_id);
-    const conflict = await service.post(changed); assert.equal(conflict.status, 409, JSON.stringify(conflict)); assert.equal(conflict.body.error.code, 'request_conflict');
+    const conflict = await service.post(changed); assert.equal(conflict.code, 'request_conflict', JSON.stringify(conflict));
     assert.equal(service.journal().head, before); assert.equal(admissions(command.request_id).length, 1);
   });
   await check('independent approved unbind removes only its exact tuple', async () => {
     const remove = await service.command('binding.unbind', { ...args('org/support'), binding_id: bound.binding.binding_id }, service.practice);
-    const response = await service.post(remove); assert.equal(response.status, 202, JSON.stringify(response));
+    const response = await service.post(remove); assert.equal(response.code, '', JSON.stringify(response));
     const proposed = await service.waitBinding(remove.request_id, value => value.binding.proposal_state === 'created'); await candidate(proposed); await decide(proposed);
     const removed = await service.waitBinding(remove.request_id, value => value.binding.effect_state === 'unbound'); await service.quiesce();
     const rows = await service.bindings(service.practice); assert(!rows.some(row => row.id === bound.binding.binding_id));
@@ -127,8 +128,8 @@ try {
     await service.pauseDelivery();
     const stale = await service.command('binding.bind', args('org/support/urgent'), service.practice);
     const advance = await service.command('binding.bind', args('org/elsewhere'), service.practice);
-    const response = await service.post(advance); assert.equal(response.status, 202, JSON.stringify(response));
-    const result = await refusal(stale, 409, 'stale_subject'); service.resumeDelivery(); return result;
+    const response = await service.post(advance); assert.equal(response.code, '', JSON.stringify(response));
+    const result = await refusal(stale, 'stale_subject'); service.resumeDelivery(); return result;
   });
 } catch (error) { failure = error; console.error(error.stack || error); }
 finally {

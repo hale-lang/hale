@@ -1,0 +1,73 @@
+// dna/api/forward.hl — HTTP as a forwarding transport (GH #1104,
+// #1135). The face is where humans decide, so the head keeps ONE path
+// for its writes over HTTP: `POST …/commands` takes one line of the api
+// binding's wire (`{"call", "payload"}`, `{"describe"}`) and hands it to
+// the program's own socket with `"via": "http-session"`, a mark the
+// binding honours only from the program's own uid. The gate and the
+// record source decide exactly as for a socket peer; the principal is
+// the head process's, mapped through `dna.unix.member` — never the bare
+// local principal. No second command table: the line is forwarded as
+// written and the receipt comes back as written. The local session only:
+// an OIDC session's person is not a socket peer, so that mode answers
+// `commands_unsupported` here until the binding grows an HTTP transport.
+
+// One forwarded line, and its receipt ("" when the socket did not
+// answer within the deadline).
+locus Forward {
+    params {
+        socket: String = "";
+        deadline_ns: Int = 30000000000; // a command is git work
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+    @unbounded
+    fn line(request: String) -> String {
+        // no wait: a head whose binding never bound answers at once; and
+        // only this process's own binding is forwarded into — a clone of
+        // the record sharing the path gets nothing
+        let fd = std::io::unix::connect(self.socket) or - 1;
+        if fd < 0 { return ""; }
+        if std::io::unix::peer_pid(fd) != std::process::pid() { std::io::tcp::__close_fd(fd); return ""; }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        self.stream.send(request + "\n") or discard;
+        let started = std::time::monotonic_ns();
+        while std::time::monotonic_ns() - started < self.deadline_ns {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 { return self.buf[0..nl]; }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) > 0 { self.buf = self.buf + chunk; }
+        }
+        return "";
+    }
+}
+
+// Whether this process answers on `socket` now: bound, and ours.
+fn socket_live(socket: String) -> Bool {
+    if len(socket) == 0 { return false; }
+    let fd = std::io::unix::connect(socket) or - 1;
+    if fd < 0 { return false; }
+    let ours = std::io::unix::peer_pid(fd) == std::process::pid();
+    std::io::tcp::__close_fd(fd);
+    return ours;
+}
+
+// The wire line for a forwarded request: the caller's object with the
+// head's mark; a line that already carries one is refused.
+fn forwarded_line(body: String) -> String {
+    let t = std::str::trim(body);
+    if !std::json::valid_object(t) || len(std::json::find_field_raw(t, "via")) > 0 { return ""; }
+    return t[0..(len(t) - 1)] + (if len(t) > 2 { "," } else { "" }) + "\"via\":\"http-session\"}";
+}
+
+// The HTTP status a receipt earns: the binding's own answer, or its
+// refusal kind.
+fn forwarded_status(receipt: String) -> Int {
+    if std::json::find_field_raw(receipt, "ok") == "true" { return 200; }
+    let kind = std::json::find_string_field(std::json::find_field_raw(receipt, "refusal"), "kind");
+    if kind == "unauthenticated" { return 401; }
+    if kind == "unauthorized" { return 403; }
+    if kind == "unknown" { return 404; }
+    if kind == "over_bound" { return 503; }
+    return 400;
+}

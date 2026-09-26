@@ -1,7 +1,10 @@
 // Browser -> real Knowledge command service -> host/body -> canonical Review
 // -> domain activation -> projected graph. No authored outcome facts.
+// Knowledge changes and their recovery are forwarded lines of the head's
+// api wire on …/commands (GH #1129); a refusal is the reply's code.
 import { test as base, expect } from '@playwright/test';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
+import { callOf, isKnowledgeCall, isKnowledgeLookup, isWrite, settleKnowledge } from './command-wire.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
@@ -10,8 +13,9 @@ const test = base.extend({
     try { await use(service); }
     finally { await service.stop(); await testInfo.attach('native-node-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
   },
-  page: async ({ page }, use) => {
+  page: async ({ page, service }, use) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
+    await service.attach(page);
     await use(page); expect(errors).toEqual([]);
   },
 });
@@ -24,8 +28,12 @@ const decision = page => page.getByRole('region', { name: 'Review intervention',
 const verdictReceipt = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const detail = page => page.getByRole('region', { name: 'Knowledge item', exact: true });
 const saved = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
-const posts = page => { const values = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/commands')) values.push(request.postDataJSON()); }); return values; };
-const statusResponse = (page, path, method) => page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === method);
+// Every line that asks for a change; recovery reads are not among them.
+const posts = page => { const values = []; page.on('request', request => { if (isWrite(request) && !isKnowledgeLookup(request) && new URL(request.url()).pathname.endsWith('/commands')) values.push(request.postDataJSON()); }); return values; };
+// The answer to a Knowledge call ('POST'), its recovery ('GET'), or a named call.
+const statusResponse = (page, path, which) => page.waitForResponse(response => new URL(response.url()).pathname === path
+  && (which === 'POST' ? isKnowledgeCall(response.request()) : which === 'GET' ? isKnowledgeLookup(response.request()) : callOf(response.request()) === which));
+const NODE_CALLS = ['KnowledgeNodePropose', 'KnowledgeNodeRevise', 'KnowledgeNodeRetire'];
 const originalText = 'A non-Practice idea — café 東京 🧭.\nKeep <img src=x onerror="window.__nodeInjected=true"> as literal evidence.\n';
 
 async function prepare(page, service, { operation = 'node.propose', id = '', name = 'Evidence compass', text = originalText } = {}) {
@@ -46,7 +54,8 @@ async function prepare(page, service, { operation = 'node.propose', id = '', nam
 async function send(page, service) {
   const pending = statusResponse(page, service.commandPath, 'POST');
   await editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true }).click();
-  const response = await pending; return { status: response.status(), body: await response.json(), command: response.request().postDataJSON() };
+  const response = await pending; const line = response.request().postDataJSON();
+  return { ...settleKnowledge(response.status(), await response.json()), line, request_id: line.payload.request_id };
 }
 async function show(page, service, requestId, predicate = value => value.node.proposal_state === 'created') {
   const native = await service.waitNode(requestId, predicate); await service.quiesce();
@@ -58,8 +67,8 @@ async function show(page, service, requestId, predicate = value => value.node.pr
 }
 async function propose(page, service, options = {}) {
   await prepare(page, service, options); await expect(editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true })).toBeEnabled();
-  const sent = await send(page, service); expect(sent.status).toBe(202);
-  const native = await show(page, service, sent.command.request_id);
+  const sent = await send(page, service); expect(sent.status).toBe(200); expect(sent.code).toBe('');
+  const native = await show(page, service, sent.request_id);
   const canonical = service.candidate(native.node.candidate_digest);
   if (options.operation !== 'node.retire') { expect(canonical.kind).toBe('idea'); expect(canonical.text).toBe(options.text ?? originalText); }
   return { ...sent, native, canonical };
@@ -77,12 +86,13 @@ async function approve(page, service, proposal, activation = 'adopted') {
   await decision(page).getByRole('radio', { name: 'Approve', exact: true }).check();
   await decision(page).getByRole('textbox', { name: 'Decision note', exact: true }).fill('Approve this exact canonical Knowledge candidate.');
   await decision(page).getByRole('button', { name: 'Review decision', exact: true }).click();
-  const response = statusResponse(page, service.apiPath + '/commands', 'POST');
+  const response = statusResponse(page, service.apiPath + '/commands', 'ReviewVerdict');
   await decision(page).getByRole('button', { name: 'Submit decision', exact: true }).click();
-  const submitted = await response; expect([200, 202]).toContain(submitted.status());
+  const submitted = await response; expect(submitted.status()).toBe(200);
   const verdict = submitted.request().postDataJSON();
-  await service.waitCommand(verdict.request_id, value => value.verdict.state === 'accepted');
-  const native = await service.waitNode(proposal.command.request_id, value => value.node.activation_state === activation);
+  expect(verdict.call).toBe('ReviewVerdict');
+  await service.waitCommand(verdict.payload.request_id, value => value.verdict.state === 'accepted');
+  const native = await service.waitNode(proposal.request_id, value => value.node.activation_state === activation);
   expect(native.node.review_outcome).toBe('approve'); await service.quiesce();
   await verdictReceipt(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await expect(verdictReceipt(page).getByRole('button', { name: 'Dismiss completed request', exact: true })).toBeVisible();
@@ -98,7 +108,9 @@ async function openObserved(page, service, id, retiring = false) {
 test('native Knowledge nodes: create a generic idea, decide its exact Review, revise and retire with history retained', async ({ page, service }, testInfo) => {
   const submitted = posts(page);
   const first = await propose(page, service);
-  expect(first.command.target).toEqual({ application_id: service.application, kind: 'dna.knowledge.collection', id: 'org' });
+  // A proposal names its collection; the head derives the target from it.
+  expect(first.line.call).toBe('KnowledgeNodePropose');
+  expect(first.line.payload).toMatchObject({ target: 'org', author: 'org', kind: 'idea' }); expect(first.line.payload).not.toHaveProperty('target_id');
   expect((await saved(page))[0]).toMatchObject({ version: 3, operation: 'dna.knowledge.node.propose', target_kind: 'dna.knowledge.collection', target_id: 'org' });
   expect(JSON.stringify(await saved(page))).not.toContain('Evidence compass');
   await expect(receipt(page)).toContainText('Proposal created'); await expect(receipt(page)).not.toContainText('Adoption observed');
@@ -108,7 +120,7 @@ test('native Knowledge nodes: create a generic idea, decide its exact Review, re
   await receipt(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('generic-idea-adopted.png') });
   await dismissNode(page);
   const revised = await propose(page, service, { operation: 'node.revise', id: firstId, text: originalText + 'Revised through its own native Review.\n' });
-  expect(revised.command.arguments.supersedes).toBe(firstId);
+  expect(revised.line.payload.supersedes).toBe(firstId);
   await approve(page, service, revised); const revisedId = revised.native.node.candidate_digest;
   await openObserved(page, service, revisedId);
   await receipt(page).getByRole('link', { name: 'Open prior knowledge', exact: true }).click();
@@ -116,27 +128,27 @@ test('native Knowledge nodes: create a generic idea, decide its exact Review, re
   expect(new URLSearchParams(new URL(page.url()).hash.split('?')[1]).get('id')).toBe(firstId);
   await dismissNode(page);
   const retirement = await propose(page, service, { operation: 'node.retire', id: revisedId });
-  expect(retirement.command.arguments).toEqual({ id: revisedId, rationale: 'Preserve exact evidence and its history.' });
+  expect(retirement.line.payload).toEqual({ request_id: retirement.request_id, record_head: retirement.line.payload.record_head, id: revisedId, rationale: 'Preserve exact evidence and its history.' });
   await approve(page, service, retirement); await openObserved(page, service, revisedId, true);
   await expect(detail(page)).toContainText('retired'); await expect(detail(page)).toContainText('Revised through its own native Review.');
-  expect(submitted.filter(value => value.operation.startsWith('dna.knowledge.node.')).map(value => value.operation)).toEqual(['dna.knowledge.node.propose', 'dna.knowledge.node.revise', 'dna.knowledge.node.retire']);
+  expect(submitted.filter(value => NODE_CALLS.includes(value.call)).map(value => value.call)).toEqual(NODE_CALLS);
   await receipt(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('generic-idea-retired-with-history.png') });
 });
 
 test('native Knowledge nodes: lost creation response restarts all services and recovers by GET without another proposal', async ({ page, service }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 }); const submitted = posts(page);
   await prepare(page, service); await service.pauseDelivery(); let admitted;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); expect(response.status()).toBe(202); admitted = route.request().postDataJSON(); await route.abort('failed');
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
+    const response = await route.fetch(); expect(response.status()).toBe(200); admitted = route.request().postDataJSON().payload; await route.abort('failed');
   });
   await editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true }).click();
   await expect(receipt(page)).toContainText('Knowledge outcome could not be confirmed');
   expect((await saved(page))[0]).toMatchObject({ operation: 'dna.knowledge.node.propose', request_id: admitted.request_id, target_kind: 'dna.knowledge.collection', target_id: 'org' });
-  await page.unroute('**/dna/knowledge/commands'); await service.restart();
+  await page.unroute('**/commands'); await service.restart();
   await service.waitNode(admitted.request_id, value => value.node.proposal_state === 'created'); await service.quiesce();
   await page.reload(); await expect(receipt(page)).toContainText('Proposal created');
-  expect(submitted).toHaveLength(1); expect(submitted[0].request_id).toBe(admitted.request_id);
+  expect(submitted).toHaveLength(1); expect(submitted[0].payload.request_id).toBe(admitted.request_id);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await receipt(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('generic-idea-recovered-mobile.png') });
 });
@@ -144,10 +156,10 @@ test('native Knowledge nodes: lost creation response restarts all services and r
 test('native Knowledge nodes: stale Record precondition refuses admission without a second request', async ({ page, service }) => {
   const submitted = posts(page); await prepare(page, service); await service.pauseDelivery();
   const other = await service.command('node.propose', { kind: 'idea', name: 'Other writer', text: 'Independent evidence.', author: 'org', target: 'org', rationale: 'Advance the native Record.' }, 'org');
-  expect((await service.post(other)).status).toBe(202); const head = service.journal().head;
-  const rejected = await send(page, service); expect(rejected.status).toBe(409); expect(rejected.body.error.code).toBe('stale_subject');
+  expect((await service.post(other)).code).toBe(''); const head = service.journal().head;
+  const rejected = await send(page, service); expect(rejected.status).toBe(200); expect(rejected.code).toBe('stale_subject');
   await expect(receipt(page)).toContainText('The service refused this Knowledge request');
-  expect(service.journal().head).toBe(head); expect((await service.lookup(rejected.command.request_id)).status).toBe(404); expect(submitted).toHaveLength(1);
+  expect(service.journal().head).toBe(head); expect((await service.lookup(rejected.request_id)).code).toBe('command_not_found'); expect(submitted).toHaveLength(1);
   service.resumeDelivery();
 });
 
@@ -157,7 +169,7 @@ test('native Knowledge nodes: approved competing revision reports adoption refus
   const first = await propose(page, service, { operation: 'node.revise', id, text: 'First independently reviewed revision.' }); await dismissNode(page);
   const second = await propose(page, service, { operation: 'node.revise', id, text: 'Second independently reviewed revision.' });
   await approve(page, service, first); await approve(page, service, second, 'refused');
-  const observed = await show(page, service, second.command.request_id, value => value.node.activation_state === 'refused');
+  const observed = await show(page, service, second.request_id, value => value.node.activation_state === 'refused');
   expect(observed.state).toBe('succeeded'); expect(observed.node.review_outcome).toBe('approve');
   await expect(receipt(page)).toContainText('refused'); await expect(receipt(page)).not.toContainText('Adoption observed');
   await receipt(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('generic-revision-approved-activation-refused.png') });
@@ -166,12 +178,12 @@ test('native Knowledge nodes: approved competing revision reports adoption refus
 test('native Knowledge nodes: graph observation requires the final receipt at the same Record head', async ({ page, service }) => {
   const proposal = await propose(page, service); await approve(page, service, proposal); await service.pauseDelivery();
   let lookups = 0, changedHead;
-  await page.route('**/dna/knowledge/commands?*', async route => {
-    if (new URL(route.request().url()).searchParams.get('request_id') !== proposal.command.request_id) return route.continue();
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeLookup(route.request()) || route.request().postDataJSON().payload.request_id !== proposal.request_id) return route.fallback();
     lookups++;
     if (lookups === 2) {
       const other = await service.command('node.propose', { kind: 'idea', name: 'Independent source advance', text: 'A real second admission changes the captured Record.', author: 'org', target: 'org', rationale: 'Verify the final source check.' }, 'org');
-      expect((await service.post(other)).status).toBe(202); changedHead = service.journal().head;
+      expect((await service.post(other)).code).toBe(''); changedHead = service.journal().head;
     }
     await route.continue();
   });
@@ -185,10 +197,13 @@ test('native Knowledge nodes: graph observation requires the final receipt at th
 
 test.describe('Denied generic node authority', () => {
   test.use({ grants: [{ mode: 'local', name: 'alice', authority: 'board', edge_link: 'direct', node_propose: 'deny', node_revise: 'deny', node_retire: 'deny', node_scopes: [{ author: 'org', target: 'org' }], recover: true }] });
+  // The seat opens the call (the `position` gate); the policy, which grants
+  // this person relationships only, refuses the proposal and admits nothing.
   test('native Knowledge nodes: read and relationship authority do not permit a node proposal', async ({ page, service }) => {
-    const submitted = posts(page); await prepare(page, service);
-    await expect(editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true })).toBeDisabled();
-    expect((await service.capability('dna.knowledge.node.propose')).body.data.authorized).toBe(false);
-    expect(submitted).toEqual([]); expect(await saved(page)).toEqual([]);
+    expect(await service.slice()).toEqual(expect.arrayContaining(['KnowledgeNodePropose', 'KnowledgeLookup']));
+    const submitted = posts(page); await prepare(page, service); const head = service.journal().head;
+    const refused = await send(page, service); expect(refused.status).toBe(200); expect(refused.code).toBe('forbidden');
+    expect(service.journal().head).toBe(head); expect(submitted).toHaveLength(1);
+    expect(service.facts('knowledge.node.requested')).toEqual([]);
   });
 });

@@ -20,6 +20,11 @@ pub(crate) trait ProcessStdlib<'ctx> {
         args: &[Expr],
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 
+    fn lower_std_process_uid(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
     fn lower_std_process_rss_bytes(
         &mut self,
         args: &[Expr],
@@ -182,6 +187,40 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_int_s_extend(pid_i32, i64_t, "pid.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((pid_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::process::uid() -> Int`: `getuid()`, sign-extended like
+    /// `pid`. The api binding asks it to know a peer is the program
+    /// itself (a forwarding transport's `via` mark, GH #1104).
+    fn lower_std_process_uid(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::uid takes 0 arguments, got {}",
+                args.len()
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let getuid = self
+            .module
+            .get_function("getuid")
+            .expect("getuid declared");
+        let call = self
+            .builder
+            .build_call(getuid, &[], "getuid.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let uid_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("getuid returns i32")
+            .into_int_value();
+        let uid_i64 = self
+            .builder
+            .build_int_z_extend(uid_i32, i64_t, "uid.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((uid_i64.into(), CodegenTy::Int))
     }
 
     /// `std::process::rss_bytes() -> Int` (2026-05-21). Returns

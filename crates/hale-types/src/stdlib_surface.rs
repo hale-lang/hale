@@ -633,7 +633,7 @@ pub const SURFACES: &[NsSurface] = &[
             // an assignment.
             e("adopt", EffectSet::SYSCALL),
             e("dump_arena_residency", EffectSet::SYSCALL), e("dump_pool_residency", EffectSet::SYSCALL),
-            e("exit", EffectSet::SYSCALL), e("kill", EffectSet::SYSCALL), e("pid", EffectSet::SYSCALL), e("read_stderr", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("read_stdout", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
+            e("exit", EffectSet::SYSCALL), e("kill", EffectSet::SYSCALL), e("pid", EffectSet::SYSCALL), e("uid", EffectSet::SYSCALL), e("read_stderr", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("read_stdout", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
             e("rss_bytes", EffectSet::SYSCALL), e("run", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("signal", EffectSet::SYSCALL), e("spawn", EffectSet::SYSCALL), e("try_wait", EffectSet::SYSCALL), e("wait", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
             e("write_stdin", EffectSet::SYSCALL),
         ],
@@ -1100,6 +1100,7 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_DEC, "to_float", [Decimal], Float),
     // std::process (scalar subset; run/spawn/wait/... in tranche 2)
     sig!(NS_PROC, "pid", [], Int),
+    sig!(NS_PROC, "uid", [], Int),
     sig!(NS_PROC, "exit", [Int], Unit),
     sig!(NS_PROC, "rss_bytes", [], Int),
     sig!(NS_PROC, "dump_arena_residency", [], Int),

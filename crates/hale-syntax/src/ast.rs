@@ -721,6 +721,12 @@ pub struct InterfaceMethodSig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocusDecl {
     pub name: Ident,
+    /// GH #1104 piece 5: the locus came in through an `import`. Set by
+    /// the cross-seed rename pass (its mangled name is a rename
+    /// target). The api binding serves the entrypoint seed's own loci
+    /// only: a library's internal bus is not the application's API,
+    /// however much of it the entrypoint composes.
+    pub imported: bool,
     /// Phase 2: when set, this locus is the binary's entry point —
     /// `main locus App { ... }`. Carries `bindings { }`
     /// configuration for cross-process topics. Exactly one
@@ -1364,6 +1370,14 @@ pub struct ApiBinding {
 }
 
 /// GH #1109: `on_unauthorized: refuse | drop`.
+impl ApiBinding {
+    /// Where the transport (the socket path expression) was written.
+    pub fn transport_span(&self) -> Span {
+        let ApiTransport::Unix { span, .. } = &self.transport;
+        *span
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiUnauthorizedPolicy {
     /// An `unauthorized` receipt naming the missing role.
@@ -1386,9 +1400,12 @@ pub struct ApiRoles {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApiTransport {
-    /// `unix("/path")` — a Unix domain stream socket speaking one JSON
-    /// object per line.
-    Unix { path: String, span: Span },
+    /// `unix(path, …)` — a Unix domain stream socket speaking one JSON
+    /// object per line. `path` is an expression the main locus evaluates
+    /// as a param default: a string literal, or `self.<param>` the
+    /// program computed (a per-record path under XDG_RUNTIME_DIR, say).
+    /// `LOTUS_API` overrides it at run time.
+    Unix { path: Expr, span: Span },
 }
 
 /// What the binding does with the request over `bound`. `refuse`

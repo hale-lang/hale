@@ -9,7 +9,9 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
+import { settle, wireLine } from './command-wire.mjs';
+import { mapPeer, seatRecord } from './record-seats.mjs';
 
 // GH #1029: dna/api/practice_review/tests/relay was removed with the
 // membrane (GH #986); nothing builds a relay against the nerves yet, so
@@ -45,7 +47,8 @@ const requests = [];
 const receipts = {};
 const cases = [];
 const started = Date.now();
-let application = '', origin = '', actor = 'alice';
+// `token`: the launch token the running API minted (GH #989); every POST carries it.
+let application = '', origin = '', actor = 'alice', token = '';
 let body, relay, api, interrupted = '';
 let serial = 0;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -140,7 +143,7 @@ function httpRequest(method, suffix, value, { discard = false } = {}) {
     const request = http.request(origin + suffix, {
       method, agent: false,
       headers: encoded ? {
-        Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1',
+        Origin: origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1', 'X-Hale-Token': token,
         'Content-Length': encoded.length, Connection: 'close',
       } : { Connection: 'close' },
     }, response => {
@@ -196,14 +199,23 @@ async function startRelay() {
   relay = startNative('relay', binaries.relay, []);
   await until('host relay startup', () => relay.output, text => text.includes('native command relay ready'));
 }
+// The API forwards commands as its own uid, which the record maps to the
+// acting person. A granted actor holds the board and the reviewer seat so
+// the gates open; an ungranted one is mapped but seated nowhere.
+const seated = new Set();
+function actAs(name, seat) {
+  if (!seat || seated.has(name)) mapPeer(fixture, childEnv, name);
+  else { seatRecord(fixture, childEnv, name, ['board', 'reviewer']); seated.add(name); }
+}
 async function startApi(name = 'alice') {
-  actor = name;
+  actor = name; actAs(name, name !== 'mallory');
   const port = await availablePort(); origin = `http://127.0.0.1:${port}`;
   api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath });
   await until('command API startup', async () => {
     try { return await httpRequest('GET', '/api/hale/v1/applications'); }
     catch (error) { if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET') return null; throw error; }
   }, result => result?.status === 200 && result.json.source?.record_id === application);
+  token = await launchToken(fixture);
   const capabilities = await read(prefix() + '/capabilities');
   assert.equal(capabilities.status, 200);
   assert.deepEqual(capabilities.json.data.principal, { mode: 'local', name });
@@ -264,20 +276,23 @@ function assertReceipt(receipt, command) {
   assert.match(receipt.command_id, /^command-[0-9a-f]{64}$/);
   assert.match(receipt.fingerprint, /^sha256:[0-9a-f]{64}$/);
 }
+// One line of the head's wire, and the receipt it settles to.
 async function submit(command) {
-  const result = await httpRequest('POST', prefix() + '/commands', command);
-  assert([200, 202].includes(result.status), `POST ${command.request_id}: ${JSON.stringify(result)}`);
-  assert.equal(result.json.source?.record_id, application);
-  assertReceipt(result.json.data, command);
-  return result.json.data;
+  const result = await httpRequest('POST', prefix() + '/commands', wireLine(command));
+  const settled = settle(result.status, result.json);
+  assert.equal(settled.code, '', `POST ${command.request_id}: ${JSON.stringify(result)}`);
+  assert.equal(settled.reply.application_id, application);
+  assertReceipt(settled.receipt, command);
+  return settled.receipt;
 }
 async function lookup(command, predicate) {
   const result = await until(`outcome ${command.request_id}`, async () => {
     const response = await read(prefix() + '/commands?request_id=' + encodeURIComponent(command.request_id));
-    assert.equal(response.status, 200, JSON.stringify(response));
-    assert.equal(response.json.source?.record_id, application);
-    assertReceipt(response.json.data, command);
-    return response.json.data;
+    const settled = settle(response.status, response.json);
+    assert.equal(settled.code, '', JSON.stringify(response));
+    assert.equal(settled.reply.application_id, application);
+    assertReceipt(settled.receipt, command);
+    return settled.receipt;
   }, predicate);
   receipts[`${command.preconditions.principal.name}:${command.request_id}`] = result;
   return result;
@@ -330,10 +345,14 @@ async function approve(command, predecessor) {
   assertAdoption(receipt, command, predecessor);
   return receipt;
 }
+// A refusal: the route's own keeps its HTTP status and error envelope; the
+// binding's is its refusal kind; the provider's is the CommandReply code
+// under a 200.
 async function expectError(method, suffix, command, status, code) {
-  const response = method === 'GET' ? await read(suffix) : await httpRequest(method, suffix, command);
+  const response = method === 'GET' ? await read(suffix) : await httpRequest(method, suffix, wireLine(command));
+  const settled = settle(response.status, response.json);
   assert.equal(response.status, status, JSON.stringify(response));
-  assert.equal(response.json.error?.code, code, JSON.stringify(response));
+  assert.equal(settled.code, code, JSON.stringify(response));
 }
 async function quiesce() {
   let previous = journal().head, stable = 0;
@@ -394,8 +413,8 @@ try {
     const retry = await submit(firstCommand);
     assert.equal(retry.command_id, firstProposal.command_id); assert.equal(retry.fingerprint, firstProposal.fingerprint);
     const changed = structuredClone(firstCommand); changed.arguments.text += 'Changed';
-    await expectError('POST', prefix() + '/commands', changed, 409, 'request_conflict');
-    await expectError('POST', prefix() + '/commands', verdict('replace-1', firstProposal), 409, 'request_conflict');
+    await expectError('POST', prefix() + '/commands', changed, 200, 'request_conflict');
+    await expectError('POST', prefix() + '/commands', verdict('replace-1', firstProposal), 200, 'request_conflict');
     assert.equal(admission('replace-1').length, 1);
   });
   let lostCommand, lostProposal;
@@ -403,7 +422,7 @@ try {
     await stopDelivery();
     lostCommand = practice('lost-proposal', active, 'Recovered after API and body restart.\r\n🧭 \u0001');
     save('lost-request.json', { application_id: application, principal: lostCommand.preconditions.principal, request_id: lostCommand.request_id });
-    await httpRequest('POST', prefix() + '/commands', lostCommand, { discard: true });
+    await httpRequest('POST', prefix() + '/commands', wireLine(lostCommand), { discard: true });
     const admitted = admission(lostCommand.request_id);
     assert.equal(admitted.length, 1); assert.equal(facts('practice.proposed', admitted[0].entity).length, 0);
     const posts = requests.filter(row => row.method === 'POST').length;
@@ -453,12 +472,12 @@ try {
     active = a.proposal.candidate_digest;
   });
   await scenario('new request against retired subject is not admitted', async () => {
-    await expectError('POST', prefix() + '/commands', practice('stale-new-key', retiredBase, 'Stale subject.'), 409, 'stale_subject');
+    await expectError('POST', prefix() + '/commands', practice('stale-new-key', retiredBase, 'Stale subject.'), 200, 'stale_subject');
     assert.equal(admission('stale-new-key').length, 0);
   });
   await scenario('principal isolation survives API restart with both grants', async () => {
     await switchActor('bob');
-    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 404, 'command_not_found');
+    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 200, 'command_not_found');
     const command = practice('replace-1', active, 'Bob has his own request identity.');
     const proposal = await created(command);
     assert.notEqual(proposal.command_id, firstProposal.command_id);
@@ -469,17 +488,20 @@ try {
     assert.equal(original.command_id, firstProposal.command_id);
   });
   await scenario('ungranted principal cannot submit or recover another receipt', async () => {
-    const denied = await switchActor('mallory');
-    assert.equal(denied.writes.practice_propose, false); assert.equal(denied.writes.review_verdict, false);
-    assert.equal(denied.commands.authorized, false); assert.equal(denied.review_commands.authorized, false);
-    await expectError('POST', prefix() + '/commands', practice('unauthorized', active, 'No policy grant.'), 403, 'forbidden');
-    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 403, 'forbidden');
+    await switchActor('mallory');
+    // Seated nowhere: the slice is the two ungated commands, a proposal is
+    // unknown to this caller, and the lookup is the provider's to refuse.
+    const described = await httpRequest('POST', prefix() + '/commands', { describe: true });
+    assert.equal(described.status, 200, JSON.stringify(described));
+    assert.deepEqual(described.json.value.commands.map(entry => entry.name).sort(), ['CommandLookup', 'TaskCreate']);
+    await expectError('POST', prefix() + '/commands', practice('unauthorized', active, 'No policy grant.'), 404, 'unknown');
+    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 200, 'forbidden');
     assert.equal(admission('unauthorized').length, 0);
   });
   await scenario('encoded HTTP cap and maximum decoded fields through native adoption', async () => {
     await switchActor('alice');
     const tooLarge = practice('encoded-control-too-large', active, '\u0001'.repeat(8192), '\u0001'.repeat(2048));
-    assert(Buffer.byteLength(JSON.stringify(tooLarge), 'utf8') > 32768);
+    assert(Buffer.byteLength(JSON.stringify(wireLine(tooLarge)), 'utf8') > 32768);
     await expectError('POST', prefix() + '/commands', tooLarge, 413, 'command_too_large');
     assert.equal(admission(tooLarge.request_id).length, 0);
     const text = '\u0001'.repeat(3000) + 'x'.repeat(5192);
@@ -487,7 +509,7 @@ try {
     assert.equal(Buffer.byteLength(text, 'utf8'), 8192);
     assert.equal(Buffer.byteLength(reason, 'utf8'), 2048);
     const command = practice('max-control-replacement', active, text, reason);
-    assert(Buffer.byteLength(JSON.stringify(command), 'utf8') <= 32768);
+    assert(Buffer.byteLength(JSON.stringify(wireLine(command)), 'utf8') <= 32768);
     const proposal = await created(command);
     const fact = only('practice.requested', proposal.command_id);
     assert.equal(fact.data.text, text); assert.equal(fact.data.because, reason);
@@ -496,7 +518,7 @@ try {
     assert.equal(only('practice.proposed', proposal.command_id).data.because, reason);
     const approval = verdict('max-control-approve', proposal, '\u0001'.repeat(2048));
     assert.equal(Buffer.byteLength(approval.arguments.comment, 'utf8'), 2048);
-    assert(Buffer.byteLength(JSON.stringify(approval), 'utf8') <= 32768);
+    assert(Buffer.byteLength(JSON.stringify(wireLine(approval)), 'utf8') <= 32768);
     await approve(approval, active);
     active = proposal.proposal.candidate_digest;
   });

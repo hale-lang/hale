@@ -3974,7 +3974,9 @@ opened on the first read and held for the process's life; a projection
 that has not reached the record's head answers
 `knowledge_projection_unavailable` until the spine's tick applies it,
 and without the DSN Knowledge reads are unsupported
-(`knowledge_unsupported`). It admits Knowledge commands into the
+(`knowledge_unsupported`). It admits Knowledge commands — the
+`Knowledge*` topics on its api binding, gated `position`, forwarded
+from HTTP like its other commands — into the
 record in the same process, under the explicit authority policy in the
 file `HALE_DNA_KNOWLEDGE_COMMAND_POLICY` names (`dna.knowledge-authority/1`,
 at most 64 KiB, decoded by `KnowledgePolicyCodec` in
@@ -3982,7 +3984,7 @@ at most 64 KiB, decoded by `KnowledgePolicyCodec` in
 `dna.trust`). The policy is read once, when the API starts: an edit to
 the file does not change a running API's basis, and a policy that does
 not decode stops the API (exit 2). `dna/api/README.md` describes the
-routes.
+reads and the topics.
 
 What is deliberately not here yet: a fleet-level semantic diff (a
 Review's diff is the edited seed's; the deploy row names the instances

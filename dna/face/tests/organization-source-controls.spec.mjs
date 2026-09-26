@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { UNGATED, commandReceipt, commandReply, describeLine, receiptLine, refusedReply, routeError } from './command-wire.mjs';
 
 const evidence = process.env.HALE_ORGANIZATION_REVIEW_EVIDENCE;
 const web = fileURLToPath(new URL('../web/', import.meta.url));
@@ -50,43 +51,28 @@ function failure(code, message, retryable = false) { return { api_version: 'hale
 async function fixture(page, options = {}) {
   const script = {
     principal: { mode: 'local', name: 'bob' }, sourceProfile: true, sourceAvailable: true, sourceAuthorized: true,
-    ordinary: false, candidateMissing: false, postMode: 'receipt', getMode: 'receipt', invalidActivation: false,
+    candidateMissing: false, postMode: 'receipt', getMode: 'receipt', invalidActivation: false,
     posts: [], gets: [], candidateReads: [], savedBeforeSend: [], errors: [], ...options,
   };
   page.on('pageerror', error => script.errors.push(error.message));
-  const capabilities = () => {
-    const sourceWrite = script.sourceProfile && script.sourceAvailable && script.sourceAuthorized;
-    const data = {
-      application_id: native.application, principal: script.principal, read_only: !(sourceWrite || script.ordinary),
-      reads: { reviews: true, practices: false, organization: false, definitions: false, knowledge: false, workflows: false },
-      writes: { practice_propose: false, review_verdict: script.ordinary },
-    };
-    if (script.ordinary) data.review_commands = {
-      profile: 'dna.review.verdict.v1', available: true, authorized: true, position_id: 'org', recovery: 'record_lifetime', max_comment_bytes: '2048', reason: '',
-    };
-    if (script.sourceProfile) {
-      data.writes.organization_propose = false;
-      data.writes.organization_review_verdict = sourceWrite;
-      data.organization_commands = {
-        profile: 'dna.organization.propose.v1', available: false, authorized: false, position_id: 'org', recovery: 'record_lifetime', command_origin: origin,
-        module_path: 'dna/org/main.hl', max_source_bytes: '16384', max_rationale_bytes: '2048', max_request_bytes: '32768', reason: 'Publication is outside this UI contract fixture.',
-      };
-      data.organization_review_commands = {
-        profile: 'dna.organization.review.verdict.v1', operation: 'dna.review.verdict', available: script.sourceAvailable, authorized: script.sourceAuthorized,
-        position_id: 'org', recovery: 'record_lifetime', command_origin: origin, max_comment_bytes: '2048', reason: script.sourceAuthorized ? '' : 'Source decision submission is not currently granted.',
-      };
-    }
-    return envelope(data);
-  };
-  const receipt = request => envelope({
-    command_id: 'ui-contract/' + request.request_id, request_id: request.request_id,
-    application_id: native.application, operation: 'dna.review.verdict', operation_version: '1', principal: script.principal,
-    context: request.context, target: request.target, subject_digest: request.preconditions.subject_digest,
-    fingerprint: 'sha256:' + 'c'.repeat(64), reason: '', state: 'recorded',
-    verdict: { value: request.arguments.verdict, state: 'pending' },
-    review: { state: script.invalidActivation ? 'settled' : 'pending', outcome: script.invalidActivation ? 'approve' : '', subject_digest: request.preconditions.subject_digest },
-    activation: { state: script.invalidActivation ? 'adopted' : 'unknown', reason: '' },
+  const capabilities = () => envelope({
+    application_id: native.application, principal: script.principal, read_only: true,
+    reads: { reviews: true, practices: false, organization: false, definitions: false, knowledge: false, workflows: false },
+    api: { transport: 'unix', socket: '/run/scripted.sock', http: script.sourceProfile ? API + '/' + native.application + '/commands' : '' },
   });
+  // The session's slice: one ReviewVerdict decides ordinary and source
+  // Reviews alike; the head's provider checks the owner quorum.
+  const slice = () => [...UNGATED, ...(script.sourceAvailable && script.sourceAuthorized ? ['ReviewVerdict'] : [])];
+  const receipt = ({ payload: request }) => receiptLine(commandReply(commandReceipt({
+    command_id: 'ui-contract/' + request.request_id, request_id: request.request_id,
+    application_id: native.application, operation: 'dna.review.verdict', operation_version: '1',
+    principal_mode: script.principal.mode, principal_name: script.principal.name,
+    target_kind: 'dna.review', target_id: request.review_id, subject_digest: request.subject_digest,
+    fingerprint: 'sha256:' + 'c'.repeat(64), state: 'recorded', proposal_state: '',
+    verdict_value: request.verdict, verdict_state: 'pending',
+    review_state: script.invalidActivation ? 'settled' : 'pending', review_outcome: script.invalidActivation ? 'approve' : '', review_subject_digest: request.subject_digest,
+    activation_state: script.invalidActivation ? 'adopted' : 'unknown',
+  }), native.candidate.source));
   await page.route('**/api/hale/v1{,/**}', async route => {
     const request = route.request(), url = new URL(request.url());
     const fulfill = (status, data) => route.fulfill({ status, contentType: 'application/json; charset=utf-8', body: JSON.stringify(data) });
@@ -108,15 +94,17 @@ async function fixture(page, options = {}) {
       // the page's saved identity read first, then the POST counted: a test
       // waiting on `posts` then reads a complete `savedBeforeSend`, and its
       // next navigation cannot destroy this read
-      const body = request.postDataJSON(); script.savedBeforeSend = await metadata(page);
+      const body = request.postDataJSON();
+      if (body.describe) return fulfill(200, describeLine(slice()));
+      script.savedBeforeSend = await metadata(page);
       script.posts.push({ body, headers: request.headers() });
       if (script.postMode === 'lost') return route.abort('failed');
-      return fulfill(202, receipt(body));
+      return fulfill(200, receipt(body));
     }
     const id = url.searchParams.get('request_id'); script.gets.push(id);
-    if (script.getMode === 'unavailable') return fulfill(503, failure('commands_unavailable', 'Scripted receipt source unavailable.', true));
-    const original = script.posts.find(post => post.body.request_id === id);
-    if (!original) return fulfill(404, failure('command_not_found', 'No scripted receipt.'));
+    if (script.getMode === 'unavailable') return fulfill(503, routeError('commands_unavailable', 'Scripted receipt source unavailable.'));
+    const original = script.posts.find(post => post.body.payload.request_id === id);
+    if (!original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
     return fulfill(200, receipt(original.body));
   });
   return script;
@@ -133,7 +121,7 @@ async function prepare(page) {
   await expect(page.locator('#decision-confirmation')).toBeVisible();
 }
 
-test('Organization source UI contract: separate source capability enables the exact candidate controls', async ({ page }, testInfo) => {
+test('Organization source UI contract: ReviewVerdict in the slice enables the exact candidate controls', async ({ page }, testInfo) => {
   const script = await fixture(page); await open(page);
   await expect(page.getByRole('region', { name: 'Organization candidate comparison', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeEnabled();
@@ -148,8 +136,8 @@ test('Organization source UI contract: separate source capability enables the ex
   expect(script.errors).toEqual([]);
 });
 
-test('Organization source UI contract: ordinary Review capability cannot grant a source decision', async ({ page }) => {
-  const script = await fixture(page, { sourceProfile: false, ordinary: true }); await open(page);
+test('Organization source UI contract: a slice without ReviewVerdict cannot grant a source decision', async ({ page }) => {
+  const script = await fixture(page, { sourceAuthorized: false }); await open(page);
   await expect(page.getByRole('region', { name: 'Organization candidate comparison', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Submit decision', exact: true })).toHaveCount(0);
@@ -177,16 +165,13 @@ test('Organization source UI contract: exact ordinary verdict payload and source
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toBeVisible();
   const sent = script.posts[0];
   expect(sent.body).toEqual({
-    request_id: expect.any(String), operation: 'dna.review.verdict', operation_version: '1',
-    context: { application_id: native.application, position_id: 'org' },
-    target: { application_id: native.application, kind: 'dna.review', id: native.review.id },
-    preconditions: { subject_digest: native.review.subject_digest, principal: script.principal, review_state: 'pending' },
-    arguments: { verdict: 'approve', comment: NOTE },
+    call: 'ReviewVerdict',
+    payload: { request_id: expect.any(String), review_id: native.review.id, subject_digest: native.review.subject_digest, verdict: 'approve', comment: NOTE },
   });
   expect(sent.headers['x-hale-command']).toBe('1'); expect(sent.headers['content-type']).toContain('application/json');
   expect(script.savedBeforeSend).toHaveLength(1);
   expect(script.savedBeforeSend[0].value).toEqual({
-    version: 3, application_id: native.application, principal: script.principal, request_id: sent.body.request_id,
+    version: 3, application_id: native.application, principal: script.principal, request_id: sent.body.payload.request_id,
     operation: 'dna.review.verdict', operation_version: '1', position_id: 'org', target_kind: 'dna.review',
     target_id: native.review.id, subject_digest: native.review.subject_digest, source_review: true,
   });
@@ -195,7 +180,7 @@ test('Organization source UI contract: exact ordinary verdict payload and source
   expect(await page.evaluate(() => window.__sourceInjected)).toBeUndefined();
   script.sourceAuthorized = false; script.getMode = 'receipt';
   await page.reload();
-  await expect.poll(() => script.gets.includes(sent.body.request_id)).toBe(true);
+  await expect.poll(() => script.gets.includes(sent.body.payload.request_id)).toBe(true);
   const recovery = page.getByRole('region', { name: 'Command recovery', exact: true });
   await expect(recovery).toContainText(/recorded/i);
   await expect(recovery).toContainText('Organization result');

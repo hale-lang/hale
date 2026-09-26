@@ -1,4 +1,5 @@
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.use({ organization: true });
 const context = page => page.getByRole('region', { name: 'Working context', exact: true });
@@ -20,7 +21,7 @@ async function navigate(page, view) {
 test('Declared scopes carry across DNA workspaces and mark only exact practice targets without changing identity', async ({ page, service }, testInfo) => {
   await service.changeOwnership(owners);
   const before = await service.projectState(), mutations = [];
-  page.on('request', request => { if (request.method() !== 'GET') mutations.push(request.url()); });
+  page.on('request', request => { if (isWrite(request)) mutations.push(request.url()); });
   await page.goto(service.url('organization'));
   await expect(page.getByLabel('Working locus').locator('option')).toHaveCount(5);
   const principal = await page.locator('#principal').textContent();

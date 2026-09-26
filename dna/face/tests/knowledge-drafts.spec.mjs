@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge editing reads require the real native Knowledge provider fixture.');
 test.use({ knowledge: true });
@@ -24,7 +25,7 @@ async function exported(page, testInfo, name = 'knowledge-change.draft.json') {
 
 test('Knowledge revision preserves exact identity and historical text, checks real service reads and exports a clearly unsubmitted draft', async ({ page, service }, testInfo) => {
   const before = await service.projectState(), mutations = [];
-  page.on('request', request => { if (request.method() !== 'GET') mutations.push(request.method() + ' ' + request.url()); });
+  page.on('request', request => { if (isWrite(request)) mutations.push(request.method() + ' ' + request.url()); });
   await open(page, service);
   await expect(editor(page).getByLabel('Knowledge text')).toHaveValue(service.text);
   const changed = 'Revised équipe 🧬\n<img src=x onerror="window.changed=true">';

@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { UNGATED, commandReceipt, commandReply, describeLine, receiptLine, refusedReply } from './command-wire.mjs';
 
 const evidence = process.env.HALE_ORGANIZATION_PUBLICATION_EVIDENCE;
 const web = fileURLToPath(new URL('../web/', import.meta.url));
@@ -45,39 +46,32 @@ const failure = (code, message) => ({ api_version: 'hale.v1', error: { code, mes
 async function fixture(page, options = {}) {
   const script = { authorized: true, available: true, postMode: 'receipt', stage: 'created', invalidSource: false, posts: [], gets: [], validations: [], savedBeforeSend: [], errors: [], ...options };
   page.on('pageerror', error => script.errors.push(error.message));
+  // The retained capabilities with the forwarding route the head names.
   const capabilities = () => {
     const data = structuredClone(native.capabilities.data);
-    data.writes.organization_propose = script.authorized && script.available; data.writes.organization_review_verdict = false;
-    data.read_only = !data.writes.organization_propose;
-    data.organization_commands = {
-      profile: 'dna.organization.propose.v1', available: script.available, authorized: script.authorized,
-      position_id: 'org', recovery: 'record_lifetime', command_origin: origin, module_path: 'dna/org/main.hl',
-      max_source_bytes: '16384', max_rationale_bytes: '2048', max_request_bytes: '32768', reason: script.authorized ? '' : 'Publication is not currently granted.',
-    };
-    data.organization_review_commands = {
-      profile: 'dna.organization.review.verdict.v1', operation: 'dna.review.verdict', available: false, authorized: false,
-      position_id: 'org', recovery: 'record_lifetime', command_origin: origin, max_comment_bytes: '2048', reason: 'This fixture only scripts publication transport.',
-    };
+    data.api = { transport: 'unix', socket: '/run/scripted.sock', http: API + '/' + native.application + '/commands' };
     return envelope(data);
   };
-  const receipt = request => {
+  // The session's slice: the board's OrganizationPropose while the script seats it.
+  const slice = () => [...UNGATED, ...(script.authorized && script.available ? ['OrganizationPropose'] : [])];
+  const receipt = ({ payload: request }) => {
     const unknown = script.stage === 'unknown', created = ['created', 'applied'].includes(script.stage), applied = script.stage === 'applied';
     const commit = 'e'.repeat(40), reviewId = 'source-' + 'd'.repeat(64);
-    return envelope({
+    return receiptLine(commandReply(commandReceipt({
       command_id: 'ui-contract/' + request.request_id, request_id: request.request_id, application_id: native.application,
-      operation: 'dna.organization.propose', operation_version: '1', principal: native.principal, context: request.context, target: request.target,
-      subject_digest: request.preconditions.base.module_digest, fingerprint: 'sha256:' + 'c'.repeat(64),
-      state: created ? 'succeeded' : unknown ? 'outcome_unknown' : 'recorded', reason: '',
+      operation: 'dna.organization.propose', operation_version: '1', principal_mode: native.principal.mode, principal_name: native.principal.name,
+      target_kind: 'dna.organization.module', target_id: 'dna/org/main.hl',
+      subject_digest: request.module_digest, fingerprint: 'sha256:' + 'c'.repeat(64),
+      state: created ? 'succeeded' : unknown ? 'outcome_unknown' : 'recorded', proposal_state: '',
       organization: {
-        proposal_state: created ? 'created' : unknown ? 'unknown' : 'pending', source_head: request.preconditions.base.source_head,
+        proposal_state: created ? 'created' : unknown ? 'unknown' : 'pending', source_head: request.source_head,
         source_digest: script.invalidSource ? 'sha256:' + 'f'.repeat(64) : native.checked.data.module.digest,
         mutation_id: created ? reviewId : '', candidate_commit: created ? commit : '',
         application_state: applied ? 'applied' : unknown ? 'unknown' : 'pending', application_reason_code: '',
         restart_handoff_state: applied ? 'requested' : unknown ? 'unknown' : 'pending',
       },
-      review: { state: applied ? 'settled' : created ? 'pending' : 'unavailable', outcome: applied ? 'approve' : '', subject_digest: created ? commit : '' },
-      activation: { state: 'unknown', reason: '' },
-    });
+      review_state: applied ? 'settled' : created ? 'pending' : 'unavailable', review_outcome: applied ? 'approve' : '', review_subject_digest: created ? commit : '',
+    }), native.original.source));
   };
   await page.route('**/api/hale/v1{,/**}', async route => {
     const req = route.request(), url = new URL(req.url());
@@ -98,13 +92,15 @@ async function fixture(page, options = {}) {
     if (url.pathname === base + '/dna/reviews') return fulfill(503, failure('commands_unavailable', 'Review read intentionally unavailable in this UI contract fixture.'));
     if (url.pathname !== base + '/commands') return fulfill(404, failure('not_found', 'Outside this UI contract fixture.'));
     if (req.method() === 'POST') {
-      const body = req.postDataJSON(); script.savedBeforeSend = await metadata(page); script.posts.push({ body, headers: req.headers() }); // counted once the page read is done, so a test's next navigation cannot destroy it
+      const body = req.postDataJSON();
+      if (body.describe) return fulfill(200, describeLine(slice()));
+      script.savedBeforeSend = await metadata(page); script.posts.push({ body, headers: req.headers() }); // counted once the page read is done, so a test's next navigation cannot destroy it
       if (script.postMode === 'lost') return route.abort('failed');
-      const value = receipt(body); return fulfill(value.data.state === 'succeeded' ? 200 : 202, value);
+      return fulfill(200, receipt(body));
     }
     const id = url.searchParams.get('request_id'); script.gets.push(id);
-    const original = script.posts.find(post => post.body.request_id === id);
-    if (!original) return fulfill(404, failure('command_not_found', 'No scripted request receipt.'));
+    const original = script.posts.find(post => post.body.payload.request_id === id);
+    if (!original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
     return fulfill(200, receipt(original.body));
   });
   return script;
@@ -140,15 +136,12 @@ test('Organization publication UI contract: exact native checked bytes and five-
   await expect.poll(() => script.posts.length).toBe(1); await expect(recovery(page)).toContainText('Source application');
   const sent = script.posts[0];
   expect(sent.body).toEqual({
-    request_id: expect.any(String), operation: 'dna.organization.propose', operation_version: '1',
-    context: { application_id: native.application, position_id: 'org' },
-    target: { application_id: native.application, kind: 'dna.organization.module', id: 'dna/org/main.hl' },
-    preconditions: { principal: native.principal, base: native.original.data.base },
-    arguments: { source_text: native.checked.data.module.text, rationale: RATIONALE },
+    call: 'OrganizationPropose',
+    payload: { request_id: expect.any(String), ...native.original.data.base, source_text: native.checked.data.module.text, rationale: RATIONALE },
   });
   expect(sent.headers['x-hale-command']).toBe('1'); expect(script.savedBeforeSend).toHaveLength(1);
   expect(script.savedBeforeSend[0].value).toEqual({
-    version: 4, application_id: native.application, principal: native.principal, request_id: sent.body.request_id,
+    version: 4, application_id: native.application, principal: native.principal, request_id: sent.body.payload.request_id,
     operation: 'dna.organization.propose', operation_version: '1', position_id: 'org', target_kind: 'dna.organization.module', target_id: 'dna/org/main.hl',
     subject_digest: native.original.data.base.module_digest, base: native.original.data.base, source_digest: native.checked.data.module.digest,
   });
@@ -182,7 +175,7 @@ test('Organization publication UI contract: editing checked source invalidates t
 
 test('Organization publication UI contract: lost reply reload uses GET only and separates applied source from a running version', async ({ page }) => {
   const script = await fixture(page, { postMode: 'lost' }); await checked(page); await send(page);
-  await expect.poll(() => script.posts.length).toBe(1); const id = script.posts[0].body.request_id;
+  await expect.poll(() => script.posts.length).toBe(1); const id = script.posts[0].body.payload.request_id;
   script.authorized = false; script.stage = 'applied'; await page.reload();
   await expect.poll(() => script.gets.includes(id)).toBe(true);
   await expect(recovery(page)).toContainText('applied'); await expect(recovery(page)).toContainText('requested');

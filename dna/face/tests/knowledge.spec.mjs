@@ -1,4 +1,5 @@
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge browser integration requires an explicitly supplied native provider fixture (HALE_FACE_KNOWLEDGE_BIN) and memory (HALE_DNA_MEMORY_DSN_OWNER).');
 test.use({ knowledge: true });
@@ -65,7 +66,7 @@ test('Knowledge reads real receipt projection, directed stored relationships and
   const mutations = [];
   const graphReads = [];
   page.on('request', request => {
-    if (request.method() !== 'GET') mutations.push(request.url());
+    if (isWrite(request)) mutations.push(request.url());
     const pathname = new URL(request.url()).pathname;
     if (/\/dna\/knowledge\/(nodes|edges|bindings|dependents)$/.test(pathname)) graphReads.push(pathname.split('/').pop());
   });

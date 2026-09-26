@@ -13917,6 +13917,22 @@ int lotus_unix_listen_socket(const char *path) {
         return -1;
     }
     lotus_set_cloexec(sock);
+    /* A live listener holds the path: refuse rather than steal it (GH
+     * #1109 review B3). A stale file — nobody answers — is unlinked as
+     * before, since a crashed predecessor leaves one. */
+    {
+        int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            int held = connect(probe, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+            close(probe);
+            if (held) {
+                fprintf(stderr, "lotus_unix_listen_socket: %s is held by a live process\n", path);
+                close(sock);
+                errno = EADDRINUSE;
+                return -1;
+            }
+        }
+    }
     (void)unlink(path);
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         int err = errno;
@@ -14707,6 +14723,63 @@ const char *lotus_tcp_io_status_kind(int64_t errno_val) {
     return lotus_io_error_kind((int32_t)errno_val);
 }
 
+/* GH #1129 (macOS head_roles): a send that would block, on a fd this
+ * coro cannot park on. The api binding's peer shares one socket
+ * between two coros of one async_io pool: its run() sits parked on
+ * the fd for the next request line while a reply handler writes the
+ * answer. The poller keeps ONE registration per fd (epoll refuses
+ * the second with EEXIST; kqueue takes it, and whichever coro
+ * resumes first deregisters both filters, orphaning the other), so
+ * the writer must not register while the reader holds the fd. It
+ * yields on a timer park instead — the worker keeps serving, the
+ * client drains — and retries the write. Linux never showed it: a
+ * 13 KB reply fits its 208 KB socket buffer; macOS gives 8 KB and
+ * the reply stopped there.
+ *
+ * Without a coro (a classic context writing a fd someone set
+ * O_NONBLOCK: an async pool's recv, or Darwin's accept inheriting the
+ * listener's flag) the classic contract is to block, so this waits
+ * in poll(2). A BLOCKING fd's EAGAIN is a SO_SNDTIMEO expiry and
+ * stays the timeout error it was. 0 = retry the write; -1 = give up
+ * with errno as the syscall left it. */
+#if LOTUS_HAVE_ASYNC_IO
+static int lotus_fd_parked_by_another(lotus_coop_pool_t *p, int fd) {
+    for (lotus_coro_t *c = p->parked_head; c; c = c->next) {
+        if (c->parked_fd == fd) return 1;
+    }
+    return 0;
+}
+#endif
+static int lotus_io_wait_writable(int fd) {
+    int saved = errno;
+#if LOTUS_HAVE_ASYNC_IO
+    lotus_coop_pool_t *p = g_current_pool_tls;
+    lotus_coro_t      *c = g_current_coro_tls;
+    if (p && c && p->async_io_enabled && p->epoll_fd >= 0) {
+        if (!lotus_fd_parked_by_another(p, fd)
+            && lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) {
+            return 0;
+        }
+        if (lotus_time_sleep_park_try(1000000) == 1) return 0;
+    }
+#endif
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || !(flags & O_NONBLOCK)) {
+        errno = saved;
+        return -1;
+    }
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+    for (;;) {
+        int r = poll(&pfd, 1, -1);
+        if (r > 0) return 0;
+        if (r < 0 && errno == EINTR) continue;
+        return -1;
+    }
+}
+
 int lotus_tcp_send_str(int fd, const char *msg) {
     g_tcp_last_io_status = 0;
     if (fd < 0) {
@@ -14719,7 +14792,8 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         g_tcp_last_io_status = EINVAL;
         return -1;
     }
-    /* F.35 Slice 3: park on EPOLLOUT for async_io pools. */
+    /* F.35 Slice 3: park on EPOLLOUT for async_io pools; the
+     * would-block cases are lotus_io_wait_writable's. */
     int async = lotus_io_on_async_io_pool();
     if (async) {
         lotus_io_set_nonblock(fd);
@@ -14735,8 +14809,8 @@ int lotus_tcp_send_str(int fd, const char *msg) {
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
-        if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (lotus_io_wait_writable(fd) == 0) continue;
         }
         g_tcp_last_io_status = errno ? errno : EIO;
         perror("lotus_tcp_send_str: write");
@@ -14786,8 +14860,8 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
-        if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (lotus_io_wait_writable(fd) == 0) continue;
         }
         g_tcp_last_io_status = errno ? errno : EIO;
         perror("lotus_tcp_send_bytes: write");

@@ -4,10 +4,13 @@
 //
 // The spine projects an admitted command into memory on its tick (GH #985);
 // the harness runs that tick after each admission, before the browser sees
-// the reply. A test's own route on the commands path hands a POST on with
-// `fallback()`, or ticks itself when it answers the POST with `fulfill`.
+// the reply. A test's own route on the commands path hands a Knowledge call
+// on with `fallback()`, or ticks itself when it answers it with `fulfill`.
+// Knowledge changes are the head's gated topics (GH #1129): every write and
+// every recovery is one forwarded line on `…/commands`.
 import { test as base, expect } from '@playwright/test';
 import { startKnowledgeService, knowledgeEnvironmentPresent } from './native-knowledge-harness.mjs';
+import { isKnowledgeCall, isKnowledgeLookup, settleKnowledge } from './command-wire.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
@@ -24,8 +27,9 @@ const test = base.extend({
   },
   page: async ({ page, service }, use) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    await page.route('**/dna/knowledge/commands', async route => {
-      if (route.request().method() !== 'POST') return route.fallback();
+    await service.attach(page);
+    await page.route('**/commands', async route => {
+      if (!isKnowledgeCall(route.request())) return route.fallback();
       const response = await route.fetch();
       await service.tick();
       await route.fulfill({ response });
@@ -41,9 +45,10 @@ const editor = page => page.getByRole('region', { name: 'Knowledge change editor
 const recovery = page => page.getByRole('region', { name: 'Knowledge relationship request', exact: true });
 const submit = page => editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true });
 const metadata = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.knowledge-recovery.v1:')).map(([, value]) => JSON.parse(value)));
-const responseFor = (page, service, method) => page.waitForResponse(response => response.request().method() === method && new URL(response.url()).pathname === service.apiPath + '/dna/knowledge/commands');
+// A Knowledge call's answer ('POST'), or its recovery's ('GET').
+const responseFor = (page, service, method) => page.waitForResponse(response => new URL(response.url()).pathname === service.apiPath + '/commands' && (method === 'POST' ? isKnowledgeCall(response.request()) : isKnowledgeLookup(response.request())));
 const trackPosts = page => {
-  const posts = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/dna/knowledge/commands')) posts.push(request.postDataJSON()); }); return posts;
+  const posts = []; page.on('request', request => { if (isKnowledgeCall(request)) posts.push(request.postDataJSON()); }); return posts;
 };
 
 async function prepare(page, service, { label = 'clarifies équipe <node>', direction = 'incoming' } = {}) {
@@ -58,10 +63,13 @@ async function prepare(page, service, { label = 'clarifies équipe <node>', dire
   await expect(editor(page).getByRole('status')).toContainText('Draft reviewed against the current visible snapshot');
   return refs;
 }
+// The face's call and what it settled to: the receipt in the old terms,
+// or the provider's refusal code.
 async function send(page, service) {
   const pending = responseFor(page, service, 'POST'); await submit(page).click();
   const response = await pending;
-  return { status: response.status(), body: await response.json(), command: response.request().postDataJSON() };
+  const line = response.request().postDataJSON();
+  return { ...settleKnowledge(response.status(), await response.json()), line, request_id: line.payload.request_id };
 }
 async function observed(page) {
   await expect(recovery(page)).toContainText('The relationship effect is committed in the Record.');
@@ -74,8 +82,8 @@ test('native Knowledge: exact directed link is recorded once and observed throug
   await expect(submit(page)).toBeEnabled();
   const head = await service.recordHead();
   let savedBeforePost;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
     savedBeforePost = await metadata(page);
     await route.fallback();
   });
@@ -85,22 +93,21 @@ test('native Knowledge: exact directed link is recorded once and observed throug
     if (posts.length && url.pathname.endsWith('/dna/knowledge/nodes') && !url.searchParams.has('id')) graphReads.push(url.searchParams);
   });
   const sent = await send(page, service);
-  expect(sent.status).toBe(202); expect(sent.body.data.state).toBe('recorded');
-  expect(sent.command.arguments).toEqual({ from_id: refs.predecessor, to_id: refs.knowledge, rel: label, rationale: 'Connect the exact evidence — keep its direction.' });
-  expect(sent.command.preconditions.record_head).toBe(head);
-  expect(sent.command.preconditions.principal).toEqual(service.principal);
-  expect(sent.command.preconditions).not.toHaveProperty('snapshot');
-  expect(sent.command.preconditions).not.toHaveProperty('graph_generation');
-  expect(savedBeforePost).toHaveLength(1); expect(savedBeforePost[0].request_id).toBe(sent.command.request_id);
+  expect(sent.status).toBe(200); expect(sent.receipt.state).toBe('recorded');
+  // The flat payload: the head supplies the record and the principal.
+  expect(sent.line.call).toBe('KnowledgeEdgeLink');
+  expect(sent.line.payload).toEqual({ request_id: sent.request_id, record_head: head, target_id: refs.knowledge, from_id: refs.predecessor, to_id: refs.knowledge, rel: label, rationale: 'Connect the exact evidence — keep its direction.' });
+  expect(sent.receipt.principal).toEqual(service.principal);
+  expect(savedBeforePost).toHaveLength(1); expect(savedBeforePost[0].request_id).toBe(sent.request_id);
   expect(Object.keys(savedBeforePost[0]).sort()).toEqual(['application_id', 'operation', 'principal', 'record_head', 'request_id', 'target_id', 'version']);
   expect(savedBeforePost[0]).toMatchObject({ version: 2, operation: 'dna.knowledge.edge.link' });
   await observed(page);
   expect(graphReads.length).toBeGreaterThan(0); expect(graphReads[0].has('snapshot')).toBe(false); expect(graphReads[0].has('cursor')).toBe(false);
-  await expect(map(page).locator('li[data-edge-id="' + sent.body.data.edge_id + '"]')).toContainText(label);
+  await expect(map(page).locator('li[data-edge-id="' + sent.receipt.edge_id + '"]')).toContainText(label);
   await expect(map(page).locator('li[data-change="added"]')).toHaveCount(0);
   await expect(map(page).locator('img')).toHaveCount(0);
   expect(posts).toHaveLength(1);
-  expect(await service.lookup(sent.command.request_id)).toMatchObject({ status: 200, body: { data: { command_id: sent.body.data.command_id, fingerprint: sent.body.data.fingerprint } } });
+  expect(await service.lookup(sent.request_id)).toMatchObject({ status: 200, receipt: { command_id: sent.receipt.command_id, fingerprint: sent.receipt.fingerprint } });
   await recovery(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-observed.png') });
 });
 
@@ -108,27 +115,27 @@ test('native Knowledge: lost POST reply and API restart recover by GET only afte
   await page.setViewportSize({ width: 390, height: 844 });
   const posts = trackPosts(page); await prepare(page, service);
   let delivered;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); expect(response.status()).toBe(202);
-    delivered = { body: await response.json(), command: route.request().postDataJSON() };
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
+    const response = await route.fetch(); expect(response.status()).toBe(200);
+    delivered = { ...settleKnowledge(200, await response.json()), request_id: route.request().postDataJSON().payload.request_id };
     await route.abort('failed');
   });
   await submit(page).click();
   await expect(recovery(page)).toContainText('The relationship outcome could not be confirmed');
-  expect(delivered.body.data.state).toBe('recorded'); expect(posts).toHaveLength(1);
+  expect(delivered.receipt.state).toBe('recorded'); expect(posts).toHaveLength(1);
   const saved = await metadata(page); expect(saved).toHaveLength(1);
-  expect(saved[0].request_id).toBe(delivered.command.request_id);
+  expect(saved[0].request_id).toBe(delivered.request_id);
   // A pre-unlink browser saved v1 link metadata without an operation field.
   // It must recover the original link; migration never creates another POST.
   await page.evaluate(() => {
     const [key, raw] = Object.entries(localStorage).find(([key]) => key.startsWith('face.knowledge-recovery.v1:'));
     const value = JSON.parse(raw); value.version = 1; delete value.operation; localStorage.setItem(key, JSON.stringify(value));
   });
-  await page.unroute('**/dna/knowledge/commands'); await service.restart();
+  await page.unroute('**/commands'); await service.restart();
   const recovered = responseFor(page, service, 'GET'); await page.reload();
   const response = await recovered; expect(response.status()).toBe(200);
-  expect((await response.json()).data.command_id).toBe(delivered.body.data.command_id);
+  expect((await response.json()).value.receipt.command_id).toBe(delivered.receipt.command_id);
   await observed(page); expect(posts).toHaveLength(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await recovery(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-recovered-mobile.png') });
@@ -138,8 +145,8 @@ async function nativeLink(service, requestId, { from, to, label = 'supports exac
   const refs = await service.refs();
   const arguments_ = { from_id: from || refs.knowledge, to_id: to || refs.predecessor, rel: label, rationale: 'Create a real relationship for exact removal acceptance.' };
   const response = await service.post(await service.command(requestId, { arguments: arguments_ }));
-  expect(response.status).toBe(202); expect(response.body.data.operation).toBe('dna.knowledge.edge.link');
-  return { id: response.body.data.edge_id, from_id: arguments_.from_id, to_id: arguments_.to_id, rel: label };
+  expect(response.status).toBe(200); expect(response.receipt.operation).toBe('dna.knowledge.edge.link');
+  return { id: response.receipt.edge_id, from_id: arguments_.from_id, to_id: arguments_.to_id, rel: label };
 }
 async function prepareRemoval(page, service, edge, { navigate = true } = {}) {
   if (navigate) await page.goto(service.url());
@@ -161,8 +168,9 @@ test('native Knowledge unlink: the selected exact relationship is removed while 
   const reverse = await nativeLink(service, 'retained-reverse', { from: refs.knowledge, to: refs.predecessor, label: 'clarifies équipe <node>' });
   const other = await nativeLink(service, 'retained-label', { from: refs.predecessor, to: refs.knowledge, label: 'different evidence' });
   await prepare(page, service);
-  const linked = await send(page, service); expect(linked.status).toBe(202); await observed(page);
-  const edge = { id: linked.body.data.edge_id, ...linked.command.arguments };
+  const linked = await send(page, service); expect(linked.status).toBe(200); await observed(page);
+  const { from_id, to_id, rel, rationale } = linked.line.payload;
+  const edge = { id: linked.receipt.edge_id, from_id, to_id, rel, rationale };
   await recovery(page).getByRole('button', { name: 'Dismiss relationship request', exact: true }).click();
   await expect(recovery(page)).toHaveCount(0);
   await prepareRemoval(page, service, edge, { navigate: false });
@@ -171,18 +179,18 @@ test('native Knowledge unlink: the selected exact relationship is removed while 
   await expect(map(page).locator('li[data-edge-id="' + reverse.id + '"]')).toHaveAttribute('data-change', 'current');
   await map(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-removal-preview.png') });
   const removed = await send(page, service);
-  expect(removed.status).toBe(202); expect(removed.command.operation).toBe('dna.knowledge.edge.unlink');
-  expect(removed.command.arguments).toEqual({ edge_id: edge.id, from_id: edge.from_id, to_id: edge.to_id, rel: edge.rel, rationale: 'Remove this exact direction and label — retain other evidence.' });
-  expect(removed.command.arguments).not.toHaveProperty('id');
-  expect((await metadata(page))[0]).toMatchObject({ version: 2, operation: 'dna.knowledge.edge.unlink', request_id: removed.command.request_id });
+  expect(removed.status).toBe(200); expect(removed.line.call).toBe('KnowledgeEdgeUnlink');
+  expect(removed.line.payload).toEqual({ request_id: removed.request_id, record_head: removed.line.payload.record_head, target_id: refs.knowledge, edge_id: edge.id, from_id: edge.from_id, to_id: edge.to_id, rel: edge.rel, rationale: 'Remove this exact direction and label — retain other evidence.' });
+  expect(removed.line.payload).not.toHaveProperty('id');
+  expect((await metadata(page))[0]).toMatchObject({ version: 2, operation: 'dna.knowledge.edge.unlink', request_id: removed.request_id });
   await removalObserved(page);
   const remaining = await service.relationships();
   expect(remaining.map(row => row.id)).toEqual(expect.arrayContaining([reverse.id, other.id]));
   expect(remaining.map(row => row.id)).not.toContain(edge.id);
   await expect(map(page).locator('li[data-edge-id="' + edge.id + '"]')).toHaveCount(0);
   await expect(map(page).locator('li[data-edge-id="' + reverse.id + '"]')).toContainText(reverse.rel);
-  expect(posts.map(command => command.operation)).toEqual(['dna.knowledge.edge.link', 'dna.knowledge.edge.unlink']);
-  expect((await service.lookup(removed.command.request_id)).body.data.operation).toBe('dna.knowledge.edge.unlink');
+  expect(posts.map(line => line.call)).toEqual(['KnowledgeEdgeLink', 'KnowledgeEdgeUnlink']);
+  expect((await service.lookup(removed.request_id)).receipt.operation).toBe('dna.knowledge.edge.unlink');
   await recovery(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-removal-observed.png') });
 });
 
@@ -192,19 +200,19 @@ test('native Knowledge unlink: lost removal reply recovers the saved operation b
   const posts = trackPosts(page); await prepareRemoval(page, service, edge);
   await map(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-removal-preview-mobile.png') });
   let delivered;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); expect(response.status()).toBe(202);
-    delivered = { body: await response.json(), command: route.request().postDataJSON() }; await route.abort('failed');
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
+    const response = await route.fetch(); expect(response.status()).toBe(200);
+    delivered = { ...settleKnowledge(200, await response.json()), request_id: route.request().postDataJSON().payload.request_id }; await route.abort('failed');
   });
   await submit(page).click();
   await expect(recovery(page)).toContainText('The relationship outcome could not be confirmed');
   expect((await metadata(page))[0].operation).toBe('dna.knowledge.edge.unlink');
-  await page.unroute('**/dna/knowledge/commands'); await service.restart();
+  await page.unroute('**/commands'); await service.restart();
   await page.reload(); await removalObserved(page);
   expect(posts).toHaveLength(1);
-  const recovered = await service.lookup(delivered.command.request_id);
-  expect(recovered.body.data).toMatchObject({ command_id: delivered.body.data.command_id, operation: 'dna.knowledge.edge.unlink', edge_id: edge.id });
+  const recovered = await service.lookup(delivered.request_id);
+  expect(recovered.receipt).toMatchObject({ command_id: delivered.receipt.command_id, operation: 'dna.knowledge.edge.unlink', edge_id: edge.id });
   expect((await service.relationships()).map(row => row.id)).not.toContain(edge.id);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await recovery(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('native-knowledge-removal-recovered-mobile.png') });
@@ -215,27 +223,36 @@ test('native Knowledge unlink: stale admission leaves the exact relationship int
   const posts = trackPosts(page); await prepareRemoval(page, service, edge);
   await service.mutate('advance'); const head = await service.recordHead();
   const removed = await send(page, service);
-  expect(removed.status).toBe(409); expect(removed.body.error.code).toBe('stale_subject');
+  expect(removed.status).toBe(200); expect(removed.code).toBe('stale_subject');
   await expect(recovery(page)).toContainText('The service refused this relationship request');
   expect(await service.recordHead()).toBe(head);
   expect((await service.relationships()).map(row => row.id)).toContain(edge.id);
-  expect((await service.lookup(removed.command.request_id)).status).toBe(404); expect(posts).toHaveLength(1);
+  expect((await service.lookup(removed.request_id)).code).toBe('command_not_found'); expect(posts).toHaveLength(1);
 });
 
+// The seat opens both calls (the `position` gate); the policy decides, per
+// person, what each may change, and refuses a change it does not grant.
 test('native Knowledge unlink: removal authority is independent from link authority and defaults to denied', async ({ page, service }) => {
   const edge = await nativeLink(service, 'permission-removal-subject');
   const grant = { mode: 'local', name: 'alice', authority: 'knowledge-editor', edge_link: 'direct', recover: true };
   await service.setGrants([grant]); // Omitting edge_unlink does not grant it.
+  expect(await service.slice()).toEqual(expect.arrayContaining(['KnowledgeEdgeLink', 'KnowledgeEdgeUnlink', 'KnowledgeLookup']));
+  const head = await service.recordHead();
   const posts = trackPosts(page); await prepareRemoval(page, service, edge);
-  await expect(submit(page)).toBeDisabled(); expect(posts).toEqual([]);
-  expect((await service.capability()).body.data.authorized).toBe(true);
-  expect((await service.capability('dna.knowledge.edge.unlink')).body.data.authorized).toBe(false);
+  const denied = await send(page, service); expect(denied.code).toBe('forbidden');
+  await expect(recovery(page)).toContainText('The service refused this relationship request');
+  expect(await service.recordHead()).toBe(head); expect((await service.relationships()).map(row => row.id)).toContain(edge.id);
+  await recovery(page).getByRole('button', { name: 'Dismiss relationship request', exact: true }).click();
+  // no read in flight while the head restarts under the new policy
+  await expect(recovery(page)).toHaveCount(0); await page.goto('about:blank');
   await service.setGrants([{ ...grant, edge_link: 'deny', edge_unlink: 'direct' }]);
-  expect((await service.request('/capabilities')).body.data.read_only).toBe(false);
-  await prepare(page, service); await expect(submit(page)).toBeDisabled();
+  expect((await service.request('/capabilities')).body.data.read_only).toBe(true);
+  await prepare(page, service);
+  const refused = await send(page, service); expect(refused.code).toBe('forbidden');
+  await recovery(page).getByRole('button', { name: 'Dismiss relationship request', exact: true }).click();
   await prepareRemoval(page, service, edge); await expect(submit(page)).toBeEnabled();
-  const removed = await send(page, service); expect(removed.status).toBe(202); await removalObserved(page);
-  expect(posts).toHaveLength(1); expect(posts[0].operation).toBe('dna.knowledge.edge.unlink');
+  const removed = await send(page, service); expect(removed.status).toBe(200); await removalObserved(page);
+  expect(posts.map(line => line.call)).toEqual(['KnowledgeEdgeUnlink', 'KnowledgeEdgeLink', 'KnowledgeEdgeUnlink']);
 });
 
 test('native Knowledge unlink: absence requires every native relationship page at one snapshot', async ({ page, service }) => {
@@ -243,9 +260,9 @@ test('native Knowledge unlink: absence requires every native relationship page a
   for (let i = 0; i < 27; i++) edges.push(await nativeLink(service, 'paged-link-' + i, { label: 'page-' + String(i).padStart(2, '0') }));
   const posts = trackPosts(page); await prepareRemoval(page, service, edges[0]);
   let committed = false, failedContinuation = false;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); committed = response.status() === 202; await service.tick(); await route.fulfill({ response });
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
+    const response = await route.fetch(); committed = response.status() === 200; await service.tick(); await route.fulfill({ response });
   });
   await page.route('**/dna/knowledge/edges?*', route => {
     if (committed && new URL(route.request().url()).searchParams.has('cursor')) {
@@ -254,7 +271,7 @@ test('native Knowledge unlink: absence requires every native relationship page a
     }
     return route.continue();
   });
-  const removed = await send(page, service); expect(removed.status).toBe(202);
+  const removed = await send(page, service); expect(removed.status).toBe(200);
   await expect(recovery(page)).toContainText('Graph readback is unavailable');
   await expect(recovery(page)).not.toContainText('Removal observed'); expect(failedContinuation).toBe(true);
   expect((await service.relationships()).map(row => row.id)).not.toContain(edges[0].id);
@@ -272,15 +289,15 @@ test('native Knowledge unlink: absence requires every native relationship page a
 test('native Knowledge unlink: endpoint restriction between admission and graph read never proves absence', async ({ page, service }) => {
   const edge = await nativeLink(service, 'visibility-removal-subject');
   const posts = trackPosts(page); await prepareRemoval(page, service, edge);
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); expect(response.status()).toBe(202);
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
+    const response = await route.fetch(); expect(response.status()).toBe(200);
     await service.mutate('protect-predecessor'); await route.fulfill({ response });
   });
-  const removed = await send(page, service); expect(removed.status).toBe(202);
+  const removed = await send(page, service); expect(removed.status).toBe(200);
   await expect(recovery(page)).toContainText('Relationship details are unavailable under current visibility');
   await expect(recovery(page)).not.toContainText('Removal observed'); await expect(map(page)).toHaveCount(0);
-  expect((await service.lookup(removed.command.request_id)).body.data).toMatchObject({ state: 'recorded', details_visible: false, edge_id: '' });
+  expect((await service.lookup(removed.request_id)).receipt).toMatchObject({ state: 'recorded', details_visible: false, edge_id: '' });
   expect(posts).toHaveLength(1);
 });
 
@@ -288,11 +305,11 @@ test('native Knowledge: stale Record head is refused without a graph effect or a
   const posts = trackPosts(page); await prepare(page, service);
   await service.mutate('advance'); const advanced = await service.recordHead();
   const sent = await send(page, service);
-  expect(sent.status).toBe(409); expect(sent.body.error.code).toBe('stale_subject');
+  expect(sent.status).toBe(200); expect(sent.code).toBe('stale_subject');
   await expect(recovery(page)).toContainText('The service refused this relationship request');
   await expect(recovery(page)).not.toContainText('effect is committed');
   expect(await service.recordHead()).toBe(advanced); expect(posts).toHaveLength(1);
-  expect((await service.lookup(sent.command.request_id)).status).toBe(404);
+  expect((await service.lookup(sent.request_id)).code).toBe('command_not_found');
   await recovery(page).getByRole('button', { name: 'Dismiss relationship request', exact: true }).click();
   await expect(recovery(page)).toHaveCount(0); expect(await metadata(page)).toEqual([]);
 });
@@ -300,12 +317,12 @@ test('native Knowledge: stale Record head is refused without a graph effect or a
 test('native Knowledge: unavailable graph readback preserves admission and later visibility restrictions clear old content', async ({ page, service }) => {
   const posts = trackPosts(page), refs = await prepare(page, service);
   let committed = false;
-  await page.route('**/dna/knowledge/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    const response = await route.fetch(); committed = response.status() === 202; await service.tick(); await route.fulfill({ response });
+  await page.route('**/commands', async route => {
+    if (!isKnowledgeCall(route.request())) return route.fallback();
+    const response = await route.fetch(); committed = response.status() === 200; await service.tick(); await route.fulfill({ response });
   });
   await page.route('**/dna/knowledge/nodes?*', route => committed ? route.fulfill({ status: 503, json: { api_version: 'hale.v1', error: { code: 'knowledge_unavailable', message: 'Read transport unavailable', retryable: true } } }) : route.continue());
-  const sent = await send(page, service); expect(sent.status).toBe(202);
+  const sent = await send(page, service); expect(sent.status).toBe(200);
   await expect(recovery(page)).toContainText('The relationship effect is committed in the Record.');
   await expect(recovery(page)).toContainText('Graph readback is unavailable');
   await expect(map(page)).toHaveCount(0); expect(posts).toHaveLength(1);
@@ -325,14 +342,15 @@ test.describe('Review-required Knowledge policy', () => {
   test('native Knowledge: read access and Review-required authority never enable a direct fallback', async ({ page, service }) => {
     const posts = trackPosts(page); await prepare(page, service);
     await expect(submit(page)).toBeEnabled();
-    await expect(editor(page)).toContainText('required native Review');
+    // Whether a relationship is reviewed is the policy's; the receipt says it is.
+    await expect(editor(page)).toContainText('proposed for a native Review');
     const before = await service.relationships(), sent = await send(page, service);
-    expect(sent.status).toBe(202); expect(sent.body.data).toMatchObject({ state: 'recorded', relationship: { proposal_state: 'pending', candidate_digest: '', review_id: '', effect_state: 'unknown' } });
+    expect(sent.status).toBe(200); expect(sent.receipt).toMatchObject({ state: 'recorded', relationship: { proposal_state: 'pending', candidate_digest: '', review_id: '', effect_state: 'unknown' } });
     await expect(recovery(page).getByRole('button', { name: 'Relationship effect', exact: true })).toContainText('unknown');
     await expect(recovery(page)).not.toContainText('The relationship effect is committed in the Record.');
     expect(await service.relationships()).toEqual(before); expect(posts).toHaveLength(1);
-    const recovered = await service.lookup(sent.command.request_id);
-    expect(recovered.body.data.relationship.proposal_state).toBe('pending');
+    const recovered = await service.lookup(sent.request_id);
+    expect(recovered.receipt.relationship.proposal_state).toBe('pending');
     // This standalone composition has no Body/relay. Admission is durable;
     // candidate/Review creation and effect are deliberately not claimed here.
   });

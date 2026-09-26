@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
+import { wireLine } from './command-wire.mjs';
 
 export { nodeEnvironmentPresent as bindingEnvironmentPresent };
 export const bindingTargets = ['org/support', 'org/support/urgent', 'org/elsewhere', ...Array.from({ length: 27 }, (_, i) => 'org/page/' + String(i).padStart(2, '0'))];
@@ -27,7 +28,7 @@ export async function startBindingService(options = {}) {
     const deadline = Date.now() + 20_000; let last;
     while (Date.now() < deadline) {
       last = await service.lookup(requestId);
-      if (last.status === 200 && predicate(last.body.data)) return last.body.data;
+      if (last.code === '' && predicate(last.receipt)) return last.receipt;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error('Native binding outcome timed out: ' + JSON.stringify(last));
@@ -35,14 +36,14 @@ export async function startBindingService(options = {}) {
   async function decide(candidate, reviewId, verdict = 'approve') {
     await service.quiesce(); await asActor('bob');
     const command = { request_id: randomUUID(), operation: 'dna.review.verdict', operation_version: '1', context: { application_id: service.application, position_id: 'org' }, target: { application_id: service.application, kind: 'dna.review', id: reviewId }, preconditions: { subject_digest: candidate, principal: { mode: 'local', name: 'bob' }, review_state: 'pending' }, arguments: { verdict, comment: 'Decide independently on the exact native fixture candidate.' } };
-    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(command) });
-    assert.equal(response.status, 202, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
+    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
+    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
     return command;
   }
   async function createItem() {
     await service.quiesce();
     const command = await service.command('node.propose', { kind: 'idea', name: 'Binding anchor', text: 'Applicability changes preserve this exact historical idea.', author: 'org', target: 'org/elsewhere', rationale: 'Start outside the support branch.' }, 'org/elsewhere');
-    assert.equal((await service.post(command)).status, 202);
+    const posted = await service.post(command); assert.equal(posted.code, '', JSON.stringify(posted));
     const created = await service.waitNode(command.request_id, value => value.node.proposal_state === 'created');
     await decide(created.node.candidate_digest, created.node.review_id);
     await service.waitNode(command.request_id, value => value.node.activation_state === 'adopted'); await service.quiesce();
@@ -53,7 +54,7 @@ export async function startBindingService(options = {}) {
     const args = { idea_id: idea, author: 'org', target, rationale: 'Prepare real applicability for the browser scenario.' };
     if (operation === 'binding.unbind') args.binding_id = bindingId;
     const command = await service.command(operation, args, idea), response = await service.post(command);
-    assert.equal(response.status, 202, JSON.stringify(response));
+    assert.equal(response.code, '', JSON.stringify(response));
     const created = await waitBinding(command.request_id, value => value.binding.proposal_state === 'created');
     await decide(created.binding.candidate_digest, created.binding.review_id);
     const settled = await waitBinding(command.request_id, value => value.binding.effect_state === (operation === 'binding.bind' ? 'bound' : 'unbound')); await service.quiesce();

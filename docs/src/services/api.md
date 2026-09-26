@@ -53,14 +53,18 @@ fn main() {
 }
 ```
 
-The `api:` entry is the whole change. It binds every topic some
-locus subscribes as a **command** (`Verdicts`), every topic some
-locus publishes as a **stream** (`Prices`), and every `expose` of
-the main locus or of its default children as a **read**
+The `api:` entry is the whole change. It binds every topic a locus
+of this seed subscribes as a **command** (`Verdicts`), every topic
+such a locus publishes as a **stream** (`Prices`), and every `expose`
+of the main locus or of its default children as a **read**
 (`billing.ledger`). The handler's return type became the reply:
 `on_verdict` returns a `VerdictResult`, so a caller gets one back.
 Nothing else in the source knows the socket exists, and a program
-without the entry pays nothing for it.
+without the entry pays nothing for it. What a library you import
+does on its own bus is not your API: only the loci of your own seed
+are served, so a head that imports a large core never hands out the
+core's internal topics as commands (an imported *topic* your locus
+subscribes is served under its qualified name, `lib::Orders`).
 
 For a program you are only trying out, skip even that line:
 
@@ -70,7 +74,12 @@ hale run --api /run/app.sock app.hl
 
 puts the same entry on the main locus with the dev defaults. It
 needs a `main locus` to put it on; a bare `fn main` program is
-refused with the rule.
+refused with the rule. The path may be a param the program computed
+(`api: unix(self.socket, …)` with `App { socket: … }` in `main`), so a
+service can listen at one socket per record under `XDG_RUNTIME_DIR`;
+`LOTUS_API` overrides whatever the entry says. A socket a live
+process already holds is never stolen, and a binding that cannot
+listen leaves the rest of the program serving, saying why.
 
 ## Talking to it
 
@@ -210,7 +219,8 @@ locus Billing {
 ```
 
 The second parameter is `std::api::Context`: the caller, the
-request id, `via` (the binding's name, or `local`), and the role
+request id, `via` (the binding's name, `local`, or the mark a
+forwarding transport of the program's own set — see below), and the role
 that authorized the message (empty when the operation is not gated). A message that did not
 come through the binding hands the handler the local principal, so a
 handler never asks whether it was reached from outside; it reads
@@ -336,11 +346,20 @@ page shows the rest greyed out with the role each item needs.
   field. Adding the entry never breaks a build.
 - A topic two handlers both answer is an error at the entry: one
   reply per command.
+- An item another seed declared is described qualified (`api::Claim`);
+  a caller may write the bare tail (`Claim`) when exactly one item
+  bears it, and gets `unknown` otherwise.
 - A `Drain<T>` batch handler is not reached through the binding
   yet; bulk requests wait on batch delivery over the cooperative
   queue.
-- A bearer token for HTTP callers waits for the HTTP transport; the
-  Unix socket's peer credentials are the one identity today.
+- A bearer token for HTTP callers waits for the HTTP transport
+  (GH #1135); the Unix socket's peer credentials are the one identity
+  today. Until then a program may forward: a request line carrying
+  `"via": "<mark>"` is honoured only from a peer whose uid is the
+  program's own (refused as `malformed` from anyone else), the mark
+  rides on the receipt's `caller` and in `ctx.via`, and the principal
+  is the forwarding process's — an HTTP handler that hands a browser's
+  line to its own socket is gated and answered exactly like any peer.
 - Transitive privilege inference (flagging `api -> OrderPlaced ->
   on_order -> refund` as an escalation) is a later, opt-in claim;
   `@gated` is a boundary check and says so.

@@ -9,7 +9,9 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
+import { mapPeer, seatRecord } from './record-seats.mjs';
+import { settle } from './command-wire.mjs';
 
 const names = ['API', 'BODY', 'RELAY'];
 export const nativeCommandEnvironmentPresent = () => names.every(name => Boolean(process.env[`HALE_NATIVE_COMMAND_${name}`]));
@@ -58,6 +60,14 @@ export async function startService(options = {}) {
   const owned = new Set(), processLog = [], requestLog = [];
   let sequence = 0, body, relay, api, dependencies, application = '', practice = '', origin = '', stopped = false;
   let currentActor = principal;
+  // The launch token each API start mints (GH #989), and the pages the lane
+  // drives: each gets the session cookie of every launch.
+  let token = '';
+  const pages = new Set();
+  async function authorize(page) {
+    const opened = await page.request.get(`${origin}/?token=${token}`);
+    assert.equal(opened.status(), 200, 'The launch token did not open the shell');
+  }
   const save = (name, value) => fs.writeFileSync(path.join(evidence, name), JSON.stringify(value, null, 2) + '\n');
   const git = (...args) => execFileSync('git', ['-C', root, ...args], { env, encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const alive = item => item?.child.pid && !item.error && item.child.exitCode === null && item.child.signalCode === null;
@@ -157,14 +167,24 @@ export async function startService(options = {}) {
     relay = launch('relay', binaries.relay, []);
     await wait('relay startup', () => relay.output, text => text.includes('native command relay ready'));
   }
+  // The head's forwarded commands are its own uid's: that uid is the acting
+  // person, seated at the board and the reviewer position so the gates open;
+  // the policy still decides what the provider admits.
+  const seated = new Set();
+  function actAs(actor) {
+    if (seated.has(actor)) mapPeer(root, env, actor);
+    else { seatRecord(root, env, actor, ['board', 'reviewer']); seated.add(actor); }
+  }
   async function startAPI(actor = currentActor) {
     assert(!alive(api), 'Stop the current API before starting another');
-    currentActor = actor;
+    currentActor = actor; actAs(actor);
     api = launch(`api-${actor}`, binaries.api, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_COMMAND_POLICY: policy });
     await wait('API startup', async () => {
       try { return await get('/api/hale/v1/applications'); }
       catch (error) { if (['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) return null; throw error; }
     }, response => response?.status === 200 && response.json.source?.record_id === application);
+    token = await launchToken(root);
+    for (const page of pages) await authorize(page);
     const capabilities = await read(apiPath() + '/capabilities');
     assert.equal(capabilities.status, 200); assert.deepEqual(capabilities.json.data.principal, { mode: 'local', name: actor });
     return capabilities.json.data;
@@ -229,6 +249,10 @@ export async function startService(options = {}) {
       application, app: application, practice, origin, root, evidence, policy, principal: { mode: 'local', name: principal },
       apiPath: apiPath(), text: 'Collect the exact receipt.\nKeep its provenance.',
       url: (view = 'practices', extra = {}) => `${origin}/#/${view}?${new URLSearchParams({ app: application, ...extra })}`,
+      // A page this lane drives: the session cookie now and after every restart.
+      async attach(page) { pages.add(page); await authorize(page); },
+      // live, not a snapshot: a lane that spreads this service still sees each launch's
+      token: () => token,
       read, journal, quiesce, startBody, startRelay, startAPI, pauseDelivery, resumeDelivery, restart, stop, exportEvidence,
       processes: () => [...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })),
       stopAPI: () => stopProcess(api), stopBody: () => stopProcess(body, body.paused), stopRelay: () => stopProcess(relay, relay.paused),
@@ -243,10 +267,11 @@ export async function startService(options = {}) {
       },
       waitCommand: async (requestId, predicate) => wait(`command ${requestId}`, async () => {
         const response = await read(apiPath() + '/commands?' + new URLSearchParams({ request_id: requestId }));
-        assert.equal(response.status, 200, JSON.stringify(response));
-        assert.equal(response.json.source?.record_id, application);
-        assert.equal(response.json.data.request_id, requestId);
-        return response.json.data;
+        const settled = settle(response.status, response.json);
+        assert.equal(settled.code, '', JSON.stringify(response));
+        assert.equal(settled.reply.application_id, application);
+        assert.equal(settled.receipt.request_id, requestId);
+        return settled.receipt;
       }, predicate),
     };
     exportEvidence();

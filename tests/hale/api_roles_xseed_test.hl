@@ -1,0 +1,175 @@
+// GH #1109 — a role source from another seed, end to end.
+//
+// spec/semantics.md § "The gate": the entry names its membership source
+// with `roles: L { … }`, and `L` may be an imported locus named through
+// the alias exactly as an adapter is. The fixture builds a library
+// seed whose source answers `holds` from a table the entry hands it,
+// an app that imports it, and drives the binding: the gate answers and
+// refuses by the library's word, and the receipt names the role.
+
+fn lib_source(lib_sock: String) -> String {
+    return "// A source whose table is `role=member,member;…` over principal names.\n"
+    // The library is a program of its own too: a main locus with an api
+    // entry of its own. Imported, that main is inert — the app's binding
+    // is the app's, and this socket never appears (GH #1104 piece 5).
+        + "type Ping { n: Int; }\n"
+        + "topic Pings { payload: Ping; subject: \"lib.ping\"; }\n"
+        + "main locus LibHead {\n"
+        + "    bus { subscribe Pings as on_ping; }\n"
+        + "    fn on_ping(p: Ping) { }\n"
+        + "    bindings { api: unix(\"" + lib_sock + "\", bound: 8, on_full: refuse); }\n"
+        + "}\n"
+        + "fn main() { LibHead { }; }\n"
+        + "locus TableRoles {\n"
+        + "    params { table: String = \"\"; asked: Int = 0; }\n"
+        + "    fn holds(p: std::api::Principal, r: String) -> Bool {\n"
+        + "        self.asked = self.asked + 1;\n"
+        + "        if p.uid < 0 { return false; }\n"
+        + "        return std::str::contains(\";\" + self.table + \";\", \";\" + r + \"=\" + p.name + \";\");\n"
+        + "    }\n"
+        + "}\n";
+}
+
+fn app_source(sock: String, me: String) -> String {
+    return "import \"../lib\" as lib;\n"
+        + "role support;\n"
+        + "type Refund { order_id: Int; }\n"
+        + "type Done { by: String; role: String; }\n"
+        + "topic Refunds { payload: Refund; subject: \"shop.refund\"; }\n"
+        + "locus Desk {\n"
+        + "    bus { subscribe Refunds as on_refund; }\n"
+        + "    @gated(role: support)\n"
+        + "    fn on_refund(r: Refund, ctx: std::api::Context) -> Done { return Done { by: ctx.caller.name, role: ctx.role }; }\n"
+        + "}\n"
+    // The app's own locus relays an imported topic: that command is the
+    // app's, described as `lib::Pings`, and a caller may write `Pings`.
+        + "locus Relay {\n"
+        + "    bus { subscribe lib::Pings as on_ping; }\n"
+        + "    fn on_ping(p: lib::Ping) -> lib::Ping { return p; }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    params { desk: Desk = Desk { }; relay: Relay = Relay { }; }\n"
+        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse, roles: lib::TableRoles { table: \"support=uid:" + me + ";owner=uid:" + me + "\" }); }\n"
+        + "    run() { std::time::sleep(8s); }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                return;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+locus Api {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+
+    fn connect(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 10s) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        return true;
+    }
+
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let mut i = 0;
+        while i < 25 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                i = i + 1;
+            } else {
+                self.buf = self.buf + chunk;
+            }
+        }
+        return "";
+    }
+}
+
+fn run_tool(argv: String) -> std::process::ProcessOutput {
+    return std::process::run(argv)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let me = std::str::trim(run_tool("id\n-u").stdout);
+    let tag = to_string(std::process::pid());
+    let root = "/tmp/hale-1109-xseed-" + tag;
+    let sock = root + "/app.sock";
+    let lib_sock = root + "/lib.sock";
+    std::io::fs::mkdir(root) or discard;
+    std::io::fs::mkdir(root + "/lib") or discard;
+    std::io::fs::mkdir(root + "/app") or discard;
+    std::io::fs::write_file(root + "/lib/roles.hl", lib_source(lib_sock)) or discard;
+    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me)) or discard;
+    let checked = run_tool(hale + "\ncheck\n" + root + "/app");
+    std::test::assert_eq_int(checked.code, 0, "the app with an imported source checks: " + checked.stderr);
+    let built = run_tool(hale + "\nbuild\n" + root + "/app");
+    std::test::assert_eq_int(built.code, 0, "and builds: " + built.stderr);
+    let p = Proc { };
+    std::test::assert(p.start(root + "/app/app"), "the app started");
+    let api = Api { };
+    std::test::assert(api.connect(sock), "connected to " + sock);
+    let r1 = api.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1}}");
+    std::test::assert(std::str::contains(r1, "\"ok\":true") && std::str::contains(r1, ",\"role\":\"support\"}"), "the library's source authorizes, and the receipt names the role: " + r1);
+    std::test::assert(std::str::contains(r1, "\"role\":\"support\"}"), "the handler's context carries it: " + r1);
+    let d = api.ask("{\"id\":2,\"describe\":\"full\"}");
+    std::test::assert(std::str::contains(d, "\"ok\":true") && std::str::contains(d, "\"role\":\"support\""), "owner by the library's word reads the full description: " + d);
+    // the imported main's api entry is inert: its socket never appears,
+    // and its topic is not the app's command
+    std::test::assert(!std::io::fs::file_exists(lib_sock), "an imported main's binding binds nothing: " + lib_sock);
+    std::test::assert(!std::str::contains(d, "\"name\":\"Pings\"") && std::str::contains(d, "\"name\":\"lib::Pings\""), "the imported topic the app relays is the app's command, spelled by its seed: " + d);
+    let bare = api.ask("{\"id\":5,\"call\":\"Pings\",\"payload\":{\"n\":7}}");
+    std::test::assert(std::str::contains(bare, "\"ok\":true") && std::str::contains(bare, "\"n\":7"), "the bare tail names it when it is the only one: " + bare);
+    let qualified = api.ask("{\"id\":6,\"call\":\"lib::Pings\",\"payload\":{\"n\":8}}");
+    std::test::assert(std::str::contains(qualified, "\"ok\":true") && std::str::contains(qualified, "\"n\":8"), "and so does the description's spelling: " + qualified);
+    p.stop();
+    std::io::fs::unlink(sock) or discard;
+
+    // The same app under a principal the library's table does not name.
+    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, to_string((std::str::parse_int(me) or 0) + 1))) or discard;
+    let built2 = run_tool(hale + "\nbuild\n" + root + "/app");
+    std::test::assert_eq_int(built2.code, 0, "rebuilt: " + built2.stderr);
+    let q = Proc { };
+    std::test::assert(q.start(root + "/app/app"), "restarted");
+    let api2 = Api { };
+    std::test::assert(api2.connect(sock), "reconnected");
+    let r2 = api2.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1}}");
+    std::test::assert(std::str::contains(r2, "\"kind\":\"unknown\"") && !std::str::contains(r2, "support"), "the library's source refuses, and the item is unknown to a non-holder: " + r2);
+    q.stop();
+    std::io::fs::unlink(sock) or discard;
+    let _rm = run_tool("rm\n-rf\n" + root);
+}

@@ -1,6 +1,7 @@
 // Branch navigation is checked against native source projections. A displayed
 // declaration does not establish a running occupant or permission to act.
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.use({ organization: true });
 
@@ -64,7 +65,7 @@ async function enterSelectedBranch(page, id) {
 test('organization navigation: a branch shows the native root and immediate children with exact edges, preserving working context', async ({ page, service }, testInfo) => {
   const project = await service.projectState();
   const writes = [];
-  page.on('request', request => { if (request.method() !== 'GET') writes.push(request.url()); });
+  page.on('request', request => { if (isWrite(request)) writes.push(request.url()); });
   const { data } = await open(page, service, { id: 'Org', scope: 'all', locus: 'org/support' });
   await expectTopology(page, data.items);
   const principal = await page.locator('#principal').textContent();

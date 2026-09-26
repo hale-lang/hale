@@ -51,8 +51,16 @@ locus Head {
         let r = self.http("GET", self.api + path, "Accept: application/json", "") or self.transport_failed(err);
         return self.reply(r);
     }
+    // The head's launch token (GH #989: the local session's trust until
+    // OIDC), read from the project this leg runs in; a head that printed
+    // none takes the POST without it.
+    fn token() -> String {
+        return std::str::trim(std::io::fs::read_file(".hale/dna/head.token") or "");
+    }
     fn post(path: String, body: String) -> Reply {
-        let r = self.http("POST", self.api + path, "Origin: " + self.api + "\r\nContent-Type: application/json\r\nX-Hale-Command: 1", body) or self.transport_failed(err);
+        let token = self.token();
+        let headers = "Origin: " + self.api + "\r\nContent-Type: application/json\r\nX-Hale-Command: 1" + (if len(token) > 0 { "\r\nX-Hale-Token: " + token } else { "" });
+        let r = self.http("POST", self.api + path, headers, body) or self.transport_failed(err);
         return self.reply(r);
     }
     fn prefix() -> String { return "/api/hale/v1/applications/" + self.application; }
@@ -124,16 +132,123 @@ locus Head {
         b.end_object();
         return b.result();
     }
-    // One command on the table; a refusal is an ok reply whose receipt
-    // says `refused` with the reason.
+    // One command on the head's binding, forwarded over HTTP as one line
+    // of the api wire (`{"call", "payload"}`; the head names the caller,
+    // the target and the record). The receipt comes back as the binding
+    // wrote it and is read back into the shape the verbs know: `data`
+    // the receipt, `source.record_head` the head it landed at. A
+    // refusal is an ok reply whose receipt says `refused` with the
+    // reason. (The socket client replaces this transport: GH #1104.)
     fn submit(request_id: String, operation: String, target_kind: String, target_id: String, preconditions: String, arguments: String) -> Reply {
-        return self.post(self.prefix() + "/commands", self.envelope(request_id, operation, target_kind, target_id, preconditions, arguments));
+        let line = "{\"call\":" + dna::record_json_quote(call_of(operation)) + ",\"payload\":" + payload_of(operation, request_id, target_id, preconditions, arguments) + "}";
+        return self.wire_reply(self.post(self.prefix() + "/commands", line));
     }
     fn lookup(request_id: String) -> Reply {
-        return self.get(self.prefix() + "/commands?request_id=" + dna::url_encode(request_id));
+        return self.wire_reply(self.get(self.prefix() + "/commands?request_id=" + dna::url_encode(request_id)));
+    }
+    // A forwarded receipt line as the verbs read a reply.
+    fn wire_reply(r: Reply) -> Reply {
+        if !r.ok && r.status == 0 { return r; }
+        let body = r.body;
+        if std::json::find_field_raw(body, "ok") != "true" {
+            let refusal = std::json::find_field_raw(body, "refusal");
+            let kind = std::json::find_string_field(refusal, "kind");
+            if len(kind) > 0 { return Reply { status: r.status, body: body, error: kind + ": " + std::json::find_string_field(refusal, "reason") }; }
+            return if r.ok { Reply { status: r.status, body: body, error: "the head's answer is not a receipt" } } else { r };
+        }
+        let value = std::json::find_field_raw(body, "value");
+        if std::json::find_field_raw(value, "ok") != "true" {
+            let code = std::json::find_string_field(value, "code");
+            return Reply { status: r.status, body: body, error: code + ": " + std::json::find_string_field(std::json::find_field_raw(value, "receipt"), "reason") };
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.field("data", std::json::find_field_raw(value, "receipt"));
+        b.begin_object_field("source");
+        b.string_field("record_id", std::json::find_string_field(value, "application_id"));
+        b.string_field("record_head", std::json::find_string_field(value, "head"));
+        b.string_field("record_revision", to_string(std::json::find_int_field(value, "revision")));
+        b.end_object();
+        b.end_object();
+        return Reply { ok: true, status: r.status, body: b.result() };
     }
     // The hat of one Work, as the head renders it: structure, never a prompt.
     fn context(work_id: String) -> Reply {
         return self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
     }
+}
+
+// The binding's name for an operation the verbs know.
+fn call_of(operation: String) -> String {
+    if operation == "dna.attempt.claim" { return "AttemptClaim"; }
+    if operation == "dna.attempt.outcome" { return "AttemptOutcome"; }
+    if operation == "dna.attempt.renew" { return "AttemptRenew"; }
+    if operation == "dna.attempt.release" { return "AttemptRelease"; }
+    if operation == "dna.friction.file" { return "FrictionFile"; }
+    return "";
+}
+
+// A JSON array of strings as the wire's space-separated words.
+@unbounded
+fn words_of(raw: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(raw);
+    while !it.done {
+        let word = std::json::string_field("{\"w\":" + it.element + "}", "w");
+        if word.kind == "string" { out = out + (if len(out) > 0 { " " } else { "" }) + word.text; }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// The typed payload of an operation: the old envelope's preconditions
+// and arguments, flat, under the request id.
+fn payload_of(operation: String, request_id: String, target_id: String, preconditions: String, arguments: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request_id", request_id);
+    if operation == "dna.attempt.claim" {
+        b.string_field("record_head", std::json::find_string_field(preconditions, "record_head"));
+        b.string_field("performer_kind", std::json::find_string_field(arguments, "performer_kind"));
+        b.string_field("performer", std::json::find_string_field(arguments, "performer"));
+        b.string_field("effect_class", std::json::find_string_field(arguments, "effect_class"));
+        b.string_field("capabilities", words_of(std::json::find_field_raw(arguments, "capabilities")));
+        b.string_field("data_classes", words_of(std::json::find_field_raw(arguments, "data_classes")));
+        b.string_field("organizations", words_of(std::json::find_field_raw(arguments, "organizations")));
+        b.int_field("ttl", std::json::find_int_field(arguments, "ttl"));
+    } else if operation == "dna.friction.file" {
+        b.string_field("record_head", std::json::find_string_field(preconditions, "record_head"));
+        b.string_field("position", std::json::find_string_field(arguments, "position"));
+        b.string_field("attempt_id", std::json::find_string_field(arguments, "attempt_id"));
+        b.string_field("text", std::json::find_string_field(arguments, "text"));
+    } else {
+        b.string_field("attempt_id", target_id);
+        b.string_field("holder", std::json::find_string_field(preconditions, "holder"));
+        b.int_field("token", std::json::find_int_field(preconditions, "token"));
+        if operation == "dna.attempt.renew" {
+            b.int_field("ttl", std::json::find_int_field(arguments, "ttl"));
+        } else if operation == "dna.attempt.release" {
+            b.string_field("why", std::json::find_string_field(arguments, "why"));
+        } else {
+            b.string_field("effect_class", std::json::find_string_field(arguments, "effect_class"));
+            b.string_field("disposition", std::json::find_string_field(arguments, "disposition"));
+            b.string_field("result", std::json::find_string_field(arguments, "result"));
+            b.string_field("result_ref", std::json::find_string_field(arguments, "result_ref"));
+            b.string_field("narrative", std::json::find_string_field(arguments, "narrative"));
+            let evidence = std::json::find_field_raw(arguments, "evidence");
+            let receipts = std::json::find_field_raw(arguments, "receipts");
+            b.string_field("evidence", if len(evidence) > 0 { evidence } else { "[]" });
+            b.string_field("receipts", if len(receipts) > 0 { receipts } else { "[]" });
+            // the typed payload names every field: the hat's are empty and -1
+            // when the leg wore none (the wire's codec is strict)
+            let worn = len(std::json::find_field_raw(arguments, "hat_digest")) > 0;
+            b.string_field("hat_digest", if worn { std::json::find_string_field(arguments, "hat_digest") } else { "" });
+            b.string_field("hat_head", if worn { std::json::find_string_field(arguments, "hat_head") } else { "" });
+            b.int_field("hat_watermark", if worn { std::json::find_int_field(arguments, "hat_watermark") } else { -1 });
+            b.string_field("prompt_digest", if worn { std::json::find_string_field(arguments, "prompt_digest") } else { "" });
+            b.string_field("renderer", if worn { std::json::find_string_field(arguments, "renderer") } else { "" });
+        }
+    }
+    b.end_object();
+    return b.result();
 }

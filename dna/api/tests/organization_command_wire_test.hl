@@ -1,122 +1,117 @@
-// Parser and pure adapter conformance only. Organization submission remains
-// disabled; this is not a native admission/publication/activation proof.
+// The typed mapping of the head's commands: a payload handed to
+// `api::CommandAdmission` reaches the provider as exactly the operations' command.
+// Organization submission stays a provider's to admit; this is not a
+// native admission/publication/activation proof.
 import ".." as api;
-import "../practice_review" as head;
 import "../../operations" as ops;
 import "../../core" as dna;
 
-const APP: String = "app/native";
 const COMMIT: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DIGEST: String = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const ORIGIN: String = "http://127.0.0.1:8801";
-const HEADERS: String = "Origin: http://127.0.0.1:8801\r\nContent-Type: application/json\r\nX-Hale-Command: 1";
 
-locus NativeMappingProbe {
-    params { submits: Int = 0; capabilities: Int = 0; }
-    fn supported(operation: String, version: String) -> Bool { return version == "1"; }
-    fn capability(context: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability {
-        self.capabilities = self.capabilities + 1; return ops::GovernanceCapability { available: true, authorized: true };
+// Records the request it was handed and admits nothing.
+locus MappingProbe {
+    params { supports: Bool = true; submits: Int = 0; received: api::CommandRequest = api::CommandRequest { }; context: api::CommandContext = api::CommandContext { }; }
+    fn supported(operation: String, version: String) -> Bool { return self.supports && version == "1"; }
+    fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
+        self.submits = self.submits + 1; self.received = command; self.context = context;
+        return api::CommandResult { code: "commands_unavailable" };
     }
-    fn submit(context: ops::GovernanceContext, command: ops::GovernanceCommand) -> ops::GovernanceResult {
-        self.submits = self.submits + 1; return ops::GovernanceResult { code: "commands_unavailable" };
-    }
-    fn lookup(context: ops::GovernanceContext, request_id: String) -> ops::GovernanceResult { return ops::GovernanceResult { code: "command_not_found" }; }
+    fn lookup(context: api::CommandContext, request_id: String) -> api::CommandResult { return api::CommandResult { code: "command_not_found" }; }
 }
-locus OrganizationWireCases {
-    params { }
-    fn quote(text: String) -> String { let codec = ops::GovernanceCommandCodec { }; return codec.quote(text); }
+locus OrganizationMappingCases {
+    params { root: String = ""; identity: String = ""; probe: MappingProbe; commands: api::CommandAdmission; }
+    fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
     fn repeat(text: String, count: Int) -> String { let out = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { out.append_str(text); i = i + 1; } return std::str::from_bytes(out.snapshot()); }
-    fn body(text: String, rationale: String) -> String {
-        return "{\"request_id\":\"source-request\",\"operation\":\"dna.organization.propose\",\"operation_version\":\"1\","
-            + "\"context\":{\"application_id\":\"" + APP + "\",\"position_id\":\"org\"},"
-            + "\"target\":{\"application_id\":\"" + APP + "\",\"kind\":\"dna.organization.module\",\"id\":\"dna/org/main.hl\"},"
-            + "\"preconditions\":{\"principal\":{\"mode\":\"local\",\"name\":\"alice\"},\"base\":{\"source_head\":\"" + COMMIT
-            + "\",\"module_digest\":\"" + DIGEST + "\",\"dependency_digest\":\"" + DIGEST + "\",\"dependency_source\":\"local_vendor_snapshot\",\"record_head\":\"record/original\"}},"
-            + "\"arguments\":{\"source_text\":" + self.quote(text) + ",\"rationale\":" + self.quote(rationale) + "}}";
+    fn proposal(text: String, rationale: String) -> api::OrganizationProposal {
+        return api::OrganizationProposal { request_id: "source-request", source_head: COMMIT, module_digest: DIGEST, dependency_source: "local_vendor_snapshot", dependency_digest: DIGEST, record_head: "record/original", source_text: text, rationale: rationale };
     }
-    fn rejected(body: String, label: String) { let wire = api::CommandWire { }; std::test::assert(!wire.parse(body, APP).valid, label); }
-    fn parser() {
-        let wire = api::CommandWire { }; let native = NativeMappingProbe { };
-        let adapter = head::PracticeReviewCommands { root: "/project", application_id: APP, service: native };
+    fn native_context() -> ops::GovernanceContext { return ops::GovernanceContext { application_id: self.identity, principal_mode: "local", principal_name: "alice" }; }
+    // Refused by the operations' own codec, before the provider sees it.
+    fn rejected(p: api::OrganizationProposal, label: String) {
+        let before = self.probe.submits;
+        let reply = self.commands.propose_organization(p, self.caller());
+        std::test::assert(!reply.ok && reply.code == "invalid_command", label + ": " + reply.code);
+        std::test::assert_eq_int(self.probe.submits, before, label + " never reaches the provider");
+    }
+    fn mapping() {
         let text = "// exact é 🧭\r\n// control \x01\nmain locus Org { }\n";
-        let rationale = "  why é\r\n\x01  "; let body = self.body(text, rationale);
-        let parsed = wire.parse(body, APP); std::test::assert(parsed.valid, "exact five-field Organization source request parses");
-        std::test::assert_eq_str(parsed.source_text, text, "literal Unicode, CRLF and non-NUL control source");
-        std::test::assert_eq_str(parsed.rationale, rationale, "rationale is neither trimmed nor normalized");
-        std::test::assert_eq_str(parsed.subject_digest, DIGEST, "module digest becomes native exact subject");
-        std::test::assert_eq_str(parsed.source_head, COMMIT, "source commit distinct from Record head");
-        std::test::assert_eq_str(parsed.record_head, "record/original", "Record precondition exact");
-        std::test::assert_eq_str(parsed.target_id, "dna/org/main.hl", "only fixed module target");
-        let mapped = adapter.native_request(parsed); let codec = ops::OrganizationCommandCodec { };
-        let context = ops::GovernanceContext { application_id: APP, principal_mode: "local", principal_name: "alice" };
-        std::test::assert(codec.valid(context, mapped), "typed API shape satisfies native Organization codec");
-        let restored = codec.decode(context, codec.canonical(context, mapped));
-        std::test::assert_eq_str(restored.source_text, text, "native mapping roundtrip exact source");
-        std::test::assert_eq_str(restored.rationale, rationale, "native mapping roundtrip exact rationale");
-        std::test::assert_eq_str(restored.dependency_source, "local_vendor_snapshot", "dependency source preserved");
-        std::test::assert_eq_str(restored.dependency_digest, DIGEST, "dependency identity preserved");
-        std::test::assert(mapped.text == "" && mapped.expected_review_state == "" && mapped.verdict == "" && mapped.comment == "", "inactive Practice/Review fields remain empty");
-        let escaped = std::str::replace(std::str::replace(body, "é", "\\u00e9"), "🧭", "\\ud83e\\udded");
-        std::test::assert_eq_str(wire.parse(escaped, APP).source_text, text, "Unicode JSON spellings preserve same source");
-        self.rejected(std::str::replace(body, "\"source_head\":", "\"source_head\":\"" + COMMIT + "\",\"source_head\":"), "duplicate base key");
-        self.rejected(std::str::replace(body, "\"source_text\":", "\"source_\\u0074ext\":"), "escaped argument key");
-        self.rejected(std::str::replace(body, "\"module_digest\":", "\"module_digest\":null,\"extra\":"), "unknown/wrong typed base");
-        self.rejected(std::str::replace(body, "\"record_head\":\"record/original\"", "\"record_head\":null"), "null Record identity");
-        self.rejected(std::str::replace(body, "\"dependency_source\":\"local_vendor_snapshot\"", "\"dependency_source\":\"live\""), "unknown dependency source");
-        self.rejected(std::str::replace(body, COMMIT, "not-a-commit"), "native source commit syntax");
-        self.rejected(std::str::replace(body, DIGEST, "not-a-digest"), "native module/dependency digest syntax");
-        self.rejected(std::str::replace(body, "dna/org/main.hl", "dna/org/owners"), "ownership module is a different profile");
-        self.rejected(std::str::replace(body, "dna/org/main.hl", "../main.hl"), "caller path traversal");
-        self.rejected(std::str::replace(body, "\"position_id\":\"org\"", "\"position_id\":\"org/team\""), "position cannot select source scope");
-        self.rejected(std::str::replace(body, "\"base\":", "\"authority\":\"board\",\"base\":"), "caller authority refused");
-        self.rejected(std::str::replace(body, "\"base\":", "\"subject_digest\":\"x\",\"base\":"), "mixed precondition variants");
-        self.rejected(std::str::replace(body, "\"source_text\":", "\"text\":\"practice\",\"source_text\":"), "mixed argument variants");
-        self.rejected(std::str::replace(body, "\"rationale\":", "\"source_owner\":\"acme\",\"rationale\":"), "source owner comes from configuration");
-        self.rejected(std::str::replace(body, "\"rationale\":", "\"dependency_receipt\":\"claimed\",\"rationale\":"), "retained receipt comes from native preparation");
-        self.rejected(std::str::replace(body, "\"operation_version\":\"1\"", "\"operation_version\":\"2\""), "unknown version");
-        self.rejected(self.body("", "why"), "empty source refused"); self.rejected(self.body("source", ""), "empty rationale refused");
-        self.rejected(self.body("\\u0000", "why") + "{}", "trailing document refused");
-        self.rejected(std::str::replace(self.body("source", "why"), "\"source\"", "\"\\u0000\""), "NUL source refused before decode");
-        std::test::assert(!wire.parse(body, "another-app").valid, "application identity is trusted context");
+        let rationale = "  why é\r\n\x01  ";
+        let reply = self.commands.propose_organization(self.proposal(text, rationale), self.caller());
+        std::test::assert_eq_str(reply.code, "commands_unavailable", "the provider's answer comes back as the reply");
+        std::test::assert_eq_int(self.probe.submits, 1, "one dispatch");
+        let got = self.probe.received;
+        std::test::assert(got.valid, "the head hands over an admissible request");
+        std::test::assert(got.expected_principal_mode == "local" && got.expected_principal_name == "alice", "the principal is the mapped person, from the head");
+        std::test::assert(self.probe.context.principal_name == "alice" && self.probe.context.root == self.root && self.probe.context.source.identity == self.identity, "the provider's context is this record and caller");
+        let native = api::native_of(got);
+        let expected = ops::GovernanceCommand {
+            request_id: "source-request", operation: "dna.organization.propose", operation_version: "1", application_id: self.identity, position_id: "org",
+            target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: DIGEST, source_head: COMMIT,
+            dependency_source: "local_vendor_snapshot", dependency_digest: DIGEST, record_head: "record/original", source_text: text, rationale: rationale
+        };
+        let codec = ops::OrganizationCommandCodec { };
+        let canonical = codec.canonical(self.native_context(), native);
+        std::test::assert(len(canonical) > 0, "the mapped command satisfies the native Organization codec");
+        std::test::assert_eq_str(canonical, codec.canonical(self.native_context(), expected), "the proposal maps to exactly the operations' command");
+        std::test::assert(native.text == "" && native.expected_review_state == "" && native.verdict == "" && native.comment == "", "inactive Practice/Review fields remain empty");
+        std::test::assert(native.performer == "" && native.attempt_id == "" && native.token == 0 && native.hat_watermark == -1, "inactive attempt fields remain empty");
+        let restored = codec.decode(self.native_context(), canonical);
+        std::test::assert_eq_str(restored.source_text, text, "literal Unicode, CRLF and non-NUL control source");
+        std::test::assert_eq_str(restored.rationale, rationale, "rationale is neither trimmed nor normalized");
         let maximum = self.repeat("a", 16378) + "é🧭";
         std::test::assert_eq_int(len(maximum), 16384, "maximum measured as UTF-8 bytes");
-        std::test::assert(wire.parse(self.body(maximum, self.repeat("r", 2048)), APP).valid, "16KiB source plus 2048-byte rationale within encoded cap");
-        self.rejected(self.body(maximum + "a", "why"), "16385 decoded source bytes refused");
-        self.rejected(self.body("source", self.repeat("r", 2049)), "2049-byte rationale refused");
-        let encoded = self.body(self.repeat("\x01", 16384), "why");
-        std::test::assert(len(encoded) > 32768, "encoded cap independent of decoded cap");
-        self.rejected(encoded, "maximum escaped source exceeds independent HTTP cap");
-        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/commands", headers: HEADERS, body: encoded }, ORIGIN), "command_too_large", "oversized encoding gets HTTP size error");
-        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/commands", headers: HEADERS, body: body }, ORIGIN), "", "same existing command transport guard");
-        let ctx = api::CommandContext { root: "/project", source: api::Source { ok: true, identity: APP, head: "record/current", revision: 1 }, principal_mode: "local", principal_name: "alice" };
-        std::test::assert(!adapter.supported("dna.organization.propose", "1"), "operation stays unadvertised even when underlying service supports it");
-        std::test::assert(!adapter.capability(ctx, "dna.organization.propose", "1").available, "no premature Organization capability");
-        std::test::assert_eq_str(adapter.submit(ctx, parsed).code, "commands_unsupported", "unconfigured source profile cannot admit");
-        std::test::assert_eq_int(native.submits, 0, "no native dispatch"); std::test::assert_eq_int(native.capabilities, 0, "no native capability query");
-        let other = api::CommandContext { root: "/project", source: ctx.source, principal_mode: "local", principal_name: "bob" };
-        std::test::assert_eq_str(adapter.submit(other, parsed).code, "command_context_changed", "expected principal cannot replace authenticated actor");
-        std::test::assert(wire.known_operation("dna.organization.propose", "1"), "new typed Organization receipt variant is recognized");
+        let before = self.probe.submits;
+        let largest = self.commands.propose_organization(self.proposal(maximum, self.repeat("r", 2048)), self.caller());
+        std::test::assert_eq_int(self.probe.submits, before + 1, "16KiB source plus 2048-byte rationale is admissible");
+        let mut p = self.proposal(text, rationale); p.source_head = "not-a-commit"; self.rejected(p, "native source commit syntax");
+        p = self.proposal(text, rationale); p.module_digest = "not-a-digest"; self.rejected(p, "native module digest syntax");
+        p = self.proposal(text, rationale); p.dependency_digest = "not-a-digest"; self.rejected(p, "native dependency digest syntax");
+        p = self.proposal(text, rationale); p.dependency_source = "live"; self.rejected(p, "unknown dependency source");
+        p = self.proposal(text, rationale); p.record_head = ""; self.rejected(p, "the Record precondition is required");
+        p = self.proposal(text, rationale); p.request_id = ""; self.rejected(p, "the request identity is required");
+        p = self.proposal(text, rationale); p.request_id = self.repeat("k", 129); self.rejected(p, "129-byte request identity");
+        self.rejected(self.proposal("", "why"), "empty source refused");
+        self.rejected(self.proposal("source", ""), "empty rationale refused");
+        self.rejected(self.proposal(maximum + "a", "why"), "16385 decoded source bytes refused");
+        self.rejected(self.proposal("source", self.repeat("r", 2049)), "2049-byte rationale refused");
+        self.probe.supports = false;
+        let unsupported = self.commands.propose_organization(self.proposal(text, rationale), self.caller());
+        std::test::assert_eq_str(unsupported.code, "commands_unsupported", "an unsupported operation never dispatches");
+        std::test::assert_eq_int(self.probe.submits, before + 1, "no dispatch when unsupported");
+        self.probe.supports = true;
     }
+    // Practice and Review keep their historical canonical bytes: the
+    // Organization branch stays empty.
     fn compatibility() {
-        let wire = api::CommandWire { }; let native = NativeMappingProbe { };
-        let adapter = head::PracticeReviewCommands { root: "/project", application_id: APP, service: native };
-        let common = "\"request_id\":\"old-key\",\"operation_version\":\"1\",\"context\":{\"application_id\":\"app/native\",\"position_id\":\"org\"},";
-        let practice = "{" + common + "\"operation\":\"dna.practice.propose\",\"target\":{\"application_id\":\"app/native\",\"kind\":\"dna.practice\",\"id\":\"opaque/practice\"},\"preconditions\":{\"subject_digest\":\"opaque/practice\",\"principal\":{\"mode\":\"local\",\"name\":\"alice\"}},\"arguments\":{\"text\":\"exact\",\"rationale\":\"why\"}}";
-        let review = "{" + common + "\"operation\":\"dna.review.verdict\",\"target\":{\"application_id\":\"app/native\",\"kind\":\"dna.review\",\"id\":\"opaque/review\"},\"preconditions\":{\"subject_digest\":\"opaque/candidate\",\"review_state\":\"pending\",\"principal\":{\"mode\":\"local\",\"name\":\"alice\"}},\"arguments\":{\"verdict\":\"reject\",\"comment\":\"\"}}";
-        let p = wire.parse(practice, APP); let r = wire.parse(review, APP);
-        std::test::assert(p.valid && r.valid, "existing request variants still parse");
-        let pc = adapter.native_request(p); let rc = adapter.native_request(r);
-        std::test::assert(pc.source_text == "" && pc.source_head == "" && pc.dependency_source == "" && pc.dependency_digest == "" && pc.record_head == "", "old Practice mapping has empty source branch");
-        std::test::assert(rc.source_text == "" && rc.source_head == "" && rc.dependency_source == "" && rc.dependency_digest == "" && rc.record_head == "", "old Review mapping has empty source branch");
-        let codec = ops::GovernanceCommandCodec { }; let context = ops::GovernanceContext { application_id: APP, principal_mode: "local", principal_name: "alice" };
-        let prefix = "{\"format\":\"dna.governance-command/1\",\"application_id\":\"app/native\",\"principal_mode\":\"local\",\"principal_name\":\"alice\",\"request_id\":\"old-key\",\"operation\":";
+        let practice = self.commands.propose(api::PracticeProposal { request_id: "old-key", subject_digest: "opaque/practice", text: "exact", rationale: "why" }, self.caller());
+        let pc = api::native_of(self.probe.received);
+        let review = self.commands.verdict(api::ReviewDecision { request_id: "old-key", review_id: "opaque/review", subject_digest: "opaque/candidate", verdict: "reject", comment: "" }, self.caller());
+        let rc = api::native_of(self.probe.received);
+        std::test::assert(pc.source_text == "" && pc.source_head == "" && pc.dependency_source == "" && pc.dependency_digest == "" && pc.record_head == "", "Practice mapping has empty source branch");
+        std::test::assert(rc.source_text == "" && rc.source_head == "" && rc.dependency_source == "" && rc.dependency_digest == "" && rc.record_head == "", "Review mapping has empty source branch");
+        let codec = ops::GovernanceCommandCodec { };
+        let prefix = "{\"format\":\"dna.governance-command/1\",\"application_id\":\"" + self.identity + "\",\"principal_mode\":\"local\",\"principal_name\":\"alice\",\"request_id\":\"old-key\",\"operation\":";
         let expected_p = prefix + "\"dna.practice.propose\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_kind\":\"dna.practice\",\"target_id\":\"opaque/practice\",\"subject_digest\":\"opaque/practice\",\"text\":\"exact\",\"rationale\":\"why\",\"expected_review_state\":\"\",\"verdict\":\"\",\"comment\":\"\"}";
         let expected_r = prefix + "\"dna.review.verdict\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_kind\":\"dna.review\",\"target_id\":\"opaque/review\",\"subject_digest\":\"opaque/candidate\",\"text\":\"\",\"rationale\":\"\",\"expected_review_state\":\"pending\",\"verdict\":\"reject\",\"comment\":\"\"}";
-        std::test::assert_eq_str(codec.canonical(context, pc), expected_p, "historical Practice canonical bytes unchanged");
-        std::test::assert_eq_str(codec.canonical(context, rc), expected_r, "historical Review canonical bytes unchanged");
-        self.rejected(std::str::replace(practice, "\"text\":", "\"source_text\":\"source\",\"text\":"), "Organization argument cannot leak into Practice variant");
-        self.rejected(std::str::replace(review, "\"comment\":", "\"source_text\":\"source\",\"comment\":"), "Organization argument cannot leak into Review variant");
-        std::test::assert(adapter.supported("dna.practice.propose", "1") && adapter.supported("dna.review.verdict", "1"), "existing support still delegates to native service");
+        std::test::assert_eq_str(codec.canonical(self.native_context(), pc), expected_p, "historical Practice canonical bytes unchanged");
+        std::test::assert_eq_str(codec.canonical(self.native_context(), rc), expected_r, "historical Review canonical bytes unchanged");
     }
 }
-fn main() { let cases = OrganizationWireCases { }; cases.parser(); cases.compatibility(); }
+fn main() {
+    if std::env::var("HALE_COMMAND_API_TEST_CLEAN") != "1" {
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-org-mapping.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, made.stderr);
+    let root = dna::trim_nl(made.stdout);
+    let record = dna::GitRecord { repo: root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+    std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+    let probe = MappingProbe { };
+    let commands = api::CommandAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: probe };
+    let cases = OrganizationMappingCases { root: root, identity: record.identity(), probe: probe, commands: commands };
+    cases.mapping(); cases.compatibility();
+    let swept = dna::run_tool("rm\n-rf\n" + root);
+}
