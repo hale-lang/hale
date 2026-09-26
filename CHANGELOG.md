@@ -17,6 +17,7 @@ behavior.
   runtime now marks a listen socket it shut down and stays silent for
   it, and for a worker whose pool is shutting down. An accept failure
   nobody asked for is still reported.
+
 ### An imported fn can be used as a value (GH #1082)
 
 - **Fixed:** an imported seed's free fn used as a value
@@ -72,6 +73,7 @@ behavior.
   The fanout now works from its own copy of the bytes whenever an
   adapter shares the subject with another route. An adapter alone pays
   nothing extra.
+
 ### `hale check` holds a call into an imported seed to its signature (GH #1028)
 
 - **Fixed:** a call to an imported seed's free fn (`lib::add3(1, 2)`)
@@ -81,6 +83,7 @@ behavior.
   signature and gets the same located errors as a same-seed call. A
   method called on the handle an imported factory returns is checked
   as well.
+
 ### DNA: a fetch that loses git's ref lock is tried again (GH #1072)
 
 - **Fixed:** two fetches of the record's refs at once in one clone —
@@ -110,6 +113,7 @@ behavior.
   the literal: the instance keeps a copy of its params as built, and
   `restart_in_place` restores that copy. A param holding a locus keeps
   its child.
+
 ### SIGTERM waits for a drain only while something can answer it (GH #1077)
 
 - **Fixed:** a `self.draining` read anywhere in the compiled program
@@ -134,6 +138,7 @@ behavior.
   down twice, once by its run wrapper and again by the statement's own
   teardown, which ran `dissolve()` on the freed arena. The statement's
   teardown now steps over a child already reclaimed.
+
 ### DNA: the head pushes to the face (GH #986)
 
 - **New:** the face's head serves `GET /api/hale/v1/head/events`, a
@@ -231,6 +236,7 @@ behavior.
 - **Fixed:** replacing a whole struct-typed self field (`self.f = Frame {
   … }`) retired the struct's old String fields but not its Bytes ones —
   8 bytes a write even for an empty payload. Both are retired now.
+
 ### DNA: the nerves replace the membrane (GH #986)
 
 - **Changed:** the organism's parts carry the record's requests over
@@ -295,6 +301,7 @@ behavior.
   binding both directions called the codec with a null `self`. The
   codec is now built before the adapter starts; F.36 always said a
   codec applies to any binding.
+
 ### An adapter's subscriptions run on its own thread (GH #1032)
 
 - **Fixed:** a bound adapter that publishes, from `send`, onto a topic
@@ -305,6 +312,7 @@ behavior.
   adapter's own (pinned) thread at its `run()`'s next yield, and the
   publisher does not wait for it. One locus can now own a socket and
   be both its `send` and its receive loop.
+
 ### Bindings name an imported adapter or codec (GH #1034)
 
 - **`bindings { Out: lib::Adapter { … } codec(lib::Codec { }); }`**:
@@ -313,6 +321,7 @@ behavior.
   B6). Both were parse errors, so every program had to wrap a library's
   adapter in a local one. They now bind exactly as a locally declared
   adapter or codec.
+
 ### A collapsed child is torn down once (GH #1036)
 
 - **Fixed:** a child that violated a closure in a handler and was
@@ -328,6 +337,7 @@ behavior.
 - **Fixed:** `violate` left its method without the `return`
   epilogue, leaking the method's per-call scratch (and skipping the
   dissolve of loci it had `let`-bound) on every violation.
+
 ### SIGINT / SIGTERM drain the program (GH #1039)
 
 - **The whole-process drain ships.** The spec's drain cascade was
@@ -659,6 +669,7 @@ the park path, replay and shutdown are untouched.
   operations without HTTP, and the head over HTTP with a restart. The book's
   run chapter and reference, `spec/dna.md` and the API README describe the
   head, its state directory and the sources directory.
+
 ### Iris: raise work from the cockpit (GH #690)
 
 - `dna.task.create@1` is the command surface's `hale dna ask`. It admits the
@@ -731,9 +742,11 @@ the park path, replay and shutdown are untouched.
   Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
   packaging and the browser cockpit remain subsequent work; see
   [`dna/api/README.md`](dna/api/README.md).
+
 ### Docs: the book catches up with the week
 
 - `docs/src/everyday/records.md` says a `let` of a record, and an assignment, is a copy (GH #713, #992); `docs/src/services/lifecycle.md` says an omitted `run()` is an empty one (GH #735), that a handle stored into a contract-typed field or handed to a field of its own interface is a borrow (GH #967, #730), and which positions `hale check` refuses because the borrow would not outlive its holder (GH #730); `docs/src/reference.md`'s command table gains `hale replay`, `hale iris`, `hale dna` and `hale inputs`; `spec/projects.md`'s surface table gains `hale check --strict-fallible` (GH #738). The install chapter, the spec and the DNA book were already current for cross-compilation, `Time`, the stdlib additions and the workflow.
+
 ### A write through a struct local never reaches another (GH #993, #992)
 
 - `crates/hale-codegen/src/codegen.rs`: a field write under a local root (`bad.id = "…"`, `bad.inner.id = "…"`, `grown.id += "…"`) inside a locus method took the locus field's in-place String path, so it overwrote bytes in place. A `let` copy of a struct (GH #713) may share an unchanged String with its source, so the write reached the source and every local sharing that String: after `let command = self.host.saved; let good = self.host.result(command); let mut bad = good; bad.id = "PRIVATE-CANARY";`, `command.id` read the canary. A String or Bytes field under a local root is now replaced: the new value is cloned into the frame's arena and the pointer stored over. The P1 regression from #980, reported against the cockpit branch's commands API test. The String stored into the locus field was already an owned clone in the locus arena, and the reproducer runs clean under ASan.
@@ -751,9 +764,11 @@ the park path, replay and shutdown are untouched.
 ### `let` copies a struct value (GH #713)
 
 - `crates/hale-codegen/src/codegen.rs`, the `let` lowering: a struct read from a place — a field of `self` or of a child, a local, an element — is now copied into the frame's own region at the binding (Strings and Bytes cloned, nested structs copied, locus handles left as handles), the way a returned struct already was. Before, the binding was a view of the storage: `let saved = self.row; self.row = Row { };` emptied `saved`, and `let mut copy = original; copy.x = …` wrote the original. A literal or a call result is bound as it is. The ruling of 2026-09-20. Spec: `spec/types.md` § "A struct binding is a copy". Test: `tests/hale/struct_let_copies_test.hl` — same-locus and child fields, replacement, mutation through the binding and through the source, Int and String fields, a nested struct, a local-to-local copy.
+
 ### An omitted `run` is an empty `run` (GH #735)
 
 - `crates/hale-syntax/src/desugar.rs` (`desugar_omitted_run`, called from codegen beside the topic desugars): every locus that declares no `run()` gets an empty one, so the two spellings lower identically. The visible change is for a flow child — a type some parent `release`s — that declared no `run`: it is now reclaimed (released, dissolved) when its empty run completes, right after its birth, exactly as one with a written `run() { }` is, instead of living until its owner's `run` returned. The ruling of 2026-09-20 on the issue. Residents are unaffected; an empty run that is not a flow's is still elided. Spec: `spec/semantics.md` under `run()`. Test: `tests/hale/omitted_run_is_empty_run_test.hl`, the issue's paired owners, asserting the same counts.
+
 ### A bare fallible stdlib call is a warning, and `--strict-fallible` makes it an error (GH #738)
 
 - `crates/hale-types/src/bare_fallible.rs` (new), `hale check`: a call to a stdlib entry point the signature table marks `fallible`, with no `or`, is reported — the callee, its payload, and the four dispositions that address it (`or raise`, `or <fallback>`, `or discard`, `or handler(err)`). A warning by default; an error under `hale check --strict-fallible` (the `--strict-secret` shape); `hale verify` fails on it as on every advisory. The typing of the bare call is unchanged: it keeps the legacy form (the success value, or an Int status for a write) and `hale build` lowers it as before. The ruling of 2026-09-20, staged: **the default becomes an error at the next minor.** Migration: add the disposition you mean — `or discard` where the failure is deliberately ignored, `or raise` where it should propagate, `or <fallback>` or `or handler(err)` where it is handled — and keep `let r: Int = write_file(…)` only until then. The inventory is the table's own rows with a payload (94 today).
@@ -891,6 +906,7 @@ foreign one was silently dropped; `hale --list-targets` listed it as
   `describe_from(host)` carry the host-relative tier;
   `TargetSpec::support()` still answers for the target alone.
 - `native`, the host's own triple, and `wasm32` build exactly as before.
+
 ### DNA: the baseline qualified (workflow card 19)
 
 - `dna/tests/workflow_conformance_test.hl` (new): one oracle over the canonical three-level example (`dna/WORKFLOW-CONTRACT.md` §6) in every supported mode. The oracle reads the record and the adapters' own stores: the member set each step registered, each step activated and completed once, every Work settled once on an admitted attempt, one execution claim per attempt, the invocation count per attempt, the order of the record (C1 before its step, the grandchild before the child's step, the child before the root's step, D's step activated before D was claimed, the root last), and the tree reclaimed. The replies: immediate; delayed and out of order; a duplicate of a settled reply and a reply from another identity; a stale reply for a retried-past attempt; a failed grandchild whose ancestors fail while an outstanding leaf keeps its responsibility (the failed-grandchild test the assessment's inconclusive probe asked for); a cancellation reaching the grandchild's leaf. The modes: one memory in process (repeated completed runs leave nothing alive); a git record with a restart mid-flight (pending attempts redelivered under their ids, each redelivery recorded, completed members never run again) and a reboot of the completed record (no row, no adapter asked); two memories reconstructed mid-flight (every fact of the tree is the ledger's; the order holds; a restart over the pair continues exactly); a leased record fenced by a takeover.
@@ -2105,6 +2121,7 @@ other law families.
 `adequacy.causes` entry stating whether the model is exact or
 degraded for the family, and no longer appear in `law.legacy`; admission re-renders the form from
 the typed payload rather than trusting an imported verdict.
+
 ### Every typed law row states its rendered form (schema 1.13 → 1.14)
 
 A row whose law renders a compatibility form now carries it, and
@@ -3413,6 +3430,7 @@ batch:
   the observer attached after steady state — counts correctly on
   current HEAD (40/40, five runs), and is now a permanent pin
   beside the four earlier flavors.
+
 ### Placement pairings: replica-sharded delivery and pool affinity
 
 Two compositions the placement matrix was missing, found writing a
@@ -3495,6 +3513,7 @@ resolve inside the merged program, not as standalone seeds. The LSP
 now recognizes stdlib-cache paths and publishes an empty diagnostic
 set for them (clearing, not skipping, so anything a client already
 showed is removed).
+
 ### `hale init` bootstraps a project
 
 There was no way to scaffold a project — `hale.toml` was hand-written
@@ -4447,6 +4466,7 @@ everything they assert. It surfaced only because the real slice's
 publisher sat outside the selected instances — and adding that
 instance makes the claim hold again, which is the round trip that
 confirms the check is not simply always-failing.
+
 ### `[fleets]`: check every declared deployment (GH #408 Phase 5)
 
 ```toml
@@ -4866,6 +4886,7 @@ the conformer from the group.
 The fact was already in the model (the artifact tags these edges
 `via_interface`); it just never reached the human. Witnesses with no
 interface in them are unchanged.
+
 ### Topology artifact schema 1.4: one verdict vocabulary, and the document's own verdict
 
 Bundle claims and fn-grained certificates (`@effects`, `@budget`,
@@ -4928,6 +4949,7 @@ construction sites.
 `check` now runs its analysis once and shares it between the artifact
 gate and the diagnostic report, so this costs nothing on a
 `--dump-topology` run.
+
 ### `hale check --workspace` (downstream review)
 
 `check` operates on one seed and does not recurse — correctly, since
@@ -5062,6 +5084,7 @@ mode for something whose job is to gate CI.
 `crates/hale-cli/tests/topology_artifact_contract.rs` pins all
 four, in both directions where a gate is involved — a loose gate
 that never fires is the same fail-open wearing a different hat.
+
 ### The hot-path lint now sees factory calls (GH #402)
 
 The advisory that flags a locus allocated per loop iteration matched
