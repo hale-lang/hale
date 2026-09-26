@@ -960,7 +960,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         }
         if len(asked) == 0 { return fail("no pending " + id + " Review"); }
         if no_wait { return answer(out); }
-        let deadline = std::time::now() + (if local { 20 } else { 60 }) + 5 * count;
+        let deadline = std::time::now() + 60 + 5 * count;
         let mut left = asked;
         while len(left) > 0 {
             if !local { let s = sync_record(root, memory); }
@@ -1012,7 +1012,10 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         if !s.ok { return fail(s.summary); }
     }
     if no_wait { return answer("verdict " + verdict + " on " + id + " by " + reviewer + " written into the record; the Review answers there\n"); }
-    let deadline = std::time::now() + (if local { 20 } else { 60 });
+    // the organism answers after the steps it is running, and on a
+    // git-backed record each of their rows is a commit (GH #995): a local
+    // organism is given the time a remote one is
+    let deadline = std::time::now() + 60;
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, seed, "", memory);
