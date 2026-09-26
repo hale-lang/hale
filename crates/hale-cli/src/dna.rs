@@ -475,7 +475,7 @@ pub fn run(args: &[String]) -> ExitCode {
         // working tree's (`--from-tree <dir>`, a checkout holding
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
-        // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`
+        // `hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>`
         // (asking is one kind of task; the face exposes the same operation
         // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
@@ -796,7 +796,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>");
+    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome; --judgment asks for an assessment, a leg's to perform");
     eprintln!("                                    ask for an outcome: a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
@@ -1271,6 +1272,14 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("models  {line}"));
         }
         let main = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+        // GH #946: agent work is a leg's; an organization from before the
+        // legs still performs it in process
+        if main.contains("dna::AgentPerformer") {
+            out.push(format!(
+                "note    {}/main.hl performs agent work in process (dna::AgentPerformer); a leg performs it now: `agent: dna::LegRelay {{ name: \"legs\" }}, agent_reconciler: dna::RelayReplay {{ }}` in the work system, and `hale dna work` claims it",
+                ORG_SEED
+            ));
+        }
         if main.contains("dna::HostedModel") || main.contains("dna::ModelRouter {") {
             out.push(format!(
                 "note    {}/main.hl wires its routers inline (dna::HostedModel is now dna::OpenAiChat); point each position at the catalog: `models: leader_models()`, `editor_models()`, `agent_models()`, and `budget: dna::Budget {{ policy: org_budget() }}` on the substrate",
@@ -2158,9 +2167,13 @@ main locus Org {{
             // models.hl (a backend is a constructor function there; a
             // hosted one presents its credential from a sealed locus and
             // is not a permitted backend without it). Every call journals
-            // its evidence, never the prompt.
+            // its evidence, never the prompt. Agent work — a judgment, an
+            // analysis — is a leg's (GH #946): the relay answers pending,
+            // and `hale dna work` claims it, performs it with the performers
+            // in work.hl, and hands the outcome back.
             work: dna::WorkSystem {{
-                agent: dna::AgentPerformer {{ name: "agent", models: agent_models() }}
+                agent: dna::LegRelay {{ name: "legs" }},
+                agent_reconciler: dna::RelayReplay {{ }}
             }},
             // The organization's spend: one policy (models.hl), one owner.
             budget: dna::Budget {{ policy: org_budget() }},
