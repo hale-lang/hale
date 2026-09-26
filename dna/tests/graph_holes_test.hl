@@ -197,6 +197,25 @@ locus App {
         while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
         return n;
     }
+    // How many practice-ratify executions the record admitted (`admitted`),
+    // or settled done (`settled`).
+    @unbounded
+    fn ratification_rows(what: String) -> Int {
+        let j = dna::GitJournal { repo: self.repo };
+        let mut tasks = "\n";
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" {
+                tasks = tasks + e.entity + "\n";
+                if what == "admitted" { n = n + 1; }
+            }
+            if what == "settled" && e.kind == "workflow.settled" && std::str::contains(tasks, "\n" + e.entity + "\n") && std::json::find_string_field(e.body, "disposition") == "done" { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
     // The Review whose question carries `text`: its id.
     @unbounded
     fn review_of(text: String) -> String {
@@ -296,12 +315,22 @@ locus App {
         let practices = self.dna("review\npractices\napprove\n--as\nada\n--authority\nboard");
         std::test::assert_eq_int(practices.code, 0, "and the practices: " + practices.stdout + practices.stderr);
         // a verdict answers at `review.settled`; the ratification is the
-        // practice-ratify execution each verdict adopts (GH #995), so it
-        // is waited for, bounded
-        let ratify_from = std::time::now();
+        // practice-ratify execution each decision is admitted as (GH #995),
+        // so it is waited for, bounded: the 35 take some 15 to 18 s on a
+        // quiet machine's git-backed record (measured) and minutes on a
+        // loaded runner, and memory takes the same rows in about a second
         let ratify_by = std::time::now() + 600;
         while self.count_rows("knowledge.ratified") < 35 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
         std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 35, "35 proposals ratified by the organism");
+        // every Board decision is an execution of practice-ratify that
+        // settles once the hat has read what memory holds: admitted,
+        // settled done, and its practice.read row; the hat waits for
+        // memory on the tick, so the 35 settle over minutes on a loaded runner
+        let executions_by = std::time::now() + 600;
+        while self.ratification_rows("settled") < 35 && std::time::now() <= executions_by { std::time::sleep(200ms); }
+        std::test::assert_eq_int(self.ratification_rows("admitted"), 35, "each decision admitted as a practice-ratify execution");
+        std::test::assert_eq_int(self.ratification_rows("settled"), 35, "each settled done");
+        std::test::assert_eq_int(self.count_rows("practice.read"), 35, "and each wrote what the hat read, at which head");
         std::test::assert_eq_str(self.show_org(head, 240), ORG, "ratified in another order than proposed, the org chart is still GRAPH.md's");
 
         // ---- fill: a holder asked of the organization

@@ -127,9 +127,13 @@ Capacity and retry values travel as decimal strings (or null when unspecified).
 
 ## Workflow definitions
 
-The standalone executable advertises `reads.definitions=false` and returns
-503 `definitions_unsupported`. It cannot discover an arbitrary application's
-in-memory `WorkflowCatalog` from a project directory. A composed head supplies
+The standalone executable and the practice-review head serve the
+organization's own catalog (`ops::ProjectWorkflowCatalog`, GH #995): what
+`dna/org/workflows.hl` returns — the baseline and the project's own — read
+through `hale dna definitions --json` with the toolchain the head started
+with, and the baseline alone for a project with no `workflows.hl`. A catalog
+that does not build is `definitions_unavailable` with the reason. The face's
+definitions views read what the organization admits. A composed head supplies
 the application-owned catalog to `ops::DeclaredWorkflowCatalog`, alongside the
 same declared `AdmissionLimits` and the loaded-source `DefinitionProvenance`,
 then passes that provider to `api::serve(root, port, web, provider)` or `Api`.

@@ -1190,6 +1190,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("work.hl"), &work_hl(&found))?;
     // GH #995: the workflow catalog — the baseline, and the project's own
     created(&mut out, &org_dir.join("workflows.hl"), WORKFLOWS_HL)?;
+    created(&mut out, &org_dir.join("own_workflows.hl"), OWN_WORKFLOWS_HL)?;
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
@@ -1227,8 +1228,8 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
-                let n = seed_journal(&app.root, app, art)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed)"));
+                let n = seed_journal(&app.root, app, art, &purpose_text)?;
+                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, the purpose proposed)"));
             }
             _ => {
                 // the declared purpose's proposal and the graph in one
@@ -1239,12 +1240,9 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
             }
         }
-        // GH #995: the declared purpose, a proposal the Board ratifies
-        // through practice-ratify like every other, listed as `purpose`
-        if app.is_some() {
-            let review = propose_purpose(&root, &purpose_text)?;
-            out.push(format!("seeded  purpose (proposed, the Board's Review {}: `hale dna review` lists it under `purpose`)", review.trim()));
-        }
+        // GH #995: the declared purpose was proposed in that seed, a
+        // proposal the Board ratifies like every other
+        out.push("seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)".to_string());
         // GH #596 C, #994: the design and the operating practices, as
         // proposals — one Review per practice, listed by family
         for (family, practices) in SEEDED {
@@ -1324,17 +1322,33 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&performers, work_hl(&discover())).map_err(|e| format!("write {}: {e}", performers.display()))?;
         out.push(format!("created {}", performers.display()));
     }
-    // GH #995: an organization from before the workflow catalog gets one;
-    // its main is the project's and is told, not edited. One that has it
-    // keeps it: the baseline it returns is the vendored toolchain's, so the
-    // upgrade above already superseded it by revision.
-    let workflows = org_dir.join("workflows.hl");
-    if org_dir.join("main.hl").is_file() && !workflows.is_file() {
-        fs::write(&workflows, WORKFLOWS_HL).map_err(|e| format!("write {}: {e}", workflows.display()))?;
-        out.push(format!("created {}", workflows.display()));
+    // GH #995: the workflow catalog's generated half is regenerated to the
+    // current shape, whatever an earlier toolchain wrote; the project's
+    // own definitions (own_workflows.hl) are the project's and are written
+    // only where there are none. Its main is the project's and is told,
+    // not edited.
+    if org_dir.join("main.hl").is_file() {
+        let workflows = org_dir.join("workflows.hl");
+        let old = fs::read_to_string(&workflows).ok();
+        if old.as_deref() != Some(WORKFLOWS_HL) {
+            let was = workflows.is_file();
+            fs::write(&workflows, WORKFLOWS_HL).map_err(|e| format!("write {}: {e}", workflows.display()))?;
+            out.push(format!("{} {}", if was { "rewrote" } else { "created" }, workflows.display()));
+            // what an earlier toolchain's workflows.hl defined of its own is
+            // not carried over: it is named, for the project to move
+            let dropped: Vec<&str> = old.as_deref().unwrap_or("").lines().map(str::trim).filter(|l| !l.starts_with("//") && (l.contains(".define(") || l.contains(".leaf(") || l.contains(".child("))).collect();
+            if !dropped.is_empty() {
+                out.push(format!("note    {}: it defined workflows of its own, which the rewrite dropped; move them into {} (`own_workflows`):\n        {}", workflows.display(), org_dir.join("own_workflows.hl").display(), dropped.join("\n        ")));
+            }
+        }
+        let own = org_dir.join("own_workflows.hl");
+        if !own.is_file() {
+            fs::write(&own, OWN_WORKFLOWS_HL).map_err(|e| format!("write {}: {e}", own.display()))?;
+            out.push(format!("created {}", own.display()));
+        }
         let main = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
         if !main.contains("catalog: workflows()") {
-            out.push(format!("note    {}/main.hl: point the substrate at it, `catalog: workflows()` on dna::Dna, to admit the project's own definitions beside the baseline", ORG_SEED));
+            out.push(format!("note    {}/main.hl: point the substrate at the catalog, `catalog: workflows()` on dna::Dna, to admit the project's own definitions beside the baseline", ORG_SEED));
         }
     }
     // GH #596: an organization from before the charter gets one, and
@@ -2355,32 +2369,51 @@ fn main() {{
     )
 }
 
-/// `dna/org/workflows.hl`: the workflow catalog as source (GH #995). The
-/// baseline is the vendored toolchain's `dna::baseline_definitions()`, so
-/// an upgrade supersedes it by revision; the project adds its own beside
-/// it. Project-owned: written at `new`, and at `upgrade` only when absent.
-const WORKFLOWS_HL: &str = r#"// dna/org/workflows.hl — the workflow catalog (project-owned; generated by
-// `hale dna new`). The definitions this organization admits: DNA's
+/// `dna/org/workflows.hl`: the workflow catalog's generated half (GH
+/// #995), written at `new` and rewritten to the current shape at every
+/// `upgrade`: the vendored toolchain's `dna::baseline_definitions()`, which
+/// an upgrade supersedes by revision, and the project's own definitions
+/// from `own_workflows.hl`.
+const WORKFLOWS_HL: &str = r#"// dna/org/workflows.hl — the workflow catalog (generated by `hale dna new`
+// and rewritten by `hale dna upgrade`; do not edit: your definitions go in
+// own_workflows.hl). The definitions this organization admits: DNA's
 // baseline, each a chain in which every step writes one store, and the
 // project's own beside it. `hale dna definitions` lists them.
 //
-// The baseline is the vendored toolchain's, so `hale dna upgrade`
-// supersedes it by revision: a Task born under an old revision finishes
-// under it, and a new one binds the newest. A definition with a step on a
-// part not built yet is listed, and refused at admission naming the part.
-//
-// A definition of your own names one store per step (`record`, `forge`,
-// `genome`, `heart`, `graph`, `nerves`, `memory`, `vault`, `host`, or
-// `read:<store>` for a step that only reads), then its members:
-//
-//     let d = catalog.define("close-month", 1, "record record", "close the month");
-//     let e = catalog.leaf("close-month", 1, 0, "books", dna::WorkRequest { requires: "human" }, 1);
+// The baseline is the vendored toolchain's, so an upgrade supersedes it by
+// revision: a Task born under an old revision finishes under it, and a new
+// one binds the newest. A definition with a step on a part not built yet
+// is listed, and refused at admission naming the part.
 
 import "vendor/dna" as dna;
 
 fn workflows() -> dna::WorkflowCatalog {
     let catalog = dna::baseline_definitions();
+    catalog.refuse_own(own_workflows(catalog));
     return catalog;
+}
+"#;
+
+/// `dna/org/own_workflows.hl`: the project's own workflow definitions (GH
+/// #995). Project-owned: written at `new`, and at `upgrade` only where
+/// there is none.
+const OWN_WORKFLOWS_HL: &str = r#"// dna/org/own_workflows.hl — this organization's own workflow definitions
+// (project-owned; generated by `hale dna new`, never rewritten). They sit
+// beside DNA's baseline in the catalog workflows.hl returns.
+//
+// A definition names the one store each step writes (`record`, `forge`,
+// `genome`, `heart`, `graph`, `nerves`, `memory`, `vault`, `host`) — a
+// step is where a fact is written — then its members:
+//
+//     let d = catalog.define("close-month", 1, "record record", "close the month");
+//     let e = catalog.leaf("close-month", 1, 0, "books", dna::WorkRequest { requires: "human" }, 1);
+//
+// "" when every definition was taken, else why one was not.
+
+import "vendor/dna" as dna;
+
+fn own_workflows(catalog: dna::WorkflowCatalog) -> String {
+    return "";
 }
 "#;
 
@@ -2448,7 +2481,7 @@ impl Chain {
     }
 }
 
-fn seed_journal(root: &Path, app: &App, art: &Value) -> Result<usize, String> {
+fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<usize, String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
     let names = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().map(|x| s(x)).collect()).unwrap_or_default() };
@@ -2545,11 +2578,16 @@ fn seed_journal(root: &Path, app: &App, art: &Value) -> Result<usize, String> {
         text.push('\n');
     }
     fs::write(&path, text).map_err(|e| e.to_string())?;
-    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string()]);
+    // GH #995: the declared purpose is proposed in the same seed (a
+    // knowledge proposal and the Board's Review: two rows)
+    let purpose_path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
+    fs::write(&purpose_path, purpose).map_err(|e| e.to_string())?;
+    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string(), purpose_path.to_string_lossy().to_string()]);
     let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&purpose_path);
     let n: usize = out?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
-    if n != c.lines.len() {
-        return Err(format!("record-seed appended {n} of {} rows", c.lines.len()));
+    if n != c.lines.len() + 2 {
+        return Err(format!("record-seed appended {n} of {} rows", c.lines.len() + 2));
     }
     Ok(n)
 }
@@ -2565,19 +2603,6 @@ fn seed_repository(root: &Path, purpose: &str) -> Result<String, String> {
     let path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
     fs::write(&path, purpose).map_err(|e| e.to_string())?;
     let out = host_run("graph-ingest", root, &[path.to_string_lossy().to_string()]);
-    let _ = fs::remove_file(&path);
-    out
-}
-
-/// GH #995: the declared purpose, proposed as knowledge with the Board's
-/// Review (group `purpose`) by the host, which keeps its receipt. The
-/// Review's id.
-fn propose_purpose(root: &Path, text: &str) -> Result<String, String> {
-    let dna_dir = root.join(".hale/dna");
-    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
-    let path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
-    fs::write(&path, text).map_err(|e| e.to_string())?;
-    let out = host_run("purpose-propose", root, &[path.to_string_lossy().to_string()]);
     let _ = fs::remove_file(&path);
     out
 }

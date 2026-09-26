@@ -46,7 +46,7 @@ main locus App {
     params {
         // a placeholder until the scratch project exists; its receipts go
         // nowhere near the working directory
-        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-prompt-placeholder" } } };
+        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("prompt-placeholder") } } };
         // the leader plans every ask as a person's job, so nothing is mutated
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "pr", charter: "You are the architect.",
@@ -150,6 +150,7 @@ main locus App {
         std::test::assert_eq_str(dna::trim_nl(grep.stdout), "0", "no receipt anywhere in the record carries the customer text");
 
         dna::scratch_done(scratch);
+        dna::scratch_done("/tmp/dna-prompt-placeholder-" + to_string(std::process::pid()));
     }
 }
 

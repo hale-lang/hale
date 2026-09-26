@@ -9,7 +9,7 @@ import "../core" as dna;
 main locus App {
     params {
         // receipts outside the working directory: this fixture files a practice
-        one: dna::Dna = dna::Dna { planned: true, org_id: "bind", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-binding-receipts" } } };
+        one: dna::Dna = dna::Dna { planned: true, org_id: "bind", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("binding-receipts") } } };
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "bind", charter: "You are the architect.",
             models: dna::ModelRouter {
@@ -51,7 +51,6 @@ main locus App {
         return out;
     }
     run() {
-        std::io::fs::mkdir("/tmp/dna-binding-receipts") or discard;
         // the Board's practice, ratified in the record
         let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: "An expense closes with its receipt.\nevidence: required", author: "org", name: "acceptance/expense-receipt" }, "org");
         let digest = "sha256:" + self.one.verification.receipts.store(doc);
@@ -76,7 +75,7 @@ main locus App {
         std::test::assert(std::str::contains(handed2, "\"acceptance\": \"\"") && std::str::contains(handed2, "\"evidence_required\": false"), "nothing bound: " + handed2);
         std::test::assert(std::str::contains(self.last("task.handed", t), "\"evidence_required\": true"), "and the first job's row is unchanged");
 
-        let rm = dna::run_tool("rm\n-rf\n/tmp/dna-binding-receipts");
+        dna::scratch_done("/tmp/dna-binding-receipts-" + to_string(std::process::pid()));
     }
 }
 

@@ -75,19 +75,13 @@ fn workflow_part_missing(store: String) -> String {
     if store == "host" { return "a host the organization provisions, which it cannot yet (a person provisions one with `hale dna body provision`)"; }
     return "";
 }
-// The definitions whose organism steps the organization performs (GH
-// #995). Another definition with a step `requires: "organism"` is refused
-// at admission, saying so, until its path moves onto the catalog.
-const ORGANISM_PERFORMS: String = "practice-ratify concern-escalate optimize-walk";
+// The organism steps this toolchain performs, `<definition>/<key>` (GH
+// #995). A definition with a step `requires: "organism"` that is not
+// among them — a path not moved onto the catalog yet, or a revision from a
+// newer toolchain with a step this one does not know — is refused at
+// admission, naming the step, never failed when it runs.
+const ORGANISM_STEPS: String = "practice-ratify/ratify practice-ratify/hat concern-escalate/raise optimize-walk/walk";
 
-// `n` steps that each write `store`: for a definition whose steps are all
-// alike.
-fn every_step(n: Int, store: String) -> String {
-    let mut out = "";
-    let mut i = 0;
-    while i < n { out = out + (if i > 0 { " " } else { "" }) + store; i = i + 1; }
-    return out;
-}
 // The words of `s`, as the catalog counts them.
 fn step_words(s: String) -> Int {
     let mut n = 0;
@@ -395,9 +389,17 @@ locus WorkflowCatalog {
         bound: BoundNodeRows = BoundNodeRows { };
         stats: DefStatRows = DefStatRows { }; // the preflight's memo
         gap: String = ""; // why the preflight refused
+        // why the project's own definitions were refused ("" when they
+        // were all taken): the generated workflows.hl records what
+        // own_workflows answered, and the listing leads with it
+        refused: String = "";
     }
 
     // ---- construction --------------------------------------------------
+
+    // Record why the project's own definitions were refused ("" when none
+    // was): never dropped, so the listing and the organization say it.
+    fn refuse_own(why: String) { self.refused = why; }
 
     // A workflow definition whose steps write `stores`, one word per step
     // in order (see the head of this file). "" when defined, else why not
@@ -493,18 +495,41 @@ locus WorkflowCatalog {
         }
         return "";
     }
-    // Why the organization cannot perform a definition's steps yet ("" when
-    // it can): a step it would perform itself (`requires: "organism"`), of
-    // a definition whose path has not moved onto the catalog.
+    // Why the organization cannot perform a definition's steps ("" when it
+    // can): a step it would perform itself (`requires: "organism"`) that
+    // this toolchain does not know, named by its key.
     @unbounded
     fn unperformed(id: String, revision: Int) -> String {
-        if word_in(id, ORGANISM_PERFORMS) { return ""; }
         let mut m = 0;
         while m < self.members.len() {
             let md = self.members.get(m) or MemberDef { };
             m = m + 1;
-            if md.workflow == id && md.revision == revision && md.kind == "leaf" && std::str::contains(md.requires, "organism") {
-                return "workflow " + definition_name(id, revision) + " step " + to_string(md.step) + " (" + md.key + "): the organization does not perform this definition's steps yet (it performs " + ORGANISM_PERFORMS + ")";
+            if md.workflow == id && md.revision == revision && md.kind == "leaf" && std::str::contains(md.requires, "organism") && !word_in(id + "/" + md.key, ORGANISM_STEPS) {
+                return "workflow " + definition_name(id, revision) + " step " + to_string(md.step) + ": the organization performs no step `" + md.key + "` of " + id + " (it performs " + ORGANISM_STEPS + ")";
+            }
+            // a child's steps run under the admitted execution's own: the
+            // organization performs a step only of a definition admitted
+            // directly, so an organism step anywhere below is refused here
+            // rather than failed when it runs
+            if md.workflow == id && md.revision == revision && md.kind == "child" {
+                let below = self.organism_below(md.child, md.child_revision);
+                if len(below) > 0 { return "workflow " + definition_name(id, revision) + " step " + to_string(md.step) + " invokes " + definition_name(md.child, md.child_revision) + ", whose step " + below + " the organization would perform: it performs steps of a definition admitted directly, never of one invoked"; }
+            }
+        }
+        return "";
+    }
+    // The first organism step of `id` or of anything it invokes, as
+    // `<n> (<key>)`; "" when none.
+    @unbounded
+    fn organism_below(id: String, revision: Int) -> String {
+        let mut m = 0;
+        while m < self.members.len() {
+            let md = self.members.get(m) or MemberDef { };
+            m = m + 1;
+            if md.workflow == id && md.revision == revision && md.kind == "leaf" && std::str::contains(md.requires, "organism") { return to_string(md.step) + " (" + md.key + ")"; }
+            if md.workflow == id && md.revision == revision && md.kind == "child" {
+                let deeper = self.organism_below(md.child, md.child_revision);
+                if len(deeper) > 0 { return deeper; }
             }
         }
         return "";
@@ -1083,10 +1108,11 @@ fn define_baseline(c: WorkflowCatalog) {
     organism_leaf(c, "practice-ratify", 0, "ratify", "ratified — the body, by digest — or declined, as the verdict bound to that digest says");
     organism_leaf(c, "practice-ratify", 1, "hat", "what the hat read once memory held it, at which head");
 
-    let dob = c.define("deploy-observe", 1, "heart genome record", "a deploy observed: the first pulse within the lease, or rolled back");
+    // the rollback is the failure edge, not a step: the happy path writes
+    // nothing to the genome
+    let dob = c.define("deploy-observe", 1, "heart record", "a deploy observed: settled on the first pulse within the lease");
     organism_leaf(c, "deploy-observe", 0, "deploy", "the deploy");
-    organism_leaf(c, "deploy-observe", 1, "rollback", "rolled back when no pulse came within the lease");
-    organism_leaf(c, "deploy-observe", 2, "settle", "settled on the first pulse, or on the rollback");
+    organism_leaf(c, "deploy-observe", 1, "settle", "settled on the first pulse within the lease");
 
     let ce = c.define("concern-escalate", 1, "record", "a concern: raised, routed to its source's parent, proposed at the threshold");
     organism_leaf(c, "concern-escalate", 0, "raise", "raised, routed to the source's parent, and at the threshold a practice proposal");
@@ -1110,7 +1136,7 @@ fn define_baseline(c: WorkflowCatalog) {
 // revision supersedes, and what a definition is refused at admission for.
 @unbounded
 fn definitions_listing(c: WorkflowCatalog) -> String {
-    let mut out = "";
+    let mut out = if len(c.refused) > 0 { "the project's own definitions were refused (dna/org/own_workflows.hl): " + c.refused + "\n" } else { "" };
     let mut i = 0;
     while i < c.workflow_count() {
         let w = c.workflow_at(i);
@@ -1125,9 +1151,12 @@ fn definitions_listing(c: WorkflowCatalog) -> String {
         }
         let newest = c.latest(w.id);
         if newest > w.revision { out = out + "  superseded by " + definition_name(w.id, newest) + ": a Task born under this revision finishes under it\n"; }
-        let missing = c.part_missing(w.id, w.revision);
+        // what an admission would refuse it for, as it would: the preflight
+        // (a step's store, the tree, the limits), a part not built, a step
+        // the organization does not perform
+        let x = c.expand("listing", w.id, w.revision, AdmissionLimits { });
         let unperformed = c.unperformed(w.id, w.revision);
-        if len(missing) > 0 { out = out + "  refused at admission: " + missing + "\n"; }
+        if !x.ok { out = out + "  refused at admission: " + x.why + "\n"; }
         else if len(unperformed) > 0 { out = out + "  refused at admission: " + unperformed + "\n"; }
     }
     return out;

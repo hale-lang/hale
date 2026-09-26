@@ -822,15 +822,16 @@ repository:
   (`optimize/<n>`, the cadence's own length; **Claims by id**, below),
   so of the nodes running the organism one runs the pass, as an
   execution of `optimize-walk` (GH #995: **The workflow catalog**) whose
-  `walk` reads the record's structural signals
+  one step, `walk`, reads the record's structural signals
   — asks planned and how many took the defaults, concerns raised,
   grant contractions, verdicts refused, mutations rolled back — and
   asks the leader (`OptimizeRequested`, keyed by `org_id`) to walk the
   machinery, not the work. The leader answers with one small proposal
   or none (`OrgReviewed`), and the substrate journals `org.reviewed
   <org>` either way, with the signals it read and the execution it
-  answers (`task`), which settles its `proposals` step: "if the state is
-  clean, say so". A proposal enters as an ask in the leader's name and takes
+  answers (`task`, carried on `OptimizeRequested` and `OrgReviewed`, so
+  passes that overlap never answer each other), which settles its `walk`
+  step: "if the state is clean, say so". A proposal enters as an ask in the leader's name and takes
   the whole road — planned, proposed, reviewed by the Board as an
   organization change. `hale dna` runs the pass on demand through the
   substrate's `optimize()`.
@@ -1245,8 +1246,7 @@ the execution contract it serves is `dna/WORKFLOW-CONTRACT.md`). A
 declares a workflow whose ordered steps each write the one store its word
 names — `stores` holds one word per step, `record`, `forge`, `genome`,
 `heart`, `graph`, `nerves`, `memory`, `vault` or `host`, so the step
-count is the word count (GH #995; `every_step(n, store)` writes `n`
-alike). A step is where a fact is written: reading, or waiting on
+count is the word count (GH #995). A step is where a fact is written: reading, or waiting on
 another writer, is part of the step whose fact it serves, never a step of
 its own; `leaf(workflow,
 revision, step, key, work, attempts)` adds a required member carrying
@@ -1319,9 +1319,17 @@ expansion.
 
 DNA ships a catalog of definitions, each a chain in which every step
 writes one store (`dna::baseline_definitions()`, in
-`dna/core/workflow_definition.hl`). A project's `dna/org/workflows.hl`,
-written by `hale dna new` and by `hale dna upgrade` when it is absent,
+`dna/core/workflow_definition.hl`). A project's `dna/org/workflows.hl` is
+generated — written by `hale dna new` and rewritten to the current shape
+by every `hale dna upgrade`, whatever an earlier toolchain wrote — and
 returns it plus the project's own (`fn workflows() -> dna::WorkflowCatalog`),
+which live in `dna/org/own_workflows.hl` (`fn own_workflows(catalog)`:
+project-owned, written only where there is none, never rewritten;
+what it answers when a definition is refused is kept on the catalog,
+`refused`, which `hale dna definitions` leads with and fails on, never a
+smaller catalog; an upgrade that rewrites a workflows.hl holding
+definitions of its own names each line it dropped, for the project to
+move into own_workflows.hl),
 and the generated organization admits from it (`catalog: workflows()` on
 its `dna::Dna`; a body given no catalog takes the baseline at birth). The
 baseline is the vendored toolchain's, so an upgrade supersedes it by
@@ -1333,7 +1341,7 @@ bound at admission — and a new Task binds the newest (`latest`).
 | `ask-triage` | `offered` · `classify` · `plan` (record each) |
 | `change-deliver` | `candidate` (record) · `review` (forge) · `verdict` (record) · `apply` (genome) · `deploy` (heart) · `settle` (record) |
 | `practice-ratify` | `ratify` · `hat` (record each) |
-| `deploy-observe` | `deploy` (heart) · `rollback` (genome) · `settle` (record) |
+| `deploy-observe` | `deploy` (heart) · `settle` (record) |
 | `concern-escalate` | `raise` (record) |
 | `optimize-walk` | `walk` (record) |
 | `secret-rotate` | `rotate` (vault) · `recorded` (record) |
@@ -1349,7 +1357,9 @@ request and the Review are written by whoever proposes (a person's
 request, a concern, the record's birth); a concern's routing is a field of
 its `concern.raised` row and its proposal is written in the same step at
 the threshold; the optimize pass's walk reads what its `org.reviewed` row
-records; deploy-observe's pulse is what `settle` waits for.
+records; deploy-observe's pulse is what `settle` waits for, and its
+rollback is the failure edge, not a step: the happy path writes nothing
+to the genome.
 
 A step the organization performs itself is one leaf that `requires:
 "organism"`. The engine relays its attempt to the assembly serving the
@@ -1359,12 +1369,22 @@ pending), which performs the step and reports the attempt's outcome
 after a redelivery it writes none twice — and one that waits (a verdict,
 the leader's word, memory's projection) is kept and performed again when
 what it waits on may have arrived: a verdict, the leader's answer, the
-tick. The organization performs the steps of `practice-ratify`,
-`concern-escalate` and `optimize-walk`; a definition whose path has not
-moved onto the catalog (`ask-triage`, whose ask is still admitted as
-`ask-edit` or `ask-person` after the leader plans it) is refused at
-admission, saying so, as a definition on a part not built is refused
-naming the part — both are `workflow.refused` rows and nothing else.
+tick. The organization performs the steps this toolchain knows, by
+definition and key: `practice-ratify/ratify`, `practice-ratify/hat`,
+`concern-escalate/raise`, `optimize-walk/walk`. A definition with an
+organism step it does not know — a path not moved onto the catalog yet
+(`ask-triage`, whose ask is still admitted as `ask-edit` or `ask-person`
+after the leader plans it), or a revision from a newer toolchain — is
+refused at admission naming the step, never failed when it runs, as a
+definition on a part not built is refused naming the part; both are
+`workflow.refused` rows and nothing else. The organization performs a
+step only of a definition admitted directly, so one that invokes a
+definition with an organism step anywhere below it is refused at
+admission too. A ratification the catalog refuses is answered once per
+incarnation — one `workflow.refused` row — and asked again after a
+restart, so a catalog fixed in between ratifies it, and nothing retries
+at every reconciliation. `hale dna definitions` lists
+what an admission would refuse each definition for.
 
 - **practice-ratify** carries every knowledge proposal the Board
   decided: when a verdict settles a proposal's Review, the organization
@@ -1374,12 +1394,16 @@ naming the part — both are `workflow.refused` rows and nothing else.
   practices, a repository's holes and practices), a holder asked for.
   `ratify` writes `knowledge.ratified` (and `knowledge.retired` for what
   it supersedes, or `knowledge.refused`) under an approval, and
-  `knowledge.declined` otherwise, which fails the chain; `hat` waits for
+  `knowledge.declined` otherwise, which fails the chain; it is done only
+  when the whole consequence landed, so a retirement the record refused
+  is written again. `hat` fails the chain, saying so, when no memory is
+  named (nothing would come to wait for); otherwise it waits for
   memory's projection to hold the idea ratified, then reads the target's
   package at memory's head and writes `practice.read <digest>`
   (`target`, `ratified_at`, `hat`, `head`, `included`, `task`): what the
-  hat read, at which head. The verdict path writes no ratification of its
-  own; a settled verdict whose ratification never ran is admitted the
+  hat read, at which head. No verdict path writes a ratification of its
+  own — a Review's verdict or a decision by command (`review.command_decided`)
+  alike; a settled verdict whose ratification never ran is admitted the
   same way at the next reconciliation.
 - **concern-escalate** is a concern: `hale dna` concerns, and the
   organization's own, are admitted as `concern:<source>:<request>` (a
@@ -1400,17 +1424,18 @@ naming the part — both are `workflow.refused` rows and nothing else.
 step is a few rows of the day's work (`step.*`, `attempt.*`,
 `work.settled`, `effect.*`). Until `hale dna ledger adopt`, each is a
 commit on `refs/dna/journal`, so an execution costs tens of commits: a
-Board deciding a repository's 35 seeded proposals waits minutes for
-their ratifications on a git-backed record, where memory takes the same
-rows in about a second. A git-backed record is what one person working
+Board deciding a repository's 35 seeded proposals waits some 15 to 18
+seconds for their ratifications on a git-backed record (measured), where
+memory takes the same rows in about a second. A git-backed record is what one person working
 alone starts on; an organization runs with its ledger adopted.
 `hale dna review <group> approve|reject` writes every verdict of the
 group first and then waits for the answers once, bounded by the group's
 size.
 
 **The declared purpose is a proposal like any other.** `hale dna init`
-proposes it (host verb `purpose-propose`: kind `purpose`, author `org`,
-for `org`, `provenance: declared`) with the Board's Review under the
+proposes it in the record's one seed call (host verb `record-seed`, or
+`graph-ingest` for a repository: kind `purpose`, author `org`, for
+`org`, `provenance: declared`) with the Board's Review under the
 group `purpose`, which `hale dna review` lists first and `hale dna
 review purpose approve` decides; the generated organization holds no
 Review of its own for it.
@@ -1420,7 +1445,11 @@ Review of its own for it.
 catalog's probe is: every definition with its revision and title, each
 step with its key and store, what a newer revision
 supersedes, and what a definition is refused at admission for; `--json`
-is the catalog's own document.
+is the catalog's own document. The head serves the same catalog to the
+face's definitions views (`ops::ProjectWorkflowCatalog`: what
+`hale dna definitions --json` reads, re-read when either file or the
+vendored catalog changes; the baseline alone for a project with no
+`workflows.hl`; unavailable, with the reason, when it does not build).
 
 ## Workflow facts
 
@@ -3392,7 +3421,7 @@ The live half is memory's, projected from the record by the spine
   concern-escalate running for it — rows that reached the record
   another way — is owed a proposal that nothing but a further concern
   would make. At birth every such source is escalated once, by an
-  execution whose `raised` step finds its raises in the record
+  execution whose `raise` step finds its raises in the record
   (`rehydrate`);
   a source with no parent was refused where it was raised and is not
   refused again.

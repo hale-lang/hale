@@ -29,9 +29,9 @@ join or grants. Subscription capacity and supervision retry are decimal strings
 or null, preserving values outside JavaScript's exact integer range.
 
 `/dna/definitions` reads an application-injected native `WorkflowCatalog`.
-`reads.definitions` is explicit: the standalone head uses `NoWorkflowCatalog`
-and advertises false; an application-composed provider advertises support without
-promising availability. The response returns all exact definition revisions,
+`reads.definitions` is explicit: the standalone head serves the organization's
+own catalog (`ProjectWorkflowCatalog`, GH #995) and advertises support without
+promising availability; so does an application-composed provider. The response returns all exact definition revisions,
 ordered Steps (each naming the one store it writes, `store`: GH #995), distinct leaf specifications and child references, and reverse
 child dependencies. Leaf-only fields cannot occur on a child member, and a leaf
 cannot carry a child reference. IDs remain opaque. Definition revisions and cost

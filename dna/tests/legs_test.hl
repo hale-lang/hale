@@ -83,7 +83,7 @@ locus App {
         api: String = "";
         with_memory: Bool = false;
         head: std::process::Child = std::process::Child { };
-        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-legs-placeholder" } } };
+        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("legs-placeholder") } } };
         journal: dna::RoutedJournal = dna::RoutedJournal { };
         asks: Int = 0;
     }
@@ -133,7 +133,7 @@ locus App {
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
         // a chore requiring nothing in particular: the Work that admits every
         // effect class, an uncertain performer among them
-        std::test::assert_eq_str(self.core.catalog.define("chore", 1, 1, "one chore"), "", "chore");
+        std::test::assert_eq_str(self.core.catalog.define("chore", 1, "record", "one chore"), "", "chore");
         std::test::assert_eq_str(self.core.catalog.leaf("chore", 1, 0, "c", dna::WorkRequest { objective: "run the storage migration", output_contract: "Report" }, 2), "", "c");
     }
     @unbounded
@@ -575,5 +575,6 @@ fn main() {
     if len(ran.stderr) > 0 { eprintln(ran.stderr); }
     if len(owner) > 0 { std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped"); }
     dna::scratch_done(scratch);
+    dna::scratch_done("/tmp/dna-legs-placeholder-" + to_string(std::process::pid()));
     std::process::exit(if ran.code < 0 { 1 } else { ran.code });
 }
