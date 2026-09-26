@@ -1,0 +1,228 @@
+// dna/operations/graph_route.hl — a change set to the positions that must
+// sign it (GH #1087).
+//
+// Routing is read from the graph, never guessed: the paths a change
+// touches name nodes — a seed (the longest one holding the path), a
+// contract (its file, or a file of its directory), a document — and the
+// edges say who signs:
+//
+//   a seed        — the reviewer of every process that unfolds into it;
+//   a contract    — every position that `reviews` it (its servers'
+//                   reviewers), and the reviewer of every consumer: a
+//                   consuming process, the processes a consuming seed
+//                   belongs to, the positions reviewing a consuming
+//                   contract; and the `board` where the contract is law
+//                   (a ratified practice is bound to it);
+//   a document    — every position that `reviews` it.
+//
+// A process's `dev` never signs for it: a `/dev` position is never a
+// signer. The evidence a verdict is given against is the run of every gate
+// guarding a node the change touches. A consumer no position reviews is
+// said, not dropped; a path that names no node, or whose nodes no
+// position signs, is left to the fallback — the Review's own authority
+// today, the task routers of GH #697 when they exist.
+
+type Route {
+    signers: String = ""; // `<position>\t<because>` per line, first reason kept
+    evidence: String = ""; // gate ids, one per line
+    unsigned: String = ""; // `<node>\t<because>` per line
+    fallback: String = ""; // `<path>\t<because>` per line
+}
+
+// `<a>\t<b>` pairs from a JSON array of two-element arrays.
+@unbounded
+fn route_pairs(raw: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(raw);
+    while !it.done {
+        let pair = show_strings(it.element);
+        let nl = std::str::index_of(pair, "\n");
+        if nl > 0 { out = out + pair[0..nl] + "\t" + dna::trim_nl(pair[(nl + 1)..len(pair)]) + "\n"; }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// Whether `lines` holds `line`.
+fn route_has(lines: String, line: String) -> Bool { return std::str::contains("\n" + lines, "\n" + line + "\n"); }
+
+locus Router {
+    params {
+        nodes: String = ""; // `<id>\t<kind>\t<name>` per line
+        unfold: String = "";
+        reviews: String = "";
+        holds: String = "";
+        meets: String = ""; // the query's meets array, raw
+        gates: String = ""; // the query's gates array, raw
+        law: String = "\n";
+        route: Route = Route { };
+    }
+    @unbounded
+    fn load(json: String) {
+        let mut it = std::json::array_first(std::json::find_field_raw(json, "nodes"));
+        while !it.done {
+            self.nodes = self.nodes + std::json::find_string_field(it.element, "id") + "\t" + std::json::find_string_field(it.element, "kind") + "\t" + std::json::find_string_field(it.element, "name") + "\n";
+            it = std::json::array_next(it);
+        }
+        self.unfold = route_pairs(std::json::find_field_raw(json, "unfold"));
+        self.reviews = route_pairs(std::json::find_field_raw(json, "reviews"));
+        self.holds = route_pairs(std::json::find_field_raw(json, "holds"));
+        self.meets = std::json::find_field_raw(json, "meets");
+        self.gates = std::json::find_field_raw(json, "gates");
+        self.law = "\n" + show_strings(std::json::find_field_raw(json, "law"));
+    }
+    // The node a path names: a contract (its file or a file under its
+    // directory), else a document, else the seed holding it; "" for none.
+    @unbounded
+    fn node_of(path: String) -> String {
+        let mut seed = "";
+        let mut rest = self.nodes;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let t1 = std::str::index_of(line, "\t");
+            let id = line[0..t1];
+            let after = line[(t1 + 1)..len(line)];
+            let t2 = std::str::index_of(after, "\t");
+            let kind = after[0..t2];
+            let name = after[(t2 + 1)..len(after)];
+            if kind == "contract" && (path == name || std::str::starts_with(path, name + "/")) { return id; }
+            if kind == "document" && path == name { return id; }
+            if kind == "seed" && (path == name || std::str::starts_with(path, name + "/")) && len(name) > len(seed) { seed = name; }
+        }
+        return if len(seed) > 0 { "seed:" + seed } else { "" };
+    }
+    // The `<b>`s of the pairs whose `<a>` is `a`, or with `reverse` the
+    // `<a>`s whose `<b>` is `b`.
+    @unbounded
+    fn related(pairs: String, key: String, reverse: Bool) -> String {
+        let mut out = "";
+        let mut rest = pairs;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let tab = std::str::index_of(line, "\t");
+            let a = line[0..tab];
+            let b = line[(tab + 1)..len(line)];
+            if !reverse && a == key { out = out + b + "\n"; }
+            if reverse && b == key { out = out + a + "\n"; }
+        }
+        return out;
+    }
+    // A process's reviewer: the `reviewer` positions it unfolds into.
+    @unbounded
+    fn reviewers_of(process: String) -> String {
+        let mut out = "";
+        let mut rest = self.related(self.unfold, process, false);
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let p = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if std::str::starts_with(p, "position:") && std::str::ends_with(p, "/reviewer") { out = out + p + "\n"; }
+        }
+        return out;
+    }
+    // A signer, once, with the first reason it signs; never a dev.
+    @unbounded
+    fn sign(position: String, because: String) {
+        if std::str::ends_with(position, "/dev") { return; }
+        if std::str::contains("\n" + self.route.signers, "\n" + position + "\t") { return; }
+        self.route.signers = self.route.signers + position + "\t" + because + "\n";
+    }
+    fn sign_all(positions: String, because: String) -> Int {
+        let mut n = 0;
+        let mut rest = positions;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            self.sign(rest[0..nl], because);
+            rest = rest[(nl + 1)..len(rest)];
+            n = n + 1;
+        }
+        return n;
+    }
+    // Who signs for a consumer of `contract`: a process's reviewer, the
+    // reviewers of the processes a seed belongs to, the positions
+    // reviewing a contract; said when there is none.
+    @unbounded
+    fn consumer(node: String, spec: String) -> Int {
+        let because = "consumes " + show_name(spec);
+        let mut n = 0;
+        if std::str::starts_with(node, "process:") { n = self.sign_all(self.reviewers_of(node), because); }
+        else if std::str::starts_with(node, "seed:") {
+            let mut ps = self.related(self.unfold, node, true);
+            while len(ps) > 0 {
+                let nl = std::str::index_of(ps, "\n");
+                n = n + self.sign_all(self.reviewers_of(ps[0..nl]), because + " (through " + show_name(node) + ")");
+                ps = ps[(nl + 1)..len(ps)];
+            }
+        } else { n = self.sign_all(self.related(self.reviews, node, true), because); }
+        if n == 0 && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it") { self.route.unsigned = self.route.unsigned + node + "\t" + because + "; no position reviews it\n"; }
+        return n;
+    }
+    // One path of the change set: its node, who signs it, the gates that
+    // are its evidence; to the fallback when no position signs it.
+    @unbounded
+    fn path(p: String) {
+        let node = self.node_of(p);
+        if len(node) == 0 { self.route.fallback = self.route.fallback + p + "\tnames no seed, contract or document the graph holds\n"; return; }
+        let mut signed = 0;
+        if std::str::starts_with(node, "seed:") {
+            let mut ps = self.related(self.unfold, node, true);
+            while len(ps) > 0 {
+                let nl = std::str::index_of(ps, "\n");
+                signed = signed + self.sign_all(self.reviewers_of(ps[0..nl]), "reviews " + show_name(ps[0..nl]) + ", whose seed " + show_name(node) + " it changes");
+                ps = ps[(nl + 1)..len(ps)];
+            }
+        } else {
+            signed = signed + self.sign_all(self.related(self.reviews, node, true), "signs " + show_name(node));
+        }
+        if std::str::starts_with(node, "contract:") {
+            let mut it = std::json::array_first(self.meets);
+            while !it.done {
+                if std::json::find_string_field(it.element, "contract") == node {
+                    let mut cs = show_strings(std::json::find_field_raw(it.element, "consumers"));
+                    while len(cs) > 0 {
+                        let nl = std::str::index_of(cs, "\n");
+                        signed = signed + self.consumer(cs[0..nl], node);
+                        cs = cs[(nl + 1)..len(cs)];
+                    }
+                }
+                it = std::json::array_next(it);
+            }
+            if route_has(self.law, node) { self.sign("position:board", show_name(node) + " is law"); signed = signed + 1; }
+        }
+        // the evidence: every gate guarding the node
+        let mut g = std::json::array_first(self.gates);
+        while !g.done {
+            let gate = std::json::find_string_field(g.element, "gate");
+            if route_has(show_strings(std::json::find_field_raw(g.element, "guarded")), node) && !route_has(self.route.evidence, gate) { self.route.evidence = self.route.evidence + gate + "\n"; }
+            g = std::json::array_next(g);
+        }
+        if signed == 0 { self.route.fallback = self.route.fallback + p + "\tno position signs " + show_name(node) + "\n"; }
+    }
+}
+
+// The route for `paths` (one per line) over the routing query's answer.
+@unbounded
+fn graph_route(json: String, paths: String) -> Route {
+    let r = Router { };
+    r.load(json);
+    let mut rest = paths;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let p = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(std::str::trim(p)) > 0 { r.path(std::str::trim(p)); }
+    }
+    return r.route;
+}
+
+// The holders of `position`, `, `-joined, from the routing query's holds.
+@unbounded
+fn route_holders(json: String, position: String) -> String {
+    let r = Router { };
+    r.holds = route_pairs(std::json::find_field_raw(json, "holds"));
+    return show_list(r.related(r.holds, position, false), false);
+}

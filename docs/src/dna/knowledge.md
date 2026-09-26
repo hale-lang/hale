@@ -197,6 +197,14 @@ person as both dev and reviewer of the same process is a warning while
 you work alone (`dna.trust = local`), and refused once the record is
 shared — by the CLI, and again where memory takes the ratified hold.
 
+The graph also says who must sign a change.
+`hale dna route spec/openapi.yaml` names the reviewer of the process that
+serves the contract and the reviewer of every process that consumes it,
+and the gates whose runs the verdict is given against;
+`hale dna route --diff main..HEAD` does the same for a branch. A process's
+dev never signs for it, and a path the graph does not hold is left to the
+Review's own authority.
+
 Practices are not repeated there: a practice in the graph is the
 knowledge idea it already is — advice while proposed, law once the
 Board ratifies it — and what it binds to is its binding. Memory keeps

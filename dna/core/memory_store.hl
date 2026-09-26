@@ -124,6 +124,7 @@ interface KnowledgeStore {
     // ratified practices that bind something, one hyperedge each.
     fn graph_edges_count(kind: String) -> Int;
     // A perspective (Π) over the graph, as JSON built by the server:
+    // `routing` — what review routing reads (GH #1087);
     // `org` — the positions, what each sits under (`unfold`), who holds
     // it (`holds`) and what it signs (`reviews`: a contract or a
     // document); `processes` — the
@@ -186,6 +187,24 @@ fn graph_processes_sql() -> String {
         + "'outside', coalesce(e.body::json -> 'outside', '[]'::json)) ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'meets' AND " + graph_member_sql("contract") + " <> ''), '[]'::json), "
         + "'runs', coalesce((SELECT json_agg(json_build_object('deployment', " + graph_member_sql("deployment") + ", "
         + "'processes', " + graph_members_sql("process") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'runs' AND " + graph_member_sql("deployment") + " <> ''), '[]'::json))";
+}
+
+// GH #1087, what review routing reads: the nodes a path can name (seeds,
+// contracts, documents, deployments), each process's seeds and positions
+// (`unfold`), what each position signs (`reviews`) and who holds it, where
+// processes meet, what each gate guards, and the contracts that are law —
+// a ratified practice bound to them. A member whose node was retired is
+// left out.
+fn graph_routing_sql() -> String {
+    let pairs = "FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.pos = 0 JOIN graph_members b ON b.edge = e.id AND b.pos = 1 WHERE " + graph_live_sql("a.node") + " AND " + graph_live_sql("b.node");
+    return "SELECT json_build_object("
+        + "'nodes', coalesce((SELECT json_agg(json_build_object('id', n.id, 'kind', n.kind, 'name', n.name) ORDER BY n.seq, n.id) FROM graph_nodes n WHERE n.kind IN ('seed', 'contract', 'document', 'deployment', 'process', 'position')), '[]'::json), "
+        + "'unfold', coalesce((SELECT json_agg(json_build_array(a.node, b.node) ORDER BY e.seq, e.id) " + pairs + " AND e.kind = 'unfold'), '[]'::json), "
+        + "'reviews', coalesce((SELECT json_agg(json_build_array(a.node, b.node) ORDER BY e.seq, e.id) " + pairs + " AND e.kind = 'reviews'), '[]'::json), "
+        + "'holds', coalesce((SELECT json_agg(json_build_array(a.node, b.node) ORDER BY e.seq, e.id) FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.pos = 0 JOIN graph_members b ON b.edge = e.id AND b.pos = 1 WHERE e.kind = 'holds' AND " + graph_live_sql("a.node") + "), '[]'::json), "
+        + "'meets', coalesce((SELECT json_agg(json_build_object('contract', " + graph_member_sql("contract") + ", 'servers', " + graph_members_sql("server") + ", 'consumers', " + graph_members_sql("consumer") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'meets' AND " + graph_member_sql("contract") + " <> ''), '[]'::json), "
+        + "'gates', coalesce((SELECT json_agg(json_build_object('gate', " + graph_member_sql("gate") + ", 'guarded', " + graph_members_sql("guarded") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'gates' AND " + graph_member_sql("gate") + " <> ''), '[]'::json), "
+        + "'law', coalesce((SELECT json_agg(DISTINCT b.target) FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.kind = 'practice' AND i.accepted), '[]'::json))";
 }
 
 fn signal_json(x: Signal) -> String {
@@ -951,7 +970,7 @@ locus Pq {
     // Both perspectives order by the record: a node by the row that put
     // it, an edge's members by their place in it.
     fn graph_perspective(name: String) -> String {
-        let sql = if name == "org" { graph_org_sql() } else if name == "processes" { graph_processes_sql() } else { "" };
+        let sql = if name == "org" { graph_org_sql() } else if name == "processes" { graph_processes_sql() } else if name == "routing" { graph_routing_sql() } else { "" };
         if len(sql) == 0 { return ""; }
         let rows = self.conn.query_all(sql);
         if !rows.ok { self.note("graph " + name, rows.err); return ""; }

@@ -517,6 +517,9 @@ pub fn run(args: &[String]) -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        // GH #1087: `hale dna route [--json] (<path>… | --diff <range>)`, the
+        // positions a change set must be signed by, from the graph
+        Some("route") => host_exec("route", Path::new("."), &args[1..]),
         // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
         // a holder asked of the organization, which proposes it to the Board
         Some("fill") => {
@@ -705,6 +708,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
+    eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
+    eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
     eprintln!("                                    the org chart and the process model, as queries over memory");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");

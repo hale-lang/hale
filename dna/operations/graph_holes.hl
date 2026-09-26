@@ -25,7 +25,7 @@
 //
 // Never the same holder as `dev` for a process's `reviewer`: the positions
 // are proposed empty, and the check is where a holder is proposed
-// (`hale dna hold`, dna/host/holes.hl).
+// (`hale dna fill`, dna/host/holes.hl) and where memory projects it.
 
 const HOLE_OPERATIONAL: String = "support accounts billing on-call";
 

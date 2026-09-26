@@ -3364,6 +3364,32 @@ The live half is memory's, projected from the record by the spine
   record's seed holds no Hale source of its own, `hale dna dev` and
   `hale dna run` check and build the organization only; there is no application
   to cut, build, express or restart, and `dev` says so.
+- **Review routing (GH #1087).** A change set goes to the positions that
+  must sign it, read from the graph, never guessed:
+  `hale dna route [--json] (<path>… | --diff <range>)` (the host verb
+  `route`, reading memory as the head, over
+  `graph_perspective("routing")`; the routing is
+  `dna/operations/graph_route.hl`). A path names a node — a contract (its
+  file, or a file under its directory), else a document, else the longest
+  seed holding it — and the edges say who signs. **A seed**: the reviewer
+  (the `/reviewer` position a process unfolds into) of every process that
+  unfolds into it. **A contract**: every position that `reviews` it, and
+  the reviewer of every consumer — a consuming process; the processes a
+  consuming seed belongs to; the positions reviewing a consuming contract
+  — and the `board` where the contract is law (a ratified practice is
+  bound to it). **A document**: every position that `reviews` it. A
+  `/dev` position never signs: a process's dev never signs for that
+  process. **The evidence** a verdict is given against is the run of every
+  gate guarding a node the change touches. A consumer no position reviews
+  is listed as such (`unsigned`), never dropped; a path that names no
+  node, or whose node no position signs, is left to the fallback — the
+  Review's own authority today, the task routers of GH #697 when they
+  exist. Text lists `signed by`, `against`, `reviewed by no position` and
+  `left to the fallback`, each signer with its holders and why it signs;
+  `--json` is one object: `signers` (`position`, `because`), `evidence`
+  (gate ids), `unsigned` (`node`, `because`), `fallback` (`path`,
+  `because`). Reviews do not yet take their signers from it; that wiring
+  is its own change.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb
   `show`. It takes `--json` and at most one project directory, and

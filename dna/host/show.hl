@@ -54,3 +54,97 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
     }
     return show_answer(what, json, data, rows, if basis.ok { basis.watermark } else { 0 }, basis.ok);
 }
+
+// ---- hale dna route [--json] (<path>… | --diff <range>) (GH #1087) ----------
+//
+// The positions a change set must be signed by, read from the graph as the
+// head reads it (graph_route.hl): who signs each path, the gates whose run
+// is the evidence a verdict is given against, the consumers no position
+// reviews, and the paths left to the fallback. `--diff <range>` takes the
+// paths `git diff --name-only <range>` names.
+
+// Lines as a JSON array of strings; with `pairs`, `<a>\t<b>` lines as
+// objects named by `first` and `second`.
+@unbounded
+fn route_json_list(lines: String, first: String, second: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if len(first) == 0 { b.string_value(line); continue; }
+        let tab = std::str::index_of(line, "\t");
+        b.begin_object();
+        b.string_field(first, line[0..tab]);
+        b.string_field(second, line[(tab + 1)..len(line)]);
+        b.end_object();
+    }
+    b.end_array();
+    return b.result();
+}
+
+// `<a>\t<b>` lines as text: `<a>` padded, then `<b>`.
+@unbounded
+fn route_text(lines: String, shown: Bool) -> String {
+    let mut out = "";
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        let a = if tab < 0 { line } else { line[0..tab] };
+        // a node by its whole name (`api/reviewer`, `ci/api`), its kind dropped
+        let name = if shown && std::str::index_of(a, ":") > 0 { a[(std::str::index_of(a, ":") + 1)..len(a)] } else { a };
+        out = out + "  " + name + (if tab < 0 { "" } else { std::str::repeat(" ", if std::str::cp_count(name) < 22 { 22 - std::str::cp_count(name) } else { 1 }) + line[(tab + 1)..len(line)] }) + "\n";
+    }
+    return out;
+}
+
+@unbounded
+fn route_verb(root: String, args: Args) -> Answer {
+    let json = has_flag(args, "--json");
+    let range = flag(args, "--diff");
+    let mut paths = "";
+    if len(range) > 0 {
+        let d = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n" + range);
+        if d.code != 0 { return fail("route: git diff " + range + ": " + dna::trim_nl(d.stderr)); }
+        paths = d.stdout;
+    }
+    let mut i = 0;
+    while len(word(args, i)) > 0 { paths = paths + word(args, i) + "\n"; i = i + 1; }
+    if len(dna::trim_nl(paths)) == 0 { return fail("usage: hale dna route [--json] (<path>… | --diff <range>)"); }
+    let env = dna::HEAD_DSN_ENV;
+    if !dna::dsn_set(env) { return fail("route: the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it"); }
+    let store = dna::Pq { dsn_env: env };
+    store.scope(dna::record_scope(root));
+    if !store.reopen() { return fail("route: memory is not open: " + store.last_error()); }
+    let basis = store.projection_basis();
+    let data = store.graph_perspective("routing");
+    if len(data) == 0 { return fail("route: memory did not answer: " + store.last_error()); }
+    let rows = dna::GitJournal { repo: root }.revision();
+    if basis.ok && basis.watermark < rows { eprintln("hale dna route: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the route as of row ", to_string(basis.watermark)); }
+    let r = ops::graph_route(data, paths);
+    // each signer with who holds it
+    let mut signers = "";
+    let mut rest = r.signers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        let held = ops::route_holders(data, line[0..tab]);
+        signers = signers + line[0..tab] + "\t" + (if len(held) > 0 { "[" + held + "] " } else { "" }) + line[(tab + 1)..len(line)] + "\n";
+    }
+    if json {
+        return answer("{\"signers\": " + route_json_list(signers, "position", "because") + ", \"evidence\": " + route_json_list(r.evidence, "", "") + ", \"unsigned\": " + route_json_list(r.unsigned, "node", "because") + ", \"fallback\": " + route_json_list(r.fallback, "path", "because") + "}\n");
+    }
+    let mut out = "";
+    if len(signers) > 0 { out = out + "signed by\n" + route_text(signers, true); }
+    if len(r.evidence) > 0 { out = out + "against\n" + route_text(r.evidence, true); }
+    if len(r.unsigned) > 0 { out = out + "reviewed by no position\n" + route_text(r.unsigned, true); }
+    if len(r.fallback) > 0 { out = out + "left to the fallback\n" + route_text(r.fallback, false); }
+    return answer(out);
+}

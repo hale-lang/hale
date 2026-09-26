@@ -47,6 +47,10 @@ hale dna fill <position> <holder> [project] [--as <who>]
                              your name; the holder is a person the record knows; dev and reviewer of
                              one process as one person is a warning under dna.trust = local, refused
                              elsewhere, here and where memory projects it
+hale dna route [--json] (<path>… | --diff <range>)
+                             who must sign a change set, from the graph: each touched seed's process
+                             reviewer, a contract's reviewers and its consumers', the board where it is
+                             law; and the gates whose runs are the evidence
 hale dna show org|processes [--json] [project]
                              the graph's two perspectives, read from memory under the head's role:
                              the org chart, the process model; `--json` is the query's answer
