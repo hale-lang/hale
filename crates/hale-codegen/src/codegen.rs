@@ -13538,6 +13538,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span,
         };
         let result_decl = TypeDecl {
+            display: None,
             name: mk_ident("Result"),
             generics: vec![mk_param("T"), mk_param("E")],
             body: TypeDeclBody::Enum(vec![
@@ -13555,6 +13556,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span,
         };
         let option_decl = TypeDecl {
+            display: None,
             name: mk_ident("Option"),
             generics: vec![mk_param("T")],
             body: TypeDeclBody::Enum(vec![
@@ -14755,6 +14757,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
 
         Ok(TypeDecl {
+            display: None,
             name: Ident {
                 name: mangled,
                 span: template.name.span.clone(),

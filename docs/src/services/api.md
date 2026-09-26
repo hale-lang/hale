@@ -124,7 +124,10 @@ claude mcp add app -- hale mcp --app /run/app.sock   # every command a tool, eve
 ```
 
 `hale call` prints the answer and exits 0; a refusal goes to stderr
-with its kind and exits 1, so a script can branch on it. `hale
+with its kind and the whole receipt, and exits 1, so a script can
+branch on it. `--receipt` prints the whole receipt on stdout
+instead of the value alone: the request id, the echoed id, and what
+later pieces add to it (the caller, the role that authorized it). `hale
 describe app.hl --openapi` writes an OpenAPI 3.1 document with a
 path per command, read and stream and every schema under
 `components`; `--mcp` writes the tool and resource shapes an MCP

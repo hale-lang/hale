@@ -2249,6 +2249,7 @@ impl Parser {
             )
         })?;
         Ok(TopicDecl {
+            display: None,
             name,
             parent,
             payload,
@@ -5679,6 +5680,7 @@ impl Parser {
                 let close = self.expect(TokenKind::RBrace, "}")?;
                 self.expect(TokenKind::Semi, ";")?;
                 return Ok(TypeDecl {
+                    display: None,
                     name,
                     generics,
                     body: TypeDeclBody::Enum(variants),
@@ -5707,6 +5709,7 @@ impl Parser {
             let ty = self.parse_type_expr()?;
             let semi = self.expect(TokenKind::Semi, ";")?;
             Ok(TypeDecl {
+                display: None,
                 name,
                 generics,
                 body: TypeDeclBody::Alias(ty),
@@ -5721,6 +5724,7 @@ impl Parser {
             }
             let close = self.expect(TokenKind::RBrace, "}")?;
             Ok(TypeDecl {
+                display: None,
                 name,
                 generics,
                 body: TypeDeclBody::Struct(fields),

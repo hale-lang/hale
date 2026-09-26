@@ -121,12 +121,15 @@ binding serves and `hale check --dump-api` emits. It carries the
 program's commands (subscribed topics, with the wire subject, the
 payload type, the reply type and the key), reads (exposed members,
 as snapshots), streams (published topics) and the JSON Schema of
-every type they name. Those are the `topics`, `subjects` and
-`payloads` tables and the `subscribes` / `declares_publish`
-relations, projected through the type declarations of the bundle
-for the field schemas the model does not hold, plus the locus
-contracts for the reads. It is `Bundle + Model -> description`
-under the same layering as the law table.
+every type they name. It is rendered from the checked bundle's
+declarations, the slice of the AST that the `topics`, `subjects`
+and `payloads` tables and the `subscribes` / `declares_publish`
+relations are derived from, plus the type declarations for the
+field schemas the model does not hold and the locus contracts for
+the reads. It does not consult the model's tables: it is the
+description of the same declarations the model is built from, so
+the two cannot disagree about which topic a locus subscribes, and
+a consistency test over the model rows is the natural next guard.
 
 Three properties are the contract:
 

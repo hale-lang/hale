@@ -24,6 +24,17 @@
         ],
         "type": "object"
       },
+      "Count": {
+        "properties": {
+          "by": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by"
+        ],
+        "type": "object"
+      },
       "Ledger": {
         "properties": {
           "balance": {
@@ -124,6 +135,13 @@
         ],
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "role": {
+        "description": "The principal the binding established: the peer's credentials on the Unix socket, a bearer token on HTTP. An operation's scopes are the roles the principal must hold. a role gate is a boundary check at the binding, never a proof over the program's internal call paths",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -173,6 +191,44 @@
           }
         },
         "summary": "command Audits: publish a Audit on subject shop.audit"
+      }
+    },
+    "/call/Counts": {
+      "post": {
+        "operationId": "call.Counts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Count"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "description": "the value Int the handler returned"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "command Counts: publish a Count on subject shop.count"
       }
     },
     "/call/Refunds": {
@@ -290,6 +346,47 @@
           }
         },
         "summary": "read billing.ledger: a snapshot of a Ledger, with its as_of digest"
+      }
+    },
+    "/read/ticks": {
+      "get": {
+        "operationId": "read.ticks",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "as_of": {
+                      "description": "sha256 digest of the answered value",
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "as_of"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "a snapshot; never a live view"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "read ticks: a snapshot of a Int, with its as_of digest"
       }
     },
     "/read/uptime": {

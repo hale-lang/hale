@@ -513,6 +513,11 @@ impl ClaimSet {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopicDecl {
     pub name: Ident,
+    /// GH #1107: the author-facing spelling of an imported topic
+    /// (`lib::Orders`) once the cross-seed rename has mangled `name`;
+    /// `None` for a topic the seed declares itself. The api
+    /// description names topics by it.
+    pub display: Option<String>,
     /// Optional declarative parent — `topic Login : Events { ... }`.
     /// `None` means this topic is at the root of its tree. Resolution
     /// looks the parent up by name; cycles are rejected.
@@ -1972,6 +1977,9 @@ pub enum PerspectiveMember {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDecl {
     pub name: Ident,
+    /// GH #1107: the author-facing spelling of an imported type
+    /// (`lib::Order`) once the cross-seed rename has mangled `name`.
+    pub display: Option<String>,
     pub generics: Vec<GenericParam>,
     pub body: TypeDeclBody,
     pub span: Span,

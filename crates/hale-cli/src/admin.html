@@ -26,25 +26,28 @@
 <h2>Reads</h2><div id="reads"></div>
 <h2>Streams</h2><div id="streams"></div>
 <script>
+const SOCKET = "{{SOCKET}}";
+const TOKEN = "{{TOKEN}}";
+const headers = (extra = {}) => Object.assign({ "X-Hale-Admin": TOKEN }, extra);
 const $ = (s) => document.querySelector(s);
 const el = (t, a = {}, ...kids) => { const e = document.createElement(t); Object.assign(e, a); kids.forEach(k => e.append(k)); return e; };
 const show = (pre, v) => { pre.textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
 async function main() {
-  const d = await (await fetch("/api/describe")).json();
+  const d = await (await fetch("/api/describe", { headers: headers() })).json();
   if (d.error) { $("#head").textContent = d.error; return; }
-  $("#head").textContent = `${d.app} over ${d.socket}. ${d.notes.gates}. ${d.notes.reads}.`;
+  $("#head").textContent = `${d.app} over ${SOCKET}. ${d.notes.gates}. ${d.notes.reads}.`;
   const sample = (ty) => { const s = d.schemas[ty]; if (!s) return {}; const o = {}; for (const [k, p] of Object.entries(s.properties || {})) { o[k] = p.type === "integer" || p.type === "number" ? 0 : p.type === "boolean" ? false : p.$ref ? sample(p.$ref.split("/").pop()) : ""; } return o; };
   for (const c of d.commands) {
     const ta = el("textarea", { value: JSON.stringify(sample(c.payload), null, 1) });
     const out = el("pre");
     const btn = el("button", { textContent: "call" });
-    btn.onclick = async () => { try { const r = await fetch("/api/call/" + c.name, { method: "POST", body: ta.value }); show(out, await r.json()); } catch (e) { show(out, String(e)); } };
+    btn.onclick = async () => { try { const r = await fetch("/api/call/" + c.name, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: ta.value }); show(out, await r.json()); } catch (e) { show(out, String(e)); } };
     $("#commands").append(el("div", { className: "card" }, el("div", {}, el("b", { textContent: c.name }), ` payload ${c.payload}` + (c.reply ? `, reply ${c.reply}` : ", accepted") + (c.role ? `, role ${c.role}` : "")), ta, btn, out));
   }
   for (const r of d.reads) {
     const out = el("pre");
     const btn = el("button", { textContent: "read" });
-    btn.onclick = async () => { try { const x = await fetch("/api/read/" + r.name); show(out, await x.json()); } catch (e) { show(out, String(e)); } };
+    btn.onclick = async () => { try { const x = await fetch("/api/read/" + r.name, { headers: headers() }); show(out, await x.json()); } catch (e) { show(out, String(e)); } };
     $("#reads").append(el("div", { className: "card" }, el("div", {}, el("b", { textContent: r.name }), ` ${r.type} (a snapshot with as_of)` + (r.role ? `, role ${r.role}` : "")), btn, out));
   }
   for (const s of d.streams) {
@@ -52,7 +55,7 @@ async function main() {
     let es = null;
     const btn = el("button", { textContent: "watch" });
     const stop = el("button", { textContent: "stop", className: "quiet" });
-    btn.onclick = () => { if (es) es.close(); out.textContent = ""; es = new EventSource("/api/watch/" + s.name); es.onmessage = (m) => { out.textContent += m.data + "\n"; out.scrollTop = out.scrollHeight; }; es.onerror = () => { out.textContent += "(closed)\n"; es.close(); }; };
+    btn.onclick = () => { if (es) es.close(); out.textContent = ""; es = new EventSource("/api/watch/" + s.name + "?token=" + TOKEN); es.onmessage = (m) => { out.textContent += m.data + "\n"; out.scrollTop = out.scrollHeight; }; es.onerror = () => { out.textContent += "(closed)\n"; es.close(); }; };
     stop.onclick = () => { if (es) es.close(); };
     $("#streams").append(el("div", { className: "card" }, el("div", {}, el("b", { textContent: s.name }), ` ${s.payload}` + (s.role ? `, role ${s.role}` : "")), btn, stop, out));
   }

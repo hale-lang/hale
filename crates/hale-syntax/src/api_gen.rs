@@ -58,11 +58,15 @@ pub struct ApiSubscriber {
 
 #[derive(Debug, Clone)]
 pub struct ApiCommand {
-    /// The topic as the program spells it (`Verdict`, `lib::Verdict`);
+    /// The topic as the author spells it (`Verdict`, `lib::Verdict`);
     /// the name a caller writes in `"call"`.
     pub name: String,
+    /// The topic's name in the program (mangled for an imported one):
+    /// what synthesized source refers to.
+    pub internal: String,
     /// The topic's wire subject, as the description reports it.
     pub subject: String,
+    /// The payload type's name in the program.
     pub payload: String,
     /// `keyed_by` field and its type, when the topic is keyed.
     pub key: Option<(String, TypeExpr)>,
@@ -85,6 +89,7 @@ pub struct ApiRead {
 #[derive(Debug, Clone)]
 pub struct ApiStream {
     pub name: String,
+    pub internal: String,
     pub subject: String,
     pub payload: String,
 }
@@ -131,6 +136,8 @@ pub struct ApiSurface {
     pub json_types: Vec<String>,
     /// The field schema of every type in `json_types`, sorted by name.
     pub schemas: Vec<ApiSchema>,
+    /// Program name -> author spelling, for imported types.
+    pub type_display: BTreeMap<String, String>,
 }
 
 // ---- walking -------------------------------------------------------
@@ -252,6 +259,7 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     let mut topics: BTreeMap<String, &TopicDecl> = BTreeMap::new();
     let mut loci: BTreeMap<String, &LocusDecl> = BTreeMap::new();
     let mut types: BTreeMap<String, &[StructField]> = BTreeMap::new();
+    let mut type_display: BTreeMap<String, String> = BTreeMap::new();
     for p in programs {
         walk_items(&p.items, &mut |item| match item {
             TopDecl::Locus(l) => {
@@ -272,6 +280,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
             TopDecl::Type(t) => {
                 if let TypeDeclBody::Struct(fs) = &t.body {
                     types.insert(t.name.name.clone(), fs.as_slice());
+                }
+                if let Some(d) = &t.display {
+                    type_display.insert(t.name.name.clone(), d.clone());
                 }
             }
             _ => {}
@@ -415,7 +426,8 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         json_types.extend(seen);
         let subject = t.subject.clone().unwrap_or_else(|| name.clone());
         commands.push(ApiCommand {
-            name,
+            name: t.display.clone().unwrap_or_else(|| name.clone()),
+            internal: name,
             subject,
             payload,
             key,
@@ -447,7 +459,12 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         }
         json_types.extend(seen);
         let subject = t.subject.clone().unwrap_or_else(|| name.clone());
-        streams.push(ApiStream { name, subject, payload });
+        streams.push(ApiStream {
+            name: t.display.clone().unwrap_or_else(|| name.clone()),
+            internal: name,
+            subject,
+            payload,
+        });
     }
 
     // Reads: the main locus's exposes, and those of a default child
@@ -593,6 +610,7 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         ambiguous_replies: ambiguous,
         json_types,
         schemas,
+        type_display,
     })
 }
 
@@ -637,6 +655,15 @@ fn json_kind(kind: &str) -> &'static str {
     }
 }
 
+/// A type's author spelling for the description.
+fn shown(surface: &ApiSurface, internal: &str) -> String {
+    surface
+        .type_display
+        .get(internal)
+        .cloned()
+        .unwrap_or_else(|| internal.to_string())
+}
+
 /// The description, as compact JSON.
 pub fn describe(surface: &ApiSurface) -> String {
     // The socket path is deployment (I2), not form: a description
@@ -657,14 +684,14 @@ pub fn describe(surface: &ApiSurface) -> String {
             b.push(',');
         }
         let reply = match c.replier.and_then(|i| c.subscribers[i].ret.as_ref()) {
-            Some(r) => json_str(&json_type_name(r)),
+            Some(r) => json_str(&shown(surface, &json_type_name(r))),
             None => "null".to_string(),
         };
         b.push_str(&format!(
             "{{\"name\":{},\"subject\":{},\"payload\":{},\"reply\":{},\"keyed_by\":{},\"role\":null}}",
             json_str(&c.name),
             json_str(&c.subject),
-            json_str(&c.payload),
+            json_str(&shown(surface, &c.payload)),
             reply,
             match &c.key {
                 Some((f, _)) => json_str(f),
@@ -682,7 +709,7 @@ pub fn describe(surface: &ApiSurface) -> String {
         b.push_str(&format!(
             "{{\"name\":{},\"type\":{},\"snapshot\":true,\"role\":null}}",
             json_str(&r.name),
-            json_str(&json_type_name(&r.ty))
+            json_str(&shown(surface, &json_type_name(&r.ty)))
         ));
     }
     b.push_str("],\"streams\":[");
@@ -696,7 +723,7 @@ pub fn describe(surface: &ApiSurface) -> String {
             "{{\"name\":{},\"subject\":{},\"payload\":{},\"role\":null}}",
             json_str(&st.name),
             json_str(&st.subject),
-            json_str(&st.payload)
+            json_str(&shown(surface, &st.payload))
         ));
     }
     b.push_str("],\"schemas\":{");
@@ -704,13 +731,13 @@ pub fn describe(surface: &ApiSurface) -> String {
         if i > 0 {
             b.push(',');
         }
-        b.push_str(&format!("{}:{{\"type\":\"object\",\"properties\":{{", json_str(&sc.name)));
+        b.push_str(&format!("{}:{{\"type\":\"object\",\"properties\":{{", json_str(&shown(surface, &sc.name))));
         for (j, f) in sc.fields.iter().enumerate() {
             if j > 0 {
                 b.push(',');
             }
             if f.nested {
-                b.push_str(&format!("{}:{{\"$ref\":\"#/schemas/{}\"}}", json_str(&f.key), f.kind));
+                b.push_str(&format!("{}:{{\"$ref\":\"#/schemas/{}\"}}", json_str(&f.key), shown(surface, &f.kind)));
             } else {
                 b.push_str(&format!("{}:{{\"type\":\"{}\"}}", json_str(&f.key), json_kind(&f.kind)));
             }
@@ -915,8 +942,7 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "" };
             return;
         }
-        let d = std::json::string_field(t, "describe");
-        if d.kind == "bool" {
+        if std::json::find_field_raw(t, "describe") == "true" {
             __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "" };
             return;
         }
@@ -989,7 +1015,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     for s in &surface.streams {
         b.push_str(&format!(
             "        subscribe {} as __api_stream_{};\n",
-            s.name,
+            s.internal,
             mangle(&s.name)
         ));
     }

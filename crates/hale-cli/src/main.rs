@@ -6388,14 +6388,11 @@ fn run_check_impl_labelled(
             return 1;
         }
         let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+        // The bytes the binding serves, never re-serialized (a `Value`
+        // round trip would sort the keys; spec/model.md promises the
+        // two documents agree byte for byte).
         let text = match hale_syntax::api_gen::api_surface(&programs) {
-            Some(surface) => {
-                let compact = hale_syntax::api_gen::describe(&surface);
-                match serde_json::from_str::<serde_json::Value>(&compact) {
-                    Ok(v) => serde_json::to_string_pretty(&v).unwrap_or(compact) + "\n",
-                    Err(_) => compact + "\n",
-                }
-            }
+            Some(surface) => hale_syntax::api_gen::describe(&surface) + "\n",
             None => String::new(),
         };
         match &dump_api_to {
