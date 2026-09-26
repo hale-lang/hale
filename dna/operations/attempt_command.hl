@@ -63,6 +63,7 @@ type AttemptCandidates {
     of_kind: Int = 0; // outstanding attempts of the leg's kind
     awaiting: Int = 0; // ... whose outcome is handed back and awaits the owner
     lacking: Int = 0; // ... whose `requires` the leg's capabilities do not cover
+    effected: Int = 0; // ... that do not admit the leg's effect class
     classed: Int = 0; // ... of a data class the leg may not see
     owned: Int = 0; // ... under an owner the leg does not work for
 }
@@ -185,7 +186,7 @@ locus AttemptCommandCodec {
         if self.claim(c.operation) {
             return c.target_kind == "dna.work" && c.target_id == context.application_id && common.bounded(c.record_head, 256, true, false) && c.subject_digest == c.record_head
                 && common.bounded(c.performer_kind, 64, true, false) && !std::str::contains(c.performer_kind, " ") && holder_ok(c.performer)
-                && attempt_words_ok(c.capabilities, 2048) && self.classes_ok(c.data_classes) && attempt_words_ok(c.organizations, 2048)
+                && dna::effect_class_ok(c.effect_class) && attempt_words_ok(c.capabilities, 2048) && self.classes_ok(c.data_classes) && attempt_words_ok(c.organizations, 2048)
                 && c.ttl >= 1 && c.ttl <= ATTEMPT_TTL_MAX
                 && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == ""
                 && c.hat_digest == "" && c.hat_head == "" && c.hat_watermark == -1 && c.prompt_digest == "" && c.renderer == "";
@@ -195,7 +196,7 @@ locus AttemptCommandCodec {
             // was met on when one (`attempt_id`), the text (`result`)
             return c.target_kind == "dna.friction" && c.target_id == context.application_id && common.bounded(c.record_head, 256, true, false) && c.subject_digest == c.record_head
                 && holder_ok(c.performer) && std::str::index_of(c.performer, "#") < 0 && common.bounded(c.attempt_id, 256, false, false) && common.bounded(c.result, 8192, true, true)
-                && c.performer_kind == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0
+                && c.performer_kind == "" && c.effect_class == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0
                 && c.holder == "" && c.token == 0 && c.disposition == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
         }
         let rendered = c.hat_digest == "" && c.prompt_digest == "" && c.renderer == "";
@@ -204,13 +205,14 @@ locus AttemptCommandCodec {
             && holder_ok(c.holder) && c.token >= 0 && c.subject_digest == self.lease_digest(c.holder, c.token)
             && c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && (rendered || self.outcome(c.operation));
         if self.renew(c.operation) {
-            return lease && c.ttl >= 1 && c.ttl <= ATTEMPT_TTL_MAX && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
+            return lease && c.effect_class == "" && c.ttl >= 1 && c.ttl <= ATTEMPT_TTL_MAX && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
         }
         if self.releasing(c.operation) {
             // `narrative` says why it is given back
-            return lease && c.ttl == 0 && common.bounded(c.narrative, 2048, false, true) && c.disposition == "" && c.result == "" && c.result_ref == "" && c.evidence == "" && c.receipts == "";
+            return lease && c.effect_class == "" && c.ttl == 0 && common.bounded(c.narrative, 2048, false, true) && c.disposition == "" && c.result == "" && c.result_ref == "" && c.evidence == "" && c.receipts == "";
         }
-        return lease && c.ttl == 0
+        // the outcome names its performer's effect class: what a failed settle may have left behind
+        return lease && c.ttl == 0 && dna::effect_class_ok(c.effect_class)
             && self.disposition_ok(c.disposition) && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
             && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts) && self.hat_ok(c);
     }
@@ -223,7 +225,7 @@ locus AttemptCommandCodec {
         self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
         self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id);
         if self.claim(c.operation) {
-            self.field(b, "record_head", c.record_head); self.field(b, "performer_kind", c.performer_kind); self.field(b, "performer", c.performer);
+            self.field(b, "record_head", c.record_head); self.field(b, "performer_kind", c.performer_kind); self.field(b, "performer", c.performer); self.field(b, "effect_class", c.effect_class);
             self.field(b, "capabilities", c.capabilities); self.field(b, "data_classes", c.data_classes); self.field(b, "organizations", c.organizations);
             b.append_str(",\"ttl\":"); b.append_str(to_string(c.ttl));
         } else if self.friction(c.operation) {
@@ -234,6 +236,7 @@ locus AttemptCommandCodec {
             if self.renew(c.operation) { b.append_str(",\"ttl\":"); b.append_str(to_string(c.ttl)); }
             else if self.releasing(c.operation) { self.field(b, "why", c.narrative); }
             else {
+                self.field(b, "effect_class", c.effect_class);
                 self.field(b, "disposition", c.disposition); self.field(b, "result", c.result); self.field(b, "result_ref", c.result_ref); self.field(b, "narrative", c.narrative);
                 self.field(b, "evidence", c.evidence); self.field(b, "receipts", c.receipts);
                 self.field(b, "hat_digest", c.hat_digest); self.field(b, "hat_head", c.hat_head);
@@ -254,7 +257,7 @@ locus AttemptCommandCodec {
             operation_version: common.string(document, "operation_version"), position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"), target_id: common.string(document, "target_id") };
         if self.claim(operation) {
             c.record_head = common.string(document, "record_head"); c.subject_digest = c.record_head;
-            c.performer_kind = common.string(document, "performer_kind"); c.performer = common.string(document, "performer");
+            c.performer_kind = common.string(document, "performer_kind"); c.performer = common.string(document, "performer"); c.effect_class = common.string(document, "effect_class");
             c.capabilities = common.string(document, "capabilities"); c.data_classes = common.string(document, "data_classes"); c.organizations = common.string(document, "organizations");
             c.ttl = std::json::find_int_field(document, "ttl");
         } else if self.friction(operation) {
@@ -266,6 +269,7 @@ locus AttemptCommandCodec {
             if self.renew(operation) { c.ttl = std::json::find_int_field(document, "ttl"); }
             else if self.releasing(operation) { c.narrative = common.string(document, "why"); }
             else {
+                c.effect_class = common.string(document, "effect_class");
                 c.disposition = common.string(document, "disposition"); c.result = common.string(document, "result"); c.result_ref = common.string(document, "result_ref"); c.narrative = common.string(document, "narrative");
                 c.evidence = common.string(document, "evidence"); c.receipts = common.string(document, "receipts");
                 c.hat_digest = common.string(document, "hat_digest"); c.hat_head = common.string(document, "hat_head"); c.hat_watermark = std::json::find_int_field(document, "hat_watermark");
@@ -363,6 +367,7 @@ locus AttemptCommandCodec {
         if !self.has_row(j, "effect.requested", "attempt:" + a.attempt_id) || self.has_row(j, "attempt.outcome", a.attempt_id) { return "settled"; }
         if self.outcome_awaiting(j, a.attempt_id) { return "awaiting"; }
         if !attempt_words_within(a.request.requires, c.capabilities) { return "capabilities"; }
+        if !dna::word_in(c.effect_class, dna::hat_effects_of(a.request.requires)) { return "effect"; }
         if !dna::word_in(a.request.data_class, c.data_classes) { return "class"; }
         let owner = dna::id_owner(a.task_id);
         if len(c.organizations) > 0 && !dna::word_in(if len(owner) == 0 { "-" } else { owner }, c.organizations) { return "organization"; }
@@ -415,6 +420,7 @@ locus AttemptCommandCodec {
                     if why != "kind" && why != "settled" { out.of_kind = out.of_kind + 1; }
                     if why == "awaiting" { out.awaiting = out.awaiting + 1; }
                     if why == "capabilities" { out.lacking = out.lacking + 1; }
+                    if why == "effect" { out.effected = out.effected + 1; }
                     if why == "class" { out.classed = out.classed + 1; }
                     if why == "organization" { out.owned = out.owned + 1; }
                 }
@@ -430,6 +436,7 @@ locus AttemptCommandCodec {
         why = why + ": " + to_string(found.of_kind) + " of that kind outstanding";
         if found.awaiting > 0 { why = why + ", " + to_string(found.awaiting) + " with an outcome handed back that awaits the owner"; }
         if found.lacking > 0 { why = why + ", " + to_string(found.lacking) + " needing a capability the leg lacks"; }
+        if found.effected > 0 { why = why + ", " + to_string(found.effected) + " not admitting a performer of effect class `" + c.effect_class + "`"; }
         if found.classed > 0 { why = why + ", " + to_string(found.classed) + " of a data class the leg may not see (it named " + (if len(c.data_classes) > 0 { "`" + c.data_classes + "`" } else { "none" }) + ")"; }
         if found.owned > 0 { why = why + ", " + to_string(found.owned) + " under an owner the leg does not work for (it named `" + c.organizations + "`)"; }
         return why;
@@ -488,6 +495,7 @@ locus AttemptCommandCodec {
         let common = GovernanceCommandCodec { };
         if !self.valid(context, c) || !self.outcome(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) { return ""; }
         let b = std::json::Builder { }; b.begin_object();
+        b.string_field("effect_class", c.effect_class);
         b.string_field("disposition", c.disposition); b.string_field("result", c.result); b.string_field("result_ref", c.result_ref); b.string_field("narrative", c.narrative);
         b.string_field("evidence_ref", evidence_ref); b.string_field("holder", c.holder); b.int_field("token", c.token); b.string_field("calls", c.evidence);
         b.string_field("request", common.identity(context, c.request_id));

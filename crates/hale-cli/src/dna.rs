@@ -1711,16 +1711,19 @@ fn work_hl(found: &Discovery) -> String {
     let model = if configured {
         "// The model leg: the catalog's agent router behind the performer
 // interface, out of process, per task. A rate-limited call is backed
-// off inside the attempt and every wait is recorded as evidence.
+// off inside the attempt and every wait is recorded as evidence. Its
+// effect class: `effect_free` for a backend that answers (a lost reply
+// may be retried), `uncertain` for one that works in place with its
+// own tools (a lost reply is never retried by a program).
 fn model() -> legs::ModelPerformer {
-    return legs::ModelPerformer { router: agent_models() };
+    return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" };
 }"
     } else {
         "// No backend was configured when this file was generated, so the
 // model takes nothing and agent work is a person's. With a backend in
 // dna/org/models.hl, put the catalog behind the leg:
 //
-// fn model() -> legs::ModelPerformer { return legs::ModelPerformer { router: agent_models() }; }
+// fn model() -> legs::ModelPerformer { return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" }; }
 fn model() -> legs::NoModel {
     return legs::NoModel { };
 }"
@@ -1735,15 +1738,21 @@ fn model() -> legs::NoModel {
 // performer: a person (the brief is rendered as text and the outcome is
 // theirs to submit), a deterministic one (a program of yours: it wins
 // for the work kinds it takes), and a model (the catalog's router, run
-// as a leg). `hale check` validates all of it.
+// as a leg). Every performer declares an effect class — `effect_free`,
+// `idempotent` or `uncertain`: what a settle that failed may have left
+// behind, and whether the loop may run it again (an uncertain one is
+// never retried by a program). `hale check` validates all of it; a
+// performer that declares no class is refused when the leg starts.
 
 import "vendor/dna/legs" as legs;
 
 // A deterministic performer, when this project has one: give it the
 // work kinds it takes (`agent`, `service`, `software`, …) and it wins
-// for them. `legs::NoDeterministic { }` takes nothing. A person's leg
-// is `hale dna work run` (`--performer person` when the model takes
-// the kind); a worker is `hale dna work loop --parallel N`.
+// for them, declaring its effect class (`legs::FixedAnswer { kinds:
+// "agent", effect: "effect_free", result: "…" }` is the smallest);
+// `legs::NoDeterministic { }` takes nothing. A person's leg is `hale dna
+// work run` (`--performer person` when the model takes the kind); a
+// worker is `hale dna work loop --parallel N`.
 fn deterministic() -> legs::NoDeterministic {
     return legs::NoDeterministic { };
 }
@@ -1751,7 +1760,8 @@ fn deterministic() -> legs::NoDeterministic {
 @@MODEL@@
 
 fn performers() -> legs::PerformerCatalog {
-    return legs::PerformerCatalog { person: legs::Person { }, deterministic: deterministic(), model: model() };
+    // a person answers what they are asked; asked again, they answer again
+    return legs::PerformerCatalog { person: legs::Person { effect: "idempotent" }, deterministic: deterministic(), model: model() };
 }
 
 // The hands a performer may use: git in scratch, the forge through

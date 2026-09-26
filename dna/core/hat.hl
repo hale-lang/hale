@@ -34,6 +34,7 @@ type Hat {
     output_contract: String = "";
     data_class: String = "internal";
     requires: String = "";
+    effects: String = ""; // the effect classes the Work admits of its performer, space-separated (`hat_effects_of`)
     cost_ceiling: Int = 0;
     tool_grant: String = "";
     knowledge_bindings: String = "";
@@ -49,6 +50,24 @@ type Hat {
 // The kind a Work's request selects before an attempt is admitted, as the
 // engine selects it (`kinds_of`, capability-first): a person's, an edit,
 // else by what it requires.
+// The effect classes a performer declares (GH #946, the voice split's
+// review): what a failed settle may have left behind. `effect_free`
+// answered and touched nothing; `idempotent` may be run again to the
+// same end; `uncertain` may have acted once already (an agent's seat
+// with tools), so a lost reply is never retried by a program — the
+// attempt stays unresolved until evidence or a person decides.
+const EFFECT_CLASSES: String = "effect_free idempotent uncertain";
+fn effect_class_ok(c: String) -> Bool { return word_in(c, EFFECT_CLASSES); }
+// The classes a Work admits of its performer, by what it requires: a
+// judgment or an analysis is answered, never acted on, so an uncertain
+// performer is not given one; an edit changes source, so an effect-free
+// performer cannot do it; a person's job, and anything else, admits any.
+fn hat_effects_of(requires: String) -> String {
+    if std::str::contains(requires, "judgment") || std::str::contains(requires, "analysis") { return "effect_free idempotent"; }
+    if std::str::contains(requires, "edit") { return "idempotent uncertain"; }
+    return EFFECT_CLASSES;
+}
+
 fn hat_kind_of(requires: String) -> String {
     if std::str::contains(requires, "edit") { return "edit"; }
     if std::str::contains(requires, "human") || std::str::contains(requires, "person") { return "human"; }
@@ -125,6 +144,7 @@ fn hat_body(h: Hat) -> String {
     b.string_field("output_contract", h.output_contract);
     b.string_field("data_class", h.data_class);
     b.string_field("requires", h.requires);
+    b.string_field("effects", h.effects);
     b.string_field("cost_ceiling", to_string(h.cost_ceiling));
     b.string_field("tool_grant", h.tool_grant);
     b.string_field("knowledge_bindings", h.knowledge_bindings);

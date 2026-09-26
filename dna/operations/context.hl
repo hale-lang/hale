@@ -107,7 +107,7 @@ locus HatReader {
             ok: true, work_id: work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: kind,
             position_id: position, charter: dna::hat_node_text(self.j, position),
             objective: node.objective, target: node.target, output_contract: node.output_contract, data_class: node.data_class,
-            requires: node.requires, cost_ceiling: node.cost_ceiling, tool_grant: dna::hat_tool_grant(kind), knowledge_bindings: node.knowledge_bindings,
+            requires: node.requires, effects: dna::hat_effects_of(node.requires), cost_ceiling: node.cost_ceiling, tool_grant: dna::hat_tool_grant(kind), knowledge_bindings: node.knowledge_bindings,
             history: self.history_json(work_id), head: self.j.head()
         };
         let ready = self.knowledge.ready();

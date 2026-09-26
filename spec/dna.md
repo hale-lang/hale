@@ -1754,7 +1754,27 @@ memory is named to it.
   the render alone (the hat is structure), and the hat's digest is the
   context digest on every row. `--performer` names the performer
   instead of the catalog's choice; a performer never answers a kind it
-  does not take, forced or not. `loop --parallel N` is a worker: N
+  does not take, forced or not. Every performer declares an **effect
+  class** — `effect_free` (answered, touched nothing), `idempotent`
+  (may be run again to the same end) or `uncertain` (an agent's seat
+  with tools: may have acted once already) — with no default: a
+  performer declaring none is refused when the leg starts. The class
+  rides on the claim (`effect_class`), where the head admits an attempt
+  only if its Work's requirement allows the class — a judgment or an
+  analysis admits `effect_free` and `idempotent`, an edit `idempotent`
+  and `uncertain`, anything else all three; the hat says so in
+  `effects` — and on the outcome, where it is evidence
+  (`effect_class` on `attempt.outcome_requested`). A settle that fails
+  (the outcome read back neither settled nor requested, or unreadable)
+  on an `effect_free` or `idempotent` performer is `unsettled` and the
+  loop runs the child again; on an `uncertain` performer the leg files
+  friction naming the attempt, the request id and the lease, keeps the
+  lease, answers `unresolved`, and the loop stops that slot: nothing is
+  retried by a program until evidence or a person decides. The model
+  leg treats a lost reply (the call may have been made) the same way:
+  `unresolved` behind an `uncertain` performer, never retried or failed
+  over; a `failed` outcome behind the other two. A rate-limited call was
+  never made, so its backoff holds for every class. `loop --parallel N` is a worker: N
   supervised child processes, each `run` as its own holder
   `position:<name>#<n>` (two workers of one position never share a
   lease), each answer one JSON line as the child ends, started again

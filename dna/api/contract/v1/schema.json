@@ -11628,6 +11628,13 @@
               "maxLength": 256,
               "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
+            "effect_class": {
+              "enum": [
+                "effect_free",
+                "idempotent",
+                "uncertain"
+              ]
+            },
             "capabilities": {
               "type": "array",
               "maxItems": 64,
@@ -11667,6 +11674,7 @@
           "required": [
             "performer_kind",
             "performer",
+            "effect_class",
             "capabilities",
             "data_classes",
             "organizations",
@@ -11733,6 +11741,13 @@
         "arguments": {
           "type": "object",
           "properties": {
+            "effect_class": {
+              "enum": [
+                "effect_free",
+                "idempotent",
+                "uncertain"
+              ]
+            },
             "disposition": {
               "enum": [
                 "done",
@@ -11796,6 +11811,7 @@
             }
           },
           "required": [
+            "effect_class",
             "disposition",
             "result",
             "result_ref",
@@ -12838,6 +12854,9 @@
         "requires": {
           "type": "string"
         },
+        "effects": {
+          "type": "string"
+        },
         "cost_ceiling": {
           "$ref": "#/$defs/DefinitionDecimal"
         },
@@ -12892,6 +12911,7 @@
         "output_contract",
         "data_class",
         "requires",
+        "effects",
         "cost_ceiling",
         "tool_grant",
         "knowledge_bindings",

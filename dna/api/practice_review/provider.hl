@@ -92,7 +92,7 @@ locus PracticeReviewCommands {
             record_head: command.record_head, source_text: command.source_text,
             expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
             outcome: command.outcome, to: command.to,
-            performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
+            performer_kind: command.performer_kind, performer: command.performer, effect_class: command.effect_class, capabilities: command.capabilities, data_classes: command.data_classes,
             organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
             disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
             evidence: command.evidence, receipts: command.receipts,

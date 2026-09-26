@@ -40,6 +40,7 @@ type CommandRequest {
     // A leg's claim and outcome (GH #946): typed copies of the wire.
     performer_kind: String = "";
     performer: String = "";
+    effect_class: String = "";
     capabilities: String = "";
     data_classes: String = "";
     organizations: String = "";
@@ -261,11 +262,11 @@ locus CommandWire {
         let give_back = operation == "dna.attempt.release";
         let friction = operation == "dna.friction.file";
         if claim {
-            if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "performer_kind performer capabilities data_classes organizations ttl", 6) { return CommandRequest { }; }
+            if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "performer_kind performer effect_class capabilities data_classes organizations ttl", 7) { return CommandRequest { }; }
         } else if submit {
             // the hat the leg wore rides on the outcome when it wore one: the
             // five fields together, or none of them
-            if !self.fields(conditions, "holder token principal", 3) || !(self.fields(arguments, "disposition result result_ref narrative evidence receipts", 6) || self.fields(arguments, "disposition result result_ref narrative evidence receipts hat_digest hat_head hat_watermark prompt_digest renderer", 11)) { return CommandRequest { }; }
+            if !self.fields(conditions, "holder token principal", 3) || !(self.fields(arguments, "effect_class disposition result result_ref narrative evidence receipts", 7) || self.fields(arguments, "effect_class disposition result result_ref narrative evidence receipts hat_digest hat_head hat_watermark prompt_digest renderer", 12)) { return CommandRequest { }; }
         } else if renew {
             if !self.fields(conditions, "holder token principal", 3) || !self.fields(arguments, "ttl", 1) { return CommandRequest { }; }
         } else if give_back {
@@ -323,17 +324,18 @@ locus CommandWire {
                 }
             } else if claim {
                 command.record_head = digest;
-                command.performer_kind = self.text(arguments, "performer_kind"); command.performer = self.text(arguments, "performer");
+                command.performer_kind = self.text(arguments, "performer_kind"); command.performer = self.text(arguments, "performer"); command.effect_class = self.text(arguments, "effect_class");
                 command.capabilities = self.words(self.raw(arguments, "capabilities")); command.data_classes = self.words(self.raw(arguments, "data_classes")); command.organizations = self.words(self.raw(arguments, "organizations"));
                 let ttl_raw = std::str::trim(self.raw(arguments, "ttl"));
-                if !std::str::can_parse_int(ttl_raw) || !self.is_text(self.raw(arguments, "performer_kind")) || !self.is_text(self.raw(arguments, "performer")) { return CommandRequest { }; }
+                if !std::str::can_parse_int(ttl_raw) || !self.is_text(self.raw(arguments, "performer_kind")) || !self.is_text(self.raw(arguments, "performer")) || !self.is_text(self.raw(arguments, "effect_class")) { return CommandRequest { }; }
                 command.ttl = std::str::parse_int(ttl_raw) or 0;
                 if target_id != application_id || command.capabilities == "!" || command.data_classes == "!" || command.organizations == "!" { return CommandRequest { }; }
             } else {
                 command.attempt_id = target_id; command.holder = self.text(conditions, "holder"); command.token = token;
+                command.effect_class = self.text(arguments, "effect_class");
                 command.disposition = self.text(arguments, "disposition"); command.result = self.text(arguments, "result"); command.result_ref = self.text(arguments, "result_ref"); command.narrative = self.text(arguments, "narrative");
                 let evidence = std::str::trim(self.raw(arguments, "evidence")); let receipts = std::str::trim(self.raw(arguments, "receipts"));
-                if !std::str::starts_with(evidence, "[") || !std::str::starts_with(receipts, "[") || !self.is_text(self.raw(conditions, "holder")) || !self.is_text(self.raw(arguments, "disposition"))
+                if !std::str::starts_with(evidence, "[") || !std::str::starts_with(receipts, "[") || !self.is_text(self.raw(conditions, "holder")) || !self.is_text(self.raw(arguments, "disposition")) || !self.is_text(self.raw(arguments, "effect_class"))
                     || !self.is_text(self.raw(arguments, "result")) || !self.is_text(self.raw(arguments, "result_ref")) || !self.is_text(self.raw(arguments, "narrative")) { return CommandRequest { }; }
                 command.evidence = if evidence == "[]" { "" } else { evidence }; command.receipts = if receipts == "[]" { "" } else { receipts };
                 if len(self.raw(arguments, "hat_digest")) > 0 {
@@ -704,7 +706,7 @@ fn attempt_native(command: CommandRequest) -> ops::GovernanceCommand {
         request_id: command.request_id, operation: command.operation, operation_version: command.operation_version,
         application_id: command.application_id, position_id: command.position_id, target_kind: command.target_kind, target_id: command.target_id,
         subject_digest: command.subject_digest, record_head: command.record_head,
-        performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
+        performer_kind: command.performer_kind, performer: command.performer, effect_class: command.effect_class, capabilities: command.capabilities, data_classes: command.data_classes,
         organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
         disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
         evidence: command.evidence, receipts: command.receipts,

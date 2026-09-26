@@ -30,7 +30,7 @@ locus RecoveryCases {
     fn principal() -> String { return "{\"mode\": \"local\", \"name\": \"riley\"}"; }
     fn claim_body(id: String, head: String, performer: String) -> String {
         let a = std::json::Builder { }; a.begin_object();
-        a.string_field("performer_kind", "agent"); a.string_field("performer", performer);
+        a.string_field("performer_kind", "agent"); a.string_field("performer", performer); a.string_field("effect_class", "idempotent");
         a.begin_array_field("capabilities"); a.string_value("judgment"); a.end_array();
         a.begin_array_field("data_classes"); a.string_value("internal"); a.end_array();
         a.begin_array_field("organizations"); a.end_array();
@@ -39,7 +39,7 @@ locus RecoveryCases {
     }
     fn outcome_body(id: String, attempt: String, token: Int, hat: String) -> String {
         let a = std::json::Builder { }; a.begin_object();
-        a.string_field("disposition", "done"); a.string_field("result", "assessment: ship it"); a.string_field("result_ref", "receipt:assessment-1"); a.string_field("narrative", "one call on the deep tier");
+        a.string_field("effect_class", "effect_free"); a.string_field("disposition", "done"); a.string_field("result", "assessment: ship it"); a.string_field("result_ref", "receipt:assessment-1"); a.string_field("narrative", "one call on the deep tier");
         a.begin_array_field("evidence"); a.begin_object(); a.string_field("backend", "deep"); a.string_field("requested_model", "deep-1"); a.int_field("input_tokens", 12); a.int_field("output_tokens", 3); a.int_field("cost_micros", 5); a.end_object(); a.end_array();
         a.begin_array_field("receipts"); a.end_array();
         if len(hat) > 0 { a.string_field("hat_digest", hat); a.string_field("hat_head", self.f.journal.head()); a.int_field("hat_watermark", -1); a.string_field("prompt_digest", dna::digest_of("the prompt as sent")); a.string_field("renderer", "legs-render/1"); }
