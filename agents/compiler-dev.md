@@ -330,8 +330,10 @@ run targeted tests locally and let the PR run the rest.
   `docs/src/SUMMARY.md`) in the same change. `hale` blocks there must
   parse (`crates/hale-syntax/tests/docs_snippets.rs`); `spec/styleguide.md`
   snippets must typecheck (`crates/hale-types/tests/styleguide_snippets.rs`).
-- User-visible changes get a `## Unreleased` entry in `CHANGELOG.md`;
-  a closed deferred question is resolved in `notes/open-questions.md`.
+- User-visible changes get a CHANGELOG fragment,
+  `unreleased/<pr-number>.md`, added once the PR has a number
+  (CLAUDE.md § "CHANGELOG entries are fragments"); a closed deferred
+  question is resolved in `notes/open-questions.md`.
 
 ## Performance
 
