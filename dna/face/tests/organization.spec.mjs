@@ -226,8 +226,8 @@ test('Organization mobile detail, back and browser history preserve the selected
 test.describe('generated DNA project', () => {
   test.use({ organization: 'generated' });
   // The case checks the generated project's vendored DNA twice through the
-  // API: under half a minute on a fast machine, a few on a loaded CI runner.
-  // Budget the checks, not a guess about the runner.
+  // API: about 1.2 minutes on a fast machine with a warm cache, several on a
+  // loaded CI runner. Budget the checks, not a guess about the runner.
   test.setTimeout(600_000);
   test('ignored vendored DNA is inspected without modification and dependency changes invalidate the cache', async ({ page, service }) => {
     const original = await service.projectState();

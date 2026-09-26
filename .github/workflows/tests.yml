@@ -676,15 +676,6 @@ jobs:
   # jobs, on the same build the dna partitions make, so their minutes
   # never sit on the critical path of a partition that is already the
   # longest.
-  #
-  # Each job builds the API and the head for itself rather than one
-  # handing its builds to the other. A hand-off (an artifact, or a cache
-  # entry saved mid-run) is a `needs` edge, and behind it the consumer
-  # would wait out the producer's setup, compiler build and seed builds
-  # before starting its own: minutes on the critical path, to save
-  # builds that cost no wall time once they run beside the warm
-  # (scripts/warm-and-build.sh). Across runs the browser shards do share
-  # theirs, through the builds cache.
   face-api:
     name: face (DNA API + head)
     needs: scope
@@ -761,29 +752,18 @@ jobs:
           key: dna-toolchain-${{ steps.compiler.outputs.toolchain }}
           restore-keys: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
 
-      - name: Warm the DNA toolchain cache and build the DNA API and the head
+      - name: Warm the DNA toolchain cache
         # The head fixtures create fresh projects with hale dna new under
         # their own budgets; the first host build of this binary is paid
         # once here, not inside one of them. Nothing here runs the
         # observer, so its build is skipped.
-        #
-        # The three seeds the tests below spawn are checked and built
-        # (native, as a user builds them) beside the warm rather than
-        # after it: each `hale build` is one single-threaded process, and
-        # in turn the three took 12 of this job's 26 minutes on a
-        # four-core runner (2026-09-26). The script waits for every build
-        # and prints each one's output as its own group.
         env:
           HALE_DNA_DISCOVER: "off"
           HALE_WARM_SKIP_IRIS: "1"
-        run: |
-          scripts/warm-and-build.sh ./target/release/hale --check \
-            dna/api dna/api/practice_review dna/api/project_service
+        run: scripts/warm-dna-cache.sh ./target/release/hale
 
       # Only when neither entry was there (`cache-matched-key` is empty on
-      # a miss); after the warm, as in the cli job. The builds beside the
-      # warm add their runtime objects to the entry: content-addressed by
-      # source and flags, so a later build only finds them ready.
+      # a miss); after the warm, as in the cli job.
       - &face-toolchain-save
         name: Save the DNA toolchain cache
         if: steps.toolchain-cache.outputs.cache-matched-key == ''
@@ -802,8 +782,12 @@ jobs:
           export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
           export HALE_BIN="$PWD/target/release/hale"
           ./target/release/hale test dna/api/contract/v1/tests
-          # dna/api, practice_review and project_service were checked and
-          # built beside the warm, above.
+          ./target/release/hale check dna/api
+          ./target/release/hale build dna/api
+          ./target/release/hale check dna/api/practice_review
+          ./target/release/hale build dna/api/practice_review
+          ./target/release/hale check dna/api/project_service
+          ./target/release/hale build dna/api/project_service
           HALE_API_BIN="$PWD/dna/api/api" \
             ./target/release/hale test dna/api/tests
           # The head (GH #965): its fixtures spawn the built head over
@@ -818,25 +802,11 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-  # The browser suite in two shards, by what dominates each. `startup` is
-  # startup.spec.mjs alone: its first case is the one-command launcher
-  # building the head and its API from a fresh checkout copy, two
-  # single-threaded `hale build`s in turn (9.4 of the suite's 20 minutes
-  # on 2026-09-26), and it is the longest shard however the rest is cut.
-  # `rest` is every other spec (about 7 minutes of cases). A third shard
-  # would only add a runner's setup: `rest` already finishes before
-  # `startup`. Each shard builds, warms and caches as below; the two
-  # share the builds cache and the toolchain cache, and the second saver
-  # of either logs that the entry exists and carries on.
   face-browser:
-    name: face (browser, ${{ matrix.shard }})
+    name: face (browser)
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [startup, rest]
     # GH #985: Knowledge lives in memory. The browser suite's Knowledge
     # fixture migrates its record into this Postgres with the owner's DSN
     # (set on the step that runs the suite, below) and hands the API the
@@ -893,9 +863,21 @@ jobs:
       - *compiler-identity
       - *face-toolchain-restore
 
-      # The three binaries the browser fixtures spawn, cached across runs.
+      - name: Warm the DNA toolchain cache
+        # The face's browser fixtures create fresh projects with hale dna
+        # new under their own budgets; the first host build of this binary
+        # is paid once here, not inside one of them. Nothing here runs the
+        # observer, so its build is skipped.
+        env:
+          HALE_DNA_DISCOVER: "off"
+          HALE_WARM_SKIP_IRIS: "1"
+        run: scripts/warm-dna-cache.sh ./target/release/hale
+
+      - *face-toolchain-save
+
+      # The four binaries the browser fixtures spawn, cached across runs.
       # A build is a function of the compiler, the machine it is tuned for
-      # and the sources it reads. These three are built for the portable
+      # and the sources it reads. These four are built for the portable
       # x86-64-v3 baseline (`--target-cpu baseline`, below) instead of the
       # host, so the CPU the runner happens to draw is not an input: keyed
       # per host they almost never hit, because the runners of four runs
@@ -908,51 +890,38 @@ jobs:
       # dna/{api,core,operations,organization_source,organization_runtime,ui}
       # and iris/process_identity and nothing outside those two trees. The
       # stdlib and the runtime are inside the compiler. The paths are the
-      # three outputs only.
-      #
-      # dna/api/practice_review is not among them: nothing in the browser
-      # suite reads HALE_NATIVE_HEAD_API (the startup case's launcher builds
-      # its own), and face-api builds and tests it.
+      # four outputs only.
       - name: Restore the DNA API and the head
         id: face-builds
         uses: actions/cache/restore@v4
         with:
           path: |
             dna/api/api
+            dna/api/practice_review/practice_review
             dna/api/project_service/project_service
             dna/api/tests/knowledge/knowledge
           key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
 
-      - name: Warm the DNA toolchain cache and build the DNA API and the head
-        # The warm: the face's browser fixtures create fresh projects with
-        # hale dna new under their own budgets; the first host build of
-        # this binary is paid once here, not inside one of them. Nothing
-        # here runs the observer, so its build is skipped.
-        #
-        # The builds: HALE_API_BIN, HALE_NATIVE_HEAD_BIN and the Knowledge
+      - name: Build the DNA API and the head
+        # The binaries the browser fixtures spawn: HALE_API_BIN,
+        # HALE_NATIVE_HEAD_BIN, HALE_NATIVE_HEAD_API and the Knowledge
         # fixture (HALE_FACE_KNOWLEDGE_BIN, HALE_KNOWLEDGE_SEED_BIN) below.
-        # face-api checks and tests the first two; this job only builds
-        # them, beside the warm (each is one single-threaded process; in
-        # turn, warm then builds took 17 minutes, 2026-09-26), and on a
-        # cache hit not at all: it checks the restored three are there and
-        # executable.
-        env:
-          HALE_DNA_DISCOVER: "off"
-          HALE_WARM_SKIP_IRIS: "1"
+        # face-api checks and tests the first three; this job only builds
+        # them, and on a cache hit not even that: it checks the restored
+        # four are there and executable.
         run: |
           set -euo pipefail
-          seeds=()
           if [ "${{ steps.face-builds.outputs.cache-hit }}" != "true" ]; then
-            seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
+            ./target/release/hale build dna/api --target-cpu baseline
+            ./target/release/hale build dna/api/practice_review --target-cpu baseline
+            ./target/release/hale build dna/api/project_service --target-cpu baseline
+            ./target/release/hale build dna/api/tests/knowledge --target-cpu baseline
           fi
-          scripts/warm-and-build.sh ./target/release/hale --target-cpu baseline "${seeds[@]}"
-          for b in dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge; do
+          for b in dna/api/api dna/api/practice_review/practice_review dna/api/project_service/project_service dna/api/tests/knowledge/knowledge; do
             if [ ! -f "$b" ] || [ ! -x "$b" ]; then
               echo "::error::$b is missing or not executable"; exit 1
             fi
           done
-
-      - *face-toolchain-save
 
       # Saved under the key the restore computed, not a fresh hashFiles:
       # the builds just wrote their outputs under dna/, which would change
@@ -963,6 +932,7 @@ jobs:
         with:
           path: |
             dna/api/api
+            dna/api/practice_review/practice_review
             dna/api/project_service/project_service
             dna/api/tests/knowledge/knowledge
           key: ${{ steps.face-builds.outputs.cache-primary-key }}
@@ -974,42 +944,31 @@ jobs:
           cache: npm
           cache-dependency-path: dna/face/package-lock.json
 
-      - name: Face browser integration (${{ matrix.shard }})
+      - name: Face browser integration
         working-directory: dna/face
         # The owner's DSN reaches only the Knowledge fixture: the harness
         # strips memory's DSNs from every process it starts and gives the
         # API the head's.
-        #
-        # The shard picks its specs by file: `startup` names the one file,
-        # `rest` inverts the same pattern (Playwright's --grep matches a
-        # case's file path as well as its title), so between them every
-        # spec runs exactly once.
         env:
           HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
           HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
-          SHARD: ${{ matrix.shard }}
         run: |
-          set -euo pipefail
-          case "$SHARD" in
-            startup) select=(--grep 'startup\.spec\.mjs') ;;
-            rest) select=(--grep-invert 'startup\.spec\.mjs') ;;
-            *) echo "::error::unknown shard $SHARD"; exit 1 ;;
-          esac
           npm ci
           npx playwright install --with-deps chromium --only-shell
           HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
             HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/dna/api/project_service/project_service" \
+            HALE_NATIVE_HEAD_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
             HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
             HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
             HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
-            npm test -- "${select[@]}"
+            npm test
 
       - name: Preserve face browser failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: face-browser-failures-${{ matrix.shard }}
+          name: face-browser-failures
           path: dna/face/test-results
           if-no-files-found: ignore
           retention-days: 7
