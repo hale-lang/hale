@@ -512,7 +512,7 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     // `dna::wait_scale` widens every wait at once, and the suite asks
     // for double by default; a slower runner can ask for more from the
     // environment. Two, not more: the widest wait in a fixture is 300s,
-    // and the slice's own `terminate-after` allowance is 15 minutes for
+    // and the slice's own `terminate-after` allowance is 25 minutes for
     // every fixture in it, so one stuck wait must not be able to eat
     // the whole slice. Running a fixture by hand keeps the
     // quiet-machine bounds, so a real hang is still reported in seconds

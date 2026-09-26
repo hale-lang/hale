@@ -33,10 +33,14 @@ test-group = 'shared-fixture-dir'
 # live hosts, bodies with their lease and fence, knowledge services, the
 # books acceptance slice. On CI it takes 380-415s on a quiet runner and
 # ran past the 8-minute limit above on a loaded one, a timeout rather
-# than a failure. It gets 15 minutes; a real wedge still ends in a named
-# failure.
+# than a failure. It gets 25 minutes: since every Board decision is a
+# practice-ratify execution (GH #995), graph_holes_test alone took 523 s
+# on a warm runner and ran past 15 minutes on a loaded one, against
+# ~150 s locally; the heaviest fixtures each lead a slice of their own
+# (`HEAVY` in dna_native_suite.rs), so only a slice that is really slow
+# spends the extra time. A real wedge still ends in a named failure.
 filter = 'binary(dna_native_suite)'
-slow-timeout = { period = "60s", terminate-after = 15 }
+slow-timeout = { period = "60s", terminate-after = 25 }
 # The suite is sliced (2026-09-19) so CI's hash partition spreads it,
 # and the slices that land on one job run beside each other
 # (2026-09-20): ports are picked free per fixture, and each slice
