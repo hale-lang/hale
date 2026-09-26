@@ -69,7 +69,9 @@ locus PracticeReviewCommands {
                 application_reason_code: value.organization.application_reason_code, restart_handoff_state: value.organization.restart_handoff_state },
             task: api::TaskCommandOutcome { state: value.task.state, from: value.task.from, to: value.task.to, event_id: value.task.event_id },
             person: api::PersonRetirementOutcome { state: value.person.state, from: value.person.from, to: value.person.to, event_id: value.person.event_id, transferred: value.person.transferred },
-            task_create: api::TaskCreateOutcome { intent_id: value.task_create.intent_id, intent_state: value.task_create.intent_state, task_id: value.task_create.task_id, event_id: value.task_create.event_id }
+            task_create: api::TaskCreateOutcome { intent_id: value.task_create.intent_id, intent_state: value.task_create.intent_state, task_id: value.task_create.task_id, event_id: value.task_create.event_id },
+            attempt: api::AttemptCommandOutcome { state: value.attempt.state, attempt_id: value.attempt.attempt_id, work_id: value.attempt.work_id, task_id: value.attempt.task_id, performer_kind: value.attempt.performer_kind,
+                holder: value.attempt.holder, token: value.attempt.token, until: value.attempt.until, disposition: value.attempt.disposition, reason: value.attempt.reason, event_id: value.attempt.event_id }
         };
     }
     fn result(context: api::CommandContext, value: ops::GovernanceResult) -> api::CommandResult {
@@ -89,7 +91,11 @@ locus PracticeReviewCommands {
             source_head: command.source_head, dependency_source: command.dependency_source, dependency_digest: command.dependency_digest,
             record_head: command.record_head, source_text: command.source_text,
             expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
-            outcome: command.outcome, to: command.to
+            outcome: command.outcome, to: command.to,
+            performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
+            organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
+            disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
+            evidence: command.evidence, receipts: command.receipts
         };
     }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {

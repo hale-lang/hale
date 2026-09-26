@@ -1104,6 +1104,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             ORG_SEED
         ));
     }
+    if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkSubmit") {
+        out.push(format!(
+            "note    {}/main.hl binds no `dna::WorkSubmit` (GH #946): a leg's outcome, handed back at the head, arrives over the nerves. Add `dna::WorkSubmit: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("self.core.tick(") {
         out.push(format!(
             "note    {}/main.hl calls self.core.tick directly; use self.core.request_tick with the same millisecond clock in the live loop so journal refresh and incoming work run on the owner's queue",
@@ -1947,6 +1953,7 @@ main locus Org {{
         dna::KnowledgeNodeRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
+        dna::WorkSubmit: nats::NatsAdapter {{ }};
     }}
     // The nerves collapsed (a fact the stream would not take): this
     // organization stops, and the host that supervises it stops too and

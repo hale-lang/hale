@@ -3789,6 +3789,143 @@
           }
         }
       }
+    },
+    "/api/hale/v1/applications/{application_id}/dna/context": {
+      "parameters": [
+        {
+          "name": "application_id",
+          "in": "path",
+          "required": true,
+          "description": "Record genesis identity returned by discovery.",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listWorkflowExecutions",
+        "summary": "The hat: one Work's context as structure",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "description": "Exact visible root execution identity. A detail returns nodes, attempts and history. Missing and suppressed executions return the same 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum returned items.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Offset in this collection; requires snapshot when nonzero.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000,
+              "default": 0
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "description": "Record head captured by the first page. Changes return 409. Required for nonzero offset.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Visible root execution page or exact native execution detail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ContextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Catalog unsupported, unavailable, invalid or beyond reader validation budgets; structured error code distinguishes the reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "GH #946. The position's identity and charter, the practices ratified for the Work's target with their ids, the knowledge bindings, the tool grant, the output contract, the data class, the Work's history as facts, the Record head and memory's watermark it was rendered at, and the digest over all of it. Never a prompt: rendering is a leg's. Trusted-local only; `id` names the Work and is required."
+      }
     }
   },
   "components": {

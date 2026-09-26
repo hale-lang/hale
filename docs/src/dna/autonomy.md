@@ -189,3 +189,29 @@ recipe). Defining a new revision in the catalog changes future
 adoption only: an active execution finishes under its own recipe, and
 the next admission adopts the new one. Adoption and migration stay
 two different, auditable things.
+
+## Legs: the hat and the two commands
+
+Work is performed by legs — a person, an agent harness, a worker pool —
+that hold nothing between tasks and touch no database. The spine's
+whole API to one is three things. **The hat** is a read,
+`GET …/dna/context?id=<work>`: one Work's context as structure, never a
+prompt — who the position is and its charter, the practices ratified
+for the Work's target with their ids, the bindings, the tool grant,
+the output contract, the data class, the Work's history as facts, and
+the record head and memory's watermark it was rendered at, all under
+one digest. Rendered twice at one head it is one digest; a row that
+moves the head moves it. The leg renders it for its backend, and
+records the hat digest, the prompt digest and its renderer's version
+on the attempt, so replay renders from the recorded hat and the tape
+hits. **The claim**, `dna.attempt.claim`, hands the leg an admitted
+attempt of the kind it performs that fits its capabilities and data
+classes, and the lease it works under — memory's claim on the attempt,
+with a token and an expiry — as a value; nothing fitting, or an
+attempt another leg holds, is a refusal with the reason. **The
+outcome**, `dna.attempt.outcome`, hands the result back under that
+lease with the calls it made and the receipts to file; the owner
+journals the calls on the attempt (tokens per task hold out of
+process), settles it as it settles every reply, and refuses a stale
+lease or a duplicate with the reason. Positions are the graph's
+`position:<name>` ids.

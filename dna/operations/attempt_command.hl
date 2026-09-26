@@ -1,0 +1,328 @@
+// dna/operations/attempt_command.hl — the spine's two commands to a leg
+// (GH #946, slice 3): `dna.attempt.claim@1` and `dna.attempt.outcome@1`.
+//
+// A leg holds nothing between tasks and has no database role. It claims
+// an attempt HERE, at the head: the claim is memory's, keyed on the
+// attempt id with a TTL and taken under the head's role (GH #1026: the
+// store decides between two legs racing for one attempt), and an
+// `attempt.claimed` row names the holder, its token and until when — the
+// lease the leg settles under, returned to it as a value. A refusal is a
+// receipt with the reason and no row. It hands its outcome back here
+// too: the head refuses a stale or duplicate outcome with the reason,
+// files the receipts (a protected body in memory, the rest in the
+// record), and writes the outcome as an `attempt.outcome_requested`
+// row; a node relays the row to the owner, which settles the attempt as
+// it settles every reply (`attempt.outcome`) or refuses it
+// (`attempt.outcome_refused`). The owner still admits and settles;
+// nothing here runs a performer.
+import "../core" as dna;
+
+const ATTEMPT_CLAIM_FORMAT: String = "dna.attempt-claim-command/1";
+const ATTEMPT_OUTCOME_FORMAT: String = "dna.attempt-outcome-command/1";
+const ATTEMPT_TTL_MAX: Int = 86400;
+const ATTEMPT_CLASSES: String = "public internal customer confidential";
+
+type AttemptCommandFact {
+    valid: Bool = false;
+    context: GovernanceContext = GovernanceContext { };
+    command: GovernanceCommand = GovernanceCommand { };
+    grant: GovernanceGrant = GovernanceGrant { };
+    head: String = "";
+    attempt_id: String = "";
+}
+
+// A word list: space-separated words of printable bytes, each 1..128
+// bytes, the whole at most `max`; "" is a list of none.
+fn attempt_words_ok(s: String, max: Int) -> Bool {
+    let common = GovernanceCommandCodec { };
+    if len(s) == 0 { return true; }
+    if !common.bounded(s, max, true, false) { return false; }
+    let mut i = 0;
+    while i < dna::word_count(s) {
+        if len(dna::nth_word(s, i)) > 128 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Whether every word of `needs` is a word of `has`.
+fn attempt_words_within(needs: String, has: String) -> Bool {
+    let mut i = 0;
+    while i < dna::word_count(needs) {
+        if !dna::word_in(dna::nth_word(needs, i), has) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+locus AttemptCommandCodec {
+    params { }
+    fn claim(operation: String) -> Bool { return operation == "dna.attempt.claim"; }
+    fn outcome(operation: String) -> Bool { return operation == "dna.attempt.outcome"; }
+    fn known(operation: String, version: String) -> Bool { return version == "1" && (self.claim(operation) || self.outcome(operation)); }
+    // The fields these two operations carry; every other variant
+    // requires them empty.
+    fn absent(c: GovernanceCommand) -> Bool {
+        return c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0
+            && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == ""
+            && c.narrative == "" && c.evidence == "" && c.receipts == "";
+    }
+    fn lease_digest(holder: String, token: Int) -> String { return "lease:" + holder + "@" + to_string(token); }
+    fn classes_ok(s: String) -> Bool {
+        if !attempt_words_ok(s, 256) { return false; }
+        let mut i = 0;
+        while i < dna::word_count(s) {
+            if !dna::word_in(dna::nth_word(s, i), ATTEMPT_CLASSES) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn disposition_ok(d: String) -> Bool { return d == "done" || d == "failed" || d == "declined" || d == "timeout"; }
+    // The calls a leg reports: "" or a JSON array of at most 256 objects.
+    fn evidence_ok(text: String) -> Bool {
+        if len(text) == 0 { return true; }
+        if len(text) > 32768 || !std::json::valid(text) || !std::str::starts_with(std::str::trim(text), "[") { return false; }
+        let mut it = std::json::array_first(text);
+        let mut n = 0;
+        while !it.done {
+            if !std::json::valid_object(it.element) || n >= 256 { return false; }
+            if std::json::find_int_field(it.element, "input_tokens") < 0 || std::json::find_int_field(it.element, "output_tokens") < 0 || std::json::find_int_field(it.element, "cost_micros") < 0 { return false; }
+            n = n + 1;
+            it = std::json::array_next(it);
+        }
+        return true;
+    }
+    // The receipts a leg files with its outcome: "" or a JSON array of at
+    // most 32 `{class, body}` objects, each body a nonempty string.
+    fn receipts_ok(text: String) -> Bool {
+        if len(text) == 0 { return true; }
+        if len(text) > 65536 || !std::json::valid(text) || !std::str::starts_with(std::str::trim(text), "[") { return false; }
+        let mut it = std::json::array_first(text);
+        let mut n = 0;
+        while !it.done {
+            if !std::json::valid_object(it.element) || n >= 32 { return false; }
+            let class = std::json::find_string_field(it.element, "class");
+            let body = std::json::string_field(it.element, "body");
+            if !dna::word_in(class, ATTEMPT_CLASSES) || body.kind != "string" || len(body.text) == 0 { return false; }
+            n = n + 1;
+            it = std::json::array_next(it);
+        }
+        return true;
+    }
+    fn valid(context: GovernanceContext, c: GovernanceCommand) -> Bool {
+        let common = GovernanceCommandCodec { };
+        if !self.known(c.operation, c.operation_version) || !common.context_valid(context) || c.application_id != context.application_id || c.position_id != "org"
+            || !common.bounded(c.request_id, 128, true, false) { return false; }
+        if c.text != "" || c.rationale != "" || c.expected_review_state != "" || c.verdict != "" || c.comment != "" || c.expected_assignee != "" || c.new_assignee != ""
+            || c.source_head != "" || c.dependency_source != "" || c.dependency_digest != "" || c.source_text != "" || c.outcome != "" || c.to != "" { return false; }
+        if self.claim(c.operation) {
+            return c.target_kind == "dna.work" && c.target_id == context.application_id && common.bounded(c.record_head, 256, true, false) && c.subject_digest == c.record_head
+                && common.bounded(c.performer_kind, 64, true, false) && !std::str::contains(c.performer_kind, " ") && common.bounded(c.performer, 256, true, false)
+                && attempt_words_ok(c.capabilities, 2048) && self.classes_ok(c.data_classes) && attempt_words_ok(c.organizations, 2048)
+                && c.ttl >= 1 && c.ttl <= ATTEMPT_TTL_MAX
+                && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
+        }
+        return c.target_kind == "dna.attempt" && common.bounded(c.attempt_id, 256, true, false) && c.target_id == c.attempt_id && c.record_head == ""
+            && common.bounded(c.holder, 256, true, false) && c.token >= 0 && c.subject_digest == self.lease_digest(c.holder, c.token)
+            && self.disposition_ok(c.disposition) && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
+            && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts)
+            && c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0;
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
+    fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {
+        if !self.valid(context, c) { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":"); b.append_str(dna::record_json_quote(if self.claim(c.operation) { ATTEMPT_CLAIM_FORMAT } else { ATTEMPT_OUTCOME_FORMAT }));
+        self.field(b, "application_id", context.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
+        self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version); self.field(b, "position_id", c.position_id);
+        self.field(b, "target_kind", c.target_kind); self.field(b, "target_id", c.target_id);
+        if self.claim(c.operation) {
+            self.field(b, "record_head", c.record_head); self.field(b, "performer_kind", c.performer_kind); self.field(b, "performer", c.performer);
+            self.field(b, "capabilities", c.capabilities); self.field(b, "data_classes", c.data_classes); self.field(b, "organizations", c.organizations);
+            b.append_str(",\"ttl\":"); b.append_str(to_string(c.ttl));
+        } else {
+            self.field(b, "attempt_id", c.attempt_id); self.field(b, "holder", c.holder);
+            b.append_str(",\"token\":"); b.append_str(to_string(c.token));
+            self.field(b, "disposition", c.disposition); self.field(b, "result", c.result); self.field(b, "result_ref", c.result_ref); self.field(b, "narrative", c.narrative);
+            self.field(b, "evidence", c.evidence); self.field(b, "receipts", c.receipts);
+        }
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fingerprint(context: GovernanceContext, c: GovernanceCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
+    fn decode(context: GovernanceContext, document: String) -> GovernanceCommand {
+        let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { };
+        if len(document) > 131072 || !syntax.valid(document) || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return GovernanceCommand { }; }
+        let format = common.string(document, "format");
+        if format != ATTEMPT_CLAIM_FORMAT && format != ATTEMPT_OUTCOME_FORMAT { return GovernanceCommand { }; }
+        let operation = common.string(document, "operation");
+        let mut c = GovernanceCommand { application_id: common.string(document, "application_id"), request_id: common.string(document, "request_id"), operation: operation,
+            operation_version: common.string(document, "operation_version"), position_id: common.string(document, "position_id"), target_kind: common.string(document, "target_kind"), target_id: common.string(document, "target_id") };
+        if self.claim(operation) {
+            c.record_head = common.string(document, "record_head"); c.subject_digest = c.record_head;
+            c.performer_kind = common.string(document, "performer_kind"); c.performer = common.string(document, "performer");
+            c.capabilities = common.string(document, "capabilities"); c.data_classes = common.string(document, "data_classes"); c.organizations = common.string(document, "organizations");
+            c.ttl = std::json::find_int_field(document, "ttl");
+        } else {
+            c.attempt_id = common.string(document, "attempt_id"); c.holder = common.string(document, "holder"); c.token = std::json::find_int_field(document, "token");
+            c.subject_digest = self.lease_digest(c.holder, c.token);
+            c.disposition = common.string(document, "disposition"); c.result = common.string(document, "result"); c.result_ref = common.string(document, "result_ref"); c.narrative = common.string(document, "narrative");
+            c.evidence = common.string(document, "evidence"); c.receipts = common.string(document, "receipts");
+        }
+        return if self.valid(context, c) && self.canonical(context, c) == document { c } else { GovernanceCommand { } };
+    }
+    // No grant key: the authenticated principal is the authority, as for
+    // `hale dna ask`. What a leg may claim is the filter's and the
+    // record's to say; positions as roles arrive with GH #1104.
+    fn grant(context: GovernanceContext) -> GovernanceGrant {
+        let common = GovernanceCommandCodec { };
+        if !common.context_valid(context) { return GovernanceGrant { }; }
+        return GovernanceGrant { allowed: true, authority: context.principal_name, basis: "dna.attempt/1:authenticated-principal:" + context.principal_mode };
+    }
+    // ---- the record, read for a claim --------------------------------------
+    fn has_row(j: dna::Journal, kind: String, entity: String) -> Bool {
+        let mut i = 0;
+        while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == entity { return true; } i = i + 1; }
+        return false;
+    }
+    // The latest `attempt.claimed` row of an attempt as a lease; not
+    // present when none was taken.
+    fn recorded_claim(j: dna::Journal, attempt_id: String) -> dna::Lease {
+        let mut out = dna::Lease { key: "attempt:" + attempt_id };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "attempt.claimed" && e.entity == attempt_id {
+                out = dna::Lease { key: out.key, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"), present: true };
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Whether an admitted attempt awaits a leg like this one: outstanding
+    // (the owner asked for it to run and holds no outcome), of the kind
+    // the leg performs, needing nothing the leg lacks, of a data class
+    // the leg may see, under an owner the leg works for. Whether another
+    // leg holds it is the claim's question (`held_by_another`).
+    fn awaits(j: dna::Journal, a: dna::AdmittedAttempt, c: GovernanceCommand) -> Bool {
+        if a.performer_kind != c.performer_kind { return false; }
+        if !self.has_row(j, "effect.requested", "attempt:" + a.attempt_id) || self.has_row(j, "attempt.outcome", a.attempt_id) { return false; }
+        if !attempt_words_within(a.request.requires, c.capabilities) { return false; }
+        if len(c.data_classes) > 0 && !dna::word_in(a.request.data_class, c.data_classes) { return false; }
+        let owner = dna::id_owner(a.task_id);
+        return len(c.organizations) == 0 || dna::word_in(if len(owner) == 0 { "-" } else { owner }, c.organizations);
+    }
+    // Whether the record says another leg holds the attempt under a lease
+    // that is still live.
+    fn held_by_another(j: dna::Journal, attempt_id: String, performer: String, now: Int) -> Bool {
+        let held = self.recorded_claim(j, attempt_id);
+        return held.present && held.holder != performer && held.expires > now;
+    }
+    // The attempts that await such a leg, in record order, one id per line.
+    @unbounded
+    fn candidates(j: dna::Journal, c: GovernanceCommand) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "attempt.admitted" {
+                let d = dna::decode_attempt(e.body);
+                if d.ok && d.value.attempt_id == e.entity && self.awaits(j, d.value, c) { out = out + e.entity + "\n"; }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // ---- the rows ----------------------------------------------------------
+    fn command_fields(b: std::json::Builder, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, format: String) {
+        let common = GovernanceCommandCodec { };
+        b.string_field("command_format", format); b.string_field("command_id", common.identity(context, c.request_id));
+        b.string_field("command_payload", self.canonical(context, c)); b.string_field("command_fingerprint", self.fingerprint(context, c));
+        b.string_field("command_authority", grant.authority); b.string_field("command_authority_basis", grant.basis); b.string_field("command_record_head", head);
+    }
+    // The `attempt.claimed` row: the lease as granted, the attempt it is
+    // on, and the command that took it.
+    fn claim_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, a: dna::AdmittedAttempt, lease: dna::Lease) -> String {
+        let common = GovernanceCommandCodec { };
+        if !self.valid(context, c) || !self.claim(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) || len(a.attempt_id) == 0 { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("holder", lease.holder); b.int_field("token", lease.token); b.int_field("until", lease.expires);
+        b.string_field("task_id", a.task_id); b.string_field("work_id", a.work_id); b.string_field("performer_kind", a.performer_kind); b.string_field("performer", c.performer);
+        self.command_fields(b, context, c, grant, head, ATTEMPT_CLAIM_FORMAT);
+        b.end_object(); return b.result();
+    }
+    // The `attempt.outcome_requested` row: the outcome as the leg handed
+    // it back under its lease, the receipts it filed, and the command.
+    // `request` names the command, so the row is answered by the outcome
+    // or the refusal that names it.
+    fn outcome_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, evidence_ref: String) -> String {
+        let common = GovernanceCommandCodec { };
+        if !self.valid(context, c) || !self.outcome(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("disposition", c.disposition); b.string_field("result", c.result); b.string_field("result_ref", c.result_ref); b.string_field("narrative", c.narrative);
+        b.string_field("evidence_ref", evidence_ref); b.string_field("holder", c.holder); b.int_field("token", c.token); b.string_field("calls", c.evidence);
+        b.string_field("request", common.identity(context, c.request_id));
+        self.command_fields(b, context, c, grant, head, ATTEMPT_OUTCOME_FORMAT);
+        b.end_object(); return b.result();
+    }
+    fn decode_fact(e: dna::Event) -> AttemptCommandFact {
+        let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { };
+        let claimed = e.kind == "attempt.claimed";
+        if (!claimed && e.kind != "attempt.outcome_requested") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
+        let payload = common.string(e.body, "command_payload");
+        if len(payload) > 131072 || !syntax.valid(payload) { return AttemptCommandFact { }; }
+        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+        let c = self.decode(context, payload);
+        let grant = GovernanceGrant { allowed: true, authority: common.string(e.body, "command_authority"), basis: common.string(e.body, "command_authority_basis") };
+        let head = common.string(e.body, "command_record_head");
+        if !self.valid(context, c) || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false) || head != e.prev { return AttemptCommandFact { }; }
+        let same = if claimed {
+            self.claim(c.operation) && e.body == self.claim_fact(context, c, grant, head,
+                dna::AdmittedAttempt { attempt_id: e.entity, work_id: common.string(e.body, "work_id"), task_id: common.string(e.body, "task_id"), performer_kind: common.string(e.body, "performer_kind") },
+                dna::Lease { holder: common.string(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until") })
+        } else {
+            self.outcome(c.operation) && c.attempt_id == e.entity && e.body == self.outcome_fact(context, c, grant, head, common.string(e.body, "evidence_ref"))
+        };
+        if !same { return AttemptCommandFact { }; }
+        return AttemptCommandFact { valid: true, context: context, command: c, grant: grant, head: head, attempt_id: e.entity };
+    }
+    // ---- what a command reads back -------------------------------------------
+    fn receipt_of(context: GovernanceContext, c: GovernanceCommand, command_id: String, fingerprint: String, state: String, reason: String, o: AttemptCommandOutcome) -> GovernanceReceipt {
+        return GovernanceReceipt { command_id: command_id, request_id: c.request_id, application_id: context.application_id, operation: c.operation, operation_version: c.operation_version,
+            principal_mode: context.principal_mode, principal_name: context.principal_name, position_id: c.position_id, target_kind: c.target_kind, target_id: c.target_id,
+            subject_digest: c.subject_digest, fingerprint: fingerprint, proposal_state: "", state: state, reason: reason, attempt: o };
+    }
+    // A refusal at the head: a receipt with the reason, and no row.
+    fn refused(context: GovernanceContext, c: GovernanceCommand, why: String) -> GovernanceReceipt {
+        let common = GovernanceCommandCodec { };
+        return self.receipt_of(context, c, common.identity(context, c.request_id), self.fingerprint(context, c), "refused", why,
+            AttemptCommandOutcome { state: "refused", attempt_id: c.attempt_id, performer_kind: c.performer_kind, holder: if self.claim(c.operation) { c.performer } else { c.holder }, token: if self.claim(c.operation) { -1 } else { c.token }, reason: why });
+    }
+    // The recorded command, re-derived from the record on every read: a
+    // claim is its row; an outcome is `requested` until the owner's
+    // `attempt.outcome` settles it or an `attempt.outcome_refused` naming
+    // the command refuses it.
+    @unbounded
+    fn project(j: dna::Journal, a: GovernanceAdmission) -> GovernanceReceipt {
+        let c = a.command; let context = a.context;
+        if a.unknown {
+            return self.receipt_of(context, c, a.command_id, a.fingerprint, "outcome_unknown", "", AttemptCommandOutcome { state: "unknown", attempt_id: c.attempt_id, performer_kind: c.performer_kind, holder: if self.claim(c.operation) { c.performer } else { c.holder }, token: if self.claim(c.operation) { -1 } else { c.token } });
+        }
+        let body = a.native_body;
+        if self.claim(c.operation) {
+            return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome {
+                state: "claimed", attempt_id: a.entity, work_id: std::json::find_string_field(body, "work_id"), task_id: std::json::find_string_field(body, "task_id"),
+                performer_kind: std::json::find_string_field(body, "performer_kind"), holder: std::json::find_string_field(body, "holder"),
+                token: std::json::find_int_field(body, "token"), until: std::json::find_int_field(body, "until"), event_id: a.event_id });
+        }
+        let mut state = "requested"; let mut disposition = ""; let mut reason = "";
+        let mut i = if a.sequence < 0 { 0 } else { a.sequence + 1 };
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "attempt.outcome" && e.entity == c.attempt_id { let o = dna::decode_attempt_outcome(e.body); state = "settled"; disposition = if o.ok { o.value.disposition } else { "" }; reason = ""; }
+            else if e.kind == "attempt.outcome_refused" && e.entity == c.attempt_id && dna::request_named(e.body) == a.command_id && state == "requested" { state = "refused"; reason = std::json::find_string_field(e.body, "why"); }
+            i = i + 1;
+        }
+        return self.receipt_of(context, c, a.command_id, a.fingerprint, if state == "refused" { "refused" } else { "succeeded" }, reason, AttemptCommandOutcome {
+            state: state, attempt_id: c.attempt_id, work_id: usage_work_of(c.attempt_id), holder: c.holder, token: c.token, disposition: if len(disposition) > 0 { disposition } else { c.disposition }, reason: reason, event_id: a.event_id });
+    }
+}

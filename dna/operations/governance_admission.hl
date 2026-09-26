@@ -117,6 +117,7 @@ type GovernanceReceipt {
     person: PersonRetirementOutcome = PersonRetirementOutcome { };
     organization: OrganizationCommandOutcome = OrganizationCommandOutcome { };
     task_create: TaskCreateOutcome = TaskCreateOutcome { };
+    attempt: AttemptCommandOutcome = AttemptCommandOutcome { };
 }
 type GovernanceResult {
     ok: Bool = false; code: String = "commands_unavailable";
@@ -153,12 +154,18 @@ locus GovernanceCommands {
         let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
         let source_enabled = if operation == "dna.organization.ownership.propose" { self.organization_ownership_enabled } else { self.organization_enabled };
-        return codec.known(operation, version) || create.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
+        let attempts = AttemptCommandCodec { };
+        return codec.known(operation, version) || create.known(operation, version) || attempts.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
     }
     fn command_valid(context: GovernanceContext, command: GovernanceCommand) -> Bool {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
         let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
+        // GH #946: a leg's claim and outcome carry fields of their own,
+        // which every other variant leaves empty
+        let attempts = AttemptCommandCodec { };
+        if attempts.known(command.operation, command.operation_version) { return attempts.valid(context, command); }
+        if !attempts.absent(command) { return false; }
         if person.known(command.operation, command.operation_version) { return person.valid(context, command); }
         if create.known(command.operation, command.operation_version) { return create.valid(context, command); }
         if task.known(command.operation, command.operation_version) { return task.valid(context, command); }
@@ -168,6 +175,8 @@ locus GovernanceCommands {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
         let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
+        let attempts = AttemptCommandCodec { };
+        if attempts.known(command.operation, command.operation_version) { return attempts.fingerprint(context, command); }
         if person.known(command.operation, command.operation_version) { return person.fingerprint(context, command); }
         if create.known(command.operation, command.operation_version) { return create.fingerprint(context, command); }
         if task.known(command.operation, command.operation_version) { return task.fingerprint(context, command); }
@@ -175,6 +184,7 @@ locus GovernanceCommands {
     }
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> GovernanceGrant {
         if operation == "dna.task.create" { let create = TaskCreateCommandCodec { }; return create.grant(context); }
+        if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
         if operation == "dna.task.reassign" || operation == "dna.person.retire" { return self.task_authority.authorize(context, operation, recovery, j); }
         if operation == "dna.organization.propose" || operation == "dna.organization.ownership.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
         let grant = self.authority.authorize(context, operation, recovery, j);
@@ -315,6 +325,16 @@ locus GovernanceCommands {
                         || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
                         || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: create.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
+                }
+            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" {
+                // GH #946: a leg's claim, or the outcome it handed back
+                if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
+                if codec.string(e.body, "command_id") == id {
+                    let attempts = AttemptCommandCodec { }; let fact = attempts.decode_fact(e); let c = fact.command;
+                    if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id
+                        || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
+                        || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                    found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: attempts.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
             } else if e.kind == "organization.source.requested" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
@@ -475,6 +495,10 @@ locus GovernanceCommands {
             let create = TaskCreateCommandCodec { };
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: create.project(j, admission) };
         }
+        if admission.command.operation == "dna.attempt.claim" || admission.command.operation == "dna.attempt.outcome" {
+            let attempts = AttemptCommandCodec { };
+            return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: attempts.project(j, admission) };
+        }
         if admission.command.operation == "dna.task.reassign" {
             let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
             let view = TaskProjection { j: j, visibility: queries };
@@ -528,6 +552,75 @@ locus GovernanceCommands {
                 return self.result(s, j, GovernanceAdmission { ok: true, command_id: id, fingerprint: self.fingerprint(context, command), authority_profile: profile, context: context, command: command, unknown: true });
             }
             if !self.supported(command.operation, command.operation_version) { return GovernanceResult { code: "commands_unsupported" }; }
+            if command.operation == "dna.attempt.claim" || command.operation == "dna.attempt.outcome" {
+                if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
+                let attempts = AttemptCommandCodec { }; let now = std::time::now();
+                let leases = dna::MemoryLeases { repo: self.record.location(), dsn_env: dna::HEAD_DSN_ENV };
+                if command.operation == "dna.attempt.claim" {
+                    // GH #946 slice 3: the claim is memory's, keyed on the attempt id
+                    // with its TTL; the row names the lease. A refusal is a receipt
+                    // with the reason and no row: legs ask often, and an empty
+                    // answer is not a fact of the record.
+                    if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
+                    let names = attempts.candidates(j, command);
+                    if len(names) == 0 { return self.refusal(s, attempts.refused(context, command, "no admitted attempt awaits a " + command.performer_kind + " leg with capabilities `" + command.capabilities + "`")); }
+                    let mut rest = names; let mut taken = ""; let mut lease = dna::Lease { };
+                    while len(rest) > 0 && len(taken) == 0 {
+                        let nl = std::str::index_of(rest, "\n"); let candidate = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+                        // the record's word first: a live lease another leg holds is not raced for
+                        if attempts.held_by_another(j, candidate, command.performer, now) { continue; }
+                        let l = leases.claim("attempt:" + candidate, command.performer, command.ttl);
+                        if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to take the claim: " + leases.last_error)); }
+                        if l.present && l.holder == command.performer { taken = candidate; lease = l; }
+                    }
+                    if len(taken) == 0 { return self.refusal(s, attempts.refused(context, command, "every attempt that awaits such a leg is held by another leg whose lease is live")); }
+                    let admitted = dna::recorded_attempt_admission(j, taken, j.revision());
+                    let fact = attempts.claim_fact(context, command, grant, s.head, admitted.value, lease);
+                    if fact == "" { return GovernanceResult { code: "invalid_command" }; }
+                    if !self.unchanged(s) { continue; }
+                    let row = dna::Row { kind: "attempt.claimed", entity: taken, author: context.principal_name, body: fact };
+                    let appended = self.record.append("journal", s.head, row, self.sign, "");
+                    if appended.ok && len(appended.id) > 0 {
+                        let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: appended.id, revision: s.revision + 1 };
+                        return self.result(after, j, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: s.revision, event_id: appended.id, native_body: fact, entity: taken });
+                    }
+                    if appended.error != "stale" { uncertain = true; }
+                    continue;
+                }
+                // the outcome: refused here, with the reason, when it is not this
+                // leg's to hand back — never admitted, never run, settled already
+                // (a duplicate), or a lease that is not this holder's at this
+                // token now (stale); the receipts filed; then the row, which the
+                // owner answers
+                let a = command.attempt_id;
+                let admitted = dna::recorded_attempt_admission(j, a, j.revision());
+                if !admitted.ok { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never admitted")); }
+                if !attempts.has_row(j, "effect.requested", "attempt:" + a) { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never asked to run; nothing is outstanding on it")); }
+                let settled = dna::recorded_attempt_outcome(j, a, j.revision());
+                if settled.ok { return self.refusal(s, attempts.refused(context, command, "duplicate: attempt " + a + " is settled (" + settled.value.disposition + "); this outcome changes nothing")); }
+                let claim = attempts.recorded_claim(j, a);
+                if !claim.present { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never claimed by a leg")); }
+                if claim.holder != command.holder || claim.token != command.token { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + command.holder + "'s at token " + to_string(command.token))); }
+                if claim.expires <= now { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " expired at " + to_string(claim.expires))); }
+                if leases.ready() {
+                    let live = leases.current(claim.key);
+                    if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to fence the lease: " + leases.last_error)); }
+                    if !live.present || live.holder != command.holder || live.token != command.token || live.expires <= now { return self.refusal(s, attempts.refused(context, command, "stale: memory's claim on attempt " + a + " is not " + command.holder + "'s at token " + to_string(command.token) + " now")); }
+                }
+                let filed = self.file_receipts(context, command);
+                if std::str::starts_with(filed, "!") { return self.refusal(s, attempts.refused(context, command, filed[1..len(filed)])); }
+                let fact = attempts.outcome_fact(context, command, grant, s.head, filed);
+                if fact == "" { return GovernanceResult { code: "invalid_command" }; }
+                if !self.unchanged(s) { continue; }
+                let row = dna::Row { kind: "attempt.outcome_requested", entity: a, author: context.principal_name, body: fact };
+                let appended = self.record.append("journal", s.head, row, self.sign, "");
+                if appended.ok && len(appended.id) > 0 {
+                    let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: appended.id, revision: s.revision + 1 };
+                    return self.result(after, j, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: s.revision, event_id: appended.id, native_body: fact, entity: a });
+                }
+                if appended.error != "stale" { uncertain = true; }
+                continue;
+            }
             if command.operation == "dna.person.retire" {
                 if !self.source_supported(j) || self.retirement_record.identity() != s.application_id { return GovernanceResult { code: "commands_unsupported" }; }
                 if !self.task_authority.eligible(context, command.target_id, j)
@@ -627,5 +720,39 @@ locus GovernanceCommands {
         return GovernanceResult { code: if uncertain { "command_outcome_unknown" } else { "command_busy" } };
     }
     fn submit(context: GovernanceContext, command: GovernanceCommand) -> GovernanceResult { return self.execute(context, command, false); }
+    // GH #946: a refusal at the head is a receipt with its reason, over
+    // the snapshot it was decided on, and no row.
+    fn refusal(s: GovernanceSnapshot, receipt: GovernanceReceipt) -> GovernanceResult {
+        return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: receipt };
+    }
+    // The receipts a leg files with its outcome: a protected body goes to
+    // memory alone, under the head's role, and the record gets its digest
+    // and class; a public or internal body is an ordinary git receipt.
+    // The digests, space-separated, or `!` and why one could not be filed.
+    @unbounded
+    fn file_receipts(context: GovernanceContext, command: GovernanceCommand) -> String {
+        if len(command.receipts) == 0 { return ""; }
+        let location = self.record.location();
+        let mut out = "";
+        let mut it = std::json::array_first(command.receipts);
+        while !it.done {
+            let class = std::json::find_string_field(it.element, "class");
+            let body = std::json::string_field(it.element, "body");
+            if dna::protected_class(class) {
+                let vault = dna::MemoryVault { repo: location, dsn_env: dna::HEAD_DSN_ENV };
+                let digest = vault.keep(body.text, class, context.principal_name);
+                if len(digest) == 0 { return "!a " + class + " receipt cannot be filed: " + vault.last_error; }
+                out = out + (if len(out) > 0 { " " } else { "" }) + digest;
+            } else {
+                if len(location) == 0 { return "!a " + class + " receipt needs a record on disk to file it in"; }
+                let receipts = dna::GitReceipts { repo: location };
+                let hex = receipts.store(body.text);
+                if len(hex) == 0 { return "!a " + class + " receipt could not be stored in the record"; }
+                out = out + (if len(out) > 0 { " " } else { "" }) + "sha256:" + hex;
+            }
+            it = std::json::array_next(it);
+        }
+        return out;
+    }
     fn lookup(context: GovernanceContext, request_id: String) -> GovernanceResult { return self.execute(context, GovernanceCommand { request_id: request_id }, true); }
 }

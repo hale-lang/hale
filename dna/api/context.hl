@@ -1,0 +1,31 @@
+// The hat as a read (GH #946, slice 2): `GET /dna/context?id=<work>`
+// answers the structured context of one Work — position, practices with
+// ids, bindings, grant, contract, class, history, head, watermark and
+// the digest over all of it. Structure, never a prompt: rendering is a
+// leg's. Trusted-local, like the executions it is read from; the
+// practices come from memory under the head's role when memory is
+// named, and the hat says so when it is not.
+import "../core" as dna;
+import "../operations" as ops;
+
+locus ContextWire {
+    params { }
+    fn read(root: String, mode: String, source: Source, query: Query) -> std::http::Response {
+        let http = Http { };
+        if mode != "local" { return http.error(403, "context_source_unavailable", "hosted context reads require an owning-service visibility provider", false); }
+        if len(query.id) == 0 { return http.error(400, "invalid_query", "the context read names one Work by id", false); }
+        let j = dna::GitJournal { repo: root };
+        if j.head() != source.head || j.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the context", true); }
+        let reader = ops::HatReader { j: j, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV } };
+        let hat = reader.read(query.id);
+        if !hat.ok {
+            if hat.code == "work_not_found" { return http.error(404, hat.code, hat.why, false); }
+            return http.error(503, hat.code, hat.why, hat.code == "context_source_unavailable");
+        }
+        let record = dna::GitRecord { repo: root };
+        let record_now = record.head("journal");
+        if !record_now.ok { return http.unreadable(record_now); }
+        if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the context was read", true); }
+        return http.success(source, ops::hat_json(hat));
+    }
+}

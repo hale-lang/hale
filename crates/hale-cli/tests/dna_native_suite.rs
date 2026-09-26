@@ -816,6 +816,7 @@ fn dna_fixture_set_is_complete() {
             "anthropic_messages_test.hl",
             "apply_test.hl",
             "assembly_test.hl",
+            "attempt_commands_test.hl",
             "b1_team_test.hl",
             "binding_store_test.hl",
             "body_claim_expired_test.hl",

@@ -1,0 +1,95 @@
+// The hat as a read (GH #946, slice 2): `GET /dna/context?id=<work>`
+// answers one Work's context as structure — the position and its
+// charter, the practices with ids, the bindings, the grant, the
+// contract, the class, the history as facts — fenced to the Record head
+// and memory's watermark and named by its digest. Rendered twice at one
+// head it is one digest; a row that moves the head moves the digest.
+// Native handler test over an owned Record: no body, database or model
+// runs, and every response is checked against the contract.
+import ".." as api;
+import "../../core" as dna;
+import "./fixture" as fixture;
+
+const ROOT: String = "hat-close";
+const STEP: String = "hat-close/wf1/s0";
+const WORK: String = "hat-close/wf1/s0/judge";
+const CHARTER: String = "Judges what the organization asks of it, by its ratified practices; proposes, never applies.";
+
+locus HatCases {
+    params { f: fixture::Fixture; json: fixture::Json = fixture::Json { }; }
+    fn get(service: api::Api, path: String, status: Int, schema: String) -> String {
+        let response = service.handle(std::http::Request { method: "GET", path: self.f.prefix + path });
+        std::test::assert_eq_int(response.status, status, response.body);
+        if len(schema) > 0 {
+            let checked = self.f.validator.validate(schema, response.body);
+            std::test::assert(checked.ok, checked.error + "\n" + response.body);
+        }
+        return response.body;
+    }
+    fn seed() {
+        let cat = dna::WorkflowCatalog { };
+        std::test::assert_eq_str(cat.define("judge", 1, 1, "one judgment"), "", "definition");
+        let request = dna::WorkRequest { objective: "assess the storage migration", target: "org", requires: "judgment", output_contract: "Assessment", knowledge_bindings: "package:sha256:none" };
+        std::test::assert_eq_str(cat.leaf("judge", 1, 0, "judge", request, 2), "", "leaf");
+        let limits = dna::AdmissionLimits { };
+        let bound = cat.expand(ROOT, "judge", 1, limits);
+        std::test::assert(bound.ok, "bound recipe: " + bound.why);
+        // the graph names the position and its charter (GH #1085); the hat reads it from the record
+        self.f.append("graph.node", "position:agent", "{\"kind\": \"position\", \"name\": \"agent\", \"text\": " + dna::record_json_quote(CHARTER) + "}");
+        self.f.append("task.born", ROOT, "hat-ask: judge (workflow)");
+        self.f.append("workflow.admitted", ROOT, dna::encode_admission(dna::AdmittedWorkflow { task_id: ROOT, definition: "judge", revision: 1, recipe: cat.encode_bound(), limits: limits, works: 1, tasks: 1, steps: 1, depth: 1 }));
+        self.f.append("step.registered", STEP, dna::encode_members(dna::RegisteredMembers { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, members: "judge:leaf:" + WORK }));
+        self.f.append("step.activated", STEP, dna::encode_activation(dna::ActivatedStep { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, dispatched: "judge" }));
+        self.f.append("attempt.admitted", dna::attempt_id_of(WORK, 0), dna::encode_attempt(dna::AdmittedAttempt { attempt_id: dna::attempt_id_of(WORK, 0), work_id: WORK, step_id: STEP, task_id: ROOT, attempt_no: 0, performer_kind: "agent", request: request }));
+    }
+    fn run_cases() {
+        self.seed();
+        let service = api::Api { root: self.f.root, local_name: "riley" };
+        let capabilities = self.get(service, "/capabilities", 200, "CapabilitiesResponse");
+        self.json.is_bool(self.json.raw(self.json.data(capabilities), "reads"), "context", true);
+        // the hat, twice at one head: one digest
+        let first = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        let hat = self.json.data(first);
+        self.json.eq(hat, "work_id", WORK);
+        self.json.eq(hat, "task_id", ROOT);
+        self.json.eq(hat, "attempt_id", dna::attempt_id_of(WORK, 0));
+        self.json.eq(hat, "performer_kind", "agent");
+        self.json.eq(self.json.raw(hat, "position"), "id", "position:agent");
+        self.json.eq(self.json.raw(hat, "position"), "charter", CHARTER);
+        self.json.eq(hat, "objective", "assess the storage migration");
+        self.json.eq(hat, "output_contract", "Assessment");
+        self.json.eq(hat, "data_class", "internal");
+        self.json.eq(hat, "requires", "judgment");
+        self.json.eq(hat, "tool_grant", "");
+        self.json.eq(hat, "knowledge_bindings", "package:sha256:none");
+        self.json.eq(hat, "head", self.json.string(self.json.raw(first, "source"), "record_head"));
+        let status = self.json.string(hat, "practices_status");
+        std::test::assert(status == "no memory" || status == "resolved" || status == "unavailable", "the hat says how its practices were read: " + status);
+        if status != "resolved" { self.json.eq(hat, "watermark", "-1"); std::test::assert_eq_str(self.json.raw(hat, "practices"), "[]", "no practices without memory"); }
+        std::test::assert(std::str::contains(self.json.raw(hat, "history"), "{\"kind\": \"attempt.admitted\", \"id\": \"" + dna::attempt_id_of(WORK, 0) + "\""), "the Work's history as facts: " + self.json.raw(hat, "history"));
+        let digest = self.json.string(hat, "digest");
+        std::test::assert(std::str::starts_with(digest, "sha256:") && len(digest) == 71, "the digest names the hat: " + digest);
+        let again = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        std::test::assert_eq_str(self.json.string(self.json.data(again), "digest"), digest, "rendered twice at one head, one digest");
+        // the digest is over the body: what the hat says is what it hashes
+        let body = self.json.data(first);
+        let cut = std::str::index_of(body, ", \"digest\": ");
+        std::test::assert(cut > 0, "the digest is the last field: " + body);
+        std::test::assert_eq_str(dna::digest_of(body[0..cut] + "}"), digest, "sha256 over the canonical body, the digest itself left out");
+        // a row that moves the head moves the digest: the hat is fenced to the head it was rendered at
+        self.f.append("task.born", "hat-other", "hat-ask-2: another judge (workflow)");
+        let moved = self.get(service, "/dna/context?id=" + dna::url_encode(WORK), 200, "ContextResponse");
+        std::test::assert(self.json.string(self.json.data(moved), "head") != self.json.string(hat, "head"), "the head moved");
+        std::test::assert(self.json.string(self.json.data(moved), "digest") != digest, "and so did the digest");
+        // a Work the record does not bind, and a read that names none
+        self.get(service, "/dna/context?id=hat-close%2Fwf1%2Fs0%2Fnobody", 404, "ErrorResponse");
+        self.get(service, "/dna/context", 400, "ErrorResponse");
+        eprintln("PASS the hat as a read");
+    }
+}
+
+fn main() {
+    let f = fixture::Fixture { root: "/tmp/hale-api-context." + to_string(std::process::pid()) };
+    let cases = HatCases { f: f };
+    cases.run_cases();
+}

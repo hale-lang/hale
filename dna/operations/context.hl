@@ -1,0 +1,255 @@
+// dna/operations/context.hl — the hat (GH #946, slice 2): one
+// content-addressed context per Work, as a READ.
+//
+// The hat is what a position wears to a Work: the position's identity
+// and charter, the practices the organization ratified for the Work's
+// target resolved to text with their ids, the knowledge bindings the
+// owner named, the tool grant, the output contract, the data class, and
+// the Work's history as facts. It is structure, never a prompt:
+// rendering is a leg's, and the renderer's version is evidence of its
+// own. A hat is a point-in-time render fenced to a record head and a
+// projection watermark, recorded by its digest — sha256 over the
+// canonical body, excluding nothing that is in it — so two attempts of
+// one task may wear different hats, correctly, and an attempt records
+// which. What is forbidden is unrecorded variation: nothing here reads
+// a clock, an environment value or a random id. Replay renders from the
+// recorded hat, never the live graph.
+import "../core" as dna;
+
+type Hat {
+    ok: Bool = false;
+    code: String = ""; // work_not_found | context_read_limit | context_source_invalid | context_source_unavailable
+    why: String = "";
+    work_id: String = "";
+    task_id: String = "";
+    step_id: String = "";
+    attempt_id: String = ""; // the attempt admitted last; "" before one is
+    performer_kind: String = "";
+    position_id: String = ""; // the graph's id for the position, `position:<name>`
+    charter: String = ""; // the position node's text; "" when the record holds no node for it
+    objective: String = "";
+    target: String = "";
+    output_contract: String = "";
+    data_class: String = "internal";
+    requires: String = "";
+    cost_ceiling: Int = 0;
+    tool_grant: String = "";
+    knowledge_bindings: String = "";
+    practices: String = "[]"; // a JSON array of {id, text}
+    practices_n: Int = 0;
+    practices_status: String = ""; // resolved | no memory | unavailable
+    history: String = "[]"; // a JSON array of {kind, id, order}
+    head: String = "";
+    watermark: Int = -1; // memory's projection watermark the practices were read at; -1 without memory
+    digest: String = "";
+}
+
+// The kind a Work's request selects before an attempt is admitted, as the
+// engine selects it (`kinds_of`, capability-first): a person's, an edit,
+// else by what it requires.
+fn hat_kind_of(requires: String) -> String {
+    if std::str::contains(requires, "edit") { return "edit"; }
+    if std::str::contains(requires, "human") || std::str::contains(requires, "person") { return "human"; }
+    if std::str::contains(requires, "judgment") { return "agent"; }
+    if std::str::contains(requires, "analysis") { return "service"; }
+    return "software";
+}
+
+// The graph's id for the position a performer kind names (GH #1085):
+// the generated organization's instances are `leader`, `editor` and
+// `agent`; a human Work is the people's; a service or software
+// performer is named by its kind.
+fn hat_position_of(kind: String) -> String {
+    return "position:" + (if kind == "edit" { "editor" } else if len(kind) == 0 { "agent" } else { kind });
+}
+
+// The tools a position may use on the Work: the editor's hands on an
+// edit; nothing else is granted until #987 hands the rest over.
+fn hat_tool_grant(kind: String) -> String {
+    return if kind == "edit" { "read edit fmt check" } else { "" };
+}
+
+// The locus path knowledge is drawn for: the Work's target when it is
+// one (`org`, `org/<child>`, …), else the organization's own.
+fn hat_knowledge_target(target: String) -> String {
+    return if target == "org" || std::str::starts_with(target, "org/") { target } else { "org" };
+}
+
+// The canonical body of a hat — everything but the digest, in a fixed
+// order — and the digest over it.
+fn hat_body(h: Hat) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("work_id", h.work_id);
+    b.string_field("task_id", h.task_id);
+    b.string_field("step_id", h.step_id);
+    b.string_field("attempt_id", h.attempt_id);
+    b.string_field("performer_kind", h.performer_kind);
+    b.begin_object_field("position");
+    b.string_field("id", h.position_id);
+    b.string_field("charter", h.charter);
+    b.end_object();
+    b.string_field("objective", h.objective);
+    b.string_field("target", h.target);
+    b.string_field("output_contract", h.output_contract);
+    b.string_field("data_class", h.data_class);
+    b.string_field("requires", h.requires);
+    b.string_field("cost_ceiling", to_string(h.cost_ceiling));
+    b.string_field("tool_grant", h.tool_grant);
+    b.string_field("knowledge_bindings", h.knowledge_bindings);
+    b.field("practices", h.practices);
+    b.string_field("practices_status", h.practices_status);
+    b.field("history", h.history);
+    b.string_field("head", h.head);
+    b.string_field("watermark", to_string(h.watermark));
+    b.end_object();
+    return b.result();
+}
+
+fn hat_digest(h: Hat) -> String { return dna::digest_of(hat_body(h)); }
+
+// The hat on the wire: its body, then the digest over that body.
+fn hat_json(h: Hat) -> String {
+    let body = hat_body(h);
+    return body[0..(len(body) - 1)] + ", \"digest\": " + dna::record_json_quote(h.digest) + "}";
+}
+
+// The reader: a caller-owned, already loaded journal, and memory under
+// the caller's role for the practices (a head's; without memory the hat
+// says so and carries none).
+locus HatReader {
+    params {
+        j: dna::Journal;
+        knowledge: dna::MemoryKnowledge = dna::MemoryKnowledge { };
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
+        loaded: Bool = false;
+        code: String = "";
+        problem: String = "";
+    }
+    fn fail(code: String, why: String) -> Bool { self.code = code; self.problem = why; return false; }
+    fn workflow_fact(kind: String) -> Bool {
+        return kind == "workflow.admitted" || kind == "workflow.refused" || kind == "workflow.settled" || kind == "step.registered" || kind == "step.activated"
+            || kind == "step.completed" || kind == "step.failed" || kind == "attempt.admitted" || kind == "attempt.outcome" || kind == "work.settled";
+    }
+    // The execution facts, replayed into the projection under the same
+    // bounds the execution reader keeps.
+    @unbounded
+    fn load() -> Bool {
+        if self.loaded { return true; }
+        if self.j.revision() > 2048 { return self.fail("context_read_limit", "the context reader's event budget was exceeded"); }
+        let mut i = 0;
+        let mut bytes = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "ledger.adopted" { return self.fail("context_source_unavailable", "this application has adopted a Ledger; its owning-service context reader is not connected"); }
+            if self.workflow_fact(e.kind) {
+                bytes = bytes + len(e.body);
+                if len(e.body) > 65536 || bytes > 524288 || self.p.fact_count() >= 512 { return self.fail("context_read_limit", "the context reader's fact budget was exceeded"); }
+                let applied = dna::replay(self.p, e.kind, e.entity, e.body);
+                if !applied.ok { return self.fail("context_source_invalid", "a recorded execution fact was refused by the native projection: " + applied.why); }
+                if self.p.node_count() > 256 { return self.fail("context_read_limit", "the context reader's bound-node budget was exceeded"); }
+            }
+            i = i + 1;
+        }
+        self.loaded = true;
+        return true;
+    }
+    // The text of the record's graph node for an id ("" when none): the
+    // latest `graph.node` row for it, a retirement taking it back.
+    @unbounded
+    fn node_text(id: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "graph.node" && e.entity == id { out = std::json::find_string_field(e.body, "text"); }
+            if e.kind == "graph.retired" && e.entity == id { out = ""; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The Work's history as facts: every execution fact about the Work —
+    // its attempts admitted and settled, its settlement — by record order.
+    @unbounded
+    fn history_json(work_id: String) -> String {
+        let b = std::json::Builder { };
+        b.begin_array();
+        let mut i = 0;
+        while i < self.p.fact_count() {
+            let f = self.p.facts.get(i) or dna::Fact { };
+            let node = if f.kind == "attempt.admitted" || f.kind == "attempt.outcome" { std::json::find_string_field(f.body, "work_id") } else { f.id };
+            if node == work_id {
+                b.begin_object();
+                b.string_field("kind", f.kind);
+                b.string_field("id", f.id);
+                b.string_field("order", to_string(i));
+                b.end_object();
+            }
+            i = i + 1;
+        }
+        b.end_array();
+        return b.result();
+    }
+    // The practices ratified for the Work's target, resolved to text with
+    // their ids, from memory under the reader's role; the watermark they
+    // were read at. Without memory the hat carries none and says so.
+    @unbounded
+    fn practices(h: Hat) -> Hat {
+        let mut out = h;
+        if !self.knowledge.ready() { out.practices_status = "no memory"; return out; }
+        let pkg = self.knowledge.package_for(hat_knowledge_target(h.target), h.objective);
+        if len(pkg.error) > 0 { out.practices_status = "unavailable"; return out; }
+        out.watermark = pkg.revision;
+        out.practices_status = "resolved";
+        let b = std::json::Builder { };
+        b.begin_array();
+        let mut ids = pkg.included + " ";
+        let mut lines = pkg.text;
+        let mut n = 0;
+        while len(ids) > 1 {
+            let sp = std::str::index_of(ids, " ");
+            let id = ids[0..sp];
+            ids = ids[(sp + 1)..len(ids)];
+            if len(id) == 0 { continue; }
+            let nl = std::str::index_of(lines, "\n");
+            let line = if nl < 0 { lines } else { lines[0..nl] };
+            lines = if nl < 0 { "" } else { lines[(nl + 1)..len(lines)] };
+            b.begin_object();
+            b.string_field("id", id);
+            b.string_field("text", if std::str::starts_with(line, "- ") { line[2..len(line)] } else { line });
+            b.end_object();
+            n = n + 1;
+        }
+        b.end_array();
+        out.practices = b.result();
+        out.practices_n = n;
+        return out;
+    }
+    // The hat for a Work, at this reading of the record.
+    @unbounded
+    fn read(work_id: String) -> Hat {
+        if !self.load() { return Hat { code: self.code, why: self.problem }; }
+        let mut node = dna::BoundNode { };
+        let mut i = 0;
+        while i < self.p.node_count() {
+            let n = self.p.tree.get(i) or dna::BoundNode { };
+            if n.kind == "work" && n.id == work_id { node = n; }
+            i = i + 1;
+        }
+        if len(node.id) == 0 { return Hat { code: "work_not_found", why: "no bound Work `" + work_id + "` in any admitted execution" }; }
+        let w = self.p.work(work_id);
+        let admitted = if len(w.attempt_id) > 0 { dna::recorded_attempt_admission(self.j, w.attempt_id, self.j.revision()) } else { dna::DecodedAttempt { } };
+        let kind = if admitted.ok { admitted.value.performer_kind } else { hat_kind_of(node.requires) };
+        let position = hat_position_of(kind);
+        let mut h = Hat {
+            ok: true, work_id: work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: kind,
+            position_id: position, charter: self.node_text(position),
+            objective: node.objective, target: node.target, output_contract: node.output_contract, data_class: node.data_class,
+            requires: node.requires, cost_ceiling: node.cost_ceiling, tool_grant: hat_tool_grant(kind), knowledge_bindings: node.knowledge_bindings,
+            history: self.history_json(work_id), head: self.j.head()
+        };
+        h = self.practices(h);
+        h.digest = hat_digest(h);
+        return h;
+    }
+}

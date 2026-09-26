@@ -40,3 +40,13 @@ review, where the template puts it. The growth assessment
 context alone. Each old context digest was checked by reproducing it
 from the new context with the four changes taken back out. No fresh
 model call was made; every answer is unchanged.
+
+GH #946 gave the generated organization's `main.hl` one more binding, a
+leg's outcome over the nerves (`dna::WorkSubmit: nats::NatsAdapter { }`).
+Two entries carry that file in their context. The organization-growth
+edit (`3d1f819f6bdc…`, was `24445cec5037…`) is re-keyed, and its recorded
+output carries the same one line and nothing else. The growth assessment
+(`beeae0270a4e…`, was `7ec59ec75a20…`) is re-keyed for the changed context
+alone. Each old context digest was checked by reproducing it from the new
+context with the one line taken back out. No fresh model call was made;
+every answer is unchanged.

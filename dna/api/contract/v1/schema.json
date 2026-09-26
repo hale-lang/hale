@@ -474,6 +474,9 @@
             },
             "people": {
               "type": "boolean"
+            },
+            "context": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -506,6 +509,12 @@
               "type": "boolean"
             },
             "task_create": {
+              "type": "boolean"
+            },
+            "attempt_claim": {
+              "type": "boolean"
+            },
+            "attempt_outcome": {
               "type": "boolean"
             }
           },
@@ -553,6 +562,9 @@
         },
         "task_create_commands": {
           "$ref": "#/$defs/TaskCreateCommandCapabilities"
+        },
+        "attempt_commands": {
+          "$ref": "#/$defs/AttemptCommandCapabilities"
         }
       },
       "required": [
@@ -2728,6 +2740,12 @@
             },
             {
               "$ref": "#/$defs/TaskCreateCommandReceipt"
+            },
+            {
+              "$ref": "#/$defs/AttemptClaimCommandReceipt"
+            },
+            {
+              "$ref": "#/$defs/AttemptOutcomeCommandReceipt"
             }
           ]
         }
@@ -2889,6 +2907,12 @@
         },
         {
           "$ref": "#/$defs/TaskCreateCommandRequest"
+        },
+        {
+          "$ref": "#/$defs/AttemptClaimCommandRequest"
+        },
+        {
+          "$ref": "#/$defs/AttemptOutcomeCommandRequest"
         }
       ]
     },
@@ -11389,6 +11413,886 @@
         }
       ],
       "description": "Raising work succeeds once its intent.requested row is in the Record; the subject digest is the Record head the request was prepared against. `task_create` re-derives the organism's answer on every read: requested until it answers, offered, refused, or born with the Task id. An uncertain append names no intent."
+    },
+    "AttemptClaimCommandTarget": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "dna.work"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "application_id",
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptOutcomeCommandTarget": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "dna.attempt"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "application_id",
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptEvidenceCall": {
+      "type": "object",
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "backend": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "credential": {
+          "type": "string"
+        },
+        "requested_model": {
+          "type": "string"
+        },
+        "reported_model": {
+          "type": "string"
+        },
+        "params": {
+          "type": "string"
+        },
+        "prompt_digest": {
+          "type": "string"
+        },
+        "context_digest": {
+          "type": "string"
+        },
+        "knowledge_bindings": {
+          "type": "string"
+        },
+        "tool_grant": {
+          "type": "string"
+        },
+        "response_digest": {
+          "type": "string"
+        },
+        "elapsed": {
+          "type": "string"
+        },
+        "retry_of": {
+          "type": "string"
+        },
+        "data_class": {
+          "type": "string"
+        },
+        "refused": {
+          "type": "string"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_micros": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "description": "One model call a leg made under the attempt, as its evidence: the fields of a model.called row. Journaled on the attempt id by the owner, so tokens per task hold out of process."
+    },
+    "AttemptReceiptBody": {
+      "type": "object",
+      "properties": {
+        "class": {
+          "enum": [
+            "public",
+            "internal",
+            "customer",
+            "confidential"
+          ]
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "class",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptClaimCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.claim"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptClaimCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "record_head": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal"
+            }
+          },
+          "required": [
+            "record_head",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "performer_kind": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "performer": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "capabilities": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "data_classes": {
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "enum": [
+                  "public",
+                  "internal",
+                  "customer",
+                  "confidential"
+                ]
+              }
+            },
+            "organizations": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "ttl": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          },
+          "required": [
+            "performer_kind",
+            "performer",
+            "capabilities",
+            "data_classes",
+            "organizations",
+            "ttl"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "A leg claims one admitted, outstanding attempt of the kind it performs (GH #946): needing nothing beyond its capabilities, of a data class it may see, under an owner it works for. The claim is memory's, keyed on the attempt id with this TTL; the lease comes back as a value. Conditioned on the Record head the request was prepared against."
+    },
+    "AttemptOutcomeCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.outcome"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "holder": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "token": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal"
+            }
+          },
+          "required": [
+            "holder",
+            "token",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "type": "object",
+          "properties": {
+            "disposition": {
+              "enum": [
+                "done",
+                "failed",
+                "declined",
+                "timeout"
+              ]
+            },
+            "result": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 16384
+            },
+            "result_ref": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 256
+            },
+            "narrative": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "evidence": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/AttemptEvidenceCall"
+              }
+            },
+            "receipts": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/$defs/AttemptReceiptBody"
+              }
+            }
+          },
+          "required": [
+            "disposition",
+            "result",
+            "result_ref",
+            "narrative",
+            "evidence",
+            "receipts"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "A leg hands back the outcome of the attempt it claimed, under its lease (GH #946): the disposition, the result or a reference to it, the calls it made as evidence, and the receipts to file (a protected body goes to memory alone). The owner still settles; a stale or duplicate outcome is refused with the reason."
+    },
+    "AttemptCommandCapabilities": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "dna.attempt.v1"
+        },
+        "operations": {
+          "const": "dna.attempt.claim dna.attempt.outcome"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "authorized": {
+          "type": "boolean"
+        },
+        "position_id": {
+          "const": "org"
+        },
+        "recovery": {
+          "const": "record_lifetime"
+        },
+        "max_ttl_seconds": {
+          "const": "86400"
+        },
+        "max_result_bytes": {
+          "const": "16384"
+        },
+        "max_evidence_bytes": {
+          "const": "32768"
+        },
+        "max_receipts_bytes": {
+          "const": "65536"
+        },
+        "max_identity_bytes": {
+          "const": "256"
+        },
+        "max_request_bytes": {
+          "const": "32768"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "operations",
+        "available",
+        "authorized",
+        "position_id",
+        "recovery",
+        "max_ttl_seconds",
+        "max_result_bytes",
+        "max_evidence_bytes",
+        "max_receipts_bytes",
+        "max_identity_bytes",
+        "max_request_bytes",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptCommandOutcome": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "claimed",
+            "requested",
+            "settled",
+            "refused",
+            "unknown"
+          ]
+        },
+        "attempt_id": {
+          "type": "string"
+        },
+        "work_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "performer_kind": {
+          "type": "string"
+        },
+        "holder": {
+          "type": "string"
+        },
+        "token": {
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/DefinitionUnsignedDecimal"
+            }
+          ]
+        },
+        "until": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "disposition": {
+          "enum": [
+            "",
+            "done",
+            "failed",
+            "declined",
+            "timeout"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "attempt_id",
+        "work_id",
+        "task_id",
+        "performer_kind",
+        "holder",
+        "token",
+        "until",
+        "disposition",
+        "reason",
+        "event_id"
+      ],
+      "additionalProperties": false,
+      "description": "What a claim or an outcome reads back: the attempt and its lease (holder, token, until) as a value, the outcome's state as the owner settles it, or the refusal with its reason."
+    },
+    "AttemptClaimCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.claim"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptClaimCommandTarget"
+        },
+        "subject_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "refused",
+            "outcome_unknown"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "outcome": {
+              "const": ""
+            },
+            "subject_digest": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "outcome",
+            "subject_digest"
+          ],
+          "additionalProperties": false
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "attempt": {
+          "$ref": "#/$defs/AttemptCommandOutcome"
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "subject_digest",
+        "fingerprint",
+        "state",
+        "reason",
+        "review",
+        "activation",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "AttemptOutcomeCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "const": "dna.attempt.outcome"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/PracticeCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/AttemptOutcomeCommandTarget"
+        },
+        "subject_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "refused",
+            "outcome_unknown"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "outcome": {
+              "const": ""
+            },
+            "subject_digest": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "outcome",
+            "subject_digest"
+          ],
+          "additionalProperties": false
+        },
+        "activation": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": ""
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "attempt": {
+          "$ref": "#/$defs/AttemptCommandOutcome"
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "application_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "subject_digest",
+        "fingerprint",
+        "state",
+        "reason",
+        "review",
+        "activation",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "HatPractice": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "HatFact": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "order"
+      ],
+      "additionalProperties": false
+    },
+    "Hat": {
+      "type": "object",
+      "properties": {
+        "work_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "attempt_id": {
+          "type": "string"
+        },
+        "performer_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "position": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "charter": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "charter"
+          ],
+          "additionalProperties": false
+        },
+        "objective": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "output_contract": {
+          "type": "string"
+        },
+        "data_class": {
+          "enum": [
+            "public",
+            "internal",
+            "customer",
+            "confidential"
+          ]
+        },
+        "requires": {
+          "type": "string"
+        },
+        "cost_ceiling": {
+          "$ref": "#/$defs/DefinitionDecimal"
+        },
+        "tool_grant": {
+          "type": "string"
+        },
+        "knowledge_bindings": {
+          "type": "string"
+        },
+        "practices": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/HatPractice"
+          }
+        },
+        "practices_status": {
+          "enum": [
+            "resolved",
+            "no memory",
+            "unavailable"
+          ]
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "$ref": "#/$defs/HatFact"
+          }
+        },
+        "head": {
+          "type": "string",
+          "minLength": 1
+        },
+        "watermark": {
+          "$ref": "#/$defs/DefinitionDecimal"
+        },
+        "digest": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "work_id",
+        "task_id",
+        "step_id",
+        "attempt_id",
+        "performer_kind",
+        "position",
+        "objective",
+        "target",
+        "output_contract",
+        "data_class",
+        "requires",
+        "cost_ceiling",
+        "tool_grant",
+        "knowledge_bindings",
+        "practices",
+        "practices_status",
+        "history",
+        "head",
+        "watermark",
+        "digest"
+      ],
+      "additionalProperties": false,
+      "description": "The hat (GH #946): one Work's context as structure, never a prompt. A point-in-time render fenced to the Record head and memory's projection watermark; the digest is sha256 over the canonical body with the digest itself left out, and is what an attempt, a receipt and a tape key on. Positions are the graph's position:<name> ids."
+    },
+    "ContextResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "data": {
+          "$ref": "#/$defs/Hat"
+        }
+      },
+      "required": [
+        "api_version",
+        "source",
+        "data"
+      ],
+      "additionalProperties": false
     },
     "PersonCommandTarget": {
       "type": "object",

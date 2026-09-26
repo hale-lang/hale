@@ -1192,6 +1192,9 @@ record's.
 | `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node stops and exits 75 for its unit to start it again, and the next node relays every unanswered request again (GH #986) |
 | `observation.requested` / `observation.refused` | record | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it; refused, unrelayed, when the row is not verified under `signed` trust (GH #986) |
 | `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
+| `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the attempt's task, work and performer kind, and the command that took it |
+| `attempt.outcome_requested` | ledger | the outcome a leg handed back under its lease: the disposition, the result, the receipts it filed (`evidence_ref`), the calls it made (`calls`) and the command (`request`); relayed until `attempt.outcome` or `attempt.outcome_refused` answers it |
+| `attempt.outcome_refused` | ledger | why the owner would not settle a leg's outcome (`why`, `holder`, `token`, `request`) |
 | `org.reviewed` | record | that pass's own answer |
 | `person.retired` | record | someone left, and who took their work |
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
@@ -1497,6 +1500,62 @@ makes no claim that external effects happen once: a performer that
 acted and died before its outcome was saved is a later card's. The
 `WorkSystem` retries nothing of its own (card 18): it routes each
 admitted attempt to the performer of the kind the admission names.
+
+## Legs: the hat, the claim and the outcome
+
+The spine's whole API to a leg is three things (GH #946): the hat as a
+read, `dna.attempt.claim`, and `dna.attempt.outcome`. A leg holds
+nothing between tasks and has no database role; the owner still admits
+and settles.
+
+- **The hat** (`GET …/dna/context?id=<work>`; `dna/operations/context.hl`)
+  is one Work's context as structure, never a prompt: the position's
+  identity — the graph's `position:<name>` id, from the performer kind
+  the attempt admitted last names, or the kind the request selects
+  before one is — and its charter (the record's `graph.node` text for
+  that id, `""` until the graph names it); the practices ratified for
+  the Work's target, from memory under the reader's role, resolved to
+  text with their ids; the knowledge bindings; the tool grant; the
+  output contract; the data class; the Work's history as facts; the
+  record head and memory's projection watermark it was rendered at
+  (`-1` without memory, and `practices_status` says so); and the
+  digest, sha256 over the canonical body with the digest itself left
+  out. Rendered twice at one head it is one digest; a row that moves
+  the head moves it. Two attempts of one task may wear different hats,
+  correctly: what is forbidden is unrecorded variation, so the hat reads
+  no clock, no environment value and no random id, and replay renders
+  from the recorded hat, never the live graph. Rendering is a leg's,
+  and the renderer's version is evidence of its own.
+- **The claim** is taken at the head. The filter names the performer
+  kind and identity, the capabilities the leg has, the data classes it
+  may see, the owners it works for and a TTL. The head picks the first
+  admitted attempt of that kind that is outstanding — asked to run
+  (`effect.requested attempt:<id>`), no outcome — fits the filter, and
+  is not held by another leg under a live lease; takes memory's claim
+  `attempt:<id>` for the performer with the TTL under the head's role
+  (GH #1026: the store decides between two legs racing; without memory
+  nothing races); and appends `attempt.claimed` naming the lease. The
+  receipt returns the task and the lease as a value. Nothing fitting,
+  or everything held, is a refusal: a receipt with the reason and no
+  row, since legs ask often and an empty answer is not a fact.
+- **The outcome** comes back under the lease. The head refuses — a
+  receipt with the reason, no row — an attempt never admitted or never
+  asked to run, one already settled (`duplicate`), and a lease that is
+  not this holder's at this token now, by the recorded claim and, with
+  memory, by memory's (`stale`); files the receipts (a protected body
+  in memory alone, the rest as git receipts); and appends
+  `attempt.outcome_requested`. A node relays the row onto the nerves
+  (`WorkSubmit`, `dna.work.submit`) until the record answers it. The
+  owner checks the same lease, journals the calls the leg made as
+  `model.called` rows on the attempt id — tokens per task hold out of
+  process — and settles the attempt through the path every reply
+  takes: `attempt.outcome` by exact append, the Work and the task
+  after it; a submission it will not settle is an
+  `attempt.outcome_refused` row naming why, which answers the request
+  too. A `LegRelay` performer answers pending for the kinds a program
+  hands to legs, so the attempt waits for one instead of running in
+  process (stage 1 of the legs; the in-process performers go as each
+  stage lands).
 
 ## Workflow execution: one step
 

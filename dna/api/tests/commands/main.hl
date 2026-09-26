@@ -18,6 +18,8 @@ locus ScriptedCommands {
         review_authorized: Bool = true;
         create_supported: Bool = true;
         create_authorized: Bool = true;
+        attempt_supported: Bool = true;
+        attempt_authorized: Bool = true;
         capability_calls: Int = 0;
         submit_calls: Int = 0;
         lookup_calls: Int = 0;
@@ -28,7 +30,7 @@ locus ScriptedCommands {
         result_head: String = "";
     }
     fn supported(operation: String, version: String) -> Bool {
-        return version == "1" && ((operation == "dna.practice.propose" && self.practice_supported) || (operation == "dna.review.verdict" && self.review_supported) || (operation == "dna.task.create" && self.create_supported));
+        return version == "1" && ((operation == "dna.practice.propose" && self.practice_supported) || (operation == "dna.review.verdict" && self.review_supported) || (operation == "dna.task.create" && self.create_supported) || ((operation == "dna.attempt.claim" || operation == "dna.attempt.outcome") && self.attempt_supported));
     }
     fn current_mode() -> String {
         let mode = if len(self.root) > 0 { std::io::fs::read_file(self.root + "/command-mode") or self.mode } else { self.mode };
@@ -37,7 +39,7 @@ locus ScriptedCommands {
     fn capability(context: api::CommandContext, operation: String, version: String) -> api::CommandCapability {
         self.capability_calls = self.capability_calls + 1;
         let mode = self.current_mode();
-        return api::CommandCapability { available: self.available && mode != "unavailable", authorized: self.authorized && (if operation == "dna.review.verdict" { self.review_authorized } else if operation == "dna.task.create" { self.create_authorized } else { self.practice_authorized }) && mode != "forbidden", reason: "Scripted adapter conformance provider; native durability is not implemented." };
+        return api::CommandCapability { available: self.available && mode != "unavailable", authorized: self.authorized && (if operation == "dna.review.verdict" { self.review_authorized } else if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" { self.attempt_authorized } else if operation == "dna.task.create" { self.create_authorized } else { self.practice_authorized }) && mode != "forbidden", reason: "Scripted adapter conformance provider; native durability is not implemented." };
     }
     fn result(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         let mode = self.current_mode();
@@ -45,6 +47,7 @@ locus ScriptedCommands {
         if mode == "unavailable" || mode == "lookup_unavailable" { return api::CommandResult { }; }
         if command.operation == "dna.review.verdict" { return self.verdict_result(context, command, mode); }
         if command.operation == "dna.task.create" { return self.create_result(context, command, mode); }
+        if command.operation == "dna.attempt.claim" || command.operation == "dna.attempt.outcome" { return self.attempt_result(context, command, mode); }
         let created = mode == "succeeded" || mode == "approve_pending" || mode == "adopted" || mode == "activation_refused";
         let approved = mode == "approve_pending" || mode == "adopted" || mode == "activation_refused";
         let receipt = api::CommandReceipt {
@@ -74,7 +77,32 @@ locus ScriptedCommands {
         b.string_field("text", command.text); b.string_field("rationale", command.rationale);
         b.string_field("verdict", command.verdict); b.string_field("comment", command.comment);
         b.string_field("record_head", command.record_head); b.string_field("outcome", command.outcome); b.string_field("to", command.to);
+        b.string_field("performer", command.performer); b.string_field("attempt_id", command.attempt_id); b.string_field("holder", command.holder); b.int_field("token", command.token);
         b.end_object(); return dna::digest_of(b.result());
+    }
+    // A scripted claim or outcome (GH #946): the mode names what the head
+    // or the owner answered.
+    fn attempt_result(context: api::CommandContext, command: api::CommandRequest, mode: String) -> api::CommandResult {
+        let claim = command.operation == "dna.attempt.claim";
+        let unknown = mode == "outcome_unknown";
+        let refused = mode == "claim_refused" || mode == "attempt_stale";
+        let reason = if mode == "claim_refused" { "no admitted attempt awaits a agent leg with capabilities `judgment`" } else if mode == "attempt_stale" { "stale: the lease on attempt t1/wf1/s0/j/a0 is leg:bob's at token 4, not leg:alice's at token 3" } else { "" };
+        let attempt = if unknown { api::AttemptCommandOutcome { state: "unknown", attempt_id: command.attempt_id, performer_kind: command.performer_kind, holder: if claim { command.performer } else { command.holder }, token: if claim { -1 } else { command.token } } }
+        else if refused { api::AttemptCommandOutcome { state: "refused", attempt_id: command.attempt_id, performer_kind: command.performer_kind, holder: if claim { command.performer } else { command.holder }, token: if claim { -1 } else { command.token }, reason: reason } }
+        else if claim { api::AttemptCommandOutcome { state: "claimed", attempt_id: "t1/wf1/s0/j/a0", work_id: "t1/wf1/s0/j", task_id: "org:t1", performer_kind: command.performer_kind, holder: command.performer, token: 3, until: 1790500000, event_id: "cccccccccccccccccccccccccccccccccccccccc" } }
+        else { api::AttemptCommandOutcome { state: if mode == "attempt_settled" { "settled" } else { "requested" }, attempt_id: command.attempt_id, work_id: "t1/wf1/s0/j", holder: command.holder, token: command.token, disposition: command.disposition, event_id: "cccccccccccccccccccccccccccccccccccccccc" } };
+        let receipt = api::CommandReceipt {
+            command_id: "scripted:" + command.request_id, request_id: command.request_id,
+            application_id: if mode == "malformed" { "another-application" } else { context.source.identity },
+            operation: command.operation, operation_version: command.operation_version,
+            principal_mode: context.principal_mode, principal_name: context.principal_name,
+            target_kind: command.target_kind, target_id: command.target_id, subject_digest: command.subject_digest,
+            fingerprint: self.fingerprint(command), state: if unknown { "outcome_unknown" } else if refused { "refused" } else { "succeeded" }, reason: reason,
+            proposal_state: "", review_state: "unavailable", activation_state: "unknown", attempt: attempt
+        };
+        let mut source = context.source;
+        if len(self.result_head) > 0 { source.head = self.result_head; source.revision = source.revision + 1; }
+        return api::CommandResult { ok: true, source: source, receipt: receipt };
     }
     // A scripted ask: the mode names the organism's answer the receipt reports.
     fn create_result(context: api::CommandContext, command: api::CommandRequest, mode: String) -> api::CommandResult {
@@ -121,7 +149,7 @@ locus ScriptedCommands {
     }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         self.submit_calls = self.submit_calls + 1; self.last_context = context; self.last_command = command;
-        if !self.authorized || (command.operation == "dna.review.verdict" && !self.review_authorized) || (command.operation == "dna.practice.propose" && !self.practice_authorized) || (command.operation == "dna.task.create" && !self.create_authorized) { return api::CommandResult { code: "forbidden" }; }
+        if !self.authorized || (command.operation == "dna.review.verdict" && !self.review_authorized) || (command.operation == "dna.practice.propose" && !self.practice_authorized) || (command.operation == "dna.task.create" && !self.create_authorized) || ((command.operation == "dna.attempt.claim" || command.operation == "dna.attempt.outcome") && !self.attempt_authorized) { return api::CommandResult { code: "forbidden" }; }
         // Deliberately bounded, process-local conformance state, not a durable
         // registry. The retained key shares one namespace across operations.
         if command.request_id == self.saved_command.request_id && context.source.identity == self.saved_context.source.identity && context.principal_mode == self.saved_context.principal_mode && context.principal_name == self.saved_context.principal_name && command.operation != self.saved_command.operation { return api::CommandResult { code: "request_conflict" }; }
