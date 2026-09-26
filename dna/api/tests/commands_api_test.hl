@@ -51,7 +51,7 @@ locus CommandCases {
         b.begin_object_field("target"); b.string_field("application_id", self.f.identity); b.string_field("kind", "dna.work"); b.string_field("id", self.f.identity); b.end_object();
         b.begin_object_field("preconditions"); b.string_field("record_head", RECORD_HEAD);
         b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "alice"); b.end_object(); b.end_object();
-        b.begin_object_field("arguments"); b.string_field("performer_kind", kind); b.string_field("performer", performer);
+        b.begin_object_field("arguments"); b.string_field("performer_kind", kind); b.string_field("performer", performer); b.string_field("effect_class", "idempotent");
         b.begin_array_field("capabilities"); b.string_value("judgment"); b.end_array();
         b.begin_array_field("data_classes"); b.string_value("internal"); b.end_array();
         b.begin_array_field("organizations"); b.end_array();
@@ -65,7 +65,7 @@ locus CommandCases {
         b.begin_object_field("target"); b.string_field("application_id", self.f.identity); b.string_field("kind", "dna.attempt"); b.string_field("id", attempt); b.end_object();
         b.begin_object_field("preconditions"); b.string_field("holder", holder); b.int_field("token", token);
         b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "alice"); b.end_object(); b.end_object();
-        b.begin_object_field("arguments"); b.string_field("disposition", disposition); b.string_field("result", "assessment: ship it"); b.string_field("result_ref", ""); b.string_field("narrative", "one call on the deep tier");
+        b.begin_object_field("arguments"); b.string_field("effect_class", "effect_free"); b.string_field("disposition", disposition); b.string_field("result", "assessment: ship it"); b.string_field("result_ref", ""); b.string_field("narrative", "one call on the deep tier");
         b.begin_array_field("evidence"); b.begin_object(); b.string_field("backend", "deep"); b.string_field("requested_model", "deep-1"); b.int_field("input_tokens", 1200); b.int_field("output_tokens", 340); b.int_field("cost_micros", 55); b.end_object(); b.end_array();
         b.begin_array_field("receipts"); b.end_array(); b.end_object();
         b.end_object(); return b.result();

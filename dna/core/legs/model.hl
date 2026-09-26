@@ -15,8 +15,9 @@
 // `ModelCalled` publishes stay theirs: a leg is one run of a program, with
 // no bus pump between its call and its answer. A rate-limited call is
 // backed off inside the attempt — a bounded, doubling wait — and every
-// wait is recorded as evidence of its own, so the attempt's cost in time
-// is in the record beside its cost in tokens, and the lease is renewed
+// wait is recorded as evidence of its own (a refused call was never
+// made, whatever the performer's effect class), so the attempt's cost in
+// time is in the record beside its cost in tokens, and the lease is renewed
 // through the lease hand before each wait, so the Work is not lost to
 // another leg mid-wait. The model is sent the render alone: the hat is
 // structure, the leg renders it, and the hat's digest is the context
@@ -62,6 +63,15 @@ fn sleep_for_ms(ms: Int) {
 fn rate_limited(refused: String) -> Bool {
     return std::str::contains(refused, "http 429") || std::str::contains(refused, "rate limit") || std::str::contains(refused, "rate-limit") || std::str::contains(refused, "too many requests");
 }
+// Whether a refusal is a reply that was lost — the call may have been
+// made and acted on: the connection went, the answer never came, the
+// gateway gave up — as opposed to the endpoint refusing before doing
+// anything (a 4xx, a policy, a missing credential).
+fn reply_lost(refused: String) -> Bool {
+    let r = std::str::lower(refused);
+    return std::str::contains(r, "timeout") || std::str::contains(r, "timed out") || std::str::contains(r, "connection") || std::str::contains(r, "reset") || std::str::contains(r, "eof")
+        || std::str::contains(r, "unreachable") || std::str::contains(r, "lost") || std::str::contains(r, "http 502") || std::str::contains(r, "http 503") || std::str::contains(r, "http 504");
+}
 
 // The role a request carries, by the work kind: what the selection
 // policy weighs.
@@ -75,6 +85,7 @@ locus ModelPerformer {
     params {
         name: String = "model";
         kinds: String = "agent service software"; // the work kinds the model leg takes
+        effect: String = ""; // the effect class declared for this leg: effect_free for a backend that answers, uncertain for one that works in place
         router: dna::ModelRouter = dna::ModelRouter { };
         // a rate-limited call: up to `retries` more tries, the first after
         // `backoff_ms`, each wait double the last, each recorded
@@ -89,6 +100,7 @@ locus ModelPerformer {
     }
     fn kind() -> String { return "model"; }
     fn takes(performer_kind: String) -> Bool { return dna::word_in(performer_kind, self.kinds); }
+    fn effect_class() -> String { return self.effect; }
     // The wait as evidence: a call that was not made, saying why, for how
     // long, and whether the lease was kept meanwhile.
     fn waited(brief: Brief, refused: String, ms: Int, renewed: String) {
@@ -143,6 +155,11 @@ locus ModelPerformer {
             r = self.asked(brief, req);
         }
         let calls = "[" + self.calls + "]";
+        if !r.ok && self.effect == "uncertain" && reply_lost(r.refused) {
+            // the call may have acted: no retry, no failover, nothing handed
+            // back — the attempt stays unresolved until evidence or a person decides
+            return Performance { unresolved: "the reply was lost and the performer is uncertain: " + r.refused, calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+        }
         if !r.ok {
             return Performance { disposition: "failed", narrative: "the model did not answer: " + r.refused + (if tries > 0 { " (after " + to_string(tries) + " backed-off retries, " + to_string(self.waited_ms) + "ms)" } else { "" }), calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
         }

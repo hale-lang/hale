@@ -13,6 +13,18 @@
 // The project's catalog (`dna/org/work.hl`, generated at init) names
 // one of each; the head's contract stays a result struct until #732
 // gives the performers a contract of their own.
+//
+// Every performer declares an effect class (GH #946, the voice split's
+// review): what a settle that failed may have left behind. `effect_free`
+// answered and touched nothing, `idempotent` may be run again to the
+// same end, `uncertain` — an agent's seat with tools — may have acted
+// once already. A settle that fails on the first two may be retried by
+// the loop; an uncertain one is never retried by a program: the leg
+// files friction naming the request and leaves the lease held, until
+// evidence or a person decides. The class rides on the claim, where it
+// is the filter (a Work admits the classes its requirement allows), and
+// on the outcome, where it is evidence. There is no default class: a
+// performer that declares none is refused when the leg is seeded.
 import ".." as dna;
 
 // What a performer is handed: the Work as the hat says it, the lease it
@@ -46,6 +58,7 @@ type Performance {
     renderer: String = "";
     pending: Bool = false; // a person's: the outcome is theirs to submit later
     refused: String = ""; // why the performer would not perform, "" when it did
+    unresolved: String = ""; // an uncertain performer's reply was lost: why; nothing is handed back, the lease is kept
 }
 
 // A performer, structurally: its kind, the work kinds it takes, and one
@@ -53,15 +66,17 @@ type Performance {
 interface Performer {
     fn kind() -> String;
     fn takes(performer_kind: String) -> Bool;
+    fn effect_class() -> String;
     fn perform(brief: Brief, hands: Hands) -> Performance;
 }
 
 // A person: the brief is rendered as text for them; the outcome comes
 // back through `hale dna work submit`, under the lease the brief names.
 locus Person {
-    params { name: String = "person"; briefed: Int = 0; }
+    params { name: String = "person"; effect: String = ""; briefed: Int = 0; }
     fn kind() -> String { return "person"; }
     fn takes(performer_kind: String) -> Bool { return true; }
+    fn effect_class() -> String { return self.effect; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.briefed = self.briefed + 1;
         return Performance {
@@ -75,6 +90,7 @@ locus Person {
 locus NoDeterministic {
     fn kind() -> String { return "deterministic"; }
     fn takes(performer_kind: String) -> Bool { return false; }
+    fn effect_class() -> String { return "effect_free"; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         return Performance { refused: "no deterministic performer takes " + brief.performer_kind + " work in this project (dna/org/work.hl names none)" };
     }
@@ -85,6 +101,7 @@ locus NoDeterministic {
 locus NoModel {
     fn kind() -> String { return "model"; }
     fn takes(performer_kind: String) -> Bool { return false; }
+    fn effect_class() -> String { return "effect_free"; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         return Performance { refused: "no model performs " + brief.performer_kind + " work in this project; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl (`legs::ModelPerformer { router: agent_models() }` puts the catalog behind it)" };
     }
@@ -94,9 +111,10 @@ locus NoModel {
 // one fixed result: the shape a project's own program takes, and the
 // one a fixture wires.
 locus FixedAnswer {
-    params { name: String = "fixed"; kinds: String = "agent"; result: String = ""; narrative: String = "a fixed answer"; performed: Int = 0; }
+    params { name: String = "fixed"; kinds: String = "agent"; effect: String = ""; result: String = ""; narrative: String = "a fixed answer"; performed: Int = 0; }
     fn kind() -> String { return "deterministic"; }
     fn takes(performer_kind: String) -> Bool { return dna::word_in(performer_kind, self.kinds); }
+    fn effect_class() -> String { return self.effect; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.performed = self.performed + 1;
         return Performance { disposition: "done", result: self.result, narrative: self.narrative, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION };
@@ -106,11 +124,32 @@ locus FixedAnswer {
 // The project's performers, one of each kind: the deterministic one
 // wins for the work kinds it takes; a person's work is a person's; the
 // rest is the model's when the model takes the kind, a person's else.
+// Why a performer is unseated: it declares no class, or one that is not
+// an effect class.
+fn unseated_text(who: String, class: String) -> String {
+    if class == "" { return "the " + who + " performer declares no effect class"; }
+    return "the " + who + " performer declares `" + class + "`, which is not an effect class";
+}
+
 locus PerformerCatalog {
     params {
         person: Performer = Person { };
         deterministic: Performer = NoDeterministic { };
         model: Performer = NoModel { };
+    }
+    // The performer that declares no effect class, or one that is not
+    // `effect_free`, `idempotent` or `uncertain`: "" when all three do.
+    fn unseated() -> String {
+        if !dna::effect_class_ok(self.person.effect_class()) { return unseated_text("person", self.person.effect_class()); }
+        if !dna::effect_class_ok(self.deterministic.effect_class()) { return unseated_text("deterministic", self.deterministic.effect_class()); }
+        if !dna::effect_class_ok(self.model.effect_class()) { return unseated_text("model", self.model.effect_class()); }
+        return "";
+    }
+    // The effect class of the performer named.
+    fn effect_of(who: String) -> String {
+        if who == "deterministic" { return self.deterministic.effect_class(); }
+        if who == "model" { return self.model.effect_class(); }
+        return self.person.effect_class();
     }
     fn chosen(performer_kind: String) -> String {
         if self.deterministic.takes(performer_kind) { return "deterministic"; }

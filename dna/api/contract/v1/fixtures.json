@@ -24308,6 +24308,7 @@
       "arguments": {
         "performer_kind": "agent",
         "performer": "position:agent",
+        "effect_class": "idempotent",
         "capabilities": [
           "judgment",
           "analysis"
@@ -24348,6 +24349,7 @@
       "arguments": {
         "performer_kind": "agent",
         "performer": "position:agent",
+        "effect_class": "idempotent",
         "capabilities": [
           "judgment",
           "analysis"
@@ -24388,6 +24390,7 @@
       "arguments": {
         "performer_kind": "agent",
         "performer": "position:agent",
+        "effect_class": "idempotent",
         "capabilities": [
           "judgment",
           "analysis"
@@ -24428,6 +24431,7 @@
       "arguments": {
         "performer_kind": "agent",
         "performer": "position:agent",
+        "effect_class": "idempotent",
         "capabilities": "judgment",
         "data_classes": [
           "public",
@@ -24464,6 +24468,7 @@
         }
       },
       "arguments": {
+        "effect_class": "effect_free",
         "disposition": "done",
         "result": "assessment: ship it",
         "result_ref": "",
@@ -24523,6 +24528,7 @@
         }
       },
       "arguments": {
+        "effect_class": "effect_free",
         "disposition": "done",
         "result": "assessment: ship it",
         "result_ref": "",
@@ -24582,6 +24588,7 @@
         }
       },
       "arguments": {
+        "effect_class": "effect_free",
         "disposition": "pending",
         "result": "assessment: ship it",
         "result_ref": "",
@@ -24639,6 +24646,7 @@
         }
       },
       "arguments": {
+        "effect_class": "effect_free",
         "disposition": "done",
         "result": "assessment: ship it",
         "result_ref": "",
@@ -25167,6 +25175,7 @@
         "output_contract": "Assessment",
         "data_class": "internal",
         "requires": "judgment",
+        "effects": "effect_free idempotent",
         "cost_ceiling": "0",
         "tool_grant": "",
         "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
@@ -25219,6 +25228,7 @@
         "output_contract": "Assessment",
         "data_class": "internal",
         "requires": "judgment",
+        "effects": "effect_free idempotent",
         "cost_ceiling": "0",
         "tool_grant": "",
         "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",
@@ -25270,6 +25280,7 @@
         "output_contract": "Assessment",
         "data_class": "internal",
         "requires": "judgment",
+        "effects": "effect_free idempotent",
         "cost_ceiling": "0",
         "tool_grant": "",
         "knowledge_bindings": "package:sha256:4444444444444444444444444444444444444444444444444444444444444444 k:0123456789ab",

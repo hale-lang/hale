@@ -128,14 +128,14 @@ locus App {
         return ops::GovernanceCommand {
             request_id: request, operation: "dna.attempt.claim", operation_version: "1", application_id: identity, position_id: "org",
             target_kind: "dna.work", target_id: identity, subject_digest: head, record_head: head,
-            performer_kind: kind, performer: performer, capabilities: "judgment analysis", data_classes: classes, ttl: 600
+            performer_kind: kind, performer: performer, effect_class: "idempotent", capabilities: "judgment analysis", data_classes: classes, ttl: 600
         };
     }
     fn outcome_of(request: String, identity: String, attempt: String, holder: String, token: Int, hat: dna::Hat) -> ops::GovernanceCommand {
         return ops::GovernanceCommand {
             request_id: request, operation: "dna.attempt.outcome", operation_version: "1", application_id: identity, position_id: "org",
             target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
-            attempt_id: attempt, holder: holder, token: token, disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1", narrative: "one call on the deep tier",
+            attempt_id: attempt, holder: holder, token: token, effect_class: "idempotent", disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1", narrative: "one call on the deep tier",
             evidence: CALLS, receipts: "[{\"class\": \"internal\", \"body\": \"the prompt as sent\"}]",
             hat_digest: hat.digest, hat_head: hat.head, hat_watermark: hat.watermark, prompt_digest: dna::digest_of("the prompt as sent"), renderer: "legs-render/1"
         };
@@ -182,6 +182,15 @@ locus App {
         let r0 = commands.submit(alice, self.claim_of(label + "c0", identity, head0, "agent", alice_leg, ""));
         std::test::assert(r0.ok && r0.receipt.state == "refused", l + "no class named is no class: " + r0.code + " " + r0.receipt.state);
         std::test::assert(std::str::contains(r0.receipt.reason, "data class the leg may not see"), l + "and the refusal names it: " + r0.receipt.reason);
+        // a performer of a class the Work does not admit: a judgment is answered,
+        // never acted on, so an uncertain performer is refused, and the refusal says so
+        let mut cu = self.claim_of(label + "cu", identity, head0, "agent", alice_leg, "internal public"); cu.effect_class = "uncertain";
+        let ru = commands.submit(alice, cu);
+        std::test::assert(ru.ok && ru.receipt.state == "refused" && std::str::contains(ru.receipt.reason, "effect class `uncertain`"), l + "a judgment admits no uncertain performer: " + ru.code + " " + ru.receipt.state + " " + ru.receipt.reason);
+        // and a claim naming no class at all is not a claim
+        let mut cn = self.claim_of(label + "cn", identity, head0, "agent", alice_leg, "internal public"); cn.effect_class = "";
+        let rn = commands.submit(alice, cn);
+        std::test::assert(!rn.ok && rn.code == "invalid_command", l + "no class is no claim: " + rn.code + " " + rn.receipt.state);
         let r1 = commands.submit(alice, self.claim_of(label + "c1", identity, head0, "agent", alice_leg, "internal public"));
         std::test::assert(r1.ok, l + "the claim is admitted: " + r1.code + " " + r1.receipt.reason);
         std::test::assert_eq_str(r1.receipt.attempt.state, "claimed", l + "the lease comes back as a value: " + r1.receipt.reason);

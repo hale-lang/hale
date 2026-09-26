@@ -43,6 +43,7 @@ type GovernanceCommand {
     // outcome and its evidence. Every other variant requires all empty.
     performer_kind: String = "";
     performer: String = "";
+    effect_class: String = ""; // the performer's effect class (GH #946): effect_free | idempotent | uncertain; on a claim, the filter; on an outcome, the evidence
     capabilities: String = "";
     data_classes: String = "";
     organizations: String = "";

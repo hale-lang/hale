@@ -14,10 +14,10 @@ receipt. The position a leg works as is the graph's `position:<name>`
 id, never a free string.
 
 ```text
-hale dna work next --as position:agent          claim the next attempt for a position
+hale dna work next --as position:agent [--effect <class>]   claim the next attempt for a position
 hale dna work brief --attempt <id> [--render text|prompt|agent] [--plain]
 hale dna work renew --as … --attempt <id> --token <n> [--ttl 900]
-hale dna work submit --as … --attempt <id> --token <n> --result <text> [--result-file f]
+hale dna work submit --as … --attempt <id> --token <n> --result <text> [--result-file f] [--effect <class>]
                      [--narrative …] [--evidence-file calls.json] [--receipt-file f --receipt-class internal]
                      [--hat-digest … --hat-head … --hat-watermark n --prompt-digest …]
 hale dna work settle --attempt <id> --token <n> [--wait <secs>]
@@ -136,17 +136,25 @@ unbounded loop would hold the server, and belongs to a terminal.
 ## The performers
 
 `dna/org/work.hl`, generated at init beside the catalog, names one
-performer of each kind:
+performer of each kind, and every one declares its **effect class**
+(`effect`): what a settle that failed may have left behind.
+`effect_free` answered and touched nothing; `idempotent` may be run
+again to the same end; `uncertain` — an agent's seat with tools — may
+have acted once already. There is no default: a performer that
+declares none is refused when the leg starts (exit 2, naming it).
 
-- a **person**: the brief is rendered as text and the outcome is
+- a **person** (`legs::Person { effect: "idempotent" }`: asked again,
+  they answer again): the brief is rendered as text and the outcome is
   theirs to `submit`;
 - a **deterministic** performer: a program of the project's own. Give
   it the work kinds it takes and it wins for them
-  (`legs::FixedAnswer { kinds: "agent", result: "…" }` is the
-  smallest one; `NoDeterministic` takes nothing);
+  (`legs::FixedAnswer { kinds: "agent", effect: "effect_free", result:
+  "…" }` is the smallest one; `NoDeterministic` takes nothing);
 - a **model**: the model leg — the catalog's agent router
   (`agent_models()` from `dna/org/models.hl`) behind the performer,
-  `legs::ModelPerformer { router: agent_models() }`. It takes the
+  `legs::ModelPerformer { router: agent_models(), effect:
+  "effect_free" }` for a backend that answers, `effect: "uncertain"`
+  for one that works in place with its own tools. It takes the
   `agent`, `service` and `software` kinds (`kinds`). A project
   initialised with no backend configured gets `NoModel`, which takes
   nothing, so its agent Works are a person's rather than attempts
@@ -159,6 +167,34 @@ scratch worktree (never the primary checkout), the forge through
 and the heart's API refuse until GH #987 hands them over — and answers
 with a performance: the disposition and result, the calls it made,
 the receipts to file, the digest of what it was shown.
+
+The class rides with the work. On the **claim** it is the filter: a
+Work admits the classes its requirement allows — a judgment or an
+analysis is answered, never acted on, so it admits `effect_free` and
+`idempotent` and no `uncertain` performer is given one; an edit
+changes source, so it admits `idempotent` and `uncertain`; a person's
+job, and anything else, admits any — and the hat says so
+(`effects`). `run` and `loop` claim with the class of the performer
+they chose; `next` and `submit` claim and answer with the person's,
+or the one `--effect` names. On the **outcome** it is evidence: the
+row the owner journals carries `effect_class`.
+
+And it decides what a failed settle becomes. A settle that fails —
+the outcome read back is neither settled nor still requested, or
+cannot be read — on an `effect_free` or `idempotent` performer is
+`unsettled` (exit 1), and the loop runs the child again at once,
+which claims the same lease and performs again. On an `uncertain`
+performer nothing is retried by a program: the leg files **friction**
+naming the attempt, the request id and the lease, keeps the lease,
+answers `unresolved` (exit 1), and the loop stops that slot — the
+attempt stays unresolved until evidence or a person decides. The
+model leg applies the same rule to a **lost reply**: a call that may
+have been made and acted on (the connection went, the answer never
+came, a gateway gave up) behind an `uncertain` performer is
+`unresolved` with nothing handed back, never retried, never failed
+over; behind the other two it is a `failed` outcome as before. A
+rate-limited call was never made, so its backoff applies to every
+class.
 
 ## The model leg
 

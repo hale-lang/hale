@@ -52,14 +52,14 @@ fn relay_once(app: String) -> Int {
     return n;
 }
 
-const FIXED_WORK: String = "// a deterministic performer for the fixture\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::FixedAnswer { kinds: \"agent\", result: \"assessment: fixed\", narrative: \"a program answered\" }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const FIXED_WORK: String = "// a deterministic performer for the fixture\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::FixedAnswer { kinds: \"agent\", effect: \"effect_free\", result: \"assessment: fixed\", narrative: \"a program answered\" }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
-const MODEL_WORK: String = "// the model leg over fakes, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { router: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", model: \"quick-1\", answer: \"assessment: the fake says ship it\" }, deep: dna::FakeModel { name: \"deep\", model: \"deep-1\", answer: \"assessment: the fake says ship it\" } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
-const THROTTLED_WORK: String = "// a rate-limited backend, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Throttled {\n    params { calls: Int = 0; }\n    bus { publish dna::ModelCalled; }\n    fn identity() -> String { return \"throttled\"; }\n    fn model_name() -> String { return \"throttled-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return false; }\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult {\n        self.calls = self.calls + 1;\n        let mut ev = dna::ModelEvidence { attempt_id: req.attempt_id, adapter: \"fake\", backend: \"throttled\", requested_model: \"throttled-1\", reported_model: \"throttled-1\", prompt_digest: req.prompt_digest, context_digest: dna::digest_of(req.context), data_class: req.data_class, retry_of: req.retry_of };\n        if self.calls == 1 { ev.refused = \"http 429 too many requests\"; dna::ModelCalled <- ev; return dna::ModelResult { ok: false, backend: \"throttled\", model: \"throttled-1\", refused: ev.refused }; }\n        ev.input_tokens = 7; ev.output_tokens = 3; ev.cost_micros = 1;\n        dna::ModelCalled <- ev;\n        return dna::ModelResult { ok: true, backend: \"throttled\", model: \"throttled-1\", output: \"assessment: ship it, after a breath\", tokens: 10, input_tokens: 7, output_tokens: 3, cost_micros: 1 };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { backoff_ms: 100, router: dna::ModelRouter { quick: Throttled { }, deep: Throttled { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const MODEL_WORK: String = "// the model leg over fakes, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { effect: \"effect_free\", router: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", model: \"quick-1\", answer: \"assessment: the fake says ship it\" }, deep: dna::FakeModel { name: \"deep\", model: \"deep-1\", answer: \"assessment: the fake says ship it\" } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const THROTTLED_WORK: String = "// a rate-limited backend, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Throttled {\n    params { calls: Int = 0; }\n    bus { publish dna::ModelCalled; }\n    fn identity() -> String { return \"throttled\"; }\n    fn model_name() -> String { return \"throttled-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return false; }\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult {\n        self.calls = self.calls + 1;\n        let mut ev = dna::ModelEvidence { attempt_id: req.attempt_id, adapter: \"fake\", backend: \"throttled\", requested_model: \"throttled-1\", reported_model: \"throttled-1\", prompt_digest: req.prompt_digest, context_digest: dna::digest_of(req.context), data_class: req.data_class, retry_of: req.retry_of };\n        if self.calls == 1 { ev.refused = \"http 429 too many requests\"; dna::ModelCalled <- ev; return dna::ModelResult { ok: false, backend: \"throttled\", model: \"throttled-1\", refused: ev.refused }; }\n        ev.input_tokens = 7; ev.output_tokens = 3; ev.cost_micros = 1;\n        dna::ModelCalled <- ev;\n        return dna::ModelResult { ok: true, backend: \"throttled\", model: \"throttled-1\", output: \"assessment: ship it, after a breath\", tokens: 10, input_tokens: 7, output_tokens: 3, cost_micros: 1 };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { effect: \"effect_free\", backoff_ms: 100, router: dna::ModelRouter { quick: Throttled { }, deep: Throttled { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
 // A deterministic performer that takes six seconds, for a worker ended
 // mid-task; drained early it still holds the lease past the loop's grace.
-const SLOW_WORK: String = "// a slow performer for the fixture\nimport \"vendor/dna/legs\" as legs;\nlocus Slow {\n    fn kind() -> String { return \"deterministic\"; }\n    fn takes(performer_kind: String) -> Bool { return performer_kind == \"agent\"; }\n    @unbounded\n    fn perform(brief: legs::Brief, hands: legs::Hands) -> legs::Performance {\n        let until = std::time::monotonic_ns() + 6000000000;\n        while std::time::monotonic_ns() < until { std::time::sleep(100ms); }\n        return legs::Performance { disposition: \"done\", result: \"assessment: slowly\", renderer: legs::RENDERER_VERSION };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: Slow { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const SLOW_WORK: String = "// a slow performer for the fixture\nimport \"vendor/dna/legs\" as legs;\nlocus Slow {\n    fn kind() -> String { return \"deterministic\"; }\n    fn effect_class() -> String { return \"idempotent\"; }\n    fn takes(performer_kind: String) -> Bool { return performer_kind == \"agent\"; }\n    @unbounded\n    fn perform(brief: legs::Brief, hands: legs::Hands) -> legs::Performance {\n        let until = std::time::monotonic_ns() + 6000000000;\n        while std::time::monotonic_ns() < until { std::time::sleep(100ms); }\n        return legs::Performance { disposition: \"done\", result: \"assessment: slowly\", renderer: legs::RENDERER_VERSION };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: Slow { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
 // The lines of a text: one per newline-terminated line, plus a last one.
 @unbounded
@@ -68,6 +68,14 @@ fn lines_in(text: String) -> Int {
     while i < len(text) { if text[i..(i + 1)] == "\n" { n = n + 1; } i = i + 1; }
     return if len(text) > 0 { n + 1 } else { 0 };
 }
+
+// A backend whose reply is lost — the connection went after the call
+// was made — behind a performer of each effect class: the uncertain one
+// leaves the attempt unresolved, the effect-free one hands back failed.
+const LOST_WORK_UNCERTAIN: String = "// a backend that loses its reply, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Lost {\n    fn identity() -> String { return \"lost\"; }\n    fn model_name() -> String { return \"lost-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return true; }\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult { return dna::ModelResult { ok: false, backend: \"lost\", model: \"lost-1\", refused: \"connection reset by peer after the request was sent\" }; }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { effect: \"uncertain\", router: dna::ModelRouter { quick: Lost { }, deep: Lost { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const LOST_WORK_FREE: String = "// a backend that loses its reply behind an effect-free performer\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Lost {\n    fn identity() -> String { return \"lost\"; }\n    fn model_name() -> String { return \"lost-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return false; }\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult { return dna::ModelResult { ok: false, backend: \"lost\", model: \"lost-1\", refused: \"connection reset by peer after the request was sent\" }; }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { effect: \"effect_free\", router: dna::ModelRouter { quick: Lost { }, deep: Lost { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+// A catalog with a performer that declares no class: refused at seed.
+const UNSEATED_WORK: String = "// a person with no effect class, for the fixture\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
 locus App {
     params {
@@ -113,13 +121,20 @@ locus App {
         self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
         self.core = dna::Dna {
             journal: self.journal,
-            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
+            work: dna::WorkSystem {
+                agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { },
+                software: dna::LegRelay { name: "legs-software", performer_kind: "software" }, software_reconciler: dna::RelayReplay { }
+            },
             verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
             claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
             org_id: "legs"
         };
         std::test::assert_eq_str(self.core.catalog.define("judge", 1, 1, "one judgment"), "", "judge");
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
+        // a chore requiring nothing in particular: the Work that admits every
+        // effect class, an uncertain performer among them
+        std::test::assert_eq_str(self.core.catalog.define("chore", 1, 1, "one chore"), "", "chore");
+        std::test::assert_eq_str(self.core.catalog.leaf("chore", 1, 0, "c", dna::WorkRequest { objective: "run the storage migration", output_contract: "Report" }, 2), "", "c");
     }
     @unbounded
     fn count_rows(kind: String, entity: String) -> Int {
@@ -136,6 +151,14 @@ locus App {
         while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { out = e.body; } i = i + 1; }
         return out;
     }
+    // The last row of a kind, whatever its entity.
+    @unbounded
+    fn last_of_kind(kind: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = ""; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind { out = e.body; } i = i + 1; }
+        return out;
+    }
     @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
@@ -147,6 +170,15 @@ locus App {
         let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "judge", revision: 1, from: "test" });
         let attempt = dna::attempt_id_of(t + "/wf1/s0/j", 0);
         self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
+        self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
+        return attempt;
+    }
+    // A chore asked of the organization: its Work admits every effect class.
+    fn ask_chore() -> String {
+        self.asks = self.asks + 1;
+        let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "chore", revision: 1, from: "test" });
+        let attempt = dna::attempt_id_of(t + "/wf1/s0/c", 0);
+        self.wait_row("attempt.admitted", attempt, "the engine admits the chore's attempt");
         self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
         return attempt;
     }
@@ -401,6 +433,62 @@ locus App {
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
         self.wait_row("attempt.outcome", a12, "settled");
     }
+    // ---- the effect classes: the filter, the seed, and what a lost reply becomes
+    @unbounded
+    fn effects() {
+        // the judgment leaf admits effect_free and idempotent: an uncertain claim is refused, naming it
+        let a13 = self.ask();
+        let un = self.work_rc("next\n--as\nposition:leader\n--kind\nagent\n--effect\nuncertain", 1);
+        std::test::assert(self.state_of(un) == "refused" && std::str::contains(std::json::find_string_field(un, "reason"), "not admitting a performer of effect class `uncertain`"), "a judgment admits no uncertain performer: " + un);
+        let bad = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work next --as position:agent --effect maybe --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert_eq_int(bad.code, 2, "--effect names one of the three: " + bad.stdout + bad.stderr);
+        // the hat says what the Work admits
+        let hat = self.work("brief\n--attempt\n" + a13);
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(hat, "hat"), "effects"), "effect_free idempotent", "the hat carries the classes the Work admits: " + hat);
+        // a performer that declares no class is refused when the leg is seeded
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", UNSEATED_WORK) or discard;
+        let unseated = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_API=\"$3\" && \"$2\" dna work run --as position:agent --holder position:agent#9\nsh\n" + self.app + "\n" + toolchain() + "\n" + self.api);
+        std::test::assert(unseated.code == 2 && std::str::contains(unseated.stderr, "declares no effect class"), "no default class, refused at seed: " + unseated.stdout + unseated.stderr);
+        // a lost reply behind an uncertain performer, on a chore (a Work that
+        // admits one; the routing policy hands it to a software leg): unresolved,
+        // friction filed, the lease kept. The worker is the loop's own slot 1,
+        // so the loop below meets the same lease.
+        let a15 = self.ask_chore();
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", LOST_WORK_UNCERTAIN) or discard;
+        let chore_hat = self.work("brief\n--attempt\n" + a15);
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(chore_hat, "hat"), "effects"), "effect_free idempotent uncertain", "a chore admits every class: " + chore_hat);
+        let held = self.work_rc("run\n--as\nposition:software\n--holder\nposition:software#1\n--wait\n0", 1);
+        std::test::assert(std::json::find_string_field(held, "state") == "unresolved" && std::json::find_string_field(held, "attempt_id") == a15 && std::json::find_string_field(held, "effect_class") == "uncertain", "an uncertain performer's lost reply is unresolved: " + held);
+        std::test::assert(std::str::contains(std::json::find_string_field(held, "reason"), "connection reset") && std::json::find_string_field(held, "friction") == "filed", "friction is filed naming the loss: " + held);
+        std::test::assert(!self.has_row("attempt.outcome_requested", a15), "nothing was handed back");
+        let friction_body = self.last_of_kind("friction.filed");
+        std::test::assert(std::str::contains(friction_body, "request work-submit:" + a15 + ":") && std::str::contains(friction_body, "unresolved"), "the friction names the request id: " + friction_body);
+        let taken = self.work_rc("next\n--as\nposition:leader\n--kind\nsoftware", 1);
+        std::test::assert(self.state_of(taken) == "refused", "the lease is kept, nobody else claims it: " + taken);
+        // a loop over the same catalog stops its slot on the unresolved attempt
+        let looped = self.work_timeout(60, "loop\n--as\nposition:software\n--parallel\n1\n--wait\n0");
+        std::test::assert(std::str::contains(looped, "\"state\": \"unresolved\"") && std::str::contains(looped, "\"ran\": 1"), "the loop does not run an unresolved attempt again: " + looped);
+        // the same loss behind an effect-free performer, on the judgment still
+        // outstanding: a failed outcome, handed back
+        let a14 = a13;
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", LOST_WORK_FREE) or discard;
+        let failed = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        std::test::assert(std::json::find_string_field(failed, "state") == "requested" && std::json::find_string_field(failed, "attempt_id") == a14 && std::json::find_string_field(failed, "effect_class") == "effect_free", "an effect-free performer's lost reply is a failed outcome: " + failed);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a14, "and settled");
+        std::test::assert(std::str::contains(self.row_body("attempt.outcome_requested", a14), "\"effect_class\": \"effect_free\""), "the class rides on the outcome");
+        // the failed outcome spent one of the judgment's two attempts, so the
+        // engine asks again; the retry is closed here, by a program that
+        // answers, so a later pass finds only its own attempts outstanding
+        let retry = a14[0..(len(a14) - 2)] + "a1";
+        self.wait_row("attempt.admitted", retry, "the engine tries the judgment again");
+        self.wait_row("effect.requested", "attempt:" + retry, "and asks a leg for it");
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
+        let closed = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        std::test::assert_eq_str(std::json::find_string_field(closed, "attempt_id"), retry, "the retry is the one claimed: " + closed);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", retry, "and settled");
+    }
     // ---- the hands, on the project's own repository
     fn hands() {
         let git = legs::ScratchGit { };
@@ -444,6 +532,7 @@ locus App {
         self.pass("record", "1");
         self.extras();
         self.worker();
+        self.effects();
         self.hands();
         if self.with_memory {
             self.adopt();
