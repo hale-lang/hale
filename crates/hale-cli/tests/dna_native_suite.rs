@@ -900,6 +900,7 @@ fn dna_fixture_set_is_complete() {
             "task_evidence_test.hl",
             "two_heads_test.hl",
             "two_owners_test.hl",
+            "usage_test.hl",
             "verification_test.hl",
             "workflow_admission_contention_test.hl",
             "workflow_admission_test.hl",

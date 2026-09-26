@@ -4069,6 +4069,9 @@
         },
         "accepted": {
           "type": "boolean"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
         }
       },
       "required": [
@@ -4082,7 +4085,108 @@
         "result_ref",
         "evidence_ref",
         "narrative",
-        "accepted"
+        "accepted",
+        "usage"
+      ],
+      "additionalProperties": false
+    },
+    "Usage": {
+      "type": "object",
+      "description": "Model calls summed from their model.called evidence rows: an attempt's own, or a task's with every task under it, by position (the graph's position id) and by backend/model. Counters are native integers as decimal strings.",
+      "properties": {
+        "calls": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "cost_micros": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "by_position": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/UsageByPosition"
+          }
+        },
+        "by_backend": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/UsageByBackend"
+          }
+        }
+      },
+      "required": [
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "cost_micros",
+        "by_position",
+        "by_backend"
+      ],
+      "additionalProperties": false
+    },
+    "UsageByPosition": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The graph's position id, position:<name>."
+        },
+        "calls": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "cost_micros": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        }
+      },
+      "required": [
+        "position",
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "cost_micros"
+      ],
+      "additionalProperties": false
+    },
+    "UsageByBackend": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "minLength": 1
+        },
+        "calls": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        },
+        "cost_micros": {
+          "$ref": "#/$defs/DefinitionUnsignedDecimal"
+        }
+      },
+      "required": [
+        "backend",
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "cost_micros"
       ],
       "additionalProperties": false
     },
@@ -4173,6 +4277,9 @@
           "items": {
             "$ref": "#/$defs/ExecutionFact"
           }
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
         }
       },
       "required": [
@@ -4184,7 +4291,8 @@
         "reason",
         "nodes",
         "attempts",
-        "history"
+        "history",
+        "usage"
       ],
       "additionalProperties": false
     },
@@ -10414,6 +10522,9 @@
             "$ref": "#/$defs/TaskAssignment"
           },
           "minItems": 1
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
         }
       },
       "required": [
@@ -10429,7 +10540,8 @@
         "waiting",
         "assignment_digest",
         "reassignment_supported",
-        "history"
+        "history",
+        "usage"
       ],
       "additionalProperties": false,
       "allOf": [

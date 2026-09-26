@@ -143,6 +143,20 @@ JSON Schema conformance. OpenAPI checks cover this release's routes and local
 request/response references and the command parameters, not full specification
 validation.
 
+## Usage
+
+`Usage` is the object every `Execution`, `ExecutionAttempt` and
+`AdministeredTask` carries as `usage` (GH #946): the model calls summed from
+their evidence rows. Its four counters (`calls`, `input_tokens`,
+`output_tokens`, `cost_micros`) are canonical unsigned decimal strings, never
+JSON numbers; `by_position` (at most 64 `UsageByPosition` rows, keyed by the
+graph's position id, `position:<name>`) and
+`by_backend` (at most 256 `UsageByBackend` rows, keyed `<backend>/<model>`)
+repeat the counters under a name. All three objects reject extra fields. The
+fixture `usage-summed-by-position-and-backend` is the shape; the three
+`invalid-usage-*` fixtures reject an integer counter, an extra breakdown field
+and a negative cost.
+
 ## Knowledge wire additions
 
 `reads.knowledge` is a required boolean. `KnowledgeNodesResponse`,

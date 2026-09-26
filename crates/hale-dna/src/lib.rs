@@ -180,6 +180,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/task_create_command.hl",
     "dna/operations/task_policy.hl",
     "dna/operations/task_projection.hl",
+    "dna/operations/usage.hl",
 ];
 
 /// The organization's runtime and source seeds (GH #690): what the host

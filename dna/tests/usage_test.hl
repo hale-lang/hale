@@ -1,0 +1,176 @@
+// dna/tests/usage_test.hl — tokens per task (GH #946, slice 1).
+//
+// Every model call is one `model.called` row on an attempt id, with its
+// tokens and its cost; nothing summed them. The usage projection reads
+// those rows back per task and per attempt, by position and by backend,
+// from the journal alone. Four id shapes join a call to its task:
+// `<ask>/plan` through the task born of the ask, `<work>/a<n>` through
+// a wf1 admission (which names the task and the performer) or a
+// Mutation's request (the editor's), `<review>/review` through the
+// Review's request (a knowledge Review is `knowledge`'s), and
+// `optimize/<n>` is the organization's own; a position is keyed by the
+// graph's id for it, `position:<name>`. A child workflow's calls count
+// under its parent. The editor's locate and plan calls carry the
+// Work's attempt id, so they are the Work's and nobody else's. `hale dna
+// history <entity>` prints the sums under the entity from the same
+// projection, and nothing when no call was made.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+    let r = j.append(j.revision(), kind, entity, body);
+    std::test::assert(r.ok, "append " + kind + " " + entity + ": " + r.error);
+}
+
+// One call's evidence, as the assembly journals it (the fields the
+// projection reads; the digests and the bodies are not its concern).
+fn called(j: dna::Journal, attempt: String, backend: String, model: String, input: Int, output: Int, cost: Int) {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("adapter", "fake");
+    b.string_field("backend", backend);
+    b.string_field("requested_model", model);
+    b.int_field("input_tokens", input);
+    b.int_field("output_tokens", output);
+    b.int_field("cost_micros", cost);
+    b.bool_field("ok", true);
+    b.int_field("at", 1);
+    b.end_object();
+    append(j, "model.called", attempt, b.result());
+}
+
+// A record with every id shape: an ask planned, its Mutation tried
+// twice and judged, a knowledge Review, an optimize pass, a wf1 root
+// with a child, and a call of no known shape.
+fn seed(j: dna::Journal) {
+    called(j, "i1/plan", "deep", "deep-1", 1000, 300, 50);
+    append(j, "task.born", "t1", "i1: make the checkout faster (workflow)");
+    append(j, "mutation.requested", "m1", "{\"task_id\": \"t1\", \"change_class\": \"feature\", \"objective\": \"make the checkout faster\"}");
+    called(j, "m1/a0", "quick", "quick-1", 200, 40, 5);
+    called(j, "m1/a1", "quick", "quick-1", 220, 44, 5);
+    append(j, "review.requested", "review:m1", "{\"question\": \"apply m1?\", \"mutation_id\": \"m1\", \"task_id\": \"t1\"}");
+    called(j, "m1/review", "deep", "deep-1", 900, 20, 45);
+    append(j, "review.requested", "review:k:0123456789ab", "{\"question\": \"ratify?\", \"knowledge_digest\": \"sha256:0123456789abcdef\"}");
+    called(j, "k:0123456789ab/review", "deep", "deep-1", 300, 10, 15);
+    called(j, "optimize/1", "deep", "deep-1", 400, 30, 20);
+    append(j, "workflow.admitted", "t2", "{\"version\": 1, \"engine\": \"wf1\", \"task_id\": \"t2\", \"definition\": \"close\", \"revision\": 1, \"parent_task\": \"\"}");
+    append(j, "attempt.admitted", "t2/wf1/s0/bank/a0", "{\"version\": 1, \"attempt_id\": \"t2/wf1/s0/bank/a0\", \"work_id\": \"t2/wf1/s0/bank\", \"task_id\": \"t2\", \"attempt_no\": 0, \"performer_kind\": \"agent\"}");
+    called(j, "t2/wf1/s0/bank/a0", "quick", "quick-1", 100, 10, 5);
+    append(j, "workflow.admitted", "t3", "{\"version\": 1, \"engine\": \"wf1\", \"task_id\": \"t3\", \"definition\": \"evidence\", \"revision\": 1, \"parent_task\": \"t2\"}");
+    append(j, "attempt.admitted", "t3/wf1/s0/x/a0", "{\"version\": 1, \"attempt_id\": \"t3/wf1/s0/x/a0\", \"work_id\": \"t3/wf1/s0/x\", \"task_id\": \"t3\", \"attempt_no\": 0, \"performer_kind\": \"human\"}");
+    called(j, "t3/wf1/s0/x/a0", "private", "llama3", 50, 5, 0);
+    called(j, "probe/customer", "probe", "probe-1", 1, 1, 1);
+}
+
+fn same(t: ops::UsageTotals, calls: Int, input: Int, output: Int, cost: Int, what: String) {
+    std::test::assert_eq_int(t.calls, calls, what + ": calls");
+    std::test::assert_eq_int(t.input_tokens, input, what + ": input tokens");
+    std::test::assert_eq_int(t.output_tokens, output, what + ": output tokens");
+    std::test::assert_eq_int(t.cost_micros, cost, what + ": cost");
+}
+
+main locus App {
+    params {
+        mem: dna::MemJournal = dna::MemJournal { };
+        // the editor under test: a scripted model that names the one file
+        editor: dna::SourceEditor = dna::SourceEditor {
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", model: "quick-1", answer: "a.hl" },
+                deep: dna::FakeModel { name: "deep", model: "deep-1", answer: "a.hl" }
+            }
+        };
+        seen: String = ""; // the attempt ids the editor's calls were published on, in order
+    }
+    bus { subscribe dna::ModelCalled as on_called; }
+    fn on_called(ev: dna::ModelEvidence) { self.seen = self.seen + ev.attempt_id + "\n"; }
+    run() {
+        // ---- 1. the projection, over a memory journal
+        seed(self.mem);
+        let u = ops::Usage { j: self.mem };
+        // an attempt's own
+        same(u.under("m1/a0"), 1, 200, 40, 5, "m1/a0");
+        let a0 = ops::usage_json(u.under("m1/a0"));
+        std::test::assert(std::str::contains(a0, "\"calls\": \"1\"") && std::str::contains(a0, "\"by_position\": [{\"position\": \"position:editor\", \"calls\": \"1\"") && std::str::contains(a0, "\"by_backend\": [{\"backend\": \"quick/quick-1\""), "the wire shape: " + a0);
+        // a Mutation's: its attempts and the verdict on it
+        same(u.under("m1"), 3, 1320, 104, 55, "m1");
+        // the ask's: its plan
+        same(u.under("i1"), 1, 1000, 300, 50, "i1");
+        // the task's: the plan of the ask it was born of, the Mutation's
+        // attempts and its verdict
+        let t1 = u.under("t1");
+        same(t1, 4, 2320, 404, 105, "t1");
+        std::test::assert_eq_str(t1.by_position, "position:leader 2 1900 320 95\nposition:editor 2 420 84 10", "t1 by position");
+        std::test::assert_eq_str(t1.by_backend, "deep/deep-1 2 1900 320 95\nquick/quick-1 2 420 84 10", "t1 by backend");
+        // the knowledge Review's
+        same(u.under("knowledge"), 1, 300, 10, 15, "knowledge");
+        same(u.under("k:0123456789ab"), 1, 300, 10, 15, "k:0123456789ab");
+        // the organization's own
+        same(u.under("org"), 1, 400, 30, 20, "org");
+        // a wf1 root: the performer is the position, and the child counts
+        let t2 = u.under("t2");
+        same(t2, 2, 150, 15, 5, "t2");
+        std::test::assert_eq_str(t2.by_position, "position:agent 1 100 10 5\nposition:human 1 50 5 0", "t2 by position");
+        same(u.under("t3"), 1, 50, 5, 0, "t3");
+        same(u.under("t2/wf1/s0/bank"), 1, 100, 10, 5, "the Work");
+        // a call of no known shape is its own and no task's
+        same(u.under("probe/customer"), 1, 1, 1, 1, "probe/customer");
+        same(u.under("probe"), 0, 0, 0, 0, "probe");
+        same(u.under("nothing"), 0, 0, 0, 0, "nothing");
+        // the record
+        same(u.record(), 9, 3171, 460, 146, "the record");
+        // the terminal rendering
+        let text = ops::usage_text("usage of t1", t1);
+        std::test::assert(std::str::starts_with(text, "usage of t1: 4 call(s) · 2320 in · 404 out · 105 µ$\n"), "the totals line: " + text);
+        std::test::assert(std::str::contains(text, "by position: position:leader 2 call(s) · 1900 in · 320 out · 95 µ$; position:editor 2 call(s) · 420 in · 84 out · 10 µ$\n"), "by position: " + text);
+        std::test::assert(std::str::contains(text, "by backend: deep/deep-1 2 call(s)"), "by backend: " + text);
+        std::test::assert_eq_str(ops::usage_text("usage of nothing", u.under("nothing")), "", "nothing to say when no call was made");
+
+        // ---- 2. the editor's locate and plan calls are the Work's attempt's
+        let scratch = dna::scratch_root("usage");
+        let tree = scratch + "/tree";
+        std::io::fs::mkdir(tree) or discard;
+        std::io::fs::write_file(tree + "/a.hl", "fn main() { }\n") or raise;
+        self.editor.confine(tree);
+        std::test::assert_eq_str(self.editor.plan("m7/a0", "speed it up"), "a.hl", "the plan names the listed file");
+        std::test::assert_eq_str(self.editor.locate("m7/a1", "speed it up"), "a.hl", "locate names the listed file");
+        let mut tries = 0;
+        while tries < 100 && !std::str::contains(self.seen, "m7/a1\n") { std::time::sleep(10ms); tries = tries + 1; }
+        std::test::assert_eq_str(self.seen, "m7/a0\nm7/a1\n", "both calls carry the attempt id they were made for");
+
+        // ---- 3. `hale dna history` prints the sums under the entity
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/app";
+        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let git = dna::GitJournal { repo: app, author: "test" };
+        if git.revision() == 0 { append(git, "org.born", "org", "usage fixture"); }
+        seed(git);
+        let h = in_dir(app, toolchain() + "\ndna\nhistory\nt1");
+        std::test::assert_eq_int(h.code, 0, "hale dna history t1: " + h.stderr);
+        std::test::assert(std::str::contains(h.stdout, "usage of t1: 4 call(s) · 2320 in · 404 out · 105 µ$\n       by position: position:leader 2 call(s) · 1900 in · 320 out · 95 µ$; position:editor 2 call(s) · 420 in · 84 out · 10 µ$\n       by backend: deep/deep-1 2 call(s) · 1900 in · 320 out · 95 µ$; quick/quick-1 2 call(s) · 420 in · 84 out · 10 µ$\n"), "the totals under the task:\n" + h.stdout);
+        let a = in_dir(app, toolchain() + "\ndna\nhistory\nm1/a1");
+        std::test::assert_eq_int(a.code, 0, "hale dna history m1/a1: " + a.stderr);
+        std::test::assert(std::str::contains(a.stdout, "usage of m1/a1: 1 call(s) · 220 in · 44 out · 5 µ$\n"), "the totals under one attempt:\n" + a.stdout);
+        let w = in_dir(app, toolchain() + "\ndna\nhistory");
+        std::test::assert_eq_int(w.code, 0, "hale dna history: " + w.stderr);
+        std::test::assert(std::str::contains(w.stdout, "usage: 9 call(s) · 3171 in · 460 out · 146 µ$\n"), "the whole record's:\n" + w.stdout);
+        let none = in_dir(app, toolchain() + "\ndna\nhistory\nnothing");
+        std::test::assert_eq_int(none.code, 0, "hale dna history nothing: " + none.stderr);
+        std::test::assert(!std::str::contains(none.stdout, "usage of"), "no line when no call was made:\n" + none.stdout);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

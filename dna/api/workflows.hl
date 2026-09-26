@@ -138,7 +138,14 @@ locus WorkflowRead {
         b.string_field("performer", o.performer); b.string_field("result", o.result); b.string_field("result_ref", o.result_ref);
         b.string_field("evidence_ref", o.evidence_ref); b.string_field("narrative", o.narrative);
         b.bool_field("accepted", self.p.work(a.work_id).disposition == "done" && self.p.work(a.work_id).attempt_id == a.attempt_id);
+        b.field("usage", self.usage(a.attempt_id));
         b.end_object(); return b.result();
+    }
+    // GH #946: the model calls under an id, summed from their evidence
+    // rows — an attempt's own, or a task's with every task under it.
+    fn usage(id: String) -> String {
+        let u = ops::Usage { j: self.j };
+        return ops::usage_json(u.under(id));
     }
     fn row(id: String, detail: Bool) -> String {
         let t = self.p.task(id);
@@ -154,7 +161,7 @@ locus WorkflowRead {
         if detail { while i < self.p.fact_count() { let f = self.p.facts.get(i) or dna::Fact { }; if f.kind == "attempt.admitted" && self.root(self.fact_node(f)) == id { b.value(self.attempt_json(f)); } i = i + 1; } }
         b.end_array(); b.begin_array_field("history"); i = 0;
         if detail { while i < self.p.fact_count() { let f = self.p.facts.get(i) or dna::Fact { }; if self.root(self.fact_node(f)) == id { b.begin_object(); b.string_field("kind", f.kind); b.string_field("id", f.id); b.string_field("node_id", self.fact_node(f)); b.string_field("order", to_string(i)); b.end_object(); } i = i + 1; } }
-        b.end_array(); b.end_object(); return b.result();
+        b.end_array(); b.field("usage", self.usage(id)); b.end_object(); return b.result();
     }
 }
 

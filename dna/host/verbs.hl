@@ -3,6 +3,7 @@
 // queue, a report, pressure, the fleet; and the catalog's probe.
 
 import "../core" as dna;
+import "../operations" as ops;
 import "../organization_runtime" as org_runtime;
 
 // One verb's answer: lines to print, or an error.
@@ -320,6 +321,12 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
         i = i + 1;
     }
     if len(entity) > 0 { out = out + "history of " + entity + ": " + to_string(selected) + " event(s)\n"; }
+    // GH #946: what the entity's model calls cost, summed from their
+    // `model.called` rows — the task's own, its attempts', the plan's
+    // and the verdict's — by position and by backend; the API reads the
+    // same projection. Nothing when no call was made.
+    let usage = ops::Usage { j: p.j };
+    out = out + ops::usage_text(if len(entity) > 0 { "usage of " + entity } else { "usage" }, usage.under(entity));
     return answer(out + lines);
 }
 

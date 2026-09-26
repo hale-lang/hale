@@ -222,7 +222,7 @@ locus SourceEditor {
     // objective names, else the quick tier's pick from the listing —
     // and only a listed file is ever a target.
     @unbounded
-    fn locate(objective: String) -> String {
+    fn locate(attempt: String, objective: String) -> String {
         let listing = self.files();
         let mut rest = objective;
         while len(rest) > 0 {
@@ -236,7 +236,7 @@ locus SourceEditor {
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
         let pick = self.models.ask(ModelRequest {
-            attempt_id: "locate", role: "locate",
+            attempt_id: attempt, role: "locate",
             prompt: "Which one of these files should change so that: " + objective + "\nAnswer with the file name only.",
             context: listing, context_bytes: len(listing) + len(objective),
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
@@ -250,7 +250,7 @@ locus SourceEditor {
     // objective names, else the quick tier's plan from the listing, one
     // per line — only listed files are ever targets. Space-separated.
     @unbounded
-    fn plan(objective: String) -> String {
+    fn plan(attempt: String, objective: String) -> String {
         let listing = self.files();
         let mut named = "";
         let mut rest = objective;
@@ -266,7 +266,7 @@ locus SourceEditor {
         }
         if len(named) > 0 { return trim_nl(named); }
         let pick = self.models.ask(ModelRequest {
-            attempt_id: "plan", role: "plan",
+            attempt_id: attempt, role: "plan",
             prompt: "Which of these files should change so that: " + objective + "\nAnswer with file names only, one per line.",
             context: listing, context_bytes: len(listing) + len(objective),
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
@@ -491,7 +491,7 @@ locus SourceEditor {
         if self.in_place(req.data_class) {
             return self.perform_in_place(req);
         }
-        let files = if len(req.target) > 0 { req.target } else { self.plan(req.objective) };
+        let files = if len(req.target) > 0 { req.target } else { self.plan(attempt_id_of(req.work_id, req.attempt_no), req.objective) };
         if len(files) == 0 {
             return WorkResult { disposition: "failed", narrative: "no target file in the request", performer: self.name };
         }
