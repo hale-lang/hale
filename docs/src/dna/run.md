@@ -267,16 +267,20 @@ git config dna.oidc.board riley
 hale dna secret set HALE_DNA_OIDC_SECRET
 ```
 
-The head's socket (the api binding on `dna/api`, `LOTUS_API` naming
-its path) knows a peer by its Unix credentials instead, and the record
-says what that peer may do: map the uid to a person the record knows,
+The head's socket (the api binding on `dna/api`, one per record under
+`$XDG_RUNTIME_DIR/hale/dna/<record id>.sock` or the record's own
+`.hale/dna`, `LOTUS_API` overriding it) knows a peer by its Unix
+credentials instead, and the record says what that peer may do: map
+the uid to a person the record knows, in the record's own local config,
 
 ```text
-git config --add dna.unix.member "uid:1000=riley"
+git config --local --add dna.unix.member "uid:1000=riley"
 ```
 
-and a position the graph says that person holds is a role the peer
-holds — `owner`, which reads the full description, is the board.
+(never a global or an included file; the head reads it again whenever
+the record moves), and a position the graph says that person holds is
+a role the peer holds: `role api_dev;` is `position:api/dev`, and
+`owner`, which reads the full description, is the board.
 Generic clients (`hale call`, `hale mcp --app`, `hale admin`) see
 exactly that principal's slice.
 

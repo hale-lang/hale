@@ -4275,6 +4275,17 @@ fn render_located(
             }
         }
     }
+    // A span in the api binding's own parse space (GH #1109): the
+    // source was synthesized from the `api:` entry, so no file of the
+    // bundle owns it; say that, rather than a position in whichever
+    // file happens to be listed first.
+    if off >= hale_syntax::api_gen::API_SYNTH_BASE {
+        return format!(
+            "{}: {} (in the api binding synthesized from the `api:` entry; `hale check --dump-api` shows what it serves)",
+            d.kind_str(),
+            d.message
+        );
+    }
     let any = sources.values().next().map(|s| s.as_str()).unwrap_or("");
     d.render(any)
 }

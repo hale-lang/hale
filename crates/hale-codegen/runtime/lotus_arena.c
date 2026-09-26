@@ -13917,6 +13917,22 @@ int lotus_unix_listen_socket(const char *path) {
         return -1;
     }
     lotus_set_cloexec(sock);
+    /* A live listener holds the path: refuse rather than steal it (GH
+     * #1109 review B3). A stale file — nobody answers — is unlinked as
+     * before, since a crashed predecessor leaves one. */
+    {
+        int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            int held = connect(probe, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+            close(probe);
+            if (held) {
+                fprintf(stderr, "lotus_unix_listen_socket: %s is held by a live process\n", path);
+                close(sock);
+                errno = EADDRINUSE;
+                return -1;
+            }
+        }
+    }
     (void)unlink(path);
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         int err = errno;

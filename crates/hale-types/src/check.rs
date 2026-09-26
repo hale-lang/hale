@@ -6104,6 +6104,12 @@ fn check_main_and_bindings(
                 if l.is_main && !l.imported {
                     mains.push((l.name.name.clone(), l.span));
                 }
+                // An imported main's bindings are inert (GH #1104 piece 5):
+                // they bind nothing here and count toward nothing — not
+                // "already bound", not a role to infer.
+                if l.imported {
+                    return;
+                }
                 for member in &l.members {
                     if let LocusMember::Bindings(bb) = member {
                         for entry in &bb.entries {

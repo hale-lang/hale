@@ -1694,11 +1694,19 @@ not those hearing it through a parent topic. `hale run --api
 <path>` (and `hale build --api <path>`, flags before the target)
 synthesizes the entry above with the dev defaults, `bound: 64,
 on_full: refuse`, and needs a `main locus` to put it on: a bare
-`fn main` program is refused with the rule. `LOTUS_API=<path>` at
+`fn main` program is refused with the rule. The path is an expression
+the main locus evaluates as a param default — a literal, or
+`self.<param>` the program computed, so a head may listen at one
+socket per record under `XDG_RUNTIME_DIR` rather than at a fixed
+path two projects would steal from each other. `LOTUS_API=<path>` at
 run time overrides the socket path of an entry the program
 carries and never creates one, so a binary built without the entry
-pays nothing. The socket file is unlinked when the listener binds
-(a crashed predecessor leaves one) and again at dissolve. The
+pays nothing. A stale socket file (nobody answers on it: a crashed
+predecessor's) is unlinked when the listener binds, and the file is
+unlinked again at dissolve; a path a live process holds is refused,
+never stolen. A binding that cannot listen does not take the program
+with it: it says so on stderr and the rest of the program serves
+without its socket. The
 listener is born as the last param of the main locus, so it
 appears once every earlier param is born; a caller that races the
 boot connects with a wait.
@@ -2446,7 +2454,10 @@ Bundle-wide rules:
 1. At most one `main` locus per bundle. Zero is fine — the
    classic bare `fn main()` shape is still legal.
 2. Each `bindings` entry's topic must name a declared `topic`.
-3. A topic may appear at most once across all bindings.
+3. A topic may appear at most once across the entrypoint's bindings.
+   An imported seed's `main locus` is renamed with its seed and its
+   bindings are inert: they bind nothing, count toward nothing here,
+   and do not make a second `main` (GH #1104 piece 5).
 4. Bindings only legal in a `main`-modified locus. The parser
    rejects them in any other locus position.
 5. Every binding's role must be either explicit (`role:`
