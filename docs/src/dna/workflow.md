@@ -75,7 +75,9 @@ units of work) is a refusal at admission, in the record
 DNA ships a catalog. `hale dna new` writes `dna/org/workflows.hl`, which
 returns it plus your own from `dna/org/own_workflows.hl`; `hale dna
 upgrade` rewrites the first to the current shape and never touches the
-second. `hale dna definitions` lists the catalog. Each
+second (a definition the first held of its own is named, for you to move
+into the second). `hale dna definitions` lists the catalog, and fails,
+saying why, when one of your own definitions is refused. Each
 baseline definition is a chain in which every step writes one store:
 
 | id | steps (store) | runs today |

@@ -72,9 +72,11 @@ locus ProjectWorkflowCatalog {
             } else {
                 let hale = if len(self.hale) > 0 { self.hale } else if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
                 let r = dna::run_tool(hale + "\ndna\ndefinitions\n--json\n" + self.root);
+                // the failure is kept under the key it was read at, like a
+                // document: a catalog that does not build is read again
+                // when a file it is read from changes, not on every request
                 if r.code != 0 {
                     self.error = "the organization's catalog (dna/org/workflows.hl) could not be read: " + dna::trim_nl(r.stderr + r.stdout);
-                    self.key = "";
                     self.document = "";
                 } else { self.document = dna::trim_nl(r.stdout); }
             }
