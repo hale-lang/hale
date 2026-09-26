@@ -52,8 +52,10 @@ hale dna fill <position> <holder> [project] [--as <who>]
                              elsewhere, here and where memory projects it
 hale dna route [--json] (<path>… | --diff <range>)
                              who must sign a change set, from the graph: each touched seed's process
-                             reviewer, a contract's reviewers and its consumers', the board where it is
-                             law; and the gates whose runs are the evidence
+                             reviewer, a contract's reviewers and its consumers', the board where a
+                             practice ratified as law binds it, a deployment file's operator; and the
+                             gates whose runs are the evidence (paths from a subdirectory are taken
+                             from there)
 hale dna show org|processes [--json] [project]
                              the graph's two perspectives, read from memory under the head's role:
                              the org chart, the process model; `--json` is the query's answer

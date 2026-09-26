@@ -1148,7 +1148,7 @@ record's.
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position (`hale dna fill`) |
-| `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not |
+| `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
@@ -3276,8 +3276,9 @@ The live half is memory's, projected from the record by the spine
   `process:`); a `holder` is a person, not a node; `meets` also
   carries its transport (`via`) and the parties it reaches that are
   not nodes (`outside`, e.g. callers). Two kinds are never graph rows:
-  a `practice` is a knowledge idea of kind `practice` — advice while
-  proposed, law once ratified — and `binds` is its knowledge binding;
+  a `practice` is a knowledge idea of kind `practice` — advice unless the
+  Board ratifies it as law (its document says `law: true`; one ratified
+  as advice stays advice) — and `binds` is its knowledge binding;
   a member names a practice as `practice:<digest>`. The rows are
   `graph.node` (entity the node's id, body
   `{kind, name, text?, source?}`), `graph.edge` (entity the edge's id,
@@ -3419,10 +3420,16 @@ The live half is memory's, projected from the record by the spine
   wrote a row in their own name, or an owner's member — and has not
   retired (`person.retired`), and the same-holder rule. **The store is the
   gate**: a hold is checked again where memory projects it, however it
-  reached the record — a retired holder is not projected, and a process's
-  `reviewer` held by its `dev`'s holder is a warning on stderr under
-  `dna.trust = local` (one person holds every role) and not projected,
-  with the reason, under any other trust.
+  reached the record — a holder the record never knew before the row (no
+  row in their name, and no owner's member) is not projected, nor is a
+  retired one, and a process's `reviewer` held by its `dev`'s holder is a
+  warning on stderr under `dna.trust = local` (one person holds every
+  role) and not projected under any other trust. A hold the store refuses
+  is a row, once: `hold.refused <hold id>` (`why`, `row`, `by: memory`).
+  A person retired after their hold was projected gives every seat back
+  where the retirement is projected. `fill` and `practice propose` name a
+  request by its digest at the record's head (`h…`, `p…`), so two requests
+  in one millisecond never share an id.
 - **A repository record runs its organization alone (GH #1091).** When the
   record's seed holds no Hale source of its own, `hale dna dev` and
   `hale dna run` check and build the organization only; there is no application
@@ -3432,26 +3439,35 @@ The live half is memory's, projected from the record by the spine
   `hale dna route [--json] (<path>… | --diff <range>)` (the host verb
   `route`, reading memory as the head, over
   `graph_perspective("routing")`; the routing is
-  `dna/operations/graph_route.hl`). A path names a node — a contract (its
-  file, or a file under its directory), else a document, else the longest
-  seed holding it — and the edges say who signs. **A seed**: the reviewer
+  `dna/operations/graph_route.hl`). A path is the repository's: one
+  given from a subdirectory is taken from there, and the organization's
+  root is the nearest directory holding `dna/org` (a seed's own
+  `hale.toml` is not it). A path names a node — a contract (its file, or
+  a file under its directory), else a document, else a deployment (the
+  file it was read from, when that is no document: `compose.yaml`), else
+  the longest seed holding it — and the edges say who signs. **A seed**: the reviewer
   (the `/reviewer` position a process unfolds into) of every process that
   unfolds into it. **A contract**: every position that `reviews` it, and
   the reviewer of every consumer — a consuming process; the processes a
   consuming seed belongs to; the positions reviewing a consuming contract
-  — and the `board` where the contract is law (a ratified practice is
-  bound to it). **A document**: every position that `reviews` it. A
+  — and the `board` where the contract is law: a practice the Board
+  ratified as law is bound to it (its receipt says `law: true`); one
+  ratified as advice is not law, and the board does not sign for it.
+  **A document**: every position that `reviews` it. **A deployment's
+  file**: the `operator` position the deployment unfolds into, against the
+  gates guarding the deployment (`ci/image` gates `compose`). A
   `/dev` position never signs: a process's dev never signs for that
   process. **The evidence** a verdict is given against is the run of every
   gate guarding a node the change touches. A consumer no position reviews
   is listed as such (`unsigned`), never dropped; a path that names no
-  node, or whose node no position signs, is left to the fallback — the
-  Review's own authority today, the task routers of GH #697 when they
-  exist. Text lists `signed by`, `against`, `reviewed by no position` and
-  `left to the fallback`, each signer with its holders and why it signs;
-  `--json` is one object: `signers` (`position`, `because`), `evidence`
-  (gate ids), `unsigned` (`node`, `because`), `fallback` (`path`,
-  `because`). Reviews do not yet take their signers from it; that wiring
+  node, or whose node no position signs (or operates), is left to the
+  fallback — the Review's own authority today, the task routers of GH
+  #697 when they exist, which the route names. Text lists `signed by`,
+  `against` (`no gate guards it` when no gate does), `reviewed by no
+  position` and `left to the fallback, <what it falls back to>`, each
+  signer with its holders and why it signs; `--json` is one object:
+  `signers` (`position`, `because`), `evidence` (gate ids), `unsigned`
+  (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. Reviews do not yet take their signers from it; that wiring
   is its own change.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb

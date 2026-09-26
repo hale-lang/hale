@@ -138,6 +138,8 @@ interface KnowledgeStore {
     // retired a person.
     fn graph_held_by(holder: String) -> String;
     fn person_retired(person: String) -> Bool;
+    // Whether the owners map names `person` a member (GH #1087 review, G4).
+    fn org_member(person: String) -> Bool;
 }
 
 type Signal { kind: String = ""; source: String = ""; what: String = ""; count: Int = 0; last_seq: Int = 0; }
@@ -198,13 +200,13 @@ fn graph_processes_sql() -> String {
 fn graph_routing_sql() -> String {
     let pairs = "FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.pos = 0 JOIN graph_members b ON b.edge = e.id AND b.pos = 1 WHERE " + graph_live_sql("a.node") + " AND " + graph_live_sql("b.node");
     return "SELECT json_build_object("
-        + "'nodes', coalesce((SELECT json_agg(json_build_object('id', n.id, 'kind', n.kind, 'name', n.name) ORDER BY n.seq, n.id) FROM graph_nodes n WHERE n.kind IN ('seed', 'contract', 'document', 'deployment', 'process', 'position')), '[]'::json), "
+        + "'nodes', coalesce((SELECT json_agg(json_build_object('id', n.id, 'kind', n.kind, 'name', n.name, 'source', coalesce((n.body::json)->>'source', '')) ORDER BY n.seq, n.id) FROM graph_nodes n WHERE n.kind IN ('seed', 'contract', 'document', 'deployment', 'process', 'position')), '[]'::json), "
         + "'unfold', coalesce((SELECT json_agg(json_build_array(a.node, b.node) ORDER BY e.seq, e.id) " + pairs + " AND e.kind = 'unfold'), '[]'::json), "
         + "'reviews', coalesce((SELECT json_agg(json_build_array(a.node, b.node) ORDER BY e.seq, e.id) " + pairs + " AND e.kind = 'reviews'), '[]'::json), "
         + "'holds', coalesce((SELECT json_agg(json_build_array(a.node, b.node) ORDER BY e.seq, e.id) FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.pos = 0 JOIN graph_members b ON b.edge = e.id AND b.pos = 1 WHERE e.kind = 'holds' AND " + graph_live_sql("a.node") + "), '[]'::json), "
         + "'meets', coalesce((SELECT json_agg(json_build_object('contract', " + graph_member_sql("contract") + ", 'servers', " + graph_members_sql("server") + ", 'consumers', " + graph_members_sql("consumer") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'meets' AND " + graph_member_sql("contract") + " <> ''), '[]'::json), "
         + "'gates', coalesce((SELECT json_agg(json_build_object('gate', " + graph_member_sql("gate") + ", 'guarded', " + graph_members_sql("guarded") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'gates' AND " + graph_member_sql("gate") + " <> ''), '[]'::json), "
-        + "'law', coalesce((SELECT json_agg(DISTINCT b.target) FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.kind = 'practice' AND i.accepted), '[]'::json))";
+        + "'bound', coalesce((SELECT json_agg(json_build_array(b.idea, b.target) ORDER BY b.idea, b.target) FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.kind = 'practice' AND i.accepted), '[]'::json))";
 }
 
 fn signal_json(x: Signal) -> String {
@@ -949,6 +951,13 @@ locus Pq {
         a.add(person);
         let rows = self.conn.query_params("SELECT person FROM org_retired WHERE person = $1", a);
         if !rows.ok { self.note("retired", rows.err); return false; }
+        return rows.n > 0;
+    }
+    fn org_member(person: String) -> Bool {
+        let a = db::Args { };
+        a.add(person);
+        let rows = self.conn.query_params("SELECT person FROM org_members WHERE person = $1", a);
+        if !rows.ok { self.note("members", rows.err); return false; }
         return rows.n > 0;
     }
     fn graph_nodes_count(kind: String) -> Int {

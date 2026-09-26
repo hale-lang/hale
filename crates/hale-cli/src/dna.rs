@@ -519,7 +519,32 @@ pub fn run(args: &[String]) -> ExitCode {
         },
         // GH #1087: `hale dna route [--json] (<path>… | --diff <range>)`, the
         // positions a change set must be signed by, from the graph
-        Some("route") => host_exec("route", Path::new("."), &args[1..]),
+        Some("route") => {
+            // a path is the repository's: one given from a subdirectory is
+            // taken from there (GH #1087 review), whatever directory the
+            // host reads the record from
+            // the organization's root: the nearest directory holding
+            // `dna/org`, which a seed of a repository (a `hale.toml` of its
+            // own) is not
+            let cwd = std::env::current_dir().ok().and_then(|c| c.canonicalize().ok()).unwrap_or_default();
+            let root = cwd.ancestors().find(|a| a.join("dna/org").is_dir()).map(|a| a.to_path_buf()).unwrap_or_else(|| cwd.clone());
+            let under = cwd.strip_prefix(&root).map(|p| p.to_path_buf()).unwrap_or_default();
+            let mut rest = Vec::new();
+            let mut it = args[1..].iter();
+            while let Some(a) = it.next() {
+                if a == "--diff" {
+                    rest.push(a.clone());
+                    if let Some(v) = it.next() {
+                        rest.push(v.clone());
+                    }
+                } else if a.starts_with('-') {
+                    rest.push(a.clone());
+                } else {
+                    rest.push(repo_path(&root, &under, a));
+                }
+            }
+            host_exec("route", &root, &rest)
+        }
         // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
         // a holder asked of the organization, which proposes it to the Board
         Some("fill") => {
@@ -1917,6 +1942,24 @@ fn ensure_repo(root: &Path) -> Result<bool, String> {
 /// from the record alone (GH #566 F6) — a Hale HTTP server over the
 /// offline verbs of `hale dna`, built once into the toolchain cache
 /// beside the core, run in the project root with this toolchain.
+/// A path given from `under` (a directory of the repository, relative to
+/// its root) as the repository names it: joined — an absolute one taken
+/// from the root — `.` and `..` resolved, never above the root.
+fn repo_path(root: &Path, under: &Path, given: &str) -> String {
+    let joined = if Path::new(given).is_absolute() { Path::new(given).strip_prefix(root).map(|p| p.to_path_buf()).unwrap_or_else(|_| PathBuf::from(given)) } else { under.join(given) };
+    let mut parts: Vec<String> = Vec::new();
+    for c in joined.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Normal(p) => parts.push(p.to_string_lossy().to_string()),
+            _ => {}
+        }
+    }
+    parts.join("/")
+}
+
 fn ui_cmd(args: &[String]) -> ExitCode {
     let mut dir = PathBuf::from(".");
     let mut port = "8790".to_string();

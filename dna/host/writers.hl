@@ -45,6 +45,13 @@ fn millis() -> Int {
     return std::time::monotonic_ns() / 1000000;
 }
 
+// A request's id from the request itself (GH #1087 review): its digest at
+// the record's head, so two requests the same millisecond never share one
+// and the same request written twice at one head is one request.
+fn request_digest_id(root: String, prefix: String, request: String) -> String {
+    return prefix + dna::digest_of(record_head(root).id + "\n" + request)[7..19];
+}
+
 fn no_organism(root: String) -> String {
     return "the organism is not running here (no body in this clone holds the record's lease) and the repository has no remote to reach one through; start it with `hale dna run`";
 }
@@ -1053,7 +1060,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
     if sub == "propose" {
         if len(name) == 0 || len(text) == 0 { return fail(usage); }
         let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-        let request_id = "p" + hex(millis());
+        let request_id = request_digest_id(root, "p", name + "\n" + text + "\n" + who + "\n" + because + "\n" + supersedes);
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("request_id", request_id);
