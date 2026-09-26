@@ -438,7 +438,7 @@ locus App {
         std::test::assert(admin.open().ok, "the owner connects");
         std::test::assert(admin.exec("UPDATE " + dna::schema_for(record) + ".memory_meta SET value = '3' WHERE key = 'schema_version'").ok, "a version-3 memory");
         admin.close();
-        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 3; this toolchain needs version 4"), "refused at open, naming both versions: " + store.last_error());
+        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 3; this toolchain needs version " + to_string(dna::MEMORY_SCHEMA_VERSION)), "refused at open, naming both versions: " + store.last_error());
 
         store.close();
         std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
