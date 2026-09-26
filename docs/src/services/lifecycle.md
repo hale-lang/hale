@@ -295,9 +295,12 @@ Queries { }.total() }` the `Queries` is just an expression — it has
 no field to live in — so it belongs to the enclosing function's
 scope, exactly as if you had written it on a line of its own.
 
-**The scope is the enclosing function, not the enclosing block** — a
-`let` is readable for the rest of the function, including after the
-loop that bound it. But a locus created **in a loop** is reclaimed
+**The lifetime is the enclosing function, not the enclosing block** —
+the slot a `let` binds lives until the function exits, including
+after the loop that bound it — while the *name* is the block's: a
+`let` is visible to the end of its block, and one that reuses a
+parameter's or an outer `let`'s name inside a branch shadows it there
+only. But a locus created **in a loop** is reclaimed
 when the next iteration reaches the same line:
 
 ```hale,fragment
@@ -311,7 +314,8 @@ while i < steps {
 Coming back round to that line is the end of the previous `m`'s life:
 it runs its `drain()` and `dissolve()` and gives back its arena before
 the new one takes its place, and the function's exit releases the last
-one — so `m` is still readable after the loop. The loop holds one
+one — the slot outlives the loop, though the name `m` is the loop
+body's and is not readable after it. The loop holds one
 instance at a time, not `steps` of them. Both spellings behave
 identically — a factory call, a `Matrix { }` literal and a literal you
 merely *use* (`Matrix { }.trace()`, `sum(Matrix { })`) all get the

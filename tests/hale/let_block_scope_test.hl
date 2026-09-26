@@ -1,0 +1,69 @@
+// GH #1132 — a `let` is its block's. Codegen kept one name map per
+// fn, so a `let` that reused a parameter's (or an outer `let`'s) name
+// inside a branch replaced that binding for the rest of the fn; on the
+// path that never took the branch the fn then read a slot nothing had
+// stored — garbage, or a segfault. The checker always scoped a `let`
+// to its block; now the built program agrees: the inner name is the
+// inner block's, the outer binding is what the rest of the fn sees.
+
+fn route(p: String, take: Bool) -> String {
+    if take {
+        let p = "inner" + "!";
+        return p;
+    }
+    return "outer " + p;
+}
+
+fn count(n: Int, again: Bool) -> Int {
+    let mut total = n;
+    if again {
+        let n = 100;
+        total = total + n;
+    }
+    return total + n;
+}
+
+// Sibling branches each bind the name; the outer `let` after them is
+// a third binding of its own.
+fn label(kind: Int) -> String {
+    let mut out = "";
+    if kind == 0 {
+        let s = "zero";
+        out = s;
+    } else {
+        let s = "other";
+        out = s;
+    }
+    let s = out + "!";
+    return s;
+}
+
+// A loop body's `let` is the body's; the fn's own `i` is untouched.
+fn nested(i: Int) -> Int {
+    let mut acc = 0;
+    let mut k = 0;
+    while k < 3 {
+        let i = k * 10;
+        acc = acc + i;
+        k = k + 1;
+    }
+    return acc + i;
+}
+
+// A block expression's `let` is the block's too.
+fn picked(x: Int, take: Bool) -> Int {
+    let y = if take { let x = 7; x + 1 } else { x };
+    return y * 10 + x;
+}
+
+fn main() {
+    std::test::assert_eq_str(route("given", false), "outer given", "an untaken branch's let leaves the parameter alone");
+    std::test::assert_eq_str(route("given", true), "inner!", "the taken branch reads its own binding");
+    std::test::assert_eq_int(count(1, false), 2, "the parameter after an untaken branch");
+    std::test::assert_eq_int(count(1, true), 102, "the parameter after a taken branch that shadowed it");
+    std::test::assert_eq_str(label(0), "zero!", "sibling branches, then an outer binding of the same name");
+    std::test::assert_eq_str(label(1), "other!", "the other sibling");
+    std::test::assert_eq_int(nested(5), 35, "a loop body's let is the body's");
+    std::test::assert_eq_int(picked(2, true), 82, "a block expression's let is the block's (taken)");
+    std::test::assert_eq_int(picked(2, false), 22, "a block expression's let is the block's (untaken)");
+}
