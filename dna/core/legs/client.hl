@@ -237,13 +237,14 @@ fn payload_of(operation: String, request_id: String, target_id: String, precondi
             let receipts = std::json::find_field_raw(arguments, "receipts");
             b.string_field("evidence", if len(evidence) > 0 { evidence } else { "[]" });
             b.string_field("receipts", if len(receipts) > 0 { receipts } else { "[]" });
-            if len(std::json::find_field_raw(arguments, "hat_digest")) > 0 {
-                b.string_field("hat_digest", std::json::find_string_field(arguments, "hat_digest"));
-                b.string_field("hat_head", std::json::find_string_field(arguments, "hat_head"));
-                b.int_field("hat_watermark", std::json::find_int_field(arguments, "hat_watermark"));
-                b.string_field("prompt_digest", std::json::find_string_field(arguments, "prompt_digest"));
-                b.string_field("renderer", std::json::find_string_field(arguments, "renderer"));
-            }
+            // the typed payload names every field: the hat's are empty and -1
+            // when the leg wore none (the wire's codec is strict)
+            let worn = len(std::json::find_field_raw(arguments, "hat_digest")) > 0;
+            b.string_field("hat_digest", if worn { std::json::find_string_field(arguments, "hat_digest") } else { "" });
+            b.string_field("hat_head", if worn { std::json::find_string_field(arguments, "hat_head") } else { "" });
+            b.int_field("hat_watermark", if worn { std::json::find_int_field(arguments, "hat_watermark") } else { -1 });
+            b.string_field("prompt_digest", if worn { std::json::find_string_field(arguments, "prompt_digest") } else { "" });
+            b.string_field("renderer", if worn { std::json::find_string_field(arguments, "renderer") } else { "" });
         }
     }
     b.end_object();

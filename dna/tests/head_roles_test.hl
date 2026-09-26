@@ -72,10 +72,13 @@ locus Api {
         return true;
     }
 
+    // A reply line, waited for up to a minute: the full description is
+    // the largest answer, and a slower box (macOS in CI) needs more than
+    // the ten seconds the slice needs.
     fn ask(line: String) -> String {
         self.stream.send(line + "\n") or discard;
         let mut i = 0;
-        while i < 50 {
+        while i < 300 {
             let nl = std::str::index_of(self.buf, "\n");
             if nl >= 0 {
                 let got = self.buf[0..nl];
