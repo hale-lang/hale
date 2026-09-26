@@ -1056,12 +1056,17 @@ fn baseline_definitions() -> WorkflowCatalog {
 // The baseline, defined into `c`.
 @unbounded
 fn define_baseline(c: WorkflowCatalog) {
-    // an ask: one change prepared for review, or a person's job. The ask's
-    // own objective is bound at admission.
+    // an ask: one change prepared for review, a person's job, or a
+    // judgment. The ask's own objective is bound at admission.
     let a = c.define("ask-edit", 1, "record", "an ask: one change, prepared for review");
     let b = c.leaf("ask-edit", 1, 0, "e", WorkRequest { requires: "edit", output_contract: "Patch" }, 1);
     let d = c.define("ask-person", 1, "record", "an ask: a person's job");
     let e = c.leaf("ask-person", 1, 0, "p", WorkRequest { requires: "human" }, 1);
+    // a judgment: one leaf requiring judgment under the `Assessment`
+    // contract — capability first, an agent's, so a leg's (GH #946); a
+    // person's on the second attempt
+    let jd = c.define("ask-judge", 1, "record", "an ask: a judgment, an assessment handed back");
+    let jl = c.leaf("ask-judge", 1, 0, "j", WorkRequest { requires: "judgment", output_contract: "Assessment" }, 2);
 
     let t = c.define("ask-triage", 1, "record record record", "an ask, triaged: what it is, then planned or split");
     organism_leaf(c, "ask-triage", 0, "offered", "the intent offered");

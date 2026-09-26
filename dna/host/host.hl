@@ -480,7 +480,8 @@ locus NodeRelay {
                 intent_id: std::json::find_string_field(body, "intent_id"),
                 outcome: std::json::find_string_field(body, "outcome"),
                 from: std::json::find_string_field(body, "from"),
-                to: std::json::find_string_field(body, "to")
+                to: std::json::find_string_field(body, "to"),
+                kind: std::json::find_string_field(body, "kind")
             };
         } else if kind == "verdict" {
             dna::ReviewVerdict <- dna::Verdict {
