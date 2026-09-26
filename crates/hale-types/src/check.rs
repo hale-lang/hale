@@ -6597,6 +6597,11 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                 return;
             }
             loci.insert(l.name.name.clone(), l);
+            // An imported locus is not reached from the binding, so its
+            // gates (or their absence) say nothing about the entrypoint's.
+            if l.imported {
+                return;
+            }
             // Every subscription, by handler: one handler may subscribe
             // several topics (review F5), and each is a site.
             let mut subscribed: Vec<(&str, Option<String>)> = Vec::new();
@@ -6755,6 +6760,12 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
     };
     let Some(locus_name) = locus_name else { return };
     if locus_name.starts_with("__Std") || locus_name.starts_with("std::") {
+        return;
+    }
+    // A qualified path (`lib::TableRoles`) is renamed to the imported
+    // locus's mangled name only on the build path; here the generated
+    // init is typed against the interface, which is check enough.
+    if locus_name.contains("::") && !loci.contains_key(&locus_name) {
         return;
     }
     let entry = api_span.unwrap_or(src.span);

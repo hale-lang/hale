@@ -505,6 +505,35 @@ locus Api {
     }
 }
 
+// GH #1104 piece 5: the head is the binding. Every topic a locus of
+// this seed subscribes is a command a caller may send, every one it
+// publishes a stream, every expose a read; the verbs land here as gated
+// topics (#946, #1110). The record answers who holds which position
+// (`dna::RecordRoles` over this root; `dna.unix.member` maps a socket
+// peer to a person), so `{"describe": "full"}` is the board's, and a
+// tool gated on a position is listed only to a principal the record
+// says holds it. The socket path is deployment: `LOTUS_API` overrides
+// the default.
+main locus Head {
+    params {
+        root: String = ".";
+        roles: dna::RecordRoles = dna::RecordRoles { };
+        port: Int = 8792;
+        handler: Api = Api { };
+    }
+    bindings {
+        api: unix("/tmp/hale-dna-head.sock", bound: 64, on_full: refuse, roles: self.roles);
+    }
+    birth() {
+        self.roles.root = self.root;
+    }
+    // The HTTP head starts once every param — the binding included — is
+    // born: a server born as a param would hold its birth thread first.
+    run() {
+        std::http::Server { host: "127.0.0.1", port: self.port, handler: self.handler };
+    }
+}
+
 fn main() {
     let root = std::env::arg_or(1, ".");
     let raw_port = std::env::arg_or(2, "8792");
@@ -584,7 +613,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
-        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        Head { root: root, port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
@@ -593,5 +622,5 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     }
     let user = std::env::var("USER");
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local; ", command_label, ")");
-    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
+    Head { root: root, port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
 }

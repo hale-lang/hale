@@ -3306,6 +3306,7 @@ impl Parser {
             }
         }
         Ok(LocusDecl {
+            imported: false,
             phase_effects: None,
             depends: None,
             supervised: false,

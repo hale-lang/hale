@@ -14002,6 +14002,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map(|m| Self::substitute_locus_member(m, &subst))
             .collect();
         Ok(LocusDecl {
+            imported: template.imported,
             phase_effects: None,
             depends: None,
             supervised: false,
