@@ -1647,7 +1647,14 @@ memory is named to it.
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
-  `hale_dna_work`.
+  `hale_dna_work`. Where the head carries its api binding (GH #1104
+  piece 5) the verbs go over its socket — a `call` per verb on the
+  head's topics, the receipt on the value channel, the hat a query
+  topic — and the principal is the peer's credentials: the head names
+  the lease's holder, `--holder` has no say, and a verb outside the
+  caller's slice is `unknown`. A head without the binding is spoken
+  to over HTTP; the leg takes the socket from `--socket`,
+  `HALE_DNA_SOCKET`, or the head's own declaration.
 
 ## Workflow execution: one step
 

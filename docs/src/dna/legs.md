@@ -205,6 +205,21 @@ calls.json` hands it back with its calls as evidence (the array of
 `model.called` bodies) and the digests the brief reported. Through
 `hale mcp` the same verbs are one tool, `hale_dna_work`.
 
+## Over the head's socket
+
+When the head carries its api binding (GH #1104 piece 5, the head of
+#1129), the verbs go over its Unix socket instead of HTTP: one JSON
+object per line, the verb a `call` on its topic, the receipt on the
+value channel, the hat a query. The leg takes the socket from
+`--socket`, from `HALE_DNA_SOCKET`, or from the head itself when its
+HTTP answer declares one; a head with no socket is spoken to over
+HTTP as before. Over the socket the principal is the peer's
+credentials, as the kernel vouches for them: `--holder` has no say
+(it is ignored with a note), the head names the lease's holder in the
+claim it answers, and the workers of a `loop` are told apart by their
+pids. A verb the principal may not use answers `unknown`, exit 1, as
+the binding refuses everything outside a caller's slice.
+
 ## Through `hale mcp`
 
 The `hale_dna_work` tool takes a verb and its flags as given on the

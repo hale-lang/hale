@@ -13,8 +13,10 @@
 //             one JSON line per child as it ends; SIGTERM/SIGINT or `loop --drain` ends it
 //
 // Every verb prints one JSON object and holds nothing afterwards: the
-// head is read per verb (`--api`, the record head and the principal the
-// head sees this leg as), the position is the graph's `position:<name>`
+// head is read per verb (`--api`, or its api socket — `--socket`,
+// `HALE_DNA_SOCKET`, or the one the head declares — where the principal
+// is the peer's credentials and `--holder` has no say; the record head
+// and the principal the head sees this leg as), the position is the graph's `position:<name>`
 // id (`--as`, never a free string), and a request id is minted from what
 // the verb asks, so a verb run twice is one act and the second run reads
 // the first's receipt. No database role: everything is a command on the
@@ -25,7 +27,7 @@
 import ".." as dna;
 
 // The flags with a value; every other `--flag` stands alone.
-const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --holder --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --performer --parallel --only --idle-ms ";
+const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --holder --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --performer --parallel --only --idle-ms --socket ";
 
 type Args {
     verb: String = "";
@@ -360,6 +362,8 @@ locus Leg {
         if std::json::find_string_field(lease, "state") != "claimed" { println(answer_json("run", request, claimed)); return 0; }
         let attempt = std::json::find_string_field(lease, "attempt_id");
         let token = std::str::parse_int(std::json::find_string_field(lease, "token")) or 0;
+        // over the binding the holder is the head's to name: the peer it established
+        if self.head.over_socket { self.holder = std::json::find_string_field(lease, "holder"); }
         let context = self.head.context(std::json::find_string_field(lease, "work_id"));
         if !context.ok { return self.fail("run", "the hat: " + context.error); }
         let hat = std::json::find_field_raw(context.body, "data");
@@ -472,6 +476,9 @@ locus Leg {
         // holder, and the flags that pass through; never a request id — each
         // child mints its own claim id
         let mut common = std::env::arg(0) + "\nrun\n--as\n" + self.as_position + "\n--api\n" + self.head.api + "\n--wait\n" + to_string(int_flag(self.a, "--wait", 0));
+        // over the binding each child is its own peer (its pid), and the head names the holder
+        let socketed = self.head.over_socket;
+        if socketed { common = common + "\n--socket\n" + self.head.socket; }
         let passed = " --performer --capabilities --classes --orgs --ttl ";
         let mut k = 0;
         while k < dna::word_count(passed) {
@@ -515,7 +522,7 @@ locus Leg {
                     } else if draining {
                         pool.finish(slot); done = done + 1;
                     } else if pool.due(slot, now) {
-                        pool.start(slot, common + "\n--holder\n" + self.holder + "#" + to_string(slot));
+                        pool.start(slot, if socketed { common } else { common + "\n--holder\n" + self.holder + "#" + to_string(slot) });
                     }
                 }
                 w = w + 1;
@@ -555,7 +562,9 @@ locus Leg {
         if len(wrong) > 0 { return self.usage(wrong); }
         if verb == "loop" && has_flag(self.a, "--drain") { return self.worker_loop(); }
         self.head.api = flag_or(self.a, "--api", if std::env::var_exists("HALE_DNA_API") { std::env::var("HALE_DNA_API") } else { "http://127.0.0.1:8793" });
+        self.head.socket = flag_or(self.a, "--socket", if std::env::var_exists("HALE_DNA_SOCKET") { std::env::var("HALE_DNA_SOCKET") } else { "" });
         if !self.head.attach() { return self.fail(verb, self.head.error); }
+        if self.head.over_socket && len(flag(self.a, "--holder")) > 0 { eprintln("hale dna work: --holder is ignored over the head's socket; the lease's holder is the peer the head established"); }
         if verb == "loop" { return self.worker_loop(); }
         if verb == "next" { return self.next(); }
         if verb == "brief" { return self.brief(); }

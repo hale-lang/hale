@@ -1,7 +1,8 @@
 // dna/core/legs/client.hl — the head, as a leg sees it (GH #946 slice 4).
 //
 // A leg holds nothing between tasks and has no database role: everything
-// it knows it reads from the head over HTTP, and everything it does is a
+// it knows it reads from the head — its api socket when the head has one
+// (GH #1104 piece 5), HTTP otherwise — and everything it does is a
 // command on the head's table — the claim, the renewal, the outcome, the
 // release, the friction — each under a request id the leg mints from
 // what it asks, so a verb run twice is one act and the second run reads
@@ -9,6 +10,97 @@
 // in the repository (`dna/core/legs`), in the toolchain cache, and in a
 // project's `vendor/dna/legs`, like pond's copies do.
 import ".." as dna;
+
+// ---- the head binding (GH #1104 piece 5, #1110): the verbs as topics
+// on the head's api socket, one JSON object per line, the reply on the
+// value channel, the principal from the peer's credentials.
+//
+// DRAFT: the topic names and the read below are placeholders in one
+// place, replaced by the names the compiler pane posts on #1104 when
+// its hard cut is rebased. Until #1129 lands the head declares no
+// socket, and every verb goes over HTTP as before.
+const CLAIM_TOPIC: String = "WorkClaim";
+const RENEW_TOPIC: String = "WorkRenew";
+const OUTCOME_TOPIC: String = "WorkSubmit";
+const SETTLE_TOPIC: String = "WorkSettle"; // the outcome's command read back: a query topic
+const RELEASE_TOPIC: String = "WorkRelease";
+const FRICTION_TOPIC: String = "FrictionFile";
+const HAT_TOPIC: String = "WorkHat"; // the hat as a query topic with a return type (#1110)
+const HEAD_READ: String = "head.record"; // an expose: the application and its record head
+const SOCKET_WAIT: Int = 30; // seconds a verb waits on the socket for its answer
+
+fn topic_of(operation: String) -> String {
+    if operation == "dna.attempt.claim" { return CLAIM_TOPIC; }
+    if operation == "dna.attempt.renew" { return RENEW_TOPIC; }
+    if operation == "dna.attempt.outcome" { return OUTCOME_TOPIC; }
+    if operation == "dna.attempt.release" { return RELEASE_TOPIC; }
+    if operation == "dna.friction.file" { return FRICTION_TOPIC; }
+    return "";
+}
+
+// One connection to the binding: a line sent, the line that answers it
+// (frames of a stream never arrive here: a leg watches nothing).
+locus Wire {
+    params {
+        path: String = "";
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+        open: Bool = false;
+        error: String = "";
+    }
+    fn connect(path: String) -> Bool {
+        self.path = path;
+        let fd = std::io::unix::connect(path) or - 1;
+        if fd < 0 { self.error = "the head's socket at " + path + " cannot be reached"; return false; }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        self.open = true;
+        return true;
+    }
+    // The next line the binding writes, within `SOCKET_WAIT`; "" when none came.
+    @unbounded
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let deadline = std::time::now() + SOCKET_WAIT;
+        while std::time::now() < deadline {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) > 0 { self.buf = self.buf + chunk; }
+        }
+        return "";
+    }
+    fn call(id: String, topic: String, payload: String) -> String {
+        return self.ask("{\"id\": " + dna::record_json_quote(id) + ", \"call\": " + dna::record_json_quote(topic) + ", \"payload\": " + payload + "}");
+    }
+    fn read(id: String, name: String) -> String {
+        return self.ask("{\"id\": " + dna::record_json_quote(id) + ", \"read\": " + dna::record_json_quote(name) + "}");
+    }
+    fn describe() -> String { return self.ask("{\"describe\": true}"); }
+}
+
+// A binding's answer as the verbs read one: the value under `data`, the
+// caller and the authorizing role beside it; a refusal is the error.
+fn socket_reply(path: String, line: String) -> Reply {
+    if len(line) == 0 { return Reply { status: 0, error: "the head's socket at " + path + " gave no answer" }; }
+    if std::json::find_bool_field(line, "ok") {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.field("data", std::json::find_field_raw(line, "value"));
+        b.field("caller", std::json::find_field_raw(line, "caller"));
+        b.string_field("role", std::json::find_string_field(line, "role"));
+        b.int_field("request_id", std::str::parse_int(std::json::find_string_field(line, "request_id")) or 0);
+        b.end_object();
+        return Reply { ok: true, status: 200, body: b.result() };
+    }
+    let refusal = std::json::find_field_raw(line, "refusal");
+    let kind = std::json::find_string_field(refusal, "kind");
+    return Reply { status: 400, body: line, error: (if len(kind) > 0 { kind } else { "refused" }) + ": " + std::json::find_string_field(refusal, "reason") };
+}
 
 type Reply {
     ok: Bool = false; // a 2xx answer
@@ -20,6 +112,9 @@ type Reply {
 locus Head {
     params {
         api: String = "http://127.0.0.1:8793"; // the API's origin, which every command carries as Origin
+        socket: String = ""; // the head's api socket, when named (--socket, HALE_DNA_SOCKET) or declared by the head
+        wire: Wire = Wire { };
+        over_socket: Bool = false; // the verbs go over the binding; the principal is the peer
         application: String = "";
         record_head: String = "";
         record_revision: String = "";
@@ -56,14 +151,47 @@ locus Head {
         return self.reply(r);
     }
     fn prefix() -> String { return "/api/hale/v1/applications/" + self.application; }
+    // The binding, when the head has one: the description names the verbs
+    // this principal may use, its receipt names the principal (the peer's
+    // credentials), and one read names the application and the record head.
+    fn attach_socket(path: String) -> Bool {
+        if !self.wire.connect(path) { self.error = self.wire.error; return false; }
+        let described = self.wire.describe();
+        let receipt = socket_reply(path, described);
+        if !receipt.ok { self.error = "the head's socket: " + receipt.error; return false; }
+        let caller = std::json::find_field_raw(receipt.body, "caller");
+        self.principal_mode = std::json::find_string_field(caller, "mode");
+        self.principal_name = std::json::find_string_field(caller, "name");
+        if len(self.principal_name) == 0 { self.error = "the head's socket names no principal for this leg"; return false; }
+        if !std::str::contains(std::json::find_field_raw(receipt.body, "data"), "\"" + CLAIM_TOPIC + "\"") {
+            self.error = "the head's socket serves no `" + CLAIM_TOPIC + "` to " + self.principal_name + ": the verbs are not on this binding, or this principal holds no position";
+            return false;
+        }
+        let facts = socket_reply(path, self.wire.read("attach", HEAD_READ));
+        if !facts.ok { self.error = "the head's socket: " + facts.error + " (" + HEAD_READ + ")"; return false; }
+        let source = std::json::find_field_raw(facts.body, "data");
+        self.application = std::json::find_string_field(source, "record_id");
+        self.record_head = std::json::find_string_field(source, "record_head");
+        self.record_revision = std::json::find_string_field(source, "record_revision");
+        if len(self.application) == 0 { self.error = "the head's socket names no application"; return false; }
+        self.socket = path;
+        self.over_socket = true;
+        self.attached = true;
+        return true;
+    }
     // The application the head serves, its record head, and the principal
     // the head sees this leg as: what every command's preconditions name.
-    // Once per verb, or once per renewal of a lease held through a wait.
+    // A socket named by the caller is the head; otherwise HTTP, and the
+    // socket the head declares in its answer, when it declares one. Once
+    // per verb, or once per renewal of a lease held through a wait.
     @unbounded
     fn attach() -> Bool {
+        if len(self.socket) > 0 { return self.attach_socket(self.socket); }
         let apps = self.get("/api/hale/v1/applications");
         if !apps.ok { self.error = apps.error; return false; }
         let source = std::json::find_field_raw(apps.body, "source");
+        let declared = std::json::find_string_field(source, "socket");
+        if len(declared) > 0 && self.attach_socket(declared) { return true; }
         self.application = std::json::find_string_field(source, "record_id");
         self.record_head = std::json::find_string_field(source, "record_head");
         self.record_revision = std::json::find_string_field(source, "record_revision");
@@ -94,11 +222,13 @@ locus Head {
         b.end_object();
         return b.result();
     }
-    // The preconditions of a command under a lease.
+    // The preconditions of a command under a lease. Over the binding the
+    // holder is the peer the head established, never a flag: the token
+    // alone names the lease.
     fn lease_conditions(holder: String, token: Int) -> String {
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("holder", holder);
+        if !self.over_socket { b.string_field("holder", holder); }
         b.int_field("token", token);
         b.field("principal", self.principal());
         b.end_object();
@@ -127,13 +257,20 @@ locus Head {
     // One command on the table; a refusal is an ok reply whose receipt
     // says `refused` with the reason.
     fn submit(request_id: String, operation: String, target_kind: String, target_id: String, preconditions: String, arguments: String) -> Reply {
+        if self.over_socket {
+            let topic = topic_of(operation);
+            if len(topic) == 0 { return Reply { status: 0, error: "no topic on the binding for " + operation }; }
+            return socket_reply(self.socket, self.wire.call(request_id, topic, self.envelope(request_id, operation, target_kind, target_id, preconditions, arguments)));
+        }
         return self.post(self.prefix() + "/commands", self.envelope(request_id, operation, target_kind, target_id, preconditions, arguments));
     }
     fn lookup(request_id: String) -> Reply {
+        if self.over_socket { return socket_reply(self.socket, self.wire.call("settle:" + request_id, SETTLE_TOPIC, "{\"request_id\": " + dna::record_json_quote(request_id) + "}")); }
         return self.get(self.prefix() + "/commands?request_id=" + dna::url_encode(request_id));
     }
     // The hat of one Work, as the head renders it: structure, never a prompt.
     fn context(work_id: String) -> Reply {
+        if self.over_socket { return socket_reply(self.socket, self.wire.call("hat:" + work_id, HAT_TOPIC, "{\"id\": " + dna::record_json_quote(work_id) + "}")); }
         return self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
     }
 }
