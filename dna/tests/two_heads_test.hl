@@ -312,9 +312,18 @@ main locus App {
         let brow = row_with(row_with_all(ledger, "\"kind\": \"intent.requested\""), "reconcile the payroll account");
         std::test::assert(std::str::contains(arow, "\"author\": \"alice\"") && !std::str::contains(arow, "\"author\": \"bob\""), "alice's ask, in alice's name whatever the form said: " + arow);
         std::test::assert(std::str::contains(brow, "\"author\": \"bob\"") && !std::str::contains(brow, "\"author\": \"alice\""), "bob's ask, in bob's name whatever the form said: " + brow);
-        // the record holds none of the day's work: the ask went straight into the ledger
+        // the record holds none of the day's work: the ask went straight into
+        // the ledger. What the organization does about it may reach the record
+        // — a mutation planned from the ask names its objective, and mutations
+        // are the record's — but never a row whose home is the ledger.
         let record = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
-        std::test::assert_eq_str(row_with(record, "chase the late invoice"), "", "the ask never touched the record");
+        let mut touched = row_with_all(record, "chase the late invoice");
+        while len(touched) > 0 {
+            let nl = std::str::index_of(touched, "\n");
+            let line = if nl < 0 { touched } else { touched[0..nl] };
+            touched = if nl < 0 { "" } else { touched[(nl + 1)..len(touched)] };
+            std::test::assert_eq_str(dna::memory_of(std::json::find_string_field(line, "kind")), "record", "the ask's own rows never touched the record: " + line);
+        }
         // a session is not a shared secret: bob's cookie on alice's form field is bob
         let b2 = curl("POST", ui + "/api/task/create", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
         std::test::assert_eq_int(b2.status, 200, "taken");
