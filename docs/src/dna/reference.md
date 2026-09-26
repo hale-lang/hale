@@ -16,7 +16,8 @@ hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([le
                              renew, submit, settle, release, friction, run; --as position:<name>, --api <origin>;
                              --effect effect_free|idempotent|uncertain on next and submit (the performer's class;
                              run and loop use their performer's); an uncertain performer's failed settle or lost
-                             reply is `unresolved` — friction filed, the lease kept, never retried by a program
+                             reply marks the attempt `unresolved` (effect.result unknown, friction filed), never
+                             retried by a program: `hale dna effect resolve attempt:<id> --outcome ok|failed`
                              loop --parallel N is a worker (N children, holders position:<name>#n); loop --drain
 hale dna definitions [project] [--json]
                              the workflow catalog (dna/org/workflows.hl): every definition with its

@@ -140,8 +140,10 @@ performer of each kind, and every one declares its **effect class**
 (`effect`): what a settle that failed may have left behind.
 `effect_free` answered and touched nothing; `idempotent` may be run
 again to the same end; `uncertain` — an agent's seat with tools — may
-have acted once already. There is no default: a performer that
-declares none is refused when the leg starts (exit 2, naming it).
+have acted once already. There is no default: a catalog with a
+performer that declares none is refused by the verbs that claim or
+hand back (`next`, `submit`, `run`, `loop`; exit 2, naming it), and
+read by the rest.
 
 - a **person** (`legs::Person { effect: "idempotent" }`: asked again,
   they answer again): the brief is rendered as text and the outcome is
@@ -153,8 +155,9 @@ declares none is refused when the leg starts (exit 2, naming it).
 - a **model**: the model leg — the catalog's agent router
   (`agent_models()` from `dna/org/models.hl`) behind the performer,
   `legs::ModelPerformer { router: agent_models(), effect:
-  "effect_free" }` for a backend that answers, `effect: "uncertain"`
-  for one that works in place with its own tools. It takes the
+  "effect_free" }` for hosted backends that answer, `effect:
+  "uncertain"` when a tier is a harness with tools (init writes the
+  class the catalog it found calls for). It takes the
   `agent`, `service` and `software` kinds (`kinds`). A project
   initialised with no backend configured gets `NoModel`, which takes
   nothing, so its agent Works are a person's rather than attempts
@@ -168,33 +171,60 @@ and the heart's API refuse until GH #987 hands them over — and answers
 with a performance: the disposition and result, the calls it made,
 the receipts to file, the digest of what it was shown.
 
-The class rides with the work. On the **claim** it is the filter: a
-Work admits the classes its requirement allows — a judgment or an
-analysis is answered, never acted on, so it admits `effect_free` and
-`idempotent` and no `uncertain` performer is given one; an edit
-changes source, so it admits `idempotent` and `uncertain`; a person's
-job, and anything else, admits any — and the hat says so
-(`effects`). `run` and `loop` claim with the class of the performer
-they chose; `next` and `submit` claim and answer with the person's,
-or the one `--effect` names. On the **outcome** it is evidence: the
-row the owner journals carries `effect_class`.
+The class rides with the work. On the **claim** it is the filter,
+and the hat says what the Work admits (`effects`). The class decides
+what a failed settle becomes, never what the performer may do — that
+is the hat's tool grant — so a Work that is answered (a judgment, an
+analysis, a chore) admits every class, and an edit, which changes
+source, admits no `effect_free` performer. `run` and `loop` claim
+with the class of the performer they chose; `next` and `submit`
+claim and answer with the person's, or the one `--effect` names
+(the flag is theirs alone). The claim row records the class, a
+renewal carries it on, and an outcome under the lease names the
+same class or is refused. On the **outcome** it is evidence: the row
+the owner journals carries `effect_class`.
 
-And it decides what a failed settle becomes. A settle that fails —
-the outcome read back is neither settled nor still requested, or
-cannot be read — on an `effect_free` or `idempotent` performer is
-`unsettled` (exit 1), and the loop runs the child again at once,
-which claims the same lease and performs again. On an `uncertain`
-performer nothing is retried by a program: the leg files **friction**
-naming the attempt, the request id and the lease, keeps the lease,
-answers `unresolved` (exit 1), and the loop stops that slot — the
-attempt stays unresolved until evidence or a person decides. The
-model leg applies the same rule to a **lost reply**: a call that may
-have been made and acted on (the connection went, the answer never
-came, a gateway gave up) behind an `uncertain` performer is
-`unresolved` with nothing handed back, never retried, never failed
-over; behind the other two it is a `failed` outcome as before. A
-rate-limited call was never made, so its backoff applies to every
-class.
+And it decides what a failed settle becomes. On an `effect_free` or
+`idempotent` performer a settle that fails — the answer to the
+submit was lost and the outcome cannot be read back, the outcome was
+refused, or the owner refused it — is `unsettled` (exit 1): the lease
+is given back when it was still the leg's, the owner asks again under
+a fresh token, and the loop runs the slot again after a rest, which
+performs anew (never a second submit under the same request). On an
+`uncertain` performer nothing is retried by a program. The leg
+**marks the attempt unresolved** at the head — an outcome of
+disposition `unresolved`, carrying its calls as evidence and heard
+past the lease's end, which the head records as `attempt.unresolved`
+and as `effect.result unknown` on the attempt — files **friction**
+naming the attempt, the holder, the lease and the way out, answers
+`unresolved` (exit 1), and the loop stops that slot. Marked, the
+attempt is nobody's to claim: not another leg's, not its own
+holder's, not a loop's. A person decides:
+
+```sh
+hale dna effect resolve attempt:<id> --outcome ok|failed
+```
+
+and the owner settles the attempt on that word (`failed` spends the
+attempt, and the Work is asked again if its allowance has more).
+
+The same holds when no word comes at all. An `uncertain` claim whose
+lease lapses with no outcome — the leg died mid-session — is never
+asked of a leg again: the owner records the effect unknown itself,
+and waits for the same resolution. So a claim of that class is taken
+for an hour by default (`--ttl`), a session with tools being no
+ten-minute affair.
+
+The model leg applies the rule by what the backend says of the call.
+Every model result says whether the backend **may have acted**
+(`made`): a refusal before anything was sent or run — no credential,
+a data class, a harness not on PATH, a connection never opened, a
+4xx that did no work — did not; anything after did. Behind an
+`uncertain` performer a refusal that may have acted is `unresolved`,
+never retried, never failed over; behind the other two it is a
+`failed` outcome. A rate-limited call is asked again after a wait
+only when it was never made: a harness session cut short by a limit
+is not a call to repeat.
 
 ## The model leg
 

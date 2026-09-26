@@ -11753,7 +11753,8 @@
                 "done",
                 "failed",
                 "declined",
-                "timeout"
+                "timeout",
+                "unresolved"
               ]
             },
             "result": {

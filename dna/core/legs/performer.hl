@@ -58,7 +58,7 @@ type Performance {
     renderer: String = "";
     pending: Bool = false; // a person's: the outcome is theirs to submit later
     refused: String = ""; // why the performer would not perform, "" when it did
-    unresolved: String = ""; // an uncertain performer's reply was lost: why; nothing is handed back, the lease is kept
+    unresolved: String = ""; // an uncertain performer's call may have acted and no answer came: why; the attempt is marked unresolved, nothing is handed back
 }
 
 // A performer, structurally: its kind, the work kinds it takes, and one
@@ -103,7 +103,7 @@ locus NoModel {
     fn takes(performer_kind: String) -> Bool { return false; }
     fn effect_class() -> String { return "effect_free"; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
-        return Performance { refused: "no model performs " + brief.performer_kind + " work in this project; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl (`legs::ModelPerformer { router: agent_models() }` puts the catalog behind it)" };
+        return Performance { refused: "no model performs " + brief.performer_kind + " work in this project; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl (`legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" }` puts the catalog behind it)" };
     }
 }
 
