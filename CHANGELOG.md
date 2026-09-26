@@ -50,6 +50,7 @@ behavior.
   `connection_refused` as final. The read dials once and answers
   `knowledge_unavailable` in about a millisecond, with the reason on the
   API's stderr.
+
 ### `hale fmt` keeps the space after `+`/`-` that follows a keyword-named field (GH #1064)
 
 - **Fixed:** `hale fmt` took a `+` or `-` after a field whose name is a
