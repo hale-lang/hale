@@ -40,7 +40,9 @@ export async function startNodeService(options = {}) {
   // A mutation carries this launch's token, as a tool that read its file does.
   // One connection per request: the API is restarted on the same port
   // whenever the actor or the grants change, and a pooled keep-alive
-  // socket to the old process would fail the next fetch.
+  // socket to the old process would fail the next fetch. No retry: a read
+  // that needs the projection at the Record head follows `quiesce()`, and a
+  // dead head surfaces as its own connection error at once.
   async function request(path, init = {}) {
     const headers = { Connection: 'close', ...(init.method && init.method !== 'GET' ? { 'X-Hale-Token': service.token() } : {}), ...(init.headers || {}) };
     const response = await fetch(service.origin + path, { signal: AbortSignal.timeout(15_000), ...init, headers });

@@ -1,18 +1,18 @@
 // Actual browser → command API → host relay → DNA body → Record outcomes.
 // The lost-reply case drops only transport after a real native POST completed.
 import { test as base, expect } from '@playwright/test';
-import { nativeCommandEnvironmentPresent, startService } from './native-command-harness.mjs';
+import { nativeCommandEnvironmentPresent, serviceFixtureTimeout, startService } from './native-command-harness.mjs';
 import { isDescribe, isWrite, settle } from './command-wire.mjs';
 
 const test = base.extend({
-  service: async ({}, use, testInfo) => {
+  service: [async ({}, use, testInfo) => {
     const service = await startService();
     try { await use(service); }
     finally {
       await service.stop();
       await testInfo.attach('native-service-evidence', { path: service.evidence + '/service.json', contentType: 'application/json' });
     }
-  },
+  }, { timeout: serviceFixtureTimeout }],
   page: async ({ page, service }, use) => {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));

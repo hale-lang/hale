@@ -5,14 +5,15 @@
 import { test as base, expect } from '@playwright/test';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
 import { callOf, isKnowledgeCall, isKnowledgeLookup, isWrite, settleKnowledge } from './command-wire.mjs';
+import { serviceFixtureTimeout } from './native-command-harness.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
-  service: async ({ grants }, use, testInfo) => {
+  service: [async ({ grants }, use, testInfo) => {
     const service = await startNodeService({ grants });
     try { await use(service); }
     finally { await service.stop(); await testInfo.attach('native-node-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
-  },
+  }, { timeout: serviceFixtureTimeout }],
   page: async ({ page, service }, use) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     await service.attach(page);
