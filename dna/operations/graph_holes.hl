@@ -213,8 +213,16 @@ fn graph_holes(g: GraphIngest) -> HolesAnswer {
         let p = procs[0..nl];
         procs = procs[nl..len(procs)];
         let process = "process:" + p;
-        let gate = dna::trim_nl(hole_seconds(g.guards, "seed:" + p));
-        let first = if std::str::contains(gate, "\n") { gate[0..std::str::index_of(gate, "\n")] } else { gate };
+        // the gate guarding a seed the process unfolds into (its `unfold`
+        // edge, not its name), the first one found
+        let mut first = "";
+        let mut seeds = hole_seconds(g.unfolds, process);
+        while len(seeds) > 0 && len(first) == 0 {
+            let n2 = std::str::index_of(seeds, "\n");
+            let gate = hole_seconds(g.guards, seeds[0..n2]);
+            seeds = seeds[(n2 + 1)..len(seeds)];
+            if len(gate) > 0 { first = gate[0..std::str::index_of(gate, "\n")]; }
+        }
         // a gate is shown by its whole name (`ci/api`), not its last segment
         let shown = if len(first) > 5 { first[5..len(first)] } else { first };
         let w = HoleDoc { name: p, target: process };

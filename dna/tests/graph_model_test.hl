@@ -425,6 +425,27 @@ locus App {
         std::test::assert_eq_str(rebuilt.error, "", "the rebuild projects clean");
         std::test::assert_eq_str(self.perspectives(store), before, "a rebuild reproduces both perspectives");
 
+        // ---- a hold is the store's to admit (GH #1091): the same holder as
+        // the process's other seat is not projected under signed trust, and
+        // a retired person holds nothing
+        let hold = ops::GraphEdge { kind: "holds" };
+        hold.member("position", "position:node/dev");
+        hold.member("holder", "bob");
+        self.append("graph.edge", hold.id(), hold.body());
+        let both = ops::GraphEdge { kind: "holds" };
+        both.member("position", "position:node/reviewer");
+        both.member("holder", "bob");
+        self.append("graph.edge", both.id(), both.body());
+        self.append("person.retired", "carol", "{\"by\": \"ada\"}");
+        let late = ops::GraphEdge { kind: "holds" };
+        late.member("position", "position:nats/dev");
+        late.member("holder", "carol");
+        self.append("graph.edge", late.id(), late.body());
+        let gated = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "signed");
+        std::test::assert_eq_str(gated.error, "", "a refused hold stops nothing");
+        std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("bob")), "position:node/dev", "bob holds node/dev, and not its reviewer too under signed trust");
+        std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("carol")), "", "a retired person holds nothing");
+
         // ---- a malformed row stops the projection at its row, with why
         let at = self.j.revision();
         self.append("graph.edge", "meets:contract:spec/node.yaml", "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}");

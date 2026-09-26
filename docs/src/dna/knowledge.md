@@ -184,11 +184,18 @@ Board Review of its own: a board, a dev and a reviewer for every process
 (the reviewer signing the contracts its process serves), an operator and
 the operational roles — support, accounts, billing, on-call — under every
 deployment, one work item per process done when its gate passes, and the
-practices your documents mark. Ratify them and they are the org chart.
-Propose who holds one with `hale dna hold <position> <holder>`; one
+practices your documents mark. `hale dna review` lists them in their
+groups, and `hale dna review holes approve --as <you> --authority board`
+decides them in turn; ratify them and they are the org chart, in the order
+they were proposed.
+
+With the organization running (`hale dna dev` works on a repository too:
+it runs the organization alone), ask it for a holder with
+`hale dna fill <position> <holder>`. The holder must be someone the record
+knows; the proposal is in your name, so someone else ratifies it. One
 person as both dev and reviewer of the same process is a warning while
 you work alone (`dna.trust = local`), and refused once the record is
-shared.
+shared — by the CLI, and again where memory takes the ratified hold.
 
 Practices are not repeated there: a practice in the graph is the
 knowledge idea it already is — advice while proposed, law once the

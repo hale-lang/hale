@@ -300,6 +300,7 @@ locus GraphIngest {
         // document marks, as its receipt document, one per line
         served: String = "";
         guards: String = "";
+        unfolds: String = ""; // `<process>\t<seed>` per unfold the ingest wrote
         deployments: String = "";
         practices: String = "";
         nodes: Int = 0;
@@ -486,6 +487,7 @@ locus GraphIngest {
                 self.add(u, "parent", "process:" + d);
                 self.add(u, "child", seed);
                 self.edge(u);
+                self.unfolds = self.unfolds + "process:" + d + "\t" + seed + "\n";
             }
         }
     }

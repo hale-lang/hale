@@ -132,6 +132,11 @@ interface KnowledgeStore {
     // A member whose node was retired is not shown. "" for a perspective
     // no query answers.
     fn graph_perspective(name: String) -> String;
+    // GH #1091, what the projection checks a ratified hold against: the
+    // positions `holder` holds, one id per line, and whether the record
+    // retired a person.
+    fn graph_held_by(holder: String) -> String;
+    fn person_retired(person: String) -> Bool;
 }
 
 type Signal { kind: String = ""; source: String = ""; what: String = ""; count: Int = 0; last_seq: Int = 0; }
@@ -912,6 +917,20 @@ locus Pq {
         let m = self.conn.exec_params("DELETE FROM graph_members WHERE edge = $1", a);
         if !m.ok { return self.fail("graph retire", m.err); }
         return true;
+    }
+    fn graph_held_by(holder: String) -> String {
+        let a = db::Args { };
+        a.add(holder);
+        let rows = self.conn.query_params("SELECT a.node FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.role = 'position' JOIN graph_members h ON h.edge = e.id AND h.role = 'holder' WHERE e.kind = 'holds' AND h.node = $1 ORDER BY a.node", a);
+        if !rows.ok { self.note("graph held", rows.err); return ""; }
+        return rows.csv;
+    }
+    fn person_retired(person: String) -> Bool {
+        let a = db::Args { };
+        a.add(person);
+        let rows = self.conn.query_params("SELECT person FROM org_retired WHERE person = $1", a);
+        if !rows.ok { self.note("retired", rows.err); return false; }
+        return rows.n > 0;
     }
     fn graph_nodes_count(kind: String) -> Int {
         let a = db::Args { };

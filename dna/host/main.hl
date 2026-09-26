@@ -228,9 +228,9 @@ fn main() {
     } else if verb == "show" {
         // GH #1086: `hale dna show org | processes [--json]`, queries over memory
         ans = show_verb(root, word(a, 0), has_flag(a, "--json"));
-    } else if verb == "hold" {
-        // GH #1091: `hale dna hold <position> <holder>`, a proposal for the Board
-        ans = hold_verb(root, word(a, 0), word(a, 1), memory);
+    } else if verb == "fill" {
+        // GH #1091: `hale dna fill <position> <holder>`, a holder proposed through the organization
+        ans = fill_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), memory);
     } else if verb == "graph-ingest" {
         // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
         ans = graph_ingest_verb(root, word(a, 0), memory);

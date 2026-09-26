@@ -1,25 +1,37 @@
 // dna/tests/graph_holes_test.hl — the holes, proposed at record birth, and
-// the org chart they fill once ratified (GH #1091).
+// the org chart they fill once the Board ratifies them (GH #1091).
 //
 // The fixture is hale-lang/voice at 6ad244d2 (hale-lang/voice#4), vendored
 // under dna/tests/onboarding/voice. `hale dna init` proposes exactly what
-// its GRAPH.md lists under "The holes": 26 positions (the board, a dev and
-// a reviewer under each process, an operator and the four operational
-// roles under each deployment), 5 work items and the 4 practices
-// DIRECTION.md marks `derived` — 35 proposals, one Board Review each, the
-// reviewers carrying the contracts they sign. `hale dna hold` proposes a
-// holder, warns when a process's dev and reviewer would be one person
-// under `dna.trust = local`, and refuses it elsewhere. Ratified the way
-// the organism's review path ratifies them, the proposals project into the
-// graph, and `hale dna show org` prints GRAPH.md's org chart byte for byte
-// — that half needs memory (HALE_DNA_MEMORY_DSN_OWNER).
+// its GRAPH.md lists under "The holes": 26 positions, 5 work items and the
+// 4 practices DIRECTION.md marks `derived` — 35 proposals, one Board Review
+// each. Then the organism runs on the repository record — it has no
+// application, and runs its organization alone — and the Board decides
+// through the real review path, `hale dna review holes approve`, in the
+// order the listing gives, which is not the order init proposed them: the
+// org chart `hale dna show org` prints is GRAPH.md's all the same. `hale
+// dna fill` asks the organization to propose a holder: a person the record
+// knows, for a position it states; the proposer may not ratify it; a
+// process's dev and reviewer as one person is a warning under
+// `dna.trust = local`, said again where memory projects it, and refused
+// under any other trust. The organism half needs memory
+// (HALE_DNA_MEMORY_DSN_OWNER) and the nerves (HALE_DNA_NATS_URL_OWNER).
 
 import "../core" as dna;
-import "../operations" as ops;
 
 fn source() -> String {
     let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The value of `NAME=value` on its own line of `text`.
+@unbounded
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
 }
 
 fn toolchain() -> String {
@@ -79,8 +91,125 @@ const ORG: String = "purpose
   scaled-out  operator, support, accounts, billing, on-call
 ";
 
+// The catalog the organism runs on: every backend a `dna::FakeModel`, so
+// it boots with no API key (the Board's Reviews need no model).
+const CATALOG: String = "// dna/org/models.hl — the catalog, scripted (the holes fixture).\n"
+    + "import \"vendor/dna\" as dna;\n"
+    + "\n"
+    + "fn frontier() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"deep\", model: \"deep-1\", price_micros: 0, answer: \"kind: person\\nclass: application\\ntarget: (none)\\ncount: 1\\nassignee: bob\\nobligation: none\\na person chases it; nothing in the source changes\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn fast() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"quick\", model: \"quick-1\", price_micros: 0, answer: \"kind: person\\nclass: application\\ntarget: (none)\\ncount: 1\\nassignee: bob\\nobligation: none\\na person chases it; nothing in the source changes\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn desk() -> dna::LocalFakeModel {\n"
+    + "    return dna::LocalFakeModel { };\n"
+    + "}\n"
+    + "\n"
+    + "fn leader_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn editor_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn agent_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn org_budget() -> dna::BudgetPolicy {\n"
+    + "    return dna::BudgetPolicy { window: \"none\", allowance_micros: 5000000 };\n"
+    + "}\n"
+    + "\n"
+    + "fn probe_catalog() -> String {\n"
+    + "    return dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + dna::probe(\"desk\", desk());\n"
+    + "}\n";
+
 locus App {
     params { repo: String = ""; }
+    // The organization runs: its pid file is written and the process is alive.
+    fn organization_up(tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            let pid = dna::trim_nl(std::io::fs::read_file(self.repo + "/.hale/dna/org.pid") or "");
+            if len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0 { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    fn gone(pid: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            if dna::run_tool("kill\n-0\n" + pid).code != 0 {
+                let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + self.repo);
+                return true;
+            }
+            std::time::sleep(200ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    // Whether the body's log says `needle`, within `tries` half-seconds.
+    @unbounded
+    fn logged(needle: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            if std::str::contains(std::io::fs::read_file(self.repo + "/.hale/body.log") or "", needle) { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    @unbounded
+    fn count_rows(kind: String) -> Int {
+        let j = dna::GitJournal { repo: self.repo };
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
+        return n;
+    }
+    // The Review whose question carries `text`: its id.
+    @unbounded
+    fn review_of(text: String) -> String {
+        let listed = self.dna("review").stdout;
+        let at = std::str::index_of(listed, text);
+        if at < 0 { return ""; }
+        let before = listed[0..at];
+        let mut i = len(before);
+        while i > 0 && before[(i - 1)..i] != "\n" { i = i - 1; }
+        let line = std::str::trim(before[i..len(before)]);
+        let sp = std::str::index_of(line, " ");
+        return if sp < 0 { line } else { line[0..sp] };
+    }
+    // `hale dna show org` as the head, once memory has projected the whole
+    // record (bounded).
+    @unbounded
+    fn show_org(head: String, tries: Int) -> String {
+        let mut n = 0;
+        while n < tries {
+            let r = dna::run_tool("sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && exec \"$3\" dna show org\nsh\n" + self.repo + "\n" + head + "\n" + toolchain());
+            if r.code == 0 && !std::str::contains(r.stderr, "memory has projected") && len(r.stdout) > 0 { return r.stdout; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn show_until(head: String, needle: String, tries: Int) -> String {
+        let mut n = 0;
+        let mut last = "";
+        while n < tries {
+            last = self.show_org(head, 4);
+            if std::str::contains(last, needle) { return last; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return last;
+    }
     fn dna(args: String) -> dna::RunResult {
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + self.repo + "\n" + toolchain() + "\ndna\n" + args);
     }
@@ -96,7 +225,6 @@ locus App {
         // ---- the proposals, as the record holds them
         let j = dna::GitJournal { repo: self.repo };
         let mut proposed = "";
-        let mut digests = ""; // the proposals init made, `<digest>\t<review>\t<kind>\t<target>`
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
@@ -104,9 +232,6 @@ locus App {
             if e.kind == "review.requested" && (group == "holes" || group == "practices") {
                 proposed = proposed + group + " " + std::json::find_string_field(e.body, "name") + "\n";
                 std::test::assert_eq_str(std::json::find_string_field(e.body, "required_authority"), "board", "the Board decides " + e.entity);
-            }
-            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "author") == "hale dna init" {
-                digests = digests + e.entity + "\t" + std::json::find_string_field(e.body, "review_id") + "\t" + std::json::find_string_field(e.body, "kind") + "\t" + std::json::find_string_field(e.body, "target") + "\n";
             }
             i = i + 1;
         }
@@ -122,72 +247,71 @@ locus App {
         std::test::assert(std::str::contains(questions, "ratify the work `api`: done when ci/api passes\n") && std::str::contains(questions, "ratify the work `nats`: nats has no gate, so its done-when is to define one\n"), "work is done when its gate passes, or when one is defined: " + questions);
         std::test::assert(std::str::contains(questions, "ratify the practice `A node` (DIRECTION.md) as advice\n"), "a derived item is proposed as advice");
 
-        // ---- hold: a proposal for the Board; the same holder warned, then refused
-        let dev = self.dna("hold\napi/dev\nada");
-        std::test::assert(dev.code == 0 && std::str::contains(dev.stdout, "proposed ada to hold position:api/dev"), "a holder is proposed: " + dev.stdout + dev.stderr);
-        let same = self.dna("hold\napi/reviewer\nada");
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(owner) == 0 || len(nats) == 0 { eprintln("graph_holes_test: the organism half not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)"); dna::scratch_done(scratch); return; }
+
+        // ---- the organism, on the repository record: its organization alone
+        std::io::fs::write_file(self.repo + "/dna/org/models.hl", CATALOG) or discard;
+        let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm catalog\nsh\n" + self.repo);
+        std::test::assert_eq_int(committed.code, 0, "the scripted catalog committed: " + committed.stderr);
+        let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
+        let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
+        std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
+        let started = dna::run_tool("sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain());
+        let body = dna::trim_nl(started.stdout);
+        std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        std::test::assert(self.logged("a repository: no application runs under this host", 240), "with no application to express: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+
+        // ---- the Board decides through the review path, in the listing's order
+        let listed = self.dna("review");
+        std::test::assert(std::str::contains(listed.stdout, "holes — 31 hole(s) the repository leaves, each its own Review:") && std::str::contains(listed.stdout, "practices — 4 practice(s) its documents mark"), "the holes and practices, each group listed together: " + listed.stdout);
+        let holes = self.dna("review\nholes\napprove\n--as\nada\n--authority\nboard");
+        std::test::assert_eq_int(holes.code, 0, "the Board ratifies the holes: " + holes.stdout + holes.stderr);
+        let practices = self.dna("review\npractices\napprove\n--as\nada\n--authority\nboard");
+        std::test::assert_eq_int(practices.code, 0, "and the practices: " + practices.stdout + practices.stderr);
+        std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 35, "35 proposals ratified by the organism");
+        std::test::assert_eq_str(self.show_org(head, 240), ORG, "ratified in another order than proposed, the org chart is still GRAPH.md's");
+
+        // ---- fill: a holder asked of the organization
+        let dev = self.dna("fill\napi/dev\nada\n--as\ngrace");
+        std::test::assert(dev.code == 0 && std::str::contains(dev.stdout, "proposed ada to hold position:api/dev") && std::str::contains(dev.stdout, "under `holds`"), "a holder proposed through the organization: " + dev.stdout + dev.stderr);
+        let same = self.dna("fill\napi/reviewer\nada\n--as\ngrace");
         std::test::assert(same.code == 0 && std::str::contains(same.stderr, "warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev"), "under dna.trust = local the same holder is a warning: " + same.stdout + same.stderr);
-        let bob = self.dna("hold\nnode/dev\nbob");
-        std::test::assert_eq_int(bob.code, 0, "bob for node/dev: " + bob.stderr);
+        let stranger = self.dna("fill\napi/dev\nzed\n--as\ngrace");
+        std::test::assert(stranger.code != 0 && std::str::contains(stranger.stderr, "zed is no person this record knows"), "a holder is a person the record knows: " + stranger.stderr);
+        let nowhere = self.dna("fill\nnowhere/dev\nada\n--as\ngrace");
+        std::test::assert(nowhere.code != 0 && std::str::contains(nowhere.stderr, "is no position the record states or proposes"), "for a position it states: " + nowhere.stderr);
+        let rj = dna::GitJournal { repo: self.repo };
+        std::test::assert(rj.append(rj.revision(), "graph.retired", "position:compose/support", "{}").ok, "a position retired");
+        let gone = self.dna("fill\ncompose/support\nada\n--as\ngrace");
+        std::test::assert(gone.code != 0 && std::str::contains(gone.stderr, "is no position the record states or proposes"), "a retired position holds no one: " + gone.stderr);
+        let own = self.dna("fill\nboard\nada\n--as\nada");
+        std::test::assert_eq_int(own.code, 0, "ada proposes herself for the board: " + own.stderr);
+        let listed_holds = self.dna("review");
+        std::test::assert(std::str::contains(listed_holds.stdout, "holds — 3 proposed holder(s)"), "the holds, listed together: " + listed_holds.stdout);
+        let self_review = self.review_of("ada holding the position `board`, as ada proposes");
+        let refused = self.dna("review\n" + self_review + "\napprove\n--as\nada\n--authority\nboard");
+        std::test::assert(std::str::contains(refused.stdout + refused.stderr, "reviewer ada authored the candidate"), "the proposer may not ratify it: " + refused.stdout + refused.stderr);
+        let approve_dev = self.dna("review\n" + self.review_of("ada holding the position `api/dev`, as grace proposes") + "\napprove\n--as\nada\n--authority\nboard");
+        std::test::assert_eq_int(approve_dev.code, 0, "grace's proposal ratified: " + approve_dev.stderr);
+        let approve_rev = self.dna("review\n" + self.review_of("ada holding the position `api/reviewer`, as grace proposes") + "\napprove\n--as\nada\n--authority\nboard");
+        std::test::assert_eq_int(approve_rev.code, 0, "and the same holder's: " + approve_rev.stderr);
+        let held = self.show_until(head, "  api         dev [ada], reviewer(openapi.yaml) [ada]\n", 240);
+        std::test::assert(std::str::contains(held, "  api         dev [ada], reviewer(openapi.yaml) [ada]\n") && std::str::contains(held, "  board\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
+        std::test::assert(self.logged("warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev", 240), "memory says so where it projects it: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+
+        // ---- under any other trust the same holder is refused
+        let bob = self.dna("fill\nnode/dev\nada\n--as\ngrace");
+        std::test::assert_eq_int(bob.code, 0, "ada proposed for node/dev: " + bob.stderr);
+        let k = dna::run_tool("kill\n" + body);
+        std::test::assert(self.gone(body, 600), "the organism stops");
         let signed = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\ndna.trust\nsigned");
         std::test::assert_eq_int(signed.code, 0, "the record's trust set to signed");
-        let refused = self.dna("hold\nnode/reviewer\nbob");
-        std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "hold: refused: bob holds position:node/dev") && std::str::contains(refused.stderr, "dna.trust = signed"), "elsewhere it is refused: " + refused.stdout + refused.stderr);
-        let unset = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--unset\ndna.trust");
-        std::test::assert_eq_int(unset.code, 0, "back to local");
-        let nowhere = self.dna("hold\nnowhere/dev\nada");
-        std::test::assert(nowhere.code != 0 && std::str::contains(nowhere.stderr, "is no position the record states or proposes"), "a position no one proposed is refused: " + nowhere.stderr);
+        let refused_signed = self.dna("fill\nnode/reviewer\nada\n--as\ngrace");
+        std::test::assert(refused_signed.code != 0 && std::str::contains(refused_signed.stderr, "fill: refused: ada holds position:node/dev") && std::str::contains(refused_signed.stderr, "dna.trust = signed"), "refused, with the reason: " + refused_signed.stdout + refused_signed.stderr);
 
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-        if len(owner) == 0 { eprintln("graph_holes_test: the org chart half not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); dna::scratch_done(scratch); return; }
-
-        // ---- the Board ratifies every hole, as the review path writes it
-        let r = dna::GitJournal { repo: self.repo };
-        let mut rest = digests;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = rest[0..nl];
-            rest = rest[(nl + 1)..len(rest)];
-            let t1 = std::str::index_of(line, "\t");
-            let digest = line[0..t1];
-            let after = line[(t1 + 1)..len(line)];
-            let t2 = std::str::index_of(after, "\t");
-            let tail = after[(t2 + 1)..len(after)];
-            let t3 = std::str::index_of(tail, "\t");
-            let b = std::json::Builder { };
-            b.begin_object();
-            b.string_field("digest", digest);
-            b.string_field("review_id", after[0..t2]);
-            b.string_field("decided_by", "ada");
-            b.string_field("outcome", "approve");
-            b.string_field("kind", tail[0..t3]);
-            b.string_field("target", tail[(t3 + 1)..len(tail)]);
-            b.string_field("class", "initiative");
-            b.end_object();
-            std::test::assert(r.append(r.revision(), "knowledge.ratified", digest, b.result()).ok, "ratified " + digest);
-        }
-
-        let identity = dna::GitRecord { repo: self.repo }.identity();
-        let spine = dna::migrated(owner, identity);
-        std::test::assert(spine.ok, "memory migrates: " + spine.why);
-        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
-        std::test::assert(store.open(), "memory opens: " + store.last_error());
-        let applied = ops::apply_record(store, dna::GitJournal { repo: self.repo }, dna::GitReceipts { repo: self.repo });
-        std::test::assert_eq_str(applied.error, "", "the record projects clean");
-        std::test::assert_eq_int(store.graph_nodes_count("position"), 26, "26 positions, ratified");
-        std::test::assert_eq_int(store.graph_nodes_count("work"), 5, "5 work items");
-        std::test::assert_eq_int(store.graph_edges_count("reviews"), 5, "5 contracts signed");
-        let work = store.conn.query_one("SELECT body FROM graph_nodes WHERE id = 'work:api'");
-        std::test::assert(work.ok && std::str::contains(work.data, "\"done_when\"") && std::str::contains(work.data, "gate:ci/api"), "api's work is done when ci/api passes: " + work.data);
-        let practices = store.conn.query_one("SELECT count(*) FROM knowledge_ideas WHERE kind = 'practice' AND accepted AND author = 'hale dna init'");
-        std::test::assert_eq_str(dna::trim_nl(practices.data), "4", "the four practices, ratified");
-        let m = dna::migrate(dna::parse_dsn(owner), identity);
-        let org = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && exec \"$3\" dna show org\nsh\n" + self.repo + "\n" + m.head_dsn + "\n" + toolchain());
-        std::test::assert_eq_int(org.code, 0, "show org: " + org.stderr);
-        std::test::assert_eq_str(org.stdout, ORG, "ratifying the holes fills GRAPH.md's org chart");
-
-        store.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }
 }

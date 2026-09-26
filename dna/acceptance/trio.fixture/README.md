@@ -50,3 +50,15 @@ output carries the same one line and nothing else. The growth assessment
 alone. Each old context digest was checked by reproducing it from the new
 context with the one line taken back out. No fresh model call was made;
 every answer is unchanged.
+
+GH #1091 gave the generated organization's `main.hl` one more binding, a
+holder asked of the organization over the nerves
+(`dna::HoldRequested: nats::NatsAdapter { }`, after
+`dna::PracticeRequested`). Two entries carry that file in their context.
+The organization-growth edit (`d9fd4a5d2943…`, was `3d1f819f6bdc…`) is
+re-keyed, and its recorded output carries the same one line and nothing
+else. The growth assessment (`0dfcfca7d96c…`, was `beeae0270a4e…`) is
+re-keyed for the changed context alone. Each old context digest was
+checked by reproducing it from the new context, stored as the miss's
+evidence, with the one line taken back out. No fresh model call was made;
+every answer is unchanged.

@@ -42,9 +42,11 @@ hale dna review <id> [--iris] render a Review: source diff, semantic diff, evide
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
-hale dna hold <position> <holder>
-                             propose who holds a position: a Board Review; dev and reviewer of one
-                             process as one person is a warning under dna.trust = local, refused elsewhere
+hale dna fill <position> <holder> [project] [--as <who>]
+                             ask the organization to propose who holds a position: a Board Review in
+                             your name; the holder is a person the record knows; dev and reviewer of
+                             one process as one person is a warning under dna.trust = local, refused
+                             elsewhere, here and where memory projects it
 hale dna show org|processes [--json] [project]
                              the graph's two perspectives, read from memory under the head's role:
                              the org chart, the process model; `--json` is the query's answer
