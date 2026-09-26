@@ -721,6 +721,12 @@ pub struct InterfaceMethodSig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocusDecl {
     pub name: Ident,
+    /// GH #1104 piece 5: the locus came in through an `import`. Set by
+    /// the cross-seed rename pass (its mangled name is a rename
+    /// target). The api binding serves the entrypoint seed's own loci
+    /// only: a library's internal bus is not the application's API,
+    /// however much of it the entrypoint composes.
+    pub imported: bool,
     /// Phase 2: when set, this locus is the binary's entry point —
     /// `main locus App { ... }`. Carries `bindings { }`
     /// configuration for cross-process topics. Exactly one

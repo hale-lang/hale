@@ -53,14 +53,18 @@ fn main() {
 }
 ```
 
-The `api:` entry is the whole change. It binds every topic some
-locus subscribes as a **command** (`Verdicts`), every topic some
-locus publishes as a **stream** (`Prices`), and every `expose` of
-the main locus or of its default children as a **read**
+The `api:` entry is the whole change. It binds every topic a locus
+of this seed subscribes as a **command** (`Verdicts`), every topic
+such a locus publishes as a **stream** (`Prices`), and every `expose`
+of the main locus or of its default children as a **read**
 (`billing.ledger`). The handler's return type became the reply:
 `on_verdict` returns a `VerdictResult`, so a caller gets one back.
 Nothing else in the source knows the socket exists, and a program
-without the entry pays nothing for it.
+without the entry pays nothing for it. What a library you import
+does on its own bus is not your API: only the loci of your own seed
+are served, so a head that imports a large core never hands out the
+core's internal topics as commands (an imported *topic* your locus
+subscribes is served under its qualified name, `lib::Orders`).
 
 For a program you are only trying out, skip even that line:
 

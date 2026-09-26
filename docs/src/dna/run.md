@@ -267,6 +267,19 @@ git config dna.oidc.board riley
 hale dna secret set HALE_DNA_OIDC_SECRET
 ```
 
+The head's socket (the api binding on `dna/api`, `LOTUS_API` naming
+its path) knows a peer by its Unix credentials instead, and the record
+says what that peer may do: map the uid to a person the record knows,
+
+```text
+git config --add dna.unix.member "uid:1000=riley"
+```
+
+and a position the graph says that person holds is a role the peer
+holds — `owner`, which reads the full description, is the board.
+Generic clients (`hale call`, `hale mcp --app`, `hale admin`) see
+exactly that principal's slice.
+
 Then nothing is served without signing in, a verdict from the page is
 recorded in the name the subject maps to — with the board's authority
 if `dna.oidc.board` lists that name — and a subject you have not mapped
