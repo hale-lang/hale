@@ -227,7 +227,7 @@ fn main() {
         ans = record_seed_verb(root, word(a, 0), memory);
     } else if verb == "graph-ingest" {
         // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
-        ans = graph_ingest_verb(root, memory);
+        ans = graph_ingest_verb(root, word(a, 0), memory);
     } else if verb == "design-upgrade" {
         // `hale dna init` / `upgrade`: the toolchain's design as proposals
         ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);

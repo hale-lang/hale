@@ -80,7 +80,7 @@ fn edge_line(body: String) -> String {
 }
 
 locus App {
-    params { nodes: String = ""; edges: String = "\n"; }
+    params { nodes: String = ""; edges: String = "\n"; dangling: String = ""; }
     // How many lines of `text` begin with `prefix`.
     @unbounded
     fn count(text: String, prefix: String) -> Int {
@@ -116,8 +116,19 @@ locus App {
             let kind = std::json::find_string_field(line, "kind");
             let body = std::json::find_string_field(line, "body");
             if kind == "graph.node" { self.nodes = self.nodes + std::json::find_string_field(body, "kind") + ":" + std::json::find_string_field(body, "name") + "\n"; }
-            if kind == "graph.edge" { self.edges = self.edges + edge_line(body) + "\n"; }
+            if kind == "graph.edge" {
+                self.edges = self.edges + edge_line(body) + "\n";
+                // a node before any edge that names it
+                let mut m = std::json::array_first(std::json::find_field_raw(body, "members"));
+                while !m.done {
+                    let node = std::json::find_string_field(m.element, "node");
+                    if std::json::find_string_field(m.element, "role") != "holder" && !std::str::starts_with(node, "practice:") && !std::str::contains("\n" + self.nodes, "\n" + node + "\n") { self.dangling = self.dangling + std::json::find_string_field(line, "entity") + " names " + node + "\n"; }
+                    m = std::json::array_next(m);
+                }
+            }
         }
+
+        std::test::assert_eq_str(self.dangling, "", "every edge names nodes the record already holds");
 
         // GRAPH.md, "Checkable"
         let kinds = "purpose axiom process seed contract deployment gate document witness position work";
@@ -150,7 +161,7 @@ locus App {
         std::test::assert_eq_int(self.count(self.edges, "unfold|parent=purpose:voice|child=axiom:"), 17, "the purpose unfolds into every axiom");
 
         // ---- init again: the record stands, nothing is read twice
-        let again = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
+        let again = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
         std::test::assert_eq_int(again.code, 0, "init again: " + again.stderr);
         std::test::assert(std::str::contains(again.stdout, "a record exists; not reseeded") && !std::str::contains(again.stdout, "graph   "), "the record is not reseeded: " + again.stdout);
 

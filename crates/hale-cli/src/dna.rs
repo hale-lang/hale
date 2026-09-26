@@ -100,6 +100,8 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
     let out = cmd.args(args).output().map_err(|e| format!("hale dna {verb}: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // the host prefixes its own complaints; the caller prefixes again
+        let err = err.strip_prefix("hale dna: ").map(str::to_string).unwrap_or(err);
         return Err(if err.is_empty() { format!("hale dna {verb} failed") } else { err });
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -991,7 +993,11 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     // 4. the organization: a program of its own (GH #566 F2). The
     //    application is not touched — it carries its own law and is
     //    observable like any Hale binary; the org oversees it from outside.
-    let purpose_text = format!("{}: keep the application correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.", project);
+    let purpose_text = format!(
+        "{}: keep {} correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.",
+        project,
+        if app.is_some() { "the application" } else { "what this repository builds" }
+    );
     let purpose_digest = format!("sha256:{}", hex(&openssl::sha::sha256(purpose_text.as_bytes())));
     let org_dir = root.join(ORG_SEED);
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
@@ -1005,7 +1011,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("models  {line}"));
         }
     }
-    created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, &purpose_digest, app.as_ref().map_or(".", |a| a.seed_rel.as_str())))?;
+    created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, &purpose_digest, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
     if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project))? {
@@ -1046,9 +1052,10 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
                 out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
             }
             _ => {
-                let n = seed_repository(&root, &purpose_digest)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} event(s): review.requested)"));
-                let graph = host_run("graph-ingest", &root, &[])?;
+                // the purpose's Review and the graph in one checked seed: a
+                // repository the ingest refuses leaves no record behind
+                let graph = seed_repository(&root, &purpose_digest)?;
+                out.push(format!("seeded  {RECORD_REF} (review.requested, then the graph)"));
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
             }
         }
@@ -1885,7 +1892,16 @@ fn purpose() -> String {{
     )
 }
 
-fn org_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
+fn org_hl(project: &str, purpose_digest: &str, seed: Option<&str>) -> String {
+    // what the organization oversees: one application, or (GH #1090) a
+    // repository's seeds
+    let oversees = match seed {
+        Some(seed) => format!("// The application ({seed}) is not part of this program. It carries its\n// own law and is observed like any Hale binary; this organization\n// proposes changes to it, verifies them, and expresses them."),
+        None => "// The repository's seeds are not part of this program. Each carries its\n// own law and is observed like any Hale binary; this organization\n// proposes changes to them, verifies them, and expresses them.".to_string(),
+    };
+    // what verification builds and the genome is, in the program: the
+    // application's seed, or the repository's root
+    let seed = seed.unwrap_or(".");
     format!(
         r#"// dna/org/main.hl — the organization that oversees {project}
 // (project-owned; edit freely). An org chart is a Hale program:
@@ -1904,9 +1920,7 @@ fn org_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
 //   models.hl   the catalog: which model each position calls, and the
 //               organization's allowance (`hale dna models` probes it)
 //
-// The application ({seed}) is not part of this program. It carries its
-// own law and is observed like any Hale binary; this organization
-// proposes changes to it, verifies them, and expresses them.
+{oversees}
 
 import "vendor/dna" as dna;
 import "vendor/dna/pond/realtime/nats" as nats;
@@ -2229,10 +2243,12 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
     Ok(n)
 }
 
-/// GH #1090: a repository's first rows — the Review that ratifies the
-/// declared purpose. What the repository holds follows as the graph
-/// (`graph-ingest`), each row checked before any lands.
-fn seed_repository(root: &Path, purpose_digest: &str) -> Result<usize, String> {
+/// GH #1090: a repository's record — the Review that ratifies the declared
+/// purpose, then what the repository holds as the graph — seeded by the
+/// host's `graph-ingest` in one call that checks every row before any
+/// lands, so an ingest the graph refuses leaves no record and `init` can
+/// be run again. What it read, by kind.
+fn seed_repository(root: &Path, purpose_digest: &str) -> Result<String, String> {
     let row = serde_json::json!({
         "kind": "review.requested",
         "entity": "review:purpose",
@@ -2247,9 +2263,9 @@ fn seed_repository(root: &Path, purpose_digest: &str) -> Result<usize, String> {
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
     let path = dna_dir.join(format!("seed.{}.jsonl", std::process::id()));
     fs::write(&path, format!("{row}\n")).map_err(|e| e.to_string())?;
-    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string()]);
+    let out = host_run("graph-ingest", root, &[path.to_string_lossy().to_string()]);
     let _ = fs::remove_file(&path);
-    out?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))
+    out
 }
 
 /// Whether the record exists: the host answers `none` or its head.

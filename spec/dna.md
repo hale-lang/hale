@@ -3221,17 +3221,25 @@ The live half is memory's, projected from the record by the spine
   from the other. A directory holding `.hl` files is a seed: with a main
   locus it is an application, attached as before with no graph ingest,
   and without one it is refused as before. Ingest reads the tracked
-  files (`git ls-files`) and recognizes: the **purpose** — the
-  `README.md`'s title and first paragraph; **processes** — the compose
-  file's services (`compose.yaml`, `compose.yml`, `docker-compose.*`),
-  and the `compose` **deployment** that runs them (built); **seeds** —
+  files (`git ls-files`, paths as git holds them with `core.quotePath`
+  off) and recognizes: the **purpose** — the `README.md`'s title and
+  first paragraph, and none without a `README.md`, so an empty tree is
+  an empty graph; **processes** — the compose file's services
+  (`compose.yaml`, `compose.yml`, `docker-compose.*`), then the
+  `compose` **deployment** that runs them (built) — processes first,
+  since a perspective lists in the record's order; **seeds** —
   each directory holding `hale.toml`, `package.json`, `Cargo.toml`,
   `go.mod` or `pyproject.toml`, the outermost only (a workspace's
   members are its own), never the root; a process unfolds into the seed
   of its name; **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
   and each directory under `spec/vendor/`; **nouns** — a YAML contract's
   `components.schemas` and a markdown contract's `CREATE TABLE`s, named
-  by the contract, with each `$ref` and `REFERENCES` a `refers`;
+  by the contract; a noun is its name, so two contracts that name one
+  merge into one node, which both `names`; then **`refers`**, from a
+  contract's local `$ref: '#/components/schemas/<X>'` (never another key
+  that holds such a path, never a reference that leaves the contract)
+  or `REFERENCES <table>`, only to a noun the same contract names — every
+  noun of a contract is written before its `refers`;
   **documents** — every `.md`; **gates** — each CI job
   (`.github/workflows/*`), named `<workflow>/<job name>`, guarding the
   seeds, contracts and compose deployment its steps name; **witnesses**
@@ -3257,7 +3265,18 @@ The live half is memory's, projected from the record by the spine
   that names it, and **the host checks every `graph.*` row against the
   vocabulary before it appends any** (`record-seed` does the same for
   a seed file), so an ingest the graph refuses leaves the record as it
-  was. `init` says what it read: `graph   <n> node(s), <m> edge(s):
+  was. A YAML mapping's children are indented as its first child line
+  is, never by an assumed two. **Input the conventions cannot take is
+  refused, with the reason, never dropped**: an `axiom` item with no
+  bold name; any name the vocabulary refuses (a `|`, a control byte,
+  longer than 512 bytes) — a witness's title, a schema's, an axiom's;
+  a meets row that links no contract; a runs row that names no
+  deployment; a name in code in a declaring table that is no process,
+  seed or file of the repository. Nothing is appended then, the purpose's
+  Review included (init seeds it and the graph in one `graph-ingest`
+  call), so the record does not exist and init can be run again once the
+  document is fixed. A job's own `name:` names its gate and is not a
+  word its steps say. `init` says what it read: `graph   <n> node(s), <m> edge(s):
   <count> <kind>, …`. A record that exists is not reseeded.
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,

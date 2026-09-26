@@ -1,0 +1,124 @@
+// dna/tests/graph_ingest_refusals_test.hl — what ingest refuses, and what
+// it reads that the voice fixture does not exercise (GH #1090, the
+// review's hardening).
+//
+// Four small repositories, each run through the real `hale dna init`:
+//
+//   tricky  — YAML indented by four (compose services, schemas, CI jobs),
+//             a contract whose path is not ASCII, `$ref`s that leave the
+//             contract or name no schema of it and an `x-` key that looks
+//             like one, and a job whose own `name:` is a seed's name: the
+//             graph takes exactly what is declared, every noun written
+//             before an edge names it;
+//   refused — an `axiom` with no bold name: init says why, leaves no
+//             record, and once the document names it init runs again and
+//             seeds the record whole;
+//   badname — a FRICTION entry whose title no node can carry: refused,
+//             with the reason;
+//   empty   — nothing tracked: an empty graph, no purpose read from a
+//             README that is not there.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `files` is `<path>\n<content><<eof>>` per file; the repository is made,
+// committed, and returned.
+@unbounded
+fn repository(root: String, files: String) -> String {
+    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n" + root);
+    std::test::assert_eq_int(made.code, 0, "a repository at " + root + ": " + made.stderr);
+    let mut rest = files;
+    while len(rest) > 0 {
+        let end = std::str::index_of(rest, "<<eof>>");
+        let one = rest[0..end];
+        rest = rest[(end + 7)..len(rest)];
+        let nl = std::str::index_of(one, "\n");
+        let path = one[0..nl];
+        let dir = dna::run_tool("sh\n-c\nmkdir -p \"$(dirname \"$1\")\"\nsh\n" + root + "/" + path);
+        std::io::fs::write_file(root + "/" + path, one[(nl + 1)..len(one)]) or discard;
+        std::test::assert(std::io::fs::file_exists(root + "/" + path), "wrote " + path);
+    }
+    let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -q --allow-empty -m tree\nsh\n" + root);
+    std::test::assert_eq_int(committed.code, 0, "committed: " + committed.stderr);
+    return root;
+}
+
+fn init(repo: String) -> dna::RunResult {
+    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
+}
+
+// The record's rows, `<kind> <entity>` per line; "" when there is none.
+@unbounded
+fn rows(repo: String) -> String {
+    let r = dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl");
+    if r.code != 0 { return ""; }
+    let mut out = "";
+    let mut rest = r.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) > 0 { out = out + std::json::find_string_field(line, "kind") + " " + std::json::find_string_field(line, "entity") + "\n"; }
+    }
+    return out;
+}
+
+fn has_record(repo: String) -> Bool { return dna::run_tool("git\n-C\n" + repo + "\nrev-parse\n-q\n--verify\nrefs/dna/journal").code == 0; }
+
+locus App {
+    params { }
+    run() {
+        let scratch = dna::scratch_root("graph-ingest-refusals");
+
+        // ---- tricky: four-space YAML, a path above ASCII, refs that are no edge
+        let tricky = repository(scratch + "/tricky", "README.md\n# tricky\n\nA small repository with odd corners.\n<<eof>>compose.yaml\nservices:\n    web:\n        image: web\n    db:\n        image: db\n<<eof>>web/package.json\n{}\n<<eof>>spec/wörk.yaml\nopenapi: 3.1.0\ncomponents:\n    schemas:\n        Order:\n            type: object\n            properties:\n                item: { $ref: '#/components/schemas/Item' }\n                vendor:\n                    x-voice-schema: './vendor/x.json#/components/schemas/Vendor'\n                remote:\n                    $ref: 'other.yaml#/components/schemas/Remote'\n                ghost:\n                    $ref: '#/components/schemas/Ghost'\n        Item:\n            type: object\n<<eof>>.github/workflows/ci.yml\nname: ci\non: push\njobs:\n    lint:\n        name: web\n        runs-on: ubuntu-24.04\n        steps:\n            - run: echo lint\n    test:\n        runs-on: ubuntu-24.04\n        steps:\n            - run: npm test --prefix web\n<<eof>>");
+        let t = init(tricky);
+        std::test::assert_eq_int(t.code, 0, "init reads the tricky repository: " + t.stdout + t.stderr);
+        std::test::assert(std::str::contains(t.stdout, "1 purpose, 0 axiom, 2 process, 1 seed, 1 contract, 2 noun, 1 deployment, 2 gate, 1 document, 0 witness"), "four-space YAML read as written: " + t.stdout);
+        let tr = rows(tricky);
+        std::test::assert(std::str::contains(tr, "graph.node process:web\ngraph.node process:db\n"), "compose's services, indented by four: " + tr);
+        std::test::assert(std::str::contains(tr, "graph.node contract:spec/wörk.yaml\n"), "a path above ASCII, as git holds it: " + tr);
+        std::test::assert(std::str::contains(tr, "graph.edge refers:noun:Order|noun:Item\n"), "a local $ref to a schema the contract holds is a refers");
+        std::test::assert(!std::str::contains(tr, "noun:Ghost") && !std::str::contains(tr, "noun:Remote") && !std::str::contains(tr, "noun:Vendor"), "a $ref that leaves the contract or names nothing, and an x- key, are no edge: " + tr);
+        std::test::assert(std::str::index_of(tr, "graph.node noun:Item\n") < std::str::index_of(tr, "graph.edge refers:noun:Order|noun:Item\n"), "a noun is written before an edge names it");
+        std::test::assert(std::str::contains(tr, "graph.node gate:ci/web\n") && std::str::contains(tr, "graph.edge gates:gate:ci/test\n") && !std::str::contains(tr, "gates:gate:ci/web"), "a job's own name names its gate and guards nothing: " + tr);
+
+        // ---- refused: an axiom with no name leaves no record, and init runs again
+        let refused = repository(scratch + "/refused", "README.md\n# refused\n\nA repository whose decision has no name.\n<<eof>>DIRECTION.md\n# Direction\n\n- `axiom` only words here, and no bold sentence to name it.\n<<eof>>");
+        let r1 = init(refused);
+        std::test::assert(r1.code != 0, "init refuses: " + r1.stdout);
+        std::test::assert(std::str::contains(r1.stderr, "DIRECTION.md: an `axiom` item names nothing"), "and says why: " + r1.stderr);
+        std::test::assert(!std::str::contains(r1.stderr, "hale dna: hale dna:"), "once: " + r1.stderr);
+        std::test::assert(!has_record(refused), "no record is left behind");
+        std::io::fs::write_file(refused + "/DIRECTION.md", "# Direction\n\n- `axiom` **Now it has a name.** And words after it.\n") or discard;
+        let fixed = dna::run_tool("sh\n-c\ncd \"$1\" && git commit -qam named\nsh\n" + refused);
+        std::test::assert_eq_int(fixed.code, 0, "committed: " + fixed.stderr);
+        let r2 = init(refused);
+        std::test::assert_eq_int(r2.code, 0, "init runs again: " + r2.stdout + r2.stderr);
+        let rr = rows(refused);
+        std::test::assert(std::str::starts_with(rr, "review.requested review:purpose\ngraph.node purpose:refused\n"), "the purpose's Review, then the graph: " + rr);
+        std::test::assert(std::str::contains(rr, "graph.node axiom:Now it has a name\n") && std::str::contains(rr, "graph.edge unfold:purpose:refused|axiom:Now it has a name\n"), "the axiom, under the purpose: " + rr);
+        std::test::assert(std::str::contains(rr, "knowledge.proposed "), "and the practices init proposes: " + rr);
+
+        // ---- badname: a title no node can carry
+        let badname = repository(scratch + "/badname", "README.md\n# badname\n\nA repository with an odd entry.\n<<eof>>FRICTION.md\n# Friction\n\n## pipes | break ids\n\nAn entry.\n<<eof>>");
+        let b = init(badname);
+        std::test::assert(b.code != 0 && std::str::contains(b.stderr, "FRICTION.md: a witness named `pipes | break ids` cannot be a node"), "refused, with the reason: " + b.stderr);
+        std::test::assert(!has_record(badname), "and no record");
+
+        // ---- empty: nothing tracked, nothing read
+        let empty = repository(scratch + "/empty", "");
+        let e = init(empty);
+        std::test::assert_eq_int(e.code, 0, "init on an empty tree: " + e.stdout + e.stderr);
+        std::test::assert(std::str::contains(e.stdout, "graph   0 node(s), 0 edge(s)"), "an empty graph: " + e.stdout);
+        std::test::assert(!std::str::contains(rows(empty), "graph.node"), "no purpose from a README that is not there: " + rows(empty));
+
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

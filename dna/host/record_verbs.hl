@@ -134,13 +134,17 @@ fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> An
 // ---- hale dna init on a repository (GH #1090) ----------------------------
 //
 // The repository read into the graph (dna/operations/graph_ingest.hl) and
-// its rows appended to the record, each checked first. Says how many
-// nodes and edges, and the nodes by kind.
-fn graph_ingest_verb(root: String, memory: dna::Memory) -> Answer {
+// its rows appended to the record after `first`'s (a file of rows init
+// seeds before the graph: the purpose's Review), all of them in one
+// `seed_rows`, each checked before any lands — a repository ingest refuses
+// leaves no record, and init can be run again. Says how many nodes and
+// edges, and the nodes by kind.
+fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer {
     let g = ops::GraphIngest { root: root };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("graph-ingest: " + r.error); }
-    let seeded = seed_rows(root, r.rows, "graph-ingest", memory);
+    let before = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
+    let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows, "graph-ingest", memory);
     if !seeded.ok { return seeded; }
     return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "\n");
 }
