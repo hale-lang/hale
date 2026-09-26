@@ -244,7 +244,9 @@ fn tick() {
 TERM→KILL escalation of `kill` is more than you want.
 
 Other process self-introspection: `std::process::pid()`,
-`std::process::exit(code)`, and `std::process::rss_bytes()` (peak
+`std::process::uid()` (the real uid; the api binding uses it to know
+a peer is the program itself), `std::process::exit(code)`, and
+`std::process::rss_bytes()` (peak
 RSS — see [Memory](#memory-my-rss-is-growing) above).
 
 ## Worked triage

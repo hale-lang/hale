@@ -303,6 +303,23 @@ carries `api{transport,socket}` instead.
 `hale dna work`, the legs client, is being switched from the HTTP route
 to this socket by the DNA line; the socket is its target.
 
+**HTTP is a forwarding transport** (forward.hl; GH #1135 is the binding's
+own HTTP transport). The face is where humans decide, so its writes keep
+one path: `POST …/commands` takes one line of the same wire
+(`{"call": "PracticePropose", "payload": {...}}`, `{"describe": true}`)
+under the CSRF headers every mutation here carries (exact `Origin`,
+`Content-Type: application/json`, `X-Hale-Command: 1`), forwards it to
+the head's own socket with `"via": "http-session"` — a mark the binding
+honours only from the program's own uid — and answers the receipt as
+written, with the status the refusal kind earns (`unauthenticated` 401,
+`unauthorized` 403, `unknown` 404, `over_bound` 503, else 400). A line
+that already carries a `via` is refused. `GET …/commands?request_id=`
+forwards a `CommandLookup`. The principal is the head process's, mapped
+through `dna.unix.member` like any peer; rows record that person. The
+local session only: an OIDC session's person is not a socket peer, so
+that mode answers `commands_unsupported` here. `/capabilities` names the
+route as `api.http`.
+
 ## Practice and Review command providers
 
 `PracticePropose` and `ReviewVerdict` ([Commands](#commands)) are gated

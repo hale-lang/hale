@@ -1808,6 +1808,22 @@ carries the principal it established:
  "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
 ```
 
+**A forwarding transport (`via`).** A request line may carry `"via":
+"<mark>"` (1..64 bytes). The binding honours it only from a peer whose
+uid is the program's own (`std::process::uid()`), and refuses the line
+as `malformed` from anyone else: the mark says how a transport of the
+program's own — an HTTP handler forwarding a browser's line to its
+own socket, say — received the request, and nobody else may claim
+one. The mark rides on the principal (`Principal.via`), on every
+receipt for that line (`"caller": {..., "via": "http-session"}`), and
+reaches a `Context` handler as `ctx.via` in place of `api`. The
+principal stays the forwarding peer's own (the process's uid), never
+the bare local principal: the gate and the membership source decide
+exactly as for any socket peer. Until the binding has an HTTP
+transport of its own (GH #1135), HTTP is such a forwarding transport,
+written by the program; a bearer token stays the third mode that
+arrives with it.
+
 **The gate (GH #1109).** A role is declared vocabulary
 (`spec/types.md` § "Roles and `@gated`"); `@gated(role: R)` on a
 subscribed handler, an `expose` member or a `publish` member says

@@ -112,6 +112,8 @@ locus Wire {
         b.begin_object_field("api");
         b.string_field("transport", "unix");
         b.string_field("socket", socket);
+        // the same wire, one line per POST, for the browser (mode local only)
+        b.string_field("http", if mode == "local" { API_PREFIX + "/" + source.identity + "/commands" } else { "" });
         b.end_object();
         let wire = CommandWire { };
         if definitions && wire.origin_valid(command_origin) {
@@ -159,13 +161,15 @@ locus Api {
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
         let knowledge_commands_path = std::str::starts_with(path, API_PREFIX + "/") && std::str::ends_with(path, "/dna/knowledge/commands");
+        let commands_path = std::str::starts_with(path, API_PREFIX + "/") && !knowledge_commands_path && std::str::ends_with(path, "/commands");
         let draft_path = std::str::starts_with(path, API_PREFIX + "/") && (std::str::ends_with(path, "/dna/definitions/draft") || std::str::ends_with(path, "/dna/organization/draft") || std::str::ends_with(path, "/dna/organization/ownership/draft"));
         // Preserve the standalone head's existing unsupported-mutation behavior.
         // A command provider opens command submission. Draft POST is separate
         // read preparation and requires a real catalog plus a configured origin.
-        // The commands are the api binding's (commands.hl): over HTTP a
-        // record takes no mutation but a Knowledge command and a draft.
-        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path)) { return http.error(405, "method_not_allowed", "this head takes commands on its api socket; reads are GET", false); }
+        // The commands are the api binding's (commands.hl); over HTTP a
+        // record takes a Knowledge command, a draft, and a line forwarded
+        // to that binding (forward.hl). Everything else is a read.
+        if req.method != "GET" && !(req.method == "POST" && (draft_path || knowledge_commands_path || commands_path)) { return http.error(405, "method_not_allowed", "this head takes commands on its api socket, or forwarded to it at /commands; reads are GET", false); }
         // The optional shell is public and static, so Runtime inspection can
         // work without a DNA session. Every Record read still passes auth below.
         if self.web.serves(path) { return self.web.response(path); }
@@ -188,7 +192,7 @@ locus Api {
         }
         if !std::str::starts_with(path, API_PREFIX) { return http.error(404, "not_found", "no such read endpoint", false); }
         let knowledge_path = std::str::contains(path, "/dna/knowledge/");
-        let query = if knowledge_path || draft_path { Query { } } else if std::str::ends_with(path, "/dna/tasks") { http.task_query(raw_query) } else { http.query(raw_query) };
+        let query = if knowledge_path || draft_path || commands_path { Query { } } else if std::str::ends_with(path, "/dna/tasks") { http.task_query(raw_query) } else { http.query(raw_query) };
         if !query.ok { return http.error(400, "invalid_query", query.error, false); }
         let reader = SourceReader { root: self.root };
         let source = reader.read();
@@ -207,6 +211,7 @@ locus Api {
         if path == prefix + "/dna/reviews/candidate" { return self.review_candidate_read(command_context, query, raw_query); }
         if path == prefix + "/dna/organization/source-status" { let status = OrganizationStatusWire { }; return status.read(command_context, query, raw_query, self.organization_candidates, self.organization_runtime); }
         if path == prefix + "/dna/organization/source-impact" { let impact = OrganizationImpactWire { }; return impact.read(command_context, query, raw_query, self.organization_candidates); }
+        if path == prefix + "/commands" { return self.forward_command(req, raw_query); }
         if path == prefix + "/dna/knowledge/commands" || path == prefix + "/dna/knowledge/commands/capability" {
             let knowledge_wire = KnowledgeCommandWire { };
             return knowledge_wire.handle(req, raw_query, std::str::ends_with(path, "/capability"), command_context, self.knowledge_commands, self.command_origin);
@@ -279,6 +284,31 @@ locus Api {
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
         return http.success(source, b.result());
+    }
+    // HTTP as a forwarding transport (forward.hl): the browser's line to
+    // the head's own socket, under the CSRF discipline every mutation
+    // here has, in the local session only.
+    fn forward_command(req: std::http::Request, query: String) -> std::http::Response {
+        let http = Http { };
+        let wire = CommandWire { };
+        if self.mode != "local" { return http.error(503, "commands_unsupported", "the HTTP session forwards the local principal only; use the api socket", false); }
+        if len(self.socket) == 0 { return http.error(503, "commands_unavailable", "the head has no api socket to forward to", true); }
+        let mut line = "";
+        if req.method == "GET" {
+            let id = wire.lookup_id(query);
+            if len(id) == 0 { return wire.error("invalid_query"); }
+            line = forwarded_line("{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":" + dna::record_json_quote(id) + "}}");
+        } else {
+            if len(query) > 0 { return wire.error("invalid_query"); }
+            let guard = wire.guard(req, self.command_origin);
+            if len(guard) > 0 { return wire.error(guard); }
+            line = forwarded_line(req.body);
+            if len(line) == 0 { return http.error(400, "invalid_command", "one JSON object of the api wire, without a \"via\"", false); }
+        }
+        let forward = Forward { socket: self.socket };
+        let receipt = forward.line(line);
+        if len(receipt) == 0 { return http.error(503, "commands_unavailable", "the api socket did not answer; retain the request id for lookup", true); }
+        return http.response(forwarded_status(receipt), receipt);
     }
     fn definition_draft_handle(req: std::http::Request, has_query: Bool, context: CommandContext) -> std::http::Response {
         let http = Http { };

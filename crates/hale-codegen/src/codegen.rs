@@ -27520,6 +27520,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_process_pid(args)?;
                 Ok(())
             }
+            ["std", "process", "uid"] => {
+                let _ = self.lower_std_process_uid(args)?;
+                Ok(())
+            }
             ["std", "process", "rss_bytes"] => {
                 let _ = self.lower_std_process_rss_bytes(args)?;
                 Ok(())
@@ -28737,6 +28741,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match segs {
             ["std", "process", "pid"] => self.lower_std_process_pid(args),
+            ["std", "process", "uid"] => self.lower_std_process_uid(args),
             ["std", "process", "rss_bytes"] => self.lower_std_process_rss_bytes(args),
             ["std", "term", "is_tty"] => self.lower_std_term_is_tty(args, scope),
             ["std", "io", "stdout", "write_bytes"] => {

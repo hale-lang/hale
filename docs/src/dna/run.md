@@ -288,7 +288,9 @@ The record's own commands (`dna/api`) are gated topics on this same
 socket: `owner` is the board, `reviewer` is `position:reviewer`, and
 `position` is any position the peer holds. `git config --local --add
 dna.unix.member "uid:<n>=<person>"` is how a peer becomes a person
-these gates can name.
+these gates can name. The face reaches the same gates over HTTP: the
+head forwards its `POST …/commands` line to its own socket marked
+`via: http-session`, as the head's own uid, so map that uid too.
 
 Then nothing is served without signing in, a verdict from the page is
 recorded in the name the subject maps to — with the board's authority
