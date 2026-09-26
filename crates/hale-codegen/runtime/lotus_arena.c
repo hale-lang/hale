@@ -14742,14 +14742,17 @@ const char *lotus_tcp_io_status_kind(int64_t errno_val) {
  * in poll(2). A BLOCKING fd's EAGAIN is a SO_SNDTIMEO expiry and
  * stays the timeout error it was. 0 = retry the write; -1 = give up
  * with errno as the syscall left it. */
+#if LOTUS_HAVE_ASYNC_IO
 static int lotus_fd_parked_by_another(lotus_coop_pool_t *p, int fd) {
     for (lotus_coro_t *c = p->parked_head; c; c = c->next) {
         if (c->parked_fd == fd) return 1;
     }
     return 0;
 }
+#endif
 static int lotus_io_wait_writable(int fd) {
     int saved = errno;
+#if LOTUS_HAVE_ASYNC_IO
     lotus_coop_pool_t *p = g_current_pool_tls;
     lotus_coro_t      *c = g_current_coro_tls;
     if (p && c && p->async_io_enabled && p->epoll_fd >= 0) {
@@ -14759,6 +14762,7 @@ static int lotus_io_wait_writable(int fd) {
         }
         if (lotus_time_sleep_park_try(1000000) == 1) return 0;
     }
+#endif
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || !(flags & O_NONBLOCK)) {
         errno = saved;
