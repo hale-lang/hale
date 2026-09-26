@@ -1,0 +1,392 @@
+{
+  "components": {
+    "schemas": {
+      "Accepted": {
+        "properties": {
+          "accepted": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "type": "object"
+      },
+      "Audit": {
+        "properties": {
+          "line": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "type": "object"
+      },
+      "Ledger": {
+        "properties": {
+          "balance": {
+            "type": "integer"
+          },
+          "entries": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "balance",
+          "entries"
+        ],
+        "type": "object"
+      },
+      "Money": {
+        "properties": {
+          "amount": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount"
+        ],
+        "type": "object"
+      },
+      "Refund": {
+        "properties": {
+          "money": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "order_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id",
+          "money"
+        ],
+        "type": "object"
+      },
+      "RefundResult": {
+        "properties": {
+          "note": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "note"
+        ],
+        "type": "object"
+      },
+      "Refusal": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "Tick": {
+        "properties": {
+          "n": {
+            "type": "integer"
+          },
+          "order_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id",
+          "n"
+        ],
+        "type": "object"
+      },
+      "Uptime": {
+        "properties": {
+          "seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seconds"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Served by the program's api binding as one JSON object per line on a Unix socket. Gates: a role gate is a boundary check at the binding, never a proof over the program's internal call paths. Reads: a read is a snapshot taken on the locus's own pool, carried with an as_of digest; a live view is a stream.",
+    "title": "Shop api",
+    "version": "hale-api/1",
+    "x-hale-notes": {
+      "gates": "a role gate is a boundary check at the binding, never a proof over the program's internal call paths",
+      "reads": "a read is a snapshot taken on the locus's own pool, carried with an as_of digest; a live view is a stream"
+    }
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/call/Audits": {
+      "post": {
+        "operationId": "call.Audits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Audit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                }
+              }
+            },
+            "description": "accepted: dispatched to every born subscriber"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "command Audits: publish a Audit on subject shop.audit"
+      }
+    },
+    "/call/Refunds": {
+      "post": {
+        "operationId": "call.Refunds",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Refund"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundResult"
+                }
+              }
+            },
+            "description": "the value RefundResult the handler returned"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "command Refunds: publish a Refund on subject shop.refund"
+      }
+    },
+    "/call/Ticks": {
+      "post": {
+        "operationId": "call.Ticks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Tick"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                }
+              }
+            },
+            "description": "accepted: dispatched to every born subscriber"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "command Ticks: publish a Tick on subject shop.tick"
+      }
+    },
+    "/read/billing.ledger": {
+      "get": {
+        "operationId": "read.billing.ledger",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "as_of": {
+                      "description": "sha256 digest of the answered value",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/components/schemas/Ledger"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "as_of"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "a snapshot; never a live view"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "read billing.ledger: a snapshot of a Ledger, with its as_of digest"
+      }
+    },
+    "/read/uptime": {
+      "get": {
+        "operationId": "read.uptime",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "as_of": {
+                      "description": "sha256 digest of the answered value",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/components/schemas/Uptime"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "as_of"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "a snapshot; never a live view"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "read uptime: a snapshot of a Uptime, with its as_of digest"
+      }
+    },
+    "/watch/Moved": {
+      "get": {
+        "operationId": "watch.Moved",
+        "responses": {
+          "200": {
+            "content": {
+              "application/jsonl": {
+                "schema": {
+                  "properties": {
+                    "dropped": {
+                      "description": "frames the watcher's queue shed since the last one",
+                      "type": "integer"
+                    },
+                    "stream": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/components/schemas/Ledger"
+                    }
+                  },
+                  "required": [
+                    "stream"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "frames, one per line, for the life of the connection"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            },
+            "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
+          }
+        },
+        "summary": "stream Moved: every Ledger published on subject shop.moved, one JSON object per line after attach"
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "the api binding's socket, a deployment choice; paths name the request verbs of its line protocol",
+      "url": "unix:{socket}",
+      "variables": {
+        "socket": {
+          "default": "/run/app.sock",
+          "description": "where this copy of the program listens"
+        }
+      }
+    }
+  ]
+}

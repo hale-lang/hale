@@ -105,10 +105,34 @@ printf '%s\n' '{"id":1,"call":"Verdicts","payload":{"review_id":7,"verdict":"rat
     | socat - UNIX-CONNECT:/run/app.sock
 ```
 
-The generic clients (`hale call`, `hale watch`, `hale admin` and
-`hale mcp --app`) read the description the compiler emits and are
-the next piece; until then any program that can write a line to a
-socket is a client.
+## The clients
+
+You never write a client for a Hale program, because the binding
+describes itself. `{"describe": true}` on the socket, or `hale
+describe app.hl` on the source, returns the same document: every
+command with its payload schema and reply type, every read, every
+stream, and two notes that say what a gate and a read are and are
+not. Four verbs read only that document:
+
+```sh
+hale describe /run/app.sock                # the description; --openapi, --mcp for the derived forms
+hale call /run/app.sock Verdicts '{"review_id": 7, "verdict": "ratify"}'
+hale call /run/app.sock billing.ledger     # a read, with its as_of
+hale watch /run/app.sock Prices            # frames, one JSON line each
+hale admin /run/app.sock                   # a page on 127.0.0.1:7473 over the description
+claude mcp add app -- hale mcp --app /run/app.sock   # every command a tool, every read a resource
+```
+
+`hale call` prints the answer and exits 0; a refusal goes to stderr
+with its kind and exits 1, so a script can branch on it. `hale
+describe app.hl --openapi` writes an OpenAPI 3.1 document with a
+path per command, read and stream and every schema under
+`components`; `--mcp` writes the tool and resource shapes an MCP
+host lists. Both are derived from the description and pinned by a
+conformance fixture in the compiler's tests, so a generated document
+never drifts from what the binding serves. The description carries
+no socket path or deployment detail: it says what the program is,
+and where one copy listens is the deployment's business.
 
 ## When it says no
 

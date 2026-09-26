@@ -433,3 +433,128 @@ fn dispatch(name: &str, args: &Value) -> Result<(String, bool), String> {
         other => Err(format!("unknown tool: {}", other)),
     }
 }
+
+
+// ---- GH #1107: a running program's api binding as tools and resources ----
+
+/// `hale mcp --app <socket>`: the same stdio transport, but the tools
+/// are the program's commands and the resources its reads, read from
+/// the description the binding serves. A tool call is one `call`
+/// through the socket; its text is the answer's value, or the
+/// refusal with `isError`. Streams have no MCP shape; the server's
+/// instructions name them for `hale watch`.
+pub fn run_mcp_app(sock: &str) -> ExitCode {
+    use crate::api_client::{answer_value, mcp as mcp_form, Client};
+    let desc = match Client::connect(sock).and_then(|mut c| c.describe()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("hale mcp --app: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+    let form = mcp_form(&desc);
+    let tools = form.get("tools").cloned().unwrap_or_else(|| json!([]));
+    let resources = form.get("resources").cloned().unwrap_or_else(|| json!([]));
+    let app = desc.get("app").and_then(Value::as_str).unwrap_or("app").to_string();
+    let streams: Vec<String> = form
+        .get("streams")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let notes = desc.get("notes").cloned().unwrap_or(Value::Null);
+    let instructions = format!(
+        "{} over {}. Tools are the program's commands; resources are its reads (snapshots with an as_of digest). Streams ({}) have no MCP shape: `hale watch {} <stream>` tails one. {} {}",
+        app,
+        sock,
+        if streams.is_empty() { "none".to_string() } else { streams.join(", ") },
+        sock,
+        notes.get("gates").and_then(Value::as_str).unwrap_or(""),
+        notes.get("reads").and_then(Value::as_str).unwrap_or("")
+    );
+
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(msg) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let Some(id) = msg.get("id").cloned() else { continue };
+        let result = match method {
+            "initialize" => {
+                let proto = msg
+                    .pointer("/params/protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or("2024-11-05");
+                json!({
+                    "protocolVersion": proto,
+                    "capabilities": { "tools": {}, "resources": {} },
+                    "serverInfo": { "name": format!("hale-app:{}", app), "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": instructions
+                })
+            }
+            "ping" => json!({}),
+            "tools/list" => json!({ "tools": tools }),
+            "resources/list" => json!({ "resources": resources }),
+            "resources/read" => {
+                let uri = msg.pointer("/params/uri").and_then(Value::as_str).unwrap_or("");
+                match uri.strip_prefix("hale://read/") {
+                    Some(name) => {
+                        let mut req = serde_json::Map::new();
+                        req.insert("read".to_string(), json!(name));
+                        let got = Client::connect(sock).and_then(|mut c| c.request(req, |_| {}));
+                        match got {
+                            Ok(ans) => match answer_value(&ans) {
+                                Ok(v) => json!({ "contents": [{ "uri": uri, "mimeType": "application/json",
+                                    "text": json!({ "value": v, "as_of": ans.get("as_of").cloned().unwrap_or(Value::Null) }).to_string() }] }),
+                                Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
+                            },
+                            Err(e) => json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": e }] }),
+                        }
+                    }
+                    None => json!({ "contents": [] }),
+                }
+            }
+            "tools/call" => {
+                let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
+                let args = msg.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
+                let known = tools
+                    .as_array()
+                    .map(|a| a.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(name)))
+                    .unwrap_or(false);
+                let outcome = if !known {
+                    Err(format!("`{}` is not a command of {}", name, app))
+                } else {
+                    let mut req = serde_json::Map::new();
+                    req.insert("call".to_string(), json!(name));
+                    req.insert("payload".to_string(), args);
+                    Client::connect(sock)
+                        .and_then(|mut c| c.request(req, |_| {}))
+                        .and_then(|ans| answer_value(&ans))
+                };
+                match outcome {
+                    Ok(v) => json!({ "content": [{ "type": "text", "text": v.to_string() }], "isError": false }),
+                    Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+                }
+            }
+            _ => Value::Null,
+        };
+        let resp = json!({ "jsonrpc": "2.0", "id": id, "result": result });
+        let _ = writeln!(writer, "{}", resp);
+        let _ = writer.flush();
+    }
+    ExitCode::SUCCESS
+}

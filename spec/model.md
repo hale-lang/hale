@@ -113,6 +113,45 @@ to serialise, the provenance table to survive, and an admission
 path that cannot be tricked into producing a model no program
 denotes.
 
+### The description: the model's first wire form (GH #1107)
+
+One slice of the model does have a wire form now, and it is
+deliberately a *form* slice: the **api description** an `api`
+binding serves and `hale check --dump-api` emits. It carries the
+program's commands (subscribed topics, with the wire subject, the
+payload type, the reply type and the key), reads (exposed members,
+as snapshots), streams (published topics) and the JSON Schema of
+every type they name. Those are the `topics`, `subjects` and
+`payloads` tables and the `subscribes` / `declares_publish`
+relations, projected through the type declarations of the bundle
+for the field schemas the model does not hold, plus the locus
+contracts for the reads. It is `Bundle + Model -> description`
+under the same layering as the law table.
+
+Three properties are the contract:
+
+- **Form, not params (I1, not I2).** The document names what the
+  program is and never where one copy of it listens: no socket
+  path, no environment, no principal. The OpenAPI form's server is
+  a variable for that reason.
+- **Perspective-invariant (I5).** Every entry is a form claim over
+  the program's declarations, so a `perspective` swap, a placement
+  change or a second deployment describe themselves in the same
+  bytes; two builds of one source produce one description, and a
+  running binding serves the bytes the compiler emitted.
+- **Boundary honesty.** The document carries two notes in its own
+  text: a role gate is a boundary check at the binding, never a
+  proof over internal call paths, and a read is a snapshot with an
+  `as_of` digest, never a live view. A client renders the notes;
+  it does not present a gate as a certificate.
+
+Its shape is fixed by `hale_syntax::api_gen::describe` and pinned
+by `crates/hale-cli/tests/fixtures/api_description/`; the OpenAPI
+3.1 and MCP forms are derived from it in `hale-cli` and pinned
+beside it. It is not a reversible wire form of the model — the
+boundary above stands — and it admits nothing: a consumer reads it,
+never builds a model from it.
+
 ## Sorts — the entity tables
 
 `Entities` holds fifteen tables. A row's **id is its index** in its

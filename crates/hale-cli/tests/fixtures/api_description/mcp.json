@@ -1,0 +1,94 @@
+{
+  "notes": {
+    "gates": "a role gate is a boundary check at the binding, never a proof over the program's internal call paths",
+    "reads": "a read is a snapshot taken on the locus's own pool, carried with an as_of digest; a live view is a stream"
+  },
+  "resources": [
+    {
+      "description": "Read billing.ledger: a snapshot of a Ledger with its as_of digest, never a live view.",
+      "mimeType": "application/json",
+      "name": "billing.ledger",
+      "uri": "hale://read/billing.ledger"
+    },
+    {
+      "description": "Read uptime: a snapshot of a Uptime with its as_of digest, never a live view.",
+      "mimeType": "application/json",
+      "name": "uptime",
+      "uri": "hale://read/uptime"
+    }
+  ],
+  "streams": [
+    "Moved"
+  ],
+  "tools": [
+    {
+      "description": "Command Audits: sends a Audit to the program; the answer is `accepted` once it is dispatched.",
+      "inputSchema": {
+        "properties": {
+          "line": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "type": "object"
+      },
+      "name": "Audits"
+    },
+    {
+      "description": "Command Refunds: sends a Refund to the program and returns the RefundResult its handler answers with.",
+      "inputSchema": {
+        "$defs": {
+          "Money": {
+            "properties": {
+              "amount": {
+                "type": "integer"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "money": {
+            "$ref": "#/$defs/Money"
+          },
+          "order_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id",
+          "money"
+        ],
+        "type": "object"
+      },
+      "name": "Refunds"
+    },
+    {
+      "description": "Command Ticks: sends a Tick to the program; the answer is `accepted` once it is dispatched.",
+      "inputSchema": {
+        "properties": {
+          "n": {
+            "type": "integer"
+          },
+          "order_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id",
+          "n"
+        ],
+        "type": "object"
+      },
+      "name": "Ticks"
+    }
+  ]
+}
