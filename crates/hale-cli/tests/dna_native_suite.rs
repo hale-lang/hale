@@ -839,6 +839,7 @@ fn dna_fixture_set_is_complete() {
             "genome_pull_test.hl",
             "grant_layering_test.hl",
             "grant_resources_test.hl",
+            "graph_model_test.hl",
             "handed_task_test.hl",
             "handoff_test.hl",
             "harness_test.hl",

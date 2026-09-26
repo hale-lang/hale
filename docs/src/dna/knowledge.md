@@ -160,6 +160,36 @@ to bind to; and the fleet's **signals**, every `pressure.raised` and
 `concern.raised`, counted per source. They live in the record's
 schema beside the ideas (`knowledge_structure`, `knowledge_signals`).
 
+It also carries the **repository as one graph**. The organization and
+its product are a single hypergraph, and the org chart and the process
+model are two ways of looking at it. The record holds its nodes —
+purpose, axioms, processes, seeds, contracts and the nouns they name,
+deployments, gates, documents, witnesses, positions, work — as
+`graph.node` rows, and its hyperedges as `graph.edge` rows: `unfold`
+(what a node is made of), `meets` (the processes that meet at a
+contract: the one that serves it, the ones that consume it, the one
+that carries it, over which transport), `names`, `refers`,
+`constrains` (a decision and what it shaped), `runs`, `gates`,
+`witnesses`, `holds` (who holds a position) and `reviews` (what a
+position signs: a contract, or a document such as a design). A contract
+is where the two perspectives meet, so a change to one shows up in both.
+
+There is one org chart, and it is this graph: its positions and who holds
+them. The organization's generated `dna/org` files and the owners map are
+renderings of it, never where a position is decided.
+
+Practices are not repeated there: a practice in the graph is the
+knowledge idea it already is — advice while proposed, law once the
+Board ratifies it — and what it binds to is its binding. Memory keeps
+the graph in `graph_nodes`, `graph_edges` and `graph_members`, and the
+two perspectives are queries over them: the org chart (every position,
+what it sits under, who holds it, what it signs) and the process
+model (every process, where it meets another, what runs it). A node
+taken out of the graph leaves both perspectives, though the record keeps
+the edges that named it. A row that names a kind the vocabulary does not
+have, or an edge with one member, stops the projection at that row and
+says why.
+
 ## Ranking inside the bound
 
 A package is bounded first: only ideas bound to the target or above

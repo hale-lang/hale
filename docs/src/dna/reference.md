@@ -159,6 +159,9 @@ sequence either way — see [The record](./record.md).
 |---|---|---|---|
 | `application.attached` | record | the seed | the entrypoint, the artifact's digests, the toolchain |
 | `structure.observed` | record | `locus:X`, `topic:X`, `claim:X`, … | the compiler's model of it, `provenance: observed` |
+| `graph.node` | record | `<kind>:<name>` (`process:api`) | a node of the repository's graph: `kind`, `name`, `text`, `source` |
+| `graph.edge` | record | `<kind>:<anchor>` or `<kind>:<anchor>\|<second>` | a hyperedge: `kind`, `members` (`role`, `node`) in order, `via`, `outside` |
+| `graph.retired` | record | a node's or an edge's id | it leaves the graph |
 | `responsibility.proposed` | record | `locus:X` | an inferred one-line responsibility, `ratified: false` |
 | `law.deferred` | record | a clause | why `init` could not certify it |
 | `intent.requested` | ledger | the intent id | an ask from a clone with no organization: outcome, from, to |
@@ -323,7 +326,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
 
 | `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables, the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
-| `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres), `Dsn` / `parse_dsn`, `schema_for` |
+| `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres, the repository's graph and its two perspectives), `Dsn` / `parse_dsn`, `schema_for` |
 | `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
 | `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |
 | `memory_embed.hl` | the hashed bag-of-words embedding the graph ranks with |

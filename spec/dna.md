@@ -290,13 +290,14 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 3 (GH #1026: 2 made the
+- **The version fence.** The schema version is 4 (GH #1026: 2 made the
   lease table `claims` and the graph's projection one transaction per
   record row — migrating a version-1 memory renames the table in place,
   its rows kept; 3 adds the Ledger's gate, `ledger_append`, with the
-  org chart it checks and the roles' principals. Each moves the
-  projection protocol, so the graph is emptied once for the projectors
-  to rebuild). A store's `open`
+  org chart it checks and the roles' principals; GH #1085: 4 adds the
+  repository's graph, `graph_nodes`, `graph_edges` and `graph_members`.
+  Each moves the projection protocol, so the graph is emptied once for
+  the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
   DSN; it also refuses a schema whose claim names another record (`it
@@ -305,7 +306,7 @@ host's tick (**The spine**, below).
 - **Grants.** A head's role — the head's, or an owner's — has `SELECT`
   on the ledger, knowledge, org-chart and meta tables (`memory_meta`,
   `ledger_rows`, `ledger_meta`, `ledger_requests`, `claims`,
-  `knowledge_*`, `org_members`, `org_retired`), `INSERT` and `UPDATE`
+  `knowledge_*`, `graph_*`, `org_members`, `org_retired`), `INSERT` and `UPDATE`
   on `claims` only, to take and fence a claim, and `EXECUTE` on
   `receipt_file`, `receipt_read` and `ledger_append`: a head writes the
   Ledger through its gate and no table directly. The spine's role reads
@@ -1142,6 +1143,9 @@ record's.
 |---|---|---|
 | `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain |
 | `structure.observed` | record | the compiler's model of one of its parts, at `init` |
+| `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
+| `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
+| `graph.retired` | record | the node or edge the entity names leaves the graph |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
@@ -2805,10 +2809,11 @@ The live half is memory's, projected from the record by the spine
   `idea(id)`, `context_ids(target, budget)` (accepted ideas bound to
   the target or any prefix of its path — goals flow down, initiatives
   stay local — in ratification order), `ranked_ids`, `count(what)`, and
-  the structure and signals of K3. `Pq` is Postgres (six tables:
-  `knowledge_meta`, `knowledge_ideas`, `knowledge_bindings`,
-  `knowledge_edges`, `knowledge_structure`, `knowledge_signals`, which
-  the migration creates and `open` only checks; node writes are
+  the structure and signals of K3, and the repository's graph (below).
+  `Pq` is Postgres (nine tables: `knowledge_meta`, `knowledge_ideas`,
+  `knowledge_bindings`, `knowledge_edges`, `knowledge_structure`,
+  `knowledge_signals`, `graph_nodes`, `graph_edges`, `graph_members`,
+  which the migration creates and `open` only checks; node writes are
   upserts and removals delete exact tuples; rows come back as JSON
   built by the server, since the driver's tab- and newline-separated
   rows cannot carry an ordinary paragraph; a signal counts once per
@@ -3089,6 +3094,62 @@ The live half is memory's, projected from the record by the spine
   every such source is proposed once, by the same rule (`rehydrate`);
   a source with no parent was refused where it was raised and is not
   refused again.
+- **The repository's graph (GH #1085).** An organization and its
+  product are one recursive hypergraph; the org chart and the deployed
+  process model are two perspectives over it, neither its trunk. The
+  record holds it as rows and memory projects it with everything else:
+  one record, one projection, no second store. The vocabulary is
+  `dna/operations/graph.hl`. **Node kinds**: `purpose`, `axiom`,
+  `process`, `seed`, `contract`, `noun`, `deployment`, `practice`,
+  `gate`, `document`, `witness`, `position`, `work`; a node's id is
+  `<kind>:<name>`. **Hyperedge kinds**, arity two or more, each a list
+  of members `{role, node}` whose first is its anchor: `unfold(parent,
+  child)`, `meets(contract; server…, consumer…, carrier…)`,
+  `names(contract; noun…)`, `refers(from, to)`, `constrains(axiom;
+  shaped…)`, `runs(deployment; process…)`, `gates(gate; guarded…)`,
+  `binds`, `witnesses(witness; about…)`, `holds(position, holder)`,
+  `reviews(position, subject)` — the subject a contract or a document, a
+  design document being signed too. A pair kind (`unfold`, `refers`,
+  `holds`, `reviews`) is exactly its two members and is keyed by both,
+  so an unfold is one edge per child; any other kind is keyed by its
+  anchor, so there is one `meets` per contract and the latest row says
+  who meets there. An edge's id is `<kind>:<anchor>` or
+  `<kind>:<anchor>|<second>`, and no name or holder holds a `|`, so an id
+  reads one way. A role may require a node kind (a
+  `meets` contract is a `contract:` node, a `runs` process a
+  `process:`); a `holder` is a person, not a node; `meets` also
+  carries its transport (`via`) and the parties it reaches that are
+  not nodes (`outside`, e.g. callers). Two kinds are never graph rows:
+  a `practice` is a knowledge idea of kind `practice` — advice while
+  proposed, law once ratified — and `binds` is its knowledge binding;
+  a member names a practice as `practice:<digest>`. The rows are
+  `graph.node` (entity the node's id, body `{kind, name, text?,
+  source?}`), `graph.edge` (entity the edge's id, body `{kind,
+  members, via?, outside?}`) and `graph.retired` (entity the id).
+  **The tail checks a graph row whole** before memory takes it — the
+  kind is the vocabulary's, the anchor comes first, every member names
+  a node of the kind its role requires and no node twice, the arity is
+  two or more, and the entity is the id the body implies — and a row that fails stops
+  the projection at that row, `invalid graph.<kind> (row n): <why>`,
+  like any invalid fact. A node or edge is replaced by a later row with
+  its id (an edge's members with it) and taken out by `graph.retired`; a
+  retired node's edges stay as the record left them, and the perspectives
+  leave its memberships out (an edge whose anchor is gone is not shown).
+  **There is one org chart, and it is the graph**: its `position` nodes
+  and their `holds` edges. The organization's generated `dna/org` files
+  and the owners map are renderings of it, never its source; until the
+  holes are proposed and ratified into the graph (GH #1091) they are
+  written beside it.
+  **Perspectives are queries over memory**:
+  `KnowledgeStore.graph_perspective("org")` is the positions in the
+  record's order, each with the node it unfolds from (`under`), its
+  `holders` and the contracts it `reviews`; `graph_perspective(
+  "processes")` is the processes, every `meets` (`contract`, `via`,
+  `servers`, `consumers`, `carriers`, `outside`) and every `runs`
+  (`deployment`, `processes`), each as JSON the server builds.
+  `graph_nodes_count(kind)` and `graph_edges_count(kind)` count them;
+  `practice` counts the practices proposed or ratified and `binds` the
+  ratified practices that bind something, one hyperedge each.
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the

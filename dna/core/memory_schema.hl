@@ -16,8 +16,9 @@
 // insert function, `ledger_append`: a row lands only as a role that holds
 // its author, with its lease live, and past the checks the spine's
 // admission ran; the org chart it checks against is projected into
-// `org_members` and `org_retired`.
-const MEMORY_SCHEMA_VERSION: Int = 3;
+// `org_members` and `org_retired`. 4 (GH #1085): the repository's graph —
+// its nodes, its hyperedges and their members — beside the ideas.
+const MEMORY_SCHEMA_VERSION: Int = 4;
 
 type Migrated {
     ok: Bool = false;
@@ -109,7 +110,22 @@ fn knowledge_ddl() -> String {
         + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
         + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));"
         + "CREATE TABLE IF NOT EXISTS knowledge_structure (kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL, PRIMARY KEY (kind, name));"
-        + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));";
+        + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));"
+        + graph_ddl();
+}
+
+// GH #1085: the repository as one hypergraph, projected from the record's
+// `graph.*` rows. A node is keyed by its id (`<kind>:<name>`); an edge by
+// its id, with its members one row each, in order, so a perspective joins
+// on a member's role rather than parsing a body. Practices and `binds` are
+// not here: they are the ideas and bindings above.
+const GRAPH_TABLES: String = "graph_nodes, graph_edges, graph_members";
+
+fn graph_ddl() -> String {
+    return "CREATE TABLE IF NOT EXISTS graph_nodes (id text PRIMARY KEY, kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS graph_edges (id text PRIMARY KEY, kind text NOT NULL, seq bigint NOT NULL, body text NOT NULL);"
+        + "CREATE TABLE IF NOT EXISTS graph_members (edge text NOT NULL, pos int NOT NULL, role text NOT NULL, node text NOT NULL, PRIMARY KEY (edge, pos));"
+        + "CREATE INDEX IF NOT EXISTS graph_members_node ON graph_members (node, role);";
 }
 
 // GH #1026: claims by id. The lease table of version 1 is the `claims`
@@ -251,8 +267,9 @@ fn graph_indexes() -> String {
 
 // The projection's protocol: what a projector's stamp vouches for. 2 (GH
 // #1026) is one transaction per row; 3 adds the org chart's retirements
-// (`org_retired`), so a memory at 2 is projected again to fill them.
-const PROJECTION_PROTOCOL: String = "3";
+// (`org_retired`), so a memory at 2 is projected again to fill them; 4
+// adds the repository's graph (GH #1085), filled the same way.
+const PROJECTION_PROTOCOL: String = "4";
 
 // The projection's protocol (GH #1026): `watermark` is the number of
 // record rows applied and `graph_projection_head` the digest of the last
@@ -269,7 +286,7 @@ fn projection_protocol() -> String {
     return "DO $p$ BEGIN IF coalesce((SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'), '') <> '" + PROJECTION_PROTOCOL + "' THEN "
         + "PERFORM 1 FROM knowledge_meta WHERE key = 'watermark' FOR UPDATE; PERFORM 1 FROM knowledge_meta WHERE key = 'graph_projection_head' FOR UPDATE; "
         + "INSERT INTO knowledge_meta (key, value) VALUES ('graph_generation', '0') ON CONFLICT (key) DO UPDATE SET value = ((knowledge_meta.value::bigint) + 1)::text; "
-        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals, org_retired; "
+        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals, org_retired, " + GRAPH_TABLES + "; "
         + "DELETE FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head'); "
         + "INSERT INTO knowledge_meta (key, value) VALUES ('watermark', '0'), ('graph_projection_head', ''), ('graph_projection_protocol', '" + PROJECTION_PROTOCOL + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; "
         + "END IF; END $p$";
@@ -314,6 +331,7 @@ fn head_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
         + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".claims, "
         + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals, "
+        + sch + ".graph_nodes, " + sch + ".graph_edges, " + sch + ".graph_members, "
         + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
         + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
         + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
