@@ -1,8 +1,13 @@
 // The conformance fixture for the api description (GH #1107): a
 // command with a reply, a command with none, a keyed command, a
 // read on the main locus and one on a default child, a stream, and
-// a nested payload. `crates/hale-cli/tests/api_description.rs`
-// holds the emitted description, OpenAPI and MCP forms beside it.
+// a nested payload, and (GH #1109) a gated command, read and stream
+// under a declared role with a hierarchy.
+// `crates/hale-cli/tests/api_description.rs` holds the emitted
+// description, OpenAPI and MCP forms beside it.
+
+role auditor;
+role owner includes auditor;
 
 type Money { amount: Int; currency: String = "USD"; }
 type Refund { order_id: Int; money: Money; }
@@ -20,14 +25,14 @@ topic Moved { payload: Ledger; subject: "shop.moved"; }
 topic Counts { payload: Count; subject: "shop.count"; }
 
 locus Billing {
-    contract { expose ledger: Ledger; }
+    contract { @gated(role: auditor) expose ledger: Ledger; }
     params { ledger: Ledger = Ledger { balance: 100, entries: 0 }; }
     bus {
         subscribe Refunds as on_refund;
         subscribe Audits as on_audit;
         subscribe Ticks as on_tick where key == 7;
         subscribe Counts as on_count;
-        publish Moved;
+        @gated(role: auditor) publish Moved;
     }
     fn on_refund(r: Refund) -> RefundResult {
         self.ledger.balance = self.ledger.balance - r.money.amount;
@@ -35,6 +40,7 @@ locus Billing {
         Moved <- self.ledger;
         return RefundResult { ok: true, note: "refunded " + to_string(r.order_id) };
     }
+    @gated(role: auditor)
     fn on_audit(a: Audit) { println(a.line); }
     fn on_tick(t: Tick) { self.ledger.entries = self.ledger.entries + t.n; }
     // A scalar reply: the description inlines its schema.

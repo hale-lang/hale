@@ -170,7 +170,14 @@ struct Running {
 }
 
 impl Running {
+    /// No role table: every gate refuses, and the description served
+    /// is the ungated slice.
     fn start(tag: &str) -> Running {
+        Running::start_with(tag, None)
+    }
+
+    /// `roles`: a `LOTUS_API_ROLES` table for the run.
+    fn start_with(tag: &str, roles: Option<&str>) -> Running {
         // `hale build` lands the binary beside its source, so build a
         // copy of the fixture under a path of this test's own.
         let dir = std::env::temp_dir();
@@ -182,8 +189,12 @@ impl Running {
         let bin = src.with_extension("");
         let sock = dir.join(format!("hale_api_desc_{}_{}.sock", tag, std::process::id()));
         let _ = std::fs::remove_file(&sock);
-        let child = Command::new(&bin)
-            .env("LOTUS_API", &sock)
+        let mut cmd = Command::new(&bin);
+        cmd.env("LOTUS_API", &sock);
+        if let Some(t) = roles {
+            cmd.env("LOTUS_API_ROLES", t);
+        }
+        let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -211,11 +222,16 @@ impl Drop for Running {
 
 #[test]
 fn a_running_binding_serves_the_emitted_description() {
-    let app = Running::start("serve");
-    let out = hale().arg("describe").arg(&app.sock).output().unwrap();
+    // An owner's full description is the emitted one, byte for byte.
+    let app = Running::start_with("serve", Some("owner=*"));
+    let out = hale().arg("describe").arg(&app.sock).arg("--full").output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let served = String::from_utf8(out.stdout).unwrap();
     assert_eq!(served, describe(&[]), "the binding serves the bytes the compiler emits, byte for byte");
+    // Owner includes auditor, so the plain description is the same
+    // document for this caller.
+    let out = hale().arg("describe").arg(&app.sock).output().unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), describe(&[]), "an owner's slice is the whole");
     // And hale call round-trips a command through it.
     let out = hale()
         .arg("call")
@@ -265,8 +281,54 @@ impl Drop for Mcp {
 }
 
 #[test]
+fn the_description_is_served_filtered_to_the_caller_and_full_is_gated() {
+    // GH #1109: no table, so this caller holds nothing: the gated
+    // command, read and stream are not in its slice, nor the schema
+    // only they use; the full document is refused naming `owner`;
+    // and `hale mcp --app` lists exactly the tools it may use.
+    let app = Running::start("filtered");
+    let out = hale().arg("describe").arg(&app.sock).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let d: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let names = |section: &str| -> Vec<String> {
+        d[section].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(names("commands"), ["Counts", "Refunds", "Ticks"], "{}", d);
+    assert_eq!(names("reads"), ["ticks", "uptime"], "{}", d);
+    assert!(names("streams").is_empty(), "{}", d);
+    assert!(d["schemas"].get("Audit").is_none() && d["schemas"].get("Ledger").is_none(), "{}", d["schemas"]);
+    assert!(d["schemas"].get("Refund").is_some(), "{}", d["schemas"]);
+    let full = hale().arg("describe").arg(&app.sock).arg("--full").output().unwrap();
+    assert!(!full.status.success());
+    let err = String::from_utf8_lossy(&full.stderr);
+    assert!(err.contains("unauthorized") && err.contains("owner"), "{}", err);
+    let mut m = Mcp::start(&app.sock);
+    m.call(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}));
+    let tools = m.call(serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    let tool_names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(tool_names, ["Counts", "Refunds", "Ticks"], "only what this principal may call");
+    // `hale call` works from the slice, so it cannot name the gated
+    // command; a caller that spells the request itself is told
+    // `unknown`, as for a name that does not exist: what it may not use
+    // is not disclosed to it.
+    let out = hale().arg("call").arg(&app.sock).arg("Audits").arg(r#"{"line": "x"}"#).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("this caller may use"), "{}", String::from_utf8_lossy(&out.stderr));
+    use std::io::{BufRead, Write};
+    let mut s = std::os::unix::net::UnixStream::connect(&app.sock).unwrap();
+    s.write_all(b"{\"id\":1,\"call\":\"Audits\",\"payload\":{\"line\":\"x\"}}\n").unwrap();
+    let mut line = String::new();
+    BufReader::new(s).read_line(&mut line).unwrap();
+    let v: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["ok"], false, "{}", v);
+    assert_eq!(v["refusal"]["kind"], "unknown", "{}", v);
+    assert_eq!(v["refusal"]["reason"], "Audits", "{}", v);
+    assert!(!line.contains("auditor"), "the role is not disclosed: {}", line);
+}
+
+#[test]
 fn mcp_app_lists_the_commands_as_tools_and_calls_through() {
-    let app = Running::start("mcp");
+    let app = Running::start_with("mcp", Some("auditor=*"));
     let mut m = Mcp::start(&app.sock);
     let init = m.call(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}));
     assert!(init["result"]["capabilities"]["tools"].is_object());
@@ -355,7 +417,7 @@ impl Drop for Admin {
 
 #[test]
 fn admin_refuses_other_origins_hosts_and_untokened_calls() {
-    let app = Running::start("admin");
+    let app = Running::start_with("admin", Some("auditor=*"));
     let admin = Admin::start(&app.sock);
     let host = format!("127.0.0.1:{}", admin.port);
     // The page itself is behind the token: any local process can open

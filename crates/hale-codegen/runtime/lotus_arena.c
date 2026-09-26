@@ -75,6 +75,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <pwd.h>
+#include <grp.h>
 #if defined(__APPLE__)
 #include <sys/ucred.h>
 #endif
@@ -13996,6 +13998,61 @@ static int lotus_unix_peer(int fd, int64_t *uid, int64_t *gid, int64_t *pid) {
 int64_t lotus_unix_peer_uid(int fd) { int64_t u, g, p; lotus_unix_peer(fd, &u, &g, &p); return u; }
 int64_t lotus_unix_peer_gid(int fd) { int64_t u, g, p; lotus_unix_peer(fd, &u, &g, &p); return g; }
 int64_t lotus_unix_peer_pid(int fd) { int64_t u, g, p; lotus_unix_peer(fd, &u, &g, &p); return p; }
+
+/* GH #1109: the static role table's name spellings. `user:<name>` and
+ * `group:<name>` resolve once, at the binding's birth, per the host's
+ * account database (getpwnam / getgrnam); -1 when it has no such
+ * account. Nothing here runs per request. */
+int64_t lotus_unix_user_id(const char *name) {
+#if defined(__wasm__)
+    (void)name;
+    return -1;
+#else
+    struct passwd *p = getpwnam(name);
+    return p ? (int64_t)p->pw_uid : -1;
+#endif
+}
+int64_t lotus_unix_group_id(const char *name) {
+#if defined(__wasm__)
+    (void)name;
+    return -1;
+#else
+    struct group *g = getgrnam(name);
+    return g ? (int64_t)g->gr_gid : -1;
+#endif
+}
+/* GH #1109 (review F7): the peer's supplementary groups as the kernel
+ * holds them for the connection — SO_PEERGROUPS on Linux — so a `gid:`
+ * member is matched without an account-database lookup per request.
+ * Elsewhere the count is 0 and only the primary group (peer_gid) is
+ * known. The first 256 groups are read; a peer in more than that has
+ * the rest unmatched. */
+#define LOTUS_PEER_GROUPS_MAX 256
+/* A gid on the socket option is 32 bits; spelled as such so the wasm
+ * shim, which has no gid_t, compiles the (inert) fallback too. */
+static int64_t lotus_unix_peer_groups(int fd, uint32_t *groups) {
+#if defined(__linux__) && defined(SO_PEERGROUPS)
+    socklen_t len = LOTUS_PEER_GROUPS_MAX * sizeof(uint32_t);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERGROUPS, groups, &len) < 0) {
+        if (errno != ERANGE) return 0;
+        len = LOTUS_PEER_GROUPS_MAX * sizeof(uint32_t);
+    }
+    return (int64_t)(len / sizeof(uint32_t));
+#else
+    (void)fd; (void)groups;
+    return 0;
+#endif
+}
+int64_t lotus_unix_peer_groups_count(int fd) {
+    uint32_t groups[LOTUS_PEER_GROUPS_MAX];
+    return lotus_unix_peer_groups(fd, groups);
+}
+int64_t lotus_unix_peer_group_at(int fd, int64_t i) {
+    uint32_t groups[LOTUS_PEER_GROUPS_MAX];
+    int64_t n = lotus_unix_peer_groups(fd, groups);
+    if (i < 0 || i >= n) return -1;
+    return (int64_t)groups[i];
+}
 
 int lotus_unix_connect(const char *path) {
     return lotus_unix_connect_wait(path, 0);

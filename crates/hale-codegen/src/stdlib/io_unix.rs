@@ -144,6 +144,84 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("returns i64");
         Ok((v, CodegenTy::Int))
     }
+
+    /// GH #1109: `std::io::unix::user_id(name) -> Int` and
+    /// `group_id(name) -> Int`: the host's account database, -1 when
+    /// it has no such name.
+    pub(crate) fn lower_std_io_unix_name_id(
+        &mut self,
+        which: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::{} takes 1 arg (name), got {}",
+                which,
+                args.len()
+            )));
+        }
+        let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::{}: name must be String, got {:?}",
+                which, name_ty
+            )));
+        }
+        let name_val = self.unpack_view_if_needed(name_val, &name_ty)?;
+        let f = self
+            .module
+            .get_function(&format!("lotus_unix_{}", which))
+            .expect("lotus_unix_{user,group}_id declared");
+        let v = self
+            .builder
+            .build_call(f, &[name_val.into()], "unix.name_id")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// GH #1109 (review): `std::io::unix::peer_group_at(fd, i) -> Int`: the
+    /// i-th supplementary group the kernel holds for the peer
+    /// (SO_PEERGROUPS), -1 past the end or off Linux.
+    pub(crate) fn lower_std_io_unix_peer_group_at(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::peer_group_at takes 2 args (fd, i), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
+        if fd_ty != CodegenTy::Int || i_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::peer_group_at: fd and i must be Int, got {:?} and {:?}",
+                fd_ty, i_ty
+            )));
+        }
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), self.context.i32_type(), "peer.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_unix_peer_group_at")
+            .expect("lotus_unix_peer_group_at declared");
+        let v = self
+            .builder
+            .build_call(f, &[fd_i32.into(), i_val.into()], "peer.group")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {

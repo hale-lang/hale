@@ -258,6 +258,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 TopDecl::Locus(l) => out.loci.push(l),
                 TopDecl::Topic(t) => out.topics.push(t),
                 TopDecl::Group(g) => out.groups.push(g),
+                TopDecl::Role(_) => {}
                 TopDecl::Type(t) => {
                     out.types.push((t.name.name.as_str(), t.name.span))
                 }

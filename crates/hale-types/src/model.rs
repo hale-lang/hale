@@ -210,6 +210,15 @@ impl Model {
                             },
                         );
                     }
+                    TopDecl::Role(r) => {
+                        decls.insert(
+                            r.name.name.clone(),
+                            DeclInfo {
+                                origin: origin(&r.name.name),
+                                span: r.name.span,
+                            },
+                        );
+                    }
                     TopDecl::Module(md) => {
                         walk(&md.items, seed_of, decls, phases)
                     }

@@ -62,7 +62,7 @@ diagnostic's meaning, go there.
 | `hale targets` | the targets this compiler can name, and which of them it can build |
 | `hale lsp` | the language server, in the compiler binary |
 | `hale mcp [--app <socket>]` | the MCP server, in the compiler binary; `--app` serves a running program's api binding as tools and resources |
-| `hale describe <socket \| file>` | an api binding's description: commands, reads, streams, schemas; `--openapi`, `--mcp` |
+| `hale describe <socket \| file>` | an api binding's description: commands, reads, streams, schemas; `--openapi`, `--mcp`; from a socket the caller's slice, `--full` the whole (a read gated on `owner`) |
 | `hale call <socket> <name> [json]` | send a command or a read to a running api binding, print the answer |
 | `hale watch <socket> <stream>` | tail a stream of a running api binding |
 | `hale admin <socket>` | a local page over an api binding's description |

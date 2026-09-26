@@ -901,6 +901,10 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // no TypeExprs the import-rename pass needs
                 // to rewrite.
             }
+            TopDecl::Role(_) => {
+                // GH #1109: a role's name and its `includes` are bare
+                // vocabulary, never qualified paths.
+            }
             TopDecl::Group(g) => {
                 // GH #382: canonicalize qualified group members the
                 // same way qualified topic refs are canonicalized
@@ -1151,7 +1155,11 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         // GH #409: a constitution's NAME is law vocabulary, cited
         // by `adopt` and in diagnostics — never a mangled symbol,
         // for the same reason claim names are not.
-        TopDecl::Claims(_) | TopDecl::Constitution(_) => None,
+        // GH #1109: a role's NAME is deployment vocabulary — the key
+        // in `[environments.<env>.roles]` and the word a refusal
+        // names — so it is never mangled either; the checker refuses
+        // two declarations of one name bundle-wide instead.
+        TopDecl::Claims(_) | TopDecl::Constitution(_) | TopDecl::Role(_) => None,
     }
 }
 
@@ -1421,6 +1429,10 @@ impl<'a> Mangler<'a> {
                 // not user-namespace names, so they don't
                 // participate in the import rename table.
                 self.rewrite_ident(&mut t.name.name);
+            }
+            TopDecl::Role(_) => {
+                // GH #1109: role names are deployment vocabulary and
+                // stay as written (see `decl_name`).
             }
             TopDecl::Group(g) => {
                 // GH #382: rewrite the decl name plus single-
@@ -1707,6 +1719,13 @@ impl<'a> Mangler<'a> {
                     if let Some(codec) = &mut entry.codec {
                         self.rewrite_alias_head_joined(&mut codec.locus);
                         self.rewrite_ident(&mut codec.locus.name);
+                    }
+                }
+                // GH #1109: and the api entry's role source, an
+                // expression the main locus evaluates.
+                if let Some(api) = &mut bb.api {
+                    if let Some(r) = &mut api.roles {
+                        self.walk_expr(&mut r.expr);
                     }
                 }
             }

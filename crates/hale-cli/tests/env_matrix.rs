@@ -891,3 +891,82 @@ fn an_environment_with_no_entrypoints_leaves_them_unbound() {
     assert_ne!(code, 0, "{}", out);
     assert!(out.contains("in no environment"), "{}", out);
 }
+
+/// GH #1109: the role-coverage rule. Every role an entrypoint
+/// declares (and `owner`, once it has an api binding) is mapped in
+/// each environment it deploys to — `[]` is explicitly nobody — and
+/// nothing is mapped that it does not declare.
+const GATED_APP: &str = r#"
+role support;
+role auditor;
+type Refund { id: Int; }
+topic Refunds { payload: Refund; subject: "app.refund"; }
+locus Desk {
+    bus { subscribe Refunds as on_refund; }
+    @gated(role: support)
+    fn on_refund(r: Refund) { }
+}
+main locus A {
+    params { d: Desk = Desk { }; }
+    bindings { api: unix("/tmp/gated-matrix.sock", bound: 8, on_full: refuse); }
+}
+fn main() { A { }; }
+"#;
+
+fn gated_workspace(tag: &str, roles: &str) -> PathBuf {
+    let r = root(tag);
+    write(&r, "app/main.hl", GATED_APP);
+    write(
+        &r,
+        "hale.toml",
+        &format!(
+            "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app\"]\n\n[environments.dev.roles]\n{}",
+            roles
+        ),
+    );
+    r
+}
+
+#[test]
+fn the_matrix_wants_every_declared_role_mapped_or_explicitly_nobody() {
+    let r = gated_workspace("roles_missing", "support = [\"uid:1000\"]\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "auditor and owner are unmapped: {}", out);
+    assert!(
+        out.contains("`auditor`") && out.contains("`owner`") && out.contains("not mapped in [environments.dev.roles]"),
+        "the missing roles are named: {}",
+        out
+    );
+
+    let r = gated_workspace("roles_ok", "support = [\"uid:1000\", \"group:ops\"]\nauditor = []\nowner = [\"user:root\"]\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 0, "every role mapped, [] included: {}", out);
+
+    let r = gated_workspace("roles_extra", "support = []\nauditor = []\nowner = []\nsuport = [\"uid:1\"]\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "a mapped role nothing declares is a mistake: {}", out);
+    assert!(out.contains("`suport`") && out.contains("does not declare"), "{}", out);
+
+    // A member spelling the binding cannot act on is a manifest error.
+    let r = gated_workspace("roles_spelling", "support = [\"riley\"]\nauditor = []\nowner = []\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("is not a role member"), "{}", out);
+    // Review F1: the table travels as one line the binding re-splits,
+    // so an account name carrying a separator is refused before it can
+    // smuggle a second role in; a key that is not an identifier too.
+    let r = gated_workspace("roles_smuggle", "support = [\"user:nobody;owner=*\"]\nauditor = []\nowner = []\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("is not an account name"), "{}", out);
+    let r = gated_workspace("roles_key", "support = []\nauditor = []\nowner = []\n\"own er\" = []\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("a role key is an identifier"), "{}", out);
+}

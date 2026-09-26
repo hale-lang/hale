@@ -43,6 +43,7 @@ top_decl          = locus_decl
                   | ring_layout_decl
                   | target_decl
                   | group_decl
+                  | role_decl             (* #1109 *)
                   | claims_block          (* #392: library tier *)
                   | constitution_decl     (* #409 *)
                   ;
@@ -71,6 +72,15 @@ group_decl        = "group" , IDENTIFIER , "=" , "{" ,
                     [ group_member , { "," , group_member } , [ "," ] ] ,
                     "}" , [ "may_be_empty" ] , ";" ;
 group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
+
+(* GH #1109 — `role NAME [includes A, B];` declares authorization
+   vocabulary (spec/types.md § "Roles and `@gated`"). `role` and
+   `includes` are contextual: at top level `role` followed by a name
+   is the declaration (it is also the `unix(..., role: listen)`
+   kwarg). `includes` is grant-only and union-only; `owner` needs no
+   declaration. Role names are never mangled. *)
+role_decl         = "role" , IDENTIFIER ,
+                    [ "includes" , IDENTIFIER , { "," , IDENTIFIER } ] , ";" ;
 
 (* GH #901 — `target_decl` is the one `top_decl` a module body may
    NOT hold: it is a program-level build directive, and every
@@ -493,7 +503,13 @@ api_transport     = "unix" , "(" , STRING_LIT , { "," , api_kwarg } , ")" ;
 api_kwarg         = ( "bound" , ":" , INT_LIT )
                   | ( "on_full" , ":" , "refuse" )
                   | ( "watch_bound" , ":" , INT_LIT )
-                  | ( "on_watch_full" , ":" , shed_policy ) ;
+                  | ( "on_watch_full" , ":" , shed_policy )
+                  | ( "on_unauthorized" , ":" , ( "refuse" | "drop" ) )   (* #1109 *)
+                  | ( "roles" , ":" , expression ) ;
+(* `roles:` takes an expression the main locus evaluates as a param
+   default: a locus literal (`RecordRoles { }`, `lib::RecordRoles { }`)
+   or one of main's params (`self.roles`), so the program builds its
+   source with its own state and keeps a handle to it. *)
 
 (* F.36 Slice 2 (2026-05-28): optional codec(L { ... }) clause
    on a binding entry. Pluggable encode/decode for cross-binary
@@ -662,7 +678,8 @@ contract_block    = "contract" ,
                     ( ":" , "inferred" , ";"
                     | "{" , { contract_member } "}"
                     ) ;
-contract_member   = ( "expose" | "consume" ) ,
+contract_member   = [ gated_annotation ] ,          (* #1109: on `expose` only *)
+                    ( "expose" | "consume" ) ,
                     ( contract_name , ":" , type_expr , ";"
                     | "inferred" , ";"
                     ) ;
@@ -683,7 +700,7 @@ contract_name     = IDENTIFIER | "bulk" | "harmonic" | "resolution" ;
 
 bus_block         = "bus" , "{" , { bus_member } , "}" ;
 bus_member        = bus_subscribe
-                  | bus_publish
+                  | [ gated_annotation ] , bus_publish   (* #1109 *)
                   ;
 (* The subject is either a literal string (legacy form, requires
    `of type T`) or a named topic decl (no `of type T` allowed —
@@ -1063,6 +1080,10 @@ unbounded_annotation = "@" , "unbounded" ;
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;
+(* GH #1109 — on a subscribed handler (a fn decorator), an `expose`
+   member or a `publish` member: the role a caller through the api
+   binding must hold. spec/types.md § "Roles and `@gated`". *)
+gated_annotation  = "@" , "gated" , "(" , "role" , ":" , IDENTIFIER , ")" ;
 effect_annotation = "@" , effect_assert_flag
                   | "@" , "effects" , "(" , effect_clauses , ")" ;
 effect_assert_flag = "no_syscall" | "no_block" | "no_ffi"

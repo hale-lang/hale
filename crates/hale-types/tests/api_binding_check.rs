@@ -11,7 +11,7 @@ use hale_types::check_program;
 fn check(src: &str) -> Vec<String> {
     let mut prog = parse_source(src).expect("parse failed");
     hale_syntax::json_gen::generate_json_parsers(&mut prog);
-    hale_syntax::api_gen::generate_api(&mut [&mut prog]);
+    hale_syntax::api_gen::generate_api(&mut [&mut prog], None);
     check_program(&prog).into_iter().map(|d| d.message).collect()
 }
 
@@ -266,4 +266,210 @@ fn main() { Head { }; }
     assert!(a.iter().any(|m| m.contains("unowned inside")), "the rule fires without a context: {:?}", a);
     assert!(b.iter().any(|m| m.contains("unowned inside")), "and with one: {:?}", b);
     assert_eq!(a.len(), b.len(), "the same findings either way:\n{:?}\n{:?}", a, b);
+}
+
+// ---- GH #1109: roles and gates ---------------------------------------------
+
+fn gated_program(roles: &str, gate_fn: &str, gate_pub: &str, gate_expose: &str, extra: &str) -> String {
+    format!(
+        r#"
+{roles}
+type Refund {{ id: Int; }}
+type Ledger {{ n: Int; }}
+type Moved {{ n: Int; }}
+topic Refunds {{ payload: Refund; subject: "app.refund"; }}
+topic Moves {{ payload: Moved; subject: "app.moved"; }}
+locus Desk {{
+    contract {{ {gate_expose} expose ledger: Ledger; }}
+    params {{ ledger: Ledger = Ledger {{ n: 0 }}; }}
+    bus {{ subscribe Refunds as on_refund; {gate_pub} publish Moves; }}
+    {gate_fn}
+    fn on_refund(r: Refund) {{ Moves <- Moved {{ n: r.id }}; }}
+    fn plain() {{ }}
+}}
+{extra}
+main locus App {{
+    params {{ desk: Desk = Desk {{ }}; }}
+    bindings {{ api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+fn role_msgs(src: &str) -> Vec<String> {
+    check(src).into_iter().filter(|m| m.contains("role") || m.contains("gated") || m.contains("RoleSource")).collect()
+}
+
+#[test]
+fn a_gated_program_with_declared_roles_is_clean() {
+    let msgs = role_msgs(&gated_program(
+        "role support;\nrole auditor;\nrole owner includes support, auditor;",
+        "@gated(role: support)",
+        "@gated(role: support)",
+        "@gated(role: auditor)",
+        "",
+    ));
+    assert!(msgs.is_empty(), "{:?}", msgs);
+    // `owner` needs no declaration to be named.
+    let msgs = role_msgs(&gated_program("", "@gated(role: owner)", "@gated(role: owner)", "@gated(role: owner)", ""));
+    assert!(msgs.is_empty(), "{:?}", msgs);
+}
+
+#[test]
+fn an_undeclared_role_is_an_error_at_every_site() {
+    let msgs = role_msgs(&gated_program("role support;", "@gated(role: suport)", "", "", ""));
+    assert!(msgs.iter().any(|m| m.contains("names role `suport`, which nothing declares")), "{:?}", msgs);
+    let msgs = role_msgs(&gated_program("role support;", "", "@gated(role: nope)", "", ""));
+    assert!(msgs.iter().any(|m| m.contains("`nope`") && m.contains("publish")), "{:?}", msgs);
+    let msgs = role_msgs(&gated_program("role support;", "", "", "@gated(role: nope)", ""));
+    assert!(msgs.iter().any(|m| m.contains("`nope`") && m.contains("expose")), "{:?}", msgs);
+    let msgs = role_msgs(&gated_program("role owner includes nope;", "", "", "", ""));
+    assert!(msgs.iter().any(|m| m.contains("`role owner includes …`") && m.contains("`nope`")), "{:?}", msgs);
+}
+
+#[test]
+fn the_vocabulary_is_one_name_once_and_acyclic() {
+    let msgs = role_msgs(&gated_program("role support;\nrole support;", "", "", "", ""));
+    assert!(msgs.iter().any(|m| m.contains("role `support` is declared twice")), "{:?}", msgs);
+    let msgs = role_msgs(&gated_program("role a includes b;\nrole b includes a;", "", "", "", ""));
+    assert!(msgs.iter().any(|m| m.contains("includes itself")), "{:?}", msgs);
+}
+
+#[test]
+fn a_gate_on_a_plain_method_is_refused() {
+    let src = gated_program("role support;", "", "", "", "").replace("fn plain() { }", "@gated(role: support)\n    fn plain() { }");
+    let msgs = role_msgs(&src);
+    assert!(msgs.iter().any(|m| m.contains("`Desk.plain`") && m.contains("no `subscribe` line")), "{:?}", msgs);
+}
+
+#[test]
+fn every_subscriber_and_publisher_of_one_topic_states_the_same_gate() {
+    let extra = r#"
+locus Tally {
+    params { n: Int = 0; }
+    bus { subscribe Refunds as on_refund; publish Moves; }
+    fn on_refund(r: Refund) { self.n = self.n + 1; }
+}
+"#;
+    let msgs = role_msgs(&gated_program("role support;", "@gated(role: support)", "@gated(role: support)", "", extra));
+    assert!(
+        msgs.iter().any(|m| m.contains("topic `Refunds`") && m.contains("Desk.on_refund gated `support`") && m.contains("Tally.on_refund ungated")),
+        "subscribers: {:?}",
+        msgs
+    );
+    assert!(msgs.iter().any(|m| m.contains("topic `Moves`") && m.contains("publishes")), "publishers: {:?}", msgs);
+    let agreed = extra.replace("fn on_refund", "@gated(role: support)\n    fn on_refund").replace("publish Moves;", "@gated(role: support) publish Moves;");
+    let msgs = role_msgs(&gated_program("role support;", "@gated(role: support)", "@gated(role: support)", "", &agreed));
+    assert!(msgs.is_empty(), "{:?}", msgs);
+}
+
+#[test]
+fn a_gated_handler_on_a_transport_bound_topic_is_refused() {
+    let src = gated_program("role support;", "@gated(role: support)", "", "", "")
+        .replace(r#"bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }"#, r#"bindings { Refunds: unix("/tmp/r.sock", role: listen); }"#);
+    let msgs = role_msgs(&src);
+    assert!(msgs.iter().any(|m| m.contains("bound to a transport in `bindings { }` that has no gate")), "{:?}", msgs);
+}
+
+#[test]
+fn an_app_role_source_must_answer_holds() {
+    let good = gated_program("role support;", "@gated(role: support)", "", "", r#"
+locus Record {
+    params { n: Int = 0; }
+    fn holds(p: std::api::Principal, r: String) -> Bool { return p.uid == 7 && r == "support"; }
+}
+"#).replace(r#"bound: 8, on_full: refuse)"#, r#"bound: 8, on_full: refuse, roles: Record { n: 1 })"#);
+    let msgs = role_msgs(&good);
+    assert!(msgs.is_empty(), "{:?}", msgs);
+    let bad = good.replace("fn holds(p: std::api::Principal, r: String) -> Bool", "fn holds(p: std::api::Principal) -> Bool");
+    let msgs = role_msgs(&bad);
+    assert!(msgs.iter().any(|m| m.contains("does not satisfy std::api::RoleSource")), "{:?}", msgs);
+    let missing = good.replace("roles: Record { n: 1 }", "roles: Nowhere { }");
+    let msgs = role_msgs(&missing);
+    assert!(msgs.iter().any(|m| m.contains("is no locus of this bundle")), "{:?}", msgs);
+    // Review F6: the parameter types are checked, with the fn's span,
+    // and the source may be a main param the program built.
+    let wrong = good.replace("fn holds(p: std::api::Principal, r: String) -> Bool", "fn holds(p: String, r: Int) -> Bool");
+    let msgs = role_msgs(&wrong);
+    assert!(msgs.iter().any(|m| m.contains("first parameter is not a `std::api::Principal`") && m.contains("second parameter is not a `String`")), "{:?}", msgs);
+    let via_self = good
+        .replace("roles: Record { n: 1 }", "roles: self.record")
+        .replace("params { desk: Desk = Desk { }; }", "params { desk: Desk = Desk { }; record: Record = Record { n: 2 }; }");
+    let msgs = role_msgs(&via_self);
+    assert!(msgs.is_empty(), "{:?}", msgs);
+    let via_self_wrong = via_self.replace("fn holds(p: std::api::Principal, r: String) -> Bool", "fn holds(p: std::api::Principal) -> Bool");
+    let msgs = role_msgs(&via_self_wrong);
+    assert!(msgs.iter().any(|m| m.contains("takes 1 parameter(s), not 2")), "{:?}", msgs);
+}
+
+#[test]
+fn a_gate_on_a_free_fn_is_refused() {
+    // Review F3: nothing at top level is reached from the binding, and
+    // the role is checked all the same.
+    let src = gated_program("role support;", "", "", "", "@gated(role: nope)
+fn helper() { }");
+    let msgs = role_msgs(&src);
+    assert!(msgs.iter().any(|m| m.contains("on the free fn `helper`")), "{:?}", msgs);
+    assert!(msgs.iter().any(|m| m.contains("names role `nope`, which nothing declares")), "{:?}", msgs);
+}
+
+#[test]
+fn one_handler_on_two_topics_is_two_sites() {
+    // Review F5: the coherence rule is per topic, so a handler that
+    // subscribes two topics cannot hide a disagreement on the second.
+    let src = r#"
+role support;
+type Refund { id: Int; }
+type Audit { id: Int; }
+topic Refunds { payload: Refund; subject: "app.refund"; }
+topic Audits { payload: Audit; subject: "app.audit"; }
+locus Desk {
+    bus { subscribe Refunds as on_any; subscribe Audits as on_any; }
+    @gated(role: support)
+    fn on_any(r: Refund) { }
+}
+locus Tally {
+    bus { subscribe Audits as on_audit; }
+    fn on_audit(a: Audit) { }
+}
+main locus App {
+    params { desk: Desk = Desk { }; tally: Tally = Tally { }; }
+    bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = role_msgs(src);
+    assert!(msgs.iter().any(|m| m.contains("topic `Audits`") && m.contains("Desk.on_any gated `support`") && m.contains("Tally.on_audit ungated")), "{:?}", msgs);
+}
+
+#[test]
+fn a_stream_follows_its_topics_subscribers_unless_the_publish_says() {
+    // Review ruling: a topic both subscribed (gated) and published is a
+    // stream under the same gate; a publish member may state its own.
+    let src = r#"
+role support;
+role auditor;
+type Refund { id: Int; }
+topic Refunds { payload: Refund; subject: "app.refund"; }
+locus Desk {
+    bus { subscribe Refunds as on_refund; publish Refunds; }
+    @gated(role: support)
+    fn on_refund(r: Refund) { }
+}
+main locus App {
+    params { desk: Desk = Desk { }; }
+    bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }
+}
+fn main() { App { }; }
+"#;
+    let mut prog = parse_source(src).expect("parse failed");
+    hale_syntax::json_gen::generate_json_parsers(&mut prog);
+    let surface = hale_syntax::api_gen::api_surface(&[&prog]).expect("a surface");
+    assert_eq!(surface.streams[0].role.as_deref(), Some("support"), "inherited from the subscribers");
+    let own = src.replace("publish Refunds;", "@gated(role: auditor) publish Refunds;");
+    let mut prog = parse_source(&own).expect("parse failed");
+    hale_syntax::json_gen::generate_json_parsers(&mut prog);
+    let surface = hale_syntax::api_gen::api_surface(&[&prog]).expect("a surface");
+    assert_eq!(surface.streams[0].role.as_deref(), Some("auditor"), "the publish member's own");
 }

@@ -185,6 +185,72 @@ pub struct EnvSpec {
     /// feature exists to remove.
     #[serde(default)]
     pub entrypoints: Vec<String>,
+    /// GH #1109: `[environments.<name>.roles]` — who holds which
+    /// role here, `role = ["uid:1000", "group:ops", "user:riley"]`.
+    /// The requirement is form (`@gated(role:)` on the operation);
+    /// this is the params half. A role mapped to `[]` is explicitly
+    /// nobody, which `--matrix` accepts; an absent role it does not.
+    #[serde(default)]
+    pub roles: BTreeMap<String, Vec<String>>,
+}
+
+/// GH #1109: the spellings a role member may take.
+pub fn check_role_member(m: &str) -> Result<(), String> {
+    if m == "*" {
+        return Ok(());
+    }
+    for (prefix, numeric) in [("uid:", true), ("gid:", true), ("user:", false), ("group:", false)] {
+        if let Some(rest) = m.strip_prefix(prefix) {
+            if rest.is_empty() {
+                return Err(format!("`{}` names nothing after `{}`", m, prefix));
+            }
+            if numeric && rest.parse::<u64>().is_err() {
+                return Err(format!("`{}` is not `{}<number>`", m, prefix));
+            }
+            // The table travels as one line the binding re-splits, so an
+            // account name is confined to what an account name is:
+            // never `;`, `,`, `=`, blanks or control characters.
+            if !numeric && !account_name_ok(rest) {
+                return Err(format!(
+                    "`{}` is not an account name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
+                    m
+                ));
+            }
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "`{}` is not a role member: write `uid:<n>`, `gid:<n>`, `user:<name>`, \
+         `group:<name>` or `*` (any authenticated peer)",
+        m
+    ))
+}
+
+/// An account name the table may carry: `[A-Za-z0-9._@-]`, 1 to 64.
+pub fn account_name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+}
+
+/// A role key as `role NAME;` declares one: an identifier.
+pub fn role_key_ok(s: &str) -> bool {
+    let mut cs = s.chars();
+    match cs.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// GH #1109: the table the api binding bakes in, one line the stdlib's
+/// `std::api::StaticRoles` parses: `role=member,member;role=`.
+pub fn roles_table(roles: &BTreeMap<String, Vec<String>>) -> String {
+    roles
+        .iter()
+        .map(|(r, ms)| format!("{}={}", r, ms.join(",")))
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 /// `[ffi]` section of `hale.toml`. Paths in `csrc` are resolved
@@ -558,6 +624,29 @@ pub fn read_claims_config(
     let m: Manifest = toml::from_str(&src)
         .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
     for (name, spec) in &m.environments {
+        // GH #1109: a member spelling the binding could not act on
+        // is a manifest error, not a role that silently holds nobody.
+        for (role, members) in &spec.roles {
+            if !role_key_ok(role) {
+                return Err(format!(
+                    "{}: environment `{}` role `{}`: a role key is an identifier, as `role NAME;` declares it",
+                    manifest.display(),
+                    name,
+                    role
+                ));
+            }
+            for member in members {
+                if let Err(why) = check_role_member(member) {
+                    return Err(format!(
+                        "{}: environment `{}` role `{}`: {}",
+                        manifest.display(),
+                        name,
+                        role,
+                        why
+                    ));
+                }
+            }
+        }
         match (&spec.constitution, spec.source_only) {
             (Some(_), true) => {
                 return Err(format!(

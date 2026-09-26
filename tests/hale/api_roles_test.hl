@@ -1,0 +1,335 @@
+// GH #1109 — roles at the binding.
+//
+// spec/types.md § "Roles and @gated": `role` is declared vocabulary
+// with a grant-only hierarchy; `@gated(role: R)` on a subscribed
+// handler, an `expose` member or a `publish` means a call, a read or
+// a watch arriving through the api binding is refused unless the
+// caller holds R, directly or through a role that `includes` it.
+// The static table (`std::api::StaticRoles`) reads the environment's
+// `roles` — baked by `hale build --env`, overridden by
+// `LOTUS_API_ROLES` — in every member spelling; a refusal is a
+// receipt naming the missing role; an answer names the role that
+// authorized it, on the receipt and in the handler's context; the
+// description is served filtered to what the caller holds, and the
+// full one is a read gated on `owner`.
+
+fn app_source(sock: String, extra: String) -> String {
+    return "role support;\n"
+        + "role auditor;\n"
+        + "role owner includes support;\n"
+        + "type Refund { order_id: Int; amount: Int; }\n"
+        + "type Result { ok: Bool; by: String; role: String; }\n"
+        + "type Note { text: String; }\n"
+        + "type Ledger { balance: Int; }\n"
+        + "type Moved { balance: Int; }\n"
+        + "type Tick { n: Int; }\n"
+        + "topic Refunds { payload: Refund; subject: \"shop.refund\"; }\n"
+        + "topic Notes { payload: Note; subject: \"shop.note\"; }\n"
+        + "topic Moves { payload: Moved; subject: \"shop.moved\"; }\n"
+        + "topic Ticks { payload: Tick; subject: \"shop.tick\"; }\n"
+        + "locus Billing {\n"
+        + "    contract {\n"
+        + "        @gated(role: auditor) expose ledger: Ledger;\n"
+        + "        expose count: Int;\n"
+        + "    }\n"
+        + "    params { ledger: Ledger = Ledger { balance: 100 }; count: Int = 0; }\n"
+        + "    bus {\n"
+        + "        subscribe Refunds as on_refund;\n"
+        + "        subscribe Notes as on_note;\n"
+        + "        @gated(role: support) publish Moves;\n"
+        + "        publish Ticks;\n"
+        + "    }\n"
+        + "    @gated(role: support)\n"
+        + "    fn on_refund(r: Refund, ctx: std::api::Context) -> Result {\n"
+        + "        self.ledger.balance = self.ledger.balance - r.amount;\n"
+        + "        self.count = self.count + 1;\n"
+        + "        Moves <- Moved { balance: self.ledger.balance };\n"
+        + "        return Result { ok: true, by: ctx.caller.name, role: ctx.role };\n"
+        + "    }\n"
+        + "    fn on_note(n: Note) { self.count = self.count + 1; }\n"
+        + "    run() { let mut i = 0; while !self.draining && i < 40 { std::time::sleep(250ms); Ticks <- Tick { n: i }; i = i + 1; } }\n"
+        + "}\n"
+        + "main locus Shop {\n"
+        + "    params { billing: Billing = Billing { }; }\n"
+        + "    placement { billing: cooperative(pool = work) where async_io; }\n"
+        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse" + extra + "); }\n"
+        + "    run() { std::time::sleep(12s); }\n"
+        + "}\n"
+        + "fn main() { Shop { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    // The child's exit code, waited for (bounded); -1 when it did not exit.
+    fn exit_code() -> Int {
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stderr(self.child) or "");
+                return code;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stderr(self.child) or "");
+                return;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+locus Api {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+
+    fn connect(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 10s) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        return true;
+    }
+
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let mut i = 0;
+        while i < 15 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                i = i + 1;
+            } else {
+                self.buf = self.buf + chunk;
+            }
+        }
+        return "";
+    }
+}
+
+fn run_tool(argv: String) -> std::process::ProcessOutput {
+    return std::process::run(argv)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+fn has(s: String, needle: String) -> Bool {
+    return std::str::contains(s, needle);
+}
+
+// The n-th space-separated word of `s`, "" past the end.
+fn nth_word(s: String, n: Int) -> String {
+    let mut rest = s + " ";
+    let mut i = 0;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(w) > 0 {
+            if i == n { return w; }
+            i = i + 1;
+        }
+    }
+    return "";
+}
+
+// The names the description lists in one section, as `"name":"x"`.
+fn lists(desc: String, section: String, name: String) -> Bool {
+    let part = std::json::find_field_raw(desc, section);
+    return std::str::contains(part, "\"name\":\"" + name + "\"");
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let me = std::str::trim(run_tool("id\n-u").stdout);
+    let my_name = std::str::trim(run_tool("id\n-un").stdout);
+    let my_gid = std::str::trim(run_tool("id\n-g").stdout);
+    let my_group = std::str::trim(run_tool("id\n-gn").stdout);
+    let other = to_string((std::str::parse_int(me) or 0) + 1);
+    let tag = to_string(std::process::pid());
+    let sock = "/tmp/hale-roles-" + tag + ".sock";
+    let src = std::io::fs::mktemp("/tmp/hale-1109-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, app_source(sock, "")) or discard;
+    let built = run_tool(hale + "\nbuild\n" + src);
+    std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
+    std::test::assert(has(built.stderr, "gated operation(s) and no role table"), "a build without --env says the gates refuse until a table arrives: " + built.stderr);
+    let bin = src[0..(len(src) - 3)];
+    let full = run_tool(hale + "\ncheck\n--dump-api\n" + src);
+    std::test::assert_eq_int(full.code, 0, "hale check --dump-api: " + full.stderr);
+    let emitted = std::str::trim(full.stdout);
+    std::test::assert(has(emitted, "\"name\":\"Refunds\"") && has(emitted, "\"role\":\"support\""), "the emitted description carries the role requirement: " + emitted);
+
+    // Table A: this uid holds support (by user name), an auditor and an
+    // owner who is someone else.
+    let table_a = "support=user:" + my_name + ";auditor=uid:" + other + ";owner=uid:" + other;
+    let p = Proc { };
+    std::test::assert(p.start("env\nLOTUS_API_ROLES=" + table_a + "\n" + bin), "the app started under table A");
+    let api = Api { };
+    std::test::assert(api.connect(sock), "connected to " + sock);
+
+    let r1 = api.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":4,\"amount\":5}}");
+    std::test::assert(has(r1, "\"ok\":true"), "a holder's call is answered: " + r1);
+    std::test::assert(has(r1, "\"role\":\"support\",\"by\":") || has(r1, "\"role\":\"support\"}"), "the handler's context named the authorizing role: " + r1);
+    std::test::assert(has(r1, ",\"role\":\"support\"}"), "the receipt names the authorizing role: " + r1);
+    let r2 = api.ask("{\"id\":2,\"read\":\"billing.ledger\"}");
+    std::test::assert(has(r2, "\"ok\":false") && has(r2, "\"kind\":\"unknown\"") && has(r2, "\"reason\":\"billing.ledger\"") && !has(r2, "auditor"), "a gated read outside the slice is unknown, and the role is not disclosed: " + r2);
+    let r3 = api.ask("{\"id\":3,\"read\":\"billing.count\"}");
+    std::test::assert(has(r3, "\"ok\":true") && has(r3, "\"value\":1"), "an ungated read answers: " + r3);
+    let r4 = api.ask("{\"id\":4,\"watch\":\"Moves\"}");
+    std::test::assert(has(r4, "\"attached\":\"Moves\"") && has(r4, ",\"role\":\"support\"}"), "a holder attaches to a gated stream: " + r4);
+    let r5 = api.ask("{\"id\":5,\"call\":\"Notes\",\"payload\":{\"text\":\"hi\"}}");
+    std::test::assert(has(r5, "\"accepted\":true") && !has(r5, "\"role\""), "an ungated command is accepted with no role: " + r5);
+    let d1 = api.ask("{\"id\":6,\"describe\":true}");
+    let desc1 = std::json::find_field_raw(d1, "value");
+    std::test::assert(lists(desc1, "commands", "Refunds") && lists(desc1, "commands", "Notes"), "the description lists what this caller may call: " + desc1);
+    std::test::assert(!lists(desc1, "reads", "billing.ledger") && lists(desc1, "reads", "billing.count"), "the description hides the read this caller may not use: " + desc1);
+    std::test::assert(lists(desc1, "streams", "Moves") && lists(desc1, "streams", "Ticks"), "the description lists the streams this caller may watch: " + desc1);
+    std::test::assert(!has(std::json::find_field_raw(desc1, "schemas"), "\"Ledger\""), "a schema only a hidden item uses is hidden too: " + desc1);
+    let d2 = api.ask("{\"id\":7,\"describe\":\"full\"}");
+    std::test::assert(has(d2, "\"kind\":\"unauthorized\"") && has(d2, "\"role\":\"owner\""), "the full description is a read gated on owner: " + d2);
+    p.stop();
+    std::io::fs::unlink(sock) or discard;
+
+    // Table B: this principal holds auditor by a group the kernel says it
+    // is in — a supplementary one when there is one (SO_PEERGROUPS), else
+    // its primary group by name — someone else holds support, nobody is
+    // owner.
+    let groups = std::str::trim(run_tool("id\n-G").stdout);
+    let mut supplementary = "";
+    let mut gi = 0;
+    while len(nth_word(groups, gi)) > 0 {
+        if nth_word(groups, gi) != my_gid && len(supplementary) == 0 { supplementary = nth_word(groups, gi); }
+        gi = gi + 1;
+    }
+    let auditor_member = if len(supplementary) > 0 { "gid:" + supplementary } else { "group:" + my_group };
+    let table_b = "support=uid:" + other + ";auditor=" + auditor_member + ";owner=";
+    let q = Proc { };
+    std::test::assert(q.start("env\nLOTUS_API_ROLES=" + table_b + "\n" + bin), "the app started under table B");
+    let api2 = Api { };
+    std::test::assert(api2.connect(sock), "connected under table B");
+    let b1 = api2.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":4,\"amount\":5}}");
+    std::test::assert(has(b1, "\"kind\":\"unknown\"") && !has(b1, "support"), "a non-holder's call is unknown to it: " + b1);
+    let b2 = api2.ask("{\"id\":2,\"watch\":\"Moves\"}");
+    std::test::assert(has(b2, "\"kind\":\"unknown\"") && !has(b2, "support"), "a non-holder cannot attach to a gated stream, and is not told it exists: " + b2);
+    let b3 = api2.ask("{\"id\":3,\"watch\":\"Ticks\"}");
+    std::test::assert(has(b3, "\"attached\":\"Ticks\""), "an ungated stream attaches: " + b3);
+    let b4 = api2.ask("{\"id\":4,\"read\":\"billing.ledger\"}");
+    std::test::assert(has(b4, "\"balance\":100") && has(b4, ",\"role\":\"auditor\"}"), "the auditor reads the gated field, by group membership (" + auditor_member + "): " + b4);
+    let d3 = std::json::find_field_raw(api2.ask("{\"id\":5,\"describe\":true}"), "value");
+    std::test::assert(!lists(d3, "commands", "Refunds") && lists(d3, "reads", "billing.ledger") && !lists(d3, "streams", "Moves"), "the description is this caller's slice: " + d3);
+    std::test::assert(has(std::json::find_field_raw(d3, "schemas"), "\"Ledger\"") && !has(std::json::find_field_raw(d3, "schemas"), "\"Refund\""), "schemas follow the items that show them: " + d3);
+    q.stop();
+    std::io::fs::unlink(sock) or discard;
+
+    // Table C: this uid is owner, which includes support; the full
+    // description is the emitted one, byte for byte.
+    let table_c = "support=;auditor=;owner=uid:" + me;
+    let w = Proc { };
+    std::test::assert(w.start("env\nLOTUS_API_ROLES=" + table_c + "\n" + bin), "the app started under table C");
+    let api3 = Api { };
+    std::test::assert(api3.connect(sock), "connected under table C");
+    let c1 = api3.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1,\"amount\":1}}");
+    std::test::assert(has(c1, "\"ok\":true") && has(c1, ",\"role\":\"owner\"}"), "owner includes support, and the receipt says which role authorized: " + c1);
+    let c2 = api3.ask("{\"id\":2,\"describe\":\"full\"}");
+    std::test::assert_eq_str(std::json::find_field_raw(c2, "value"), emitted, "the full description is the emitted document");
+    let c3 = api3.ask("{\"id\":3,\"read\":\"billing.ledger\"}");
+    std::test::assert(has(c3, "\"kind\":\"unknown\""), "owner does not include auditor: " + c3);
+    w.stop();
+    std::io::fs::unlink(sock) or discard;
+    std::io::fs::unlink(bin) or discard;
+    std::io::fs::unlink(src) or discard;
+
+    // `on_unauthorized: drop`: no receipt at all, and the connection
+    // stays usable.
+    let src_d = std::io::fs::mktemp("/tmp/hale-1109d-", ".hl") or "";
+    std::io::fs::write_file(src_d, app_source(sock, ", on_unauthorized: drop")) or discard;
+    let built_d = run_tool(hale + "\nbuild\n" + src_d);
+    std::test::assert_eq_int(built_d.code, 0, "the drop variant builds: " + built_d.stderr);
+    let bin_d = src_d[0..(len(src_d) - 3)];
+    let v = Proc { };
+    std::test::assert(v.start("env\nLOTUS_API_ROLES=" + table_b + "\n" + bin_d), "the drop variant started");
+    let api4 = Api { };
+    std::test::assert(api4.connect(sock), "connected to the drop variant");
+    let e1 = api4.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1,\"amount\":1}}");
+    std::test::assert_eq_str(e1, "", "under drop an unauthorized call gets no answer");
+    let e2 = api4.ask("{\"id\":2,\"read\":\"billing.count\"}");
+    std::test::assert(has(e2, "\"ok\":true"), "the connection is still answered afterwards: " + e2);
+    v.stop();
+    std::io::fs::unlink(sock) or discard;
+    std::io::fs::unlink(bin_d) or discard;
+    std::io::fs::unlink(src_d) or discard;
+
+    // `hale build --env`: the table from hale.toml is baked in, so the
+    // binary needs no LOTUS_API_ROLES.
+    let dir = "/tmp/hale-1109-env-" + tag;
+    std::io::fs::mkdir(dir) or discard;
+    std::io::fs::write_file(dir + "/hale.toml",
+        "[claims]\nno_base = true\n\n[environments.test]\nsource_only = true\nentrypoints = [\".\"]\n\n[environments.test.roles]\nsupport = [\"uid:" + me + "\"]\nauditor = []\nowner = []\n") or discard;
+    std::io::fs::write_file(dir + "/main.hl", app_source(sock, "")) or discard;
+    let built_e = run_tool(hale + "\nbuild\n--env\ntest\n" + dir + "/main.hl");
+    std::test::assert_eq_int(built_e.code, 0, "hale build --env test: " + built_e.stderr);
+    std::test::assert(!has(built_e.stderr, "no role table"), "with --env there is a table: " + built_e.stderr);
+    let u = Proc { };
+    std::test::assert(u.start(dir + "/main"), "the env-built app started");
+    let api5 = Api { };
+    std::test::assert(api5.connect(sock), "connected to the env-built app");
+    let f1 = api5.ask("{\"id\":1,\"call\":\"Refunds\",\"payload\":{\"order_id\":1,\"amount\":1}}");
+    std::test::assert(has(f1, "\"ok\":true") && has(f1, ",\"role\":\"support\"}"), "the baked table grants support to this uid: " + f1);
+    let f2 = api5.ask("{\"id\":2,\"read\":\"billing.ledger\"}");
+    std::test::assert(has(f2, "\"kind\":\"unknown\""), "a role mapped to [] holds nobody: " + f2);
+    u.stop();
+    std::io::fs::unlink(sock) or discard;
+    let matrix = run_tool(hale + "\ncheck\n--matrix\n" + dir);
+    std::test::assert_eq_int(matrix.code, 0, "every declared role is mapped, so the matrix passes: " + matrix.stderr + matrix.stdout);
+    let _rm = run_tool("rm\n-rf\n" + dir);
+
+    // A table the program cannot act on is refused at birth, whether it
+    // arrives baked or as LOTUS_API_ROLES: a role nothing declares, a
+    // member outside the five spellings.
+    let bad_src = std::io::fs::mktemp("/tmp/hale-1109-bad-", ".hl") or "";
+    std::io::fs::write_file(bad_src, app_source(sock, "")) or discard;
+    std::test::assert_eq_int(run_tool(hale + "\nbuild\n" + bad_src).code, 0, "built for the refusals");
+    let bad_bin = bad_src[0..(len(bad_src) - 3)];
+    let x = Proc { };
+    std::test::assert(x.start("env\nLOTUS_API_ROLES=suport=uid:" + me + "\n" + bad_bin), "started under an undeclared role");
+    let x_code = x.exit_code();
+    std::test::assert_eq_int(x_code, 2, "a table naming an undeclared role refuses to start: " + x.out);
+    std::test::assert(has(x.out, "refusing to start") && has(x.out, "`suport` is not a role this program declares"), "and says why: " + x.out);
+    let y = Proc { };
+    std::test::assert(y.start("env\nLOTUS_API_ROLES=support=riley\n" + bad_bin), "started under a bad member spelling");
+    std::test::assert_eq_int(y.exit_code(), 2, "a member outside the five spellings refuses to start: " + y.out);
+    std::test::assert(has(y.out, "`riley` is not a role member"), "and says which: " + y.out);
+    std::io::fs::unlink(bad_bin) or discard;
+    std::io::fs::unlink(bad_src) or discard;
+}

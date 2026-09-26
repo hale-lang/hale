@@ -6373,6 +6373,7 @@ fn check_main_and_bindings(
         });
     }
     check_api_binding(&programs_vec, diags);
+    check_api_roles(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
             diags.push(Diag::ty(
@@ -6441,6 +6442,390 @@ fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
                 ex.what, ex.reason
             ),
         ));
+    }
+}
+
+/// GH #1109: the role vocabulary and the `@gated(role:)` sites.
+///
+/// Roles are declared vocabulary like `group` and `effect`: a name
+/// nothing declares is an error, bundle-wide, with `owner` the one
+/// role that needs no declaration (a program declares it only to
+/// give it `includes`). `includes` is grant-only and union-only, so a
+/// cycle says nothing and is refused. A gate goes on a subscribed
+/// handler, an `expose` member or a `publish`, and every subscriber
+/// (or publisher) of one topic states the same gate, because the
+/// binding refuses the message, not the handler. A gated handler's
+/// topic cannot also be bound to a transport in `bindings { }`: that
+/// transport has no gate, so the annotation would promise a check
+/// that does not run.
+fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
+    use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut decls: BTreeMap<String, (Vec<Ident>, Span)> = BTreeMap::new();
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            if let TopDecl::Role(r) = item {
+                if let Some((_, first)) = decls.get(&r.name.name) {
+                    diags.push(
+                        Diag::ty(
+                            r.name.span,
+                            format!(
+                                "role `{}` is declared twice; a role is one name the \
+                                 deployment maps, so declare it once and `includes` it \
+                                 where a wider role should hold it",
+                                r.name.name
+                            ),
+                        )
+                        .with_related(*first, "the first declaration"),
+                    );
+                } else {
+                    decls.insert(r.name.name.clone(), (r.includes.clone(), r.name.span));
+                }
+            }
+        });
+    }
+    let declared = |n: &str| n == "owner" || decls.contains_key(n);
+    let undeclared = |n: &Ident, at: &str| {
+        Diag::ty(
+            n.span,
+            format!(
+                "{} names role `{}`, which nothing declares — roles are declared \
+                 vocabulary: `role {};` at top level (only `owner` needs no declaration)",
+                at, n.name, n.name
+            ),
+        )
+    };
+    for (name, (incs, span)) in &decls {
+        for inc in incs {
+            if !declared(&inc.name) {
+                diags.push(undeclared(inc, &format!("`role {} includes …`", name)));
+            }
+        }
+        // A cycle: `name` reachable from its own includes.
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut stack: Vec<String> = incs.iter().map(|i| i.name.clone()).collect();
+        while let Some(cur) = stack.pop() {
+            if cur == *name {
+                diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "role `{}` includes itself through its `includes` chain; \
+                         composition is grant-only and union-only, so a cycle says nothing",
+                        name
+                    ),
+                ));
+                break;
+            }
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            if let Some((more, _)) = decls.get(&cur) {
+                stack.extend(more.iter().map(|i| i.name.clone()));
+            }
+        }
+    }
+
+    // Topics bound to a transport in `bindings { }` have no gate; the
+    // api entry's own source, and the main locus's params (a source
+    // may be `self.<param>`).
+    let mut bound: BTreeSet<String> = BTreeSet::new();
+    let mut api_roles: Option<ApiRoles> = None;
+    let mut api_span: Option<Span> = None;
+    let mut main_params: Vec<(String, TypeExpr)> = Vec::new();
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                for m in &l.members {
+                    if let LocusMember::Bindings(bb) = m {
+                        for e in &bb.entries {
+                            bound.insert(e.topic.name.clone());
+                        }
+                        if let Some(api) = &bb.api {
+                            api_span = Some(api.span);
+                            if let Some(r) = &api.roles {
+                                api_roles = Some(r.clone());
+                            }
+                            for pm in &l.members {
+                                if let LocusMember::Params(pb) = pm {
+                                    for prm in &pb.params {
+                                        if let Some(t) = &prm.ty {
+                                            main_params.push((prm.name.name.clone(), t.clone()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Review F3: a gate on a free fn is an error — nothing there is
+    // reached from the binding — and its role is checked all the same.
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            if let TopDecl::Fn(f) = item {
+                if let Some(g) = &f.gated {
+                    diags.push(Diag::ty(
+                        g.span,
+                        format!(
+                            "`@gated(role: {})` on the free fn `{}`: a gate goes on a subscribed \
+                             handler, an `expose` member or a `publish` — it is checked at the api \
+                             binding, and a free fn is never reached from there",
+                            g.name, f.name.name
+                        ),
+                    ));
+                    if !declared(&g.name) {
+                        diags.push(undeclared(g, &format!("`@gated` on `{}`", f.name.name)));
+                    }
+                }
+            }
+        });
+    }
+
+    // The sites, and the gate each topic's subscribers and publishers
+    // state: (site, role, span).
+    let mut sub_gates: BTreeMap<String, Vec<(String, Option<String>, Span)>> = BTreeMap::new();
+    let mut pub_gates: BTreeMap<String, Vec<(String, Option<String>, Span)>> = BTreeMap::new();
+    let mut loci: BTreeMap<String, &hale_syntax::ast::LocusDecl> = BTreeMap::new();
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            if l.name.name.starts_with("__Api") {
+                return;
+            }
+            loci.insert(l.name.name.clone(), l);
+            // Every subscription, by handler: one handler may subscribe
+            // several topics (review F5), and each is a site.
+            let mut subscribed: Vec<(&str, Option<String>)> = Vec::new();
+            for m in &l.members {
+                let LocusMember::Bus(bb) = m else { continue };
+                for bm in &bb.members {
+                    match bm {
+                        BusMember::Subscribe { subject, handler, .. } => {
+                            let topic = match subject {
+                                BusSubject::Topic(id) => Some(id.name.clone()),
+                                _ => None,
+                            };
+                            subscribed.push((handler.name.as_str(), topic));
+                        }
+                        BusMember::Publish { subject, gated, span, .. } => {
+                            if let Some(g) = gated {
+                                if !declared(&g.name) {
+                                    diags.push(undeclared(g, &format!("`@gated` on `{}`'s publish", l.name.name)));
+                                }
+                            }
+                            if let BusSubject::Topic(id) = subject {
+                                pub_gates.entry(id.name.clone()).or_default().push((
+                                    format!("{} publishes it", l.name.name),
+                                    gated.as_ref().map(|g| g.name.clone()),
+                                    *span,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            for m in &l.members {
+                match m {
+                    LocusMember::Fn(f) => {
+                        let Some(g) = &f.gated else { continue };
+                        if !declared(&g.name) {
+                            diags.push(undeclared(g, &format!("`@gated` on `{}.{}`", l.name.name, f.name.name)));
+                        }
+                        let mine: Vec<&Option<String>> = subscribed
+                            .iter()
+                            .filter(|(h, _)| *h == f.name.name.as_str())
+                            .map(|(_, t)| t)
+                            .collect();
+                        if mine.is_empty() {
+                            diags.push(Diag::ty(
+                                g.span,
+                                format!(
+                                    "`@gated(role: {})` on `{}.{}`, which no `subscribe` line of \
+                                     `{}` names: a gate goes on a subscribed handler, an `expose` \
+                                     member or a `publish` — it is checked at the binding, and a \
+                                     plain method is never reached from there",
+                                    g.name, l.name.name, f.name.name, l.name.name
+                                ),
+                            ));
+                        }
+                        for topic in mine.into_iter().flatten() {
+                            if bound.contains(topic) {
+                                diags.push(Diag::ty(
+                                    g.span,
+                                    format!(
+                                        "`@gated(role: {})` on `{}.{}`, but its topic `{}` is \
+                                         bound to a transport in `bindings {{ }}` that has no \
+                                         gate: a message from another process would reach the \
+                                         handler unchecked. Reach the topic through the api \
+                                         binding, or drop the annotation",
+                                        g.name, l.name.name, f.name.name, topic
+                                    ),
+                                ));
+                            }
+                            sub_gates.entry(topic.clone()).or_default().push((
+                                format!("{}.{}", l.name.name, f.name.name),
+                                Some(g.name.clone()),
+                                g.span,
+                            ));
+                        }
+                    }
+                    LocusMember::Contract(cb) => {
+                        let ContractKind::Members(members) = &cb.kind else { continue };
+                        for cm in members {
+                            let Some(g) = &cm.gated else { continue };
+                            if cm.direction != ContractDirection::Expose {
+                                continue;
+                            }
+                            if !declared(&g.name) {
+                                diags.push(undeclared(g, &format!("`@gated` on an `expose` of `{}`", l.name.name)));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Ungated subscribers count too: every subscriber of a
+            // topic must agree.
+            for (h, topic) in &subscribed {
+                let Some(t) = topic else { continue };
+                let gated = l.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == *h && f.gated.is_some()));
+                if !gated {
+                    let span = l
+                        .members
+                        .iter()
+                        .find_map(|m| match m {
+                            LocusMember::Fn(f) if f.name.name == *h => Some(f.name.span),
+                            _ => None,
+                        })
+                        .unwrap_or(l.name.span);
+                    sub_gates.entry(t.clone()).or_default().push((format!("{}.{}", l.name.name, h), None, span));
+                }
+            }
+        });
+    }
+    for (kind, gates) in [("subscribes", &sub_gates), ("publishes", &pub_gates)] {
+        for (topic, sites) in gates {
+            let distinct: BTreeSet<Option<String>> = sites.iter().map(|(_, r, _)| r.clone()).collect();
+            if distinct.len() < 2 {
+                continue;
+            }
+            let listed: Vec<String> = sites
+                .iter()
+                .map(|(site, r, _)| match r {
+                    Some(r) => format!("{} gated `{}`", site, r),
+                    None => format!("{} ungated", site),
+                })
+                .collect();
+            let (_, _, span) = sites.iter().find(|(_, r, _)| r.is_some()).unwrap_or(&sites[0]);
+            diags.push(Diag::ty(
+                *span,
+                format!(
+                    "topic `{}`: {} — every locus that {} one topic states the same gate, \
+                     because the binding refuses the message, not the handler",
+                    topic,
+                    listed.join(", "),
+                    kind
+                ),
+            ));
+        }
+    }
+
+    // A program-named source is a locus satisfying std::api::RoleSource
+    // (review F6): a locus literal or `self.<param>` of the main locus
+    // is checked structurally here, with the fn's span; any other
+    // expression is typed against the interface at the generated init.
+    let Some(src) = api_roles else { return };
+    let named = |path: &hale_syntax::ast::QualifiedName| -> String {
+        path.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::")
+    };
+    let locus_name: Option<String> = match &src.expr {
+        Expr::Struct { path, .. } => Some(named(path)),
+        Expr::Field { receiver, name, .. } if matches!(**receiver, Expr::KwSelf(_)) => main_params
+            .iter()
+            .find(|(n, _)| *n == name.name)
+            .and_then(|(_, t)| match t {
+                TypeExpr::Named { path, .. } => Some(named(path)),
+                _ => None,
+            }),
+        _ => None,
+    };
+    let Some(locus_name) = locus_name else { return };
+    if locus_name.starts_with("__Std") || locus_name.starts_with("std::") {
+        return;
+    }
+    let entry = api_span.unwrap_or(src.span);
+    let Some(l) = loci.get(&locus_name) else {
+        diags.push(Diag::ty(
+            src.span,
+            format!(
+                "api binding: `roles:` names `{}`, which is no locus of this bundle; a role \
+                 source is a locus with `fn holds(p: std::api::Principal, r: String) -> Bool` \
+                 (std::api::RoleSource)",
+                locus_name
+            ),
+        ));
+        return;
+    };
+    let holds = l.members.iter().find_map(|m| match m {
+        LocusMember::Fn(f) if f.name.name == "holds" => Some(f),
+        _ => None,
+    });
+    let Some(f) = holds else {
+        diags.push(Diag::ty(
+            src.span,
+            format!(
+                "api binding: `roles:` names `{}`, which has no `fn holds`: a role source \
+                 answers `fn holds(p: std::api::Principal, r: String) -> Bool` \
+                 (std::api::RoleSource) — whether the principal holds the role directly; \
+                 the binding walks `includes` itself",
+                locus_name
+            ),
+        ));
+        return;
+    };
+    let is_principal = |t: &TypeExpr| match t {
+        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            segs == ["std", "api", "Principal"] || segs == ["__StdApiPrincipal"]
+        }
+        _ => false,
+    };
+    let mut why: Vec<String> = Vec::new();
+    if f.params.len() != 2 {
+        why.push(format!("takes {} parameter(s), not 2", f.params.len()));
+    } else {
+        if !is_principal(&f.params[0].ty) {
+            why.push(format!("its first parameter is not a `std::api::Principal`"));
+        }
+        if !matches!(&f.params[1].ty, TypeExpr::Primitive(PrimType::String, _)) {
+            why.push(format!("its second parameter is not a `String`"));
+        }
+    }
+    if !matches!(&f.ret, Some(TypeExpr::Primitive(PrimType::Bool, _))) {
+        why.push("it does not return `Bool`".to_string());
+    }
+    if f.fallible.is_some() {
+        why.push("it is fallible".to_string());
+    }
+    if !why.is_empty() {
+        diags.push(
+            Diag::ty(
+                f.name.span,
+                format!(
+                    "`{}.holds` does not satisfy std::api::RoleSource: {} — a role source \
+                     answers `fn holds(p: std::api::Principal, r: String) -> Bool`, not \
+                     fallible, whether the principal holds the role directly (the binding \
+                     walks `includes` itself)",
+                    locus_name,
+                    why.join("; ")
+                ),
+            )
+            .with_related(entry, "the api entry that names it"),
+        );
     }
 }
 
@@ -8054,6 +8439,11 @@ impl<'a> Checker<'a> {
                 // pass — the law judgment — because members
                 // may name imported decls only the merged bundle
                 // can see. Nothing per-decl to check here.
+            }
+            TopDecl::Role(_) => {
+                // GH #1109: authorization vocabulary. Declared-ness,
+                // `includes` and the annotation sites are checked
+                // bundle-wide in `check_api_roles`.
             }
             TopDecl::Topic(t) => {
                 // Topic declarations carry `payload: T; subject:

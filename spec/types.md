@@ -1398,6 +1398,47 @@ The `IoError` payload is the unified shape for the
 fallible I/O surface — see `spec/stdlib.md` § "IoError" for the
 errno → kind tag taxonomy.
 
+## Roles and `@gated` (GH #1109)
+
+`role NAME;` at top level declares a **role**: authorization
+vocabulary, the way `group` declares claim vocabulary and `effect`
+declares an effect class. A role is a name the deployment maps to
+principals; the program never says who holds it. `role NAME includes
+A, B;` is the hierarchy: whoever holds `NAME` holds `A` and `B`, and
+whatever they include, transitively. Composition is **grant-only and
+union-only** (the constitutions rule): `includes` can only widen what
+a holder may do, so a cycle says nothing and is an error, and a name
+declared twice is an error rather than a merge. `owner` is the one
+role that needs no declaration — the full api description is a read
+gated on it — and a program declares it only to give it `includes`.
+Role names are deployment vocabulary (the keys of
+`[environments.<env>.roles]`, the word a refusal names) and are never
+mangled: an imported seed's `role x;` and the entrypoint's are one
+`x`, and declaring it in both is the duplicate error.
+
+`@gated(role: R)` goes on exactly three sites: a **subscribed
+handler** (a locus fn some `subscribe … as` line of the same locus
+names), an **`expose`** contract member, or a **`publish`** bus
+member. `R` must be declared (or be `owner`). It means one thing: a
+message on that subject, a read of that member or an external
+subscription to that stream, arriving through the api binding, is
+refused unless the caller holds `R` (`spec/semantics.md` § "The
+gate"); a stream whose `publish` member states no gate follows the
+gate the topic's subscribers state. It is a boundary check, named so — the way `@secret` is a
+lint and not a containment proof — and says nothing about the
+program's own call paths; a guarantee about those is a later,
+opt-in claim. So `@gated` on a plain method, on a `consume`, or on
+the `subscribe` line itself is an error: nothing there is reached
+from the binding, and an annotation must not promise a check that
+does not run — a free fn included. Two more rules keep the gate on
+the message rather than the handler: every subscriber of one topic
+(and every publisher of one stream) states the same gate, each
+subscription of a handler that subscribes several topics being its
+own site, and a gated handler's topic cannot also be bound to a
+transport in `bindings { }`, which has no gate. A `@gated` in a program without an api binding is inert and
+legal: the requirement is form, true in every deployment; who holds
+the role is params.
+
 ## Recovery-primitive typing
 
 Recovery primitives (`restart`, `restart_in_place`,
