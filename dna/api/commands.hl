@@ -376,6 +376,7 @@ locus Commands {
         root: String = ".";
         roles: dna::RecordRoles = dna::RecordRoles { };
         provider: CommandProvider = NoCommands { };
+        local_name: String = "local"; // the local session's name, for the head's own uid when the record maps it to nobody
         // the helpers, held: a handler allocates nothing per message
         reader: SourceReader = SourceReader { };
         wire: CommandWire = CommandWire { };
@@ -402,13 +403,15 @@ locus Commands {
         subscribe CommandLookup as lookup;
     }
     // The caller as the record knows them: the person `dna.unix.member`
-    // maps the peer to, else the peer's account name (only an ungated
+    // maps the peer to; the head's own uid unmapped is the local session
+    // (what `/capabilities` names, so a forwarded receipt matches it);
+    // any other unmapped peer is its account name (only an ungated
     // command reaches here unmapped). Rows say `local`: the peer is a
     // local account the kernel vouched for.
     fn context(ctx: std::api::Context) -> CommandContext {
         let source = self.reader.read();
         let person = self.roles.person(ctx.caller);
-        let name = if len(person) > 0 { person } else { ctx.caller.name };
+        let name = if len(person) > 0 { person } else if ctx.caller.uid == std::process::uid() { self.local_name } else { ctx.caller.name };
         return CommandContext { root: self.root, source: source, principal_mode: "local", principal_name: name };
     }
     fn refused(code: String) -> CommandReply { return CommandReply { code: code }; }

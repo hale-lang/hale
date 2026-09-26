@@ -1,4 +1,5 @@
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 import { writeFile } from 'node:fs/promises';
 
 test.skip(!process.env.HALE_FACE_WORKFLOWS_BIN, 'Requires the native recorded workflow fixture.');
@@ -15,7 +16,7 @@ async function refresh(page) { await page.getByRole('button', { name: 'Refresh',
 
 test('Work reads the native bound recipe, nested admission, failed attempt history and accepted result', async ({ page, service }, testInfo) => {
   const refs = await service.refs(), mutations = [];
-  page.on('request', request => { if (request.method() !== 'GET') mutations.push(request.url()); });
+  page.on('request', request => { if (isWrite(request)) mutations.push(request.url()); });
   const response = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/dna/workflows') && new URL(r.url()).searchParams.get('id') === service.execution);
   await open(page, service);
   const payload = await (await response).json();

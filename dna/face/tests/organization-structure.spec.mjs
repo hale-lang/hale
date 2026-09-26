@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect } from './harness.mjs';
+import { isDescribe } from './command-wire.mjs';
 
 test.use({ organization: true, organizationDrafts: true });
 const editor = page => page.getByRole('region', { name: 'Organization editing', exact: true });
@@ -87,7 +88,7 @@ test('Source removal previews the entire subtree and requires explicit draft con
 
 test('Unsafe identifiers, duplicate fields, recursion and Int64 overflow do not submit', async ({ page, service }) => {
   await open(page, service, 'Org.support');
-  const posts = []; page.on('request', r => { if (r.method() === 'POST') posts.push(r.url()); });
+  const posts = []; page.on('request', r => { if (r.method() === 'POST' && !isDescribe(r)) posts.push(r.url()); });
   await form(page).getByLabel('New child name', { exact: true }).fill('reviewer');
   await form(page).getByRole('button', { name: 'Validate new child', exact: true }).click();
   await expect(form(page).getByRole('alert')).toContainText('unique Hale identifier');
@@ -238,7 +239,7 @@ test('Moving into a shared parent previews every destination and refreshes ackno
 test('Moves reject duplicate names and recursive containment without submitting', async ({ page, service }) => {
   await open(page, service, 'Org.metrics');
   const move = form(page).getByRole('group', { name: 'Move to another parent', exact: true });
-  const posts = []; page.on('request', r => { if (r.method() === 'POST') posts.push(r.url()); });
+  const posts = []; page.on('request', r => { if (r.method() === 'POST' && !isDescribe(r)) posts.push(r.url()); });
   await move.getByLabel('Destination parent', { exact: true }).selectOption('Org.support');
   await move.getByLabel('Child name after move', { exact: true }).fill('reviewer');
   await move.getByLabel('I reviewed both parent declarations', { exact: true }).check();

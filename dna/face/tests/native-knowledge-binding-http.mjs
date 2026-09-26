@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
+import { wireLine } from './command-wire.mjs';
 
 assert(bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
@@ -54,8 +55,8 @@ function verdict(receipt, actor) {
 async function decide(receipt) {
   await service.quiesce(); await asActor('bob');
   const command = verdict(receipt, 'bob');
-  const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(command) });
-  assert.equal(response.status, 202, JSON.stringify(response));
+  const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(command)) });
+  assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response));
   const decided = await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted');
   assert.equal(decided.activation.state, 'unknown', 'Review receipt must not claim node adoption for a binding change');
   await service.quiesce(); await asActor('alice'); return decided;
@@ -92,8 +93,9 @@ try {
     const exact = await candidate(created); assert.equal(exact.document.because, rationale); assert.equal(exact.document.idea_id, service.practice);
     assert.equal(exact.document.by, 'alice'); assert.equal(exact.document.author, 'org'); assert.equal(exact.document.target, 'org/support');
     assert.equal(exact.review.state, 'pending'); assert.equal(admissions(command.request_id).length, 1);
-    const self = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(verdict(created, 'alice')) });
-    assert.equal(self.status, 403, JSON.stringify(self)); assert.equal(self.body.error.code, 'forbidden');
+    // The binding answers; the provider refuses the proposer's own verdict.
+    const self = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(verdict(created, 'alice'))) });
+    assert.equal(self.status, 200, JSON.stringify(self)); assert.equal(self.body.value?.code, 'forbidden', JSON.stringify(self));
     await save('candidate-read.json', exact.response); await save('created-receipt.json', created);
     return { request_id: command.request_id, candidate: created.binding.candidate_digest, rationale_bytes: bytes(rationale), rationale_digest: digest(rationale), encoded_request_bytes: bytes(JSON.stringify(command)) };
   });

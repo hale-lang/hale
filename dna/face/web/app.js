@@ -125,15 +125,22 @@
 
   // Command bodies and receipts remain in memory. Only a scoped recovery key
   // crosses a reload, and persisting that key must succeed before any POST.
-  const COMMAND_PROFILE = "dna.practice.propose.v1";
   const PRACTICE_OPERATION = "dna.practice.propose";
   const REVIEW_OPERATION = "dna.review.verdict";
-  const REVIEW_PROFILE = "dna.review.verdict.v1";
-  const SOURCE_REVIEW_PROFILE = "dna.organization.review.verdict.v1";
   const ORGANIZATION_OPERATION = "dna.organization.propose";
   const TASK_OPERATION = "dna.task.reassign";
   const PERSON_OPERATION = "dna.person.retire";
   const TASK_CREATE_OPERATION = "dna.task.create";
+  // A record command is one line of the head's api wire, forwarded over
+  // HTTP to its socket: the operation's call and its flat payload. The head
+  // supplies the context, the target's application and the principal.
+  const COMMAND_CALLS = { [PRACTICE_OPERATION]: "PracticePropose", [REVIEW_OPERATION]: "ReviewVerdict", [ORGANIZATION_OPERATION]: "OrganizationPropose", [TASK_OPERATION]: "TaskReassign", [PERSON_OPERATION]: "PersonRetire", [TASK_CREATE_OPERATION]: "TaskCreate" };
+  const COMMAND_LOOKUP = "CommandLookup";
+  // The operations' own byte bounds, checked before anything is saved or
+  // sent; an identity's 256 is commandID's.
+  const COMMAND_BOUNDS = { text: 8192, rationale: 2048, comment: 2048, outcome: 8192, source: 16384, request: 32768 };
+  // A command is git work; the head waits up to 30 s for its socket.
+  const COMMAND_TIMEOUT_MS = 35_000;
   const ORGANIZATION_MODULE = "dna/org/main.hl";
   const ORGANIZATION_BASE = ["source_head", "module_digest", "dependency_source", "dependency_digest", "record_head"];
   const VERDICTS = { approve: "Approve", reject: "Reject", revise: "Request revision" };
@@ -175,47 +182,24 @@
   function organizationBase(base) {
     return closedObject(base, ORGANIZATION_BASE) && sourceCommit(base.source_head) && sourceDigest(base.module_digest) && sourceDigest(base.dependency_digest) && ["none", "committed_source", "local_vendor_snapshot"].includes(base.dependency_source) && commandID(base.record_head);
   }
-  function commandProfile(capabilities, operation) {
-    if (operation === TASK_CREATE_OPERATION) {
-      const c = capabilities?.task_create_commands;
-      const supported = closedObject(c, ["profile", "available", "authorized", "position_id", "recovery", "max_outcome_bytes", "max_identity_bytes", "max_request_bytes", "reason"]) && c.profile === "dna.task.create.v1" && typeof c.available === "boolean" && typeof c.authorized === "boolean" && c.position_id === "org" && c.recovery === "record_lifetime" && c.max_outcome_bytes === "8192" && c.max_identity_bytes === "256" && c.max_request_bytes === "32768" && unicodeText(c.reason) && byteLength(c.reason) <= 512;
-      return { supported, enabled: supported && c.available && c.authorized };
-    }
-    if (operation === TASK_OPERATION || operation === PERSON_OPERATION) {
-      const person = operation === PERSON_OPERATION;
-      const c = person ? capabilities?.person_commands : capabilities?.task_commands;
-      const supported = closedObject(c, ["profile", "available", "authorized", "position_id", "recovery", "max_identity_bytes", "max_request_bytes", "recipients", "reason", ...(person ? ["max_transfers"] : [])]) && c.profile === (person ? "dna.person.retire.v1" : "dna.task.reassign.v1") && (!person || c.max_transfers === "32") && typeof c.available === "boolean" && typeof c.authorized === "boolean" && c.position_id === "org" && c.recovery === "record_lifetime" && c.max_identity_bytes === "256" && c.max_request_bytes === "32768" && Array.isArray(c.recipients) && c.recipients.length <= 64 && c.recipients.every(value => commandID(value)) && new Set(c.recipients).size === c.recipients.length && unicodeText(c.reason) && byteLength(c.reason) <= 512 && (c.available && c.authorized || c.recipients.length === 0);
-      return { supported, enabled: supported && c.available && c.authorized };
-    }
-    const review = operation === REVIEW_OPERATION;
-    const c = review ? capabilities?.review_commands : capabilities?.commands;
-    const limits = review ? ["max_comment_bytes"] : ["max_text_bytes", "max_rationale_bytes"];
-    const supported = [PRACTICE_OPERATION, REVIEW_OPERATION].includes(operation) && closedObject(c, ["profile", "available", "authorized", "position_id", "recovery", ...limits, "reason"]) && c.profile === (review ? REVIEW_PROFILE : COMMAND_PROFILE) && typeof c.available === "boolean" && typeof c.authorized === "boolean" && c.position_id === "org" && c.recovery === "record_lifetime" && (review ? c.max_comment_bytes === "2048" : c.max_text_bytes === "8192" && c.max_rationale_bytes === "2048") && unicodeText(c.reason);
-    return { supported, enabled: supported && c.available && c.authorized };
+  // The head's slice for this session: the call names its describe line
+  // lists (null when the head forwards no commands). A command is offered
+  // exactly when its call is in the slice; the head gates and admits again.
+  function commandSlice(capabilities) {
+    return Array.isArray(capabilities?.command_slice) ? capabilities.command_slice : null;
   }
-  function sourceCommandProfile(capabilities, review) {
-    const c = review ? capabilities?.organization_review_commands : capabilities?.organization_commands;
-    const fields = review ? ["operation", "max_comment_bytes"] : ["module_path", "max_source_bytes", "max_rationale_bytes", "max_request_bytes"];
-    const supported = closedObject(c, ["profile", "available", "authorized", "position_id", "recovery", "command_origin", ...fields, "reason"]) && typeof c.available === "boolean" && typeof c.authorized === "boolean" && c.position_id === "org" && c.recovery === "record_lifetime" && ["", location.origin].includes(c.command_origin) && unicodeText(c.reason) && (review ? c.profile === SOURCE_REVIEW_PROFILE && c.operation === REVIEW_OPERATION && c.max_comment_bytes === "2048" : c.profile === "dna.organization.propose.v1" && c.module_path === "dna/org/main.hl" && c.max_source_bytes === "16384" && c.max_rationale_bytes === "2048" && c.max_request_bytes === "32768");
-    return { supported, enabled: supported && c.available && c.authorized && c.command_origin === location.origin };
+  function commandCapability(capabilities = state.capabilities, operation = PRACTICE_OPERATION) {
+    const slice = commandSlice(capabilities);
+    const supported = Boolean(slice) && Object.hasOwn(COMMAND_CALLS, operation) && commandID(capabilities.principal?.name) && ["local", "oidc"].includes(capabilities.principal.mode) && commandID(capabilities.application_id);
+    return { supported, allowed: state.phase === "ready" && supported && slice.includes(COMMAND_CALLS[operation]) };
   }
-  function commandCapability(capabilities = state.capabilities, operation = PRACTICE_OPERATION, sourceReview = false) {
-    const organization = operation === ORGANIZATION_OPERATION;
-    const profile = organization || sourceReview && operation === REVIEW_OPERATION ? sourceCommandProfile(capabilities, sourceReview) : commandProfile(capabilities, operation);
-    const writes = capabilities?.writes;
-    const consistent = commandID(capabilities?.principal?.name) && ["local", "oidc"].includes(capabilities.principal.mode) && commandID(capabilities.application_id) && typeof writes?.practice_propose === "boolean" && typeof writes.review_verdict === "boolean" && typeof capabilities.read_only === "boolean" && (!(writes.practice_propose || writes.review_verdict) || capabilities.read_only === false) && (!writes.practice_propose || commandProfile(capabilities, PRACTICE_OPERATION).enabled) && (!writes.review_verdict || commandProfile(capabilities, REVIEW_OPERATION).enabled);
-    const sourceConsistent = !(sourceReview || organization) || typeof writes?.organization_propose === "boolean" && typeof writes.organization_review_verdict === "boolean" && (!(writes.organization_propose || writes.organization_review_verdict) || capabilities.read_only === false) && (!writes.organization_propose || sourceCommandProfile(capabilities, false).enabled) && (!writes.organization_review_verdict || sourceCommandProfile(capabilities, true).enabled);
-    const taskConsistent = operation !== TASK_OPERATION || typeof writes?.task_reassign === "boolean" && (!writes.task_reassign || capabilities.read_only === false && commandProfile(capabilities, TASK_OPERATION).enabled);
-    const personConsistent = operation !== PERSON_OPERATION || typeof writes?.person_retire === "boolean" && (!writes.person_retire || capabilities.read_only === false && commandProfile(capabilities, PERSON_OPERATION).enabled);
-    const createConsistent = operation !== TASK_CREATE_OPERATION || typeof writes?.task_create === "boolean" && (!writes.task_create || capabilities.read_only === false && commandProfile(capabilities, TASK_CREATE_OPERATION).enabled);
-    const supported = profile.supported && consistent && sourceConsistent && taskConsistent && personConsistent && createConsistent;
-    return { supported, allowed: state.phase === "ready" && supported && profile.enabled && writes[operation === TASK_CREATE_OPERATION ? "task_create" : operation === PERSON_OPERATION ? "person_retire" : operation === TASK_OPERATION ? "task_reassign" : organization ? "organization_propose" : sourceReview ? "organization_review_verdict" : operation === REVIEW_OPERATION ? "review_verdict" : "practice_propose"] === true };
+  function reviewCapability() {
+    return commandCapability(state.capabilities, REVIEW_OPERATION);
   }
-  function reviewCapability(review) {
-    return commandCapability(state.capabilities, REVIEW_OPERATION, review?.organization_source === true);
-  }
+  // Recovery is a lookup by the saved request id, whatever the session may
+  // submit now.
   function recoveryCapability() {
-    return commandCapability(state.capabilities, intervention.metadata?.operation || PRACTICE_OPERATION, intervention.metadata?.source_review === true);
+    return { supported: commandSlice(state.capabilities)?.includes(COMMAND_LOOKUP) === true };
   }
   function commandScope() {
     const principal = state.capabilities?.principal;
@@ -263,7 +247,7 @@
     return p && practiceTextAvailable(p) && p.kind === "practice" && p.state === "ratified" && p.ratified === true && p.retired === false && p.declined === false && p.author === "org" && p.target === "org" && commandID(p.id) && p.id === p.digest;
   }
   function interventionReason(p) {
-    if (!commandCapability().supported) return "This connection does not provide the supported practice command profile. Practice reads remain available.";
+    if (!commandCapability().supported) return "This head forwards no record commands to this session. Practice reads remain available.";
     if (!commandCapability().allowed) return "Practice submission is unavailable for this connection or signed-in principal. Viewing an organization position does not grant authority.";
     if (intervention.blocked) return intervention.error;
     if (intervention.metadata) return "Check the saved request above before starting another proposal.";
@@ -271,12 +255,12 @@
     return "Propose an organization-wide replacement. The service checks your current authority; viewing a position does not grant it.";
   }
   function validDraft(draft) {
-    if (draft?.operation === TASK_CREATE_OPERATION) return commandID(draft.record_head) && draft.subject === draft.record_head && commandID(draft.target) && unicodeText(draft.outcome) && byteLength(draft.outcome) > 0 && byteLength(draft.outcome) <= 8192 && commandID(draft.to);
+    if (draft?.operation === TASK_CREATE_OPERATION) return commandID(draft.record_head) && draft.subject === draft.record_head && commandID(draft.target) && unicodeText(draft.outcome) && byteLength(draft.outcome) > 0 && byteLength(draft.outcome) <= COMMAND_BOUNDS.outcome && commandID(draft.to);
     if (draft?.operation === PERSON_OPERATION) return sourceDigest(draft.subject) && commandID(draft.target) && (draft.to === "" || commandID(draft.to)) && draft.target !== draft.to;
     if (draft?.operation === TASK_OPERATION) return sourceDigest(draft.subject) && commandID(draft.target) && commandID(draft.from) && commandID(draft.to) && draft.from !== draft.to;
-    if (draft?.operation === REVIEW_OPERATION) return typeof draft.verdict === "string" && Object.hasOwn(VERDICTS, draft.verdict) && unicodeText(draft.comment) && byteLength(draft.comment) <= 2048;
-    if (draft?.operation === ORGANIZATION_OPERATION) return organizationBase(draft.base) && draft.subject === draft.base.module_digest && draft.target === ORGANIZATION_MODULE && sourceDigest(draft.source_digest) && draft.source_digest !== draft.subject && unicodeText(draft.source_text) && byteLength(draft.source_text) > 0 && byteLength(draft.source_text) <= 16384 && unicodeText(draft.rationale) && byteLength(draft.rationale) > 0 && byteLength(draft.rationale) <= 2048;
-    return draft?.operation === PRACTICE_OPERATION && unicodeText(draft.text) && byteLength(draft.text) > 0 && byteLength(draft.text) <= 8192 && unicodeText(draft.rationale) && byteLength(draft.rationale) > 0 && byteLength(draft.rationale) <= 2048 && draft.text !== draft.predecessor;
+    if (draft?.operation === REVIEW_OPERATION) return typeof draft.verdict === "string" && Object.hasOwn(VERDICTS, draft.verdict) && unicodeText(draft.comment) && byteLength(draft.comment) <= COMMAND_BOUNDS.comment;
+    if (draft?.operation === ORGANIZATION_OPERATION) return organizationBase(draft.base) && draft.subject === draft.base.module_digest && draft.target === ORGANIZATION_MODULE && sourceDigest(draft.source_digest) && draft.source_digest !== draft.subject && unicodeText(draft.source_text) && byteLength(draft.source_text) > 0 && byteLength(draft.source_text) <= COMMAND_BOUNDS.source && unicodeText(draft.rationale) && byteLength(draft.rationale) > 0 && byteLength(draft.rationale) <= COMMAND_BOUNDS.rationale;
+    return draft?.operation === PRACTICE_OPERATION && unicodeText(draft.text) && byteLength(draft.text) > 0 && byteLength(draft.text) <= COMMAND_BOUNDS.text && unicodeText(draft.rationale) && byteLength(draft.rationale) > 0 && byteLength(draft.rationale) <= COMMAND_BOUNDS.rationale && draft.text !== draft.predecessor;
   }
   function beginIntervention(p) {
     if (!commandCapability().allowed || !eligiblePractice(p) || intervention.metadata || intervention.blocked) return;
@@ -463,8 +447,8 @@
     return { ...data, text: data.document, relationship: e };
   }
   function reviewInterventionReason(r) {
-    if (!reviewCapability(r).supported) return r?.organization_source ? "This connection does not provide the separate Organization decision profile. The exact source comparison remains available." : "This connection does not provide the supported Review command profile. Review reads remain available.";
-    if (!reviewCapability(r).allowed) return "Decision submission is unavailable for this connection or signed-in principal. Required authority is information, not a permission grant.";
+    if (!reviewCapability().supported) return r?.organization_source ? "This head forwards no record commands to this session. The exact source comparison remains available." : "This head forwards no record commands to this session. Review reads remain available.";
+    if (!reviewCapability().allowed) return "Decision submission is unavailable for this connection or signed-in principal. Required authority is information, not a permission grant.";
     if (intervention.blocked) return intervention.error;
     if (intervention.metadata) return "Check the saved request above and explicitly dismiss it after completion before preparing another decision.";
     if (state.reviewCandidateError) return state.reviewCandidateError;
@@ -476,16 +460,16 @@
     return "Decide on this exact pending candidate. The service rechecks current authority, independence, subject and pending state before recording a verdict.";
   }
   function currentDraftEligible(draft) {
-    if (!draft || !commandCapability(state.capabilities, draft.operation, draft.source_review === true).allowed) return false;
+    if (!draft || !commandCapability(state.capabilities, draft.operation).allowed) return false;
     if (draft.operation === TASK_CREATE_OPERATION) return state.route.view === "tasks" && state.source?.record_head === draft.record_head && state.app?.id === draft.target;
     if (draft.operation === ORGANIZATION_OPERATION) return state.route.view === "organization" && state.source?.record_head === draft.base.record_head && ["source_head", "dependency_source", "dependency_digest"].every(key => state.collection?.basis?.[key] === draft.base[key]) && organizationDraftController?.publicationMatches(draft.validation) === true;
     if (draft.operation === PERSON_OPERATION) return state.route.view === "tasks" && state.route.assignee === draft.target && state.person?.person === draft.target && state.person.subject_digest === draft.subject && state.person.state === "active" && state.person.authorized && (draft.to === "" ? state.person.tasks.length === 0 : state.person.recipients.includes(draft.to));
-    if (draft.operation === TASK_OPERATION) return state.route.view === "tasks" && state.detail?.id === draft.target && state.detail.assignment_digest === draft.subject && state.detail.assignee === draft.from && state.detail.state === "handed" && state.detail.reassignment_supported === true && state.capabilities.task_commands.recipients.includes(draft.to);
+    if (draft.operation === TASK_OPERATION) return state.route.view === "tasks" && state.detail?.id === draft.target && state.detail.assignment_digest === draft.subject && state.detail.assignee === draft.from && state.detail.state === "handed" && state.detail.reassignment_supported === true && state.taskRecipients.includes(draft.to);
     return draft.operation === REVIEW_OPERATION ? state.route.view === "reviews" && eligibleReview(state.detail) && Boolean(state.detail.organization_source) === Boolean(draft.source_review) && state.detail.id === draft.target && state.detail.subject_digest === draft.subject && state.reviewCandidate.text === draft.candidate : state.route.view === "practices" && eligiblePractice(state.detail) && state.detail.id === draft.target && state.detail.digest === draft.subject;
   }
   function organizationProposalAccess() {
     const capability = commandCapability(state.capabilities, ORGANIZATION_OPERATION);
-    const reason = !capability.supported ? "This connection does not provide the Organization publishing profile. Validation and export remain available." : !capability.allowed ? "Organization publishing is unavailable for this connection or signed-in principal." : intervention.blocked ? intervention.error : intervention.metadata ? "Recover or dismiss the saved request before starting another proposal." : "Submit the exact checked source for native verification and Review.";
+    const reason = !capability.supported ? "This head forwards no record commands to this session. Validation and export remain available." : !capability.allowed ? "Organization publishing is unavailable for this connection or signed-in principal." : intervention.blocked ? intervention.error : intervention.metadata ? "Recover or dismiss the saved request before starting another proposal." : "Submit the exact checked source for native verification and Review.";
     return { ...capability, allowed: capability.allowed && !intervention.blocked && !intervention.metadata, reason };
   }
   async function proposeOrganization(data, rationale) {
@@ -498,7 +482,7 @@
     return { submitted, error: submitted ? "" : error || "The source or signed-in context changed before the request could be reserved. Nothing was submitted." };
   }
   function beginReviewIntervention(r) {
-    if (!reviewCapability(r).allowed || !eligibleReview(r) || intervention.metadata || intervention.blocked) return;
+    if (!reviewCapability().allowed || !eligibleReview(r) || intervention.metadata || intervention.blocked) return;
     intervention.draft = { operation: REVIEW_OPERATION, subject: r.subject_digest, target: r.id, candidate: state.reviewCandidate.text, verdict: "", comment: "", ...(r.organization_source ? { source_review: true } : {}) };
     intervention.phase = "editing";
     intervention.error = "";
@@ -530,7 +514,7 @@
     const draft = intervention.draft;
     if (draft?.operation !== REVIEW_OPERATION || draft.target !== r.id || draft.subject !== r.subject_digest || !["editing", "reviewing"].includes(intervention.phase)) {
       const prepare = button("Prepare decision", () => beginReviewIntervention(r));
-      prepare.disabled = !reviewCapability(r).allowed || !eligibleReview(r) || Boolean(intervention.metadata) || intervention.blocked;
+      prepare.disabled = !reviewCapability().allowed || !eligibleReview(r) || Boolean(intervention.metadata) || intervention.blocked;
       body.append(append(node("div", "intervention-actions"), prepare));
       return append(panel, heading, body);
     }
@@ -631,81 +615,180 @@
     const refusals = ["invalid_command", "forbidden", "stale_subject", "organization_worktree_invalid", "organization_candidate_invalid", "organization_snapshot_unsupported", "organization_deployment_unsupported"];
     assert(o.application_state === "refused" ? refusals.includes(o.application_reason_code) : o.application_state === "failed" ? o.application_reason_code === "native_apply_failed" : o.application_reason_code === "");
   }
-  function validCommandReceipt(body, metadata, method, status, expectedVerdict = null, expectedTask = null) {
-    assert(closedObject(body, ["api_version", "source", "data"]) && body.api_version === "hale.v1");
-    validSource(body.source, metadata.application_id);
-    assert(decimal(body.source.record_revision));
-    const r = body.data;
+  function commandPath(appId) { return API + "/" + encodeURIComponent(appId) + "/commands"; }
+  // One exchange with the head's forwarding route: a line of the api wire
+  // POSTed under the command headers, or a lookup by request id.
+  async function commandExchange(appId, method, line, signal, query = "") {
+    const pending = new AbortController();
+    const cancel = () => pending.abort();
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
+    const timeout = setTimeout(cancel, COMMAND_TIMEOUT_MS);
+    try {
+      const response = await fetch(commandPath(appId) + query, { method, signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json", "X-Hale-Command": "1" } : {}) }, ...(method === "POST" ? { body: JSON.stringify(line) } : {}) });
+      let body = null;
+      try { body = await response.json(); } catch { body = null; }
+      return { status: response.status, body };
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", cancel);
+    }
+  }
+  const REFUSAL_STATUS = { unauthenticated: 401, unauthorized: 403, unknown: 404, over_bound: 503 };
+  // The binding's receipt line, as the head forwarded it for this session:
+  // its answer or its refusal, under the head's own caller marked as
+  // forwarded. The HTTP status is the line's.
+  function isReceiptLine(body) { return body !== null && typeof body === "object" && !Array.isArray(body) && Object.hasOwn(body, "request_id") && typeof body.ok === "boolean"; }
+  function validReceiptLine(body, status) {
+    const optional = ["id", "role"].filter(key => Object.hasOwn(body, key));
+    assert(closedObject(body, ["request_id", "ok", body.ok ? "value" : "refusal", "caller", ...optional]) && Number.isSafeInteger(body.request_id) && body.request_id >= 0);
+    const c = body.caller;
+    assert(closedObject(c, ["mode", "name", "uid", "gid", "pid", "via"]) && c.mode === "unix" && commandID(c.name) && [c.uid, c.gid, c.pid].every(Number.isSafeInteger) && c.via === "http-session");
+    assert(!Object.hasOwn(body, "role") || body.ok && commandID(body.role));
+    assert(!Object.hasOwn(body, "id"), "The head answered a line this page did not send.");
+    if (!body.ok) {
+      const r = body.refusal;
+      assert(closedObject(r, ["kind", "reason", ...(Object.hasOwn(r || {}, "role") ? ["role"] : [])]) && commandID(r.kind) && unicodeText(r.reason));
+    }
+    assert(status === (body.ok ? 200 : REFUSAL_STATUS[body.refusal.kind] || 400), "The forwarded receipt and its HTTP status disagree.");
+    return body;
+  }
+  // The slice the head's describe line gives this session: the call names
+  // it may send. Absent when the head forwards no commands (an OIDC session,
+  // a head without a socket); reads never depend on it.
+  async function readCommandSlice(appId, capabilities, signal) {
+    if (capabilities.api?.http !== commandPath(appId)) return null;
+    try {
+      const { status, body } = await commandExchange(appId, "POST", { describe: true }, signal);
+      if (!isReceiptLine(body)) return null;
+      validReceiptLine(body, status);
+      if (!body.ok) return null;
+      const commands = body.value?.commands;
+      assert(Array.isArray(commands) && commands.every(entry => entry !== null && typeof entry === "object" && commandID(entry.name)));
+      return commands.map(entry => entry.name);
+    } catch (error) {
+      if (error.name === "AbortError" && signal.aborted) throw error;
+      return null;
+    }
+  }
+  const RECEIPT_TEXT = ["command_id", "request_id", "application_id", "operation", "operation_version", "principal_mode", "principal_name", "position_id", "target_kind", "target_id", "subject_digest", "fingerprint", "state", "reason", "proposal_state", "verdict_value", "verdict_state", "candidate_digest", "review_id", "review_state", "review_outcome", "review_subject_digest", "activation_state", "activation_reason"];
+  // Every branch of the typed receipt is present; only the operation's own
+  // carries values.
+  const RECEIPT_BRANCHES = {
+    organization: [["proposal_state", "source_head", "source_digest", "mutation_id", "candidate_commit", "application_state", "application_reason_code", "restart_handoff_state"], []],
+    task: [["state", "from", "to", "event_id"], []],
+    person: [["state", "from", "to", "event_id"], ["transferred"]],
+    task_create: [["intent_id", "intent_state", "task_id", "event_id"], []],
+    attempt: [["state", "attempt_id", "work_id", "task_id", "performer_kind", "holder", "disposition", "reason", "event_id"], ["token", "until"]]
+  };
+  function typedObject(value, text, integers) {
+    return closedObject(value, [...text, ...integers]) && text.every(key => unicodeText(value[key])) && integers.every(key => Number.isSafeInteger(value[key]));
+  }
+  // The CommandReply around the receipt: the provider's answer and the
+  // Record basis it was captured at.
+  function validCommandReply(value) {
+    assert(closedObject(value, ["ok", "code", "application_id", "head", "revision", "receipt"]) && typeof value.ok === "boolean" && unicodeText(value.code) && unicodeText(value.application_id) && unicodeText(value.head) && Number.isSafeInteger(value.revision) && value.revision >= 0);
+    const r = value.receipt;
+    assert(closedObject(r, [...RECEIPT_TEXT, ...Object.keys(RECEIPT_BRANCHES)]) && RECEIPT_TEXT.every(key => unicodeText(r[key])));
+    for (const [branch, [text, integers]] of Object.entries(RECEIPT_BRANCHES)) assert(typedObject(r[branch], text, integers));
+    return value;
+  }
+  // The receipt in the face's own terms: the flat typed fields grouped the
+  // way the recovery panel presents them.
+  function receiptView(r) {
+    return {
+      command_id: r.command_id, request_id: r.request_id, application_id: r.application_id, operation: r.operation, operation_version: r.operation_version,
+      principal: { mode: r.principal_mode, name: r.principal_name }, context: { application_id: r.application_id, position_id: r.position_id },
+      target: { application_id: r.application_id, kind: r.target_kind, id: r.target_id }, subject_digest: r.subject_digest, fingerprint: r.fingerprint, state: r.state, reason: r.reason,
+      proposal: { state: r.proposal_state, candidate_digest: r.candidate_digest, review_id: r.review_id }, verdict: { value: r.verdict_value, state: r.verdict_state },
+      review: { state: r.review_state, outcome: r.review_outcome, subject_digest: r.review_subject_digest }, activation: { state: r.activation_state, reason: r.activation_reason },
+      organization: { ...r.organization }, task: { ...r.task }, task_create: { ...r.task_create },
+      person: { ...r.person, transferred: r.person.transferred >= 0 ? String(r.person.transferred) : "" }
+    };
+  }
+  function validCommandReceipt(reply, metadata, method, expectedVerdict = null, expectedTask = null) {
+    assert(reply.ok && reply.application_id === metadata.application_id && commandID(reply.head) && reply.revision >= 1);
+    const r = receiptView(reply.receipt);
     const isVerdict = metadata.operation === REVIEW_OPERATION;
     const isOrganization = metadata.operation === ORGANIZATION_OPERATION;
     const isTask = metadata.operation === TASK_OPERATION;
     const isPerson = metadata.operation === PERSON_OPERATION;
     const isCreate = metadata.operation === TASK_CREATE_OPERATION;
-    assert(closedObject(r, ["command_id", "request_id", "application_id", "operation", "operation_version", "principal", "context", "target", "subject_digest", "fingerprint", "state", "reason", isCreate ? "task_create" : isPerson ? "person" : isTask ? "task" : isOrganization ? "organization" : isVerdict ? "verdict" : "proposal", "review", "activation"]));
     assert(commandID(r.command_id) && commandID(r.fingerprint) && r.request_id === metadata.request_id && r.application_id === metadata.application_id && r.operation === metadata.operation && r.operation_version === metadata.operation_version);
-    assert(closedObject(r.principal, ["mode", "name"]) && r.principal.mode === metadata.principal.mode && r.principal.name === metadata.principal.name);
-    assert(closedObject(r.context, ["application_id", "position_id"]) && r.context.application_id === metadata.application_id && r.context.position_id === metadata.position_id);
-    assert(closedObject(r.target, ["application_id", "kind", "id"]) && r.target.application_id === metadata.application_id && r.target.kind === metadata.target_kind && r.target.id === metadata.target_id && r.subject_digest === metadata.subject_digest);
-    assert(["recorded", "admitted", "running", "succeeded", "refused", "failed", "outcome_unknown"].includes(r.state) && unicodeText(r.reason));
+    assert(r.principal.mode === metadata.principal.mode && r.principal.name === metadata.principal.name);
+    assert(r.context.position_id === metadata.position_id);
+    assert(r.target.kind === metadata.target_kind && r.target.id === metadata.target_id && r.subject_digest === metadata.subject_digest);
+    assert(["recorded", "admitted", "running", "succeeded", "refused", "failed", "outcome_unknown"].includes(r.state));
     if (isPerson) {
-      assert(closedObject(r.person, ["state", "from", "to", "event_id", "transferred"]) && r.person.from === metadata.target_id && (r.person.to === "" || commandID(r.person.to)) && r.person.to !== r.person.from);
+      assert(r.person.from === metadata.target_id && (r.person.to === "" || commandID(r.person.to)) && r.person.to !== r.person.from);
       assert(r.person.state === "applied" ? r.state === "succeeded" && sourceCommit(r.person.event_id) && decimal(r.person.transferred) && BigInt(r.person.transferred) <= 32n && (r.person.transferred === "0" || r.person.to !== "") : r.person.state === "unknown" && r.state === "outcome_unknown" && r.person.event_id === "" && r.person.transferred === "");
       assert(method !== "POST" || expectedTask && r.person.from === expectedTask.from && r.person.to === expectedTask.to);
     } else if (isTask) {
-      assert(closedObject(r.task, ["state", "from", "to", "event_id"]) && commandID(r.task.from) && commandID(r.task.to) && r.task.from !== r.task.to);
+      assert(commandID(r.task.from) && commandID(r.task.to) && r.task.from !== r.task.to);
       assert(r.task.state === "applied" ? r.state === "succeeded" && sourceCommit(r.task.event_id) : r.task.state === "unknown" && r.state === "outcome_unknown" && r.task.event_id === "");
       assert(method !== "POST" || expectedTask && r.task.from === expectedTask.from && r.task.to === expectedTask.to);
     } else if (isCreate) {
       const t = r.task_create;
-      assert(closedObject(t, ["intent_id", "intent_state", "task_id", "event_id"]) && ["requested", "offered", "refused", "born", "unknown"].includes(t.intent_state));
+      assert(["requested", "offered", "refused", "born", "unknown"].includes(t.intent_state));
       assert(t.intent_state === "unknown" ? r.state === "outcome_unknown" && t.intent_id === "" && t.task_id === "" && t.event_id === "" : r.state === "succeeded" && /^i[0-9a-f]{1,16}$/.test(t.intent_id) && sourceCommit(t.event_id) && (t.intent_state === "born" ? commandID(t.task_id) : t.task_id === ""));
     } else if (isOrganization) validOrganizationReceipt(r, metadata);
     else if (isVerdict) {
-      assert(closedObject(r.verdict, ["value", "state"]) && typeof r.verdict.value === "string" && Object.hasOwn(VERDICTS, r.verdict.value) && ["pending", "accepted", "refused", "unknown"].includes(r.verdict.state));
+      assert(Object.hasOwn(VERDICTS, r.verdict.value) && ["pending", "accepted", "refused", "unknown"].includes(r.verdict.state));
       assert(method !== "POST" || r.verdict.value === expectedVerdict);
       assert(r.state !== "succeeded" || r.verdict.state === "accepted");
       assert(r.state !== "refused" || r.verdict.state === "refused");
     } else {
-      assert(closedObject(r.proposal, ["state", "candidate_digest", "review_id"]) && ["pending", "created", "refused", "unknown"].includes(r.proposal.state));
+      assert(["pending", "created", "refused", "unknown"].includes(r.proposal.state));
       assert([r.proposal.candidate_digest, r.proposal.review_id].every((id) => id === "" || commandID(id)));
       assert(r.proposal.state !== "created" || (commandID(r.proposal.candidate_digest) && commandID(r.proposal.review_id)));
       assert(r.state !== "succeeded" || r.proposal.state === "created");
       assert(r.state !== "refused" || r.proposal.state === "refused");
     }
-    assert(closedObject(r.review, ["state", "outcome", "subject_digest"]) && ["unavailable", "pending", "settled"].includes(r.review.state) && ["", "approve", "reject", "revise", "abstain"].includes(r.review.outcome));
+    assert(["unavailable", "pending", "settled"].includes(r.review.state) && ["", "approve", "reject", "revise", "abstain"].includes(r.review.outcome));
     const exactSubject = isTask || isPerson || isCreate ? "" : isVerdict ? metadata.subject_digest : isOrganization ? r.organization.candidate_commit : r.proposal.candidate_digest;
     const created = !isTask && !isPerson && !isCreate && (isVerdict || (isOrganization ? r.organization.proposal_state === "created" : r.proposal.state === "created"));
     assert(r.review.state === "unavailable" ? r.review.outcome === "" && r.review.subject_digest === "" : created && r.review.subject_digest === exactSubject && (r.review.state === "pending" ? r.review.outcome === "" : r.review.outcome !== ""));
-    assert(closedObject(r.activation, ["state", "reason"]) && ["unknown", "pending", "adopted", "refused"].includes(r.activation.state) && unicodeText(r.activation.reason));
+    assert(["unknown", "pending", "adopted", "refused"].includes(r.activation.state));
     assert(!(metadata.source_review === true || isOrganization || isTask || isPerson || isCreate) || r.activation.state === "unknown" && r.activation.reason === "");
     assert(!(isTask || isPerson || isCreate) || r.review.state === "unavailable");
     assert(r.activation.state !== "adopted" || (created && r.review.state === "settled" && r.review.outcome === "approve"));
-    assert(method === "GET" ? status === 200 : status === (COMMAND_TERMINAL.has(r.state) ? 200 : 202));
     return r;
   }
+  // What a provider's refusal means to the saved request: the status the
+  // HTTP route used to answer it with.
+  const REPLY_STATUS = { unauthenticated: 401, forbidden: 403, command_not_found: 404, commands_unavailable: 503, commands_unsupported: 503, command_context_changed: 409, stale_subject: 409, request_conflict: 409 };
   async function commandRequest(method, metadata, payload, signal) {
-    const pending = new AbortController();
-    const cancelCommand = () => pending.abort();
-    signal.addEventListener("abort", cancelCommand, { once: true });
-    if (signal.aborted) cancelCommand();
-    const timeout = setTimeout(() => pending.abort(), READ_TIMEOUT_MS);
-    const path = API + "/" + encodeURIComponent(metadata.application_id) + "/commands" + (method === "GET" ? "?" + new URLSearchParams({ request_id: metadata.request_id }) : "");
-    try {
-      const response = await fetch(path, { method, signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json", "X-Hale-Command": "1" } : {}) }, ...(method === "POST" ? { body: JSON.stringify(payload) } : {}) });
-      if (response.status === 401) throw new ReadError(401, "unauthenticated", "Sign in again to recover this request.");
-      if (response.status === 409) {
-        const failure = await response.json();
-        if (closedObject(failure, ["api_version", "error"]) && failure.api_version === "hale.v1" && closedObject(failure.error, ["code", "message", "retryable"]) && failure.error.code === "command_context_changed" && typeof failure.error.message === "string" && typeof failure.error.retryable === "boolean") {
-          throw new ReadError(409, "command_context_changed", "The signed-in identity changed before submission.");
-        }
-      }
-      if (!response.ok) throw new ReadError(response.status, "command_unconfirmed", "The request outcome could not be confirmed.");
-      const body = await response.json();
-      return { receipt: validCommandReceipt(body, metadata, method, response.status, payload?.arguments?.verdict, payload?.operation === PERSON_OPERATION ? { from: payload.target.id, to: payload.arguments.to } : payload?.operation === TASK_OPERATION ? { from: payload.preconditions.assignee, to: payload.arguments.to } : null), source: body.source };
-    } finally {
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", cancelCommand);
+    const line = method === "POST" ? { call: COMMAND_CALLS[metadata.operation], payload } : null;
+    const query = method === "GET" ? "?" + new URLSearchParams({ request_id: metadata.request_id }) : "";
+    const { status, body } = await commandExchange(metadata.application_id, method, line, signal, query);
+    if (status === 401) throw new ReadError(401, "unauthenticated", "Sign in again to recover this request.");
+    // The route's own answer, not the binding's: no socket, or a request the
+    // head would not forward.
+    if (!isReceiptLine(body)) {
+      const code = closedObject(body, ["api_version", "error"]) && body.api_version === "hale.v1" && commandID(body.error?.code) ? body.error.code : "command_unconfirmed";
+      throw new ReadError(status >= 400 ? status : 502, code, "The request outcome could not be confirmed.");
     }
+    validReceiptLine(body, status);
+    // A call outside this caller's slice is not theirs to send, gate or no gate.
+    if (!body.ok) throw new ReadError(["unknown", "unauthorized"].includes(body.refusal.kind) ? 403 : REFUSAL_STATUS[body.refusal.kind] || 400, body.refusal.kind === "unauthenticated" ? "unauthenticated" : "command_unconfirmed", "The request outcome could not be confirmed.");
+    const reply = validCommandReply(body.value);
+    if (!reply.ok) {
+      if (reply.code === "command_context_changed") throw new ReadError(409, "command_context_changed", "The signed-in identity changed before submission.");
+      throw new ReadError(REPLY_STATUS[reply.code] || 400, reply.code || "command_unconfirmed", "The request outcome could not be confirmed.");
+    }
+    const expectedTask = metadata.operation === PERSON_OPERATION ? { from: payload?.person, to: payload?.to } : metadata.operation === TASK_OPERATION ? { from: payload?.assignee, to: payload?.to } : null;
+    return { receipt: validCommandReceipt(reply, metadata, method, payload?.verdict, expectedTask), source: { record_id: reply.application_id, record_head: reply.head, record_revision: String(reply.revision) } };
+  }
+  // The flat payload of a draft's call: its arguments and preconditions,
+  // under the request id saved before sending.
+  function commandPayload(draft, metadata) {
+    const request_id = metadata.request_id;
+    if (draft.operation === ORGANIZATION_OPERATION) return { request_id, ...metadata.base, source_text: draft.source_text, rationale: draft.rationale };
+    if (draft.operation === REVIEW_OPERATION) return { request_id, review_id: metadata.target_id, subject_digest: metadata.subject_digest, verdict: draft.verdict, comment: draft.comment };
+    if (draft.operation === TASK_OPERATION) return { request_id, task_id: metadata.target_id, assignment_digest: metadata.subject_digest, assignee: draft.from, to: draft.to };
+    if (draft.operation === PERSON_OPERATION) return { request_id, person: metadata.target_id, subject_digest: metadata.subject_digest, to: draft.to };
+    if (draft.operation === TASK_CREATE_OPERATION) return { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to };
+    return { request_id, subject_digest: metadata.subject_digest, text: draft.text, rationale: draft.rationale };
   }
   function commandStillCurrent(token, scope, signal) {
     return token === commandGeneration && !signal.aborted && scope === commandScope() && scope === intervention.scope;
@@ -794,11 +877,8 @@
         if (isPerson) { metadata.version = 6; metadata.target_kind = "dna.person"; }
         const isCreate = draft.operation === TASK_CREATE_OPERATION;
         if (isCreate) { metadata.version = 7; metadata.target_kind = "dna.record"; }
-        const payload = { request_id: metadata.request_id, operation: metadata.operation, operation_version: metadata.operation_version, context: { application_id: metadata.application_id, position_id: metadata.position_id }, target: { application_id: metadata.application_id, kind: metadata.target_kind, id: metadata.target_id }, preconditions: isOrganization ? { principal: { ...metadata.principal }, base: { ...metadata.base } } : { subject_digest: metadata.subject_digest, principal: { mode: metadata.principal.mode, name: metadata.principal.name }, ...(isVerdict ? { review_state: "pending" } : {}) }, arguments: isOrganization ? { source_text: draft.source_text, rationale: draft.rationale } : isVerdict ? { verdict: draft.verdict, comment: draft.comment } : { text: draft.text, rationale: draft.rationale } };
-        if (isTask) { payload.preconditions.assignee = draft.from; payload.arguments = { to: draft.to }; }
-        if (isPerson) payload.arguments = { to: draft.to };
-        if (isCreate) { payload.preconditions = { record_head: draft.record_head, principal: { mode: metadata.principal.mode, name: metadata.principal.name } }; payload.arguments = { outcome: draft.outcome, to: draft.to }; }
-        if (byteLength(JSON.stringify(payload)) > 32768) return { error: "The JSON-encoded request exceeds 32768 bytes. Shorten its text before submitting; nothing was sent or saved." };
+        const payload = commandPayload(draft, metadata);
+        if (byteLength(JSON.stringify({ call: COMMAND_CALLS[draft.operation], payload })) > COMMAND_BOUNDS.request) return { error: "The JSON-encoded request exceeds 32768 bytes. Shorten its text before submitting; nothing was sent or saved." };
         const serialized = JSON.stringify(metadata);
         localStorage.setItem(key, serialized);
         if (localStorage.getItem(key) !== serialized) throw new Error("recovery identity was not persisted");
@@ -991,7 +1071,7 @@
     const actions = append(node("div", "intervention-actions"), check);
     if (result && COMMAND_TERMINAL.has(result.receipt.state)) actions.append(button("Dismiss completed request", dismissCompletedRequest));
     body.append(actions, evidence);
-    if (!recoveryCapability().supported) body.append(node("p", "detail-note", "This connection does not currently advertise the matching recovery profile. The saved identity is retained."));
+    if (!recoveryCapability().supported) body.append(node("p", "detail-note", "This head does not currently offer command lookup to this session. The saved identity is retained."));
     if (result && intervention.error) body.append(node("p", "intervention-error", intervention.error));
     return append(panel, heading, body);
   }
@@ -1657,7 +1737,7 @@
     return append(panel, body);
   }
   function blankState(route) {
-    return { route, phase: "loading", apps: [], app: null, capabilities: null, workingContext: null, source: null, collection: null, detail: null, detailError: null, organizationBranch: null, organizationBranchError: null, reviewCandidate: null, reviewCandidateError: "", organizationStatus: null, organizationStatusError: "", organizationImpact: null, organizationImpactError: "", practiceContext: null, person: null, personError: "", relationships: null, bindings: null, error: null, notice: "", inspectedAt: null, head: headState };
+    return { route, phase: "loading", apps: [], app: null, capabilities: null, workingContext: null, source: null, collection: null, detail: null, detailError: null, organizationBranch: null, organizationBranchError: null, reviewCandidate: null, reviewCandidateError: "", organizationStatus: null, organizationStatusError: "", organizationImpact: null, organizationImpactError: "", practiceContext: null, person: null, personError: "", taskRecipients: [], relationships: null, bindings: null, error: null, notice: "", inspectedAt: null, head: headState };
   }
   function node(tag, className, text) {
     const el = document.createElement(tag);
@@ -2001,7 +2081,10 @@
       names.add(row.position); positions.push({ position: row.position, owner: row.owner });
     }
     positions.sort((a, b) => a.position.localeCompare(b.position));
-    return { available: true, positions, source: response.source, sourceHead: response.data.basis.source_head };
+    // The people the declared ownership names: candidates the face may offer,
+    // never a grant.
+    const members = [...new Set(response.data.ownership.memberships.flatMap(row => row.members))].filter(name => commandID(name));
+    return { available: true, positions, members, source: response.source, sourceHead: response.data.basis.source_head };
   }
   function requireWorkingContext(route, context) {
     if (route.locus && (!context?.available || !context.positions.some(row => row.position === route.locus))) {
@@ -2026,9 +2109,10 @@
     const capabilityResponse = await request(base + "/capabilities", signal);
     ensureCurrent(token, signal);
     validSource(capabilityResponse.source, app.id);
-    const capabilities = capabilityResponse.data;
     const workspace = WORKSPACES[route.view];
-    assert(capabilities.application_id === app.id && typeof capabilities.read_only === "boolean" && capabilities.principal && typeof capabilities.principal.name === "string" && ["local", "oidc"].includes(capabilities.principal.mode) && capabilities.reads);
+    assert(capabilityResponse.data.application_id === app.id && typeof capabilityResponse.data.read_only === "boolean" && capabilityResponse.data.principal && typeof capabilityResponse.data.principal.name === "string" && ["local", "oidc"].includes(capabilityResponse.data.principal.mode) && capabilityResponse.data.reads);
+    const capabilities = { ...capabilityResponse.data, command_slice: await readCommandSlice(app.id, capabilityResponse.data, signal) };
+    ensureCurrent(token, signal);
     route = { ...route, app: app.id };
     // Recovery needs this freshly authenticated identity, not a successful
     // domain collection. Never include a partial collection or its contents.
@@ -2225,7 +2309,38 @@
         personError = "The complete retirement plan is unavailable. No retirement can be prepared from this view.";
       }
     }
-    return { apps, app, capabilities, workingContext, source: collectionResponse.source, collection, person, personError, detail, detailError, organizationBranch, organizationBranchError, reviewCandidate, reviewCandidateError, organizationStatus, organizationStatusError, organizationImpact, organizationImpactError, route };
+    const taskRecipients = route.view === "tasks" && detail ? await readTaskRecipients(base, capabilities, collection, detail, person, collectionResponse.source, workingContext?.available ? workingContext.members : [], signal) : [];
+    ensureCurrent(token, signal);
+    return { apps, app, capabilities, workingContext, source: collectionResponse.source, collection, person, personError, taskRecipients, detail, detailError, organizationBranch, organizationBranchError, reviewCandidate, reviewCandidateError, organizationStatus, organizationStatusError, organizationImpact, organizationImpactError, route };
+  }
+  // Who a Task may be handed to next. The head's people read carries the
+  // eligible recipients when this session may retire the assignee; otherwise
+  // the picker offers the people this Tasks read records and the declared
+  // ownership names, and the head checks eligibility again when the
+  // reassignment arrives.
+  async function readTaskRecipients(base, capabilities, collection, detail, person, source, members, signal) {
+    if (detail.state !== "handed" || !commandID(detail.assignee) || !commandSlice(capabilities)?.includes(COMMAND_CALLS[TASK_OPERATION])) return [];
+    if (capabilities.reads.people === true) {
+      try {
+        let plan = person?.person === detail.assignee ? person : null;
+        if (!plan) {
+          const response = await request(base + "/dna/people?" + new URLSearchParams({ id: detail.assignee, snapshot: source.record_head }), signal);
+          validSource(response.source, capabilities.application_id);
+          assert(response.source.record_head === source.record_head && response.source.record_revision === source.record_revision);
+          plan = validPerson(response.data, response.source, detail.assignee);
+        }
+        if (plan.authorized && plan.recipients.length) return plan.recipients.filter(name => name !== detail.assignee);
+      } catch (error) {
+        if (error.name === "AbortError" || [401, 409].includes(error.status)) throw error;
+      }
+    }
+    const recorded = new Set(members);
+    for (const row of [...collection.items, detail]) {
+      recorded.add(row.assignee);
+      for (const event of Array.isArray(row.history) ? row.history : []) { recorded.add(event.from); recorded.add(event.to); }
+    }
+    recorded.delete(detail.assignee);
+    return [...recorded].filter(name => commandID(name)).slice(0, 64);
   }
   function destroyIndependent() {
     applicationController?.destroy();
@@ -2443,7 +2558,7 @@
     if (application) ui.principal.textContent = "Connecting to application";
     const practiceEnabled = !independent && commandCapability().allowed;
     const reviewEnabled = !independent && commandCapability(state.capabilities, REVIEW_OPERATION).allowed;
-    const sourceReviewEnabled = !independent && commandCapability(state.capabilities, REVIEW_OPERATION, true).allowed;
+    const sourceReviewEnabled = reviewEnabled;
     const organizationEnabled = !independent && commandCapability(state.capabilities, ORGANIZATION_OPERATION).allowed;
     const taskEnabled = !independent && commandCapability(state.capabilities, TASK_OPERATION).allowed;
     const personEnabled = !independent && commandCapability(state.capabilities, PERSON_OPERATION).allowed;
@@ -2775,7 +2890,7 @@
     evidence.append(facts); panel.append(actions, evidence); return panel;
   }
   function prepareTaskReassignment(item, selection) {
-    if (state.phase !== "ready" || state.route.view !== "tasks" || state.detail !== item || !commandCapability(state.capabilities, TASK_OPERATION).allowed || intervention.metadata || intervention.blocked || intervention.draft || !item.reassignment_supported || item.state !== "handed" || !commandID(item.assignee) || !commandID(selection?.to) || selection.to === item.assignee || !state.capabilities.task_commands.recipients.includes(selection.to)) throw new Error("Reload this Task and check the current authority before preparing a reassignment.");
+    if (state.phase !== "ready" || state.route.view !== "tasks" || state.detail !== item || !commandCapability(state.capabilities, TASK_OPERATION).allowed || intervention.metadata || intervention.blocked || intervention.draft || !item.reassignment_supported || item.state !== "handed" || !commandID(item.assignee) || !commandID(selection?.to) || selection.to === item.assignee || !state.taskRecipients.includes(selection.to)) throw new Error("Reload this Task and check the current authority before preparing a reassignment.");
     intervention.draft = { operation: TASK_OPERATION, target: item.id, subject: item.assignment_digest, from: item.assignee, to: selection.to };
     intervention.phase = "reviewing"; intervention.error = "";
     render(); $("task-reassignment-confirmation")?.focus();
@@ -2791,7 +2906,7 @@
     detail.append(window.FaceTaskAdministration.render(item, {
       inspectedAt: state.inspectedAt, historical: false,
       canReassign: capability.allowed && !intervention.metadata && !intervention.blocked && !intervention.draft && commandID(item.assignee),
-      recipients: capability.allowed ? state.capabilities.task_commands.recipients : [],
+      recipients: capability.allowed ? state.taskRecipients : [],
       onPrepareReassignment: selection => prepareTaskReassignment(item, selection), onRefresh: refresh
     }));
     const draft = intervention.draft;

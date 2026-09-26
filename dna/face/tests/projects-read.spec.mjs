@@ -1,12 +1,13 @@
 // Real plain Record API: no operator-machine head stands behind it, so the
 // shell's head probe answers 404 and the face continues unchanged.
 import { test, expect } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test('real Record API without a head: the shell continues to Practices, hides Projects and sends nothing but reads', async ({ page, service }) => {
   const before = await service.refs();
   const mutations = [], probes = [];
   page.on('request', request => {
-    if (request.method() !== 'GET') mutations.push(request.url());
+    if (isWrite(request)) mutations.push(request.url());
     if (new URL(request.url()).pathname === '/api/hale/v1/head') probes.push(request.url());
   });
   const probe = page.waitForResponse(response => new URL(response.url()).pathname === '/api/hale/v1/head');

@@ -2,6 +2,7 @@
 // receipts. These cases do not prove native submission, authority or durability.
 import { test, expect } from './harness.mjs';
 import { recoveryMetadata, scriptedCommands } from './command-fixture.mjs';
+import { commandReceipt, commandReply, isDescribe, receiptLine } from './command-wire.mjs';
 
 test.use({ commandSubject: true });
 
@@ -138,7 +139,7 @@ test('practice interaction: selecting receipt stages keeps approval distinct fro
   await stageButton(page, 'Adoption').click();
   await expectSelectedStage(page, 'Adoption');
   await expect(selectedOutcome(page)).toContainText(/pending|awaiting adoption/i);
-  const requestID = script.posts[0].body.request_id;
+  const requestID = script.posts[0].body.payload.request_id;
   const previousReads = script.gets.length;
 
   script.stage = 'refused';
@@ -166,29 +167,27 @@ test('practice interaction: an outcome_unknown receipt remains uncertain and ret
   await page.route('**/api/hale/v1/**/commands*', async route => {
     const request = route.request();
     const isPost = request.method() === 'POST';
+    // The slice still comes from the shared fixture.
+    if (isDescribe(request)) return route.fallback();
     if (isPost) {
       original = request.postDataJSON();
       posts.push(original);
     } else {
       gets.push(new URL(request.url()).searchParams.get('request_id'));
     }
+    const p = original.payload;
     await route.fulfill({
-      status: isPost ? 202 : 200,
+      status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        api_version: 'hale.v1', source: script.source,
-        data: {
-          command_id: `command/${original.request_id}`, request_id: original.request_id,
-          application_id: service.application, operation: original.operation, operation_version: '1',
-          principal: script.principal, context: original.context, target: original.target,
-          subject_digest: original.preconditions.subject_digest,
-          fingerprint: 'sha256:' + 'c'.repeat(64), state: 'outcome_unknown',
-          reason: 'The service cannot yet establish the outcome of this request.',
-          proposal: { state: 'unknown', candidate_digest: '', review_id: '' },
-          review: { state: 'unavailable', outcome: '', subject_digest: '' },
-          activation: { state: 'unknown', reason: '' },
-        },
-      }),
+      body: JSON.stringify(receiptLine(commandReply(commandReceipt({
+        command_id: `command/${p.request_id}`, request_id: p.request_id,
+        application_id: service.application, operation: 'dna.practice.propose', operation_version: '1',
+        principal_mode: script.principal.mode, principal_name: script.principal.name,
+        target_kind: 'dna.practice', target_id: p.subject_digest, subject_digest: p.subject_digest,
+        fingerprint: 'sha256:' + 'c'.repeat(64), state: 'outcome_unknown',
+        reason: 'The service cannot yet establish the outcome of this request.',
+        proposal_state: 'unknown',
+      }), script.source))),
     });
   });
   await prepareProposal(page, service, `${service.text}\nAn explicit additional requirement.`);
@@ -201,7 +200,7 @@ test('practice interaction: an outcome_unknown receipt remains uncertain and ret
   await expect(selectedOutcome(page)).toContainText(/unknown/i);
   await expect(recovery(page).getByRole('button', { name: 'Dismiss completed request', exact: true })).toHaveCount(0);
   const saved = (await recoveryMetadata(page))[0].value;
-  expect(saved.request_id).toBe(original.request_id);
+  expect(saved.request_id).toBe(original.payload.request_id);
 
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await expect.poll(() => gets.length).toBe(1);
@@ -259,7 +258,7 @@ test('practice interaction: recovery follows its exact candidate and remains ava
   // the recorder counts the POST only after it has read what the page
   // saved, so the recovery region can show first (GH #1022)
   await expect.poll(() => script.posts.length).toBe(1);
-  const requestID = script.posts[0].body.request_id;
+  const requestID = script.posts[0].body.payload.request_id;
 
   await recovery(page).getByRole('link', { name: 'Open proposal review', exact: true }).click();
   await expect(page.locator('.review-detail').getByRole('region', { name: 'Command recovery', exact: true })).toBeVisible();

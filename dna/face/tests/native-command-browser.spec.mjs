@@ -2,6 +2,7 @@
 // The lost-reply case drops only transport after a real native POST completed.
 import { test as base, expect } from '@playwright/test';
 import { nativeCommandEnvironmentPresent, startService } from './native-command-harness.mjs';
+import { isDescribe, isWrite, settle } from './command-wire.mjs';
 
 const test = base.extend({
   service: async ({}, use, testInfo) => {
@@ -19,7 +20,6 @@ const test = base.extend({
     expect(errors, 'No unhandled face JavaScript error').toEqual([]);
   },
 });
-test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!nativeCommandEnvironmentPresent(), 'Supply explicit HALE_NATIVE_COMMAND_API/BODY/RELAY binaries for real native browser acceptance.');
 test.setTimeout(75_000);
 
@@ -28,7 +28,7 @@ const intervention = page => page.getByRole('region', { name: 'Review interventi
 const stage = (page, name) => recovery(page).getByRole('list', { name: 'Request and outcome', exact: true }).getByRole('button', { name, exact: true });
 const postRequests = page => {
   const posts = [];
-  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/commands')) posts.push(request.postDataJSON()); });
+  page.on('request', request => { if (isWrite(request) && new URL(request.url()).pathname.endsWith('/commands')) posts.push(request.postDataJSON()); });
   return posts;
 };
 const metadata = page => page.evaluate(() => Object.entries(localStorage)
@@ -44,14 +44,14 @@ async function prepareProposal(page, service, text, rationale = 'Browser-operate
   expect(await page.locator('#proposal-comparison .comparison-after').textContent()).toBe(text);
 }
 async function send(page, service, label) {
-  const response = page.waitForResponse(result => new URL(result.url()).pathname === service.apiPath + '/commands' && result.request().method() === 'POST');
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === service.apiPath + '/commands' && isWrite(result.request()));
   await page.getByRole('button', { name: label, exact: true }).click();
   const result = await response;
-  expect([200, 202]).toContain(result.status());
-  const payload = await result.json();
-  expect(payload.source.record_id).toBe(service.application);
-  expect(payload.data.principal).toEqual(service.principal);
-  return { receipt: payload.data, command: result.request().postDataJSON() };
+  const settled = settle(result.status(), await result.json());
+  expect(settled.status).toBe(200); expect(settled.code).toBe('');
+  expect(settled.reply.application_id).toBe(service.application);
+  expect(settled.receipt.principal).toEqual(service.principal);
+  return { receipt: settled.receipt, command: result.request().postDataJSON().payload };
 }
 async function showOutcome(page, service, request, predicate) {
   const native = await service.waitCommand(request.receipt.request_id, predicate);
@@ -59,8 +59,9 @@ async function showOutcome(page, service, request, predicate) {
   const response = page.waitForResponse(result => result.request().method() === 'GET' && new URL(result.url()).searchParams.get('request_id') === request.receipt.request_id);
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   const result = await response;
-  expect(result.status()).toBe(200);
-  const receipt = (await result.json()).data;
+  const settled = settle(result.status(), await result.json());
+  expect(settled.status).toBe(200); expect(settled.code).toBe('');
+  const receipt = settled.receipt;
   expect(receipt.command_id).toBe(native.command_id);
   expect(receipt.fingerprint).toBe(native.fingerprint);
   expect(predicate(receipt)).toBe(true);
@@ -116,8 +117,8 @@ test('real native browser: propose, inspect the exact Review, approve and follow
   const posts = postRequests(page);
   const text = 'Collect the exact receipt.\nKeep <img src=x onerror="window.__nativeInjected=true"> literal — café 東京 🧭.\n';
   const proposal = await propose(page, service, text);
-  expect(proposal.command.preconditions.subject_digest).toBe(service.practice);
-  expect(proposal.command.arguments.text).toBe(text);
+  expect(proposal.command.subject_digest).toBe(service.practice);
+  expect(proposal.command.text).toBe(text);
   await expect(stage(page, 'Proposal')).toContainText('created');
   await expect(stage(page, 'Adoption')).toContainText('Unknown');
   await prepareDecision(page, service, proposal, { followLink: true });
@@ -125,9 +126,9 @@ test('real native browser: propose, inspect the exact Review, approve and follow
   await expect(intervention(page).locator('img')).toHaveCount(0);
   await intervention(page).screenshot({ path: testInfo.outputPath('native-exact-review.png') });
   const sent = await send(page, service, 'Submit decision');
-  expect(sent.command.target.id).toBe(proposal.receipt.proposal.review_id);
-  expect(sent.command.preconditions.subject_digest).toBe(proposal.receipt.proposal.candidate_digest);
-  expect(sent.command.target.id).not.toBe(sent.command.preconditions.subject_digest);
+  expect(sent.command.review_id).toBe(proposal.receipt.proposal.review_id);
+  expect(sent.command.subject_digest).toBe(proposal.receipt.proposal.candidate_digest);
+  expect(sent.command.review_id).not.toBe(sent.command.subject_digest);
   const decision = await showOutcome(page, service, sent, value => value.activation?.state === 'adopted');
   await expect(stage(page, 'This verdict')).toContainText('accepted');
   await expect(stage(page, 'Review settlement')).toContainText('Approved');
@@ -149,12 +150,13 @@ test('real native browser: a lost reply survives API/body restart and reload rec
   await service.pauseDelivery();
   let delivered;
   await page.route('**/commands', async route => {
-    if (route.request().method() !== 'POST') return route.continue();
+    if (route.request().method() !== 'POST' || isDescribe(route.request())) return route.continue();
     // This is transport fault injection after actual native admission. No
     // successful response or outcome is synthesized by the browser fixture.
     const response = await route.fetch({ maxRetries: 0 });
-    expect([200, 202]).toContain(response.status());
-    delivered = (await response.json()).data;
+    const settled = settle(response.status(), await response.json());
+    expect(settled.status).toBe(200); expect(settled.code).toBe('');
+    delivered = settled.receipt;
     await route.abort('failed');
   });
   await page.getByRole('button', { name: 'Submit proposal', exact: true }).click();

@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { seatRecord, unseatRecord } from './record-seats.mjs';
+import { settle, wireLine } from './command-wire.mjs';
 
 export const nativeTaskEnvironmentPresent = () => Boolean(process.env.HALE_NATIVE_TASK_API && process.env.HALE_NATIVE_TASK_SEED);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -39,6 +41,9 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   const seed = boundedNative(binaries.seed, [root, evidence, 'seed']);
   const seedOutput = run(seed.command, seed.args); fs.writeFileSync(path.join(evidence, 'seed.log'), seedOutput);
   assert(seedOutput.includes('READY actual native Task handoffs'));
+  // The actor holds the board: reassignment and retirement are the owner's
+  // gated commands on the head's socket, which the face reaches forwarded.
+  seatRecord(root, env, actor, ['board']);
   const fixture = JSON.parse(fs.readFileSync(path.join(evidence, 'task-fixture.json')));
   const application = fixture.application_id; let first;
   const authorityFile = path.join(evidence, 'authority.json'), taskFile = path.join(evidence, 'task-policy.json');
@@ -92,7 +97,11 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
     const initial = await read(prefix + "/dna/tasks?id=" + encodeURIComponent(fixture.first_id)); assert.equal(initial.status, 200, JSON.stringify(initial)); first = initial.json.data.items[0]; assert(first?.state === "handed");
     fs.writeFileSync(path.join(evidence, "task-response.json"), JSON.stringify(initial.json, null, 2)); exportEvidence();
     return { application, origin, root, evidence, prefix, task: first.id, initial: first, principal: { mode: 'local', name: actor }, capabilities, read,
-      post: command => send('POST', prefix + '/commands', command),
+      // One line of the head's wire (an envelope-shaped command is sent as
+      // its call), settled to the receipt or the refusal it earned.
+      post: async command => { const result = await send('POST', prefix + '/commands', command.call ? command : wireLine(command)); return { ...result, ...settle(result.status, result.json) }; },
+      lookup: async request_id => { const result = await read(prefix + '/commands?' + new URLSearchParams({ request_id })); return { ...result, ...settle(result.status, result.json) }; },
+      unseat: () => unseatRecord(root, env, actor, ['board']),
       command: (row, to, request_id) => ({ request_id, operation: 'dna.task.reassign', operation_version: '1', context: { application_id: application, position_id: 'org' }, target: { application_id: application, kind: 'dna.task', id: row.id }, preconditions: { subject_digest: row.assignment_digest, principal: { mode: 'local', name: actor }, assignee: row.assignee }, arguments: { to } }),
       current: async (id = first.id) => { const response = await read(prefix + '/dna/tasks?id=' + encodeURIComponent(id)); assert.equal(response.status, 200, JSON.stringify(response)); return response.json.data.items[0]; },
       url: () => origin + '/#/tasks?' + new URLSearchParams({ app: application, id: first.id }),

@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
+import { wireLine } from './command-wire.mjs';
 
 assert(nodeEnvironmentPresent(), 'Supply HALE_NATIVE_COMMAND_{API,BODY,RELAY} and HALE_DNA_MEMORY_DSN_OWNER.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
@@ -112,8 +113,8 @@ try {
       preconditions: { principal: service.principal, subject_digest: created.node.candidate_digest, review_state: 'pending' },
       arguments: { verdict: 'approve', comment: 'Approve exact café 🧭\r\ncontrol \u0001 evidence.' },
     };
-    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(verdict) });
-    assert([200, 202].includes(response.status), JSON.stringify(response));
+    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: headers(), body: JSON.stringify(wireLine(verdict)) });
+    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response));
     const decided = await service.waitCommand(requestId, receipt => receipt.verdict.state === 'accepted' && receipt.activation.state === 'adopted');
     adopted = await service.waitNode(command.request_id, receipt => receipt.node.activation_state === 'adopted');
     assert.equal(adopted.node.review_outcome, 'approve'); assert.equal(adopted.node.candidate_digest, created.node.candidate_digest);

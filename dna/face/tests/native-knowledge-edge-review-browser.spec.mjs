@@ -1,5 +1,6 @@
 import { test as base, expect } from '@playwright/test';
 import { startEdgeReviewService, edgeReviewEnvironmentPresent, edgeReviewGrant } from './native-knowledge-edge-review-harness.mjs';
+import { isWrite } from './command-wire.mjs';
 const test = base.extend({
   service: async ({}, use, testInfo) => {
     const service = await startEdgeReviewService();
@@ -9,8 +10,6 @@ const test = base.extend({
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!edgeReviewEnvironmentPresent(), 'Supply matching API, Body, relay and Knowledge service binaries.');
-// A test that decides a Review submits a record command (a verdict) over HTTP.
-const CUT = "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.";
 test.setTimeout(90_000);
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const map = page => page.getByRole('region', { name: 'Knowledge relationship map', exact: true });
@@ -58,9 +57,9 @@ async function decide(page, service, proposal, { verdict = 'approve', effect = p
   await decision(page).getByRole('radio', { name: verdict === 'approve' ? 'Approve' : 'Reject', exact: true }).check();
   await decision(page).getByRole('textbox', { name: 'Decision note', exact: true }).fill('Decide the exact directed tuple independently.');
   await decision(page).getByRole('button', { name: 'Review decision', exact: true }).click();
-  const pending = page.waitForResponse(r => new URL(r.url()).pathname === service.apiPath + '/commands' && r.request().method() === 'POST');
-  await decision(page).getByRole('button', { name: 'Submit decision', exact: true }).click(); const response = await pending; expect([200, 202]).toContain(response.status());
-  await service.waitCommand(response.request().postDataJSON().request_id, r => r.verdict.state === 'accepted'); await service.quiesce();
+  const pending = page.waitForResponse(r => new URL(r.url()).pathname === service.apiPath + '/commands' && isWrite(r.request()));
+  await decision(page).getByRole('button', { name: 'Submit decision', exact: true }).click(); const response = await pending; expect(response.status()).toBe(200);
+  await service.waitCommand(response.request().postDataJSON().payload.request_id, r => r.verdict.state === 'accepted'); await service.quiesce();
   await verdictReceipt(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await expect(verdictReceipt(page)).toContainText('Reported by relationship request');
   await verdictReceipt(page).getByRole('button', { name: 'Dismiss completed request', exact: true }).click(); await expect(verdictReceipt(page)).toHaveCount(0);
@@ -70,7 +69,7 @@ async function decide(page, service, proposal, { verdict = 'approve', effect = p
 async function openResult(page, service) { await service.quiesce(); await page.goto(service.url('knowledge', { id: service.practice })); }
 async function dismiss(page) { await receipt(page).getByRole('button', { name: 'Dismiss relationship request', exact: true }).click(); await expect(receipt(page)).toHaveCount(0); }
 
-test.skip('reviewed relationships: exact directed creation and selected removal require independent Reviews and preserve other tuples', { annotation: { type: 'skip', description: CUT } }, async ({ page, service }, testInfo) => {
+test('reviewed relationships: exact directed creation and selected removal require independent Reviews and preserve other tuples', async ({ page, service }, testInfo) => {
   const other = await service.createItem(), posts = trackPosts(page);
   const link = await propose(page, service, { other });
   expect(link.command.arguments).toEqual({ from_id: other, to_id: service.practice, rel: label, rationale });
@@ -108,12 +107,12 @@ test('reviewed relationships: lost reply recovers legacy metadata by GET after p
   expect(service.journal().rows.filter(row => row.kind === 'knowledge.edge.requested' && row.data?.request_id === admitted.command_id)).toHaveLength(1);
 });
 
-test.skip('reviewed relationships: rejected Review declines the effect without graph success', { annotation: { type: 'skip', description: CUT } }, async ({ page, service }) => {
+test('reviewed relationships: rejected Review declines the effect without graph success', async ({ page, service }) => {
   const proposal = await propose(page, service); await decide(page, service, proposal, { verdict: 'reject', effect: 'declined' }); await openResult(page, service);
   await expect(receipt(page).getByRole('button', { name: 'Relationship effect', exact: true })).toContainText('declined'); await expect(receipt(page)).not.toContainText('Observed in graph'); expect(await service.edges()).toEqual([]);
 });
 
-test.skip('reviewed relationships: changed exact tuple basis leaves approved Review and refused effect separate', { annotation: { type: 'skip', description: CUT } }, async ({ page, service }) => {
+test('reviewed relationships: changed exact tuple basis leaves approved Review and refused effect separate', async ({ page, service }) => {
   const first = await propose(page, service); await dismiss(page); const second = await propose(page, service);
   await decide(page, service, first); await decide(page, service, second, { effect: 'refused' }); await openResult(page, service);
   await expect(receipt(page).getByRole('button', { name: 'Review', exact: true })).toContainText('approve'); await expect(receipt(page).getByRole('button', { name: 'Relationship effect', exact: true })).toContainText('refused'); await expect(receipt(page)).not.toContainText('Observed in graph');

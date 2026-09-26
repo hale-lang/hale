@@ -1,5 +1,6 @@
 // Browser-boundary scripts over real native reads. No durable domain writes.
 import { errorBody } from './harness.mjs';
+import { UNGATED, commandReceipt, commandReply, describeLine, receiptLine, refusalLine, refusalStatus, refusedReply, routeError } from './command-wire.mjs';
 
 export const STORAGE_PREFIX = 'face.practice-recovery.v1:';
 export async function recoveryMetadata(page) {
@@ -13,34 +14,37 @@ export async function scriptedCommands(page, service, options = {}) {
     profile: true, available: true, authorized: true, principal: null,
     reviewProfile: false, reviewAvailable: true, reviewAuthorized: true,
     authLost: false, readsUnavailable: false, reviewsUnavailable: false,
-    source: null, posts: [], gets: [], savedBeforeSend: [], candidateReads: [],
+    source: null, posts: [], gets: [], describes: 0, savedBeforeSend: [], candidateReads: [],
     postMode: 'receipt', getMode: 'receipt', stage: 'recorded',
     verdictStage: 'recorded', corrupt: false, wrongChoice: false,
     ...options,
   };
-  const receipt = (request, principal = script.principal) => {
+  // The head's slice for the forwarded session: the ungated two, and a
+  // proposal or a verdict while the script seats its principal for it.
+  const slice = () => [...UNGATED,
+    ...(script.available && script.authorized ? ['PracticePropose'] : []),
+    ...(script.reviewProfile && script.reviewAvailable && script.reviewAuthorized ? ['ReviewVerdict'] : [])];
+  const receipt = (line, principal = script.principal) => {
+    const p = line.payload, verdict = line.call === 'ReviewVerdict';
     const data = {
-      command_id: `command/${request.request_id}`, request_id: request.request_id,
-      application_id: service.application, operation: request.operation, operation_version: '1',
-      principal: script.corrupt ? { mode: 'local', name: 'wrong-person' } : principal,
-      context: { application_id: service.application, position_id: 'org' },
-      target: request.target, subject_digest: request.preconditions.subject_digest,
-      fingerprint: 'sha256:' + 'c'.repeat(64), reason: script.corrupt ? 'WRONG ACTOR SECRET' : '',
+      command_id: `command/${p.request_id}`, request_id: p.request_id, application_id: service.application,
+      operation: verdict ? 'dna.review.verdict' : 'dna.practice.propose', operation_version: '1',
+      principal_mode: principal.mode, principal_name: script.corrupt ? 'wrong-person' : principal.name,
+      position_id: 'org', target_kind: verdict ? 'dna.review' : 'dna.practice', target_id: verdict ? p.review_id : p.subject_digest,
+      subject_digest: p.subject_digest, fingerprint: 'sha256:' + 'c'.repeat(64), reason: script.corrupt ? 'WRONG ACTOR SECRET' : '',
     };
-    if (request.operation === 'dna.review.verdict') {
+    if (verdict) {
       const stage = script.verdictStage;
       const refused = ['refused', 'refused_other_approved'].includes(stage);
       const accepted = !refused && stage !== 'recorded';
       const settled = ['settled', 'adopted', 'activation_refused', 'refused_other_approved'].includes(stage);
       Object.assign(data, {
-        state: refused ? 'refused' : accepted ? 'succeeded' : 'recorded',
-        verdict: { value: script.wrongChoice ? 'revise' : request.arguments.verdict,
-          state: refused ? 'refused' : accepted ? 'accepted' : 'pending' },
-        review: { state: settled ? 'settled' : 'pending',
-          outcome: settled ? stage === 'refused_other_approved' ? 'approve' : request.arguments.verdict : '',
-          subject_digest: request.preconditions.subject_digest },
-        activation: { state: ['adopted', 'refused_other_approved'].includes(stage) ? 'adopted' : stage === 'activation_refused' ? 'refused' : 'unknown',
-          reason: stage === 'activation_refused' ? 'The candidate could not replace its predecessor.' : '' },
+        state: refused ? 'refused' : accepted ? 'succeeded' : 'recorded', proposal_state: '',
+        verdict_value: script.wrongChoice ? 'revise' : p.verdict, verdict_state: refused ? 'refused' : accepted ? 'accepted' : 'pending',
+        review_state: settled ? 'settled' : 'pending', review_outcome: settled ? stage === 'refused_other_approved' ? 'approve' : p.verdict : '',
+        review_subject_digest: p.subject_digest,
+        activation_state: ['adopted', 'refused_other_approved'].includes(stage) ? 'adopted' : stage === 'activation_refused' ? 'refused' : 'unknown',
+        activation_reason: stage === 'activation_refused' ? 'The candidate could not replace its predecessor.' : '',
       });
       if (refused) data.reason = 'This command was refused; another decision may already exist.';
     } else {
@@ -48,16 +52,14 @@ export async function scriptedCommands(page, service, options = {}) {
       const settled = ['approved', 'adopted', 'refused'].includes(script.stage);
       const candidate = created ? script.proposalCandidate || 'sha256:' + 'b'.repeat(64) : '';
       Object.assign(data, {
-        state: created ? 'succeeded' : 'recorded',
-        proposal: { state: created ? 'created' : 'pending', candidate_digest: candidate,
-          review_id: created ? script.proposalReview || 'org/reviews/command/決定' : '' },
-        review: { state: settled ? 'settled' : created ? 'pending' : 'unavailable',
-          outcome: settled ? 'approve' : '', subject_digest: candidate },
-        activation: { state: script.stage === 'adopted' ? 'adopted' : script.stage === 'refused' ? 'refused' : created ? 'pending' : 'unknown',
-          reason: script.stage === 'refused' ? 'Another candidate replaced this predecessor.' : '' },
+        state: created ? 'succeeded' : 'recorded', proposal_state: created ? 'created' : 'pending', candidate_digest: candidate,
+        review_id: created ? script.proposalReview || 'org/reviews/command/決定' : '',
+        review_state: settled ? 'settled' : created ? 'pending' : 'unavailable', review_outcome: settled ? 'approve' : '', review_subject_digest: candidate,
+        activation_state: script.stage === 'adopted' ? 'adopted' : script.stage === 'refused' ? 'refused' : created ? 'pending' : 'unknown',
+        activation_reason: script.stage === 'refused' ? 'Another candidate replaced this predecessor.' : '',
       });
     }
-    return { api_version: 'hale.v1', source: script.source, data };
+    return receiptLine(commandReply(commandReceipt(data), script.source));
   };
   await page.route('**/api/hale/v1/**', async route => {
     const request = route.request();
@@ -70,22 +72,8 @@ export async function scriptedCommands(page, service, options = {}) {
       script.source = payload.source;
       script.principal ||= payload.data.principal;
       payload.data.principal = script.principal;
-      // The API no longer carries command profiles (GH #1104 piece 5), so
-      // the script supplies the whole write surface the face reads.
-      payload.data.writes ??= {};
-      payload.data.writes.practice_propose = script.available && script.authorized;
-      payload.data.writes.review_verdict = Boolean(script.reviewProfile || script.reviewWriteOnly) && script.reviewAvailable && script.reviewAuthorized;
-      payload.data.read_only = !(payload.data.writes.practice_propose || payload.data.writes.review_verdict);
-      if (script.profile) payload.data.commands = {
-        profile: 'dna.practice.propose.v1', available: script.available, authorized: script.authorized,
-        position_id: 'org', recovery: 'record_lifetime', max_text_bytes: '8192', max_rationale_bytes: '2048',
-        reason: script.authorized ? '' : 'Current principal cannot propose a practice revision.',
-      };
-      if (script.reviewProfile) payload.data.review_commands = {
-        profile: 'dna.review.verdict.v1', available: script.reviewAvailable, authorized: script.reviewAuthorized,
-        position_id: 'org', recovery: 'record_lifetime', max_comment_bytes: '2048',
-        reason: script.reviewAuthorized ? '' : 'Current principal cannot submit a Review verdict.',
-      };
+      // No forwarding route at all: the face offers no record command.
+      if (!script.profile) payload.data.api.http = '';
       return fulfill(200, payload);
     }
     if (script.readsUnavailable && url.pathname.endsWith('/dna/practices')) return fulfill(503, errorBody('source_unavailable', 'Practice reads unavailable'));
@@ -113,6 +101,7 @@ export async function scriptedCommands(page, service, options = {}) {
     if (!url.pathname.endsWith('/commands')) return route.continue();
     if (request.method() === 'POST') {
       const body = request.postDataJSON();
+      if (body.describe === true) { script.describes += 1; return fulfill(200, describeLine(slice())); }
       const principal = structuredClone(script.principal);
       // what the page saved before it sent, read from the page; only then
       // is the POST counted, so a test that waits on `posts` and then
@@ -121,15 +110,15 @@ export async function scriptedCommands(page, service, options = {}) {
       script.posts.push({ body, headers: request.headers() });
       if (script.waitForPost) await script.waitForPost;
       if (script.postMode === 'lost') return route.abort('failed');
-      if (script.postMode === 'stale') return fulfill(409, errorBody('stale_subject', 'The subject changed.'));
-      if (script.postMode === 'identity_changed') return fulfill(409, errorBody('command_context_changed', 'Authenticated identity changed.'));
-      const result = receipt(body, principal);
-      return fulfill(['succeeded', 'refused', 'failed'].includes(result.data.state) ? 200 : 202, result).catch(() => {});
+      if (script.postMode === 'stale') return fulfill(200, receiptLine(refusedReply('stale_subject')));
+      if (script.postMode === 'identity_changed') return fulfill(200, receiptLine(refusedReply('command_context_changed')));
+      if (!slice().includes(body.call)) return fulfill(refusalStatus('unknown'), refusalLine('unknown', body.call));
+      return fulfill(200, receipt(body, principal)).catch(() => {});
     }
     script.gets.push(url.searchParams.get('request_id'));
-    if (script.getMode === 'unavailable') return fulfill(503, errorBody('commands_unavailable', 'Receipt source unavailable'));
-    const original = script.posts.find(post => post.body.request_id === url.searchParams.get('request_id'));
-    if (script.getMode === 'missing' || !original) return fulfill(404, errorBody('command_not_found', 'No accepted request found'));
+    if (script.getMode === 'unavailable') return fulfill(503, routeError('commands_unavailable', 'the api socket did not answer; retain the request id for lookup'));
+    const original = script.posts.find(post => post.body.payload.request_id === url.searchParams.get('request_id'));
+    if (script.getMode === 'missing' || !original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
     return fulfill(200, receipt(original.body));
   });
   return script;

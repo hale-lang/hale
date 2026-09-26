@@ -458,6 +458,17 @@ locus Api {
     }
 }
 
+// The name the local session acts under: the person `dna.unix.member`
+// maps this process's uid to, else `fallback` ($USER). The forwarder
+// records a command under the same name, so a receipt matches the
+// session `/capabilities` names.
+fn local_person(root: String, fallback: String) -> String {
+    let roles = dna::RecordRoles { root: root };
+    let me = std::process::uid();
+    let person = roles.person(std::api::Principal { mode: "unix", name: "uid:" + to_string(me), uid: me, gid: -1, pid: std::process::pid() });
+    return if len(person) > 0 { person } else { fallback };
+}
+
 // The head's socket: one per record, under the user's runtime directory
 // (`$XDG_RUNTIME_DIR/hale/dna/<record id>.sock`), or under the record's
 // own `.hale/dna` when there is none — never a fixed path two projects
@@ -590,8 +601,10 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         eprintln("hale dna api: unsupported principal source; refusing local fallback");
         std::process::exit(2);
     }
-    let user = std::env::var("USER");
+    // The local session is the head's own uid: the person the record maps
+    // it to (what a forwarded command is recorded as), else $USER.
+    let user = local_person(root, std::env::var("USER"));
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local; ", command_label, ")");
-    Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, port: port, commands: Commands { root: root, roles: dna::RecordRoles { root: root }, provider: commands },
+    Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, port: port, commands: Commands { root: root, roles: dna::RecordRoles { root: root }, provider: commands, local_name: if len(user) > 0 { user } else { "local" } },
         handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
 }
