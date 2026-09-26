@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+### A param default's child is supervised by its holder wherever the holder is built (GH #1074)
+
+- **Fixed:** a locus built inside another locus's method (`let s = Sup
+  { };` in `App.run()`) sent its param-default child's failures to the
+  method's locus (App) or, with no handler there, to nobody ("no parent
+  handler"). The default's child now goes to the locus whose default it
+  is, as it already did for a locus built in `fn main` and for a child
+  written at the call site (#1035).
+
 ### A deliberate server shutdown is silent again (GH #1081)
 
 - **Fixed:** shutting a `std::http::Server` down on purpose printed

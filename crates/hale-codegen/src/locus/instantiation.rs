@@ -227,9 +227,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1035: a literal whose value a field of the literal
         // around it owns — `App { b: Boom { } }`, a placement entry's
         // instance, every branch of an `or` or `if` that field names —
-        // is supervised by that literal's locus. Anything else (a
-        // default's child, an argument, a binding) resolves as
-        // before: the method body or params-init loop it sits in.
+        // is supervised by that literal's locus.
+        //
+        // GH #1074: so is a param DEFAULT's child (`Owner::Field` with
+        // the declaring locus's own default text, `ExprId::DECLARED`, as
+        // its owner), by the locus whose params loop is building it —
+        // `params_init_self`. Left to `resolve_failure_route`'s fallback
+        // order it got `current_self` first: inside a method body that
+        // is the METHOD's locus, so `let s = Sup { };` in `App.run()`
+        // routed Sup's default child to App (or to nobody).
+        //
+        // Anything else (an argument, a binding, a temporary) resolves
+        // as before: the method body or params-init loop it sits in.
         let holder = self.field_holder.take();
         self.supervising_parent = match (&site_owner, holder) {
             (
@@ -239,6 +248,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (crate::ownership::Owner::Placement(_), Some((_, cx))) => {
                 Some((locus_name.to_string(), cx))
             }
+            (crate::ownership::Owner::Field { owner, .. }, None)
+                if *owner == crate::ownership::ExprId::DECLARED =>
+            {
+                self.params_init_self
+                    .clone()
+                    .map(|cx| (locus_name.to_string(), cx))
+            }
+            (crate::ownership::Owner::Placement(_), None) => self
+                .params_init_self
+                .clone()
+                .map(|cx| (locus_name.to_string(), cx)),
             _ => None,
         };
         // GH #253: high-water mark of the enclosing deferred-
