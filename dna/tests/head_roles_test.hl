@@ -1,0 +1,178 @@
+// dna/tests/head_roles_test.hl — the head is the binding, and the record
+// answers who holds which position (GH #1109, #1104 piece 5).
+//
+// `dna/api` carries an api entry on its main locus with
+// `dna::RecordRoles` as the membership source. The fixture builds the
+// head from a copy of the tree, gives it a record whose graph says ada
+// holds the board and maps this process's uid to ada, and drives the
+// socket: the description is served; the full description — a read
+// gated on `owner`, which the source answers as `position:board` — is
+// this caller's while the record says so, refused naming `owner` once a
+// `graph.retired` row takes the holds edge out (read fresh: the record
+// moved); `hale mcp --app` lists the tools the record lets this
+// principal call. The verbs that make those tools land on the head
+// under #946 / #1110; the binding and the source are what this proves.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stderr(self.child) or "");
+                return;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+locus Api {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+
+    fn connect(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 20s) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        return true;
+    }
+
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let mut i = 0;
+        while i < 50 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                i = i + 1;
+            } else {
+                self.buf = self.buf + chunk;
+            }
+        }
+        return "";
+    }
+}
+
+fn has(s: String, needle: String) -> Bool {
+    return std::str::contains(s, needle);
+}
+
+locus App {
+    params { repo: String = ""; }
+    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+        std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
+    }
+    fn holds(j: dna::GitJournal, position: String, holder: String) -> String {
+        let e = ops::GraphEdge { kind: "holds" };
+        e.member("position", ops::graph_node_id("position", position));
+        e.member("holder", holder);
+        self.append(j, "graph.edge", e.id(), e.body());
+        return e.id();
+    }
+    run() {
+        let hale = toolchain();
+        let me = std::str::trim(dna::run_tool("id\n-u").stdout);
+        let scratch = dna::scratch_root("head-roles");
+
+        // The head, built from a copy of the tree so the binary lands
+        // nowhere near the source.
+        let copied = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna\" \"$1/dna\" && rm -rf \"$1/dna/tests\"\nsh\n" + scratch + "\n" + source());
+        std::test::assert_eq_int(copied.code, 0, "the tree is copied: " + copied.stderr);
+        let built = dna::run_tool_timeout(600, hale + "\nbuild\n" + scratch + "/dna/api");
+        std::test::assert_eq_int(built.code, 0, "the head builds with its api entry: " + built.stderr);
+        let emitted = dna::run_tool_timeout(300, hale + "\ncheck\n--dump-api\n" + scratch + "/dna/api");
+        std::test::assert_eq_int(emitted.code, 0, "the head describes itself: " + emitted.stderr);
+        let description = std::str::trim(emitted.stdout);
+        std::test::assert(has(description, "\"app\":\"Head\""), "the description names the head: " + description);
+
+        // A record: ada holds the board; this uid is ada.
+        self.repo = scratch + "/rec";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git config --add dna.unix.member \"uid:$2=ada\"\nsh\n" + self.repo + "\n" + me);
+        std::test::assert_eq_int(made.code, 0, "a record of its own: " + made.stderr);
+        let j = dna::GitJournal { repo: self.repo };
+        self.append(j, "graph.node", ops::graph_node_id("position", "board"), ops::graph_node_body("position", "board", "", ""));
+        self.append(j, "graph.node", ops::graph_node_id("position", "api/dev"), ops::graph_node_body("position", "api/dev", "", ""));
+        let ada_board = self.holds(j, "board", "ada");
+        self.holds(j, "api/dev", "grace");
+
+        let sock = scratch + "/head.sock";
+        let port = dna::free_port(0);
+        let head = Proc { };
+        std::test::assert(head.start("env\nLOTUS_API=" + sock + "\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
+        let api = Api { };
+        std::test::assert(api.connect(sock), "connected to the head's socket");
+
+        let d = api.ask("{\"id\":1,\"describe\":true}");
+        std::test::assert(has(d, "\"ok\":true") && has(d, "\"app\":\"Head\""), "the head serves its description: " + d);
+        let full = api.ask("{\"id\":2,\"describe\":\"full\"}");
+        std::test::assert(has(full, "\"ok\":true"), "the board's holder reads the full description, by the record: " + full);
+        std::test::assert_eq_str(std::json::find_field_raw(full, "value"), description, "and it is the emitted document");
+        std::test::assert(has(full, ",\"role\":\"owner\"}"), "authorized as owner: " + full);
+
+        // The record moves: the holds edge is taken out, and the source
+        // reads it fresh — it asks the git record whether it moved at
+        // most once a second, so the answer changes within that bound.
+        self.append(j, "graph.retired", ada_board, "{}");
+        let mut gone = api.ask("{\"id\":3,\"describe\":\"full\"}");
+        let mut tries = 0;
+        while tries < 40 && !has(gone, "\"ok\":false") {
+            std::time::sleep(100ms);
+            gone = api.ask("{\"id\":3,\"describe\":\"full\"}");
+            tries = tries + 1;
+        }
+        std::test::assert(has(gone, "\"kind\":\"unauthorized\"") && has(gone, "\"role\":\"owner\""), "once the record no longer says so, the full description is refused: " + gone);
+        let still = api.ask("{\"id\":4,\"describe\":true}");
+        std::test::assert(has(still, "\"ok\":true"), "the slice is still served: " + still);
+
+        // hale mcp --app lists this principal's tools from the same slice.
+        let mcp = dna::run_tool_timeout(60, "sh\n-c\nprintf '%s\\n%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' | \"$1\" mcp --app \"$2\"\nsh\n" + hale + "\n" + sock);
+        std::test::assert_eq_int(mcp.code, 0, "hale mcp --app over the head: " + mcp.stderr);
+        std::test::assert(has(mcp.stdout, "\"tools\":[") || has(mcp.stdout, "\"tools\": ["), "the tool list is the slice's commands: " + mcp.stdout);
+
+        head.stop();
+        std::io::fs::unlink(sock) or discard;
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() {
+    App { };
+}

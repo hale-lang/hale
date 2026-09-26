@@ -1674,11 +1674,17 @@ main locus App {
 ```
 
 Nothing else in the source changes. The entry binds **every topic
-some locus subscribes** (a *command*), **every topic some locus
-publishes** (a *stream*), and **every `expose` member of the main
-locus or of a param-default child whose type appears once among
-main's params** (a *read*, named `member` on main and
-`param.member` on the child). A subscription by literal subject
+some locus of the entrypoint's own seed subscribes** (a *command*),
+**every topic such a locus publishes** (a *stream*), and **every
+`expose` member of the main locus or of a param-default child of the
+seed's own whose type appears once among main's params** (a *read*,
+named `member` on main and `param.member` on the child). A locus that
+came in through `import` is not part of the surface, however much of
+it the entrypoint composes (GH #1104 piece 5): a library's internal
+bus is not the application's API, and a head importing its core must
+not serve the core's topics as commands. An imported *topic* a seed's
+own locus subscribes or publishes is served as any other, under its
+qualified name. A subscription by literal subject
 (`subscribe "log.**" ...`) names no topic and is not part of the
 API; a command reaches the loci that subscribe the topic by name,
 not those hearing it through a parent topic. `hale run --api

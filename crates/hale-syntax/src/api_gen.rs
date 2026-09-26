@@ -341,7 +341,10 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     // every publisher of one topic agree, so the first is the one.
     let mut pubs: BTreeMap<String, Option<String>> = BTreeMap::new();
     for l in loci.values() {
-        if l.name.name.starts_with("__Api") {
+        // A library's loci are not the application's API (GH #1104
+        // piece 5): the head that imports its core must not serve the
+        // core's internal bus.
+        if l.name.name.starts_with("__Api") || l.imported {
             continue;
         }
         let fns: BTreeMap<&str, &crate::ast::FnDecl> = l
@@ -539,6 +542,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     }
     for (tn, params) in &param_types {
         let Some(l) = loci.get(tn) else { continue };
+        if l.imported {
+            continue;
+        }
         if params.len() != 1 {
             if l.members.iter().any(|m| matches!(m, LocusMember::Contract(_))) {
                 excluded.push(ApiExcluded {
