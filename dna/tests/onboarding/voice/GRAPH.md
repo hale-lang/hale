@@ -211,31 +211,44 @@ new migration" to `store.md`.
 ## The holes: what `init` should propose
 
 The graph lacks exactly what a delivery needs and the repository cannot
-imply. `init` should propose these and the Board ratify:
+imply. `init` proposes each of these on its own, one Board Review each,
+and the Board ratifies:
 
 - **Positions** under each process: `dev` (bound by the process's
   practices, writes) and `reviewer` (holds the contracts the process
-  serves, signs; never the same holder as `dev` for that process). A
-  `board` under `purpose`. An `operator` under each deployment. Deeper
-  substructure (core, library, integration) when a process grows.
-- **`reviews` edges** from each `meets`: the reviewer of a contract's
-  server signs changes to it; a change to a contract fans out to the
-  reviewers of every consumer; `board` where the contract is law.
-- **Operational roles** under deployments that no artifact implies:
-  support for a deployment's projects, account and quota management,
-  billing, on-call. Created empty, named by the Board.
-- **Work**: the five MVP deliverables, each an `unfold` of a process with
-  a done-when that is its gate: the store seed (`store.md`'s migrations
-  and transactions), `api`, `brain`, `node`, `ui`.
-- **Practices** proposed as advice, and ratified as law where the Board
-  chooses; the rest stay advice.
+  serves, signs; never the same holder as `dev` for that process — a
+  warning where one person holds every role, `dna.trust = local`, and
+  refused elsewhere). A `board` under `purpose`. An `operator` under each
+  deployment. Deeper substructure (core, library, integration) when a
+  process grows.
+- **`reviews` edges** from each `meets`: the reviewer of a process signs
+  every contract the process serves, and they come with that reviewer's
+  proposal. A change to a contract also fans out to the reviewers of
+  every consumer (routing, not an edge); `board` signs where the contract
+  is law (none is yet).
+- **Operational roles** under each deployment that no artifact implies,
+  proposed empty: `support` (for a deployment's projects), `accounts`
+  (account and quota management), `billing`, `on-call`. They are
+  positions like any other, shown in the org chart unfilled until the
+  Board names who holds them.
+- **Work**: one item per process, an `unfold` of it, done when its gate
+  passes: `api` (`ci/api`), `brain` (`ci/brain`), `node` (`ci/node`).
+  `postgres` and `nats` have no gate, so their work's done-when is to
+  define one.
+- **Practices**: the four items `DIRECTION.md` marks `derived`, proposed
+  as advice, and ratified as law where the Board chooses; the rest stay
+  advice.
+
+That is 35 proposals: 26 positions (the board, a dev and a reviewer under
+each of the five processes, and five under each of the three
+deployments), 5 work items and 4 practices.
 
 ## The two perspectives, as queries
 
 **The org chart**: nodes are `position`s and their holders; edges are
 `unfold` (which process or deployment a position is under) and `reviews`
-(who signs what). Rendered for voice once the holes are filled, each
-reviewer with the contracts its process serves:
+(who signs what). Rendered for voice once the proposals are ratified,
+each reviewer with the contracts its process serves:
 
 ```
 purpose
@@ -245,10 +258,13 @@ purpose
   api         dev, reviewer(openapi.yaml)
   brain       dev, reviewer(internal.yaml)
   node        dev, reviewer(node.yaml, protocol.yaml)
-  compose     operator
-  personal    operator
-  scaled-out  operator
+  compose     operator, support, accounts, billing, on-call
+  personal    operator, support, accounts, billing, on-call
+  scaled-out  operator, support, accounts, billing, on-call
 ```
+
+Every position here is unfilled; a holder shows in brackets once the
+Board names one (`dev [ada]`).
 
 **The process model**: nodes are `process`es; edges are `meets` (which
 contract, over which transport) and `runs` (which deployment). Every arrow
@@ -276,6 +292,6 @@ moves through `constrains` and may reshape either.
 `hale dna init` on this repository, at this commit, should yield: 1
 purpose, 17 axioms, 5 processes, 5 seeds, 6 contracts, 3 deployments (1
 built), 6 gates, 7 documents, 4 witnesses, 0 positions, 0 work; the edges
-above; and proposals for every hole listed. A later commit that adds a
+above; and the 35 proposals for the holes listed. A later commit that adds a
 contract, a seed or a decision changes those counts, and the diff between
 two ingests is the review.

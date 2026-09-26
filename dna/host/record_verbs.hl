@@ -143,10 +143,22 @@ fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer
     let g = ops::GraphIngest { root: root };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("graph-ingest: " + r.error); }
+    // GH #1091: the holes, proposed in the same seed as the graph
+    let holes = ops::graph_holes(g);
+    if len(holes.error) > 0 { return fail("graph-ingest: " + holes.error); }
+    let mut proposals = "";
+    let mut rest = holes.proposals;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let rows = hole_rows(root, rest[0..nl], "hale dna init");
+        rest = rest[(nl + 1)..len(rest)];
+        if len(rows) == 0 { return fail("graph-ingest: a hole's receipt could not be kept; nothing was seeded"); }
+        proposals = proposals + rows;
+    }
     let before = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
-    let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows, "graph-ingest", memory);
+    let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
     if !seeded.ok { return seeded; }
-    return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "\n");
+    return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n");
 }
 
 // ---- the toolchain's design, as proposals (GH #596 C) --------------------

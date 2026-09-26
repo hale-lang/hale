@@ -1,0 +1,244 @@
+// dna/operations/graph_holes.hl — the holes, proposed at record birth (GH
+// #1091).
+//
+// The graph an ingest reads lacks exactly what a delivery needs and the
+// repository cannot imply: who works where, who signs what, what is to be
+// delivered. `init` proposes each hole on its own, one Board Review each,
+// and the Board ratifies. A hole is a knowledge proposal whose receipt
+// document (`kind: graph`) carries the graph rows it would add, each
+// checked against the vocabulary (graph.hl) before it is proposed; the
+// existing path ratifies it (`knowledge.ratified`), and the projection
+// writes its rows into the graph (memory_tail.hl). The graph is the one
+// org chart: what the Board ratifies here is the org chart.
+//
+//   positions  — a `dev` and a `reviewer` under each process, the reviewer
+//                carrying a `reviews` edge to every contract the process
+//                serves; a `board` under the purpose; under each
+//                deployment an `operator` and the operational roles no
+//                artifact implies (`support`, `accounts`, `billing`,
+//                `on-call`), proposed empty;
+//   work       — one item per process, an `unfold` of it, done when the
+//                gate guarding its seed passes, or, with no gate, when one
+//                is defined;
+//   practices  — each item a document marks `derived`, `practice` or `law`,
+//                proposed as advice (graph_ingest.hl builds their receipts).
+//
+// Never the same holder as `dev` for a process's `reviewer`: the positions
+// are proposed empty, and the check is where a holder is proposed
+// (`hale dna hold`, dna/host/holes.hl).
+
+const HOLE_OPERATIONAL: String = "support accounts billing on-call";
+
+// A work item's node: its name, what it is, and what it is done when.
+fn graph_work_body(name: String, text: String, gate: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", "work");
+    b.string_field("name", name);
+    b.string_field("text", text);
+    b.string_field("done_when", gate);
+    b.end_object();
+    return b.result();
+}
+
+type HolesAnswer { proposals: String = ""; count: Int = 0; error: String = ""; }
+
+// One proposal being built: its graph rows (`<kind>\t<entity>\t<body>`
+// per line), checked as they are added.
+locus HoleDoc {
+    params {
+        name: String = "";
+        target: String = "";
+        text: String = "";
+        question: String = "";
+        rows: String = "";
+        error: String = "";
+    }
+    @unbounded
+    fn row(kind: String, entity: String, body: String) {
+        let g = if kind == "graph.node" { graph_node_row(entity, body) } else { graph_edge_row(entity, body) };
+        if !g.ok && len(self.error) == 0 { self.error = "the hole `" + self.name + "` would write an invalid " + kind + ": " + g.why; }
+        self.rows = self.rows + kind + "\t" + entity + "\t" + body + "\n";
+    }
+    fn node(kind: String, name: String, text: String) -> String {
+        let id = graph_node_id(kind, name);
+        self.row("graph.node", id, graph_node_body(kind, name, text, ""));
+        return id;
+    }
+    fn unfold(parent: String, child: String) {
+        let e = GraphEdge { kind: "unfold" };
+        e.member("parent", parent);
+        e.member("child", child);
+        self.row("graph.edge", e.id(), e.body());
+    }
+    // The receipt: what the Board ratifies, and what the projection writes.
+    @unbounded
+    fn document() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("author", "hale dna init");
+        b.string_field("kind", "graph");
+        b.string_field("name", self.name);
+        b.string_field("provenance", "proposed");
+        b.string_field("question", self.question);
+        b.begin_array_field("rows");
+        let mut rest = self.rows;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let t1 = std::str::index_of(line, "\t");
+            let after = line[(t1 + 1)..len(line)];
+            let t2 = std::str::index_of(after, "\t");
+            b.begin_object();
+            b.string_field("kind", line[0..t1]);
+            b.string_field("entity", after[0..t2]);
+            b.string_field("body", after[(t2 + 1)..len(after)]);
+            b.end_object();
+        }
+        b.end_array();
+        b.string_field("target", self.target);
+        b.string_field("text", self.text);
+        b.end_object();
+        return b.result();
+    }
+}
+
+// A proposal as the host proposes it: the receipt, the Review's question,
+// the group it is listed under, its kind, name and target, one JSON
+// object per line.
+fn hole_line(doc: String, question: String, group: String, kind: String, name: String, target: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("doc", doc);
+    b.string_field("question", question);
+    b.string_field("group", group);
+    b.string_field("kind", kind);
+    b.string_field("name", name);
+    b.string_field("target", target);
+    b.end_object();
+    return b.result() + "\n";
+}
+
+// The `<a>\t<b>` lines of `pairs` whose `<a>` is `key`: their `<b>`s, one
+// per line.
+@unbounded
+fn hole_seconds(pairs: String, key: String) -> String {
+    let mut out = "";
+    let mut rest = pairs;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::starts_with(line, key + "\t") { out = out + line[(len(key) + 1)..len(line)] + "\n"; }
+    }
+    return out;
+}
+
+// Every hole of the graph an ingest read, as proposals in the order the
+// org chart lists them: the board, each process's positions, each
+// deployment's, then the work, then the practices.
+@unbounded
+fn graph_holes(g: GraphIngest) -> HolesAnswer {
+    let mut out = HolesAnswer { };
+    let mut docs = "";
+    if len(g.purpose) > 0 {
+        let d = HoleDoc { name: "board", target: g.purpose, text: "The Board: whoever holds this organization's authority, and ratifies what it becomes." };
+        d.question = "ratify the position `board` under the purpose: it ratifies what this organization becomes";
+        d.unfold(g.purpose, d.node("position", "board", d.text));
+        if len(d.error) > 0 { return HolesAnswer { error: d.error }; }
+        docs = docs + hole_line(d.document(), d.question, "holes", "graph", d.name, d.target);
+        out.count = out.count + 1;
+    }
+    // a dev and a reviewer under each process, the reviewer signing every
+    // contract the process serves
+    let mut procs = g.processes;
+    while len(procs) > 1 {
+        procs = procs[1..len(procs)];
+        let nl = std::str::index_of(procs, "\n");
+        let p = procs[0..nl];
+        procs = procs[nl..len(procs)];
+        let process = "process:" + p;
+        let dev = HoleDoc { name: p + "/dev", target: process, text: "Writes " + p + ", bound by its practices." };
+        dev.question = "ratify the position `" + p + "/dev` under process " + p + ": it writes " + p;
+        dev.unfold(process, dev.node("position", p + "/dev", dev.text));
+        if len(dev.error) > 0 { return HolesAnswer { error: dev.error }; }
+        docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target);
+        let signs = hole_seconds(g.served, process);
+        let rev = HoleDoc { name: p + "/reviewer", target: process, text: "Signs changes to what " + p + " serves; never the same holder as " + p + "/dev." };
+        let reviewer = rev.node("position", p + "/reviewer", rev.text);
+        rev.unfold(process, reviewer);
+        let mut shown = "";
+        let mut rest = signs;
+        while len(rest) > 0 {
+            let n2 = std::str::index_of(rest, "\n");
+            let c = rest[0..n2];
+            rest = rest[(n2 + 1)..len(rest)];
+            let e = GraphEdge { kind: "reviews" };
+            e.member("position", reviewer);
+            e.member("subject", c);
+            rev.row("graph.edge", e.id(), e.body());
+            shown = shown + (if len(shown) > 0 { ", " } else { "" }) + show_name(c);
+        }
+        rev.question = "ratify the position `" + p + "/reviewer` under process " + p + (if len(shown) > 0 { ", signing " + shown } else { ", which serves no contract yet" });
+        if len(rev.error) > 0 { return HolesAnswer { error: rev.error }; }
+        docs = docs + hole_line(rev.document(), rev.question, "holes", "graph", rev.name, rev.target);
+        out.count = out.count + 2;
+    }
+    // an operator and the operational roles under each deployment, empty
+    let mut deps = g.deployments;
+    while len(deps) > 0 {
+        let nl = std::str::index_of(deps, "\n");
+        let deployment = deps[0..nl];
+        deps = deps[(nl + 1)..len(deps)];
+        let d = show_name(deployment);
+        let mut k = -1;
+        while k < 0 || len(dna::nth_word(HOLE_OPERATIONAL, k)) > 0 {
+            let role = if k < 0 { "operator" } else { dna::nth_word(HOLE_OPERATIONAL, k) };
+            let h = HoleDoc { name: d + "/" + role, target: deployment };
+            h.text = if k < 0 { "Runs " + d + "." } else { "The " + role + " of " + d + "; no artifact implies it, and the Board names who holds it." };
+            h.question = "ratify the position `" + h.name + "` under deployment " + d + (if k < 0 { ": it runs " + d } else { ", proposed empty: the Board names who holds it" });
+            h.unfold(deployment, h.node("position", h.name, h.text));
+            if len(h.error) > 0 { return HolesAnswer { error: h.error }; }
+            docs = docs + hole_line(h.document(), h.question, "holes", "graph", h.name, h.target);
+            out.count = out.count + 1;
+            k = k + 1;
+        }
+    }
+    // one work item per process, done when the gate guarding its seed passes
+    procs = g.processes;
+    while len(procs) > 1 {
+        procs = procs[1..len(procs)];
+        let nl = std::str::index_of(procs, "\n");
+        let p = procs[0..nl];
+        procs = procs[nl..len(procs)];
+        let process = "process:" + p;
+        let gate = dna::trim_nl(hole_seconds(g.guards, "seed:" + p));
+        let first = if std::str::contains(gate, "\n") { gate[0..std::str::index_of(gate, "\n")] } else { gate };
+        // a gate is shown by its whole name (`ci/api`), not its last segment
+        let shown = if len(first) > 5 { first[5..len(first)] } else { first };
+        let w = HoleDoc { name: p, target: process };
+        w.text = if len(first) > 0 { "Deliver " + p + "; done when " + shown + " passes." } else { "Deliver " + p + "; done when a gate is defined for it." };
+        w.question = "ratify the work `" + p + "`: " + (if len(first) > 0 { "done when " + shown + " passes" } else { p + " has no gate, so its done-when is to define one" });
+        let id = graph_node_id("work", p);
+        w.row("graph.node", id, graph_work_body(p, w.text, if len(first) > 0 { first } else { "" }));
+        w.unfold(process, id);
+        if len(w.error) > 0 { return HolesAnswer { error: w.error }; }
+        docs = docs + hole_line(w.document(), w.question, "holes", "graph", w.name, w.target);
+        out.count = out.count + 1;
+    }
+    // the practices the documents mark, as advice
+    let mut ps = g.practices;
+    while len(ps) > 0 {
+        let nl = std::str::index_of(ps, "\n");
+        let doc = ps[0..nl];
+        ps = ps[(nl + 1)..len(ps)];
+        let name = std::json::find_string_field(doc, "name");
+        let law = std::json::find_bool_field(doc, "law");
+        let question = "ratify the practice `" + name + "` (" + std::json::find_string_field(doc, "source") + ") " + (if law { "as law, as its document proposes" } else { "as advice" });
+        docs = docs + hole_line(doc, question, "practices", "practice", name, std::json::find_string_field(doc, "target"));
+        out.count = out.count + 1;
+    }
+    out.proposals = docs;
+    return out;
+}

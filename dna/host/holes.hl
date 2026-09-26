@@ -1,0 +1,153 @@
+// dna/host/holes.hl — holes as proposals (GH #1091).
+//
+// A hole is a knowledge proposal: its receipt (the document the Board
+// ratifies, carrying the graph rows it would add), a `knowledge.proposed`
+// row and a Review of its own under the Board's authority — the same rows
+// a practice is proposed with. `init` proposes every hole of a repository
+// in the same checked seed as the graph (graph_ingest_verb), so a
+// repository whose holes cannot be proposed leaves no record either.
+// `hale dna hold <position> <holder>` proposes who holds a position; never
+// the same holder as `dev` for a process's `reviewer`, which is a warning
+// on stderr under `dna.trust = local` — one person holds every role — and
+// refused elsewhere.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+// The rows that propose one hole, one JSON object per line as `seed_rows`
+// takes them; the receipt is kept first. "" when it could not be kept.
+@unbounded
+fn hole_rows(root: String, line: String, author: String) -> String {
+    let doc = std::json::find_string_field(line, "doc");
+    let raw = rec(root).keep(doc);
+    if len(raw) == 0 { return ""; }
+    let digest = "sha256:" + raw;
+    let review_id = "k:" + raw[0..12];
+    let kind = std::json::find_string_field(line, "kind");
+    let name = std::json::find_string_field(line, "name");
+    let target = std::json::find_string_field(line, "target");
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("digest", digest);
+    b.string_field("review_id", review_id);
+    b.string_field("kind", kind);
+    b.string_field("author", author);
+    b.string_field("target", target);
+    b.string_field("class", "initiative");
+    b.string_field("provenance", "proposed");
+    b.string_field("name", name);
+    b.string_field("supersedes", "");
+    b.end_object();
+    let q = std::json::Builder { };
+    q.begin_object();
+    q.string_field("question", std::json::find_string_field(line, "question"));
+    q.string_field("subject_digest", digest);
+    q.string_field("required_authority", "board");
+    q.string_field("author", author);
+    q.string_field("knowledge_digest", digest);
+    q.string_field("kind", kind);
+    q.string_field("target", target);
+    q.string_field("class", "initiative");
+    q.string_field("group", std::json::find_string_field(line, "group"));
+    q.string_field("name", name);
+    q.end_object();
+    return hole_row("knowledge.proposed", digest, b.result()) + hole_row("review.requested", "review:" + review_id, q.result());
+}
+
+@unbounded
+fn hole_row(kind: String, entity: String, body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.end_object();
+    return b.result() + "\n";
+}
+
+// ---- hale dna hold <position> <holder> -----------------------------------
+
+// What the record says of positions and holders: every position a graph
+// row or a proposal names, and every holds edge that is not declined —
+// `<position>\t<holder>` per line.
+type HeldState { positions: String = "\n"; holds: String = ""; }
+
+@unbounded
+fn held_state(root: String) -> HeldState {
+    let out = HeldState { };
+    let j = dna::GitJournal { repo: root };
+    let declined = dna::GitJournal { repo: root };
+    let mut refused = "\n";
+    let mut i = 0;
+    while i < declined.revision() {
+        let e = declined.read(i);
+        if e.kind == "knowledge.declined" || e.kind == "knowledge.refused" { refused = refused + e.entity + "\n"; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        let mut rows = "";
+        if e.kind == "graph.node" || e.kind == "graph.edge" { rows = hole_row(e.kind, e.entity, e.body); }
+        if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" && !std::str::contains(refused, "\n" + e.entity + "\n") {
+            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+            let doc = rec(root).body(raw).text;
+            let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
+            while !it.done {
+                rows = rows + hole_row(std::json::find_string_field(it.element, "kind"), std::json::find_string_field(it.element, "entity"), std::json::find_string_field(it.element, "body"));
+                it = std::json::array_next(it);
+            }
+        }
+        let mut rest = rows;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let row = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let entity = std::json::find_string_field(row, "entity");
+            if std::json::find_string_field(row, "kind") == "graph.node" && std::str::starts_with(entity, "position:") { out.positions = out.positions + entity + "\n"; }
+            if std::str::starts_with(entity, "holds:") {
+                let bar = std::str::index_of(entity, "|");
+                out.holds = out.holds + entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)] + "\n";
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The position a process's other seat is: `api/dev` for `api/reviewer`,
+// and the reverse; "" for any other position.
+fn hold_sibling(position: String) -> String {
+    if std::str::ends_with(position, "/dev") { return position[0..(len(position) - 4)] + "/reviewer"; }
+    if std::str::ends_with(position, "/reviewer") { return position[0..(len(position) - 9)] + "/dev"; }
+    return "";
+}
+
+fn hold_verb(root: String, name: String, holder: String, memory: dna::Memory) -> Answer {
+    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna hold <position> <holder>"); }
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    let position = if std::str::starts_with(name, "position:") { name } else { ops::graph_node_id("position", name) };
+    let st = held_state(root);
+    if !std::str::contains(st.positions, "\n" + position + "\n") { return fail("hold: `" + position + "` is no position the record states or proposes"); }
+    if std::str::contains("\n" + st.holds, "\n" + position + "\t" + holder + "\n") { return answer("hold: " + holder + " already holds " + position + ", or is proposed to\n"); }
+    let sibling = hold_sibling(position);
+    if len(sibling) > 0 && std::str::contains("\n" + st.holds, "\n" + sibling + "\t" + holder + "\n") {
+        let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
+        if trust_mode(root) != "local" { return fail("hold: refused: " + why + " (dna.trust = " + trust_mode(root) + ")"); }
+        eprintln("hale dna hold: warning: ", why, " — allowed under dna.trust = local, where one person holds every role");
+    }
+    let e = ops::GraphEdge { kind: "holds" };
+    e.member("position", position);
+    e.member("holder", holder);
+    let checked = ops::graph_edge_row(e.id(), e.body());
+    if !checked.ok { return fail("hold: " + checked.why); }
+    let d = ops::HoleDoc { name: name + " held by " + holder, target: position, text: holder + " holds " + name + "." };
+    d.question = "ratify " + holder + " holding the position `" + ops::show_name(position) + "`";
+    d.row("graph.edge", e.id(), e.body());
+    let rows = hole_rows(root, ops::hole_line(d.document(), d.question, "holds", "graph", d.name, d.target), "hale dna hold");
+    if len(rows) == 0 { return fail("hold: the receipt could not be kept"); }
+    let seeded = seed_rows(root, rows, "hold", memory);
+    if !seeded.ok { return seeded; }
+    return answer("proposed " + holder + " to hold " + position + ": a Board Review (`hale dna review` lists it under `holds`)\n");
+}

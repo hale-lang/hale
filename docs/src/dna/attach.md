@@ -145,6 +145,11 @@ reads it as written:
   | [`openapi.yaml`](./spec/openapi.yaml) | `api` | callers, `ui`, `node` | HTTP |
   ```
 
+What the repository cannot say but a delivery needs — who works where,
+who signs what, what is to be delivered — `init` proposes, each with a
+Board Review of its own (`hale dna review` lists them under `holes` and
+`practices`); see [Knowledge](./knowledge.md).
+
 What the conventions cannot take stops `init` with the reason before
 anything reaches the record: an axiom with no bold name, a table row
 that links no contract, a name in code the repository does not have, a

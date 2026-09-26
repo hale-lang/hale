@@ -176,7 +176,19 @@ is where the two perspectives meet, so a change to one shows up in both.
 
 There is one org chart, and it is this graph: its positions and who holds
 them. The organization's generated `dna/org` files and the owners map are
-renderings of it, never where a position is decided.
+renderings of it, never where a position is decided (deriving them is
+[#1123](https://github.com/hale-lang/hale/issues/1123)).
+
+Nobody writes the positions by hand. `init` proposes them, each with a
+Board Review of its own: a board, a dev and a reviewer for every process
+(the reviewer signing the contracts its process serves), an operator and
+the operational roles — support, accounts, billing, on-call — under every
+deployment, one work item per process done when its gate passes, and the
+practices your documents mark. Ratify them and they are the org chart.
+Propose who holds one with `hale dna hold <position> <holder>`; one
+person as both dev and reviewer of the same process is a warning while
+you work alone (`dna.trust = local`), and refused once the record is
+shared.
 
 Practices are not repeated there: a practice in the graph is the
 knowledge idea it already is — advice while proposed, law once the

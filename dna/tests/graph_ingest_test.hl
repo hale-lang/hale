@@ -1,8 +1,8 @@
 // dna/tests/graph_ingest_test.hl — `hale dna init` reads a repository into
 // the graph (GH #1090).
 //
-// The fixture is hale-lang/voice at 2b1cb565ffa4364c69a5db6204351a096b155eab
-// (hale-lang/voice#3), vendored whole under dna/tests/onboarding/voice and
+// The fixture is hale-lang/voice at 6ad244d28e4bf1089ade20aa66904a75da487d1f
+// (hale-lang/voice#4), vendored whole under dna/tests/onboarding/voice and
 // never fetched. Its GRAPH.md says what init should yield; this runs the
 // real `hale dna init` on a copy (a repository with no application at its
 // root, a seed per process) and reads the record back: the counts under
