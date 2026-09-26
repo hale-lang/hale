@@ -973,9 +973,10 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
                 let nl = std::str::index_of(rest, "\n");
                 let rid = rest[0..nl];
                 rest = rest[(nl + 1)..len(rest)];
-                let e = find_after(q, before, " review.settled review.refused ", rid);
+                let e = find_after(q, before, " review.settled review.refused review.signed ", rid);
                 if e.seq < 0 { still = still + rid + "\n"; }
                 else if e.kind == "review.settled" { out = out + "review " + rid + " settled: " + e.body + "\n"; }
+                else if e.kind == "review.signed" { out = out + "review " + rid + " signed by " + dna::native_json_string(e.body, "by") + "; it awaits " + dna::native_json_string(e.body, "awaiting") + "\n"; }
                 else { out = out + "review " + rid + " refused the verdict: " + e.body + "\n"; }
             }
             left = still;
@@ -1023,9 +1024,11 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, seed, "", memory);
-        let e = find_after(q, before, " review.settled review.refused ", id);
+        let e = find_after(q, before, " review.settled review.refused review.signed ", id);
         if e.seq >= 0 {
             if e.kind == "review.settled" { return answer("review " + id + " settled: " + e.body + "\n"); }
+            // GH #1089: a required position signed, and the Review awaits the rest
+            if e.kind == "review.signed" { return answer("review " + id + " signed by " + dna::native_json_string(e.body, "by") + "; it awaits " + dna::native_json_string(e.body, "awaiting") + "\n"); }
             return answer("review " + id + " refused the verdict: " + e.body + "\n");
         }
         if std::time::now() > deadline { return fail("wrote the verdict, but the organism journaled no answer for `" + id + "` in time"); }

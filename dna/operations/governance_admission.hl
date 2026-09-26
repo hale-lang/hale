@@ -476,9 +476,9 @@ locus GovernanceCommands {
                 let view = OrganizationProjection { }; let fields = GovernanceCommandCodec { };
                 let candidate = view.candidate(j, command.target_id, j.snapshot.text); let evidence = view.review(j, candidate, j.snapshot.text);
                 if !candidate.ok || candidate.candidate_commit != command.subject_digest || !evidence.ok || evidence.state != "pending" { return "stale_subject"; }
-                if context.principal_name == candidate.request.by || !dna::authority_satisfies(grant.authority, fields.string(candidate.review_body, "required_authority")) { return "forbidden"; }
-                let approvers = fields.string(candidate.review_body, "approvers");
-                if approvers != "" && dna::approver_owner(approvers, context.principal_name) == "" { return "forbidden"; }
+                if context.principal_name == candidate.request.by { return "forbidden"; }
+                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, fields.string(candidate.review_body, "required_authority"), fields.string(candidate.review_body, "approvers"));
+                if len(standing) > 0 { return standing; }
                 let mut n = 0;
                 while n < j.revision() {
                     let decided = j.read(n);
@@ -501,7 +501,9 @@ locus GovernanceCommands {
                     if e.kind == "review.command_decided" && wire.string(e.body, "review_id") == command.target_id && wire.string(e.body, "subject_digest") == command.subject_digest && std::json::find_bool_field(e.body, "accepted") && std::json::find_bool_field(e.body, "settled") { return "stale_subject"; }
                     i = i + 1;
                 }
-                if context.principal_name == edge.request.by || !dna::authority_satisfies(grant.authority, row.required_authority) { return "forbidden"; }
+                if context.principal_name == edge.request.by { return "forbidden"; }
+                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, row.required_authority, "");
+                if len(standing) > 0 { return standing; }
                 return "";
             }
             if row.knowledge_binding_digest != "" || row.binding_request_id != "" {
@@ -515,7 +517,9 @@ locus GovernanceCommands {
                     if e.kind == "review.command_decided" && wire.string(e.body, "review_id") == command.target_id && wire.string(e.body, "subject_digest") == command.subject_digest && std::json::find_bool_field(e.body, "accepted") && std::json::find_bool_field(e.body, "settled") { return "stale_subject"; }
                     i = i + 1;
                 }
-                if context.principal_name == binding.request.by || !dna::authority_satisfies(grant.authority, row.required_authority) { return "forbidden"; }
+                if context.principal_name == binding.request.by { return "forbidden"; }
+                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, row.required_authority, "");
+                if len(standing) > 0 { return standing; }
                 return "";
             }
         }
@@ -541,13 +545,7 @@ locus GovernanceCommands {
             i = i + 1;
         }
         if context.principal_name == review.author { return "forbidden"; }
-        // GH #1089: a Review its route routed is decided by the positions it
-        // names; the grant's authority is the fallback for one it did not
-        let routed = projection_view.fact(j, "review.routed", command.target_id, false);
-        let signers = dna::native_json_string(routed.body, "signers");
-        if len(signers) > 0 { return if len(dna::signer_positions(signers, context.principal_name)) > 0 { "" } else { "forbidden" }; }
-        if !dna::authority_satisfies(grant.authority, review.required_authority) { return "forbidden"; }
-        return "";
+        return verdict_standing(j, command.target_id, context.principal_name, grant.authority, review.required_authority, "");
     }
     fn result(s: GovernanceSnapshot, j: GovernanceJournal, admission: GovernanceAdmission) -> GovernanceResult {
         if admission.command.operation == "dna.person.retire" {
@@ -920,4 +918,31 @@ locus GovernanceCommands {
         return out;
     }
     fn lookup(context: GovernanceContext, request_id: String) -> GovernanceResult { return self.execute(context, GovernanceCommand { request_id: request_id }, true); }
+}
+
+// GH #1089: whether `principal` stands to give a typed verdict on
+// `review_id`, by the rule the Review itself applies (review.hl
+// `standing_refusal`), over the latest `review.routed` row: with signers, a
+// holder of a required position, a member of an affected owner, or — where
+// the route left a path to it — the grant's authority; with none, the
+// grant's authority, and membership for an owners change. "" when it
+// does, else `forbidden`.
+@unbounded
+fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, authority: String, required: String, approvers: String) -> String {
+    let mut routed = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.routed" && e.entity == review_id { routed = e.body; }
+        i = i + 1;
+    }
+    let signers = dna::native_json_string(routed, "signers");
+    let as_authority = dna::authority_satisfies(authority, required);
+    let as_owner = approvers != "" && dna::approver_owner(approvers, principal) != "";
+    if len(signers) == 0 {
+        if !as_authority || (approvers != "" && !as_owner) { return "forbidden"; }
+        return "";
+    }
+    if len(dna::signer_positions(signers, principal)) > 0 || as_owner || (std::json::find_bool_field(routed, "fallback") && as_authority) { return ""; }
+    return "forbidden";
 }
