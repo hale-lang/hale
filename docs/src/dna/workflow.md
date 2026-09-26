@@ -179,7 +179,9 @@ not check lifetimes for you.
 
 `hale dna status` counts executions asked and settled beside the
 Tasks; `hale dna history t1` walks one execution's rows by their
-causal links, children and attempts included; `hale dna board` shows
+causal links, children and attempts included, and sums what its
+model calls cost, by position and by backend (the execution and each
+attempt carry the same `usage` on the API); `hale dna board` shows
 the cases waiting on people. The face (`dna/face`, served by the
 head) is where these become workspaces — definitions, executions,
 the people's queue — over the same rows; the verbs in this chapter are the

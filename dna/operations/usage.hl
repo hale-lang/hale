@@ -1,0 +1,404 @@
+// dna/operations/usage.hl — tokens per task (GH #946, slice 1).
+//
+// Every model call leaves one `model.called` row on an attempt id with
+// its tokens and its cost. This projection reads those rows back into
+// sums per task and per attempt, by position and by backend, from the
+// journal alone: nothing here is written, refreshed or published. The
+// attempt id the row already carries is the tag every later part joins
+// on — a leg's outcome, a sense, a receipt — so the sums do not change
+// when the call is made out of process.
+//
+// An attempt id says whose call it was:
+//
+//   <ask>/plan       the Leader's plan of an ask: the task born of it
+//   <work>/a<n>      one attempt of a Work: a wf1 leaf, whose admission
+//                    names the task and the performer, or a Mutation,
+//                    whose request names the task (the editor's)
+//   <review>/review  the Leader's verdict: the Mutation's task, or
+//                    `knowledge` for a knowledge Review (`k:<12hex>`)
+//   optimize/<n>     the optimize pass: the organization's own, `org`
+//
+// The probe (`hale dna models`) is nobody's attempt and is never
+// journaled. A row of any other shape is its own owner's and no task's.
+//
+// A position is keyed by the graph's id for it, `position:<name>`
+// (GH #1085): the generated organization names its Leader `leader`,
+// its editor `editor` and its agent performer `agent`, and a wf1
+// admission names the performer kind, so a call is `position:leader`,
+// `position:editor` or `position:<kind>` until an attempt's claim names
+// the position that took it (GH #946, slice 3).
+import "../core" as dna;
+
+// Where one call's evidence belongs.
+type UsageOwner {
+    attempt: String = "";
+    owner: String = ""; // the ask, Work, Mutation, Review or `org` the attempt is of
+    task: String = ""; // the task the owner serves; "" when the record does not say
+    position: String = ""; // the graph's position id (`position:<name>`), or ""
+}
+
+// Sums over calls. A breakdown is one line per key, first seen first:
+// `<key> <calls> <input tokens> <output tokens> <cost micros>`.
+type UsageTotals {
+    calls: Int = 0;
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    cost_micros: Int = 0;
+    by_position: String = "";
+    by_backend: String = ""; // keyed `<backend>/<model>`
+}
+
+type UsageLine {
+    key: String = "";
+    calls: Int = 0;
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    cost_micros: Int = 0;
+}
+
+fn usage_last_slash(s: String) -> Int {
+    let mut at = -1;
+    let mut i = 0;
+    while i < len(s) {
+        if s[i..(i + 1)] == "/" { at = i; }
+        i = i + 1;
+    }
+    return at;
+}
+
+fn usage_digits(s: String) -> Bool {
+    if len(s) == 0 { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c < 48 || c > 57 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The Work of `<work>/a<n>`, "" when the id is not of that shape.
+fn usage_work_of(attempt: String) -> String {
+    let slash = usage_last_slash(attempt);
+    if slash <= 0 { return ""; }
+    let tail = attempt[(slash + 1)..len(attempt)];
+    if len(tail) < 2 || tail[0..1] != "a" || !usage_digits(tail[1..len(tail)]) { return ""; }
+    return attempt[0..slash];
+}
+
+// A key with no spaces, so a breakdown line parses back.
+@unbounded
+fn usage_key(s: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        out = out + (if c == " " || c == "\n" || c == "\t" { "_" } else { c });
+        i = i + 1;
+    }
+    return if len(out) == 0 { "?" } else { out };
+}
+
+// The number of lines a breakdown holds.
+@unbounded
+fn usage_line_count(lines: String) -> Int {
+    let mut n = 0;
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return n + 1; }
+        n = n + 1;
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return n;
+}
+
+// The i-th line of a breakdown, parsed; an empty key past the end.
+@unbounded
+fn usage_line(lines: String, index: Int) -> UsageLine {
+    let mut rest = lines;
+    let mut n = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if n == index {
+            let a = std::str::index_of(line, " ");
+            if a < 0 { return UsageLine { key: line }; }
+            let key = line[0..a];
+            let r1 = line[(a + 1)..len(line)];
+            let b = std::str::index_of(r1, " ");
+            if b < 0 { return UsageLine { key: key }; }
+            let r2 = r1[(b + 1)..len(r1)];
+            let c = std::str::index_of(r2, " ");
+            if c < 0 { return UsageLine { key: key }; }
+            let r3 = r2[(c + 1)..len(r2)];
+            let d = std::str::index_of(r3, " ");
+            if d < 0 { return UsageLine { key: key }; }
+            return UsageLine {
+                key: key,
+                calls: std::str::parse_int(r1[0..b]) or 0,
+                input_tokens: std::str::parse_int(r2[0..c]) or 0,
+                output_tokens: std::str::parse_int(r3[0..d]) or 0,
+                cost_micros: std::str::parse_int(r3[(d + 1)..len(r3)]) or 0
+            };
+        }
+        n = n + 1;
+    }
+    return UsageLine { };
+}
+
+fn usage_line_text(l: UsageLine) -> String {
+    return l.key + " " + to_string(l.calls) + " " + to_string(l.input_tokens) + " " + to_string(l.output_tokens) + " " + to_string(l.cost_micros);
+}
+
+// `lines` with one call added under `key`: its line grown, or a new
+// line at the end.
+@unbounded
+fn usage_bump(lines: String, key: String, input: Int, output: Int, cost: Int) -> String {
+    let n = usage_line_count(lines);
+    let mut out = "";
+    let mut found = false;
+    let mut i = 0;
+    while i < n {
+        let mut l = usage_line(lines, i);
+        if l.key == key {
+            found = true;
+            l.calls = l.calls + 1;
+            l.input_tokens = l.input_tokens + input;
+            l.output_tokens = l.output_tokens + output;
+            l.cost_micros = l.cost_micros + cost;
+        }
+        out = out + (if i > 0 { "\n" } else { "" }) + usage_line_text(l);
+        i = i + 1;
+    }
+    if found { return out; }
+    let fresh = usage_line_text(UsageLine { key: key, calls: 1, input_tokens: input, output_tokens: output, cost_micros: cost });
+    return if n == 0 { fresh } else { out + "\n" + fresh };
+}
+
+// One breakdown as a JSON array of objects whose first field is `name`
+// and whose counters are decimal strings, as the contract carries
+// native integers.
+@unbounded
+fn usage_lines_json(lines: String, name: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let n = usage_line_count(lines);
+    let mut i = 0;
+    while i < n {
+        let l = usage_line(lines, i);
+        b.begin_object();
+        b.string_field(name, l.key);
+        b.string_field("calls", to_string(l.calls));
+        b.string_field("input_tokens", to_string(l.input_tokens));
+        b.string_field("output_tokens", to_string(l.output_tokens));
+        b.string_field("cost_micros", to_string(l.cost_micros));
+        b.end_object();
+        i = i + 1;
+    }
+    b.end_array();
+    return b.result();
+}
+
+// The `usage` object the API carries on a task and on an attempt.
+fn usage_json(t: UsageTotals) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("calls", to_string(t.calls));
+    b.string_field("input_tokens", to_string(t.input_tokens));
+    b.string_field("output_tokens", to_string(t.output_tokens));
+    b.string_field("cost_micros", to_string(t.cost_micros));
+    b.field("by_position", usage_lines_json(t.by_position, "position"));
+    b.field("by_backend", usage_lines_json(t.by_backend, "backend"));
+    b.end_object();
+    return b.result();
+}
+
+fn usage_counts_text(calls: Int, input: Int, output: Int, cost: Int) -> String {
+    return to_string(calls) + " call(s) · " + to_string(input) + " in · " + to_string(output) + " out · " + to_string(cost) + " µ$";
+}
+
+// One breakdown for the terminal: `<key> <counts>`, joined by `; `.
+@unbounded
+fn usage_lines_text(lines: String) -> String {
+    let n = usage_line_count(lines);
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let l = usage_line(lines, i);
+        out = out + (if i > 0 { "; " } else { "" }) + l.key + " " + usage_counts_text(l.calls, l.input_tokens, l.output_tokens, l.cost_micros);
+        i = i + 1;
+    }
+    return out;
+}
+
+// The totals as `hale dna history` prints them under an entity: the
+// sums on the first line, the breakdowns under it, nothing when no call
+// was made. `label` is `usage of <entity>` or `usage`.
+fn usage_text(label: String, t: UsageTotals) -> String {
+    if t.calls == 0 { return ""; }
+    let pad = "       ";
+    return label + ": " + usage_counts_text(t.calls, t.input_tokens, t.output_tokens, t.cost_micros) + "\n"
+        + pad + "by position: " + usage_lines_text(t.by_position) + "\n"
+        + pad + "by backend: " + usage_lines_text(t.by_backend) + "\n";
+}
+
+// The projection: a caller-owned, already loaded journal, read as it is.
+locus Usage {
+    params { j: dna::Journal; }
+    // The task born of an ask (`task.born <task>` with a body `<ask>: …`),
+    // "" when none was.
+    @unbounded
+    fn task_of_ask(ask: String) -> String {
+        let n = self.j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.j.read(i);
+            if e.kind == "task.born" && std::str::starts_with(e.body, ask + ": ") { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The task a Mutation was asked for: its request names it; an older
+    // record says it in the proposal's summary, `task <id> <class>: …`.
+    @unbounded
+    fn task_of_mutation(m: String) -> String {
+        let n = self.j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.j.read(i);
+            if e.entity == m && e.kind == "mutation.requested" {
+                let t = std::json::find_string_field(e.body, "task_id");
+                if len(t) > 0 { return t; }
+            }
+            if e.entity == m && e.kind == "mutation.proposed" && std::str::starts_with(e.body, "task ") {
+                let rest = e.body[5..len(e.body)];
+                let sp = std::str::index_of(rest, " ");
+                if sp > 0 { return rest[0..sp]; }
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The task a Review decides: the request names it, or its Mutation.
+    @unbounded
+    fn task_of_review(r: String) -> String {
+        if std::str::starts_with(r, "k:") { return "knowledge"; }
+        let n = self.j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.j.read(i);
+            if e.kind == "review.requested" && e.entity == "review:" + r {
+                let t = std::json::find_string_field(e.body, "task_id");
+                if len(t) > 0 { return t; }
+                let m = std::json::find_string_field(e.body, "mutation_id");
+                if len(m) > 0 { return self.task_of_mutation(m); }
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The task a wf1 attempt was admitted under, and its performer kind,
+    // as `<task> <kind>`; "" when no admission names it.
+    @unbounded
+    fn admission_of(attempt: String) -> String {
+        let n = self.j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.j.read(i);
+            if e.kind == "attempt.admitted" && e.entity == attempt {
+                return std::json::find_string_field(e.body, "task_id") + " " + std::json::find_string_field(e.body, "performer_kind");
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The task a task runs under (a child workflow's parent), "" at a root.
+    @unbounded
+    fn parent_of(task: String) -> String {
+        let n = self.j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.j.read(i);
+            if e.kind == "workflow.admitted" && e.entity == task { return std::json::find_string_field(e.body, "parent_task"); }
+            i = i + 1;
+        }
+        return "";
+    }
+    // Whether `task` is `root` or runs under it.
+    @unbounded
+    fn within(task: String, root: String) -> Bool {
+        let mut at = task;
+        let mut hops = 0;
+        while len(at) > 0 && hops < 64 {
+            if at == root { return true; }
+            at = self.parent_of(at);
+            hops = hops + 1;
+        }
+        return false;
+    }
+    // Whose call an attempt's evidence is.
+    @unbounded
+    fn owner_of(attempt: String) -> UsageOwner {
+        if std::str::ends_with(attempt, "/plan") {
+            let ask = attempt[0..(len(attempt) - 5)];
+            return UsageOwner { attempt: attempt, owner: ask, task: self.task_of_ask(ask), position: "position:leader" };
+        }
+        if std::str::ends_with(attempt, "/review") {
+            let r = attempt[0..(len(attempt) - 7)];
+            return UsageOwner { attempt: attempt, owner: r, task: self.task_of_review(r), position: "position:leader" };
+        }
+        if std::str::starts_with(attempt, "optimize/") {
+            return UsageOwner { attempt: attempt, owner: "org", task: "org", position: "position:leader" };
+        }
+        let work = usage_work_of(attempt);
+        if len(work) > 0 {
+            let admitted = self.admission_of(attempt);
+            if len(admitted) > 0 {
+                let sp = std::str::index_of(admitted, " ");
+                let kind = admitted[(sp + 1)..len(admitted)];
+                return UsageOwner { attempt: attempt, owner: work, task: admitted[0..sp], position: if len(kind) > 0 { "position:" + kind } else { "" } };
+            }
+            let task = self.task_of_mutation(work);
+            return UsageOwner { attempt: attempt, owner: work, task: task, position: if len(task) > 0 { "position:editor" } else { "" } };
+        }
+        return UsageOwner { attempt: attempt, owner: attempt };
+    }
+    // Whether a call belongs under `id`: the attempt itself, the ask,
+    // Work, Mutation or Review it is of, or the task it serves and every
+    // task under that. "" is every call the record holds.
+    fn belongs(o: UsageOwner, id: String) -> Bool {
+        if len(id) == 0 || o.attempt == id || o.owner == id { return true; }
+        return len(o.task) > 0 && self.within(o.task, id);
+    }
+    // The sums under `id` (the whole record for "").
+    @unbounded
+    fn under(id: String) -> UsageTotals {
+        let mut t = UsageTotals { };
+        let n = self.j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.j.read(i);
+            if e.kind == "model.called" {
+                let o = self.owner_of(e.entity);
+                if self.belongs(o, id) {
+                    let input = std::json::find_int_field(e.body, "input_tokens");
+                    let output = std::json::find_int_field(e.body, "output_tokens");
+                    let cost = std::json::find_int_field(e.body, "cost_micros");
+                    t.calls = t.calls + 1;
+                    t.input_tokens = t.input_tokens + input;
+                    t.output_tokens = t.output_tokens + output;
+                    t.cost_micros = t.cost_micros + cost;
+                    t.by_position = usage_bump(t.by_position, usage_key(o.position), input, output, cost);
+                    let model = std::json::find_string_field(e.body, "requested_model");
+                    t.by_backend = usage_bump(t.by_backend, usage_key(std::json::find_string_field(e.body, "backend") + "/" + model), input, output, cost);
+                }
+            }
+            i = i + 1;
+        }
+        return t;
+    }
+    // Every call the record holds.
+    fn record() -> UsageTotals { return self.under(""); }
+}

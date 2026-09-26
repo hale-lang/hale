@@ -265,6 +265,36 @@ the digests and says `bodies: withheld (data class customer)`, and
 the history says so instead of showing a body. Receipts travel with
 the record, so a prompt is readable in every clone that syncs it.
 
+## Tokens per task
+
+Every call's tokens and cost are on its `model.called` row, and the
+row's attempt id says whose call it was: `<ask>/plan` is the Leader's
+plan of an ask, `<work>/a<n>` one attempt of a Work (a Mutation's is
+the editor's; a wf1 leaf's is its performer's), `<review>/review` the
+Leader's verdict (a knowledge Review, `k:<12hex>`, counts to
+`knowledge`), and `optimize/<n>` the optimize pass, the organization's
+own. The probe is nobody's attempt and leaves no row. `hale dna
+history` sums them under whatever it is shown — a task with every task
+under it, a Mutation with its attempts and its verdict, one attempt —
+by position (the graph's id for it, `position:<name>`) and by backend,
+and says nothing when no call was made:
+
+```text
+$ hale dna history t1
+record refs/dna/journal — 51 event(s), …
+history of t1: 12 event(s)
+usage of t1: 4 call(s) · 2320 in · 404 out · 105 µ$
+       by position: position:leader 2 call(s) · 1900 in · 320 out · 95 µ$; position:editor 2 call(s) · 420 in · 84 out · 10 µ$
+       by backend: deep/deep-1 2 call(s) · 1900 in · 320 out · 95 µ$; quick/quick-1 2 call(s) · 420 in · 84 out · 10 µ$
+…
+```
+
+The API carries the same sums as a `usage` object on every execution,
+on each of its attempts and on every handed Task (see the API README),
+read from the one projection, `dna/operations/usage.hl`. When a leg
+performs an attempt out of process it reports the same fields on the
+attempt id, so the sums do not move when the call does.
+
 ## The editor's grant
 
 The `SourceEditor`'s hands are `WorktreeTools`: `read` and `edit` of

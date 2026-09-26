@@ -4140,7 +4140,7 @@ locus Dna {
         // its backend works in place (GH #583 M3): a harness finds its own
         // files, and the import says which it changed
         if len(file) == 0 && !self.editor.in_place("internal") {
-            file = self.editor.locate(objective);
+            file = self.editor.locate(attempt_id_of(id, req.attempt_no), objective);
             if len(file) == 0 {
                 let x = self.gateway.remove(self.journal, id, lease.token, now);
                 return self.mutation_failed(id, "attempt: no file in the grant answers `" + objective + "`");

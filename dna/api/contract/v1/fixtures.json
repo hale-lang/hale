@@ -9131,7 +9131,15 @@
             "reason": "",
             "nodes": [],
             "attempts": [],
-            "history": []
+            "history": [],
+            "usage": {
+              "calls": "0",
+              "input_tokens": "0",
+              "output_tokens": "0",
+              "cost_micros": "0",
+              "by_position": [],
+              "by_backend": []
+            }
           }
         ],
         "page": {
@@ -9172,7 +9180,15 @@
             "reason": "",
             "nodes": [],
             "attempts": [],
-            "history": []
+            "history": [],
+            "usage": {
+              "calls": "0",
+              "input_tokens": "0",
+              "output_tokens": "0",
+              "cost_micros": "0",
+              "by_position": [],
+              "by_backend": []
+            }
           }
         ],
         "page": {
@@ -9486,7 +9502,15 @@
                 "result_ref": "",
                 "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
-                "accepted": false
+                "accepted": false,
+                "usage": {
+                  "calls": "0",
+                  "input_tokens": "0",
+                  "output_tokens": "0",
+                  "cost_micros": "0",
+                  "by_position": [],
+                  "by_backend": []
+                }
               },
               {
                 "id": "close-2026-09/wf7/s0/bank/a1",
@@ -9499,7 +9523,31 @@
                 "result_ref": "",
                 "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
-                "accepted": true
+                "accepted": true,
+                "usage": {
+                  "calls": "2",
+                  "input_tokens": "640",
+                  "output_tokens": "96",
+                  "cost_micros": "110",
+                  "by_position": [
+                    {
+                      "position": "position:agent",
+                      "calls": "2",
+                      "input_tokens": "640",
+                      "output_tokens": "96",
+                      "cost_micros": "110"
+                    }
+                  ],
+                  "by_backend": [
+                    {
+                      "backend": "deep/sample-deep",
+                      "calls": "2",
+                      "input_tokens": "640",
+                      "output_tokens": "96",
+                      "cost_micros": "110"
+                    }
+                  ]
+                }
               },
               {
                 "id": "close-2026-09.s0.evidence/wf3/s0/confirm/a0",
@@ -9512,7 +9560,15 @@
                 "result_ref": "",
                 "evidence_ref": "",
                 "narrative": "",
-                "accepted": false
+                "accepted": false,
+                "usage": {
+                  "calls": "0",
+                  "input_tokens": "0",
+                  "output_tokens": "0",
+                  "cost_micros": "0",
+                  "by_position": [],
+                  "by_backend": []
+                }
               }
             ],
             "history": [
@@ -9588,7 +9644,31 @@
                 "node_id": "close-2026-09.s0.evidence/wf3/s0/confirm",
                 "order": "11"
               }
-            ]
+            ],
+            "usage": {
+              "calls": "2",
+              "input_tokens": "640",
+              "output_tokens": "96",
+              "cost_micros": "110",
+              "by_position": [
+                {
+                  "position": "position:agent",
+                  "calls": "2",
+                  "input_tokens": "640",
+                  "output_tokens": "96",
+                  "cost_micros": "110"
+                }
+              ],
+              "by_backend": [
+                {
+                  "backend": "deep/sample-deep",
+                  "calls": "2",
+                  "input_tokens": "640",
+                  "output_tokens": "96",
+                  "cost_micros": "110"
+                }
+              ]
+            }
           }
         ],
         "page": {
@@ -9873,7 +9953,15 @@
                 "result_ref": "",
                 "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
-                "accepted": false
+                "accepted": false,
+                "usage": {
+                  "calls": "0",
+                  "input_tokens": "0",
+                  "output_tokens": "0",
+                  "cost_micros": "0",
+                  "by_position": [],
+                  "by_backend": []
+                }
               },
               {
                 "id": "close-2026-09/wf7/s0/bank/a1",
@@ -9886,7 +9974,15 @@
                 "result_ref": "",
                 "evidence_ref": "sha256:face-evidence",
                 "narrative": "Recorded sample evidence — équipe",
-                "accepted": true
+                "accepted": true,
+                "usage": {
+                  "calls": "0",
+                  "input_tokens": "0",
+                  "output_tokens": "0",
+                  "cost_micros": "0",
+                  "by_position": [],
+                  "by_backend": []
+                }
               },
               {
                 "id": "close-2026-09.s0.evidence/wf3/s0/confirm/a0",
@@ -9899,7 +9995,15 @@
                 "result_ref": "",
                 "evidence_ref": "",
                 "narrative": "",
-                "accepted": false
+                "accepted": false,
+                "usage": {
+                  "calls": "0",
+                  "input_tokens": "0",
+                  "output_tokens": "0",
+                  "cost_micros": "0",
+                  "by_position": [],
+                  "by_backend": []
+                }
               }
             ],
             "history": [
@@ -9975,7 +10079,15 @@
                 "node_id": "close-2026-09.s0.evidence/wf3/s0/confirm",
                 "order": "11"
               }
-            ]
+            ],
+            "usage": {
+              "calls": "0",
+              "input_tokens": "0",
+              "output_tokens": "0",
+              "cost_micros": "0",
+              "by_position": [],
+              "by_backend": []
+            }
           }
         ],
         "page": {
@@ -9992,6 +10104,179 @@
           "runtime_association": false
         }
       }
+    }
+  },
+  {
+    "name": "usage-summed-by-position-and-backend",
+    "schema": "Usage",
+    "valid": true,
+    "value": {
+      "calls": "3",
+      "input_tokens": "1200",
+      "output_tokens": "340",
+      "cost_micros": "55",
+      "by_position": [
+        {
+          "position": "position:leader",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "position": "position:editor",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ],
+      "by_backend": [
+        {
+          "backend": "deep/deep-1",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "backend": "quick/quick-1",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-usage-integer-calls",
+    "schema": "Usage",
+    "valid": false,
+    "value": {
+      "calls": 3,
+      "input_tokens": "1200",
+      "output_tokens": "340",
+      "cost_micros": "55",
+      "by_position": [
+        {
+          "position": "position:leader",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "position": "position:editor",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ],
+      "by_backend": [
+        {
+          "backend": "deep/deep-1",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "backend": "quick/quick-1",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-usage-extra-breakdown-field",
+    "schema": "Usage",
+    "valid": false,
+    "value": {
+      "calls": "3",
+      "input_tokens": "1200",
+      "output_tokens": "340",
+      "cost_micros": "55",
+      "by_position": [
+        {
+          "position": "position:leader",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50",
+          "tokens": "1300"
+        },
+        {
+          "position": "position:editor",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ],
+      "by_backend": [
+        {
+          "backend": "deep/deep-1",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "backend": "quick/quick-1",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-usage-negative-cost",
+    "schema": "Usage",
+    "valid": false,
+    "value": {
+      "calls": "3",
+      "input_tokens": "1200",
+      "output_tokens": "340",
+      "cost_micros": "-5",
+      "by_position": [
+        {
+          "position": "position:leader",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "position": "position:editor",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ],
+      "by_backend": [
+        {
+          "backend": "deep/deep-1",
+          "calls": "2",
+          "input_tokens": "1000",
+          "output_tokens": "300",
+          "cost_micros": "50"
+        },
+        {
+          "backend": "quick/quick-1",
+          "calls": "1",
+          "input_tokens": "200",
+          "output_tokens": "40",
+          "cost_micros": "5"
+        }
+      ]
     }
   },
   {
@@ -20872,7 +21157,15 @@
                 "to": "alex",
                 "by": "leader"
               }
-            ]
+            ],
+            "usage": {
+              "calls": "0",
+              "input_tokens": "0",
+              "output_tokens": "0",
+              "cost_micros": "0",
+              "by_position": [],
+              "by_backend": []
+            }
           }
         ],
         "page": {
@@ -20918,7 +21211,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -20947,7 +21248,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -20976,7 +21285,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21005,7 +21322,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21034,7 +21359,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21063,7 +21396,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21092,7 +21433,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21121,7 +21470,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21150,7 +21507,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21179,7 +21544,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21208,7 +21581,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21237,7 +21618,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21267,7 +21656,15 @@
           "by": "leader"
         }
       ],
-      "position": "org/support"
+      "position": "org/support",
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21296,7 +21693,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21325,7 +21730,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21354,7 +21767,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21383,7 +21804,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21412,7 +21841,15 @@
           "to": "alex",
           "by": "leader"
         }
-      ]
+      ],
+      "usage": {
+        "calls": "0",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "cost_micros": "0",
+        "by_position": [],
+        "by_backend": []
+      }
     }
   },
   {
@@ -21472,7 +21909,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -21521,7 +21966,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -21569,7 +22022,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22492,7 +22953,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22541,7 +23010,15 @@
               "to": "Renée Li",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22590,7 +23067,15 @@
               "to": "<member & text>",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22639,7 +23124,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22688,7 +23181,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22737,7 +23238,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {
@@ -22810,7 +23319,15 @@
               "to": "alex",
               "by": "leader"
             }
-          ]
+          ],
+          "usage": {
+            "calls": "0",
+            "input_tokens": "0",
+            "output_tokens": "0",
+            "cost_micros": "0",
+            "by_position": [],
+            "by_backend": []
+          }
         }
       ],
       "page": {

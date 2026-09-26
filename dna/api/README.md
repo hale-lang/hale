@@ -341,7 +341,9 @@ obligation, explicit acceptance binding, evidence requirements/reference,
 waiting reason and ordered handoff/reassignment history. Acceptance and evidence
 references are opaque strings. `assignment_digest` binds the relevant native
 lifecycle, including intervening and terminal events; `reassignment_supported`
-states factual support, not the caller's authority.
+states factual support, not the caller's authority. Each row also carries
+`usage`: the model calls attributed to the Task — its plan, its Mutations'
+attempts and their verdicts — as the same object the executions carry.
 
 Reads require a trusted-local principal and a complete Record-only projection
 before Ledger adoption. They serve only the current captured head: an old
@@ -718,6 +720,16 @@ The response does not dereference receipt bodies, infer runtime identities, or
 make a native transition. Reader budgets are 2,048 Record events, 512 unique
 workflow facts, 64 KiB per fact, 512 KiB cumulative fact bodies and 256 bound
 nodes. Exceeding them reports `workflow_read_limit`, not an invalid workflow.
+
+Every execution and each of its attempts carries `usage` (GH #946): the model
+calls summed from their `model.called` rows — `calls`, `input_tokens`,
+`output_tokens` and `cost_micros` as unsigned decimal strings — with a
+`by_position` breakdown keyed by the graph's position id (`position:<name>`)
+and a `by_backend` one keyed `<backend>/<model>`. An
+execution's sums cover the Leader's plan of the ask it was born of and every
+attempt of every Work under it, child workflows included; an attempt's are its
+own. The projection is `dna/operations/usage.hl`, and `hale dna history` prints
+the same sums.
 # Person retirement
 
 The composed local command head accepts an optional `retire` boolean alongside

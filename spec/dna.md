@@ -2703,6 +2703,31 @@ The organization's models are a catalog in source (GH #583 M1):
   told, and a Review is not announced to the model-backed positions —
   it waits for the Board, which needs no model. A `ModelRouter` counts
   what its calls cost and has no allowance of its own.
+- **Tokens per task (GH #946).** The attempt id on a `model.called`
+  row is the tag its cost is attributed by: `<ask>/plan` to the task
+  born of the ask (the `task.born` row whose body starts `<ask>: `);
+  `<work>/a<n>` to the Work's task — a wf1 attempt's admission names
+  the task and the performer kind, a Mutation's request names the task
+  (the editor's; an older record says it in the proposal's `task <id>`
+  summary); `<review>/review` to the task the Review's request names,
+  or its Mutation's, or `knowledge` for a knowledge Review
+  (`k:<12hex>`); `optimize/<n>` to `org`. The probe leaves no row. A
+  call of no known shape is its own and no task's. The projection
+  (`dna/operations/usage.hl`, `Usage`) sums calls, input and output
+  tokens and `cost_micros` under an id — the attempt itself, the ask,
+  Work, Mutation or Review it is of, or the task it serves and every
+  task under it (by `workflow.admitted`'s `parent_task`) — by position,
+  keyed by the graph's id for it, `position:<name>` (`position:leader`
+  for a plan, a verdict and the optimize pass; `position:editor` for a
+  Mutation's attempts; `position:<performer kind>` for a wf1 attempt,
+  until an attempt's claim names the position that took it) and by
+  `<backend>/<model>`. `hale dna history <entity>` prints `usage of
+  <entity>: <calls> call(s) · <in> in · <out> out · <cost> µ$` and the
+  two breakdowns under the `history of` line, nothing when no call was
+  made, and `usage: …` for the whole record with no entity; the API
+  carries the same sums as `usage` on every execution, each of its
+  attempts and every administered Task. The editor's locate and plan
+  calls carry the Work's attempt id (the tape key excludes it).
 - **`hale dna models`** builds the catalog beside a one-line main in
   `.hale/dna/probe`, runs its `probe_catalog()` from the project root
   with the organization's environment, and prints one line per

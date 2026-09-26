@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### Tokens per task (GH #946, slice 1)
+
+- **Added:** every model call's tokens and cost are summed per task
+  and per attempt, by position and by backend, from the attempt ids
+  on the `model.called` rows (`dna/operations/usage.hl`). `hale dna
+  history <entity>` prints the sums under the entity; the API carries
+  them as `usage` on executions, their attempts and handed Tasks (the
+  contract's `Usage`).
+- **Fixed:** the editor's locate and plan calls carried the literal
+  attempt ids `locate` and `plan`, so their tokens were nobody's. They
+  carry the Work's attempt id now; the tape key does not include it,
+  so nothing is re-recorded.
+
 ### A param default's child is supervised by its holder wherever the holder is built (GH #1074)
 
 - **Fixed:** a locus built inside another locus's method (`let s = Sup

@@ -22,7 +22,12 @@ locus TaskWire {
         b.field("assignment_digest", dna::record_json_quote(t.assignment_digest)); b.bool_field("reassignment_supported", t.reassignment_supported);
         b.begin_array_field("history"); let mut i = 0;
         while i < p.history_count(t.id) { b.value(self.assignment(p.history_at(t.id, i))); i = i + 1; }
-        b.end_array(); b.end_object(); return b.result();
+        b.end_array();
+        // GH #946: the model calls the Task cost, from the same projection
+        // the executions and `hale dna history` read
+        let usage = ops::Usage { j: p.j };
+        b.field("usage", ops::usage_json(usage.under(t.id)));
+        b.end_object(); return b.result();
     }
     fn unavailable(code: String) -> std::http::Response {
         let http = Http { };
