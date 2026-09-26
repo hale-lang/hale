@@ -1092,7 +1092,9 @@ fn __api_reply_line(r: __ApiReply) -> String {
     line = line + r.body;
     if len(r.as_of) > 0 { line = line + ",\"as_of\":" + __api_json_str(r.as_of); }
     line = line + ",\"caller\":{\"mode\":" + __api_json_str(r.caller.mode) + ",\"name\":" + __api_json_str(r.caller.name)
-        + ",\"uid\":" + to_string(r.caller.uid) + ",\"gid\":" + to_string(r.caller.gid) + ",\"pid\":" + to_string(r.caller.pid) + "}";
+        + ",\"uid\":" + to_string(r.caller.uid) + ",\"gid\":" + to_string(r.caller.gid) + ",\"pid\":" + to_string(r.caller.pid);
+    if len(r.caller.via) > 0 { line = line + ",\"via\":" + __api_json_str(r.caller.via); }
+    line = line + "}";
     if len(r.role) > 0 { line = line + ",\"role\":" + __api_json_str(r.role); }
     return line + "}";
 }
@@ -1104,7 +1106,7 @@ fn __api_join(acc: String, item: String) -> String {
     return acc + "," + item;
 }
 fn __api_context(caller: std::api::Principal, role: String, request_id: Int) -> std::api::Context {
-    return std::api::Context { caller: caller, role: role, request_id: request_id, via: "api" };
+    return std::api::Context { caller: caller, role: role, request_id: request_id, via: if len(caller.via) > 0 { caller.via } else { "api" } };
 }
 "#,
     );
@@ -1182,6 +1184,18 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             self.refuse_here(client_id, "unauthenticated", "the kernel would not say who the peer is");
             return;
         }
+        // `via`: a transport of the program's own (the process's uid)
+        // forwarding a line says how it arrived; from anyone else the
+        // mark is refused, never silently dropped.
+        let mut who = self.caller;
+        let via = std::json::string_field(t, "via");
+        if via.kind == "string" {
+            if self.caller.uid != std::process::uid() || len(via.text) == 0 || len(via.text) > 64 {
+                self.refuse_here(client_id, "malformed", "\"via\" is set by the program's own transports only");
+                return;
+            }
+            who = std::api::Principal { mode: self.caller.mode, name: self.caller.name, uid: self.caller.uid, gid: self.caller.gid, pid: self.caller.pid, groups: self.caller.groups, via: via.text };
+        }
         let call = std::json::string_field(t, "call");
         if call.kind == "string" {
             let body = std::json::find_field_raw(t, "payload");
@@ -1189,26 +1203,26 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
                 self.refuse_here(client_id, "malformed", "a call carries a \"payload\" object");
                 return;
             }
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body, caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body, caller: who };
             return;
         }
         let rd = std::json::string_field(t, "read");
         if rd.kind == "string" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "", caller: who };
             return;
         }
         let w = std::json::string_field(t, "watch");
         if w.kind == "string" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "", caller: who };
             return;
         }
         let d = std::json::find_field_raw(t, "describe");
         if d == "true" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "", caller: who };
             return;
         }
         if d == "\"full\"" {
-            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "full", body: "", caller: self.caller };
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "full", body: "", caller: who };
             return;
         }
         self.refuse_here(client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
