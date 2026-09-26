@@ -910,9 +910,12 @@ jobs:
       # stdlib and the runtime are inside the compiler. The paths are the
       # three outputs only.
       #
-      # dna/api/practice_review is not among them: nothing in the browser
-      # suite reads HALE_NATIVE_HEAD_API (the startup case's launcher builds
-      # its own), and face-api builds and tests it.
+      # dna/api/practice_review is not among the cached three: nothing in
+      # the browser suite reads HALE_NATIVE_HEAD_API (the startup case's
+      # launcher builds its own), and face-api builds and tests it. The
+      # rest shard builds it beside them when it is missing, uncached: the
+      # native command lanes (GH #1029) start it as their API
+      # (HALE_NATIVE_COMMAND_API).
       - name: Restore the DNA API and the head
         id: face-builds
         uses: actions/cache/restore@v4
@@ -945,8 +948,14 @@ jobs:
           if [ "${{ steps.face-builds.outputs.cache-hit }}" != "true" ]; then
             seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
           fi
+          # the rest shard's native command lanes start the composed head (GH #1029)
+          built=(dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge)
+          if [ "${{ matrix.shard }}" = "rest" ]; then
+            [ -x dna/api/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
+            built+=(dna/api/practice_review/practice_review)
+          fi
           scripts/warm-and-build.sh ./target/release/hale --target-cpu baseline "${seeds[@]}"
-          for b in dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge; do
+          for b in "${built[@]}"; do
             if [ ! -f "$b" ] || [ ! -x "$b" ]; then
               echo "::error::$b is missing or not executable"; exit 1
             fi
