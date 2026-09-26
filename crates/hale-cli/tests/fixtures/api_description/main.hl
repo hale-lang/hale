@@ -1,0 +1,55 @@
+// The conformance fixture for the api description (GH #1107): a
+// command with a reply, a command with none, a keyed command, a
+// read on the main locus and one on a default child, a stream, and
+// a nested payload. `crates/hale-cli/tests/api_description.rs`
+// holds the emitted description, OpenAPI and MCP forms beside it.
+
+type Money { amount: Int; currency: String = "USD"; }
+type Refund { order_id: Int; money: Money; }
+type RefundResult { ok: Bool; note: String; }
+type Audit { line: String; }
+type Tick { order_id: Int; n: Int; }
+type Ledger { balance: Int; entries: Int; }
+type Uptime { seconds: Int; }
+
+topic Refunds { payload: Refund; subject: "shop.refund"; }
+topic Audits { payload: Audit; subject: "shop.audit"; }
+topic Ticks { payload: Tick; subject: "shop.tick"; keyed_by order_id; }
+topic Moved { payload: Ledger; subject: "shop.moved"; }
+
+locus Billing {
+    contract { expose ledger: Ledger; }
+    params { ledger: Ledger = Ledger { balance: 100, entries: 0 }; }
+    bus {
+        subscribe Refunds as on_refund;
+        subscribe Audits as on_audit;
+        subscribe Ticks as on_tick where key == 7;
+        publish Moved;
+    }
+    fn on_refund(r: Refund) -> RefundResult {
+        self.ledger.balance = self.ledger.balance - r.money.amount;
+        self.ledger.entries = self.ledger.entries + 1;
+        Moved <- self.ledger;
+        return RefundResult { ok: true, note: "refunded " + to_string(r.order_id) };
+    }
+    fn on_audit(a: Audit) { println(a.line); }
+    fn on_tick(t: Tick) { self.ledger.entries = self.ledger.entries + t.n; }
+}
+
+main locus Shop {
+    contract { expose uptime: Uptime; }
+    params {
+        uptime: Uptime = Uptime { seconds: 0 };
+        billing: Billing = Billing { };
+    }
+    placement { billing: cooperative(pool = work) where async_io; }
+    bindings { api: unix("/tmp/hale-api-description-fixture.sock", bound: 8, on_full: refuse); }
+    run() {
+        while !self.draining && self.uptime.seconds < 30 {
+            std::time::sleep(1s);
+            self.uptime.seconds = self.uptime.seconds + 1;
+        }
+    }
+}
+
+fn main() { Shop { }; }

@@ -61,6 +61,8 @@ pub struct ApiCommand {
     /// The topic as the program spells it (`Verdict`, `lib::Verdict`);
     /// the name a caller writes in `"call"`.
     pub name: String,
+    /// The topic's wire subject, as the description reports it.
+    pub subject: String,
     pub payload: String,
     /// `keyed_by` field and its type, when the topic is keyed.
     pub key: Option<(String, TypeExpr)>,
@@ -83,7 +85,27 @@ pub struct ApiRead {
 #[derive(Debug, Clone)]
 pub struct ApiStream {
     pub name: String,
+    pub subject: String,
     pub payload: String,
+}
+
+/// One field of a struct the description carries a schema for.
+#[derive(Debug, Clone)]
+pub struct ApiField {
+    pub name: String,
+    /// The JSON key: the `json:` tag when one is set, else the name.
+    pub key: String,
+    /// `Int`, `Float`, `Bool`, `String`, or the name of a nested struct.
+    pub kind: String,
+    pub nested: bool,
+    /// No literal default, so a decode without it is `missing_field`.
+    pub required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiSchema {
+    pub name: String,
+    pub fields: Vec<ApiField>,
 }
 
 /// A topic or member the api leaves out, with the reason the checker
@@ -107,6 +129,8 @@ pub struct ApiSurface {
     pub ambiguous_replies: Vec<(String, Span, Span)>,
     /// Every struct type a JSON codec is generated for.
     pub json_types: Vec<String>,
+    /// The field schema of every type in `json_types`, sorted by name.
+    pub schemas: Vec<ApiSchema>,
 }
 
 // ---- walking -------------------------------------------------------
@@ -263,6 +287,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     let mut subs: BTreeMap<String, Vec<ApiSubscriber>> = BTreeMap::new();
     let mut pubs: BTreeSet<String> = BTreeSet::new();
     for l in loci.values() {
+        if l.name.name.starts_with("__Api") {
+            continue;
+        }
         let fns: BTreeMap<&str, &crate::ast::FnDecl> = l
             .members
             .iter()
@@ -303,6 +330,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
 
     let mut commands = Vec::new();
     for (name, subscribers) in subs {
+        if name.starts_with("__Api") {
+            continue;
+        }
         let Some(t) = topics.get(&name) else { continue };
         let Some(payload) = named_type(&t.payload) else {
             excluded.push(ApiExcluded {
@@ -383,8 +413,10 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
             continue;
         }
         json_types.extend(seen);
+        let subject = t.subject.clone().unwrap_or_else(|| name.clone());
         commands.push(ApiCommand {
             name,
+            subject,
             payload,
             key,
             subscribers,
@@ -394,6 +426,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
 
     let mut streams = Vec::new();
     for name in pubs {
+        if name.starts_with("__Api") {
+            continue;
+        }
         let Some(t) = topics.get(&name) else { continue };
         let Some(payload) = named_type(&t.payload) else {
             excluded.push(ApiExcluded {
@@ -411,7 +446,8 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
             continue;
         }
         json_types.extend(seen);
-        streams.push(ApiStream { name, payload });
+        let subject = t.subject.clone().unwrap_or_else(|| name.clone());
+        streams.push(ApiStream { name, subject, payload });
     }
 
     // Reads: the main locus's exposes, and those of a default child
@@ -517,6 +553,36 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         }
     }
 
+    let json_types: Vec<String> = json_types.into_iter().collect();
+    let schemas = json_types
+        .iter()
+        .filter_map(|tn| {
+            let fields = types.get(tn)?;
+            Some(ApiSchema {
+                name: tn.clone(),
+                fields: fields
+                    .iter()
+                    .map(|f| {
+                        let (kind, nested) = match json_gen::scalar_name(&f.ty) {
+                            Some(k) => (k.to_string(), false),
+                            None => (named_type(&f.ty).unwrap_or_default(), true),
+                        };
+                        ApiField {
+                            name: f.name.name.clone(),
+                            key: f
+                                .tag
+                                .as_deref()
+                                .and_then(|t| crate::desugar::tag_value(t, "json"))
+                                .unwrap_or_else(|| f.name.name.clone()),
+                            kind,
+                            nested,
+                            required: nested || f.default.is_none(),
+                        }
+                    })
+                    .collect(),
+            })
+        })
+        .collect();
     Some(ApiSurface {
         main_locus: main_locus.name.name.clone(),
         binding,
@@ -525,8 +591,137 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         streams,
         excluded,
         ambiguous_replies: ambiguous,
-        json_types: json_types.into_iter().collect(),
+        json_types,
+        schemas,
     })
+}
+
+// ---- the description ----------------------------------------------------
+
+/// The description a binding serves and `hale describe` prints: the
+/// program's commands, reads and streams with their schemas, as one
+/// JSON object with every key in a fixed order and every list sorted,
+/// so the same program describes itself in the same bytes. It is
+/// rendered from the surface the binding was built from, so it can
+/// never name a subject the binding would refuse. The two notes are
+/// part of the document on purpose: a client that presents a gate
+/// as a proof or a read as a live view is misreading it.
+pub const API_DESCRIPTION_VERSION: i64 = 1;
+pub const GATE_NOTE: &str = "a role gate is a boundary check at the binding, never a proof over the program's internal call paths";
+pub const READ_NOTE: &str = "a read is a snapshot taken on the locus's own pool, carried with an as_of digest; a live view is a stream";
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_kind(kind: &str) -> &'static str {
+    match kind {
+        "Int" => "integer",
+        "Float" => "number",
+        "Bool" => "boolean",
+        _ => "string",
+    }
+}
+
+/// The description, as compact JSON.
+pub fn describe(surface: &ApiSurface) -> String {
+    // The socket path is deployment (I2), not form: a description
+    // names what the program is, never where one copy of it listens.
+    let mut b = String::new();
+    b.push_str(&format!(
+        "{{\"hale_api\":{},\"app\":{},\"notes\":{{\"gates\":{},\"reads\":{}}}",
+        API_DESCRIPTION_VERSION,
+        json_str(&surface.main_locus),
+        json_str(GATE_NOTE),
+        json_str(READ_NOTE)
+    ));
+    b.push_str(",\"commands\":[");
+    let mut cmds: Vec<&ApiCommand> = surface.commands.iter().collect();
+    cmds.sort_by(|a, c| a.name.cmp(&c.name));
+    for (i, c) in cmds.iter().enumerate() {
+        if i > 0 {
+            b.push(',');
+        }
+        let reply = match c.replier.and_then(|i| c.subscribers[i].ret.as_ref()) {
+            Some(r) => json_str(&json_type_name(r)),
+            None => "null".to_string(),
+        };
+        b.push_str(&format!(
+            "{{\"name\":{},\"subject\":{},\"payload\":{},\"reply\":{},\"keyed_by\":{},\"role\":null}}",
+            json_str(&c.name),
+            json_str(&c.subject),
+            json_str(&c.payload),
+            reply,
+            match &c.key {
+                Some((f, _)) => json_str(f),
+                None => "null".to_string(),
+            }
+        ));
+    }
+    b.push_str("],\"reads\":[");
+    let mut reads: Vec<&ApiRead> = surface.reads.iter().collect();
+    reads.sort_by(|a, c| a.name.cmp(&c.name));
+    for (i, r) in reads.iter().enumerate() {
+        if i > 0 {
+            b.push(',');
+        }
+        b.push_str(&format!(
+            "{{\"name\":{},\"type\":{},\"snapshot\":true,\"role\":null}}",
+            json_str(&r.name),
+            json_str(&json_type_name(&r.ty))
+        ));
+    }
+    b.push_str("],\"streams\":[");
+    let mut streams: Vec<&ApiStream> = surface.streams.iter().collect();
+    streams.sort_by(|a, c| a.name.cmp(&c.name));
+    for (i, st) in streams.iter().enumerate() {
+        if i > 0 {
+            b.push(',');
+        }
+        b.push_str(&format!(
+            "{{\"name\":{},\"subject\":{},\"payload\":{},\"role\":null}}",
+            json_str(&st.name),
+            json_str(&st.subject),
+            json_str(&st.payload)
+        ));
+    }
+    b.push_str("],\"schemas\":{");
+    for (i, sc) in surface.schemas.iter().enumerate() {
+        if i > 0 {
+            b.push(',');
+        }
+        b.push_str(&format!("{}:{{\"type\":\"object\",\"properties\":{{", json_str(&sc.name)));
+        for (j, f) in sc.fields.iter().enumerate() {
+            if j > 0 {
+                b.push(',');
+            }
+            if f.nested {
+                b.push_str(&format!("{}:{{\"$ref\":\"#/schemas/{}\"}}", json_str(&f.key), f.kind));
+            } else {
+                b.push_str(&format!("{}:{{\"type\":\"{}\"}}", json_str(&f.key), json_kind(&f.kind)));
+            }
+        }
+        b.push_str("},\"required\":[");
+        let req: Vec<String> = sc.fields.iter().filter(|f| f.required).map(|f| json_str(&f.key)).collect();
+        b.push_str(&req.join(","));
+        b.push_str("]}");
+    }
+    b.push_str("}}");
+    b
 }
 
 /// `hale run --api <path>`: put `api: unix(path, bound: 64, on_full:
@@ -720,7 +915,12 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "watch", subject: w.text, body: "" };
             return;
         }
-        self.refuse_here(client_id, "malformed", "a request is a \"call\", a \"read\" or a \"watch\"");
+        let d = std::json::string_field(t, "describe");
+        if d.kind == "bool" {
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "", body: "" };
+            return;
+        }
+        self.refuse_here(client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
     }
     fn on_reply(r: __ApiReply) {
 "#,
@@ -782,6 +982,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     b.push_str("locus __ApiBinding {\n    params {\n");
     b.push_str(&format!("        path: String = {};\n", q(path)));
     b.push_str(&format!("        bound: Int = {};\n", bound));
+    b.push_str(&format!("        description: String = {};\n", q(&describe(surface))));
     b.push_str(
         "        listen_fd: Int = -1;\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
     );
@@ -839,6 +1040,10 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64) -> String {
     fn on_ingress(i: __ApiIngress) {
         let rid = self.next_request;
         self.next_request = rid + 1;
+        if i.verb == "describe" {
+            self.reply(i.peer, rid, i.client_id, true, "\"value\":" + self.description);
+            return;
+        }
         if i.verb == "watch" {
 "#,
     );

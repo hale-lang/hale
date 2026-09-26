@@ -1709,6 +1709,7 @@ per line. A request is one of
 {"call": "Verdict", "payload": {...}}     a command, the payload the topic's type
 {"read": "billing.ledger"}                a snapshot of an exposed member
 {"watch": "PriceMoved"}                   attach to a stream
+{"describe": true}                        the description (spec/model.md § "The description")
 ```
 
 each with an optional `"id"` the client chooses (any JSON value,
@@ -1726,6 +1727,12 @@ increasing; a line that is not a request at all is refused with
 {"stream": "PriceMoved", "value": {...}}                                  a frame, after an attach
 {"stream": "PriceMoved", "dropped": 3}                                    frames the watcher's queue shed since its last frame
 ```
+
+A describe answers `{"ok": true, "value": <description>}`: the
+document `hale check --dump-api` emits for the same program, byte
+for byte, so a client learns the whole surface from the binding and
+needs no topic name in advance. `hale describe`, `hale call`, `hale
+watch`, `hale admin` and `hale mcp --app` are those clients.
 
 The refusal kinds are `malformed` (not a JSON object, no verb, no
 `payload` object on a call, or a payload that does not decode: the

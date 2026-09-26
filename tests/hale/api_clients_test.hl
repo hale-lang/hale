@@ -1,0 +1,164 @@
+// GH #1107 — `hale call` and `hale watch` read only the description a
+// running api binding serves.
+//
+// spec/semantics.md § "The api binding" and spec/model.md § "The
+// description": the binding answers `{"describe": true}` with its
+// commands, reads and streams, and the generic clients need nothing
+// else. The fixture builds a child program with the toolchain running
+// the test (`HALE_BIN`), then drives it with `hale call` (a command
+// answered by its handler's value, a read with its as_of, a refusal
+// on stderr with exit code 1, an unknown name) and `hale watch` (a
+// stream's frames, one JSON line each).
+
+fn app_source(sock: String) -> String {
+    return "type Claim { task: Int; who: String; }\n"
+        + "type Lease { task: Int; token: String; }\n"
+        + "type Tick { n: Int; }\n"
+        + "type Stats { claims: Int; }\n"
+        + "topic Claims { payload: Claim; subject: \"t.claim\"; }\n"
+        + "topic Ticks { payload: Tick; subject: \"t.tick\"; }\n"
+        + "locus Head {\n"
+        + "    contract { expose stats: Stats; }\n"
+        + "    params { stats: Stats = Stats { claims: 0 }; n: Int = 0; }\n"
+        + "    bus { subscribe Claims as on_claim; publish Ticks; }\n"
+        + "    fn on_claim(c: Claim) -> Lease {\n"
+        + "        self.stats.claims = self.stats.claims + 1;\n"
+        + "        return Lease { task: c.task, token: \"lease-\" + c.who };\n"
+        + "    }\n"
+        + "    run() {\n"
+        + "        while !self.draining && self.n < 300 {\n"
+        + "            std::time::sleep(20ms);\n"
+        + "            self.n = self.n + 1;\n"
+        + "            Ticks <- Tick { n: self.n };\n"
+        + "        }\n"
+        + "    }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    params { head: Head = Head { }; }\n"
+        + "    placement { head: cooperative(pool = work) where async_io; }\n"
+        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse); }\n"
+        + "    run() { std::time::sleep(8s); }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    // Collect stdout until it holds `count` newlines, for at most ~5s.
+    fn wait_lines(count: Int) -> Bool {
+        let mut i = 0;
+        while i < 250 {
+            self.out = self.out + (std::process::read_stdout(self.child) or "");
+            if count_lines(self.out) >= count {
+                return true;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                return;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+fn count_lines(s: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    let total = len(s);
+    while i < total {
+        if std::str::byte_at_unchecked(s, i) == 10 {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn run_tool(argv: String) -> std::process::ProcessOutput {
+    return std::process::run(argv)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let tag = to_string(std::process::pid());
+    let sock = "/tmp/hale-clients-" + tag + ".sock";
+    let src = std::io::fs::mktemp("/tmp/hale-1107-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, app_source(sock)) or discard;
+    let built = run_tool(hale + "\nbuild\n" + src);
+    std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
+    let bin = src[0..(len(src) - 3)];
+    let p = Proc { };
+    std::test::assert(p.start(bin), "the app started");
+
+    // The socket appears once the binding is born; the clients wait
+    // for it themselves through connect, so poll for the file.
+    let mut i = 0;
+    while i < 200 && !std::io::fs::file_exists(sock) {
+        std::time::sleep(25ms);
+        i = i + 1;
+    }
+    std::test::assert(std::io::fs::file_exists(sock), "the binding bound " + sock);
+
+    // hale describe: the running program's surface.
+    let d = run_tool(hale + "\ndescribe\n" + sock);
+    std::test::assert_eq_int(d.code, 0, "describe: " + d.stderr);
+    std::test::assert(std::str::contains(d.stdout, "\"name\": \"Claims\""), "describe lists the command: " + d.stdout);
+    std::test::assert(std::str::contains(d.stdout, "\"name\": \"head.stats\""), "describe lists the read: " + d.stdout);
+    std::test::assert(std::str::contains(d.stdout, "\"name\": \"Ticks\""), "describe lists the stream: " + d.stdout);
+
+    // hale call: a command answered by its handler's value.
+    let c1 = run_tool(hale + "\ncall\n" + sock + "\nClaims\n{\"task\": 7, \"who\": \"dev\"}");
+    std::test::assert_eq_int(c1.code, 0, "call Claims: " + c1.stderr);
+    std::test::assert(std::str::contains(c1.stdout, "\"token\": \"lease-dev\""), "the reply is the return value: " + c1.stdout);
+
+    // hale call: a read, with its as_of.
+    let c2 = run_tool(hale + "\ncall\n" + sock + "\nhead.stats");
+    std::test::assert_eq_int(c2.code, 0, "call head.stats: " + c2.stderr);
+    std::test::assert(std::str::contains(c2.stdout, "\"claims\": 1"), "the read is the field's copy: " + c2.stdout);
+    std::test::assert(std::str::contains(c2.stdout, "\"as_of\": \"sha256:"), "the read carries as_of: " + c2.stdout);
+
+    // hale call: a refusal is on stderr with exit code 1.
+    let c3 = run_tool(hale + "\ncall\n" + sock + "\nClaims\n{\"task\": \"x\", \"who\": \"dev\"}");
+    std::test::assert_eq_int(c3.code, 1, "a refused call exits 1: " + c3.stdout);
+    std::test::assert(std::str::contains(c3.stderr, "malformed"), "the refusal names its kind: " + c3.stderr);
+
+    // hale call: a name the description does not have.
+    let c4 = run_tool(hale + "\ncall\n" + sock + "\nNope");
+    std::test::assert_eq_int(c4.code, 1, "an unknown name exits 1");
+    std::test::assert(std::str::contains(c4.stderr, "neither a command nor a read"), "the message lists what exists: " + c4.stderr);
+
+    // hale watch: frames, one JSON line each.
+    let w = Proc { };
+    std::test::assert(w.start(hale + "\nwatch\n" + sock + "\nTicks"), "hale watch started");
+    std::test::assert(w.wait_lines(3), "three frames arrived: " + w.out);
+    std::test::assert(std::str::starts_with(w.out, "{\"stream\":\"Ticks\",\"value\":{\"n\":"), "a frame is the published value: " + w.out);
+    w.stop();
+
+    p.stop();
+    std::io::fs::unlink(src) or discard;
+    std::io::fs::unlink(bin) or discard;
+}

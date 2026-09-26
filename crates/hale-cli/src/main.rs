@@ -31,6 +31,7 @@ use hale_lsp as lsp;
 mod fleet;
 mod dna;
 mod iris;
+mod api_client;
 mod mcp;
 mod pkg;
 mod replay;
@@ -189,7 +190,29 @@ fn main() -> ExitCode {
     // binary (version-locked by construction) or call hale-lsp
     // directly.
     if cmd == "mcp" {
-        return mcp::run_mcp();
+        // GH #1107: `hale mcp --app <socket>` serves a running api
+        // binding's commands as tools and its reads as resources.
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return match rest.as_slice() {
+            [] => mcp::run_mcp(),
+            [flag, sock] if flag == "--app" => mcp::run_mcp_app(sock),
+            _ => {
+                eprintln!("usage: hale mcp [--app <socket>]");
+                ExitCode::from(2)
+            }
+        };
+    }
+
+    // GH #1107: the generic clients of an api binding. They read the
+    // description the binding serves and nothing else.
+    if cmd == "describe" || cmd == "call" || cmd == "watch" || cmd == "admin" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return match cmd.as_str() {
+            "describe" => api_client::run_describe(&rest),
+            "call" => api_client::run_call(&rest),
+            "watch" => api_client::run_watch(&rest),
+            _ => api_client::run_admin(&rest),
+        };
     }
 
     // `fmt` is discovery-driven like `test`: a bare `hale fmt`
@@ -448,6 +471,15 @@ fn usage() {
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
     eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
     eprintln!("    hale mcp                      stdio Model Context Protocol server (agent tools)");
+    eprintln!("        [--app <socket>: a running api binding's commands as tools, reads as resources]");
+    eprintln!();
+    eprintln!("    hale describe <socket|file>   an api binding's description: commands, reads, streams, schemas");
+    eprintln!("        [--openapi | --mcp] [-o <path>]");
+    eprintln!("    hale call  <socket> <name>    send a command (with a JSON payload) or a read, print the answer");
+    eprintln!("        [<json>]");
+    eprintln!("    hale watch <socket> <stream>  attach to a stream, print frames as they arrive");
+    eprintln!("    hale admin <socket>           a local page over the description, calling through the socket");
+    eprintln!("        [--port <n>]");
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
@@ -727,11 +759,53 @@ to check is derived per document from the client's `textDocument`
 URIs. Not meant to be run by hand — point an editor at `hale lsp`.
 ",
         "mcp" => "\
-hale mcp                      stdio Model Context Protocol server (agent tools)
+hale mcp [--app <socket>]     stdio Model Context Protocol server (agent tools)
 
 Speaks MCP over stdin and stdout, exposing the toolchain to a host
-without a shell. No target and no flags. Its tools self-exec this
-binary, so the compiler an agent drives is the one it is talking to.
+without a shell. No target. Its tools self-exec this binary, so the
+compiler an agent drives is the one it is talking to.
+
+`--app <socket>` serves a RUNNING program instead: every command of
+its api binding is a tool (the payload schema is the tool's input
+schema) and every read is a resource (`hale://read/<name>`), read
+from the description the binding serves. `claude mcp add app -- hale
+mcp --app /run/app.sock` is the whole setup.
+",
+        "describe" => "\
+hale describe <socket | file.hl | dir> [--openapi | --mcp] [-o <path>]
+
+The description of an api binding: its commands (subscribed topics,
+with the payload schema and the reply type), reads (exposed members,
+snapshots with an as_of digest) and streams (published topics), plus
+the JSON Schema of every type they carry. From a socket it is what the
+running binding serves; from a source it is what `hale check
+--dump-api` emits, and the two are the same bytes. `--openapi` prints
+the OpenAPI 3.1 form, `--mcp` the MCP tool and resource shapes.
+",
+        "call" => "\
+hale call <socket> <command-or-read> [<json payload>]
+
+Sends one command (its payload is the JSON argument, `{}` when
+omitted) or one read to a running api binding and prints the answer:
+the handler's return value, `{\"accepted\": true}` for a command no
+handler answers, or a read's value with its as_of. A refusal is
+printed on stderr with its kind and the exit code is 1. The name is
+looked up in the description the binding serves.
+",
+        "watch" => "\
+hale watch <socket> <stream>
+
+Attaches to a published topic of a running api binding and prints
+every frame as one JSON line until the binding closes the connection.
+A refusal to attach is printed on stderr with exit code 1.
+",
+        "admin" => "\
+hale admin <socket> [--port <n>]
+
+Serves a page on 127.0.0.1 (port 7473 by default) over a running api
+binding's description: a form per command, a button per read, a live
+tail per stream, every action one request to the binding. Nothing is
+configured; the description is the page.
 ",
         _ => return false,
     };
@@ -4998,6 +5072,7 @@ fn run_fleet(rest: &[String]) -> ExitCode {
 /// evaluations.
 const PER_SEED_FLAGS: &[&str] = &[
     "--dump-topology",
+    "--dump-api",
     "--dump-model",
     "--check-topology",
     "--check-topology-shape",
@@ -5018,6 +5093,9 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-effects-manifest", false),
     ("--dump-resource-budget", false),
     ("--dump-topology", false),
+    // GH #1107: the api binding's description, the model's first
+    // wire form. `=<path>` writes it, bare prints it.
+    ("--dump-api", false),
     // GH #476 Change 2: derive + print the canonical
     // ApplicationModel (internal format). The demand surface the
     // `hale model dump` shim routes through.
@@ -6283,6 +6361,51 @@ fn run_check_impl_labelled(
                 }
             }
             None => print!("{}", artifact),
+        }
+    }
+    // GH #1107: the api binding's description, from the checked
+    // bundle. Same refusal rule as the artifact. A program with no
+    // `api:` entry prints nothing and succeeds: there is nothing to
+    // describe, and `hale describe` says so.
+    let dump_api = argv.iter().any(|a| a == "--dump-api");
+    let dump_api_to = argv
+        .iter()
+        .find_map(|a| a.strip_prefix("--dump-api="))
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
+    if dump_api || dump_api_to.is_some() {
+        if let Some(d) = checked
+            .iter()
+            .find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim)
+        {
+            eprintln!(
+                "refusing to emit an api description: `{}` does not \
+                 typecheck, so its description would name a program \
+                 that does not exist. Fix the {} first.",
+                target.display(),
+                d.kind_str()
+            );
+            return 1;
+        }
+        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+        let text = match hale_syntax::api_gen::api_surface(&programs) {
+            Some(surface) => {
+                let compact = hale_syntax::api_gen::describe(&surface);
+                match serde_json::from_str::<serde_json::Value>(&compact) {
+                    Ok(v) => serde_json::to_string_pretty(&v).unwrap_or(compact) + "\n",
+                    Err(_) => compact + "\n",
+                }
+            }
+            None => String::new(),
+        };
+        match &dump_api_to {
+            Some(path) => {
+                if let Err(e) = std::fs::write(path, &text) {
+                    eprintln!("could not write {}: {}", path, e);
+                    return 2;
+                }
+            }
+            None => print!("{}", text),
         }
     }
     // GH #476 Change 2: the canonical-model demand surface. Same
