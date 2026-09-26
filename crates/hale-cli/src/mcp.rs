@@ -242,11 +242,11 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "hale_dna_work",
-            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, submit, settle, release, friction, run. Positions are the graph's position:<name> ids. Prints one JSON object.",
+            "description": "A leg's verb against a DNA head's API (hale dna work): next (claim the next attempt for a position), brief (the hat, or --render prompt|text|agent), renew, submit, settle, release, friction, run (one cycle through the project's performers), loop (worker mode, --parallel N). An external harness plugs in with next, brief --render agent, its own work, and submit --evidence-file. Positions are the graph's position:<name> ids. Prints one JSON object.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "verb": { "type": "string", "enum": ["next", "brief", "renew", "submit", "settle", "release", "friction", "run"] },
+                    "verb": { "type": "string", "enum": ["next", "brief", "renew", "submit", "settle", "release", "friction", "run", "loop"] },
                     "args": { "type": "array", "items": { "type": "string" }, "description": "The verb's flags as given on the command line, e.g. [\"--as\", \"position:agent\", \"--api\", \"http://127.0.0.1:8793\"]." },
                     "project": { "type": "string", "description": "The project directory (default: the current one)." }
                 },

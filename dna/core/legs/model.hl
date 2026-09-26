@@ -1,0 +1,155 @@
+// dna/core/legs/model.hl — the model leg (GH #946 slice 4, second PR).
+//
+// A model performs a Work through the project's catalog: the router
+// (`dna::ModelRouter`), its adapters (OpenAI-shaped, Anthropic, a local
+// model, a harness under confinement, the fakes) and the tape
+// (`dna::RecordedModel`, wrapping any of them) are the core's, since
+// the owner's editor and leader still call them in process until their
+// stages land; the leg wires them behind the performer interface and
+// runs them out of process, per task, with nothing held between tasks.
+// Every call is collected here as evidence — what the router answered
+// (the backend, the model, the tokens, the cost, the wall time) under the
+// prompt and context digests of the request — and handed back with the
+// outcome, so the owner journals it as `model.called` rows on the
+// attempt (tokens per task hold out of process). The adapters' own
+// `ModelCalled` publishes stay theirs: a leg is one run of a program, with
+// no bus pump between its call and its answer. A rate-limited call is
+// backed off inside the attempt — a bounded, doubling wait — and every
+// wait is recorded as evidence of its own, so the attempt's cost in time
+// is in the record beside its cost in tokens.
+import ".." as dna;
+
+// The evidence of one call, as the owner's `journal_calls` reads it.
+fn evidence_json(ev: dna::ModelEvidence) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("adapter", ev.adapter);
+    b.string_field("backend", ev.backend);
+    b.string_field("endpoint", ev.endpoint);
+    b.string_field("credential", ev.credential);
+    b.string_field("requested_model", ev.requested_model);
+    b.string_field("reported_model", ev.reported_model);
+    b.string_field("params", ev.params);
+    b.string_field("prompt_digest", ev.prompt_digest);
+    b.string_field("context_digest", ev.context_digest);
+    b.string_field("knowledge_bindings", ev.knowledge_bindings);
+    b.string_field("tool_grant", ev.tool_grant);
+    b.string_field("response_digest", ev.response_digest);
+    b.int_field("input_tokens", if ev.input_tokens < 0 { 0 } else { ev.input_tokens });
+    b.int_field("output_tokens", if ev.output_tokens < 0 { 0 } else { ev.output_tokens });
+    b.string_field("elapsed", ev.elapsed);
+    b.int_field("cost_micros", if ev.cost_micros < 0 { 0 } else { ev.cost_micros });
+    b.string_field("retry_of", ev.retry_of);
+    b.string_field("data_class", ev.data_class);
+    b.string_field("refused", ev.refused);
+    b.end_object();
+    return b.result();
+}
+
+// `ms` milliseconds of waiting, in 50ms steps (the runtime's sleep takes a literal).
+@unbounded
+fn sleep_for_ms(ms: Int) {
+    let mut left = ms;
+    while left > 0 { std::time::sleep(50ms); left = left - 50; }
+}
+
+// Whether a refusal is the endpoint asking for time: HTTP 429, or the
+// words the adapters and gateways use for it.
+fn rate_limited(refused: String) -> Bool {
+    return std::str::contains(refused, "http 429") || std::str::contains(refused, "rate limit") || std::str::contains(refused, "rate-limit") || std::str::contains(refused, "too many requests");
+}
+
+// The role a request carries, by the work kind: what the selection
+// policy weighs.
+fn role_of(performer_kind: String) -> String {
+    if performer_kind == "edit" { return "edit"; }
+    if performer_kind == "service" { return "classify"; }
+    return "review";
+}
+
+locus ModelPerformer {
+    params {
+        name: String = "model";
+        kinds: String = "agent service software"; // the work kinds the model leg takes
+        router: dna::ModelRouter = dna::ModelRouter { };
+        // a rate-limited call: up to `retries` more tries, the first after
+        // `backoff_ms`, each wait double the last, each recorded
+        backoff_ms: Int = 1000;
+        retries: Int = 3;
+        calls: String = ""; // the calls of the attempt in hand, JSON objects comma-joined
+        performed: Int = 0;
+        waited_ms: Int = 0; // what the attempt in hand waited on rate limits
+    }
+    fn on_called(ev: dna::ModelEvidence) {
+        self.calls = self.calls + (if len(self.calls) > 0 { ", " } else { "" }) + evidence_json(ev);
+    }
+    fn kind() -> String { return "model"; }
+    fn takes(performer_kind: String) -> Bool { return dna::word_in(performer_kind, self.kinds); }
+    // The wait as evidence: a call that was not made, saying why and for how long.
+    fn waited(brief: Brief, refused: String, ms: Int) {
+        self.on_called(dna::ModelEvidence {
+            attempt_id: brief.attempt_id, adapter: "legs", backend: self.router.last_backend,
+            prompt_digest: prompt_digest(brief.rendered), context_digest: dna::digest_of(brief.hat),
+            elapsed: to_string(ms) + "ms", retry_of: brief.attempt_id, data_class: std::json::find_string_field(brief.hat, "data_class"),
+            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused
+        });
+    }
+    // One call through the router, its answer as evidence.
+    fn asked(brief: Brief, req: dna::ModelRequest) -> dna::ModelResult {
+        let t0 = std::time::monotonic();
+        let r = self.router.ask(req);
+        self.on_called(dna::ModelEvidence {
+            attempt_id: brief.attempt_id, adapter: "legs-router", backend: r.backend, requested_model: r.model, reported_model: r.model,
+            prompt_digest: req.prompt_digest, context_digest: dna::digest_of(req.context), knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            response_digest: if r.ok { dna::digest_of(r.output) } else { "" }, input_tokens: r.tokens, output_tokens: 0, cost_micros: r.cost_micros,
+            elapsed: to_string(std::time::monotonic() - t0), retry_of: req.retry_of, data_class: req.data_class, refused: r.refused
+        });
+        return r;
+    }
+    @unbounded
+    fn perform(brief: Brief, hands: Hands) -> Performance {
+        self.performed = self.performed + 1;
+        self.calls = "";
+        self.waited_ms = 0;
+        let class = std::json::find_string_field(brief.hat, "data_class");
+        let mut req = dna::ModelRequest {
+            attempt_id: brief.attempt_id, role: role_of(brief.performer_kind),
+            prompt: brief.rendered, prompt_digest: prompt_digest(brief.rendered),
+            context: brief.hat, context_bytes: len(brief.hat) + len(brief.rendered),
+            knowledge_bindings: std::json::find_string_field(brief.hat, "knowledge_bindings"),
+            tool_grant: std::json::find_string_field(brief.hat, "tool_grant"),
+            data_class: if len(class) > 0 { class } else { "internal" },
+            cost_ceiling_micros: std::str::parse_int(std::json::find_string_field(brief.hat, "cost_ceiling")) or 0
+        };
+        let mut r = self.asked(brief, req);
+        let mut tries = 0;
+        let mut wait = self.backoff_ms;
+        while !r.ok && rate_limited(r.refused) && tries < self.retries {
+            self.waited(brief, r.refused, wait);
+            sleep_for_ms(wait);
+            self.waited_ms = self.waited_ms + wait;
+            wait = wait * 2;
+            tries = tries + 1;
+            req.retry_of = brief.attempt_id;
+            r = self.asked(brief, req);
+        }
+        let calls = "[" + self.calls + "]";
+        if !r.ok {
+            return Performance { disposition: "failed", narrative: "the model did not answer: " + r.refused + (if tries > 0 { " (after " + to_string(tries) + " backed-off retries, " + to_string(self.waited_ms) + "ms)" } else { "" }), calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+        }
+        // the prompt as sent is the attempt's receipt, when its class may be a git receipt
+        let b = std::json::Builder { };
+        b.begin_array();
+        if req.data_class == "public" || req.data_class == "internal" {
+            b.begin_object();
+            b.string_field("class", req.data_class);
+            b.string_field("body", brief.rendered);
+            b.end_object();
+        }
+        b.end_array();
+        return Performance {
+            disposition: "done", result: r.output, narrative: "the " + r.backend + " backend (" + r.model + ") answered" + (if tries > 0 { " after " + to_string(tries) + " backed-off retries, " + to_string(self.waited_ms) + "ms waited" } else { "" }),
+            calls: calls, receipts: b.result(), prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION
+        };
+    }
+}

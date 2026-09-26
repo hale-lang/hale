@@ -1613,8 +1613,25 @@ memory is named to it.
   `run` is one cycle through the project's performers
   (`dna/org/work.hl`, generated at init): a person's leg renders the
   brief and leaves the outcome to `submit`; a deterministic performer
-  wins for the work kinds it takes and settles; the model performer is
-  the model leg's, which follows. A performer is handed the brief and
+  wins for the work kinds it takes and settles; the model performer
+  (`legs::ModelPerformer`) is the catalog's router behind the
+  performer interface, out of process, one task per run: the brief
+  rendered as a prompt, the answer the result, and every call the
+  router answered handed back as evidence (backend, reported model,
+  tokens, cost, wall time under the prompt and context digests), which
+  the owner journals as `model.called` rows on the attempt; a
+  rate-limited call is backed off inside the attempt (bounded,
+  doubling, the lease held) and each wait is a row of evidence of its
+  own, so the attempt's cost in time is in the record beside its cost
+  in tokens. `--performer` names the performer instead of the
+  catalog's choice. `loop --parallel N` is a worker: N supervised
+  child processes, each `run` as its own holder `position:<name>#<n>`
+  (two workers of one position never share a lease), started again as
+  they end, paused when nothing awaits; `--once` runs each once,
+  `--drain` (a marker beside the leg) ends a running loop once its
+  children have; nothing is held between tasks. The catalog and the
+  tape (`models.hl`, `tape.hl`) stay in the core while the editor and
+  leader call them in process. A performer is handed the brief and
   the hands as interfaces — git in scratch, the forge (it decides, a
   leg never merges), the toolchain; deploy and the heart's API refuse,
   naming #987 — and answers a performance (a result struct until #732).

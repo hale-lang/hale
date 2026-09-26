@@ -234,6 +234,7 @@ pub const POND_FILES: &[EmbeddedFile] = at![
 pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/client.hl",
     "dna/core/legs/hands.hl",
+    "dna/core/legs/model.hl",
     "dna/core/legs/performer.hl",
     "dna/core/legs/render.hl",
     "dna/core/legs/verbs.hl",

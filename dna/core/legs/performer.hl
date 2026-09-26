@@ -116,10 +116,19 @@ locus PerformerCatalog {
         if performer_kind == "human" || !self.model.takes(performer_kind) { return "person"; }
         return "model";
     }
+    // The choice, or the one a worker was told to be (`--performer`): a
+    // forced performer that takes nothing of the kind still refuses.
+    fn chosen_or(performer_kind: String, forced: String) -> String {
+        if forced == "person" || forced == "deterministic" || forced == "model" { return forced; }
+        return self.chosen(performer_kind);
+    }
     // The render mode a performer is briefed in.
     fn mode_for(who: String) -> String { return if who == "person" { "text" } else if who == "model" { "prompt" } else { "agent" }; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
-        let who = self.chosen(brief.performer_kind);
+        return self.perform_as(self.chosen(brief.performer_kind), brief, hands);
+    }
+    // The performance by the one chosen, or the one a worker was told to be.
+    fn perform_as(who: String, brief: Brief, hands: Hands) -> Performance {
         if who == "deterministic" { return self.deterministic.perform(brief, hands); }
         if who == "model" { return self.model.perform(brief, hands); }
         return self.person.perform(brief, hands);

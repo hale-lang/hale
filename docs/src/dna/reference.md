@@ -13,7 +13,8 @@ hale dna --embedded-digest [--from-tree <dir>]
                              checkout, what that tree would embed (unequal = the binary predates it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
 hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([legs](./legs.md)): next, brief,
-                             renew, submit, settle, release, friction, run; --as position:<name>, --api <origin>
+                             renew, submit, settle, release, friction, run; --as position:<name>, --api <origin>;
+                             loop --parallel N is a worker (N children, holders position:<name>#n); loop --drain
 hale dna memory migrate [dir]
                              apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
                              dna/compose.yaml) and print the record's spine and head DSNs

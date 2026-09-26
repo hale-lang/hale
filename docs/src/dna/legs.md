@@ -23,7 +23,9 @@ hale dna work submit --as … --attempt <id> --token <n> --result <text> [--resu
 hale dna work settle --attempt <id> --token <n> [--wait <secs>]
 hale dna work release --as … --attempt <id> --token <n> --why <text>
 hale dna work friction --as position:agent [--attempt <id>] --text <what got in the way>
-hale dna work run --as position:agent [--wait <secs>]
+hale dna work run --as position:agent [--performer person|deterministic|model] [--wait <secs>]
+hale dna work loop --as position:agent [--parallel N] [--once] [--only <kind>] [--performer …]
+hale dna work loop --drain
 ```
 
 `--api` names the head (default `HALE_DNA_API`, else
@@ -92,7 +94,29 @@ files what got in the way as a row nobody admits. `brief` answers in
 the same envelope as the rest (`verb`, `state`, and the `hat`).
 
 **`run`** is one cycle through the project's performers: claim,
-brief, perform, submit, settle.
+brief, perform, submit, settle. `--performer` names the performer to
+be, instead of the catalog's choice: `person` leaves a Work the model
+would take to a person.
+
+## Worker mode: `loop`
+
+`hale dna work loop --as position:agent --parallel N` is a worker: `N`
+child processes, each this program run once (`run`), each its own
+holder — `position:agent#1` … `position:agent#N`, so two workers of
+one position never share a lease — supervised: a child that ends is
+started again, after a pause (`--idle-ms`, 2000) when it found nothing
+to claim. Every child's answer is printed as it ends, as a line
+naming the worker and its holder, and the loop's own line when it
+ends. `--once` runs each child once; `--only <kind>` claims one work
+kind; `--performer`, `--capabilities`, `--classes`, `--orgs` and
+`--ttl` pass through to the children. `--parallel` is 1..64.
+
+`hale dna work loop --drain`, on its own, tells the loop running in
+this project to take no new work and end once its children have: it
+leaves a marker beside the leg (`.hale/dna/legs/drain`), which the
+loop reads between tasks and removes when it starts. Nothing is held
+between tasks: a worker killed mid-task leaves a lease that expires,
+and the owner asks again.
 
 ## The performers
 
@@ -105,8 +129,11 @@ performer of each kind:
   it the work kinds it takes and it wins for them
   (`legs::FixedAnswer { kinds: "agent", result: "…" }` is the
   smallest one; `NoDeterministic` takes nothing);
-- a **model**: the model leg, which the next PR brings; until then
-  `NoModel` refuses and the work is a person's.
+- a **model**: the model leg — the catalog's agent router
+  (`agent_models()` from `dna/org/models.hl`) behind the performer,
+  `legs::ModelPerformer { router: agent_models() }`. It takes the
+  `agent`, `service` and `software` kinds (`kinds`); `NoModel` takes
+  nothing.
 
 A performer is handed a brief and the hands it may use — git in a
 scratch worktree (never the primary checkout), the forge through
@@ -114,6 +141,45 @@ scratch worktree (never the primary checkout), the forge through
 and the heart's API refuse until GH #987 hands them over — and answers
 with a performance: the disposition and result, the calls it made,
 the receipts to file, the digest of what it was shown.
+
+## The model leg
+
+The model performer runs the catalog — the router, its adapters (an
+OpenAI-shaped endpoint, Anthropic, a local model, a harness under
+confinement, the fakes) and the tape (`RecordedModel`, wrapping any of
+them) — out of process, one task per run, with nothing held between
+tasks. The brief is rendered as a prompt (`--render prompt`), sent
+through the router with the Work's data class, knowledge bindings,
+tool grant and cost ceiling from the hat, and the answer is the
+result. Every call the router answers is **evidence**: the backend,
+the model it reported, the tokens, the cost, the wall time, under the
+prompt and context digests, handed back with the outcome; the owner
+journals it as `model.called` rows on the attempt, so tokens per task
+hold out of process as they do in it. The prompt as sent is filed as
+the attempt's receipt when its class allows (`public`, `internal`).
+
+A **rate-limited** call (HTTP 429, or a backend saying so) is backed
+off inside the attempt: up to `retries` (3) more tries, the first
+after `backoff_ms` (1000), each wait double the last, the lease held
+meanwhile. Each wait is a row of evidence of its own — `refused:
+rate limited, backed off 1000ms: …` — so the attempt's cost in time
+sits in the record beside its cost in tokens, and the narrative says
+what it waited. A call still refused after the retries is a `failed`
+outcome, with the reason.
+
+`hale dna models`, the probe, stays a host verb: it asks each backend
+of the catalog one small request in process. The catalog and the tape
+stay in the core (`models.hl`, `tape.hl`) while the owner's editor
+and leader call them in process; they move when their stages land.
+
+## An external harness
+
+A harness of your own plugs in with the verbs, and needs no performer
+in `work.hl`: `next` claims, `brief --render agent` is the prompt with
+the hands, the harness does the work, `submit --evidence-file
+calls.json` hands it back with its calls as evidence (the array of
+`model.called` bodies) and the digests the brief reported. Through
+`hale mcp` the same verbs are one tool, `hale_dna_work`.
 
 ## Through `hale mcp`
 
