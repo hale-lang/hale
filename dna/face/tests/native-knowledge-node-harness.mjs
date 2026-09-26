@@ -31,30 +31,12 @@ export async function startNodeService(options = {}) {
   const commandPath = service.apiPath + '/dna/knowledge/commands';
   // One connection per request: the API is restarted on the same port
   // whenever the actor or the grants change, and a pooled keep-alive
-  // socket to the old process would fail the next fetch. A read is
-  // retried, bounded, while the head says memory has not caught up with
-  // the record (the host projects on its tick) or the snapshot moved; a
-  // POST is never retried.
+  // socket to the old process would fail the next fetch. No retry: a read
+  // that needs the projection at the Record head follows `quiesce()`, and a
+  // dead head surfaces as its own connection error at once.
   async function request(path, init = {}) {
-    const once = async () => {
-      const response = await fetch(service.origin + path, { signal: AbortSignal.timeout(15_000), ...init, headers: { Connection: 'close', ...(init.headers || {}) } });
-      return { status: response.status, body: await response.json() };
-    };
-    const method = (init.method || 'GET').toUpperCase();
-    if (method !== 'GET') return once();
-    const deadline = Date.now() + 20_000;
-    let last;
-    while (true) {
-      try { last = await once(); } catch (error) {
-        if (Date.now() >= deadline) throw error;
-        await new Promise(resolve => setTimeout(resolve, 100)); continue;
-      }
-      const code = last.body?.error?.code;
-      const waiting = last.status === 503 && last.body?.error?.retryable === true
-        || last.status === 409 && code === 'snapshot_changed' && last.body?.error?.retryable === true;
-      if (!waiting || Date.now() >= deadline) return last;
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    const response = await fetch(service.origin + path, { signal: AbortSignal.timeout(15_000), ...init, headers: { Connection: 'close', ...(init.headers || {}) } });
+    return { status: response.status, body: await response.json() };
   }
   return {
     ...service, commandPath, request,

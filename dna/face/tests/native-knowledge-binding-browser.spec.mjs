@@ -1,14 +1,15 @@
 // Real binding proposals, canonical Reviews, native effects and graph readback.
 import { test as base, expect } from '@playwright/test';
 import { startBindingService, bindingEnvironmentPresent, bindingGrant } from './native-knowledge-binding-harness.mjs';
+import { serviceFixtureTimeout } from './native-command-harness.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
-  service: async ({ grants }, use, testInfo) => {
+  service: [async ({ grants }, use, testInfo) => {
     const service = await startBindingService({ grants });
     try { await use(service); }
     finally { await service.stop(); await testInfo.attach('native-binding-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
-  },
+  }, { timeout: serviceFixtureTimeout }],
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
@@ -123,14 +124,15 @@ test('native bindings: stale admission preserves the graph and sends no replacem
 });
 
 test('native bindings: approved competing candidate reports refused effect rather than graph success', async ({ page, service }) => {
-  test.skip(true, 'Gated on GH #1148: under the real host the composed head dies with SIGSEGV in the pagination case, and the page offers no second competing candidate while the first is pending.');
   const first = await propose(page, service); await dismiss(page); const second = await propose(page, service);
   await decide(page, service, first); await decide(page, service, second, { effect: 'refused' }); await openResult(page, service, second);
   await expect(receipt(page).getByRole('button', { name: 'Review', exact: true })).toContainText('approve'); await expect(receipt(page).getByRole('button', { name: 'Binding effect', exact: true })).toContainText('refused'); await expect(receipt(page)).not.toContainText('Binding observed');
 });
 
-test('native bindings: removal absence requires complete unfiltered pagination and survives a failed continuation', async ({ page, service }) => {
-  test.skip(true, 'Gated on GH #1148: under the real host the composed head dies with SIGSEGV in the pagination case, and the page offers no second competing candidate while the first is pending.');
+// Declared skipped, so the fixture never starts for it.
+test.skip('native bindings: removal absence requires complete unfiltered pagination and survives a failed continuation', {
+  annotation: { type: 'issue', description: 'Gated on GH #1148: under the real host the composed head dies with SIGSEGV partway through the 27 reviewed bindings and their restarts.' },
+}, async ({ page, service }) => {
   test.setTimeout(180_000); let chosen;
   // Every tuple is a real admitted, independently reviewed native effect.
   // Bound setup lifetimes; this proves full-history restart and pagination,

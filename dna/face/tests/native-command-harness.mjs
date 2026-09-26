@@ -25,6 +25,14 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const webrootDefault = fileURLToPath(new URL('../web/', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * The service fixture's own budget, apart from its case's: the first
+ * service on a project path builds the organization cold (about 80 s on a
+ * CI runner), which no case budget should pay. A spec gives its `service`
+ * fixture `{ timeout: serviceFixtureTimeout }`.
+ */
+export const serviceFixtureTimeout = 300_000;
+
 /** What a native command lane needs: the toolchain (the host), the composed API, the memory fixture, and both owners. */
 export const nativeCommandEnvironmentPresent = () =>
   ['HALE_BIN', 'HALE_NATIVE_COMMAND_API', 'HALE_FACE_MEMORY_BIN'].every(name => Boolean(process.env[name])) && Boolean(memoryOwner()) && Boolean(nervesOwner());
@@ -104,15 +112,19 @@ export async function startService(options = {}) {
   assert(path.isAbsolute(parent), 'Native evidence parent must be absolute');
   fs.mkdirSync(parent, { recursive: true });
   const evidence = fs.mkdtempSync(path.join(parent, 'native-command-browser-'));
-  // One project path per process: the host's build cache keys the
-  // organization's build on the seed's path and contents, so every
-  // service this worker starts after the first gets the organization built
-  // in seconds rather than a minute.
+  // One project path per run and parallel slot: the host's build cache keys
+  // the organization's build on the seed's path and contents, so every
+  // service after the first gets the organization built in seconds rather
+  // than a minute. Not per worker process: Playwright replaces the worker
+  // after a failed case, and a path keyed on its pid made every case after
+  // a failure build cold again. The runner (the worker's parent) and the
+  // slot index both survive that replacement; two slots never share a path.
   if (options.rootPrefix) {
     assert(path.isAbsolute(options.rootPrefix), 'Native rootPrefix must be absolute');
     fs.mkdirSync(path.dirname(options.rootPrefix), { recursive: true });
   }
-  const root = options.rootPrefix ? path.join(fs.mkdtempSync(options.rootPrefix), 'project') : path.join(os.tmpdir(), `hale-face-browser.native-${process.pid}`, 'project');
+  const slot = `${process.ppid}-${process.env.TEST_PARALLEL_INDEX ?? process.pid}`;
+  const root = options.rootPrefix ? path.join(fs.mkdtempSync(options.rootPrefix), 'project') : path.join(os.tmpdir(), `hale-face-browser.native-${slot}`, 'project');
   const policy = path.join(evidence, 'authority.json');
   const isolated = isolatedEnvironment();
   const env = Object.fromEntries([
@@ -221,9 +233,28 @@ export async function startService(options = {}) {
     : [501, 503].includes(result.status) && (result.json.error?.retryable === true || ['record_unavailable', 'commands_unavailable'].includes(result.json.error?.code));
   const read = suffix => wait('native source read', () => get(suffix), result => !transient(result));
   const apiPath = () => `/api/hale/v1/applications/${encodeURIComponent(application)}`;
+  // Quiet is a stable Record the head can read. The host projects memory on
+  // its tick, and until it has projected the Record's head the head answers
+  // a Knowledge read 503 `knowledge_projection_unavailable` (retryable). A
+  // browser read does not retry that; it shows "Knowledge unavailable", so a
+  // page opened on a stable Record the projection has not reached stays
+  // there. With the host paused or no API up there is nothing to wait for.
+  // Stable means unchanged for longer than one host tick (HOST_TICK, 1 s):
+  // a request row the host has yet to relay moves the Record again on the
+  // next tick, and a shorter window fits between two.
+  async function stableHead() {
+    let head = journal().head, since = Date.now();
+    await wait('stable Record', async () => { await delay(100); const next = journal().head; if (next !== head) { head = next; since = Date.now(); } return Date.now() - since; }, quiet => quiet >= 1500);
+    return head;
+  }
+  const projecting = result => result.status === 503 && result.json.error?.code === 'knowledge_projection_unavailable';
   async function quiesce() {
-    let head = journal().head, same = 0;
-    await wait('stable Record', async () => { await delay(100); const next = journal().head; same = next === head ? same + 1 : 0; head = next; return same; }, count => count >= 3);
+    for (let round = 0; ; round++) {
+      const head = await stableHead();
+      if (!alive(api) || !alive(host) || host.paused) return;
+      await wait('Knowledge projection at the Record head', () => get(apiPath() + '/dna/knowledge/nodes?limit=1'), result => !projecting(result), 30_000);
+      if (journal().head === head || round >= 4) return;
+    }
   }
   // `hale dna dev` in place of the Body and the relay: it migrates memory and
   // the nerves from the owners' URLs (which reach no other process), builds
@@ -345,7 +376,7 @@ export async function startService(options = {}) {
       // still name what they name.
       startBody: () => startHost(), startRelay: async () => { assert(alive(host), 'The host is the relay: start it'); },
       stopBody: () => stopHost(host?.paused), stopRelay: () => stopHost(host?.paused),
-      processes: () => [...[...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })), ...hostChildren(root).map(({ name, pid }) => ({ name, pid, alive: running(pid), paused: host?.paused ?? false }))],
+      processes: () => [...[...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })), ...hostChildren(root).filter(({ pid }) => running(pid)).map(({ name, pid }) => ({ name, pid, alive: true, paused: host?.paused ?? false }))],
       stopAPI: () => stopProcess(api),
       facts: (kind, entity) => journal().rows.filter(row => row.kind === kind && (entity === undefined || row.entity === entity)),
       admissions: requestId => journal().rows.filter(row => ['practice.requested', 'review.verdict'].includes(row.kind) && row.data?.command_payload && JSON.parse(row.data.command_payload).request_id === requestId),

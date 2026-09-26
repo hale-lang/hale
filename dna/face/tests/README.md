@@ -497,10 +497,9 @@ binding-change candidate, inspects the exact canonical document through
 Proposal, Review, binding effect and graph observation remain separate. Exact
 removal retains a distinct descendant binding and the original Knowledge item.
 Settled Reviews retain their canonical binding document with decisions disabled.
-Two of its cases are gated on GH #1148 (`test.skip` names it): the pagination
-case, under which the composed head dies with SIGSEGV after the restarts,
-and the competing-candidate case, where the page offers no second candidate
-while the first is pending under the real host; they come back with the fix.
+The pagination case is declared skipped on GH #1148 (its annotation names
+it): under it the composed head dies with SIGSEGV partway through the 27
+reviewed bindings and their restarts. It comes back with the fix.
 The proposer Alice cannot decide her own binding Review. A separately granted
 Bob authenticates for the decision; returning to Alice recovers only her original
 Knowledge request. Actor switching changes API identity, not a browser authority
@@ -605,7 +604,18 @@ What each run starts, and from what:
   and projects memory. Readiness is the host's own words ("the organization
   reads its facts from the nerves", the genome it runs) and the Body's
   bootstrap line in `.hale/dna/org.log`. The host's build cache serves every
-  run after the first on the same path.
+  run after the first on the same path, and the path is one per Playwright
+  run and parallel slot, so the worker Playwright starts after a failed case
+  keeps it. The first service still builds the organization cold (about
+  80 s on a CI runner), so each spec gives its `service` fixture its own
+  budget (`serviceFixtureTimeout`) rather than charging the case.
+- **Quiet.** `quiesce()` waits for the Record head to hold still and then
+  for the head to read Knowledge at it: the host projects memory on its
+  tick, and a page opened before that reads `knowledge_projection_unavailable`
+  and shows "Knowledge unavailable" without retrying. The head holds still
+  for longer than one host tick (1.5 s), so a request row the host has yet to
+  relay cannot move it after. Harness reads do not retry; the graph helpers
+  (`edges()`, `bindings()`) quiesce first.
 - **The API.** `dna/api/practice_review` as the head, with
   `HALE_DNA_COMMAND_POLICY` (an explicit application-bound policy granting
   local `alice` and `bob` board access) and the head's DSN from
