@@ -203,3 +203,67 @@ fn main() { Head { }; }
         msgs
     );
 }
+
+#[test]
+fn a_context_handler_on_a_transport_bound_topic_is_refused() {
+    let src = r#"
+type Claim { task: Int; }
+topic Claims { payload: Claim; subject: "t.claim"; }
+locus Head {
+    bus { subscribe Claims as on_claim; }
+    fn on_claim(c: Claim, ctx: std::api::Context) { }
+}
+main locus App {
+    params { head: Head = Head { }; }
+    bindings { Claims: unix("/tmp/t.sock", role: listen); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("bound to a transport") && m.contains("`local` never stands for trust")),
+        "{:?}",
+        msgs
+    );
+}
+
+#[test]
+fn a_drain_handler_cannot_take_a_context_yet() {
+    let src = r#"
+type Tick { n: Int; }
+topic Ticks { payload: Tick; subject: "t.tick"; }
+locus Feed {
+    bus { subscribe Ticks as on_ticks; publish Ticks; }
+    fn on_ticks(feed: Drain<Tick>, ctx: std::api::Context) { }
+}
+fn main() { Feed { }; }
+"#;
+    let msgs = check(src);
+    assert!(msgs.iter().any(|m| m.contains("`Drain<T>` batch handler cannot take a `std::api::Context` yet")), "{:?}", msgs);
+}
+
+/// The handler stays the subscriber by name: an analysis keyed on the
+/// handler (here the unowned-subscriber rule) finds it whether or not
+/// it takes a context.
+#[test]
+fn handler_keyed_analyses_see_a_context_handler() {
+    let without = r#"
+type Claim { task: Int; }
+topic Claims { payload: Claim; subject: "t.claim"; }
+locus Worker {
+    bus { subscribe Claims as on_claim; }
+    fn on_claim(c: Claim) { }
+}
+locus Head {
+    bus { subscribe Claims as on_claim; publish Claims; }
+    fn on_claim(c: Claim) { Worker { }; }
+}
+fn main() { Head { }; }
+"#;
+    let with = without.replace("fn on_claim(c: Claim) { Worker { }; }", "fn on_claim(c: Claim, ctx: std::api::Context) { Worker { }; }");
+    let a = check(without);
+    let b = check(&with);
+    assert!(a.iter().any(|m| m.contains("unowned inside")), "the rule fires without a context: {:?}", a);
+    assert!(b.iter().any(|m| m.contains("unowned inside")), "and with one: {:?}", b);
+    assert_eq!(a.len(), b.len(), "the same findings either way:\n{:?}\n{:?}", a, b);
+}

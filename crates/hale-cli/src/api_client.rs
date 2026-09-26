@@ -822,8 +822,17 @@ pub fn run_admin(rest: &[String]) -> ExitCode {
     // must present, so a page on another origin cannot drive the
     // binding through this process (and a Host other than this
     // listener's is refused outright, against DNS rebinding).
-    let token = launch_token();
-    println!("hale admin: http://127.0.0.1:{}/  (over {})", port, sock);
+    let token = match launch_token() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("hale admin: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+    // The URL carries the token, Jupyter style: any local process can
+    // open loopback TCP, so the page itself is served only to whoever
+    // has the token this process printed.
+    println!("hale admin: http://127.0.0.1:{}/?token={}  (over {})", port, token, sock);
     let _ = std::io::stdout().flush();
     let shared = std::sync::Arc::new(AdminShared { sock, token, port });
     for conn in listener.incoming() {
@@ -840,15 +849,24 @@ struct AdminShared {
     port: u16,
 }
 
-fn launch_token() -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    std::time::SystemTime::now().hash(&mut h);
-    std::process::id().hash(&mut h);
-    let a = h.finish();
-    std::time::Instant::now().hash(&mut h);
-    let b = h.finish();
-    format!("{:016x}{:016x}", a, b)
+/// 128 bits from the kernel's entropy, as hex.
+fn launch_token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    let mut f = std::fs::File::open("/dev/urandom")
+        .map_err(|e| format!("could not open /dev/urandom for the admin token: {}", e))?;
+    f.read_exact(&mut bytes)
+        .map_err(|e| format!("could not read /dev/urandom for the admin token: {}", e))?;
+    Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+/// Compares in time independent of where the strings differ.
+fn token_matches(given: &str, expected: &str) -> bool {
+    let (a, b) = (given.as_bytes(), expected.as_bytes());
+    let mut acc: u8 = (a.len() != b.len()) as u8;
+    for i in 0..expected.len() {
+        acc |= b[i] ^ a.get(i).copied().unwrap_or(0);
+    }
+    acc == 0
 }
 
 /// The request's Host is this listener; its Origin, when it sends
@@ -931,19 +949,24 @@ fn serve_admin_conn(mut conn: std::net::TcpStream, shared: &AdminShared) {
         json_err(&mut conn, "403 Forbidden", "this page serves 127.0.0.1 only: the request's Host or Origin is another site".to_string());
         return;
     }
+    let query_token = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("token="))
+        .unwrap_or("");
+    let tokened = token_matches(&header_token, &shared.token) || token_matches(query_token, &shared.token);
+    if !tokened {
+        if path == "/" {
+            http_reply(&mut conn, "403 Forbidden", "text/plain", b"hale admin: open the URL this process printed; it carries the token\n");
+        } else {
+            json_err(&mut conn, "403 Forbidden", "missing or wrong admin token: open the URL this process printed and act from it".to_string());
+        }
+        return;
+    }
     if path == "/" {
         let page = ADMIN_PAGE
             .replace("{{SOCKET}}", sock)
             .replace("{{TOKEN}}", &shared.token);
         http_reply(&mut conn, "200 OK", "text/html; charset=utf-8", page.as_bytes());
-        return;
-    }
-    let query_token = query
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("token="))
-        .unwrap_or("");
-    if header_token != shared.token && query_token != shared.token {
-        json_err(&mut conn, "403 Forbidden", "missing or wrong admin token: open the page this process printed and act from it".to_string());
         return;
     }
     if path == "/api/describe" {

@@ -302,6 +302,8 @@ fn mcp_app_lists_the_commands_as_tools_and_calls_through() {
 struct Admin {
     child: Child,
     port: u16,
+    /// From the URL the process printed: the only way in.
+    token: String,
 }
 
 impl Admin {
@@ -323,7 +325,13 @@ impl Admin {
             .and_then(|s| s.split('/').next())
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(|| panic!("no port in {:?}", line));
-        Admin { child, port }
+        let token = line
+            .split("?token=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap_or_else(|| panic!("no token in the printed URL {:?}", line))
+            .to_string();
+        Admin { child, port, token }
     }
 
     /// One raw HTTP exchange: status line, headers, body.
@@ -350,16 +358,16 @@ fn admin_refuses_other_origins_hosts_and_untokened_calls() {
     let app = Running::start("admin");
     let admin = Admin::start(&app.sock);
     let host = format!("127.0.0.1:{}", admin.port);
+    // The page itself is behind the token: any local process can open
+    // loopback TCP, so a bare GET / must not hand out the token.
     let (status, page) = admin.http(&format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", host));
-    assert!(status.contains("200"), "{}", status);
-    assert!(!page.contains("{{SOCKET}}") && !page.contains("undefined"), "the page names the socket");
-    let token = page
-        .split("const TOKEN = \"")
-        .nth(1)
-        .and_then(|s| s.split('"').next())
-        .expect("the page carries the launch token")
-        .to_string();
+    assert!(status.contains("403"), "a bare GET / is refused: {}", status);
+    assert!(!page.contains("const TOKEN"), "the refusal carries no token");
+    let token = admin.token.clone();
     assert_eq!(token.len(), 32);
+    let (status, page) = admin.http(&format!("GET /?token={} HTTP/1.1\r\nHost: {}\r\n\r\n", token, host));
+    assert!(status.contains("200"), "{}", status);
+    assert!(page.contains(&format!("const TOKEN = \"{}\"", token)) && !page.contains("{{SOCKET}}") && !page.contains("undefined"), "the tokened page names the socket and carries the token");
 
     // A foreign Origin, whatever the body: refused before anything runs.
     let body = r#"{"line": "from elsewhere"}"#;

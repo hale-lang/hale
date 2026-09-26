@@ -9093,8 +9093,53 @@ impl<'a> Checker<'a> {
                 // either side stays permissive — cross-seed topics,
                 // stdlib paths, and `Drain<T>` batch handlers all
                 // resolve Unknown here by design.
+                // GH #1108: a second `std::api::Context` parameter is the
+                // handler asking for the caller. Dispatch hands it the
+                // local context; the api binding hands it the caller it
+                // established. A topic bound to a transport reaches the
+                // handler from another process as `local`, which must
+                // never read as trust, so that combination is refused.
+                let ctx_param = match handler_fn.params.as_slice() {
+                    [_, c] if hale_syntax::api_gen::is_context_type(&c.ty) => Some(c),
+                    _ => None,
+                };
+                if let Some(c) = ctx_param {
+                    if self.bound_topics.contains(&sub.subject) {
+                        self.diags.push(Diag::ty(
+                            c.span,
+                            format!(
+                                "bus subscribe `{}` handler `{}` takes a \
+                                 `std::api::Context`, but the topic is bound to a \
+                                 transport in `bindings {{ }}`: a message from another \
+                                 process would reach it as the local principal, and \
+                                 `local` never stands for trust. Drop the context \
+                                 parameter, or reach the topic through the api \
+                                 binding instead",
+                                sub.subject, sub.handler
+                            ),
+                        ));
+                    }
+                    if let TypeExpr::Named { path, .. } = &handler_fn.params[0].ty {
+                        if path.segments.len() == 1 && path.segments[0].name == "Drain" {
+                            self.diags.push(Diag::ty(
+                                c.span,
+                                format!(
+                                    "bus subscribe `{}` handler `{}`: a `Drain<T>` batch \
+                                     handler cannot take a `std::api::Context` yet — a \
+                                     batch over a ring has no single caller until bulk \
+                                     requests land",
+                                    sub.subject, sub.handler
+                                ),
+                            ));
+                        }
+                    }
+                }
                 if !matches!(sub.payload, Ty::Unknown) {
-                    match handler_fn.params.as_slice() {
+                    let shape: &[hale_syntax::ast::Param] = match handler_fn.params.as_slice() {
+                        [p, _] if ctx_param.is_some() => std::slice::from_ref(p),
+                        other => other,
+                    };
+                    match shape {
                         [p] => {
                             // A `Drain<T>` batch handler receives the
                             // same payload per element — compare T.

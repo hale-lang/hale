@@ -207,10 +207,12 @@ locus Billing {
 
 The second parameter is `std::api::Context`: the caller, the
 request id, `via` (the binding's name, or `local`), and, once roles
-exist, the role that authorized the message. A message published
-inside the program hands the handler the local principal, so a
+exist, the role that authorized the message. A message that did not
+come through the binding hands the handler the local principal, so a
 handler never asks whether it was reached from outside; it reads
-`via`. Both `Context` and `Principal` are ordinary structs: build
+`via`. `local` says where a message did not come from, never that
+it is trusted: a topic bound to another transport in `bindings { }`
+cannot take a context handler at all. Both `Context` and `Principal` are ordinary structs: build
 one in a test, forward one in a payload. A bearer token for HTTP
 callers is the third mode and arrives with the HTTP transport.
 

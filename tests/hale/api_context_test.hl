@@ -10,18 +10,25 @@
 // caller. The fixture builds a child program with the toolchain
 // running the test and reads what it echoes.
 
-fn app_source(sock: String) -> String {
+fn app_source(sock: String, entry: Bool) -> String {
+    let bindings = if entry {
+        "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse); }\n"
+    } else {
+        ""
+    };
     return "type Claim { task: Int; who: String; }\n"
         + "type Echo { note: String; }\n"
-        + "type Seen { count: Int; }\n"
+        + "type Seen { count: Int; last_local: String; }\n"
         + "topic Claims { payload: Claim; subject: \"t.claim\"; }\n"
         + "locus Head {\n"
         + "    contract { expose seen: Seen; }\n"
-        + "    params { seen: Seen = Seen { count: 0 }; }\n"
+        + "    params { seen: Seen = Seen { count: 0, last_local: \"\" }; }\n"
         + "    bus { subscribe Claims as on_claim; }\n"
         + "    fn on_claim(c: Claim, ctx: std::api::Context) -> Echo {\n"
         + "        self.seen.count = self.seen.count + 1;\n"
-        + "        return Echo { note: ctx.caller.mode + \"|\" + ctx.caller.name + \"|\" + to_string(ctx.caller.uid) + \"|\" + ctx.via + \"|\" + to_string(ctx.request_id) + \"|\" + c.who };\n"
+        + "        let note = ctx.caller.mode + \"|\" + ctx.caller.name + \"|\" + to_string(ctx.caller.uid) + \"|\" + to_string(ctx.caller.gid) + \"|\" + to_string(ctx.caller.pid) + \"|\" + ctx.via + \"|\" + to_string(ctx.request_id) + \"|\" + c.who;\n"
+        + "        if ctx.via == \"local\" { self.seen.last_local = note; }\n"
+        + "        return Echo { note: note };\n"
         + "    }\n"
         + "}\n"
         + "locus Tally {\n"
@@ -33,7 +40,7 @@ fn app_source(sock: String) -> String {
         + "    params { head: Head = Head { }; tally: Tally = Tally { }; }\n"
         + "    placement { head: cooperative(pool = work) where async_io; }\n"
         + "    bus { publish Claims; }\n"
-        + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse); }\n"
+        + bindings
         + "    run() {\n"
         + "        Claims <- Claim { task: 1, who: \"inside\" };\n"
         + "        std::time::sleep(8s);\n"
@@ -66,8 +73,24 @@ locus Proc {
             std::time::sleep(20ms);
             i = i + 1;
         }
+        // A child that would not drain is killed, and a killed child
+        // cannot unlink its socket file: the harness does.
         std::process::kill(self.child) or discard;
     }
+}
+
+// A small program with a context handler, for the single-file paths
+// (`hale check <file>`, `hale run <file>`): it publishes to itself and
+// prints the local context.
+fn solo_source() -> String {
+    return "type Ping { n: Int; }\n"
+        + "topic Pings { payload: Ping; subject: \"solo.ping\"; }\n"
+        + "locus Solo {\n"
+        + "    bus { subscribe Pings as on_ping; publish Pings; }\n"
+        + "    fn on_ping(p: Ping, ctx: std::api::Context) { println(\"solo \" + ctx.caller.mode + \"|\" + ctx.via + \"|\" + to_string(p.n)); }\n"
+        + "    run() { Pings <- Ping { n: 3 }; std::time::sleep(100ms); }\n"
+        + "}\n"
+        + "fn main() { Solo { }; }\n";
 }
 
 locus Api {
@@ -134,7 +157,7 @@ fn main() {
     let sock = "/tmp/hale-ctx-" + tag + ".sock";
     let src = std::io::fs::mktemp("/tmp/hale-1108-", ".hl") or "";
     std::test::assert(src != "", "a scratch source path");
-    std::io::fs::write_file(src, app_source(sock)) or discard;
+    std::io::fs::write_file(src, app_source(sock, true)) or discard;
     let built = run_tool(hale + "\nbuild\n" + src);
     std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
     let bin = src[0..(len(src) - 3)];
@@ -143,11 +166,16 @@ fn main() {
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
 
-    // Through the socket: the peer's credentials, the binding, the request id.
+    // Through the socket: the peer's credentials (uid, gid, pid), the
+    // binding, the request id.
+    let my_gid = std::str::trim(run_tool("id\n-g").stdout);
     let r1 = api.ask("{\"id\":1,\"call\":\"Claims\",\"payload\":{\"task\":2,\"who\":\"outside\"}}");
     std::test::assert(std::str::contains(r1, "\"ok\":true"), "the call answered: " + r1);
     let note = std::json::find_field_raw(std::json::find_field_raw(r1, "value"), "note");
-    std::test::assert_eq_str(note, "\"unix|uid:" + me + "|" + me + "|api|1|outside\"", "the handler saw the caller: " + r1);
+    let expect_head = "\"unix|uid:" + me + "|" + me + "|" + my_gid + "|";
+    std::test::assert(std::str::starts_with(note, expect_head), "the handler saw uid and gid: " + note);
+    let my_pid = to_string(std::process::pid());
+    std::test::assert(std::str::contains(note, "|" + my_pid + "|api|1|outside\""), "the handler saw the caller's pid, the binding and the request id: " + note);
     std::test::assert(std::str::contains(r1, "\"caller\":{\"mode\":\"unix\",\"name\":\"uid:" + me + "\",\"uid\":" + me + ","), "the receipt carries the principal: " + r1);
 
     // A refusal carries it too.
@@ -155,12 +183,40 @@ fn main() {
     std::test::assert(std::str::contains(r2, "\"kind\":\"unknown\"") && std::str::contains(r2, "\"caller\":{\"mode\":\"unix\""), "a refusal names the caller: " + r2);
 
     // The one-parameter subscriber of the same topic heard both messages;
-    // the two-parameter one counted both as well.
+    // the two-parameter one counted both as well, and the in-process
+    // one carried the local principal and `via: local`.
     let r3 = api.ask("{\"id\":3,\"read\":\"head.seen\"}");
     std::test::assert(std::str::contains(r3, "\"count\":2"), "both messages reached the context handler: " + r3);
+    std::test::assert(std::str::contains(r3, "\"last_local\":\"local|local|-1|-1|-1|local|0|inside\""), "the in-process message carried the local context: " + r3);
 
     p.stop();
+    std::io::fs::unlink(sock) or discard;
     std::test::assert(std::str::contains(p.out, "tally 2"), "the one-parameter handler heard both: " + p.out);
     std::io::fs::unlink(src) or discard;
     std::io::fs::unlink(bin) or discard;
+
+    // The single-file paths: `hale check <file>` and `hale run <file>`
+    // take a context handler like any other.
+    let solo = std::io::fs::mktemp("/tmp/hale-1108-solo-", ".hl") or "";
+    std::io::fs::write_file(solo, solo_source()) or discard;
+    let checked = run_tool(hale + "\ncheck\n" + solo);
+    std::test::assert_eq_int(checked.code, 0, "hale check accepts a context handler: " + checked.stderr);
+    let ran = run_tool(hale + "\nrun\n" + solo);
+    std::test::assert_eq_int(ran.code, 0, "hale run accepts a context handler: " + ran.stderr);
+    std::test::assert(std::str::contains(ran.stdout, "solo local|local|3"), "the handler got the local context under hale run: " + ran.stdout);
+    std::io::fs::unlink(solo) or discard;
+
+    // And `hale run --api`, with no bindings block in the source.
+    let sock2 = "/tmp/hale-ctx-" + tag + "-b.sock";
+    let src2 = std::io::fs::mktemp("/tmp/hale-1108b-", ".hl") or "";
+    std::io::fs::write_file(src2, app_source(sock2, false)) or discard;
+    let q = Proc { };
+    std::test::assert(q.start(hale + "\nrun\n--api\n" + sock2 + "\n" + src2), "hale run --api started");
+    let api2 = Api { };
+    std::test::assert(api2.connect(sock2), "connected to the zero-code socket");
+    let z = api2.ask("{\"id\":1,\"call\":\"Claims\",\"payload\":{\"task\":9,\"who\":\"zero\"}}");
+    std::test::assert(std::str::contains(z, "|api|1|zero\""), "the context handler answered under hale run --api: " + z);
+    q.stop();
+    std::io::fs::unlink(sock2) or discard;
+    std::io::fs::unlink(src2) or discard;
 }

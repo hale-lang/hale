@@ -494,7 +494,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["api"],
         fns: &[
-            e("local_context", EffectSet::PURE),
+            e("local_context", EffectSet::ALLOC),
         ],
         open_prefixes: &[],
     },
