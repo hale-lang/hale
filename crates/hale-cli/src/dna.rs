@@ -797,8 +797,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome; --judgment asks for an assessment, a leg's to perform");
-    eprintln!("                                    ask for an outcome: a row in the record, which a node relays to the organism; prints the Task born or the refusal");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
@@ -1197,7 +1196,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
             (Some(app), Some((art, raw))) => {
                 let n = seed_journal(&app.root, app, art, raw, &purpose_digest)?;
                 out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
-                out.push(seat_initializer(&app.root)?);
+                out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
                 // the purpose's Review and the graph in one checked seed: a
@@ -1205,7 +1204,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
                 let graph = seed_repository(&root, &purpose_digest)?;
                 out.push(format!("seeded  {RECORD_REF} (review.requested, then the graph)"));
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
-                out.push(seat_initializer(&root)?);
+                out.push(seat_initializer(&root, true)?);
             }
         }
         // GH #596 C, #994: the design and the operating practices, as
@@ -1295,10 +1294,11 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&performers, work_hl(&discover())).map_err(|e| format!("write {}: {e}", performers.display()))?;
         out.push(format!("created {}", performers.display()));
     }
-    // GH #946, #1104 piece 5: a record from before the seat: its maker's
-    // uid mapped to them, so the head's socket knows the peer
+    // GH #946, #1104 piece 5: a record from before the seat: this uid
+    // mapped to its user, so the head's socket knows the peer; the trust
+    // an existing record declares, or does not, is its own
     if record_exists(&root)? {
-        out.push(seat_initializer(&root)?);
+        out.push(seat_initializer(&root, false)?);
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -2317,7 +2317,7 @@ import "vendor/dna" as dna;
 group board = { dna::Board };
 group leader = { dna::Leader };
 group substrate = { dna::Dna };
-group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::LegRelay, dna::RelayReplay, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
 group editors = { dna::SourceEditor, dna::WorktreeTools };
 group knowledge = { dna::Knowledge, dna::MemoryKnowledge };
 group credentials = { dna::CredentialSource, dna::HostedCredential };
@@ -2360,9 +2360,12 @@ fn initializer() -> String {
 /// a record that declares `dna.trust = local` is one person's, who holds
 /// every position as they hold every authority there, so the seat is
 /// the record's local config alone: the initializer's uid mapped to them
-/// (`dna.unix.member`), and the trust declared. No row in the record —
+/// (`dna.unix.member`), and — only where the record is made, by `new`
+/// or `init` — the trust declared. `upgrade` maps the uid and says how
+/// to declare, never declaring for a record it did not make: an
+/// existing record's authorization is its own. No row in the record —
 /// the graph's positions and holders stay the graph's. Says what it did.
-fn seat_initializer(root: &Path) -> Result<String, String> {
+fn seat_initializer(root: &Path, declare_trust: bool) -> Result<String, String> {
     let name = initializer();
     let uid = Command::new("id").arg("-u").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
     if uid.is_empty() {
@@ -2373,13 +2376,16 @@ fn seat_initializer(root: &Path) -> Result<String, String> {
     if !have.lines().any(|l| l.trim() == entry) {
         git(root, &["config", "--local", "--add", "dna.unix.member", &entry])?;
     }
-    // the record declares its trust: local, one person holding every
-    // authority, unless it declares another already
-    let trust = git(root, &["config", "--local", "--get", "dna.trust"]).unwrap_or_default();
-    if trust.trim().is_empty() {
+    // the trust the record declares, wherever git reads it from
+    let trust = git(root, &["config", "--get", "dna.trust"]).unwrap_or_default().trim().to_string();
+    if declare_trust && trust.is_empty() {
         git(root, &["config", "--local", "dna.trust", "local"])?;
+        return Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares dna.trust = local, where they hold every position"));
     }
-    Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares dna.trust = local, where they hold every position"))
+    if trust.is_empty() {
+        return Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares no trust, so the graph's holds edges say who holds what — `git config --local dna.trust local` declares one person's record"));
+    }
+    Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares dna.trust = {trust}"))
 }
 
 /// The seed events, collected then appended to the record in order.

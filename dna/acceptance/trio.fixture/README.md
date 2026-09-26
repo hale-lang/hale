@@ -75,6 +75,7 @@ untouched. The growth assessment (`a9abb06dd5a0…`, was `0dfcfca7d96c…`)
 is re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context, stored as the miss's
 evidence, with the two changes taken back out; each new key was the
-one the miss named. No fresh model call was made; every answer is
-unchanged, and both entries' token and cost fields remain the
-original recording's.
+one the miss named. No fresh model call was made. The assessment's
+answer is unchanged; the growth edit's recorded output differs from
+the original by those two changes alone; both entries' token and cost
+fields remain the original recording's.

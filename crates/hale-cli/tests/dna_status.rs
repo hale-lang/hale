@@ -123,7 +123,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
         let (o, t) = run(&["dna", "history", "t2"]);
         ok7 = o;
         out7 = t;
-        if out7.contains("by agent") {
+        if out7.contains("attempt t2/wf1/s0/j/a0 by agent") {
             break;
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -144,5 +144,6 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     assert!(ok5 && out5.contains("history of t1") && out5.contains("task.born") && out5.contains("intent.offered"), "history:\n{out5}");
     assert!(ok6 && out6.contains("task t2 born"), "a judgment asked: {out6}");
     assert!(ok7 && out7.contains("\"definition\": \"ask-judge\"") && out7.contains("attempt t2/wf1/s0/j/a0 by agent"), "the judgment is one leaf for an agent, pending for a leg:\n{out7}");
+    assert!(!out7.contains("attempt.outcome        t2/wf1/s0/j/a0"), "nothing performed it in process: no outcome for the leg's attempt:\n{out7}");
     let _ = std::fs::remove_dir_all(&d);
 }

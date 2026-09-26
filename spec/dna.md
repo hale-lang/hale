@@ -2383,7 +2383,12 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   holding the project's grant: it decides the Reviews inside the grant
   by reading the source diff and the semantic diff, and its verdict is
   a model call with evidence), and the substrate `Dna` (the record,
-  the gateways, verification, the editing position, the Reviews). A
+  the gateways, verification, the editing position, the Reviews). Its
+  work system hands the agent kind to the legs' relay
+  (`agent: dna::LegRelay`, with `agent_reconciler: dna::RelayReplay`
+  beside it): a judgment or an analysis is answered pending and a leg
+  claims it through `hale dna work` (GH #946); no agent performer
+  runs in process, and the law's `positions` group names the relay. A
   Review is announced as a typed `ReviewRequested` fact carrying what
   a deciding position needs.
 - **Authorities are ranked**: `board` (4, `maintainer` is its older
@@ -2830,7 +2835,8 @@ The organization's models are a catalog in source (GH #583 M1):
 - **The catalog is source.** A backend is a constructor function
   (`frontier()`, `fast()`, `desk()` …); a position's router is a
   function composed from them (`leader_models()`, `editor_models()`,
-  `agent_models()`); the organization's main takes each position's
+  `agent_models()`, the model leg's, behind the performer in
+  `dna/org/work.hl`); the organization's main takes each position's
   router from the catalog and names no adapter inline. A new position
   is one more function; a provider switch is one file; `hale check`
   validates it and the law keeps the concrete types at every
