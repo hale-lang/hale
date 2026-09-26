@@ -505,6 +505,19 @@ locus Api {
     }
 }
 
+// The head's socket: one per record, under the user's runtime directory
+// (`$XDG_RUNTIME_DIR/hale/dna/<record id>.sock`), or under the record's
+// own `.hale/dna` when there is none — never a fixed path two projects
+// or two users would steal from each other. `LOTUS_API` overrides it.
+fn head_socket(root: String) -> String {
+    let id = dna::GitRecord { repo: root }.identity();
+    let runtime = std::env::var("XDG_RUNTIME_DIR");
+    let dir = if len(runtime) > 0 && len(id) > 0 { runtime + "/hale/dna" } else { root + "/.hale/dna" };
+    let made = std::process::run("mkdir\n-p\n" + dir) or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+    if made.code != 0 { return root + "/.hale/dna/head.sock"; }
+    return dir + "/" + (if len(id) > 0 { id } else { "head" }) + ".sock";
+}
+
 // GH #1104 piece 5: the head is the binding. Every topic a locus of
 // this seed subscribes is a command a caller may send, every one it
 // publishes a stream, every expose a read; the verbs land here as gated
@@ -512,20 +525,18 @@ locus Api {
 // (`dna::RecordRoles` over this root; `dna.unix.member` maps a socket
 // peer to a person), so `{"describe": "full"}` is the board's, and a
 // tool gated on a position is listed only to a principal the record
-// says holds it. The socket path is deployment: `LOTUS_API` overrides
-// the default.
+// says holds it. The socket is one per record under XDG_RUNTIME_DIR (or
+// the record's .hale/dna); `LOTUS_API` overrides it.
 main locus Head {
     params {
         root: String = ".";
+        socket: String = "";
         roles: dna::RecordRoles = dna::RecordRoles { };
         port: Int = 8792;
         handler: Api = Api { };
     }
     bindings {
-        api: unix("/tmp/hale-dna-head.sock", bound: 64, on_full: refuse, roles: self.roles);
-    }
-    birth() {
-        self.roles.root = self.root;
+        api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles);
     }
     // The HTTP head starts once every param — the binding included — is
     // born: a server born as a param would hold its birth thread first.
@@ -613,7 +624,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
-        Head { root: root, port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        Head { root: root, socket: head_socket(root), roles: dna::RecordRoles { root: root }, port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
@@ -622,5 +633,5 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     }
     let user = std::env::var("USER");
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local; ", command_label, ")");
-    Head { root: root, port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
+    Head { root: root, socket: head_socket(root), roles: dna::RecordRoles { root: root }, port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, commands: commands, people: people, organization_commands: source_capabilities, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
 }

@@ -74,7 +74,12 @@ hale run --api /run/app.sock app.hl
 
 puts the same entry on the main locus with the dev defaults. It
 needs a `main locus` to put it on; a bare `fn main` program is
-refused with the rule.
+refused with the rule. The path may be a param the program computed
+(`api: unix(self.socket, …)` with `App { socket: … }` in `main`), so a
+service can listen at one socket per record under `XDG_RUNTIME_DIR`;
+`LOTUS_API` overrides whatever the entry says. A socket a live
+process already holds is never stolen, and a binding that cannot
+listen leaves the rest of the program serving, saying why.
 
 ## Talking to it
 

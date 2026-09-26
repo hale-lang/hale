@@ -34,7 +34,7 @@ hale dna ui [project] [--port N]
                              (under `git config dna.principal oidc`: a hosted head behind sign-in at
                              dna.oidc.issuer; dna.oidc.client, dna.oidc.redirect, dna.oidc.member
                              "<subject>=<name>", dna.oidc.board, HALE_DNA_OIDC_SECRET;
-                             the head's socket knows a peer by uid: dna.unix.member "uid:<n>=<name>")
+                             the head's socket knows a peer by uid: --local dna.unix.member "uid:<n>=<name>")
                              the surface in a browser, from the record alone
 hale dna status [project] [--json]
                              the status projection, from the record
