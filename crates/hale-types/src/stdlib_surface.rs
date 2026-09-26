@@ -492,6 +492,14 @@ pub const SURFACES: &[NsSurface] = &[
         open_prefixes: &[],
     },
     NsSurface {
+        ns: &["io", "unix"],
+        fns: &[
+            e("connect", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("connect_wait", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
+            e("listen_socket", EffectSet::SYSCALL),
+        ],
+        open_prefixes: &[],
+    },
+    NsSurface {
         ns: &["io", "tcp"],
         fns: &[
             e("__accept_one", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("__close_fd", EffectSet::SYSCALL), e("__connect", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("__io_error_kind", EffectSet::PURE),
@@ -1014,6 +1022,7 @@ const NS_FILE: &[&str] = &["io", "file"];
 const NS_TCP: &[&str] = &["io", "tcp"];
 const NS_TLS: &[&str] = &["io", "tls"];
 const NS_UDP: &[&str] = &["io", "udp"];
+const NS_UNIX: &[&str] = &["io", "unix"];
 const NS_TEXT: &[&str] = &["text"];
 const NS_TERM: &[&str] = &["term"];
 const NS_LOG: &[&str] = &["log"];
@@ -1365,6 +1374,10 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TCP, "connect", [Str, Int], Int, "IoError"),
     sig!(NS_TCP, "connect_wait", [Str, Int, Duration], Int, "IoError"),
     sig!(NS_TCP, "accept_one", [Int], Int, "IoError"),
+    // GH #1106: AF_UNIX stream sockets; accept/recv/send/close are tcp's.
+    sig!(NS_UNIX, "listen_socket", [Str], Int, "IoError"),
+    sig!(NS_UNIX, "connect", [Str], Int, "IoError"),
+    sig!(NS_UNIX, "connect_wait", [Str, Duration], Int, "IoError"),
     sig!(NS_TCP, "close_fd", [Int], Int),
     // GH #829: the `buf` slot is not polymorphic — the lowering
     // (`lower_recv_into_common`) accepts exactly one codegen type,

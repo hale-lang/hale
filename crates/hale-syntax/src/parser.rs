@@ -3693,7 +3693,26 @@ impl Parser {
         self.bump(); // consume `bindings` ident
         self.expect(TokenKind::LBrace, "{")?;
         let mut entries = Vec::new();
+        let mut api: Option<ApiBinding> = None;
         while !matches!(self.peek(), TokenKind::RBrace) {
+            // GH #1106: `api: unix(...)` binds the program's API, not
+            // one topic. `api` is a contextual keyword in this head
+            // position only, told from a topic name by the `:` that
+            // follows it and the lowercase transport head after that.
+            if matches!(self.peek(), TokenKind::Ident(s) if s == "api")
+                && matches!(self.peek_at(1), TokenKind::Colon)
+            {
+                let entry = self.parse_api_binding()?;
+                if let Some(prev) = &api {
+                    return Err(Diag::parse(
+                        entry.span,
+                        "a `bindings { }` block carries one `api:` entry",
+                    )
+                    .with_related(prev.span, "first `api:` entry"));
+                }
+                api = Some(entry);
+                continue;
+            }
             // GH #527 B6: a binding may name an IMPORTED topic,
             // `alias::Topic`. The entry keeps its `Ident` shape with
             // the path joined by `::` — the same key
@@ -3721,7 +3740,124 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(BindingsBlock {
             entries,
+            api,
             span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    /// GH #1106: `api: unix("/path", bound: N, on_full: refuse,
+    /// watch_bound: M, on_watch_full: drop_old | drop_new);`. Every
+    /// kwarg is optional here; the checker requires `bound` and
+    /// `on_full` and pairs `watch_bound` with `on_watch_full`, so
+    /// a half-written entry still formats and still gets a located
+    /// diagnostic instead of a parse error.
+    fn parse_api_binding(&mut self) -> Result<ApiBinding, Diag> {
+        let api_tok = self.peek_token().clone();
+        self.bump(); // `api`
+        self.expect(TokenKind::Colon, ":")?;
+        let head = self.expect_ident("api transport (`unix`)")?;
+        if head.name != "unix" {
+            return Err(Diag::parse(
+                head.span,
+                format!(
+                    "expected api transport `unix`, got `{}` (HTTP is a later \
+                     transport)",
+                    head.name
+                ),
+            ));
+        }
+        self.expect(TokenKind::LParen, "(")?;
+        let path_tok = self.peek_token().clone();
+        let path = self.expect_string_literal("api socket path")?;
+        let mut bound: Option<(i64, Span)> = None;
+        let mut on_full: Option<(ApiFullPolicy, Span)> = None;
+        let mut watch_bound: Option<(i64, Span)> = None;
+        let mut on_watch_full: Option<(ShedPolicy, Span)> = None;
+        while self.eat(&TokenKind::Comma) {
+            if self.at(&TokenKind::RParen) {
+                break;
+            }
+            let key = self.expect_ident("api kwarg name")?;
+            self.expect(TokenKind::Colon, ":")?;
+            match key.name.as_str() {
+                "bound" | "watch_bound" => {
+                    let tok = self.peek_token().clone();
+                    let n = match tok.kind {
+                        TokenKind::IntLit(n) if n > 0 => n,
+                        _ => {
+                            return Err(Diag::parse(
+                                tok.span,
+                                format!(
+                                    "api `{}:` takes a positive integer",
+                                    key.name
+                                ),
+                            ));
+                        }
+                    };
+                    self.bump();
+                    let v = Some((n, key.span.merge(tok.span)));
+                    if key.name == "bound" {
+                        bound = v;
+                    } else {
+                        watch_bound = v;
+                    }
+                }
+                "on_full" => {
+                    let tok = self.expect_ident("api `on_full:` policy")?;
+                    if tok.name != "refuse" {
+                        return Err(Diag::parse(
+                            tok.span,
+                            format!(
+                                "api `on_full:` policy is `refuse` (a caller \
+                                 waiting for an answer cannot be shed), got `{}`",
+                                tok.name
+                            ),
+                        ));
+                    }
+                    on_full = Some((ApiFullPolicy::Refuse, key.span.merge(tok.span)));
+                }
+                "on_watch_full" => {
+                    let tok = self.expect_ident("api `on_watch_full:` policy")?;
+                    let policy = match tok.name.as_str() {
+                        "drop_old" => ShedPolicy::DropOld,
+                        "drop_new" => ShedPolicy::DropNew,
+                        other => {
+                            return Err(Diag::parse(
+                                tok.span,
+                                format!(
+                                    "api `on_watch_full:` policy is `drop_old` or \
+                                     `drop_new`, got `{}`",
+                                    other
+                                ),
+                            ));
+                        }
+                    };
+                    on_watch_full = Some((policy, key.span.merge(tok.span)));
+                }
+                other => {
+                    return Err(Diag::parse(
+                        key.span,
+                        format!(
+                            "unknown api kwarg `{}` (recognized: `bound`, `on_full`, \
+                             `watch_bound`, `on_watch_full`)",
+                            other
+                        ),
+                    ));
+                }
+            }
+        }
+        self.expect(TokenKind::RParen, ")")?;
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(ApiBinding {
+            transport: ApiTransport::Unix {
+                path,
+                span: path_tok.span,
+            },
+            bound,
+            on_full,
+            watch_bound,
+            on_watch_full,
+            span: api_tok.span.merge(semi.span),
         })
     }
 

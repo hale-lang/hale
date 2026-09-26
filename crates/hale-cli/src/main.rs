@@ -575,6 +575,11 @@ recorded under `--dev` replays only under `hale replay --dev`.
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
                                    (repeatable)
+  --api <path>                     bind the program's API to a Unix
+                                   socket at <path>: every subscribed
+                                   topic a command, every published
+                                   topic a stream, every expose a read
+                                   (dev defaults: bound 64, refuse)
   --target <native>                `run` execs what it builds, so a
                                    target this host cannot execute
                                    (wasm32) is refused; build it
@@ -611,6 +616,11 @@ that is not a flag is the target, as in `hale check`:
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
                                    (repeatable)
+  --api <path>                     bind the program's API to a Unix
+                                   socket at <path>: every subscribed
+                                   topic a command, every published
+                                   topic a stream, every expose a read
+                                   (dev defaults: bound 64, refuse)
   --wrap-main                      synthesize the wasm @export entry
                                    from `fn main` (--target wasm32)
   --locality-report                the per-locus working-set table,
@@ -5992,6 +6002,13 @@ fn run_check_impl_labelled(
         // diagnostic correctly while the CLI did not.
         let _ = hale_types::apply_sync_inference(prog);
     }
+    // GH #1106: the api binding is bundle-wide (the main locus in one
+    // file, subscribers in another), so it runs over every program of
+    // the seed once the per-program passes are done.
+    {
+        let mut refs: Vec<&mut Program> = programs.values_mut().collect();
+        hale_syntax::api_gen::generate_api(&mut refs);
+    }
 
     let bundle_programs: BTreeMap<String, &Program> = programs
         .iter()
@@ -7002,6 +7019,10 @@ fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
     // carries.
     if !o.link_libs.is_empty() {
         fp.push_str(&format!(";link={}", o.link_libs.join(",")));
+    }
+    // GH #1106: an api binding is part of the program the binary is.
+    if let Some(api) = &o.api {
+        fp.push_str(&format!(";api={}", api));
     }
     if !o.csrc_files.is_empty() {
         let files: Vec<String> = o
@@ -8396,6 +8417,15 @@ fn run_program(
     );
     hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
     hale_syntax::json_gen::generate_json_parsers(&mut program);
+    // GH #1106: `--api` injects the entry; the pass lowers it (and any
+    // entry the source spelled) before the checker sees the program.
+    if let Some(path) = &options.api {
+        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program, path) {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    }
+    hale_syntax::api_gen::generate_api(&mut [&mut program]);
     // Pre-pass diags are re-raised by `check_bundle_opts` below
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
@@ -8661,6 +8691,23 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     }
 
     hale_syntax::json_gen::generate_json_parsers(&mut program);
+    // Options first: the check answers target questions (GH #970), so
+    // it has to know the target, and `--api` (GH #1106) shapes the
+    // program before the bundle borrows it.
+    let mut options = match parse_build_options("build", flags) {
+        Ok(o) => o,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(path) = &options.api {
+        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program, path) {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    }
+    hale_syntax::api_gen::generate_api(&mut [&mut program]);
     // Pre-pass diags are re-raised by `check_bundle_opts` below
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
@@ -8678,15 +8725,6 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // ships — a downstream fleet gates on `build` across 109 binaries,
     // and "it built" must not be weaker than "it checked" on a
     // contract the compiler already knows how to evaluate.
-    // Options first: the check answers target questions (GH #970), so
-    // it has to know the target.
-    let mut options = match parse_build_options("build", flags) {
-        Ok(o) => o,
-        Err(msg) => {
-            eprintln!("{}", msg);
-            return ExitCode::from(2);
-        }
-    };
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
     bundle.target_has_async_io = options.target.spec().has_async_io();
@@ -8993,7 +9031,7 @@ fn collect_ffi_from_imports(
 /// `hale build --link raylib app.hl` would take `raylib` — the
 /// first argument that does not start with `-` — for the target.
 const VALUE_FLAGS: &[&str] =
-    &["--link", "--csrc", "--target", "--target-cpu", "--target-cache"];
+    &["--link", "--csrc", "--target", "--target-cpu", "--target-cache", "--api"];
 
 /// GH #861: the one argument splitter `hale build` and `hale run`
 /// share. Given everything after the subcommand, it returns the
@@ -9072,6 +9110,24 @@ fn parse_build_options(
                     "--csrc requires a path to a .c file".to_string()
                 })?;
                 opts.csrc_files.push(std::path::PathBuf::from(v));
+                i += 2;
+            }
+            // GH #1106: the zero-code api path. Accepted by build and
+            // run alike; the entry it synthesizes is source-shaped, so
+            // the checker sees exactly what an author would write.
+            "--api" => {
+                let v = args.get(i + 1).ok_or_else(|| {
+                    "--api requires a socket path (e.g. --api /run/app.sock)"
+                        .to_string()
+                })?;
+                let path = v.strip_prefix("unix:").unwrap_or(v);
+                if path.is_empty() || path.starts_with("--") {
+                    return Err(
+                        "--api requires a socket path (e.g. --api /run/app.sock)"
+                            .to_string(),
+                    );
+                }
+                opts.api = Some(path.to_string());
                 i += 2;
             }
             // F.32-2 (2026-05-25): operator-facing per-locus

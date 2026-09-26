@@ -1565,6 +1565,7 @@ handle under that binding's guarantee. Per binding:
 | `udp://...`        | handed to the local IP stack; lossy from there **by declaration**       |
 | `shm_ring(...)`    | slot claimed + committed, under the declared `on_overflow` policy       |
 | adapter locus      | whatever the adapter's own contract says (it owns delivery)             |
+| `api: unix(...)`   | a command: dispatched to every born subscriber, or answered by the one handler that declares a return type; a read: answered from the locus's own pool; a stream: forwarded to every attached watcher under its bound (§ "The api binding") |
 
 This contract is what lets `<-` be an infallible statement: the
 error channel isn't missing, it's relocated to where it can be
@@ -1652,6 +1653,143 @@ acted on. Consequences, all normative:
   (the file is an operator-layered override and the diagnostic
   names the line); a well-formed line whose route cannot be
   *opened* fails the boot like a `bindings { }` entry.
+
+
+#### The api binding (GH #1106)
+
+One entry in the main locus's `bindings { }`, headed by the
+contextual keyword `api`, binds the program's API rather than one
+topic:
+
+```hale
+main locus App {
+    bindings {
+        api: unix("/run/app.sock", bound: 64, on_full: refuse);
+    }
+}
+```
+
+Nothing else in the source changes. The entry binds **every topic
+some locus subscribes** (a *command*), **every topic some locus
+publishes** (a *stream*), and **every `expose` member of the main
+locus or of a param-default child whose type appears once among
+main's params** (a *read*, named `member` on main and
+`param.member` on the child). A subscription by literal subject
+(`subscribe "log.**" ...`) names no topic and is not part of the
+API; a command reaches the loci that subscribe the topic by name,
+not those hearing it through a parent topic. `hale run --api
+<path>` (and `hale build --api <path>`, flags before the target)
+synthesizes the entry above with the dev defaults, `bound: 64,
+on_full: refuse`, and needs a `main locus` to put it on: a bare
+`fn main` program is refused with the rule. `LOTUS_API=<path>` at
+run time overrides the socket path of an entry the program
+carries and never creates one, so a binary built without the entry
+pays nothing. The socket file is unlinked when the listener binds
+(a crashed predecessor leaves one) and again at dissolve. The
+listener is born as the last param of the main locus, so it
+appears once every earlier param is born; a caller that races the
+boot connects with a wait.
+
+**The two knobs.** `bound: N` and `on_full: refuse` are required
+and describe the request side: at most N commands and reads
+awaiting a handler's answer per binding; the N+1th caller receives
+an `over_bound` receipt and nothing inside the program is touched.
+`refuse` is the only request policy: a caller waiting for an answer
+cannot be shed silently, and `wait` is left for when its disposition
+has a consumer. Each attached watcher has a queue of its own,
+`watch_bound: M` frames with `on_watch_full: drop_old | drop_new`;
+the two go together, and when both are omitted a watcher gets
+`bound` frames and `drop_old`. Frames a watcher's queue sheds are
+counted and reported on the next frame it does receive.
+
+**The wire.** A Unix domain stream socket carrying one JSON object
+per line. A request is one of
+
+```text
+{"call": "Verdict", "payload": {...}}     a command, the payload the topic's type
+{"read": "billing.ledger"}                a snapshot of an exposed member
+{"watch": "PriceMoved"}                   attach to a stream
+```
+
+each with an optional `"id"` the client chooses (any JSON value,
+echoed verbatim). Every answer carries `"request_id"`, an integer
+the binding assigns, unique for the binding's lifetime and
+increasing; a line that is not a request at all is refused with
+`request_id` 0, since no request was admitted. The answers:
+
+```text
+{"request_id": 7, "id": ..., "ok": true, "value": {...}}                  a command whose handler declares a return type
+{"request_id": 7, "id": ..., "ok": true, "accepted": true}                a command no subscriber answers: dispatched
+{"request_id": 7, "id": ..., "ok": true, "value": {...}, "as_of": "..."}  a read
+{"request_id": 7, "id": ..., "ok": true, "attached": "PriceMoved"}        a watch
+{"request_id": 7, "id": ..., "ok": false, "refusal": {"kind": "...", "reason": "..."}}
+{"stream": "PriceMoved", "value": {...}}                                  a frame, after an attach
+{"stream": "PriceMoved", "dropped": 3}                                    frames the watcher's queue shed since its last frame
+```
+
+The refusal kinds are `malformed` (not a JSON object, no verb, no
+`payload` object on a call, or a payload that does not decode: the
+reason names `missing_field` or `wrong_type` and the field),
+`unknown` (no such topic or read), `not_a_command` (a stream named
+in a call), `not_a_stream` (a command named in a watch) and
+`over_bound`. A refusal is a value-channel answer, never a failure
+of the program. Answers arrive in the order the program produces
+them, so a refusal the socket side issues itself may precede the
+answer to an earlier request still with its handler; a client
+correlates by `id`.
+
+**The reply is the return type.** A subscribed handler may declare
+a return type. Through the binding, the value it returns is the
+reply, encoded as JSON; among the subscribers of one topic at most
+one may declare a return type, else the entry is an error naming
+both handlers; a command no subscriber answers is answered
+`accepted` by the binding itself once dispatched. An intra-process
+publish of the same topic calls the handler as before and ignores
+the return, so a topic that never crosses the binding pays nothing.
+A batch handler (`Drain<T>`) is not reached through the binding:
+the cooperative queue has no batch delivery yet, so a topic one
+subscribes is left out (with a warning) and bulk requests wait on
+that substrate.
+
+**Reads are snapshots.** A binding never reads a field across
+pools. An exposed member lowers to a synthesized read subject
+whose handler runs on the locus's own pool and answers a JSON copy
+of the member (a field, or a no-argument infallible fn's result),
+so the answer is the state at that instant on that thread and a
+later write does not touch it. Every read reply carries `as_of`:
+the runtime keeps no per-locus sequence, so v1 defines it as
+`sha256:` plus the hex digest of the answered JSON, which two reads
+compare equal on exactly when the snapshot did not change and a
+later command can fence on. A live view is what a stream is for.
+
+**Codecs.** The JSON codec for every payload, return and read type
+that reaches the binding is generated from the type, without
+`json:` tags: `Int`, `Float`, `Bool`, `String`, and nested structs
+of the same; a `json:"key"` tag renames a key here as it does for
+`T::from_json`. Decoding is strict: a value of the wrong JSON kind
+is `wrong_type`, a missing field without a literal default is
+`missing_field`, and a handler only ever sees a decoded value. A
+topic or member whose type has a field of another kind (`Decimal`,
+`Time`, `Duration`, `Bytes`, arrays, enums, loci) is left out of
+the API with a warning at the `api:` entry naming the field, so
+adding the entry never breaks a build.
+
+**The lowering, and what it costs.** The entry is pre-check
+synthesis, no runtime change: per command an envelope type and
+topic (`__api.call.<topic>`) carrying the peer, the request id and
+the payload (and the topic's key, so a keyed command routes as its
+topic does), and on every subscribing locus a synthesized
+subscription whose handler calls the author's and publishes the
+reply on `__api.reply`, keyed by peer; per read a subject
+(`__api.read.<name>`) answered on the locus's pool; per stream a
+forwarder into `__api.frame`. Two synthesized loci on their own
+`async_io` pool own the socket: the binding (listener, request
+ids, the bound, stream forwarding) and one accepted child per
+connection (line reader, reply writer, watcher queue). All of it
+is typechecked like the author's code, and it shows in `hale
+topology` under `__api.*` subjects. The correlation store is the
+membrane's shape (#684): the request row exists before dispatch,
+an answer is written once, and a request is admitted once.
 
 Transport surface:
 

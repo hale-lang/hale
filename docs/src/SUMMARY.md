@@ -45,6 +45,7 @@
 - [Parents & children](./services/parents-children.md)
 - [When things fail](./services/failure.md)
 - [Across binaries](./services/multi-binary.md)
+- [Drive it from outside](./services/api.md)
 - [Composition patterns](./services/patterns.md)
 
 # Systems control

@@ -1310,7 +1310,46 @@ pub struct SpannedPlacementConstraint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BindingsBlock {
     pub entries: Vec<BindingEntry>,
+    /// GH #1106: the `api: unix(...)` entry, at most one per block.
+    /// It binds the program's API — every subscribed topic as a
+    /// command, every published topic as a stream, every `expose`
+    /// of the main locus and its default children as a read —
+    /// rather than one topic, so it is not a `BindingEntry`; the
+    /// pre-check synthesis pass (`api_gen`) reads it and the topic
+    /// walks over `entries` never see it.
+    pub api: Option<ApiBinding>,
     pub span: Span,
+}
+
+/// GH #1106: `api: unix("/run/app.sock", bound: 64, on_full: refuse)`.
+/// The request-side knobs `bound` / `on_full` are required (the
+/// checker says so, not the parser, so `hale fmt` and the LSP still
+/// see the entry); the watcher-side pair defaults to `bound` and
+/// `drop_old` when both are omitted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiBinding {
+    pub transport: ApiTransport,
+    pub bound: Option<(i64, Span)>,
+    pub on_full: Option<(ApiFullPolicy, Span)>,
+    pub watch_bound: Option<(i64, Span)>,
+    pub on_watch_full: Option<(ShedPolicy, Span)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApiTransport {
+    /// `unix("/path")` — a Unix domain stream socket speaking one JSON
+    /// object per line.
+    Unix { path: String, span: Span },
+}
+
+/// What the binding does with the request over `bound`. `refuse`
+/// answers the caller with an `over_bound` receipt; it is the only
+/// policy in v1 because a caller waiting for an answer cannot be
+/// shed silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiFullPolicy {
+    Refuse,
 }
 
 #[derive(Debug, Clone, PartialEq)]

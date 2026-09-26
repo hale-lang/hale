@@ -2836,6 +2836,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_tcp_accept_one", tcp_accept_ty, None);
 
+        // GH #1106: AF_UNIX siblings behind `std::io::unix`.
+        // declare i32 @lotus_unix_listen_socket(ptr path)
+        let unix_listen_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_unix_listen_socket", unix_listen_ty, None);
+        // declare i32 @lotus_unix_connect_wait(ptr path, i64 wait_ns)
+        let unix_connect_ty =
+            i32_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_unix_connect_wait", unix_connect_ty, None);
+
         // declare i32 @lotus_tcp_connect(ptr host, i16 port)
         // socket + one connect attempt, returns conn_fd or -1.
         let tcp_connect_ty =

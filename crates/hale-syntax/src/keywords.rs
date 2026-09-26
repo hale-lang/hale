@@ -55,6 +55,8 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "sum", "prod", "or", "fallible",
     "unix", "shm_ring", "role", "listen", "connect", "slot_count",
     "on_overflow", "block", "drop",
+    // GH #1106: the api binding entry and its knobs.
+    "api", "bound", "on_full", "refuse", "watch_bound", "on_watch_full",
     "intra_process", "intra_machine", "cross_machine", "zero_copy",
     "serves", "reperspective",
     // GH #382: claims surface (phases 1-5) + effect families.

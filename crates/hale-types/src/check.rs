@@ -6372,6 +6372,7 @@ fn check_main_and_bindings(
             }
         });
     }
+    check_api_binding(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
             diags.push(Diag::ty(
@@ -6383,6 +6384,63 @@ fn check_main_and_bindings(
                 ),
             ));
         }
+    }
+}
+
+/// GH #1106: the `api:` entry. The knobs the entry must carry, the
+/// one-replier rule, and what the api leaves out. The surface is the
+/// one `api_gen` emitted from, so a warning here names exactly what
+/// the binding will not serve.
+fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
+    let Some(surface) = hale_syntax::api_gen::api_surface(programs) else {
+        return;
+    };
+    let b = &surface.binding;
+    if b.bound.is_none() || b.on_full.is_none() {
+        diags.push(Diag::ty(
+            b.span,
+            format!(
+                "api binding: `bound:` and `on_full: refuse` are required — the \
+                 request side of the binding needs a bound and a policy (the dev \
+                 default `hale run --api` uses is `bound: {}, on_full: refuse`)",
+                hale_syntax::api_gen::DEV_BOUND
+            ),
+        ));
+    }
+    if b.watch_bound.is_some() != b.on_watch_full.is_some() {
+        diags.push(Diag::ty(
+            b.watch_bound
+                .map(|(_, s)| s)
+                .or(b.on_watch_full.map(|(_, s)| s))
+                .unwrap_or(b.span),
+            "api binding: `watch_bound:` and `on_watch_full:` go together — a \
+             watcher's queue needs a bound and a policy (`drop_old` or \
+             `drop_new`); omit both to reuse `bound` with `drop_old`"
+                .to_string(),
+        ));
+    }
+    for (topic, first, second) in &surface.ambiguous_replies {
+        diags.push(
+            Diag::ty(
+                *second,
+                format!(
+                    "api binding: topic `{}` has two subscribers that declare a \
+                     return type, so the reply through the binding would be \
+                     ambiguous; at most one subscriber of a topic answers",
+                    topic
+                ),
+            )
+            .with_related(*first, "the first replying handler"),
+        );
+    }
+    for ex in &surface.excluded {
+        diags.push(Diag::warn(
+            b.span,
+            format!(
+                "api binding: {} is not served through the binding — {}",
+                ex.what, ex.reason
+            ),
+        ));
     }
 }
 
@@ -6483,15 +6541,35 @@ fn check_bus_graph(
     // A subject has a publisher if some locus publishes it (exactly
     // or via wildcard), it is bound to a transport (external peer),
     // or it's referenced cross-seed. Same for subscriber.
+    // GH #1106: an api binding makes every subscribed topic a command a
+    // caller may publish and every published topic a stream a caller
+    // may subscribe, so neither half of this lint applies under one.
+    let api_bound = bundle.programs.values().any(|p| {
+        let mut found = false;
+        walk_decls(&p.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                if l.is_main
+                    && l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Bindings(bb) if bb.api.is_some())
+                    })
+                {
+                    found = true;
+                }
+            }
+        });
+        found
+    });
     let has_pub = |aliases: &[&str]| {
-        aliases.iter().any(|a| {
-            publishers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
-        })
+        api_bound
+            || aliases.iter().any(|a| {
+                publishers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+            })
     };
     let has_sub = |aliases: &[&str]| {
-        aliases.iter().any(|a| {
-            subscribers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
-        })
+        api_bound
+            || aliases.iter().any(|a| {
+                subscribers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+            })
     };
 
     // 1) Declared topics — matched by name and wire_subject.

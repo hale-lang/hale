@@ -565,6 +565,11 @@ impl std::error::Error for CodegenError {}
 /// `--link` and `--csrc` flags.
 #[derive(Default, Debug, Clone)]
 pub struct BuildOptions {
+    /// GH #1106: `--api <path>` binds the program's API to a Unix
+    /// socket with the dev defaults, as if the main locus spelled
+    /// `api: unix(path, bound: 64, on_full: refuse)`. Part of the
+    /// execution identity (`hale run` fingerprints it).
+    pub api: Option<String>,
     /// #8 dev profile (2026-07-02): trade runtime speed for build
     /// latency — O1 module pipeline + Less machine codegen instead
     /// of the O3/Aggressive release default. The 97%-of-build-time
@@ -1039,6 +1044,16 @@ pub fn build_executable_with_options(
     // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite `T::from_json`.
     // Idempotent — a no-op if the CLI already generated them pre-typecheck.
     hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
+    // GH #1106: the api binding, as ordinary loci and topics. The CLI
+    // ran this before the checker; a caller that builds straight from
+    // a program (a test) gets it here. Idempotent, and `--api` without
+    // an entry in the source injects one first.
+    if let Some(path) = &options.api {
+        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program_owned, path) {
+            return Err(CodegenError::Unsupported(msg));
+        }
+    }
+    hale_syntax::api_gen::generate_api(&mut [&mut program_owned]);
     hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
     // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
@@ -1190,7 +1205,7 @@ pub fn build_executable_with_options(
     let bundle = hale_types::symbol::Bundle::new(bg_programs);
     let has_socket_binding = merged.items.iter().any(|item| {
         matches!(item, TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") && l.members.iter().any(|m| {
-            matches!(m, LocusMember::Bindings(b) if !b.entries.is_empty())
+            matches!(m, LocusMember::Bindings(b) if !b.entries.is_empty() || b.api.is_some())
         }))
     });
     let program_has_offthread =

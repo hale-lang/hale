@@ -1347,6 +1347,8 @@ crates/hale-stdlib/hl/text.hl 191eff77c1d03506
 crates/hale-stdlib/hl/ts.hl 8aa733706f2db819
 crates/hale-syntax/tests/wrap_main.rs#0 865d341109268295
 crates/hale-syntax/tests/wrap_main.rs#1 80e8e4543ac850e6
+crates/hale-types/tests/api_binding_check.rs#10 8209347d14c8722f
+crates/hale-types/tests/api_binding_check.rs#9 4bd9004a38d8c44a
 crates/hale-types/tests/artifact_integrity.rs#2 ceb97d5adb719c07
 crates/hale-types/tests/artifact_law_projection.rs#10 a35d4c64d00f5eeb
 crates/hale-types/tests/artifact_law_projection.rs#13 5b19cc4370a72a2f

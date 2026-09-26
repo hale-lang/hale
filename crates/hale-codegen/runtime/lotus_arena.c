@@ -13876,6 +13876,97 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
     }
 }
 
+/* GH #1106: AF_UNIX stream siblings of the TCP fd primitives
+ * above, behind `std::io::unix::listen_socket` / `connect` /
+ * `connect_wait`. Same fd-level shape, so accept, recv, send,
+ * shutdown and close are the tcp ones; only the address family
+ * differs. The listener unlinks a stale socket file before it
+ * binds (a crashed predecessor leaves one behind) and the caller's
+ * dissolve unlinks it again. A refused connect with no wait asked
+ * for is the answer, not a fault: no stderr line, the IoError
+ * says it. */
+static int lotus_unix_addr(const char *path, struct sockaddr_un *addr) {
+    if (!path || !*path) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (strlen(path) >= sizeof(addr->sun_path)) {
+        fprintf(stderr, "lotus_unix: socket path too long: %s\n", path);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memset(addr, 0, sizeof(*addr));
+    addr->sun_family = AF_UNIX;
+    /* The length check above bounds this; memcpy rather than strncpy
+     * because the wasm32 build of this file declares no strncpy. */
+    memcpy(addr->sun_path, path, strlen(path));
+    return 0;
+}
+
+int lotus_unix_listen_socket(const char *path) {
+    struct sockaddr_un addr;
+    if (lotus_unix_addr(path, &addr) < 0) return -1;
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("lotus_unix_listen_socket: socket");
+        return -1;
+    }
+    lotus_set_cloexec(sock);
+    (void)unlink(path);
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        int err = errno;
+        perror("lotus_unix_listen_socket: bind");
+        close(sock);
+        errno = err;
+        return -1;
+    }
+    if (listen(sock, 16) < 0) {
+        int err = errno;
+        perror("lotus_unix_listen_socket: listen");
+        close(sock);
+        (void)unlink(path);
+        errno = err;
+        return -1;
+    }
+    return sock;
+}
+
+int lotus_unix_connect_wait(const char *path, int64_t wait_ns) {
+    struct sockaddr_un addr;
+    if (lotus_unix_addr(path, &addr) < 0) return -1;
+    struct timespec backoff = { 0, 5L * 1000L * 1000L };
+    int64_t deadline = lotus_now_mono_ns() + (wait_ns > 0 ? wait_ns : 0);
+    for (;;) {
+        int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("lotus_unix_connect: socket");
+            return -1;
+        }
+        lotus_set_cloexec(sock);
+        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            return sock;
+        }
+        int err = errno;
+        close(sock);
+        /* ENOENT: the listener has not bound its path yet — the
+         * same "not up yet" a refused TCP connect means. */
+        if (err != ECONNREFUSED && err != ENOENT && err != EAGAIN) {
+            errno = err;
+            perror("lotus_unix_connect: connect");
+            return -1;
+        }
+        if (lotus_now_mono_ns() >= deadline || lotus_process_draining()) {
+            errno = err;
+            return -1;
+        }
+        nanosleep(&backoff, NULL);
+    }
+}
+
+int lotus_unix_connect(const char *path) {
+    return lotus_unix_connect_wait(path, 0);
+}
+
 int lotus_tcp_close_fd(int fd) {
     if (fd < 0) return 0;
     lotus_shut_listen_mark(fd, 0);

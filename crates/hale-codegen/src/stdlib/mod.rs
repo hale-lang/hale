@@ -23,6 +23,7 @@ pub(crate) mod io_stdin;
 pub(crate) mod io_tcp;
 pub(crate) mod io_tls;
 pub(crate) mod io_udp;
+pub(crate) mod io_unix;
 pub(crate) mod math;
 pub(crate) mod mirror;
 pub(crate) mod process;

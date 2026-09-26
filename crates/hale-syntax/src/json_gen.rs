@@ -75,6 +75,13 @@ struct JsonType {
     fields: Vec<JsonField>,
 }
 
+/// The scalar JSON kinds a field may have, by their Hale spelling
+/// (`Int`, `Float`, `Bool`, `String`); `None` for anything else. The
+/// api binding's surface classification (`api_gen`) shares this rule.
+pub fn scalar_name(te: &TypeExpr) -> Option<&'static str> {
+    scalar_of(te).map(|s| s.type_name())
+}
+
 fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
     match te {
         TypeExpr::Primitive(PrimType::Int, _) => Some(ScalarTy::Int),
@@ -195,11 +202,37 @@ fn scalar_value_expr(s: ScalarTy) -> &'static str {
     }
 }
 
+/// The strict reading: a number that does not parse is a wrong type,
+/// and a bool is exactly `true` or `false`.
+fn strict_scalar_value_expr(s: ScalarTy, key: &str) -> String {
+    match s {
+        ScalarTy::Int => format!(
+            "std::str::range_parse_int(__s, __vs, __ve) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
+            key
+        ),
+        ScalarTy::Float => format!(
+            "std::str::parse_float(__s[__vs..__ve]) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
+            key
+        ),
+        // Handled as a statement by the caller; never reached.
+        ScalarTy::Bool => format!("std::str::range_eq(__s, __vs, __ve, \"true\") /* {} */", key),
+        ScalarTy::Str => "std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)])".to_string(),
+    }
+}
+
 fn generate_parser_src(t: &JsonType) -> String {
+    generate_parser_src_mode(t, "__json_parse_", false)
+}
+
+/// `strict` refuses a value of the wrong JSON kind for its field
+/// (`JsonError { kind: "wrong_type", field }`) instead of reading it
+/// as the type's zero; the api binding's decoders are strict so a
+/// handler only ever sees a payload the caller actually sent.
+fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String {
     let mut b = String::new();
     b.push_str(&format!(
-        "fn __json_parse_{}(__s: String) -> {} fallible(JsonError) {{\n",
-        t.name, t.name
+        "fn {}{}(__s: String) -> {} fallible(JsonError) {{\n",
+        prefix, t.name, t.name
     ));
     b.push_str("    let __total = len(__s);\n");
     // Field accumulators + presence flags. Scalars hold the parsed value;
@@ -294,6 +327,20 @@ fn generate_parser_src(t: &JsonType) -> String {
             f.key.len(),
             f.key
         ));
+        if strict {
+            let want = match &f.kind {
+                FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
+                FieldKind::Scalar(ScalarTy::Int) | FieldKind::Scalar(ScalarTy::Float) => {
+                    "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)"
+                }
+                FieldKind::Scalar(ScalarTy::Bool) => "__c0 == 116 || __c0 == 102",
+                FieldKind::Nested(_) => "__c0 == 123",
+            };
+            b.push_str(&format!(
+                "                    let __c0 = if __vs < __ve {{ std::str::byte_at_unchecked(__s, __vs) }} else {{ 0 }};\n                    if !({}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
+                want, f.key
+            ));
+        }
         match &f.kind {
             // String: slice directly when escape-free (the common case),
             // only unescape-copy when the scan saw a backslash.
@@ -301,6 +348,20 @@ fn generate_parser_src(t: &JsonType) -> String {
                 "                    if __esc {{ __f_{} = std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)]); }} \
                  else {{ __f_{} = __s[(__vs + 1)..(__ve - 1)]; }}\n",
                 f.name, f.name
+            )),
+            // A strict bool is a statement, not an expression: `fail`
+            // ends a block and does not produce a value.
+            FieldKind::Scalar(ScalarTy::Bool) if strict => b.push_str(&format!(
+                "                    if std::str::range_eq(__s, __vs, __ve, \"true\") {{ __f_{n} = true; }} \
+                 else if std::str::range_eq(__s, __vs, __ve, \"false\") {{ __f_{n} = false; }} \
+                 else {{ fail JsonError {{ kind: \"wrong_type\", field: \"{k}\" }}; }}\n",
+                n = f.name,
+                k = f.key
+            )),
+            FieldKind::Scalar(s) if strict => b.push_str(&format!(
+                "                    __f_{} = {};\n",
+                f.name,
+                strict_scalar_value_expr(*s, &f.key)
             )),
             FieldKind::Scalar(s) => b.push_str(&format!(
                 "                    __f_{} = {};\n",
@@ -336,8 +397,8 @@ fn generate_parser_src(t: &JsonType) -> String {
     for f in &t.fields {
         if let FieldKind::Nested(tn) = &f.kind {
             b.push_str(&format!(
-                "    let __p_{} = __json_parse_{}(__raw_{}) or raise;\n",
-                f.name, tn, f.name
+                "    let __p_{} = {}{}(__raw_{}) or raise;\n",
+                f.name, prefix, tn, f.name
             ));
         }
     }
@@ -364,10 +425,14 @@ fn prefix_lit(sep: &str, key: &str) -> String {
 /// escaped, nested structs recurse. Not fallible — serialization always
 /// succeeds.
 fn generate_emit_src(t: &JsonType) -> String {
+    generate_emit_src_mode(t, "__json_to_json_")
+}
+
+fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
     let mut b = String::new();
     b.push_str(&format!(
-        "fn __json_to_json_{}(__v: {}) -> String {{\n",
-        t.name, t.name
+        "fn {}{}(__v: {}) -> String {{\n",
+        fn_prefix, t.name, t.name
     ));
     b.push_str("    let mut __b: String = \"{\";\n");
     for (i, f) in t.fields.iter().enumerate() {
@@ -379,7 +444,7 @@ fn generate_emit_src(t: &JsonType) -> String {
                 f.name
             ),
             FieldKind::Scalar(_) => format!("to_string(__v.{})", f.name),
-            FieldKind::Nested(tn) => format!("__json_to_json_{}(__v.{})", tn, f.name),
+            FieldKind::Nested(tn) => format!("{}{}(__v.{})", fn_prefix, tn, f.name),
         };
         b.push_str(&format!("    __b = __b + {} + {};\n", prefix, value));
     }
@@ -428,9 +493,16 @@ pub fn generate_json_parsers(program: &mut Program) {
         match parse_source(&src) {
             Ok(generated) => program.items.extend(generated.items),
             // The generator emits well-formed source; a parse failure is a
-            // generator bug, not user error. Leave the program unchanged so
-            // the (un-rewritten) call surfaces a normal diagnostic.
-            Err(_) => return,
+            // generator bug, not user error. Say so on stderr and leave the
+            // program unchanged so the (un-rewritten) call surfaces a normal
+            // diagnostic.
+            Err(ds) => {
+                eprintln!(
+                    "json_gen: generated parser did not parse: {}",
+                    ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+                );
+                return;
+            }
         }
     }
 
@@ -612,5 +684,112 @@ fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
             }
         }
         Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
+
+// ---- GH #1106: codecs for the api binding's type set --------------------
+
+/// Generate strict decoders `__api_decode_<T>` and encoders
+/// `__api_encode_<T>` for every struct named in `names`, looked up
+/// across the bundle's programs, into `programs[main_idx]` beside the
+/// api binding. Fields are scalars or structs of the same set (the
+/// surface classification already refused anything else); a nested
+/// struct outside the set is left as a required nested field the
+/// generator cannot read, so callers pass the transitive closure.
+pub fn generate_api_codecs(programs: &mut [&mut Program], main_idx: usize, names: &[String]) {
+    let wanted: HashSet<String> = names.iter().cloned().collect();
+    let mut types: Vec<JsonType> = Vec::new();
+    let mut have_jsonerror = false;
+    let mut existing_fns: HashSet<String> = HashSet::new();
+    for p in programs.iter() {
+        collect_api_types(&p.items, &wanted, &mut types);
+        walk_fns(&p.items, &mut |name| {
+            existing_fns.insert(name.to_string());
+        });
+        if items_declare_type(&p.items, "JsonError") {
+            have_jsonerror = true;
+        }
+    }
+    let mut src = String::new();
+    if !have_jsonerror {
+        src.push_str("type JsonError { kind: String; field: String; }\n");
+    }
+    for t in &types {
+        if !existing_fns.contains(&format!("__api_decode_{}", t.name)) {
+            src.push_str(&generate_parser_src_mode(t, "__api_decode_", true));
+        }
+        if !existing_fns.contains(&format!("__api_encode_{}", t.name)) {
+            src.push_str(&generate_emit_src_mode(t, "__api_encode_"));
+        }
+    }
+    if src.trim().is_empty() {
+        return;
+    }
+    match parse_source(&src) {
+        Ok(generated) => programs[main_idx].items.extend(generated.items),
+        Err(ds) => eprintln!(
+            "json_gen: generated api codec did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+fn items_declare_type(items: &[TopDecl], name: &str) -> bool {
+    items.iter().any(|i| match i {
+        TopDecl::Type(t) => t.name.name == name,
+        TopDecl::Module(m) => items_declare_type(&m.items, name),
+        _ => false,
+    })
+}
+
+fn walk_fns(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
+    for i in items {
+        match i {
+            TopDecl::Fn(d) => f(&d.name.name),
+            TopDecl::Module(m) => walk_fns(&m.items, f),
+            _ => {}
+        }
+    }
+}
+
+/// Like `collect_json_types`, but for a named set and with every field
+/// admitted (the api surface already classified the closure).
+fn collect_api_types(items: &[TopDecl], wanted: &HashSet<String>, out: &mut Vec<JsonType>) {
+    for item in items {
+        match item {
+            TopDecl::Type(td) => {
+                if !wanted.contains(&td.name.name) {
+                    continue;
+                }
+                if out.iter().any(|t| t.name == td.name.name) {
+                    continue;
+                }
+                let TypeDeclBody::Struct(fields) = &td.body else { continue };
+                let mut jfields = Vec::new();
+                for f in fields {
+                    let kind = if let Some(s) = scalar_of(&f.ty) {
+                        FieldKind::Scalar(s)
+                    } else if let Some(tn) = named_single(&f.ty) {
+                        FieldKind::Nested(tn.to_string())
+                    } else {
+                        continue;
+                    };
+                    let default_src = match kind {
+                        FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
+                        FieldKind::Nested(_) => None,
+                    };
+                    jfields.push(JsonField {
+                        name: f.name.name.clone(),
+                        key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
+                        kind,
+                        default_src,
+                    });
+                }
+                out.push(JsonType { name: td.name.name.clone(), fields: jfields });
+            }
+            TopDecl::Module(m) => collect_api_types(&m.items, wanted, out),
+            _ => {}
+        }
     }
 }

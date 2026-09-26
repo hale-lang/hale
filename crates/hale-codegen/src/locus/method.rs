@@ -780,9 +780,26 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     // is mutually exclusive at run time and closes
                     // it normally at its own exit).
                     self.emit_method_scratch_destroy()?;
-                    self.builder
-                        .build_return(None)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // GH #1106: a subscribed handler may declare a
+                    // return type (its value is the reply through an
+                    // api binding). The skip path of such a handler
+                    // returns the zero of its declared type; the bus
+                    // thunk ignores it as it ignores every return,
+                    // and a direct caller of a quarantined locus's
+                    // handler gets the same nothing it got before.
+                    match func.get_type().get_return_type() {
+                        None => {
+                            self.builder
+                                .build_return(None)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                        Some(rt) => {
+                            let zero = rt.const_zero();
+                            self.builder
+                                .build_return(Some(&zero))
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                    }
                     self.builder.position_at_end(body_bb);
                 }
 
