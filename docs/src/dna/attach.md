@@ -145,8 +145,11 @@ reads it as written:
   | [`openapi.yaml`](./spec/openapi.yaml) | `api` | callers, `ui`, `node` | HTTP |
   ```
 
-A row the graph's vocabulary refuses stops the whole seed before
-anything is written.
+What the conventions cannot take stops `init` with the reason before
+anything reaches the record: an axiom with no bold name, a table row
+that links no contract, a name in code the repository does not have, a
+name with a `|` in it. Fix the document and run `init` again; it keeps
+the files it already made and seeds the record whole.
 
 ## The two environments
 
