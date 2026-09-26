@@ -364,6 +364,7 @@ locus Dna {
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
         waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
+        memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
         optimizing: String = ""; // GH #995: the optimize-walk Task whose walk this incarnation asked of the leader
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
@@ -1034,7 +1035,7 @@ locus Dna {
         let kreq = self.knowledge_request_of(r.review_id);
         if len(kreq) > 0 {
             self.ratify_through(r.review_id);
-            self.revisit_steps();
+            self.revisit_steps(false);
             return;
         }
         let edge_codec = KnowledgeEdgeCodec { };
@@ -1595,7 +1596,7 @@ locus Dna {
         b.string_field("task", self.optimizing);
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "org.reviewed", self.org_id, b.result());
-        self.revisit_steps();
+        self.revisit_steps(false);
         if len(r.proposal) > 0 {
             let id = self.ask(Intent { id: "opt" + to_string(self.optimizations), outcome: r.proposal, from: r.by });
         }
@@ -3377,7 +3378,7 @@ locus Dna {
             if e.kind == "review.settled" && len(verdict_outcome(e.body)) > 0 && len(self.knowledge_request_of(e.entity)) > 0 { self.ratify_through(e.entity); }
             i = i + 1;
         }
-        self.revisit_steps();
+        self.revisit_steps(true);
     }
     // Intent enters through the membrane and births a durable Task;
     // its birth and its settlement are Journal events (the causal
@@ -3666,6 +3667,7 @@ locus Dna {
     fn on_step_requested(s: StepAsk) {
         let moved = self.journal.refresh();
         self.release_recorded();
+        if last_segment(s.request.work_id) == "hat" { self.memory_ready = self.knowledge_client.caught_up(); }
         if !self.perform_step(s) && !self.step_waiting(s.attempt_id) { self.waiting_steps.push(s); }
     }
     @unbounded
@@ -3681,12 +3683,17 @@ locus Dna {
     // Every waiting step performed again; those that reported leave the
     // list, which empties when none waits.
     @unbounded
-    fn revisit_steps() {
+    // `on_tick` revisits the steps that wait on memory too, asking memory
+    // once whether its projection caught up; a verdict or an answer
+    // revisits the others, never blocking on memory.
+    fn revisit_steps(on_tick: Bool) {
+        if on_tick { self.memory_ready = self.knowledge_client.caught_up(); }
         let mut left = 0;
         let mut i = 0;
         while i < self.waiting_steps.len() {
             let w = self.waiting_steps.get(i) or StepAsk { };
-            if len(w.attempt_id) > 0 {
+            if len(w.attempt_id) > 0 && !on_tick && last_segment(w.request.work_id) == "hat" { left = left + 1; }
+            else if len(w.attempt_id) > 0 {
                 if self.perform_step(w) { self.waiting_steps.set(i, StepAsk { }) or discard; } else { left = left + 1; }
             }
             i = i + 1;
@@ -3769,6 +3776,10 @@ locus Dna {
             if len(read.kind) > 0 { return step_done(std::json::find_string_field(read.body, "hat"), "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head"))); }
             let at = self.knowledge_client.ratified_at(digest);
             if at < 0 { return step_waits(); }
+            // never block the organization's handler on memory's projection:
+            // behind the record's knowledge, the step waits and is performed
+            // again at the tick
+            if !self.memory_ready { return step_waits(); }
             let target = std::json::find_string_field(self.governance_event("knowledge.proposed", digest).body, "target");
             let pkg = self.knowledge_client.package_for(target, "");
             if len(pkg.error) > 0 { return step_waits(); }
