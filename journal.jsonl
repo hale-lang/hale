@@ -1,0 +1,1 @@
+{"seq": 0, "kind": "application.attached", "entity": ".", "body": "{\"artifact\":\".hale/dna/baseline.topology\",\"artifact_digest\":\"509b7f694b0c7968\",\"main\":\"Demo\",\"provenance\":\"observed\",\"schema\":\"1.19\",\"shape_hash\":\"ddd87794e8adeed5\",\"toolchain\":\"0.21.0\",\"verdict\":\"clean\"}", "author": "Riley Rook"}
