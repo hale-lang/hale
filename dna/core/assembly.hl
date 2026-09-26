@@ -365,6 +365,7 @@ locus Dna {
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
         waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
         memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
+        ratified_through: String = "\n"; // GH #995: the Reviews this incarnation has ratified through practice-ratify, never scanned for again
         optimizing: String = ""; // GH #995: the optimize-walk Task whose walk this incarnation asked of the leader
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
@@ -3375,7 +3376,10 @@ locus Dna {
             }
             // GH #995: a verdict whose ratification never ran is ratified
             // through practice-ratify, as a fresh one is
-            if e.kind == "review.settled" && len(verdict_outcome(e.body)) > 0 && len(self.knowledge_request_of(e.entity)) > 0 { self.ratify_through(e.entity); }
+            if e.kind == "review.settled" && !std::str::contains(self.ratified_through, "\n" + e.entity + "\n") && len(verdict_outcome(e.body)) > 0 {
+                // a Review that is no knowledge proposal's is never asked again
+                if len(self.knowledge_request_of(e.entity)) > 0 { self.ratify_through(e.entity); } else { self.ratified_through = self.ratified_through + e.entity + "\n"; }
+            }
             i = i + 1;
         }
         self.revisit_steps(true);
@@ -3740,14 +3744,20 @@ locus Dna {
     // whose steps write the ratification and what the hat reads.
     @unbounded
     fn ratify_through(review_id: String) {
+        // each Review once per incarnation, once its execution exists: a
+        // reconciliation walks every settled one at every tick, and the
+        // scans below are the record's
+        if std::str::contains(self.ratified_through, "\n" + review_id + "\n") { return; }
         let digest = native_json_string(self.knowledge_request_of(review_id), "knowledge_digest");
-        if len(digest) == 0 || len(self.ratification_of(digest)) > 0 { return; }
+        if len(digest) == 0 { return; }
+        if len(self.ratification_of(digest)) > 0 { self.ratified_through = self.ratified_through + review_id + "\n"; return; }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("digest", digest);
         b.string_field("review_id", review_id);
         b.end_object();
         let t = self.run_workflow(WorkflowAsk { id: "ratify:" + digest, definition: "practice-ratify", revision: self.catalog.latest("practice-ratify"), inputs: b.result() });
+        if len(t) > 0 && !std::str::starts_with(t, "refused") { self.ratified_through = self.ratified_through + review_id + "\n"; }
     }
     @unbounded
     fn practice_step(task: String, key: String, x: String) -> StepVerdict {
