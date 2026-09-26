@@ -612,6 +612,11 @@ recorded under `--dev` replays only under `hale replay --dev`.
                                    topic a command, every published
                                    topic a stream, every expose a read
                                    (dev defaults: bound 64, refuse)
+  --env <name>                     the deployment target: adopt the
+                                   constitution [environments.<name>]
+                                   binds and bake its `roles` table
+                                   into the api binding (LOTUS_API_ROLES
+                                   overrides it at run time)
   --target <native>                `run` execs what it builds, so a
                                    target this host cannot execute
                                    (wasm32) is refused; build it
@@ -653,6 +658,11 @@ that is not a flag is the target, as in `hale check`:
                                    topic a command, every published
                                    topic a stream, every expose a read
                                    (dev defaults: bound 64, refuse)
+  --env <name>                     the deployment target: adopt the
+                                   constitution [environments.<name>]
+                                   binds and bake its `roles` table
+                                   into the api binding (LOTUS_API_ROLES
+                                   overrides it at run time)
   --wrap-main                      synthesize the wasm @export entry
                                    from `fn main` (--target wasm32)
   --locality-report                the per-locus working-set table,
@@ -772,7 +782,7 @@ from the description the binding serves. `claude mcp add app -- hale
 mcp --app /run/app.sock` is the whole setup.
 ",
         "describe" => "\
-hale describe <socket | file.hl | dir> [--openapi | --mcp] [-o <path>]
+hale describe <socket | file.hl | dir> [--openapi | --mcp] [--full] [-o <path>]
 
 The description of an api binding: its commands (subscribed topics,
 with the payload schema and the reply type), reads (exposed members,
@@ -3891,6 +3901,7 @@ fn top_decl_ident(d: &hale_syntax::ast::TopDecl) -> Option<&str> {
         T::RingLayout(r) => Some(&r.name.name),
         T::Target(t) => Some(&t.name.name),
         T::Group(g) => Some(&g.name.name),
+        T::Role(r) => Some(&r.name.name),
         T::Module(_) | T::Claims(_) | T::Constitution(_) => None,
     }
 }
@@ -5349,12 +5360,96 @@ fn flag_value_in(
 }
 
 /// Which constitution does environment `env` require? Walks up from
+/// GH #1109: what `build --env` and `run --env` resolve before the
+/// program is parsed: the environment's section (for the constitution
+/// it binds) and, onto `options`, its role table, which the api binding
+/// bakes in and the fingerprint covers. Without `--env` there is no
+/// table: every gate refuses until `LOTUS_API_ROLES` says otherwise.
+fn resolve_build_env(
+    target: &Path,
+    options: &mut hale_codegen::BuildOptions,
+) -> Result<Option<(crate::pkg::EnvSpec, Option<String>)>, String> {
+    let Some(env) = options.env.clone() else { return Ok(None) };
+    let (spec, base) = resolve_env_spec(target, &env)?;
+    options.api_roles = Some(crate::pkg::roles_table(&spec.roles));
+    Ok(Some((spec, base)))
+}
+
+/// GH #1109: bind the resolved environment to the parsed program —
+/// adopt its constitution as `check --env` does — and lower the api
+/// binding with the role table. Says so, once, when the program gates
+/// something and no environment mapped its roles.
+fn bind_build_env(
+    program: &mut hale_syntax::ast::Program,
+    env_spec: &Option<(crate::pkg::EnvSpec, Option<String>)>,
+    options: &hale_codegen::BuildOptions,
+) -> Result<(), String> {
+    if let Some((spec, base)) = env_spec {
+        let has_main = program
+            .items
+            .iter()
+            .any(|i| matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main));
+        if !has_main {
+            return Err(format!(
+                "`--env {}` names a deployment target, and a deployment target is an \
+                 ENTRYPOINT — this program declares no `main locus`",
+                options.env.as_deref().unwrap_or("")
+            ));
+        }
+        for c in env_adopts(spec, base) {
+            inject_adopt(program, &c);
+        }
+    }
+    let surface = hale_syntax::api_gen::generate_api(&mut [program], options.api_roles.as_deref());
+    if let Some(surface) = surface {
+        let gated = surface.commands.iter().filter(|c| c.role.is_some()).count()
+            + surface.reads.iter().filter(|r| r.role.is_some()).count()
+            + surface.streams.iter().filter(|s| s.role.is_some()).count();
+        if gated > 0 && options.api_roles.is_none() {
+            eprintln!(
+                "note: {} gated operation(s) and no role table: pass `--env <name>` to bake \
+                 `[environments.<name>.roles]` from hale.toml, or set LOTUS_API_ROLES at run \
+                 time; until then every gate refuses",
+                gated
+            );
+        }
+    }
+    Ok(())
+}
+
 /// the target for the nearest `hale.toml`, so `hale check apps/a
 /// --env prod` works from anywhere in the tree.
 fn resolve_env_constitution(
     target: &Path,
     env: &str,
 ) -> Result<Vec<String>, String> {
+    let (spec, base) = resolve_env_spec(target, env)?;
+    Ok(env_adopts(&spec, &base))
+}
+
+/// The constitutions an environment binds: the workspace base first,
+/// then the environment's own addition when it differs.
+fn env_adopts(spec: &crate::pkg::EnvSpec, base: &Option<String>) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    if let Some(b) = base {
+        v.push(b.clone());
+    }
+    if let Some(c) = &spec.constitution {
+        if Some(c) != v.first() {
+            v.push(c.clone());
+        }
+    }
+    v
+}
+
+/// GH #1109: the `[environments.<env>]` section the nearest
+/// `hale.toml` at or above `target` declares, with the workspace
+/// base. `check --env` reads its constitution; `build --env` and
+/// `run --env` read that and its `roles` table.
+fn resolve_env_spec(
+    target: &Path,
+    env: &str,
+) -> Result<(crate::pkg::EnvSpec, Option<String>), String> {
     let start = if target.is_dir() {
         target.to_path_buf()
     } else {
@@ -5366,18 +5461,7 @@ fn resolve_env_constitution(
         if m.exists() {
             let (envs, base) = crate::pkg::read_claims_config(&m)?;
             return match envs.get(env) {
-                Some(spec) => {
-                    let mut v: Vec<String> = Vec::new();
-                    if let Some(b) = base {
-                        v.push(b);
-                    }
-                    if let Some(c) = &spec.constitution {
-                        if Some(c) != v.first() {
-                            v.push(c.clone());
-                        }
-                    }
-                    Ok(v)
-                }
+                Some(spec) => Ok((spec.clone(), base)),
                 None => Err(format!(
                     "no environment `{}` in {} (declared: {})",
                     env,
@@ -5521,6 +5605,13 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             if code != 0 {
                 failed.push(format!("{} @ {}", ep, env));
             }
+            // GH #1109: every role the entrypoint declares is mapped
+            // here (a `[]` is explicitly nobody), and nothing is
+            // mapped that it does not declare.
+            for msg in role_coverage(&target, env, &spec.roles) {
+                eprintln!("{}", msg);
+                failed.push(format!("{} @ {} (roles)", ep, env));
+            }
             // Review finding 3: prove the entrypoints in ONE
             // environment resolved the SAME claimset, not merely the
             // same NAME. Constitution names are flat and unmangled,
@@ -5590,6 +5681,50 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
         eprintln!("  {}", f);
     }
     ExitCode::from(1)
+}
+
+/// GH #1109: the role-coverage rule of `--matrix`, per (entrypoint,
+/// environment): the roles the entrypoint declares (plus `owner`
+/// when it has an api binding) against the environment's `roles`
+/// table. A declared role the table omits is a failure — an omission
+/// is indistinguishable from a mistake, and `[]` says "nobody" on
+/// purpose; a mapped role nothing declares is one too, because a
+/// misspelt key would otherwise map nobody quietly.
+fn role_coverage(
+    target: &Path,
+    env: &str,
+    table: &BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    let Ok((programs, _, _, _, _)) = collect_checkable(target) else {
+        return Vec::new();
+    };
+    let refs: Vec<&hale_syntax::ast::Program> = programs.values().collect();
+    let declared = hale_syntax::api_gen::declared_roles(&refs);
+    let mut out = Vec::new();
+    let missing: Vec<&String> = declared.iter().filter(|r| !table.contains_key(*r)).collect();
+    if !missing.is_empty() {
+        out.push(format!(
+            "{} @ {}: role(s) {} are not mapped in [environments.{}.roles] — map each to \
+             its members, or to [] to say explicitly that nobody holds it here",
+            target.display(),
+            env,
+            missing.iter().map(|r| format!("`{}`", r)).collect::<Vec<_>>().join(", "),
+            env
+        ));
+    }
+    let extra: Vec<&String> = table.keys().filter(|k| !declared.iter().any(|d| d == *k)).collect();
+    if !extra.is_empty() && !declared.is_empty() {
+        out.push(format!(
+            "{} @ {}: [environments.{}.roles] maps {}, which the entrypoint does not declare \
+             (declared: {})",
+            target.display(),
+            env,
+            env,
+            extra.iter().map(|r| format!("`{}`", r)).collect::<Vec<_>>().join(", "),
+            declared.iter().map(|r| format!("`{}`", r)).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    out
 }
 
 /// The `(name, digest)` of each constitution adopted when `target`
@@ -6085,7 +6220,7 @@ fn run_check_impl_labelled(
     // the seed once the per-program passes are done.
     {
         let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-        hale_syntax::api_gen::generate_api(&mut refs);
+        hale_syntax::api_gen::generate_api(&mut refs, None);
     }
 
     let bundle_programs: BTreeMap<String, &Program> = programs
@@ -7143,6 +7278,10 @@ fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
     // GH #1106: an api binding is part of the program the binary is.
     if let Some(api) = &o.api {
         fp.push_str(&format!(";api={}", api));
+    }
+    // GH #1109: the role table is part of the binary too.
+    if let Some(t) = &o.api_roles {
+        fp.push_str(&format!(";roles={}", t));
     }
     if !o.csrc_files.is_empty() {
         let files: Vec<String> = o
@@ -8346,13 +8485,24 @@ fn run_program(
     // set, from the same parser, that `hale build` takes. They are
     // fingerprinted into the execution identity below, so a
     // recording carries the options it was made under.
-    options: hale_codegen::BuildOptions,
+    mut options: hale_codegen::BuildOptions,
     // GH #527 B3 / GH #887: `--observe` publishes the program's
     // observation segment. It is the CHILD's setting, so it rides
     // down to the `Command` that starts the child rather than being
     // planted in this process's environment for it to inherit.
     observe: bool,
 ) -> ExitCode {
+    // GH #1109: `--env` names the deployment target; its role table is
+    // part of the binary (and so of the fingerprint below), so it is
+    // resolved first. The constitution it binds is adopted once the
+    // program is parsed.
+    let env_spec = match resolve_build_env(target, &mut options) {
+        Ok(e) => e,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
     // Both single-file and directory targets resolve cross-seed
     // imports and thread the per-build path-rename table into
     // codegen — `run` and `build` agree (WS3.3). A single file
@@ -8545,7 +8695,10 @@ fn run_program(
             return ExitCode::from(2);
         }
     }
-    hale_syntax::api_gen::generate_api(&mut [&mut program]);
+    if let Err(msg) = bind_build_env(&mut program, &env_spec, &options) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     // Pre-pass diags are re-raised by `check_bundle_opts` below
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
@@ -8821,13 +8974,24 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // GH #1109: `--env` — the deployment target's role table and law.
+    let env_spec = match resolve_build_env(target, &mut options) {
+        Ok(e) => e,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
     if let Some(path) = &options.api {
         if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program, path) {
             eprintln!("{}", msg);
             return ExitCode::from(2);
         }
     }
-    hale_syntax::api_gen::generate_api(&mut [&mut program]);
+    if let Err(msg) = bind_build_env(&mut program, &env_spec, &options) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     // Pre-pass diags are re-raised by `check_bundle_opts` below
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
@@ -9151,7 +9315,7 @@ fn collect_ffi_from_imports(
 /// `hale build --link raylib app.hl` would take `raylib` — the
 /// first argument that does not start with `-` — for the target.
 const VALUE_FLAGS: &[&str] =
-    &["--link", "--csrc", "--target", "--target-cpu", "--target-cache", "--api"];
+    &["--link", "--csrc", "--target", "--target-cpu", "--target-cache", "--api", "--env"];
 
 /// GH #861: the one argument splitter `hale build` and `hale run`
 /// share. Given everything after the subcommand, it returns the
@@ -9248,6 +9412,23 @@ fn parse_build_options(
                     );
                 }
                 opts.api = Some(path.to_string());
+                i += 2;
+            }
+            // GH #1109: the deployment target. Its constitution is
+            // adopted as `check --env` adopts it, and its role table
+            // is baked into the api binding.
+            "--env" => {
+                let v = args.get(i + 1).ok_or_else(|| {
+                    "--env requires an environment name from hale.toml (e.g. --env prod)"
+                        .to_string()
+                })?;
+                if v.is_empty() || v.starts_with("--") {
+                    return Err(
+                        "--env requires an environment name from hale.toml (e.g. --env prod)"
+                            .to_string(),
+                    );
+                }
+                opts.env = Some(v.clone());
                 i += 2;
             }
             // F.32-2 (2026-05-25): operator-facing per-locus

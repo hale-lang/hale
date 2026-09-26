@@ -38,3 +38,160 @@ type __StdApiContext {
 fn __api_local_context() -> std::api::Context {
     return std::api::Context { };
 }
+
+// GH #1109: roles at the binding.
+//
+// A `RoleSource` is what the binding consults at its gate: does this
+// principal hold this role, directly. The hierarchy (`role owner
+// includes x;`) is the program's and the binding walks it, so a
+// source answers only the direct question. `StaticRoles` is the
+// stdlib's source: a table baked from `[environments.<env>.roles]`
+// in hale.toml by `hale build --env <env>` and overridden at run
+// time by `LOTUS_API_ROLES`, spelled `role=member,member;role=`.
+// A member is `uid:<n>`, `gid:<n>` (the peer's primary or a
+// supplementary group), `user:<name>` or `group:<name>` (resolved
+// once, at birth, through the host's account database; an unknown
+// name is reported and holds nobody) or `*` (any authenticated
+// peer). A principal the binding could not authenticate (uid -1)
+// holds no role whatever the table says.
+
+/// A membership source: the binding asks, the deployment answers.
+interface __StdApiRoleSource {
+    fn holds(p: std::api::Principal, r: String) -> Bool;
+}
+
+/// The static table, from the environment's `roles` section.
+locus __StdApiStaticRoles {
+    params {
+        table: String = "";
+    }
+    birth() {
+        if std::env::var_exists("LOTUS_API_ROLES") {
+            self.table = std::env::var("LOTUS_API_ROLES");
+        }
+        self.table = __api_resolve_role_names(self.table);
+    }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        if p.uid < 0 {
+            return false;
+        }
+        let mut rest = self.table;
+        while len(rest) > 0 {
+            let semi = std::str::index_of(rest, ";");
+            let mut seg = rest;
+            if semi >= 0 {
+                seg = rest[0..semi];
+                rest = rest[(semi + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            let eq = std::str::index_of(seg, "=");
+            if eq > 0 && std::str::trim(seg[0..eq]) == r {
+                if __api_role_members_match(p, seg[(eq + 1)..len(seg)]) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+/// One role's member list against a principal.
+fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
+    let mut rest = members;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let mut m = rest;
+        if comma >= 0 {
+            m = rest[0..comma];
+            rest = rest[(comma + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        m = std::str::trim(m);
+        if m == "*" {
+            return true;
+        }
+        if std::str::starts_with(m, "uid:") {
+            let n = std::str::parse_int(m[4..len(m)]) or - 1;
+            if n >= 0 && n == p.uid {
+                return true;
+            }
+        }
+        if std::str::starts_with(m, "gid:") {
+            let n = std::str::parse_int(m[4..len(m)]) or - 1;
+            if n >= 0 && (n == p.gid || std::io::unix::in_group(p.uid, n)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// `user:<name>` and `group:<name>` become `uid:<n>` and `gid:<n>`
+/// once; a name the host does not know is reported and dropped, so
+/// it holds nobody rather than someone else.
+fn __api_resolve_role_names(table: String) -> String {
+    let mut out = "";
+    let mut rest = table;
+    while len(rest) > 0 {
+        let semi = std::str::index_of(rest, ";");
+        let mut seg = rest;
+        if semi >= 0 {
+            seg = rest[0..semi];
+            rest = rest[(semi + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        let eq = std::str::index_of(seg, "=");
+        if eq <= 0 {
+            continue;
+        }
+        let role = std::str::trim(seg[0..eq]);
+        let mut members = "";
+        let mut mrest = seg[(eq + 1)..len(seg)];
+        while len(mrest) > 0 {
+            let comma = std::str::index_of(mrest, ",");
+            let mut m = mrest;
+            if comma >= 0 {
+                m = mrest[0..comma];
+                mrest = mrest[(comma + 1)..len(mrest)];
+            } else {
+                mrest = "";
+            }
+            m = std::str::trim(m);
+            let mut resolved = m;
+            if std::str::starts_with(m, "user:") {
+                let name = m[5..len(m)];
+                let id = std::io::unix::user_id(name);
+                if id < 0 {
+                    eprintln("api roles: role " + role + " names user " + name + ", which this host does not know; it holds nobody");
+                    resolved = "";
+                } else {
+                    resolved = "uid:" + to_string(id);
+                }
+            }
+            if std::str::starts_with(m, "group:") {
+                let name = m[6..len(m)];
+                let id = std::io::unix::group_id(name);
+                if id < 0 {
+                    eprintln("api roles: role " + role + " names group " + name + ", which this host does not know; it holds nobody");
+                    resolved = "";
+                } else {
+                    resolved = "gid:" + to_string(id);
+                }
+            }
+            if len(resolved) > 0 {
+                if len(members) > 0 {
+                    members = members + ",";
+                }
+                members = members + resolved;
+            }
+        }
+        if len(out) > 0 {
+            out = out + ";";
+        }
+        out = out + role + "=" + members;
+    }
+    return out;
+}

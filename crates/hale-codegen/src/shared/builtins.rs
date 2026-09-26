@@ -2852,6 +2852,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for name in ["lotus_unix_peer_uid", "lotus_unix_peer_gid", "lotus_unix_peer_pid"] {
             self.module.add_function(name, peer_ty, None);
         }
+        // GH #1109: declare i64 @lotus_unix_user_id(ptr name), i64
+        // @lotus_unix_group_id(ptr name), i32 @lotus_unix_in_group(i64
+        // uid, i64 gid) — the static role table's name spellings.
+        let name_id_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        for name in ["lotus_unix_user_id", "lotus_unix_group_id"] {
+            self.module.add_function(name, name_id_ty, None);
+        }
+        let in_group_ty = i32_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+        self.module.add_function("lotus_unix_in_group", in_group_ty, None);
 
         // declare i32 @lotus_tcp_connect(ptr host, i16 port)
         // socket + one connect attempt, returns conn_fd or -1.

@@ -190,7 +190,7 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale verify` | Layer-2 discipline gate: `check`'s full analysis, ANY finding fails (no execution) |
 | `hale fmt` | Canonical formatter (Go-style: zero config; see below) |
 | `hale doc` | API reference from `///` doc comments (Markdown / `--json`; see below) |
-| `hale describe <socket \| file>` | An api binding's description (GH #1107): commands, reads, streams and schemas; `--openapi` / `--mcp` for the derived forms; from a source it is `hale check --dump-api`, from a socket what the binding serves, and the two are the same bytes |
+| `hale describe <socket \| file>` | An api binding's description (GH #1107): commands, reads, streams and schemas; `--openapi` / `--mcp` for the derived forms; from a source it is `hale check --dump-api`, from a socket what the binding serves — the caller's slice, or with `--full` the whole document, a read gated on `owner` (GH #1109) — and the full form is the same bytes |
 | `hale call <socket> <name> [json]` | Send one command (its JSON payload) or one read to a running api binding; prints the answer, a refusal on stderr with exit 1 |
 | `hale watch <socket> <stream>` | Attach to a stream of a running api binding; one JSON line per frame |
 | `hale admin <socket> [--port n]` | A local page over the description, every action one request to the binding |

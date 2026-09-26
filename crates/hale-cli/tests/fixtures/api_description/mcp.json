@@ -28,7 +28,7 @@
   ],
   "tools": [
     {
-      "description": "Command Audits: sends a Audit to the program; the answer is `accepted` once it is dispatched.",
+      "description": "Command Audits: sends a Audit to the program; the answer is `accepted` once it is dispatched. Needs the role auditor; a role gate is a boundary check at the binding, never a proof over the program's internal call paths.",
       "inputSchema": {
         "properties": {
           "line": {

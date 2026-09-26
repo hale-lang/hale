@@ -433,7 +433,7 @@ fn check_and_publish(
         }
         {
             let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-            hale_syntax::api_gen::generate_api(&mut refs);
+            hale_syntax::api_gen::generate_api(&mut refs, None);
         }
         let bundle_programs: BTreeMap<String, &Program> = programs
             .iter()

@@ -1700,7 +1700,10 @@ has a consumer. Each attached watcher has a queue of its own,
 `watch_bound: M` frames with `on_watch_full: drop_old | drop_new`;
 the two go together, and when both are omitted a watcher gets
 `bound` frames and `drop_old`. Frames a watcher's queue sheds are
-counted and reported on the next frame it does receive.
+counted and reported on the next frame it does receive. The third
+knob is the gate's: `on_unauthorized: refuse` (the default: a
+receipt naming the missing role) or `drop` (no answer), and
+`roles: L { … }` names the membership source (GH #1109, below).
 
 **The wire.** A Unix domain stream socket carrying one JSON object
 per line. A request is one of
@@ -1709,7 +1712,8 @@ per line. A request is one of
 {"call": "Verdict", "payload": {...}}     a command, the payload the topic's type
 {"read": "billing.ledger"}                a snapshot of an exposed member
 {"watch": "PriceMoved"}                   attach to a stream
-{"describe": true}                        the description (spec/model.md § "The description")
+{"describe": true}                        the description, the slice this caller's roles show (spec/model.md § "The description")
+{"describe": "full"}                      the whole description: a read gated on `owner` (GH #1109)
 ```
 
 each with an optional `"id"` the client chooses (any JSON value,
@@ -1738,9 +1742,11 @@ The refusal kinds are `malformed` (not a JSON object, no verb, no
 `payload` object on a call, or a payload that does not decode: the
 reason names `missing_field` or `wrong_type` and the field),
 `unknown` (no such topic or read), `not_a_command` (a stream named
-in a call), `not_a_stream` (a command named in a watch) and
-`over_bound`. A refusal is a value-channel answer, never a failure
-of the program. Answers arrive in the order the program produces
+in a call), `not_a_stream` (a command named in a watch),
+`over_bound`, and `unauthorized` (GH #1109: the caller lacks the
+role the operation is gated on; the refusal carries `"role"` naming
+it, and `on_unauthorized: drop` turns it into no answer at all). A
+refusal is a value-channel answer, never a failure of the program. Answers arrive in the order the program produces
 them, so a refusal the socket side issues itself may precede the
 answer to an earlier request still with its handler; a client
 correlates by `id`.
@@ -1777,6 +1783,41 @@ carries the principal it established:
  "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
 ```
 
+**The gate (GH #1109).** A role is declared vocabulary
+(`spec/types.md` § "Roles and `@gated`"); `@gated(role: R)` on a
+subscribed handler, an `expose` member or a `publish` member says
+that a call on the topic, a read of the member or a watch of the
+stream **arriving through the api binding** is refused unless the
+caller's principal holds R. Commands and reads are checked per
+message at the binding; a stream is checked once, when the watcher
+attaches. Holding R means the membership source answers yes for R
+itself or for any role whose `includes` chain reaches R; the first
+that answers is the **authorizing role**, and it is written on the
+receipt as `"role"` and handed to a `Context`-taking handler as
+`ctx.role` (empty for an ungated operation, and for anything that did
+not cross the binding). The source is a locus satisfying
+`std::api::RoleSource` (`fn holds(p: Principal, r: String) ->
+Bool`, the direct question only): the one the entry names with
+`roles: L { … }`, or the stdlib's `std::api::StaticRoles`, whose
+table `hale build --env <name>` / `hale run --env <name>` bakes from
+`[environments.<name>.roles]` in `hale.toml` and `LOTUS_API_ROLES`
+overrides at run time. Without a table every gate refuses, and the
+build says so once. A principal the binding could not authenticate
+(uid -1) holds no role whatever the table says. The description the
+binding serves is the caller's slice: the commands, reads and
+streams it may use (an ungated item always), with the schemas those
+items reference; the whole document is itself a read gated on the
+built-in role `owner` (`{"describe": "full"}`), and it is the
+document `hale check --dump-api` emits, byte for byte. The gate is a
+boundary check at ⋈ and nothing more: it says nothing about the
+program's internal call paths (the description's `notes.gates` says
+the same), and a `@gated` anywhere but those three sites is an error
+so that no annotation promises a check that does not run. A gated
+handler's topic cannot also be bound to a transport in `bindings
+{ }`, for the same reason. Every subscriber of one topic, and every
+publisher of one stream, states the same gate, because the binding
+refuses the message, not the handler.
+
 **The handler signature rule.** As with `Drain<T>`, the `subscribe`
 line never changes; the handler's parameter list declares what the
 substrate hands it. Three independent axes: the payload shape (`T`
@@ -1792,7 +1833,7 @@ principal, `via: "local"`, request id 0, no role), built for that
 delivery in a subregion of the locus's own arena and released when
 the handler returns. Through the api binding the synthesized
 subscription passes the caller the binding established, `via:
-"api"`, the request id, and the authorizing role once roles exist. A handler never asks whether it was reached
+"api"`, the request id, and the authorizing role. A handler never asks whether it was reached
 from outside; it reads `via`. `Context` and `Principal` are
 ordinary structs (`spec/stdlib.md` § `std::api`): constructible in
 a test, forwardable in a payload; provenance in `via` is what tells

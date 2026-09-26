@@ -76,6 +76,9 @@ pub enum TopDecl {
     /// names are errors, not empty sets — the misspelt-effect-class
     /// lesson applied at the group layer. Lowers to zero code.
     Group(GroupDecl),
+    /// GH #1109: `role NAME [includes A, B];` — declared authorization
+    /// vocabulary, like `group` and `effect`.
+    Role(RoleDecl),
     /// #392 thread 2: a TOP-LEVEL `claims { }` block — the LIBRARY
     /// tier. A seed swears about itself and its own boundary; the
     /// claims travel with the import and re-evaluate in every
@@ -119,6 +122,7 @@ impl TopDecl {
             TopDecl::RingLayout(r) => r.span,
             TopDecl::Target(t) => t.span,
             TopDecl::Group(g) => g.span,
+            TopDecl::Role(r) => r.span,
             TopDecl::Claims(c) => c.span,
             TopDecl::Constitution(c) => c.span,
         }
@@ -189,6 +193,17 @@ pub fn for_each_decl_mut(
             f(item);
         }
     }
+}
+
+/// GH #1109: `role refund_support;` / `role owner includes refund_support;`.
+/// A role a `@gated(role:)` annotation may name; `includes` is the
+/// hierarchy, grant-only and union-only: whoever holds the role holds
+/// every role it includes, transitively.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoleDecl {
+    pub name: Ident,
+    pub includes: Vec<Ident>,
+    pub span: Span,
 }
 
 /// GH #382 phase 1: `group NAME = { member, ... } [may_be_empty];`
@@ -1334,10 +1349,33 @@ pub struct BindingsBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApiBinding {
     pub transport: ApiTransport,
+    /// GH #1109: `roles: RecordRoles { ... }` — a locus satisfying
+    /// `std::api::RoleSource` that answers whether a principal holds a
+    /// role; absent, the static table from `[environments.<env>.roles]`.
+    pub roles: Option<ApiRoles>,
     pub bound: Option<(i64, Span)>,
     pub on_full: Option<(ApiFullPolicy, Span)>,
     pub watch_bound: Option<(i64, Span)>,
     pub on_watch_full: Option<(ShedPolicy, Span)>,
+    /// GH #1109: what a caller lacking the role gets — a receipt
+    /// naming it (the default), or nothing.
+    pub on_unauthorized: Option<(ApiUnauthorizedPolicy, Span)>,
+    pub span: Span,
+}
+
+/// GH #1109: `on_unauthorized: refuse | drop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiUnauthorizedPolicy {
+    /// An `unauthorized` receipt naming the missing role.
+    Refuse,
+    /// No answer at all: the request is dropped at the gate.
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiRoles {
+    pub locus: Ident,
+    pub inits: Vec<StructInit>,
     pub span: Span,
 }
 
@@ -1669,6 +1707,9 @@ pub struct ContractMember {
     pub direction: ContractDirection,
     pub name: ContractName,
     pub ty: Option<TypeExpr>,
+    /// GH #1109: `@gated(role: R) expose x: T;` — a read of this member
+    /// through the api binding needs the role.
+    pub gated: Option<Ident>,
     pub span: Span,
 }
 
@@ -1785,6 +1826,9 @@ pub enum BusMember {
         /// `of type T` clause. Same constraint as `Subscribe.ty`.
         ty: Option<TypeExpr>,
         alias: Option<Ident>,
+        /// GH #1109: `@gated(role: R) publish T;` — attaching to this
+        /// stream through the api binding needs the role.
+        gated: Option<Ident>,
         span: Span,
     },
 }
@@ -2311,6 +2355,10 @@ pub struct FnDecl {
     /// `alloc_per_call` — `stack_bytes`, `block_points`, `publish`,
     /// `fanout`. Checked in `hale-types::quantitative`.
     pub quantities: Vec<(QuantDim, u64)>,
+    /// GH #1109: `@gated(role: R)` — the role a caller must hold for a
+    /// message on this handler's subject to pass the api binding's
+    /// gate. Meaningful only on a subscribed handler; the checker says so.
+    pub gated: Option<Ident>,
     /// GH #723: the contract decorators as written, in source order.
     /// Only the coherence check reads this; every other consumer reads
     /// the flattened fields. See [`FnDecorator`].

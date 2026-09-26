@@ -962,6 +962,21 @@ environment contributes any constitution: an environment binds law to
 a deployment target, and a `source_only` environment with no base
 would otherwise check a library and report success.
 
+**Roles (GH #1109).** `[environments.<name>.roles]` is the params half
+of authorization: `role = ["uid:1000", "gid:20", "user:riley",
+"group:ops", "*"]`, one key per role the entrypoint declares
+(`spec/types.md` § "Roles and `@gated`"), a member spelling outside
+those five a manifest error. `--matrix` proves, per (entrypoint,
+environment) pair, that every role the entrypoint declares — and
+`owner`, once it has an api binding — is mapped there (`[]` says
+explicitly that nobody holds it), and that nothing is mapped that the
+entrypoint does not declare: an omission is indistinguishable from a
+mistake, and a misspelt key would otherwise map nobody quietly. `hale
+build --env <name>` and `hale run --env <name>` bind the same section
+to the program: they adopt its constitution as `check --env` does and
+bake its `roles` table into the api binding (`spec/semantics.md` §
+"The gate"), where `LOTUS_API_ROLES` may override it at run time.
+
 Combinations that cannot be honoured are rejected rather than
 ignored. `--matrix` runs many evaluations, so a per-evaluation
 artifact flag (`--dump-topology`, the `--check-*` baselines) has no

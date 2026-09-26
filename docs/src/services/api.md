@@ -148,7 +148,9 @@ A refusal is an answer, never a failure of the program:
 The kinds are `malformed` (not a JSON object, no verb, or a payload
 that does not decode; the reason names the field), `unknown` (no
 such topic or read), `not_a_command` (you called a stream),
-`not_a_stream` (you watched a command) and `over_bound`. A payload
+`not_a_stream` (you watched a command), `over_bound`, and
+`unauthorized` (you lack the role; the refusal names it, see
+below). A payload
 is decoded before dispatch, strictly: a string where an `Int` is
 declared is `wrong_type`, a missing field without a default is
 `missing_field`, and the handler only ever sees a value of its
@@ -206,8 +208,8 @@ locus Billing {
 ```
 
 The second parameter is `std::api::Context`: the caller, the
-request id, `via` (the binding's name, or `local`), and, once roles
-exist, the role that authorized the message. A message that did not
+request id, `via` (the binding's name, or `local`), and the role
+that authorized the message (empty when the operation is not gated). A message that did not
 come through the binding hands the handler the local principal, so a
 handler never asks whether it was reached from outside; it reads
 `via`. `local` says where a message did not come from, never that
@@ -215,6 +217,90 @@ it is trusted: a topic bound to another transport in `bindings { }`
 cannot take a context handler at all. Both `Context` and `Principal` are ordinary structs: build
 one in a test, forward one in a payload. A bearer token for HTTP
 callers is the third mode and arrives with the HTTP transport.
+
+## Who may call
+
+The requirement that an operation needs a role is part of the
+program, true wherever it runs; who holds the role here is a
+deployment fact. So the requirement is written once, on the
+operation, and the mapping lives beside the socket path.
+
+```hale
+role refund_support;
+role auditor;
+role owner includes refund_support;      // whoever is owner may do what support may
+
+locus Billing {
+    contract {
+        @gated(role: auditor) expose ledger: Ledger;     // a gated read
+    }
+    bus {
+        subscribe Refunds as on_refund;
+        @gated(role: refund_support) publish Moved;      // a gated stream
+    }
+    @gated(role: refund_support)
+    fn on_refund(r: Refund, ctx: std::api::Context) -> RefundResult {
+        // ctx.role is the role that authorized this call: "refund_support",
+        // or "owner" for an owner, so the handler can write its own audit row.
+        return RefundResult { ok: true, by: ctx.caller.name };
+    }
+}
+```
+
+A `role` is declared vocabulary, like `group`: a name nothing
+declares is an error, and so is `@gated` on anything but a
+subscribed handler, an `expose` or a `publish`, because nothing else
+is reached from the binding. `owner` is built in. What `@gated`
+means is exactly one thing: a call, a read or a watch **arriving
+through the socket** is refused unless the caller holds the role.
+It is a gate at the boundary, not a proof about the program's
+insides; a handler that calls `refund` from some other path is not
+stopped by it, and the description says so in its `notes.gates` so
+no client presents a gate as more than it is.
+
+Who holds a role is written in `hale.toml`, per environment:
+
+```toml
+[environments.prod.roles]
+refund_support = ["group:support-leads"]
+auditor        = ["user:audit", "uid:1007"]
+owner          = ["user:riley"]
+```
+
+`hale build --env prod` (or `hale run --env prod`) bakes that table
+into the binding; the members are matched against the peer's
+credentials (`uid:`, `gid:` including supplementary groups, `user:`
+and `group:` resolved once at start, `*` for any authenticated
+peer). `LOTUS_API_ROLES="refund_support=uid:1000;owner=user:riley"`
+overrides it at run time, which is how a test drives it. With no
+table at all every gate refuses, and the build tells you. `hale
+check --matrix` insists that every declared role is mapped in every
+environment, `[]` meaning explicitly nobody. An app can also hand the
+binding its own source, a locus with `fn holds(p:
+std::api::Principal, r: String) -> Bool`, as `roles: RecordRoles { }`
+on the entry; that is how a program whose positions are roles
+answers from its own record.
+
+A refusal is a receipt naming what was missing:
+
+```text
+{"request_id": 9, "id": 3, "ok": false,
+ "refusal": {"kind": "unauthorized", "reason": "needs role auditor", "role": "auditor"},
+ "caller": {"mode": "unix", "name": "uid:1000", ...}}
+```
+
+and an answer names what authorized it: `"role": "owner"` on the
+receipt, the same value in `ctx.role`. `on_unauthorized: drop` on the
+entry turns the refusal into silence, for a socket that should not
+confirm what exists.
+
+The description follows the same rule. `{"describe": true}` returns
+the caller's slice: the commands, reads and streams it may use, and
+only the schemas those need. `hale mcp --app` therefore lists exactly
+the tools a principal may call, and `hale admin` shows what it may
+reach. The whole document is itself a read, gated on `owner`
+(`{"describe": "full"}`, `hale describe --full`); an owner's admin
+page shows the rest greyed out with the role each item needs.
 
 ## What is left out, and why
 
@@ -227,6 +313,8 @@ callers is the third mode and arrives with the HTTP transport.
 - A `Drain<T>` batch handler is not reached through the binding
   yet; bulk requests wait on batch delivery over the cooperative
   queue.
-- Roles are the next piece. Today the binding knows who is calling
-  but refuses nobody for it, so put the socket where only the right
-  processes can open it.
+- A bearer token for HTTP callers waits for the HTTP transport; the
+  Unix socket's peer credentials are the one identity today.
+- Transitive privilege inference (flagging `api -> OrderPlaced ->
+  on_order -> refund` as an escalation) is a later, opt-in claim;
+  `@gated` is a boundary check and says so.

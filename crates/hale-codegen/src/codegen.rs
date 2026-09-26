@@ -570,6 +570,11 @@ pub struct BuildOptions {
     /// `api: unix(path, bound: 64, on_full: refuse)`. Part of the
     /// execution identity (`hale run` fingerprints it).
     pub api: Option<String>,
+    /// GH #1109: `--env <name>` — the deployment target whose
+    /// constitution is adopted and whose `roles` table is baked into
+    /// the api binding (`api_roles`, the resolved table).
+    pub env: Option<String>,
+    pub api_roles: Option<String>,
     /// #8 dev profile (2026-07-02): trade runtime speed for build
     /// latency — O1 module pipeline + Less machine codegen instead
     /// of the O3/Aggressive release default. The 97%-of-build-time
@@ -1053,7 +1058,7 @@ pub fn build_executable_with_options(
             return Err(CodegenError::Unsupported(msg));
         }
     }
-    hale_syntax::api_gen::generate_api(&mut [&mut program_owned]);
+    hale_syntax::api_gen::generate_api(&mut [&mut program_owned], options.api_roles.as_deref());
     hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
     // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
@@ -10011,6 +10016,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ffi: None,
                     export: false,
                     unbounded: false,
+                    gated: None,
                     budget: None,
                     hot: false,
                     effects: Vec::new(),
@@ -14022,13 +14028,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 span: span.clone(),
                             }
                         }
-                        BusMember::Publish { subject, ty, alias, span } => {
+                        BusMember::Publish { subject, ty, alias, gated, span } => {
                             BusMember::Publish {
                                 subject: subject.clone(),
                                 ty: ty.as_ref().map(|t| {
                                     Self::substitute_type_expr(t, subst)
                                 }),
                                 alias: alias.clone(),
+                                gated: gated.clone(),
                                 span: span.clone(),
                             }
                         }
@@ -14089,6 +14096,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ffi: fd.ffi.clone(),
                 export: fd.export,
                 unbounded: fd.unbounded,
+                gated: None,
                 budget: fd.budget,
                 hot: fd.hot,
                 effects: Vec::new(),
@@ -14340,6 +14348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ffi: template.ffi.clone(),
             export: template.export,
             unbounded: template.unbounded,
+            gated: None,
             budget: template.budget,
             hot: template.hot,
             effects: Vec::new(),
@@ -14544,6 +14553,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TopDecl::Group(_) => {
                     // GH #382: groups name decls, not types —
                     // no type-bearing positions.
+                }
+                TopDecl::Role(_) => {
+                    // GH #1109: roles name roles — no type-bearing
+                    // positions, and no code.
                 }
                 TopDecl::Claims(_) | TopDecl::Constitution(_) => {
                     // #392 / #409: claims and constitutions lower to
@@ -28748,6 +28761,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "unix", "peer_uid"] => self.lower_std_io_unix_peer("uid", args, scope),
             ["std", "io", "unix", "peer_gid"] => self.lower_std_io_unix_peer("gid", args, scope),
             ["std", "io", "unix", "peer_pid"] => self.lower_std_io_unix_peer("pid", args, scope),
+            // GH #1109: the static role table's name spellings.
+            ["std", "io", "unix", "user_id"] => self.lower_std_io_unix_name_id("user_id", args, scope),
+            ["std", "io", "unix", "group_id"] => self.lower_std_io_unix_name_id("group_id", args, scope),
+            ["std", "io", "unix", "in_group"] => self.lower_std_io_unix_in_group(args, scope),
             // GH #1108: `std::api::local_context()`, the context a handler
             // reached in-process receives (Hale source in api.hl).
             ["std", "api", "local_context"] => {

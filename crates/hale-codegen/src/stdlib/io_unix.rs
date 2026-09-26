@@ -144,6 +144,89 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("returns i64");
         Ok((v, CodegenTy::Int))
     }
+
+    /// GH #1109: `std::io::unix::user_id(name) -> Int` and
+    /// `group_id(name) -> Int`: the host's account database, -1 when
+    /// it has no such name.
+    pub(crate) fn lower_std_io_unix_name_id(
+        &mut self,
+        which: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::{} takes 1 arg (name), got {}",
+                which,
+                args.len()
+            )));
+        }
+        let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::{}: name must be String, got {:?}",
+                which, name_ty
+            )));
+        }
+        let name_val = self.unpack_view_if_needed(name_val, &name_ty)?;
+        let f = self
+            .module
+            .get_function(&format!("lotus_unix_{}", which))
+            .expect("lotus_unix_{user,group}_id declared");
+        let v = self
+            .builder
+            .build_call(f, &[name_val.into()], "unix.name_id")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// GH #1109: `std::io::unix::in_group(uid, gid) -> Bool`: the uid's
+    /// primary or supplementary group membership per the host.
+    pub(crate) fn lower_std_io_unix_in_group(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::in_group takes 2 args (uid, gid), got {}",
+                args.len()
+            )));
+        }
+        let (uid_val, uid_ty) = self.lower_expr(&args[0], scope)?;
+        let (gid_val, gid_ty) = self.lower_expr(&args[1], scope)?;
+        if uid_ty != CodegenTy::Int || gid_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::in_group: uid and gid must be Int, got {:?} and {:?}",
+                uid_ty, gid_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_unix_in_group")
+            .expect("lotus_unix_in_group declared");
+        let ret = self
+            .builder
+            .build_call(f, &[uid_val.into(), gid_val.into()], "unix.in_group")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let b = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret,
+                self.context.i32_type().const_zero(),
+                "unix.in_group.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b.into(), CodegenTy::Bool))
+    }
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {

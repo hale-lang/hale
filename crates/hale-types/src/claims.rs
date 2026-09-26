@@ -621,6 +621,7 @@ pub(crate) fn enumerate_clauses<'a>(
         for item in items {
             match item {
                 TopDecl::Group(g) => groups.push(g),
+                TopDecl::Role(_) => {}
                 TopDecl::Locus(l) if l.is_main => {
                     *has_main = true;
                     for m in &l.members {

@@ -93,10 +93,17 @@ impl Client {
     }
 
     /// The description as the binding wrote it, byte for byte: the
-    /// `value` of the answer line, not a re-serialization of it.
+    /// `value` of the answer line, not a re-serialization of it. The
+    /// binding serves the slice this caller's roles show (GH #1109).
     pub fn describe_raw(&mut self) -> Result<String, String> {
+        self.describe_raw_as(false)
+    }
+
+    /// `full`: `{"describe": "full"}`, the whole document, a read the
+    /// binding gates on `owner`; refused for anyone else.
+    pub fn describe_raw_as(&mut self, full: bool) -> Result<String, String> {
         let mut req = Map::new();
-        req.insert("describe".to_string(), json!(true));
+        req.insert("describe".to_string(), if full { json!("full") } else { json!(true) });
         let (ans, line) = self.request_line(req)?;
         answer_value(&ans)?;
         raw_field(&line, "value").ok_or_else(|| "the answer carries no value".to_string())
@@ -523,6 +530,7 @@ fn is_socket(path: &str) -> bool {
 /// `hale describe <socket | file.hl | dir> [--openapi | --mcp] [-o <path>]`.
 pub fn run_describe(rest: &[String]) -> ExitCode {
     let mut form = "native";
+    let mut full = false;
     let mut out: Option<String> = None;
     let mut target: Option<String> = None;
     let mut i = 0;
@@ -534,6 +542,12 @@ pub fn run_describe(rest: &[String]) -> ExitCode {
             }
             "--mcp" => {
                 form = "mcp";
+                i += 1;
+            }
+            // GH #1109: the whole document from a running binding —
+            // a read it gates on `owner`.
+            "--full" => {
+                full = true;
                 i += 1;
             }
             "-o" | "--out" => match rest.get(i + 1) {
@@ -557,10 +571,10 @@ pub fn run_describe(rest: &[String]) -> ExitCode {
         }
     }
     let Some(target) = target else {
-        eprintln!("usage: hale describe <socket | file.hl | dir> [--openapi | --mcp] [-o <path>]");
+        eprintln!("usage: hale describe <socket | file.hl | dir> [--openapi | --mcp] [--full] [-o <path>]");
         return ExitCode::from(2);
     };
-    let raw = match description_raw_of(&target) {
+    let raw = match description_raw_of(&target, full) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("hale describe: {}", e);
@@ -598,9 +612,9 @@ pub fn run_describe(rest: &[String]) -> ExitCode {
 /// The description of a running binding (a socket path) or of a
 /// program (`hale check --dump-api`, self-exec'd so the two spellings
 /// cannot drift), as bytes.
-pub fn description_raw_of(target: &str) -> Result<String, String> {
+pub fn description_raw_of(target: &str, full: bool) -> Result<String, String> {
     if is_socket(target) {
-        return Client::connect(target)?.describe_raw();
+        return Client::connect(target)?.describe_raw_as(full);
     }
     let me = std::env::current_exe().map_err(|e| format!("current exe: {}", e))?;
     let out = std::process::Command::new(me)
@@ -682,7 +696,7 @@ pub fn run_call(rest: &[String]) -> ExitCode {
         req.insert("read".to_string(), json!(name));
     } else {
         eprintln!(
-            "hale call: `{}` is neither a command nor a read of this program\n  commands: {}\n  reads: {}\n  streams (use `hale watch`): {}",
+            "hale call: `{}` is neither a command nor a read this caller may use (the binding describes the slice your roles show)\n  commands: {}\n  reads: {}\n  streams (use `hale watch`): {}",
             name,
             commands.join(", "),
             reads.join(", "),
@@ -970,8 +984,13 @@ fn serve_admin_conn(mut conn: std::net::TcpStream, shared: &AdminShared) {
         return;
     }
     if path == "/api/describe" {
-        match Client::connect(sock).and_then(|mut c| c.describe_raw()) {
+        // `?full=1` asks for the whole document, which the binding
+        // gates on `owner`; the page greys out what the caller may
+        // not use when it gets it, and shows its slice when it does not.
+        let full = query.split('&').any(|kv| kv == "full=1");
+        match Client::connect(sock).and_then(|mut c| c.describe_raw_as(full)) {
             Ok(d) => http_reply(&mut conn, "200 OK", "application/json", d.as_bytes()),
+            Err(e) if full && e.contains("unauthorized") => json_err(&mut conn, "403 Forbidden", e),
             Err(e) => json_err(&mut conn, "502 Bad Gateway", e),
         };
         return;

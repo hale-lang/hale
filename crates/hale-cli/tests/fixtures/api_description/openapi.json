@@ -190,6 +190,13 @@
             "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
           }
         },
+        "security": [
+          {
+            "role": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "command Audits: publish a Audit on subject shop.audit"
       }
     },
@@ -345,6 +352,13 @@
             "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
           }
         },
+        "security": [
+          {
+            "role": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "read billing.ledger: a snapshot of a Ledger, with its as_of digest"
       }
     },
@@ -470,6 +484,13 @@
             "description": "refused: the receipt names the kind (malformed, unknown, not_a_command, not_a_stream, over_bound, unauthorized) and the reason"
           }
         },
+        "security": [
+          {
+            "role": [
+              "auditor"
+            ]
+          }
+        ],
         "summary": "stream Moved: every Ledger published on subject shop.moved, one JSON object per line after attach"
       }
     }

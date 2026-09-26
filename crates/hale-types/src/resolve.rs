@@ -803,6 +803,11 @@ fn register_top_decls(
                 // resolves group members against the merged bundle
                 // itself, where imported decls are visible.
             }
+            TopDecl::Role(_) => {
+                // GH #1109: authorization vocabulary, named only by
+                // `@gated(role:)` and `includes`; never a value or a
+                // type.
+            }
             TopDecl::Claims(_) | TopDecl::Constitution(_) => {
                 // #392 thread 2 / GH #409: law, not a symbol.
                 // Evaluated by the bundle-level claims pass. A

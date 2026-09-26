@@ -1981,6 +1981,7 @@ impl Resolver {
                 | TopDecl::RingLayout(_)
                 | TopDecl::Target(_)
                 | TopDecl::Group(_)
+                | TopDecl::Role(_)
                 | TopDecl::Claims(_)
                 | TopDecl::Constitution(_) => {}
             }

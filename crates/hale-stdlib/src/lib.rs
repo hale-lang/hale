@@ -340,6 +340,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // std::api (GH #1108).
     (&["std", "api", "Principal"], "__StdApiPrincipal"),
     (&["std", "api", "Context"], "__StdApiContext"),
+    // GH #1109: the membership source the api binding consults, and
+    // the stdlib's static-table implementation of it.
+    (&["std", "api", "RoleSource"], "__StdApiRoleSource"),
+    (&["std", "api", "StaticRoles"], "__StdApiStaticRoles"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
     // std::metrics (promoted from pond/metrics, 2026-07-18).
