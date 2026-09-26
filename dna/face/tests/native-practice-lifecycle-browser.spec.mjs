@@ -2,16 +2,17 @@
 // Each case is a small fresh Record; no browser-owned outcome or graph fixtures.
 import { test as base, expect } from '@playwright/test';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
+import { serviceFixtureTimeout } from './native-command-harness.mjs';
 
 const grant = { mode: 'local', name: 'alice', authority: 'board', edge_link: 'direct', edge_unlink: 'direct',
   node_propose: 'review', node_revise: 'review', node_retire: 'review', node_scopes: [{ author: 'org', target: 'org/elsewhere' }],
   binding_bind: 'review', binding_unbind: 'review', binding_scopes: [{ author: 'org', target: 'org/support' }], recover: true };
 const test = base.extend({
-  service: async ({}, use, info) => {
+  service: [async ({}, use, info) => {
     const service = await startBindingService({ grants: [grant] });
     try { await use(service); }
     finally { await service.stop(); await info.attach('native-practice-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
-  },
+  }, { timeout: serviceFixtureTimeout }],
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service.');

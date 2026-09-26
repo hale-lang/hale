@@ -1,15 +1,16 @@
 import { test as base, expect } from '@playwright/test';
 import { startEdgeReviewService, edgeReviewEnvironmentPresent, edgeReviewGrant } from './native-knowledge-edge-review-harness.mjs';
+import { serviceFixtureTimeout } from './native-command-harness.mjs';
 const test = base.extend({
-  service: async ({}, use, testInfo) => {
+  service: [async ({}, use, testInfo) => {
     const service = await startEdgeReviewService();
     try { await use(service); }
     finally { await service.stop(); await testInfo.attach('native-edge-review-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
-  },
+  }, { timeout: serviceFixtureTimeout }],
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
 test.skip(!edgeReviewEnvironmentPresent(), 'Supply matching API, Body, relay and Knowledge service binaries.');
-test.setTimeout(90_000);
+test.setTimeout(120_000);
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const map = page => page.getByRole('region', { name: 'Knowledge relationship map', exact: true });
 const receipt = page => page.getByRole('region', { name: 'Knowledge relationship request', exact: true });

@@ -1,5 +1,6 @@
-// Opt-in real native Record/body/host acceptance. This script never writes an
-// outcome, mocks an HTTP response, builds a binary, or republishes a request.
+// Opt-in real native Record/host/organization acceptance. This script never
+// writes an outcome, mocks an HTTP response, or republishes a request. The
+// host (`hale dna dev`) builds the organization from the project it is given.
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -9,28 +10,28 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, memoryOwner, nervesOwner } from './environment.mjs';
+import { scaffoldProject, hostReady, organizationReady, hostChildren, running, headMemory } from './native-command-harness.mjs';
 
-// GH #1029: dna/api/practice_review/tests/relay was removed with the
-// membrane (GH #986); nothing builds a relay against the nerves yet, so
-// this harness — which needs one — cannot run.
-assert.fail('The native command relay lane is unported (GH #1029): dna/api/practice_review/tests/relay was removed with the membrane; rebuild it against the node before running this harness.');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const webroot = path.join(repo, 'dna/face/web');
-const required = ['API', 'BODY', 'RELAY'];
-const binaries = Object.fromEntries(required.map(name => {
-  const value = process.env[`HALE_NATIVE_COMMAND_${name}`];
-  assert(value && path.isAbsolute(value), `HALE_NATIVE_COMMAND_${name} must name an explicit absolute native binary`);
+// GH #1029: the host is `hale dna dev` (HALE_BIN); the API is the composed
+// head; the memory fixture drops the record's schema at the end.
+const binaries = Object.fromEntries([['hale', 'HALE_BIN'], ['api', 'HALE_NATIVE_COMMAND_API'], ['memory', 'HALE_FACE_MEMORY_BIN']].map(([name, variable]) => {
+  const value = process.env[variable];
+  assert(value && path.isAbsolute(value), `${variable} must name an explicit absolute native binary`);
   fs.accessSync(value, fs.constants.X_OK);
-  return [name.toLowerCase(), fs.realpathSync(value)];
+  return [name, fs.realpathSync(value)];
 }));
+const owner = memoryOwner(), nerves = nervesOwner();
+assert(owner, 'The record lives in memory: set HALE_DNA_MEMORY_DSN_OWNER.');
+assert(nerves, 'The organization reads the nerves: set HALE_DNA_NATS_URL_OWNER (a nats-server -js).');
 assert.equal(process.platform, 'linux', 'This acceptance harness requires Linux process limits and process-group signals.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
 assert(path.isAbsolute(parent), 'HALE_NATIVE_COMMAND_EVIDENCE must be absolute');
 fs.mkdirSync(parent, { recursive: true });
 const evidence = fs.mkdtempSync(path.join(parent, 'native-commands-'));
 const fixture = path.join(evidence, 'project');
-fs.mkdirSync(path.join(fixture, '.hale/dna'), { recursive: true });
 const policyPath = path.join(evidence, 'authority.json');
 const inherited = isolatedEnvironment();
 // Keep only ordinary process and isolated Git settings. No inherited bus,
@@ -46,7 +47,7 @@ const receipts = {};
 const cases = [];
 const started = Date.now();
 let application = '', origin = '', actor = 'alice';
-let body, relay, api, interrupted = '';
+let host, api, interrupted = '', headDsn = '';
 let serial = 0;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const save = (name, value) => fs.writeFileSync(path.join(evidence, name), JSON.stringify(value, null, 2) + '\n');
@@ -79,8 +80,8 @@ async function until(label, read, predicate, timeout = 25_000) {
   }
   throw new Error(`${label} did not complete: ${JSON.stringify(last)}`);
 }
-function startNative(name, binary, args = [], env = {}) {
-  const bounded = boundedNative(binary, args, { lock: false });
+function startNative(name, binary, args = [], env = {}, { build = false } = {}) {
+  const bounded = boundedNative(binary, args, { lock: false, build });
   const filename = `${String(++serial).padStart(2, '0')}-${name}.log`;
   const log = fs.createWriteStream(path.join(evidence, filename));
   const child = spawn(bounded.command, bounded.args, {
@@ -184,22 +185,27 @@ function transientRead(result) {
 async function read(suffix) {
   return until('native source snapshot', () => httpRequest('GET', suffix), result => !transientRead(result));
 }
-async function startBody() {
-  body = startNative('body', binaries.body);
-  return until('body bootstrap', () => {
-    // Native JSON builders may print one object across several lines.
-    const matches = body.output.match(/\{[^{}]*"ready"\s*:\s*true[^{}]*\}/g) || [];
-    return matches.length ? JSON.parse(matches.at(-1)) : null;
-  }, value => value?.ready === true);
+// The host in place of the Body and the relay: it migrates memory and the
+// nerves, builds and runs the organization (the acceptance Body, placed as
+// the project's dna/org), and relays the record's requests on its tick.
+async function startHost() {
+  host = startNative('host', binaries.hale, ['dna', 'dev', '.', '--no-iris'], { HALE_BIN: binaries.hale, HALE_DNA_MEMORY_DSN_OWNER: owner, HALE_DNA_NATS_URL_OWNER: nerves }, { build: true });
+  await until('host startup', () => host.output, hostReady, 240_000);
+  const ready = await until('organization bootstrap', () => organizationReady(fixture), value => value?.ready === true, 60_000);
+  headDsn = headMemory({ hale: binaries.hale, root: fixture, env: childEnv, owner });
+  return ready;
 }
-async function startRelay() {
-  relay = startNative('relay', binaries.relay, []);
-  await until('host relay startup', () => relay.output, text => text.includes('native command relay ready'));
+const signalPid = (pid, name) => { try { process.kill(pid, name); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
+async function reapHostChildren() {
+  for (const { pid } of hostChildren(fixture)) { signalPid(pid, 'SIGCONT'); signalPid(pid, 'SIGKILL'); }
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && hostChildren(fixture).some(({ pid }) => running(pid))) await pause(100);
 }
+async function stopHost(kill = false) { await stop(host, kill); await reapHostChildren(); }
 async function startApi(name = 'alice') {
   actor = name;
   const port = await availablePort(); origin = `http://127.0.0.1:${port}`;
-  api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath });
+  api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath, HALE_DNA_MEMORY_DSN_HEAD: headDsn });
   await until('command API startup', async () => {
     try { return await httpRequest('GET', '/api/hale/v1/applications'); }
     catch (error) { if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET') return null; throw error; }
@@ -342,13 +348,17 @@ async function quiesce() {
     stable = head === previous ? stable + 1 : 0; previous = head; return stable;
   }, count => count >= 4);
 }
+const orgPids = () => hostChildren(fixture).filter(({ name }) => name === 'org').map(({ pid }) => pid);
 async function stopDelivery() {
   await quiesce();
-  for (const item of [relay, body]) { signal(item, 'SIGSTOP'); item.paused = true; }
-  for (const item of [relay, body]) await until(`stopped ${item.name}`, () => fs.readFileSync(`/proc/${item.child.pid}/status`, 'utf8'), text => /^State:\s+T/m.test(text));
+  for (const pid of orgPids()) signalPid(pid, 'SIGSTOP');
+  signal(host, 'SIGSTOP'); host.paused = true;
+  const stoppedState = pid => { try { return /^State:\s+T/m.test(fs.readFileSync(`/proc/${pid}/status`, 'utf8')); } catch { return false; } };
+  for (const pid of [host.child.pid, ...orgPids()]) await until(`stopped ${pid}`, () => stoppedState(pid), Boolean);
 }
 function resumeDelivery() {
-  for (const item of [body, relay]) { signal(item, 'SIGCONT'); item.paused = false; }
+  for (const pid of orgPids()) signalPid(pid, 'SIGCONT');
+  signal(host, 'SIGCONT'); host.paused = false;
 }
 async function scenario(name, run) {
   const beginning = Date.now();
@@ -359,11 +369,8 @@ async function scenario(name, run) {
 
 let failure;
 try {
-  git('init', '--quiet');
-  git('config', 'user.name', 'Native command acceptance');
-  git('config', 'user.email', 'native-command-acceptance@example.invalid');
-  git('config', 'dna.trust', 'local'); git('config', 'dna.principal', 'local');
-  const ready = await startBody();
+  scaffoldProject({ hale: binaries.hale, root: fixture, env: { ...childEnv, USER: actor, LOGNAME: actor }, actor });
+  const ready = await startHost();
   application = git('rev-list', '--max-parents=0', 'refs/dna/journal').trim();
   assert.match(application, /^[0-9a-f]{40,64}$/);
   assert.equal(ready.practice_id, ready.bootstrap_digest);
@@ -371,7 +378,6 @@ try {
     format: 'dna.practice-review-authority/1', application_id: application,
     grants: ['alice', 'bob'].map(name => ({ mode: 'local', name, authority: 'board', practice_propose: true, review_verdict: true, recover: true })),
   });
-  await startRelay();
   const capabilities = await startApi();
   assert.equal(capabilities.writes.practice_propose, true); assert.equal(capabilities.writes.review_verdict, true);
   let active = ready.practice_id, firstProposal, firstCommand;
@@ -407,9 +413,9 @@ try {
     const admitted = admission(lostCommand.request_id);
     assert.equal(admitted.length, 1); assert.equal(facts('practice.proposed', admitted[0].entity).length, 0);
     const posts = requests.filter(row => row.method === 'POST').length;
-    await stop(api); await stop(relay, true); await stop(body, true);
-    const restarted = await startBody(); assert.equal(restarted.practice_id, active);
-    await startRelay(); await startApi();
+    await stop(api); await stopHost(true);
+    const restarted = await startHost(); assert.equal(restarted.practice_id, active);
+    await startApi();
     lostProposal = await lookup(lostCommand, value => value.proposal?.state === 'created');
     assertCandidate(lostProposal, lostCommand);
     assert.equal(requests.filter(row => row.method === 'POST').length, posts, 'Recovery must never resubmit');
@@ -506,6 +512,12 @@ try {
   for (const item of [...owned].reverse()) {
     try { await stop(item, item.paused); } catch (error) { failure ||= error; }
   }
+  try { await reapHostChildren(); } catch (error) { failure ||= error; }
+  // The record's memory and its stream, gone with the run.
+  for (const [label, binary, args, extra] of [['memory drop', binaries.memory, [fixture, 'drop'], { HALE_DNA_MEMORY_DSN_OWNER: owner }], ['nerves drop', binaries.hale, ['dna', 'nerves', 'drop', fixture], { HALE_DNA_NATS_URL_OWNER: nerves }]]) {
+    try { const bounded = boundedNative(binary, args, { lock: false }); execFileSync(bounded.command, bounded.args, { cwd: fixture, env: { ...childEnv, ...extra }, encoding: 'utf8', timeout: 40_000, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (error) { failure ||= new Error(`${label} failed: ${error.stderr || error.message}`); }
+  }
   let snapshot;
   try {
     snapshot = journal();
@@ -522,7 +534,7 @@ try {
     read_requests: requests.filter(row => row.method === 'GET').length,
     discarded_replies: requests.filter(row => row.discarded).length,
     remaining_owned_processes: owned.size,
-    scope: 'real local Record/body/host command acceptance; no routing-1 or multi-clone claim',
+    scope: 'real local Record/host/organization command acceptance over the nerves and memory; no routing-1 or multi-clone claim',
     error: failure ? { message: failure.message, stack: failure.stack } : undefined,
   };
   save('result.json', result);

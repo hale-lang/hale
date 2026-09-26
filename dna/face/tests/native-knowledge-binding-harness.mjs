@@ -60,6 +60,7 @@ export async function startBindingService(options = {}) {
     return { command, receipt: settled };
   }
   async function bindings(idea, target = '') {
+    await service.quiesce();
     const items = []; let cursor = '', snapshot = '';
     do {
       const query = new URLSearchParams({ id: idea, limit: '25' }); if (target) query.set('target', target); if (cursor) query.set('cursor', cursor); if (snapshot) query.set('snapshot', snapshot);

@@ -36,6 +36,7 @@ export async function startEdgeReviewService(options = {}) {
     await service.waitNode(command.request_id, r => r.node.activation_state === 'adopted'); await service.quiesce(); return created.node.candidate_digest;
   }
   async function edges(idea = service.practice) {
+    await service.quiesce();
     const rows = []; let cursor = '', snapshot = '';
     do {
       const query = new URLSearchParams({ id: idea, limit: '25' }); if (cursor) query.set('cursor', cursor); if (snapshot) query.set('snapshot', snapshot);

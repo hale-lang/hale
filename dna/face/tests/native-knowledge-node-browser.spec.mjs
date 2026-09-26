@@ -2,14 +2,15 @@
 // -> domain activation -> projected graph. No authored outcome facts.
 import { test as base, expect } from '@playwright/test';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
+import { serviceFixtureTimeout } from './native-command-harness.mjs';
 
 const test = base.extend({
   grants: [undefined, { option: true }],
-  service: async ({ grants }, use, testInfo) => {
+  service: [async ({ grants }, use, testInfo) => {
     const service = await startNodeService({ grants });
     try { await use(service); }
     finally { await service.stop(); await testInfo.attach('native-node-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
-  },
+  }, { timeout: serviceFixtureTimeout }],
   page: async ({ page }, use) => {
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     await use(page); expect(errors).toEqual([]);
