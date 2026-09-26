@@ -38,15 +38,26 @@ fn repo_root() -> PathBuf {
 /// failure within the group's timeout.
 const SLICES: usize = 20;
 
-/// The fixtures that take minutes of a slice on CI's runners, each an
+/// The fixtures that take minutes of a slice on CI's runners: an
 /// organization run through dozens of Board decisions on a git-backed
-/// record (GH #995): graph_holes_test ~520 s, body_lease_blocked_test
-/// ~380 s, books_slice_test ~280 s, receipt_retention_test ~110 s. The
-/// sorted listing's modulo paired them by accident — adding or removing
-/// any fixture reshuffled which two shared a slice, and two of them run
-/// past a slice's fifteen minutes — so they lead the order: each opens a
-/// slice of its own, and the rest follow round-robin.
-const HEAVY: [&str; 4] = ["graph_holes_test.hl", "body_lease_blocked_test.hl", "books_slice_test.hl", "receipt_retention_test.hl"];
+/// record (GH #995: graph_holes_test ~520 s, books_slice_test ~280 s,
+/// receipt_retention_test ~110 s), the body fixtures that build the host
+/// cold in a cache of their own (body_claim_expired_test ~425 s,
+/// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test,
+/// which builds a head. The sorted listing's modulo paired them by
+/// accident — adding or removing any fixture reshuffled which shared a
+/// slice, and two of them run past a slice's fifteen minutes — so they
+/// lead the order: each opens a slice of its own, and the rest follow
+/// round-robin.
+const HEAVY: [&str; 7] = [
+    "graph_holes_test.hl",
+    "body_claim_expired_test.hl",
+    "body_lease_blocked_test.hl",
+    "books_slice_test.hl",
+    "body_lease_start_test.hl",
+    "legs_test.hl",
+    "receipt_retention_test.hl",
+];
 
 fn fixture_files() -> Vec<PathBuf> {
     let dir = repo_root().join("dna/tests");
