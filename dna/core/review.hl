@@ -168,6 +168,10 @@ locus Review {
         // passing run at the candidate cited as evidence before it settles approved
         gates: String = "";
         evidenced: String = ""; // gates with such a run cited, space-separated
+        // the route left some path to the Review's own required authority:
+        // an approval carrying it is required beside every position
+        fallback: Bool = false;
+        authority_signed: Bool = false; // such an approval is in
         receipts: ReviewReceipts = ReviewReceipts { };
         blocking: Bool = true;
         verdicts: VerdictRows = VerdictRows { };
@@ -198,8 +202,12 @@ locus Review {
     // idiom means the same thing on both sides of a socket.)
     bus {
         subscribe ReviewVerdict as on_verdict where key == self.review_id;
+        subscribe ReviewRouted as on_routed where key == self.review_id;
         publish ReviewSettled;
     }
+    // GH #1089: the holders of the positions it requires, routed again;
+    // the positions and what they signed stay.
+    fn on_routed(r: ReviewRouting) { if len(r.signers) > 0 && len(self.signers) > 0 { self.signers = r.signers; } }
     @unbounded
     fn on_verdict(v: Verdict) {
         if len(v.command_id) > 0 {
@@ -235,6 +243,11 @@ locus Review {
         let admitted = self.consider(v);
         if admitted && self.settled {
             ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment };
+        }
+        // an approval admitted that settles nothing is answered too: who
+        // signed, and what the Review still awaits
+        if admitted && !self.settled && v.verdict == "approve" {
+            ReviewSettled <- ReviewSettlement { review_id: self.review_id, decided_by: v.reviewer, signed: true, awaiting: self.awaiting() };
         }
         if !admitted {
             ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
@@ -301,12 +314,28 @@ locus Review {
     @unbounded
     fn refusal(v: Verdict) -> String {
         if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
-        if len(self.signers) > 0 {
-            if len(signer_positions(self.signers, v.reviewer)) == 0 { return "reviewer " + v.reviewer + " holds no position this Review requires (" + approver_owners(self.signers) + ")"; }
-        } else if !authority_satisfies(v.authority, self.required_authority) { return "authority " + v.authority + " does not satisfy " + self.required_authority; }
+        let why = self.standing_refusal(v);
+        if len(why) > 0 { return why; }
         if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
-        if len(self.approvers) > 0 && len(approver_owner(self.approvers, v.reviewer)) == 0 { return "reviewer " + v.reviewer + " is a member of no owner this change affects (" + approver_owners(self.approvers) + ")"; }
         return self.evidence_refusal(v);
+    }
+    // Whether the reviewer stands to decide it. With no signers, the
+    // Review's own required authority, and for an owners change membership
+    // of an affected owner as well (GH #664). With signers, a holder of a
+    // required position, a member of an affected owner, or — where the
+    // route left a path to it — one claiming the required authority. A
+    // verdict counts toward every requirement it meets.
+    @unbounded
+    fn standing_refusal(v: Verdict) -> String {
+        let as_authority = authority_satisfies(v.authority, self.required_authority);
+        let as_owner = len(self.approvers) > 0 && len(approver_owner(self.approvers, v.reviewer)) > 0;
+        if len(self.signers) == 0 {
+            if !as_authority { return "authority " + v.authority + " does not satisfy " + self.required_authority; }
+            if len(self.approvers) > 0 && !as_owner { return "reviewer " + v.reviewer + " is a member of no owner this change affects (" + approver_owners(self.approvers) + ")"; }
+            return "";
+        }
+        if len(signer_positions(self.signers, v.reviewer)) > 0 || as_owner || (self.fallback && as_authority) { return ""; }
+        return "reviewer " + v.reviewer + " holds no position this Review requires (" + approver_owners(self.signers) + ")" + (if self.fallback { " and authority " + v.authority + " does not satisfy " + self.required_authority } else { "" });
     }
     // GH #1089: each run a verdict cites is a gate run of a gate guarding
     // the change, at the candidate, that passed. A run at another commit
@@ -318,7 +347,9 @@ locus Review {
         while len(nth_word(v.evidence, i)) > 0 {
             let d = nth_word(v.evidence, i);
             i = i + 1;
-            let doc = self.receipts.read(if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
+            let raw = if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d };
+            if !digest_well_formed("sha256:" + raw) { return "evidence " + d + " is no receipt digest"; }
+            let doc = self.receipts.read(raw);
             if len(doc) == 0 { return "evidence " + d + " is no receipt this organization holds"; }
             if native_json_string(doc, "kind") != "gate.run" { return "evidence " + d + " is no gate run (kind `" + native_json_string(doc, "kind") + "`)"; }
             let gate = gate_id(native_json_string(doc, "gate"));
@@ -352,7 +383,8 @@ locus Review {
         let owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
         let signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
         let evidenced = words_add(self.evidenced, self.evidence_gates(v));
-        return words_within(approver_owners(self.approvers), owners) && words_within(approver_owners(self.signers), signed) && words_within(self.gates, evidenced);
+        let authority = self.authority_signed || (self.fallback && authority_satisfies(v.authority, self.required_authority));
+        return words_within(approver_owners(self.approvers), owners) && words_within(approver_owners(self.signers), signed) && words_within(self.gates, evidenced) && (!self.fallback || authority);
     }
     // An admitted verdict's standing and evidence, kept.
     @unbounded
@@ -361,6 +393,7 @@ locus Review {
         if v.verdict != "approve" { return; }
         self.approved_owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
         self.signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
+        if self.fallback && authority_satisfies(v.authority, self.required_authority) { self.authority_signed = true; }
     }
     @unbounded
     fn command_settles(v: Verdict) -> Bool { return self.settles_with(v); }
@@ -475,6 +508,7 @@ locus Review {
             if !word_in(nth_word(self.gates, i), self.evidenced) { out = word_add(out, nth_word(self.gates, i)); }
             i = i + 1;
         }
+        if self.fallback && !self.authority_signed { out = word_add(out, "authority:" + self.required_authority); }
         return words_add(out, self.awaiting_owners());
     }
     // GH #664: the owners still to approve, "" when none or not an owners change.

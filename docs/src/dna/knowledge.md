@@ -234,6 +234,13 @@ The receipt is a small document:
 A run at another commit is stale, and a run that did not pass is
 rejected. Either refuses the verdict, saying why.
 
+An approval that settles nothing yet is answered with who signed and
+what the Review still awaits. If the route left some path to nobody, the
+Review also requires an approval carrying its own authority: the Board's,
+for a change the policy gives the Board. Who holds a position is read
+again while the Review is open, so a position filled after it opened can
+sign, and someone who left it no longer can.
+
 A proposal's Review requires the `board` position once someone holds it.
 Until someone holds a signing position, the Review keeps its own
 authority. That is how the Board's first holder is ratified.

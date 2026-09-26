@@ -500,6 +500,15 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     let gates = dna::native_json_string(routed, "gates");
     out = out + "  needs " + (if len(signers) > 0 { "every one of " + signers_shown(signers) } else { r.required_authority }) + " · candidate " + r.subject_digest + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
     if len(gates) > 0 { out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ") + " at the candidate, cited as --evidence <receipt> (a filed `gate.run` document)\n"; }
+    // what it still awaits, as its last signature said
+    let mut awaiting = "";
+    let mut k = 0;
+    while k < p.rows() {
+        let e = p.row(k);
+        if e.kind == "review.signed" && e.entity == id { awaiting = dna::native_json_string(e.body, "awaiting"); }
+        k = k + 1;
+    }
+    if len(signers) > 0 && r.state == "pending" && len(awaiting) > 0 { out = out + "  awaits " + std::str::replace(awaiting, " ", ", ") + "\n"; }
     if r.refusal_count > 0 { out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: "); }
     if r.has_reasoned { out = out + "  why:\n" + indent_lines(dna::trim_nl(r.reasoned), "    "); }
     if !r.is_mutation {

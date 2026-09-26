@@ -270,14 +270,19 @@ fn route_bound(json: String) -> String { return route_pairs(std::json::find_fiel
 // signer is a position with the holders it has when the Review opens,
 // `<position>=<holder>,<holder>`, and every one must approve; a position
 // nobody holds is required all the same, and keeps the Review open until
-// the candidate is routed again once it is filled. A route that names no
-// held position defines no signers: the Review falls back to its own
-// required authority, which is how an organization with no Board holder
-// yet ratifies the hold that gives it one.
+// its holders are routed again (the organization re-routes an open Review
+// when who holds its positions changes). A route that names no held
+// position defines no signers: the Review falls back to its own required
+// authority, which is how an organization with no Board holder yet
+// ratifies the hold that gives it one. A route that signs some paths and
+// leaves others to the fallback requires both: every position, and an
+// approval carrying the Review's own required authority.
 
 type RouteRequirement {
     signers: String = ""; // `<position>=<holder>,<holder>`, space-separated; "" is the fallback
     gates: String = ""; // the gate ids whose passing run at the candidate is its evidence, space-separated
+    fallback: Bool = false; // some path is left to the Review's own required authority as well
+    recorded: Bool = true; // false when the record did not take the routing: the Review is not opened
 }
 
 // The targets of the bound practices ratified as law, one per line: a
@@ -331,6 +336,7 @@ fn route_requirement(json: String, r: Route) -> RouteRequirement {
         signers = signers + (if len(signers) > 0 { " " } else { "" }) + position + "=" + holders;
     }
     if !held { return RouteRequirement { }; }
+    let fallback = len(r.fallback) > 0;
     let mut gates = "";
     let mut g = r.evidence;
     while len(g) > 0 {
@@ -338,7 +344,24 @@ fn route_requirement(json: String, r: Route) -> RouteRequirement {
         gates = gates + (if len(gates) > 0 { " " } else { "" }) + g[0..nl];
         g = g[(nl + 1)..len(g)];
     }
-    return RouteRequirement { signers: signers, gates: gates };
+    return RouteRequirement { signers: signers, gates: gates, fallback: fallback };
+}
+
+// `signers` with each position's holders read again from the routing
+// query's answer: the positions a Review requires stay the route's, and
+// who holds them is who holds them now.
+@unbounded
+fn signers_held_now(json: String, signers: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while len(nth_word(signers, i)) > 0 {
+        let entry = nth_word(signers, i);
+        let eq = std::str::index_of(entry, "=");
+        let position = if eq > 0 { entry[0..eq] } else { entry };
+        out = out + (if len(out) > 0 { " " } else { "" }) + position + "=" + route_held_by(json, position);
+        i = i + 1;
+    }
+    return out;
 }
 
 // The Board's requirement: the `board` position under the purpose, with
