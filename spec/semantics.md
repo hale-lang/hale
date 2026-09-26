@@ -1753,6 +1753,41 @@ both handlers; a command no subscriber answers is answered
 `accepted` by the binding itself once dispatched. An intra-process
 publish of the same topic calls the handler as before and ignores
 the return, so a topic that never crosses the binding pays nothing.
+
+**The binding authenticates; nothing else does (GH #1108).** Who is
+calling is established at the binding and nowhere else: a peer on
+the Unix socket is the principal its kernel credentials name
+(`mode: "unix"`, `name: "uid:<n>"`, with `uid`, `gid` and `pid` as
+`SO_PEERCRED` / `getpeereid` report them), and a message published
+inside the program is the **local principal** (`mode: "local"`,
+`name: "local"`, credentials -1). A bearer token on HTTP is the
+third mode and waits for the HTTP transport; it is not spelled
+here until it exists. Every answer the binding writes, refusals
+included, carries the principal it established:
+
+```text
+{"request_id": 7, "id": ..., "ok": true, "value": {...},
+ "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
+```
+
+**The handler signature rule.** As with `Drain<T>`, the `subscribe`
+line never changes; the handler's parameter list declares what the
+substrate hands it. Three independent axes: the payload shape (`T`
+or `Drain<T>`), identity-awareness (with or without a second
+parameter `ctx: std::api::Context`), and the reply (with or without
+a return type); any combination is a handler, and a parameter list
+of any other shape is refused at the subscribe site. A handler that
+takes a `Context` is reached through a synthesized one-parameter
+thunk, since bus dispatch hands a handler one payload: intra-process
+the thunk passes `std::api::local_context()` (the local principal,
+`via: "local"`, request id 0, no role), and through the api binding
+the synthesized subscription passes the caller the binding
+established, `via: "api"`, the request id, and the authorizing
+role once roles exist. A handler never asks whether it was reached
+from outside; it reads `via`. `Context` and `Principal` are
+ordinary structs (`spec/stdlib.md` § `std::api`): constructible in
+a test, forwardable in a payload; provenance in `via` is what tells
+a binding-produced one apart, not restricted spelling.
 A batch handler (`Drain<T>`) is not reached through the binding:
 the cooperative queue has no batch delivery yet, so a topic one
 subscribes is left out (with a warning) and bulk requests wait on

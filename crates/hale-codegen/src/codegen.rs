@@ -28585,6 +28585,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "process", "dump_pool_residency"] => {
                 self.lower_std_process_dump_pool_residency(args)
             }
+            // GH #1108: the api binding's caller identity.
+            ["std", "io", "unix", "peer_uid"] => self.lower_std_io_unix_peer("uid", args, scope),
+            ["std", "io", "unix", "peer_gid"] => self.lower_std_io_unix_peer("gid", args, scope),
+            ["std", "io", "unix", "peer_pid"] => self.lower_std_io_unix_peer("pid", args, scope),
+            // GH #1108: `std::api::local_context()`, the context a handler
+            // reached in-process receives (Hale source in api.hl).
+            ["std", "api", "local_context"] => {
+                let result = self.lower_user_fn_call("__api_local_context", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::api::local_context returns Context but called in a position that expects no value".to_string()))
+            }
             ["std", "io", "tcp", "__listen_socket"] => {
                 self.lower_std_io_tcp_listen_socket(args, scope)
             }

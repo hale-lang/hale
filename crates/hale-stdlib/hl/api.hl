@@ -1,0 +1,40 @@
+// std::api — the caller at an api binding (GH #1108).
+//
+// A `Principal` is who is calling, established at the binding and
+// nowhere else: the mode says how (`local` for a publish inside the
+// program, `unix` for a peer on the api socket, later `bearer` for
+// an HTTP token), the name says who as that mode spells it (`local`,
+// `uid:1000`), and the three credentials are what a Unix socket's
+// kernel vouches for (-1 when the mode has none). The shape is the
+// one DNA carried by hand as `principal_mode` / `principal_name`.
+//
+// A `Context` is what a handler that declares a second parameter
+// receives: `fn on_x(p: T, ctx: std::api::Context)`. Through the api
+// binding it names the caller, the request id, the binding (`via`)
+// and, once roles exist, the role that authorized the message. A
+// handler reached in-process receives `local_context()`: the local
+// principal, `via: "local"`, request id 0. Both are ordinary
+// structs: constructible in a test, forwardable in a payload;
+// `via` is the provenance that tells a binding-produced one apart.
+
+/// Who is calling, as the binding established it.
+type __StdApiPrincipal {
+    mode: String = "local";
+    name: String = "local";
+    uid: Int = -1;
+    gid: Int = -1;
+    pid: Int = -1;
+}
+
+/// A handler's view of the message that reached it.
+type __StdApiContext {
+    caller: std::api::Principal = std::api::Principal { };
+    role: String = "";
+    request_id: Int = 0;
+    via: String = "local";
+}
+
+/// The context of a message that never crossed a binding.
+fn __api_local_context() -> std::api::Context {
+    return std::api::Context { };
+}

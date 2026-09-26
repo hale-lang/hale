@@ -75,6 +75,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#if defined(__APPLE__)
+#include <sys/ucred.h>
+#endif
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -13962,6 +13965,37 @@ int lotus_unix_connect_wait(const char *path, int64_t wait_ns) {
         nanosleep(&backoff, NULL);
     }
 }
+
+/* GH #1108: the peer's credentials on a connected AF_UNIX stream —
+ * the identity the api binding attaches to a caller. Linux answers
+ * SO_PEERCRED; Darwin getpeereid for uid/gid and LOCAL_PEERPID for
+ * the pid. -1 when the kernel will not say (not a socket, not AF_UNIX,
+ * or the platform has neither). */
+static int lotus_unix_peer(int fd, int64_t *uid, int64_t *gid, int64_t *pid) {
+    *uid = -1; *gid = -1; *pid = -1;
+#if defined(__linux__)
+    struct ucred cr;
+    socklen_t len = sizeof(cr);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &len) < 0) return -1;
+    *uid = (int64_t)cr.uid; *gid = (int64_t)cr.gid; *pid = (int64_t)cr.pid;
+    return 0;
+#elif defined(__APPLE__)
+    uid_t u; gid_t g;
+    if (getpeereid(fd, &u, &g) < 0) return -1;
+    *uid = (int64_t)u; *gid = (int64_t)g;
+    pid_t p = 0;
+    socklen_t plen = sizeof(p);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &p, &plen) == 0) *pid = (int64_t)p;
+    return 0;
+#else
+    (void)fd;
+    return -1;
+#endif
+}
+
+int64_t lotus_unix_peer_uid(int fd) { int64_t u, g, p; lotus_unix_peer(fd, &u, &g, &p); return u; }
+int64_t lotus_unix_peer_gid(int fd) { int64_t u, g, p; lotus_unix_peer(fd, &u, &g, &p); return g; }
+int64_t lotus_unix_peer_pid(int fd) { int64_t u, g, p; lotus_unix_peer(fd, &u, &g, &p); return p; }
 
 int lotus_unix_connect(const char *path) {
     return lotus_unix_connect_wait(path, 0);

@@ -107,6 +107,46 @@ impl<'ctx, 'p> IoUnixStdlib<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    pub(crate) fn lower_std_io_unix_peer(
+        &mut self,
+        which: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::peer_{} takes 1 arg (fd), got {}",
+                which,
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::unix::peer_{}: fd must be Int, got {:?}",
+                which, fd_ty
+            )));
+        }
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), self.context.i32_type(), "peer.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function(&format!("lotus_unix_peer_{}", which))
+            .expect("lotus_unix_peer_* declared");
+        let v = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "peer.cred")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_unix_connect_common(
         &mut self,
         args: &[Expr],

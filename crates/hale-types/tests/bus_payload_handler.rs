@@ -83,7 +83,7 @@ fn subscribe_handler_arity_must_be_one() {
     let errs = errors(&two);
     assert!(
         errs.iter()
-            .any(|e| e.contains("exactly one parameter") && e.contains("takes 2")),
+            .any(|e| e.contains("optionally followed by `ctx: std::api::Context`") && e.contains("takes 2 parameters")),
         "two params rejected: {:?}",
         errs
     );
@@ -100,7 +100,7 @@ fn subscribe_handler_arity_must_be_one() {
     let errs = errors(&zero);
     assert!(
         errs.iter()
-            .any(|e| e.contains("exactly one parameter") && e.contains("takes 0")),
+            .any(|e| e.contains("optionally followed by `ctx: std::api::Context`") && e.contains("takes 0 parameters")),
         "zero params rejected: {:?}",
         errs
     );

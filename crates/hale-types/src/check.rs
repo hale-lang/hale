@@ -9180,8 +9180,10 @@ impl<'a> Checker<'a> {
                                 handler_fn.name.span,
                                 format!(
                                     "bus subscribe `{}` handler `{}` must \
-                                     take exactly one parameter (the \
-                                     payload `{}`), but takes {}",
+                                     take the payload `{}` (or `Drain<T>`), \
+                                     optionally followed by `ctx: \
+                                     std::api::Context`, but takes {} \
+                                     parameters",
                                     sub.subject,
                                     sub.handler,
                                     sub.payload.display(),

@@ -158,3 +158,48 @@ fn main() { Billing { }; }
     let msgs = check(src);
     assert!(msgs.is_empty(), "{:?}", msgs);
 }
+
+// ---- GH #1108: the handler signature rule ----------------------------------
+
+#[test]
+fn a_context_parameter_is_accepted_with_or_without_the_binding() {
+    let src = r#"
+type Claim { task: Int; }
+type Lease { token: String; }
+topic Claims { payload: Claim; subject: "t.claim"; }
+locus Head {
+    bus { subscribe Claims as on_claim; publish Claims; }
+    fn on_claim(c: Claim, ctx: std::api::Context) -> Lease {
+        return Lease { token: ctx.via + ":" + ctx.caller.name };
+    }
+}
+fn main() { Head { }; }
+"#;
+    let msgs = check(src);
+    assert!(msgs.is_empty(), "{:?}", msgs);
+    let with_binding = format!(
+        "{}\nmain locus App {{ params {{ head: Head = Head {{ }}; }} bindings {{ api: unix(\"/tmp/t.sock\", bound: 8, on_full: refuse); }} }}\n",
+        src.replace("fn main() { Head { }; }", "")
+    );
+    let msgs = check(&with_binding);
+    assert!(!msgs.iter().any(|m| m.contains("error") || m.contains("api binding")), "{:?}", msgs);
+}
+
+#[test]
+fn a_second_parameter_that_is_not_a_context_is_refused() {
+    let src = r#"
+type Claim { task: Int; }
+topic Claims { payload: Claim; subject: "t.claim"; }
+locus Head {
+    bus { subscribe Claims as on_claim; publish Claims; }
+    fn on_claim(c: Claim, extra: Int) { }
+}
+fn main() { Head { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("optionally followed by `ctx: std::api::Context`") && m.contains("takes 2 parameters")),
+        "{:?}",
+        msgs
+    );
+}
