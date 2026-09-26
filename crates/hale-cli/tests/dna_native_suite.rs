@@ -29,11 +29,14 @@ fn repo_root() -> PathBuf {
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
-/// contention (GH #795). Sixteen slices of ~5 fixtures rather than
-/// eight of ~10, so the hash partition over the slice tests spreads
-/// them evenly across two jobs. One wedged fixture still ends in a
-/// named failure within the group's timeout.
-const SLICES: usize = 16;
+/// contention (GH #795). Twenty slices of ~6 fixtures, so the hash
+/// partition over the slice tests spreads them evenly across two jobs
+/// and no slice carries two of the heaviest organism fixtures: every
+/// Board decision and every concern is an execution now (GH #995), and
+/// books_slice_test with graph_holes_test in one slice ran past the
+/// slice's fifteen minutes. One wedged fixture still ends in a named
+/// failure within the group's timeout.
+const SLICES: usize = 20;
 
 fn fixture_files() -> Vec<PathBuf> {
     let dir = repo_root().join("dna/tests");
@@ -604,6 +607,7 @@ fixture_slices! {
     dna_fixtures_slice_4 => 4, dna_fixtures_slice_5 => 5, dna_fixtures_slice_6 => 6, dna_fixtures_slice_7 => 7,
     dna_fixtures_slice_8 => 8, dna_fixtures_slice_9 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
     dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
+    dna_fixtures_slice_16 => 16, dna_fixtures_slice_17 => 17, dna_fixtures_slice_18 => 18, dna_fixtures_slice_19 => 19,
 }
 
 /// The slice's own memory database is reached by editing exactly the
