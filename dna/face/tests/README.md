@@ -497,6 +497,10 @@ binding-change candidate, inspects the exact canonical document through
 Proposal, Review, binding effect and graph observation remain separate. Exact
 removal retains a distinct descendant binding and the original Knowledge item.
 Settled Reviews retain their canonical binding document with decisions disabled.
+Two of its cases are gated on GH #1148 (`test.skip` names it): the pagination
+case, under which the composed head dies with SIGSEGV after the restarts,
+and the competing-candidate case, where the page offers no second candidate
+while the first is pending under the real host; they come back with the fix.
 The proposer Alice cannot decide her own binding Review. A separately granted
 Bob authenticates for the decision; returning to Alice recovers only her original
 Knowledge request. Actor switching changes API identity, not a browser authority
