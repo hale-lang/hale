@@ -505,6 +505,8 @@ locus CommandWire {
         if claim { return a.state == "claimed" && self.bounded(a.attempt_id, 256, true, false) && self.bounded(a.work_id, 256, true, false) && self.bounded(a.task_id, 256, true, false) && self.bounded(a.performer_kind, 64, true, false) && a.until > 0; }
         if renew { return a.state == "renewed" && a.until > 0 && a.disposition == ""; }
         if give_back { return a.state == "released" && a.until == 0 && a.disposition == ""; }
+        // an uncertain performer's mark reads back `unresolved` until a person's resolution settles it
+        if a.state == "unresolved" { return a.until == 0 && a.disposition == "unresolved"; }
         if a.state != "requested" && a.state != "settled" { return false; }
         return a.until == 0 && (a.disposition == "done" || a.disposition == "failed" || a.disposition == "declined" || a.disposition == "timeout");
     }

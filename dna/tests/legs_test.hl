@@ -76,7 +76,7 @@ const LOST_WORK_UNCERTAIN: String = "// a backend that loses its reply, for the 
 const LOST_WORK_FREE: String = "// a backend that loses its reply behind an effect-free performer\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Lost {\n    fn identity() -> String { return \"lost\"; }\n    fn model_name() -> String { return \"lost-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return false; }\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult { return dna::ModelResult { ok: false, backend: \"lost\", model: \"lost-1\", refused: \"connection reset by peer after the request was sent\" }; }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { effect: \"effect_free\", router: dna::ModelRouter { quick: Lost { }, deep: Lost { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 // A catalog with a performer that declares no class: refused at seed.
 const SLOW_UNCERTAIN_WORK: String = "// an uncertain backend that answers after its lease, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Late {\n    fn identity() -> String { return \"late\"; }\n    fn model_name() -> String { return \"late-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return true; }\n    @unbounded\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult { let until = std::time::monotonic_ns() + 2500000000; while std::time::monotonic_ns() < until { std::time::sleep(100ms); } return dna::ModelResult { ok: true, backend: \"late\", model: \"late-1\", output: \"assessment: late but done\", tokens: 4 }; }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { effect: \"uncertain\", router: dna::ModelRouter { quick: Late { }, deep: Late { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
-const SLOW_FREE_WORK: String = "// an effect-free program that answers after its lease, for the fixture\nimport \"vendor/dna/legs\" as legs;\nlocus Slow {\n    fn kind() -> String { return \"deterministic\"; }\n    fn effect_class() -> String { return \"effect_free\"; }\n    fn takes(performer_kind: String) -> Bool { return performer_kind == \"agent\"; }\n    @unbounded\n    fn perform(brief: legs::Brief, hands: legs::Hands) -> legs::Performance {\n        let until = std::time::monotonic_ns() + 2500000000;\n        while std::time::monotonic_ns() < until { std::time::sleep(100ms); }\n        return legs::Performance { disposition: \"done\", result: \"assessment: slowly\", renderer: legs::RENDERER_VERSION };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: Slow { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const SLOW_FREE_WORK: String = "// an effect-free program that answers after its lease, for the fixture\nimport \"vendor/dna/legs\" as legs;\nlocus Slow {\n    fn kind() -> String { return \"deterministic\"; }\n    fn effect_class() -> String { return \"effect_free\"; }\n    fn takes(performer_kind: String) -> Bool { return performer_kind == \"agent\"; }\n    @unbounded\n    fn perform(brief: legs::Brief, hands: legs::Hands) -> legs::Performance {\n        let until = std::time::monotonic_ns() + 2500000000;\n        while std::time::monotonic_ns() < until { std::time::sleep(100ms); }\n        return legs::Performance { disposition: \"done\", result: \"assessment: slowly\", prompt_digest: legs::prompt_digest(brief.rendered), renderer: legs::RENDERER_VERSION };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: Slow { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 const UNSEATED_WORK: String = "// a person with no effect class, for the fixture\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
 locus App {
@@ -135,7 +135,7 @@ locus App {
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
         // a chore requiring nothing in particular: the Work that admits every
         // effect class, an uncertain performer among them
-        std::test::assert_eq_str(self.core.catalog.define("chore", 1, 1, "one chore"), "", "chore");
+        std::test::assert_eq_str(self.core.catalog.define("chore", 1, "record", "one chore"), "", "chore");
         std::test::assert_eq_str(self.core.catalog.leaf("chore", 1, 0, "c", dna::WorkRequest { objective: "run the storage migration", output_contract: "Report" }, 2), "", "c");
     }
     @unbounded
@@ -436,7 +436,7 @@ locus App {
         self.wait_row("attempt.outcome", a12, "settled");
     }
     // ---- the effect classes: the seed, the filter, and what a call that may have acted becomes
-    fn lost_calls() -> Int { return lines_in(std::io::fs::read_file(self.app + "/lost.calls") or ""); }
+    fn lost_calls() -> Int { return lines_in(dna::trim_nl(std::io::fs::read_file(self.app + "/lost.calls") or "")); }
     @unbounded
     fn effects() {
         // --effect names one of the three, and belongs to next and submit alone
@@ -476,7 +476,7 @@ locus App {
         // nobody claims it again: another leg, the same holder, a loop
         let taken = self.work_rc("next\n--as\nposition:leader\n--kind\nsoftware", 1);
         std::test::assert(self.state_of(taken) == "refused" && std::str::contains(std::json::find_string_field(taken, "reason"), "unresolved"), "no other leg is given it: " + taken);
-        let same = self.work_rc("run\n--as\nposition:software\n--holder\nposition:software#1\n--wait\n0", 1);
+        let same = self.work("run\n--as\nposition:software\n--holder\nposition:software#1\n--wait\n0");
         std::test::assert(std::json::find_string_field(same, "state") == "refused", "nor its own holder: " + same);
         let looped = self.work_timeout(60, "loop\n--as\nposition:software\n--parallel\n1\n--once\n--wait\n0");
         std::test::assert(std::str::contains(looped, "\"state\": \"refused\"") && !std::str::contains(looped, "\"state\": \"unresolved\""), "nor a loop: " + looped);
@@ -484,6 +484,7 @@ locus App {
         // a person resolves it: the owner settles the attempt on that word
         let resolved = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:" + a15 + " --outcome failed --as tester\nsh\n" + self.app + "\n" + toolchain());
         std::test::assert_eq_int(resolved.code, 0, "a person resolves the effect: " + resolved.stdout + resolved.stderr);
+        let driven_resolved = self.core.redrive();
         self.wait_row("attempt.outcome", a15, "and the owner settles the attempt on the resolution");
         std::test::assert(std::str::contains(self.row_body("attempt.outcome", a15), "resolved"), "as the resolution: " + self.row_body("attempt.outcome", a15));
         self.close_retry(a15, "position:software#2");
@@ -496,6 +497,7 @@ locus App {
         std::test::assert(std::str::starts_with(self.row_body("effect.result", "attempt:" + a16), "unknown"), "the lapsed lease does not hide the mark");
         let resolved16 = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:" + a16 + " --outcome ok --as tester\nsh\n" + self.app + "\n" + toolchain());
         std::test::assert_eq_int(resolved16.code, 0, "resolved ok: " + resolved16.stdout + resolved16.stderr);
+        let driven_resolved16 = self.core.redrive();
         self.wait_row("attempt.outcome", a16, "settled on the resolution");
         std::test::assert(std::str::contains(self.row_body("attempt.outcome", a16), "\"disposition\": \"done\""), "as done: " + self.row_body("attempt.outcome", a16));
         // an uncertain claim whose lease lapses with no word at all (the leg died):
@@ -505,20 +507,21 @@ locus App {
         std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(lapsed), "attempt_id"), a17, "claimed as uncertain: " + lapsed);
         std::test::assert(std::str::contains(self.row_body("attempt.claimed", a17), "\"effect_class\": \"uncertain\""), "the claim row carries the class");
         std::time::sleep(1500ms);
-        self.core.tick(std::time::now());
+        let lapsed_driven = self.core.redrive();
         self.wait_row("effect.result", "attempt:" + a17, "the owner marks the lapsed uncertain claim");
         std::test::assert(std::str::starts_with(self.row_body("effect.result", "attempt:" + a17), "unknown") && !self.has_row("effect.redelivered", "attempt:" + a17), "unknown, never redelivered: " + self.row_body("effect.result", "attempt:" + a17));
         let after_lapse = self.work_rc("next\n--as\nposition:leader\n--kind\nsoftware", 1);
         std::test::assert(self.state_of(after_lapse) == "refused", "and no leg is given it: " + after_lapse);
         let resolved17 = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:" + a17 + " --outcome failed --as tester\nsh\n" + self.app + "\n" + toolchain());
         std::test::assert_eq_int(resolved17.code, 0, "resolved: " + resolved17.stdout + resolved17.stderr);
+        let driven_resolved17 = self.core.redrive();
         self.wait_row("attempt.outcome", a17, "settled on the resolution");
         self.close_retry(a17, "position:software#4");
         // an effect-free performer that answers after its lease: the outcome is refused,
         // the settle is `unsettled`, and a run again performs anew under a fresh lease
         std::io::fs::write_file(self.app + "/dna/org/work.hl", SLOW_FREE_WORK) or discard;
         let slow = self.work_rc("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--ttl\n1\n--wait\n0", 1);
-        std::test::assert(std::json::find_string_field(slow, "state") == "unsettled" && std::json::find_string_field(slow, "attempt_id") == a13, "a refused outcome behind an effect-free performer is unsettled: " + slow);
+        std::test::assert(std::json::find_string_field(slow, "state") == "unsettled" && std::json::find_string_field(slow, "attempt_id") == a13 && std::str::contains(std::json::find_string_field(slow, "reason"), "stale"), "a refused outcome behind an effect-free performer is unsettled: " + slow);
         let again = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
         std::test::assert(std::json::find_string_field(again, "state") == "requested" && std::json::find_string_field(again, "attempt_id") == a13 && std::json::find_string_field(again, "effect_class") == "effect_free", "run again, it is performed anew and handed back: " + again);
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
