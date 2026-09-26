@@ -434,8 +434,7 @@ provenance and retained history. `native-practice-lifecycle-browser.spec.mjs`
 starts from the Practices UI and exercises those entry points through real
 native services. Both use the matching binary environment variables below;
 run the HTTP script with Node or pass the browser spec to Playwright. These small
-flows do not establish sustained or multi-page Knowledge stability. Like the
-node gate below, they are not ported to memory yet.
+flows do not establish sustained or multi-page Knowledge stability.
 
 `practice-context-editor.spec.mjs` separately checks the contextual editor's
 action families, exact source text, canonical scope, ordinary Knowledge behavior
@@ -449,21 +448,13 @@ successful command execution belongs to the separate native browser proof.
 `native-knowledge-node-browser.spec.mjs` exercises ordinary Knowledge creation,
 revision and retirement through their actual proposals, canonical Reviews and
 native activation. It composes `native-knowledge-node-harness.mjs` with the
-existing Body/relay owner — **the relay lane is unported (GH #1029):**
-`dna/api/practice_review/tests/relay` was removed with the membrane, and this
-spec cannot run until a relay is rebuilt against the node. `startService`
-(`native-command-harness.mjs`) fails immediately with that message rather than
-asking for a `HALE_NATIVE_COMMAND_RELAY` binary that no longer exists.
-
-**Not ported to memory (GH #985).** There is no Knowledge service to start
-beside the Body any more. The API takes the node policy as
-`HALE_DNA_KNOWLEDGE_COMMAND_POLICY` and would read the graph as the head, but
-the acceptance Body (`dna/api/practice_review/tests/body`) does not project the
-Record into memory on its tick, and the harness has no way to migrate and drop
-the Record the Body creates. Until the Body is a spine, startup fails with that
-reason rather than serve graph reads that never catch up. This applies to every
-lane built on `native-knowledge-node-harness.mjs`: the node, binding and
-edge-review gates and the Practice lifecycle.
+native command service below (`startService`): the real host is the spine, so
+the graph the API reads as the head is the Record projected on the host's tick,
+and the head's DSN comes from the host's own `hale dna memory migrate`. The API
+takes the node policy as `HALE_DNA_KNOWLEDGE_COMMAND_POLICY`. Every lane built
+on the node harness — the node, binding and edge-review gates and the Practice
+lifecycle — runs whenever the native command environment (below) is present;
+CI supplies it.
 
 The composed API is built from `dna/api/practice_review`; all binaries must
 come from the same implementation. The fixture creates an explicit node policy
@@ -581,28 +572,55 @@ establish real domain writes, service authority or restart durability.
 ## Native Practice and Review acceptance
 
 `native-commands.mjs` is an opt-in standalone Node harness for the real native
-command API, DNA body and host relay — **unported (GH #1029):**
-`dna/api/practice_review/tests/relay` was removed with the membrane, so this
-harness fails immediately with that message; it needs a relay rebuilt against
-the node before it can run again. The rest of this section describes the shape
-it exercised while the relay stood:
+command stack: the composed command API, and the real host (`hale dna dev`)
+running the acceptance organization over the nerves and memory (GH #1029).
+Nothing here is mocked, seeded or relayed by a lane-only program.
 
 ```sh
-HALE_NATIVE_COMMAND_API=/absolute/path/to/command-api \
-HALE_NATIVE_COMMAND_BODY=/absolute/path/to/body \
+HALE_BIN=/absolute/path/to/hale \
+HALE_NATIVE_COMMAND_API=/absolute/path/to/dna/api/practice_review/practice_review \
+HALE_FACE_MEMORY_BIN=/absolute/path/to/memory-fixture \
+HALE_DNA_MEMORY_DSN_OWNER='postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable' \
+HALE_DNA_NATS_URL_OWNER=nats://127.0.0.1:4222 \
 HALE_NATIVE_COMMAND_EVIDENCE=/absolute/path/to/evidence \
 node dna/face/tests/native-commands.mjs
 ```
 
-The body source is `dna/api/practice_review/tests/body/main.hl`; the relay's
-source is gone (above). The API source is `dna/api/practice_review/main.hl`.
-Missing binaries fail visibly. The evidence parent is optional and defaults to
-the system temporary directory; each run creates its own Git project and an
-explicit application-bound policy granting local `alice` and `bob` board access.
+What each run starts, and from what:
+
+- **The project.** `hale dna new` scaffolds one under the evidence directory
+  (a vendored core, a record, `dna/org`); the acceptance Body
+  (`dna/api/practice_review/tests/body/main.hl`) is written in as the
+  organization, its imports pointed at this checkout, and the project is
+  committed — the host runs the genome at `HEAD`.
+- **The host.** `hale dna dev . --no-iris` (`HALE_BIN`) with the two owners'
+  URLs, which reach no other process: it migrates the record's memory
+  (`HALE_DNA_MEMORY_DSN_OWNER`, a Postgres) and its nerves
+  (`HALE_DNA_NATS_URL_OWNER`, a `nats-server -js`), builds and runs the
+  organization, relays the record's request rows onto the nerves on its tick
+  and projects memory. Readiness is the host's own words ("the organization
+  reads its facts from the nerves", the genome it runs) and the Body's
+  bootstrap line in `.hale/dna/org.log`. The host's build cache serves every
+  run after the first on the same path.
+- **The API.** `dna/api/practice_review` as the head, with
+  `HALE_DNA_COMMAND_POLICY` (an explicit application-bound policy granting
+  local `alice` and `bob` board access) and the head's DSN from
+  `hale dna memory migrate`.
+- **At the end.** The API and the host are stopped (the organization and the
+  expression with them), the record's memory is dropped by the memory
+  fixture (`dna/face/tests/memory`, `HALE_FACE_MEMORY_BIN`, which `run.mjs`
+  builds beside the record fixture) and its stream by `hale dna nerves drop`.
+
+Locally, a Postgres and a NATS with JetStream: `docker run -d -p
+127.0.0.1:5480:5432 -e POSTGRES_USER=dna -e POSTGRES_PASSWORD=dna -e
+POSTGRES_DB=dna pgvector/pgvector:pg16` and `docker run -d -p
+127.0.0.1:4222:4222 nats:2 -js` are what CI runs. Missing binaries or owners
+fail visibly. The evidence parent is optional and defaults to the system
+temporary directory.
 
 Nine cases exercise replacement, real candidate creation and exact Review
 approval/adoption; identical and conflicting retries; GET-only recovery after a
-discarded POST reply and API/body restart; two admitted competing verdicts;
+discarded POST reply and API/host restart; two admitted competing verdicts;
 approved-candidate adoption refusal; stale subjects; principal isolation; and
 authority denial. Literal candidate text, rationale and verdict comments include
 CRLF, Unicode and a non-NUL control byte. The harness checks canonical receipt
@@ -616,42 +634,52 @@ receipt content and adoption under the same process limits. Decoded field limits
 do not override the separate encoded whole-request limit.
 
 Native services use the existing 512 MiB/30 CPU-second process bounds without
-holding the compiler lock during HTTP activity. Their environments exclude
-observation, bus, model and service settings inherited from the caller. Every owned
-process group is stopped in cleanup. The retained run directory contains the Git
-project, journal, canonical candidate blobs, native logs, request transcript,
-receipts, binary hashes and `result.json`; a failed case exits nonzero. This is
-local Record/body/host acceptance, not routing-1 Ledger or multi-clone evidence.
+holding the compiler lock during HTTP activity; the host takes the build
+bounds (2 GiB, 900 CPU-seconds), since it compiles the organization. Their
+environments exclude observation, bus, model, memory and nerves settings
+inherited from the caller. Every owned process group is stopped in cleanup,
+and the host's children reaped after it. The retained run directory contains
+the Git project, journal, canonical candidate blobs, native logs, request
+transcript, receipts, binary hashes and `result.json`; a failed case exits
+nonzero. This is local Record/host/organization acceptance, not routing-1
+Ledger or multi-clone evidence.
 
 ### Browser operating flow against the native provider
 
 `native-command-browser.spec.mjs` drives the existing face against that real
 service stack. It uses `native-command-harness.mjs`, independently of the
-scripted command fixtures. Supply the same four absolute binary paths above and
-run from `dna/face`:
+scripted command fixtures. `npm test` (`run.mjs`) turns the lanes on when
+`HALE_NATIVE_COMMAND_API` and the two owners are set beside `HALE_BIN`; it
+builds the memory fixture itself. To run one spec:
 
 ```sh
-node node_modules/@playwright/test/cli.js test \
-  --config tests/playwright.config.mjs native-command-browser.spec.mjs
+HALE_NATIVE_COMMAND_API=/absolute/path/to/practice_review \
+HALE_DNA_MEMORY_DSN_OWNER=... HALE_DNA_NATS_URL_OWNER=... \
+npm test -- native-command-browser.spec.mjs
 ```
 
-Without all four explicit binaries these cases skip visibly. The three cases
-exercise the exact candidate comparison and Review decision through adoption;
-an actual native POST whose reply is discarded, followed by fresh API/body/relay
-processes and GET-only browser reload recovery on the same origin; and two
-replacement candidates whose approved Reviews lead to adoption and adoption
-refusal respectively. They assert native Record facts, canonical candidate bytes,
-one submission per request, and the browser's separate outcome stages. Successful
-command responses and domain outcomes are never mocked. Desktop and narrow-screen
-screenshots accompany retained process, binary and Record evidence.
+Without the composed API and both owners these cases skip visibly. The three
+cases exercise the exact candidate comparison and Review decision through
+adoption; an actual native POST whose reply is discarded, followed by a fresh
+host (organization and relay) and API and GET-only browser reload recovery on
+the same origin; and two replacement candidates whose approved Reviews lead to
+adoption and adoption refusal respectively. They assert native Record facts,
+canonical candidate bytes, one submission per request, and the browser's
+separate outcome stages. Successful command responses and domain outcomes are
+never mocked. Desktop and narrow-screen screenshots accompany retained process,
+binary and Record evidence.
 
 The reusable `startService(options)` fixture owns bounded native process groups
 and exposes `stop()` for cleanup. A local preview can supply `prepareProject`
-before Body startup, a composed API binary, and explicit startup environment for
-Organization validation and Knowledge (the head's DSN and the command policy). Browser cases omit those
-sample-preparation hooks: their initial Practice and every tested outcome are
-produced by the real Body. The Record-only, fixed-authority deployment limits
-remain the same as the native service acceptance above.
+before the host starts, a composed API binary, and explicit startup environment
+for Organization validation and Knowledge (the command policy; the head's DSN
+is the host's to give). `pauseDelivery` stops the host and the organization
+where they stand (a request admitted meanwhile has no outcome yet);
+`restart` brings up a fresh host and API on the same record. Browser cases
+omit the sample-preparation hooks: their initial Practice and every tested
+outcome are produced by the real organization. The Record-only,
+fixed-authority deployment limits remain the same as the native service
+acceptance above.
 
 ### Organization status
 
