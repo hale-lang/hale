@@ -155,7 +155,7 @@ api binding, a unix socket. `/capabilities` says where it is,
 listener), and carries no write flags or command profiles; `read_only` speaks
 only for the Knowledge commands. The socket's own description is the contract:
 `hale describe <socket>` lists the calls a caller holds, and
-`hale check --dump-api dna/api` prints the full description.
+`hale check --dump-api dna/api` (the head also forwards one line of that wire per `POST …/commands`, and a `GET …/commands?request_id=` as a `CommandLookup`, under the CSRF headers every mutation here carries, in the local session only — a forwarding transport until the binding grows an HTTP one, GH #1135; it is the wire's contract, not this file's) prints the full description.
 
 | call name | subject | gate |
 |---|---|---|

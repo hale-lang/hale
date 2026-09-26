@@ -5,6 +5,20 @@ import ".." as api;
 import "./fixture" as fixture;
 import "./issuer" as issuer;
 
+// The browser's request: exact Origin, JSON, the command marker.
+fn forward(f: fixture::Fixture, method: String, url: String, body: String, headers: Bool) -> fixture::HttpResponse {
+    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--path-as-is\n--request\n" + method;
+    if headers { argv = argv + "\n--header\nOrigin: " + f.url() + "\n--header\nContent-Type: application/json\n--header\nX-Hale-Command: 1"; }
+    if len(body) > 0 { argv = argv + "\n--data\n" + body; }
+    let result = dna::run_tool(argv + "\n" + url);
+    let split = std::str::index_of(result.stdout, "\r\n\r\n");
+    if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
+    let head = result.stdout[0..split];
+    let space = std::str::index_of(head, " ");
+    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
+    return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+}
+
 locus Cases {
     params { root: String = ""; issuer_url: String = ""; schema: String = ""; json: fixture::Json = fixture::Json { }; }
     fn application_identity() {
@@ -28,6 +42,30 @@ locus Cases {
         std::test::assert(std::str::ends_with(self.json.string(self.json.raw(data, "api"), "socket"), ".sock"), "the head names its socket: " + capability);
         self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
         self.json.eq(self.json.raw(data, "principal"), "mode", "local");
+    }
+    // HTTP as a forwarding transport: one line of the api wire per POST,
+    // under the browser's CSRF headers, answered as the binding wrote it
+    // with the head's own principal marked `via: http-session`.
+    fn forwarding() {
+        let f = fixture::Fixture { root: self.root + "/fw", profiled_schema: self.schema }; f.standard(); f.start();
+        let path = f.url() + f.prefix + "/commands";
+        let described = forward(f, "POST", path, "{\"describe\":true}", true);
+        std::test::assert_eq_int(described.status, 200, described.body);
+        std::test::assert(std::str::contains(described.body, "\"ok\":true") && std::str::contains(described.body, "\"via\":\"http-session\"}") && std::str::contains(described.body, "\"name\":\"TaskCreate\""), "the slice, forwarded, under the marked principal: " + described.body);
+        let raised = forward(f, "POST", path, "{\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}", true);
+        std::test::assert_eq_int(raised.status, 200, raised.body);
+        std::test::assert(std::str::contains(raised.body, "\"code\":\"commands_unsupported\""), "the handler ran; the standalone head composes no provider: " + raised.body);
+        let gated = forward(f, "POST", path, "{\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}", true);
+        std::test::assert_eq_int(gated.status, 404, gated.body);
+        std::test::assert(std::str::contains(gated.body, "\"kind\":\"unknown\""), "a closed gate is unknown to this principal, as on the socket: " + gated.body);
+        let claimed = forward(f, "POST", path, "{\"describe\":true,\"via\":\"admin\"}", true);
+        std::test::assert_eq_int(claimed.status, 400, "a line that claims its own mark is refused: " + claimed.body);
+        let bare = forward(f, "POST", path, "{\"describe\":true}", false);
+        std::test::assert_eq_int(bare.status, 403, "without the CSRF headers nothing is forwarded: " + bare.body);
+        let looked = forward(f, "GET", path + "?request_id=ask-1", "", false);
+        std::test::assert_eq_int(looked.status, 200, looked.body);
+        std::test::assert(std::str::contains(looked.body, "\"via\":\"http-session\"}"), "a lookup is a forwarded CommandLookup: " + looked.body);
+        f.stop();
     }
     fn native_unicode() {
         let f = fixture::Fixture { root: self.root + "/02", profiled_schema: self.schema };
@@ -124,7 +162,8 @@ locus Cases {
         let mut i = 0;
         while i < 4 {
             let mut j = 0;
-            while j < 3 { f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), 405, "", "{\"as\":\"board\",\"verdict\":\"approve\"}"); j = j + 1; }
+            // POST /commands is the forwarding transport: without the browser's CSRF headers it is refused, not unknown
+            while j < 3 { f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), if i == 0 && j == 2 { 403 } else { 405 }, "", "{\"as\":\"board\",\"verdict\":\"approve\"}"); j = j + 1; }
             i = i + 1;
         }
         f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}"); f.error("POST", "/api/task/create", 405, "", "{\"as\":\"board\"}");
@@ -454,6 +493,7 @@ locus Cases {
         self.missing_ids();
         self.malformed_query();
         self.no_writes();
+        self.forwarding();
         self.service_restart();
         self.redacted();
         self.protected_receipts();

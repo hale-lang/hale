@@ -28,6 +28,11 @@ type __StdApiPrincipal {
     // for the connection (SO_PEERGROUPS on Linux; empty elsewhere),
     // comma-separated. Not on the receipt.
     groups: String = "";
+    // How the caller reached the binding when a transport of the
+    // program's own forwarded it (`"http-session"`): the wire's `via`,
+    // honoured only from the program's own uid; "" for the socket peer
+    // itself. On the receipt when set; `Context.via` carries it.
+    via: String = "";
 }
 
 /// A handler's view of the message that reached it.

@@ -489,13 +489,17 @@
         },
         "api": {
           "type": "object",
-          "description": "Where the record's commands are: the head's api binding. Its contract is `hale describe <socket>`; the socket is empty when no head serves this listener.",
+          "description": "Where the record's commands are: the head's api binding. Its contract is `hale describe <socket>`; the socket is empty when no head serves this listener; `http` is the forwarding route for the browser.",
           "properties": {
             "transport": {
               "const": "unix"
             },
             "socket": {
               "type": "string"
+            },
+            "http": {
+              "type": "string",
+              "description": "The route that forwards one line of the same wire per POST to that socket, marked `via: http-session` (GH #1135); empty when the session cannot be forwarded (OIDC)."
             }
           },
           "required": [

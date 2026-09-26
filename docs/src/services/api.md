@@ -219,7 +219,8 @@ locus Billing {
 ```
 
 The second parameter is `std::api::Context`: the caller, the
-request id, `via` (the binding's name, or `local`), and the role
+request id, `via` (the binding's name, `local`, or the mark a
+forwarding transport of the program's own set — see below), and the role
 that authorized the message (empty when the operation is not gated). A message that did not
 come through the binding hands the handler the local principal, so a
 handler never asks whether it was reached from outside; it reads
@@ -348,8 +349,14 @@ page shows the rest greyed out with the role each item needs.
 - A `Drain<T>` batch handler is not reached through the binding
   yet; bulk requests wait on batch delivery over the cooperative
   queue.
-- A bearer token for HTTP callers waits for the HTTP transport; the
-  Unix socket's peer credentials are the one identity today.
+- A bearer token for HTTP callers waits for the HTTP transport
+  (GH #1135); the Unix socket's peer credentials are the one identity
+  today. Until then a program may forward: a request line carrying
+  `"via": "<mark>"` is honoured only from a peer whose uid is the
+  program's own (refused as `malformed` from anyone else), the mark
+  rides on the receipt's `caller` and in `ctx.via`, and the principal
+  is the forwarding process's — an HTTP handler that hands a browser's
+  line to its own socket is gated and answered exactly like any peer.
 - Transitive privilege inference (flagging `api -> OrderPlaced ->
   on_order -> refund` as an escalation) is a later, opt-in claim;
   `@gated` is a boundary check and says so.

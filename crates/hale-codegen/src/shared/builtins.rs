@@ -2748,6 +2748,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i32 @getpid(void)  — POSIX, backs std::process::pid()
         let getpid_ty = i32_t.fn_type(&[], false);
         self.module.add_function("getpid", getpid_ty, None);
+        // declare i32 @getuid(void)  — POSIX, backs std::process::uid()
+        self.module.add_function("getuid", i32_t.fn_type(&[], false), None);
         // declare i64 @lotus_process_rss_bytes(void)
         // 2026-05-21: peak resident-set size in bytes via
         // getrusage(RUSAGE_SELF). Observability primitive — lets
