@@ -167,7 +167,8 @@ that watch for writes use `command-wire.mjs`'s `isWrite`.
 
 The forwarded caller is the head's own uid, which the record maps to a person
 (`dna.unix.member`); a lane that sends a real command seats that person first
-(`record-seats.mjs`: the mapping and the `holds` edges, before the head starts).
+(`record-seats.mjs`: the mapping, one row in the person's own name so memory
+knows them as a holder, and the `holds` edges, before the head starts).
 Scripted lanes answer the route themselves through `command-wire.mjs`, so every
 lane scripts the one shape the head speaks. The projects workspace's
 `/api/hale/v1/head/commands` is the project head's own and is unaffected.
