@@ -225,6 +225,9 @@ fn main() {
         // `hale dna init` seeds the record through the host: its rows, one
         // JSON object per line in a file
         ans = record_seed_verb(root, word(a, 0), memory);
+    } else if verb == "graph-ingest" {
+        // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
+        ans = graph_ingest_verb(root, memory);
     } else if verb == "design-upgrade" {
         // `hale dna init` / `upgrade`: the toolchain's design as proposals
         ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);

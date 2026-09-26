@@ -1,0 +1,48 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "echo-1",
+      "object": "model",
+      "created": 1789646400,
+      "owned_by": "local",
+      "voice": {
+        "kind": "local",
+        "context_length": 8192,
+        "max_output_tokens": 1024,
+        "quantizations": [],
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "price": {
+          "input_per_mtok_micros": 3000000,
+          "output_per_mtok_micros": 15000000,
+          "currency": "USD"
+        },
+        "available": true
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "object": "model",
+      "created": 1789646400,
+      "owned_by": "anthropic",
+      "voice": {
+        "kind": "hosted",
+        "context_length": 1000000,
+        "max_output_tokens": 64000,
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "price": {
+          "input_per_mtok_micros": 3000000,
+          "output_per_mtok_micros": 15000000,
+          "currency": "USD"
+        },
+        "available": true
+      }
+    }
+  ]
+}

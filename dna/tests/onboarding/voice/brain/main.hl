@@ -1,0 +1,59 @@
+/// The brain: keeps the route table (../README.md, "The route table").
+///
+/// It shares nothing with the api but Postgres. Only one brain works at a
+/// time: it holds a Postgres advisory lock, and a second brain process waits
+/// on the lock as a standby and takes over when the first one's connection
+/// drops.
+///
+/// Skeleton: it ticks and names what each tick will do. The store (Postgres
+/// through pond/pq), the lock and the route table come with the MVP.
+locus Brain {
+    params {
+        database: String = "postgres://127.0.0.1:5432/voice";
+        nats: String = "nats://127.0.0.1:4222";
+        interval: Duration = 1s;
+        ticks: Int = 0;
+    }
+    run() {
+        println("voice brain: route table in ", self.database);
+        println("voice brain: route-table notices on ", self.nats, " (skeleton; not connected)");
+        while true {
+            self.tick();
+            std::time::sleep(self.interval);
+        }
+    }
+    /// One pass. A method, so each tick's memory is reclaimed.
+    fn tick() {
+        self.ticks = self.ticks + 1;
+        // 1. Read the fleet as reported: seat states, api and node
+        //    heartbeats, quota windows, configuration.
+        // 2. Rewrite the route table: one slot per unit of each up seat's
+        //    concurrency, ranked by account headroom, then seat load;
+        //    exhausted accounts get none. Bump its version.
+        // 3. Reclaim what dead api instances held: free their slots,
+        //    release their reservations, record their requests abandoned.
+        // 4. Publish that the route table changed, over NATS, so the api
+        //    rereads it instead of polling.
+        if self.ticks == 1 {
+            println("brain: skeleton; no store yet, so ticks do nothing");
+        }
+    }
+}
+
+/// `brain [--database URL] [--nats URL]`
+fn main() {
+    let mut database = "postgres://127.0.0.1:5432/voice";
+    let mut nats = "nats://127.0.0.1:4222";
+    let mut i = 1;
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--database" {
+            database = value;
+        } else if flag == "--nats" {
+            nats = value;
+        }
+        i = i + 2;
+    }
+    Brain { database: database, nats: nats };
+}

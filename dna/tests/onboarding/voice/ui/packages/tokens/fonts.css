@@ -1,0 +1,7 @@
+/* The readout's type, shipped with the tokens and served from the same
+   origin: IBM Plex Sans for reading, IBM Plex Mono for identifiers and
+   values. Two weights each, 400 and 500. Open Font License. */
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';

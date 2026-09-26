@@ -1,0 +1,55 @@
+{
+  "protocol": 2,
+  "heartbeat_interval_ms": 5000,
+  "nats": {
+    "url": "nats://nats:4222",
+    "subject": "voice.node.laptop"
+  },
+  "assignment": {
+    "version": 7,
+    "max_in_flight": 4,
+    "seats": [
+      {
+        "id": "static",
+        "engine": "static",
+        "account": "static",
+        "serves": [
+          {
+            "model": "echo-1",
+            "as": null
+          }
+        ],
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "concurrency": 4,
+        "enabled": true,
+        "config": {
+          "text": "hello from voice",
+          "chunk_chars": 8,
+          "first_output_ms": 0,
+          "chunk_interval_ms": 0
+        }
+      },
+      {
+        "id": "claude-work",
+        "engine": "claude-work",
+        "account": "claude-work",
+        "serves": [
+          {
+            "model": "claude-sonnet-5",
+            "as": "sonnet"
+          }
+        ],
+        "data_classes": [
+          "public",
+          "internal"
+        ],
+        "concurrency": 2,
+        "enabled": true,
+        "config": {}
+      }
+    ]
+  }
+}

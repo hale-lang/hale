@@ -1,0 +1,240 @@
+openapi: 3.1.0
+info:
+  title: voice node
+  version: 0.1.0-draft
+  summary: The local API of voice's own node.
+  description: |
+    A node is one machine running voice's node software, on the private
+    network with NATS. What it runs is configured on the coordinator
+    (`openapi.yaml`, `/admin/v1/nodes/{node}/seats`) and reaches it as an
+    assignment: over the api's node plane when it registers, over NATS
+    after (`protocol.yaml`). The node plane and the protocol are the seam
+    other node implementations plug into; this document is only voice's own
+    node, and a node written elsewhere need not serve it.
+
+    What stays on the machine is what only the machine can decide: which
+    engines it offers, with which logins, and its hard limits (the
+    capabilities file), and local controls that pause it or lower its cap.
+    This API reads them, sets the local controls, and reports the node's
+    state, including when it cannot reach the coordinator.
+
+    ## Boot configuration
+
+    Set at start, as flags or environment variables:
+
+    - the node's id, as created on the coordinator (`POST /admin/v1/nodes`);
+    - the api's address, where the node registers;
+    - the enrollment token the coordinator issued for this node;
+    - its NATS credentials (the address comes with registration);
+    - the data directory, where local controls are kept;
+    - the capabilities file, `capabilities.json` in the data directory unless
+      given;
+    - the address this API listens on (loopback by default).
+
+    Admin authentication is middleware in front of this API, as on the
+    coordinator's admin plane: the MVP runs without it, on loopback, and
+    OIDC drops in later with no change to these endpoints.
+
+    ## The capabilities file
+
+    Written by the node's operator, and the only configuration edited on the
+    machine besides local controls. Nothing is discovered: the node offers
+    exactly the engines listed, each with the login it runs under. It is
+    `Capabilities` from the protocol plus, per engine, a `local` object the
+    node never declares (where the login is kept, and similar). Each CLI
+    keeps several logins apart in its own way; hale-lang/voice#2 settles
+    that per engine.
+
+    ```json
+    {
+      "max_in_flight": 4,
+      "engines": [
+        { "id": "static", "kind": "static" },
+        { "id": "claude-work", "kind": "claude-cli",
+          "local": { "config_dir": "~/.claude-work" } },
+        { "id": "claude-personal", "kind": "claude-cli",
+          "local": { "config_dir": "~/.claude-personal" } }
+      ]
+    }
+    ```
+
+    The node fills in each engine's `config_schema` and `models` from its
+    kind. When the file changes, the node declares its capabilities again,
+    and the coordinator re-checks the assignment against them.
+
+    ## Credentials
+
+    Voice holds no provider credentials. An engine that needs a login uses
+    its own, on this machine, named in the engine's `local` object. It is
+    never declared to the coordinator and never returned by this API.
+  contact:
+    url: https://github.com/hale-lang/voice
+
+servers:
+  - url: http://127.0.0.1
+    description: Placeholder; the node's listen address is set at boot.
+
+tags:
+  - name: node
+    description: The node's state, what it offers, and its local controls.
+  - name: health
+    description: Liveness, for a supervisor. No credential.
+
+security:
+  - nodeAdmin: []
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getNodeLiveness
+      summary: Is the node process alive
+      description: |
+        Answers `200` while the process serves HTTP. Whether it is registered
+        and on NATS is not liveness; that is in `/node/v1/status`.
+      security: []
+      responses:
+        '200':
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                $ref: './openapi.yaml#/components/schemas/Health'
+
+  /node/v1/status:
+    get:
+      tags: [node]
+      operationId: getNodeStatus
+      summary: The node, its connection, and its assigned seats
+      description: |
+        What the node is running and how it is going, as the node sees it.
+        Useful when the coordinator cannot be reached; otherwise the same is
+        visible in the coordinator's admin UI.
+      responses:
+        '200':
+          description: The node's status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /node/v1/capabilities:
+    get:
+      tags: [node]
+      operationId: getCapabilities
+      summary: What the node offers, as loaded from its capabilities file
+      description: The declared capabilities, without the engines' `local` objects.
+      responses:
+        '200':
+          description: The capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: './protocol.yaml#/components/schemas/Capabilities'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /node/v1/local:
+    get:
+      tags: [node]
+      operationId: getLocalControls
+      summary: Read the local controls
+      responses:
+        '200':
+          description: The local controls.
+          content:
+            application/json:
+              schema:
+                $ref: './protocol.yaml#/components/schemas/LocalControls'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [node]
+      operationId: setLocalControls
+      summary: Pause the node or seats, or lower its cap
+      description: |
+        Replaces the local controls. They only restrict: pausing takes no
+        new requests (in-flight ones finish), and a local cap only lowers the
+        effective one. The node tells the coordinator at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './protocol.yaml#/components/schemas/LocalControls'
+            examples:
+              pause:
+                value:
+                  paused: false
+                  paused_seats: [claude-work]
+                  max_in_flight: 2
+                  reason: on battery
+      responses:
+        '200':
+          description: The local controls, applied.
+          content:
+            application/json:
+              schema:
+                $ref: './protocol.yaml#/components/schemas/LocalControls'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    nodeAdmin:
+      type: openIdConnect
+      openIdConnectUrl: https://voice.example.invalid/.well-known/openid-configuration
+      description: A principal via OIDC, as on the coordinator's admin plane. Not enforced in the MVP.
+
+  responses:
+    BadRequest:
+      description: Malformed.
+      content:
+        application/json:
+          schema: { $ref: './openapi.yaml#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Missing or invalid credential.
+      content:
+        application/json:
+          schema: { $ref: './openapi.yaml#/components/schemas/ErrorResponse' }
+
+  schemas:
+    NodeStatus:
+      type: object
+      required: [id, version, coordinator, assignment_version, max_in_flight, in_flight, local, seats]
+      properties:
+        id: { type: string }
+        version: { type: string }
+        coordinator:
+          type: object
+          required: [url, state]
+          properties:
+            url:
+              type: string
+              description: The api the node registers with.
+            state:
+              type: string
+              enum: [connecting, connected, refused]
+              description: '`connected`: registered, and subscribed on NATS. `refused`: the coordinator rejected the enrollment token or the node was revoked.'
+            connected_at: { type: [string, 'null'], format: date-time }
+            last_error: { type: [string, 'null'] }
+        assignment_version:
+          type: [integer, 'null']
+          description: The assignment applied, or null before the first one.
+        max_in_flight:
+          type: integer
+          description: The effective cap, the smallest of the declared, assigned and local caps.
+        in_flight: { type: integer }
+        local:
+          $ref: './protocol.yaml#/components/schemas/LocalControls'
+        seats:
+          type: array
+          description: The assigned seats, each with its state on this node.
+          items:
+            allOf:
+              - $ref: './protocol.yaml#/components/schemas/Seat'
+              - $ref: './protocol.yaml#/components/schemas/SeatState'

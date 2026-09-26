@@ -1,0 +1,62 @@
+{
+  "id": "work",
+  "name": "Work",
+  "status": "active",
+  "owners": [
+    "operator@example.com"
+  ],
+  "data_classes": [
+    "public",
+    "internal"
+  ],
+  "models": null,
+  "accounts": null,
+  "budget": {
+    "allowance_micros": 50000000,
+    "currency": "USD",
+    "period": "month",
+    "period_anchor": "2026-09-01T00:00:00Z",
+    "spent_micros": 1234567,
+    "reserved_micros": 0,
+    "remaining_micros": 48765433,
+    "window_start": "2026-09-01T00:00:00Z",
+    "window_end": "2026-10-01T00:00:00Z"
+  },
+  "limits": [
+    {
+      "scope": "project",
+      "window_seconds": 60,
+      "requests": 600,
+      "input_tokens": null,
+      "output_tokens": 200000,
+      "concurrent": 16,
+      "remaining": {
+        "requests": 599,
+        "input_tokens": null,
+        "output_tokens": 199996,
+        "concurrent": 16
+      },
+      "resets_at": "2026-09-24T12:01:00Z"
+    },
+    {
+      "scope": "model",
+      "model": "claude-sonnet-5",
+      "window_seconds": 3600,
+      "requests": 200,
+      "input_tokens": null,
+      "output_tokens": null,
+      "concurrent": 4,
+      "remaining": {
+        "requests": 200,
+        "input_tokens": null,
+        "output_tokens": null,
+        "concurrent": 4
+      },
+      "resets_at": "2026-09-24T13:00:00Z"
+    }
+  ],
+  "key_count": 1,
+  "position": null,
+  "created_at": "2026-09-17T12:00:00Z",
+  "archived_at": null
+}

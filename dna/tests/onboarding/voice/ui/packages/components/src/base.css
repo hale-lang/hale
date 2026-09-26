@@ -1,0 +1,163 @@
+/* The instrument's ground: quiet carbon, off-white content, earned color. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+  background: var(--color-bg-0);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--size-md);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--color-blue);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--color-bg-2);
+  border: var(--line-hair) solid var(--color-rule-strong);
+  border-radius: 0;
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--color-bg-3);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+strong,
+b {
+  font-weight: 500;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 500;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+h1 {
+  font-size: var(--size-xl);
+}
+
+h2 {
+  font-size: var(--size-lg);
+}
+
+h3 {
+  font-size: var(--size-md);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: var(--size-xs);
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.faint {
+  color: var(--color-text-faint);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Earned color: applied only where something is happening, waiting or wrong. */
+.c-active {
+  color: var(--color-cyan);
+}
+
+.c-wait {
+  color: var(--color-amber);
+}
+
+.c-fail {
+  color: var(--color-coral);
+}
+
+.c-ok {
+  color: var(--color-green);
+}
+
+/* Afterglow: a rare event stays lit, then fades. */
+@keyframes afterglow {
+  from {
+    background-color: var(--glow-color, rgba(248, 81, 73, 0.22));
+  }
+
+  to {
+    background-color: transparent;
+  }
+}
+
+.afterglow {
+  animation: afterglow var(--motion-afterglow) ease-out forwards;
+}
+
+/* The readout: what a panel counts and how fresh it is. */
+.readout {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+
+/* The one other motion: fetching, breathing. */
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+/* Focus dims the rest. */
+.dimmed {
+  opacity: 0.35;
+  transition: opacity var(--motion-fast);
+}

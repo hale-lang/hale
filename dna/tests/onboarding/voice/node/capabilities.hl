@@ -1,0 +1,63 @@
+/// The engine kinds this build can run. A capabilities file naming any
+/// other kind is refused at start.
+const KINDS: String = "static";
+
+/// The static engine's seat config (StaticConfig in ../spec/protocol.yaml).
+const STATIC_CONFIG_SCHEMA: String = "{\"type\": \"object\", \"required\": [\"text\"], \"properties\": {\"text\": {\"type\": \"string\", \"minLength\": 1}, \"chunk_chars\": {\"type\": \"integer\", \"minimum\": 1, \"default\": 16}, \"first_output_ms\": {\"type\": \"integer\", \"minimum\": 0, \"default\": 0}, \"chunk_interval_ms\": {\"type\": \"integer\", \"minimum\": 0, \"default\": 0}}}";
+
+/// Why a capabilities file is not usable, or "" when it is. Runs once, at
+/// start, over the operator's own file.
+@unbounded
+fn capabilities_problem(file: String) -> String {
+    if !std::json::valid_object(file) { return "the capabilities file must be a JSON object"; }
+    let cap = std::str::parse_int(top_value(file, "max_in_flight")) or 0;
+    if cap < 1 { return "max_in_flight must be a whole number of at least 1"; }
+    let engines = top_value(file, "engines");
+    if !std::str::starts_with(engines, "[") { return "engines must be a list"; }
+    let mut seen = "\n";
+    let mut it = std::json::array_first_span(engines);
+    while !it.done {
+        let id = std::json::iter_find_string_field(it, engines, "id");
+        if !is_slug(id) { return "every engine needs an id matching ^[a-z0-9][a-z0-9-]{0,62}$"; }
+        if std::str::contains(seen, "\n" + id + "\n") { return "engine id " + id + " appears twice"; }
+        seen = seen + id + "\n";
+        let kind = std::json::iter_find_string_field(it, engines, "kind");
+        if kind != "static" { return "engine " + id + ": kind " + kind + " is not one this build runs (" + KINDS + ")"; }
+        it = std::json::array_next_span(it, engines);
+    }
+    return "";
+}
+
+/// The capabilities as the node declares them: each engine with what its
+/// kind supplies, and without its `local` object. Runs once, at start, over
+/// the operator's own file, so the loop is bounded by that file.
+@unbounded
+fn declared_capabilities(file: String) -> String {
+    let engines = top_value(file, "engines");
+    let mut out = "{\"max_in_flight\": " + top_value(file, "max_in_flight") + ", \"engines\": [";
+    let mut first = true;
+    let mut it = std::json::array_first_span(engines);
+    while !it.done {
+        if !first { out = out + ", "; }
+        let id = std::json::iter_find_string_field(it, engines, "id");
+        out = out + "{\"id\": \"" + id + "\", \"kind\": \"static\", \"description\": \"Answers every request with the seat's configured text.\", \"models\": null, \"config_schema\": " + STATIC_CONFIG_SCHEMA + "}";
+        first = false;
+        it = std::json::array_next_span(it, engines);
+    }
+    return out + "]}";
+}
+
+/// ^[a-z0-9][a-z0-9-]{0,62}$
+fn is_slug(s: String) -> Bool {
+    let v = std::str::bytes_view(s);
+    let n = len(s);
+    if n == 0 || n > 63 { return false; }
+    let mut i = 0;
+    while i < n {
+        let b = std::str::byte_at(v, i);
+        let ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || (b == 45 && i > 0);
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}

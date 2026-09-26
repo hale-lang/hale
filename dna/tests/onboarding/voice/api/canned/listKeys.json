@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "id": "k_ci",
+      "project": "work",
+      "name": "ci",
+      "prefix": "vk-3f9a",
+      "models": null,
+      "accounts": [
+        "claude-work"
+      ],
+      "limits": [],
+      "created_at": "2026-09-18T12:00:00Z",
+      "created_by": "operator@example.com",
+      "expires_at": null,
+      "last_used_at": "2026-09-24T12:00:00Z",
+      "status": "active",
+      "revoked_at": null
+    }
+  ]
+}

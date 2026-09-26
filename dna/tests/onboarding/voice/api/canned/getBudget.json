@@ -1,0 +1,11 @@
+{
+  "allowance_micros": 50000000,
+  "currency": "USD",
+  "period": "month",
+  "period_anchor": "2026-09-01T00:00:00Z",
+  "spent_micros": 1234567,
+  "reserved_micros": 0,
+  "remaining_micros": 48765433,
+  "window_start": "2026-09-01T00:00:00Z",
+  "window_end": "2026-10-01T00:00:00Z"
+}

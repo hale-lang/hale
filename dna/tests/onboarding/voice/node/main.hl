@@ -1,0 +1,91 @@
+/// The voice node: runs the seats configured on this machine and serves
+/// them to the coordinator. See ../spec/node.yaml (its admin API) and
+/// ../spec/protocol.yaml (its connection to the coordinator).
+///
+/// What the node offers comes from its capabilities file, read and checked
+/// at start. `Admin` serves the local API and `Session` holds the coordinator
+/// connection, each on its own thread. They share state through the data
+/// directory: local controls in `local.json`, the session's state in
+/// `session.json`.
+main locus Node {
+    params {
+        id: String = "";
+        data: String = "node-data";
+        capabilities: String = "";
+        admin: Admin = Admin { };
+        session: Session = Session { };
+    }
+    placement {
+        admin: pinned;
+        session: pinned;
+    }
+    birth() {
+        println("voice node ", self.id, ": data in ", self.data);
+    }
+}
+
+const NODE_VERSION: String = "0.1.0-dev";
+
+/// `node --id ID [--api URL] [--token T] [--data DIR] [--capabilities FILE] [--host H] [--port N]`
+fn main() {
+    let mut id = "";
+    let mut api = "http://127.0.0.1:8080";
+    let mut token = std::env::var("VOICE_ENROLLMENT_TOKEN");
+    let mut data = "node-data";
+    let mut capabilities_file = "";
+    let mut host = "127.0.0.1";
+    let mut port = 8081;
+    let mut i = 1;
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--id" {
+            id = value;
+        } else if flag == "--api" {
+            api = value;
+        } else if flag == "--token" {
+            token = value;
+        } else if flag == "--data" {
+            data = value;
+        } else if flag == "--capabilities" {
+            capabilities_file = value;
+        } else if flag == "--host" {
+            host = value;
+        } else if flag == "--port" {
+            port = std::str::parse_int(value) or port;
+        }
+        i = i + 2;
+    }
+    if len(id) == 0 {
+        println("usage: node --id ID [--api URL] [--token T] [--data DIR] [--capabilities FILE] [--host H] [--port N]");
+        std::process::exit(2);
+    }
+    ensure_data_dir(data);
+    if len(capabilities_file) == 0 {
+        capabilities_file = data + "/capabilities.json";
+    }
+    let file = std::io::fs::read_file(capabilities_file) or "";
+    if len(file) == 0 {
+        println("node: no capabilities file at ", capabilities_file, "; list the engines this machine offers there (see node.yaml)");
+        std::process::exit(2);
+    }
+    let problem = capabilities_problem(file);
+    if len(problem) > 0 {
+        println("node: ", capabilities_file, ": ", problem);
+        std::process::exit(2);
+    }
+    let capabilities = declared_capabilities(file);
+    Node {
+        id: id,
+        data: data,
+        capabilities: capabilities,
+        admin: Admin { id: id, data: data, capabilities: capabilities, host: host, port: port },
+        session: Session { id: id, data: data, api: api, token: token, capabilities: capabilities }
+    };
+}
+
+fn ensure_data_dir(data: String) {
+    if !std::io::fs::file_exists(data) {
+        std::io::fs::mkdir(data) or discard;
+    }
+}

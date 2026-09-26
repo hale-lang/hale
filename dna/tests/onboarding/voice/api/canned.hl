@@ -1,0 +1,29 @@
+/// The request id, rate-limit and budget headers every caller-plane
+/// response carries, with the values the canned bodies agree with.
+const CALLER_HEADERS: String = "X-Request-Id: resp_01j8z3q4v7m2k9x0\r\nx-ratelimit-limit-requests: 600\r\nx-ratelimit-remaining-requests: 599\r\nx-ratelimit-reset-requests: 60s\r\nx-ratelimit-limit-tokens: 200000\r\nx-ratelimit-remaining-tokens: 199996\r\nx-ratelimit-reset-tokens: 60s\r\nvoice-budget-remaining-micros: 48765433";
+
+/// A report received: `204`, no body.
+fn no_content() -> std::http::Response {
+    return std::http::Response { status: 204, body: "" };
+}
+
+/// A route that does not exist, in the spec's error envelope.
+fn not_found(req: std::http::Request) -> std::http::Response {
+    return error_response(404, "not_found", "not_found", "no such endpoint: " + req.method + " " + req.path);
+}
+
+/// `<dir>/<file>` as the body of a response, or a 500 naming the file
+/// when it is missing.
+fn canned_body(dir: String, file: String, status: Int, content_type: String, headers: String) -> std::http::Response {
+    let path = dir + "/" + file;
+    let body = std::io::fs::read_file(path) or "";
+    if len(body) == 0 {
+        return error_response(500, "server_error", "not_found", "canned body missing: " + path);
+    }
+    return std::http::Response { status: status, content_type: content_type, headers: headers, body: body };
+}
+
+fn error_response(status: Int, kind: String, code: String, message: String) -> std::http::Response {
+    let body = "{\"error\": {\"message\": \"" + std::json::escape_string(message) + "\", \"type\": \"" + kind + "\", \"code\": \"" + code + "\"}}";
+    return std::http::Response { status: status, content_type: "application/json", body: body };
+}

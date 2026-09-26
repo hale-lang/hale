@@ -1,0 +1,13 @@
+{
+  "name": "voice-ui",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "tokens": "npm run build -w @hale/tokens",
+    "gen": "npm run gen -w @voice/admin",
+    "dev": "npm run tokens && npm run dev -w @voice/admin",
+    "build": "npm run tokens && npm run build -w @voice/admin",
+    "typecheck": "npm run tokens && npm run typecheck --workspaces --if-present"
+  },
+  "engines": { "node": ">=22" }
+}

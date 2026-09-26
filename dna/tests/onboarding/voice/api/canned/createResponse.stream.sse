@@ -1,0 +1,32 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_01j8z3q4v7m2k9x0","object":"response","created_at":1790251200,"completed_at":null,"status":"in_progress","incomplete_details":null,"model":"echo-1","previous_response_id":null,"instructions":"You classify incoming asks.","output":[],"error":null,"tools":[],"tool_choice":"auto","truncation":"disabled","parallel_tool_calls":false,"text":{"format":{"type":"text"}},"top_p":1,"presence_penalty":0,"frequency_penalty":0,"top_logprobs":0,"temperature":0,"reasoning":null,"usage":null,"max_output_tokens":256,"max_tool_calls":null,"store":false,"background":false,"service_tier":"default","metadata":{"dna.attempt_id":"w-41/a2"},"safety_identifier":null,"prompt_cache_key":null},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_01j8z3q4v7m2k9x0","object":"response","created_at":1790251200,"completed_at":null,"status":"in_progress","incomplete_details":null,"model":"echo-1","previous_response_id":null,"instructions":"You classify incoming asks.","output":[],"error":null,"tools":[],"tool_choice":"auto","truncation":"disabled","parallel_tool_calls":false,"text":{"format":{"type":"text"}},"top_p":1,"presence_penalty":0,"frequency_penalty":0,"top_logprobs":0,"temperature":0,"reasoning":null,"usage":null,"max_output_tokens":256,"max_tool_calls":null,"store":false,"background":false,"service_tier":"default","metadata":{"dna.attempt_id":"w-41/a2"},"safety_identifier":null,"prompt_cache_key":null},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_01j8z3q4v7m2k9x1","status":"in_progress","role":"assistant","content":[]},"sequence_number":2}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg_01j8z3q4v7m2k9x1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":3}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_01j8z3q4v7m2k9x1","output_index":0,"content_index":0,"delta":"hello fr","logprobs":[],"sequence_number":4}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_01j8z3q4v7m2k9x1","output_index":0,"content_index":0,"delta":"om voice","logprobs":[],"sequence_number":5}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","item_id":"msg_01j8z3q4v7m2k9x1","output_index":0,"content_index":0,"text":"hello from voice","logprobs":[],"sequence_number":6}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","item_id":"msg_01j8z3q4v7m2k9x1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hello from voice","annotations":[]},"sequence_number":7}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_01j8z3q4v7m2k9x1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello from voice","annotations":[]}]},"sequence_number":8}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_01j8z3q4v7m2k9x0","object":"response","created_at":1790251200,"completed_at":1790251200,"status":"completed","incomplete_details":null,"model":"echo-1","previous_response_id":null,"instructions":"You classify incoming asks.","output":[{"type":"message","id":"msg_01j8z3q4v7m2k9x1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello from voice","annotations":[]}]}],"error":null,"tools":[],"tool_choice":"auto","truncation":"disabled","parallel_tool_calls":false,"text":{"format":{"type":"text"}},"top_p":1,"presence_penalty":0,"frequency_penalty":0,"top_logprobs":0,"temperature":0,"reasoning":null,"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"max_output_tokens":256,"max_tool_calls":null,"store":false,"background":false,"service_tier":"default","metadata":{"dna.attempt_id":"w-41/a2"},"safety_identifier":null,"prompt_cache_key":null,"voice":{"request_id":"resp_01j8z3q4v7m2k9x0","project":"work","key":"k_ci","served":{"model":"echo-1","quantization":null,"node":"laptop","seat":"laptop/static","account":"static","engine":"static","provider":null},"price_micros":96,"currency":"USD","timing":{"wall_ms":3,"queue_ms":0,"load_ms":0},"attempts":[{"seat":"laptop/static","account":"static","outcome":"served","wall_ms":2}]}},"sequence_number":9}
+
+data: [DONE]
+

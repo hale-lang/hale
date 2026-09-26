@@ -1,0 +1,601 @@
+asyncapi: 3.0.0
+info:
+  title: voice node protocol
+  version: '2'
+  description: |
+    How a node and the coordinator talk. This is the seam a node
+    implementation plugs into: a node that speaks this protocol and the
+    node plane of `openapi.yaml` can join voice, whatever it is written in.
+    `node.yaml` is only the local API of voice's own node.
+
+    Two channels, by shape:
+
+    - **HTTP, the node plane of the api** (`openapi.yaml`, tag `node`):
+      everything one-shot. The node registers on start, presenting its
+      enrollment token, and gets its assignment and where NATS is. It reports
+      its state by HTTP writes: heartbeats, seat states, quota windows,
+      capability and local-control changes, draining. It can read its
+      current assignment any time.
+    - **NATS, this document:** everything pushed or streamed. The
+      coordinator publishes assignments, requests to serve and cancels on
+      the node's own subject; the node streams each request's events and
+      result to the reply subject that request named.
+
+    NATS is on the private network with the nodes and the coordinator's
+    processes; only the api is exposed. A node connects to NATS with its own
+    credentials, and its permissions confine it to its own subject and the
+    reply subjects it is handed.
+
+    Inside `serve`, the request and its events are Open Responses
+    (`2026-04-24`), taken by reference from the vendored standard. The
+    standard's shapes are OpenAPI 3.1 schemas, which AsyncAPI's schema
+    formats cannot hold; where a field carries one, `x-voice-schema` points
+    at it in the vendored document, and both sides validate against that.
+
+    ## Who decides what
+
+    - **The node decides what is possible.** Its operator lists, on the
+      machine, the engines it offers (each with the login it uses) and its
+      hard limits. The node declares these when it registers. The logins
+      never leave the machine.
+    - **The coordinator decides what runs.** It holds the desired seats for
+      every node, configured through its admin API, and publishes them to
+      the node as an `assignment`. The node runs exactly the assigned seats
+      and refuses any seat outside its capabilities.
+    - **Local controls only restrict.** The node's operator may pause the
+      node, pause a seat, or lower the node's in-flight cap on the machine.
+      Nothing local can widen what the coordinator assigned.
+
+    A node's effective in-flight cap is the smallest of its declared
+    `max_in_flight`, the cap the coordinator sets, and any local cap. Each
+    seat is further held to its own `concurrency`.
+
+    ## Session
+
+    1. The node registers (`POST /node/v1/register`) with its id, version,
+       capabilities and local controls. One live node per id: registering
+       again replaces the earlier registration, so a restarted node takes
+       over from its own ghost. The answer carries the heartbeat interval,
+       the NATS address, and the current assignment.
+    2. The node applies the assignment (starting, reconfiguring and stopping
+       seats to match it), subscribes to `voice.node.<id>.>`, and reports
+       every assigned seat's state (`POST /node/v1/seats`), including the
+       seats it refused and why.
+    3. From then on:
+       - The coordinator publishes `assign` with the whole desired state
+         whenever it changes. Each assignment carries a `version`; the node
+         applies the newest and reports seat states for that version.
+       - The node reports seat states whenever one changes, and heartbeats
+         every interval (`POST /node/v1/heartbeat`) with every seat's state
+         and load. The coordinator marks a node `down` after three intervals
+         with nothing received, and fails its in-flight requests as seat
+         failures.
+       - The node reports capabilities when its operator changes what it
+         offers (`PUT /node/v1/capabilities`) and local controls when they
+         change (`PUT /node/v1/local`). The coordinator re-checks the
+         assignment against them.
+       - The node reports quota windows when an engine returns them
+         (`POST /node/v1/quota`). The static engine never does.
+       - Before a deliberate shutdown the node posts `draining`. The
+         coordinator sends it no new requests, and the node exits once every
+         in-flight request has its result.
+
+    A node that was offline gets its assignment when it registers again:
+    configuration made while a node is away takes effect when it returns.
+
+    ## Serving
+
+    - The coordinator publishes `serve` on `voice.node.<id>.serve` as a NATS
+      request: the node replies at once with `accepted` or `refused`
+      (unknown, paused or refused seat; seat or node full; engine down). No
+      reply within the timeout, or `refused`, is a seat failure and the
+      coordinator claims another slot. It never sends a seat more requests
+      than its `concurrency`, or the node more than its effective cap.
+    - The node then publishes the standard's streaming events, in order, to
+      `<reply_to>.event`, and exactly one `result` to `<reply_to>.result`.
+      It uses the `request_id` as the response's `id`. Events for one
+      request never reorder.
+    - Usage is the standard's `usage` on the terminal event's response, where
+      `input_tokens` includes cached input. What the standard does not carry
+      travels in `result`: the model as the engine reported it, cache writes,
+      timing, and quota windows.
+    - The coordinator publishes `cancel` when the caller goes away or the
+      deadline passes. The node stops the engine and publishes its `result`,
+      with outcome `cancelled` unless the request finished first.
+    - A node that loses NATS abandons its in-flight requests; the
+      coordinator, seeing no result, treats each as a seat failure: retried
+      elsewhere if nothing had reached the caller, failed otherwise.
+    - The coordinator retries a failed request on another seat only when
+      `retryable` is true and no output has reached the caller. A
+      `quota_exhausted` failure also marks the account exhausted until the
+      reset in the result's quota windows.
+
+    ## Subjects
+
+    `voice.node.<node>.assign`, `voice.node.<node>.serve`,
+    `voice.node.<node>.cancel` are the node's, and it subscribes to
+    `voice.node.<node>.>`. `<reply_to>` is chosen by the api instance that
+    published the `serve` and is unique per request. A node's NATS
+    permissions allow subscribing to its own subject and publishing to reply
+    subjects, nothing else.
+  contact:
+    url: https://github.com/hale-lang/voice
+
+defaultContentType: application/json
+
+servers:
+  nats:
+    host: nats:4222
+    protocol: nats
+    description: The private network's NATS. Its address is part of the node's registration answer.
+
+channels:
+  assign:
+    address: voice.node.{node}.assign
+    parameters:
+      node: { $ref: '#/components/parameters/node' }
+    messages:
+      assign: { $ref: '#/components/messages/assign' }
+  serve:
+    address: voice.node.{node}.serve
+    parameters:
+      node: { $ref: '#/components/parameters/node' }
+    messages:
+      serve: { $ref: '#/components/messages/serve' }
+  serveReply:
+    address: null
+    description: The NATS reply inbox of a `serve` request.
+    messages:
+      serveAck: { $ref: '#/components/messages/serveAck' }
+  cancel:
+    address: voice.node.{node}.cancel
+    parameters:
+      node: { $ref: '#/components/parameters/node' }
+    messages:
+      cancel: { $ref: '#/components/messages/cancel' }
+  event:
+    address: '{reply_to}.event'
+    parameters:
+      reply_to: { $ref: '#/components/parameters/reply_to' }
+    messages:
+      event: { $ref: '#/components/messages/event' }
+  result:
+    address: '{reply_to}.result'
+    parameters:
+      reply_to: { $ref: '#/components/parameters/reply_to' }
+    messages:
+      result: { $ref: '#/components/messages/result' }
+
+operations:
+  receiveAssign:
+    action: receive
+    channel: { $ref: '#/channels/assign' }
+    summary: The node's whole desired state, after any change.
+  receiveServe:
+    action: receive
+    channel: { $ref: '#/channels/serve' }
+    summary: Serve one request on one seat; answer accepted or refused at once.
+    reply:
+      channel: { $ref: '#/channels/serveReply' }
+      address:
+        location: '$message.header#/replyTo'
+  receiveCancel:
+    action: receive
+    channel: { $ref: '#/channels/cancel' }
+    summary: Stop serving a request.
+  sendEvent:
+    action: send
+    channel: { $ref: '#/channels/event' }
+    summary: One standard streaming event for a request.
+  sendResult:
+    action: send
+    channel: { $ref: '#/channels/result' }
+    summary: How a request ended. Exactly one per request, always last.
+
+components:
+  parameters:
+    node:
+      description: The node's id.
+    reply_to:
+      description: The reply subject prefix a `serve` named.
+
+  messages:
+    assign:
+      name: assign
+      payload: { $ref: '#/components/schemas/Assign' }
+    serve:
+      name: serve
+      payload: { $ref: '#/components/schemas/Serve' }
+    serveAck:
+      name: serve_ack
+      payload: { $ref: '#/components/schemas/ServeAck' }
+    cancel:
+      name: cancel
+      payload: { $ref: '#/components/schemas/Cancel' }
+    event:
+      name: event
+      payload: { $ref: '#/components/schemas/Event' }
+    result:
+      name: result
+      payload: { $ref: '#/components/schemas/Result' }
+
+  schemas:
+    RequestId:
+      type: string
+      description: The coordinator's request id; the usage record's id and the response's `id`.
+
+    Slug:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+
+    Capabilities:
+      type: object
+      description: |
+        What the node can run, as its operator configured it on the machine.
+        The coordinator assigns seats only within it, and the node refuses
+        any seat outside it.
+      required: [engines, max_in_flight]
+      properties:
+        engines:
+          type: array
+          items: { $ref: '#/components/schemas/Engine' }
+        max_in_flight:
+          type: integer
+          minimum: 1
+          description: The most requests the node will serve at once, across all its seats.
+
+    Engine:
+      type: object
+      description: |
+        One engine the node offers: a kind of engine with the login it runs
+        under. Two logins for one CLI are two engines. How the login is held
+        is local to the node and is never declared.
+      required: [id, kind, config_schema]
+      properties:
+        id:
+          $ref: '#/components/schemas/Slug'
+          description: Unique on the node; seats name it.
+          examples: [static, claude-work, claude-personal]
+        kind:
+          type: string
+          description: What runs, e.g. `static`, `claude-cli`, `codex-cli`, `agy`.
+          examples: [static, claude-cli]
+        description: { type: string }
+        models:
+          type: [array, 'null']
+          description: The engine's own names for the models it can run, when it knows them. Null when any name may be tried.
+          items: { type: string }
+        config_schema:
+          type: object
+          description: |
+            JSON Schema of the `config` a seat on this engine takes. The
+            coordinator checks seats against it, and a UI renders it as a
+            form. The static engine's is `StaticConfig`.
+
+    StaticConfig:
+      type: object
+      description: |
+        The static engine's seat config. It answers every request with
+        `text`. Tokens are counted as one per four characters, rounded up, of
+        the input and of `text`.
+      required: [text]
+      properties:
+        text: { type: string, minLength: 1 }
+        chunk_chars:
+          type: integer
+          minimum: 1
+          default: 16
+          description: Characters per streamed delta.
+        first_output_ms:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Delay before the first output, to exercise timing and deadlines.
+        chunk_interval_ms:
+          type: integer
+          minimum: 0
+          default: 0
+
+    LocalControls:
+      type: object
+      description: |
+        What the node's operator set on the machine. Each field only
+        restricts: a paused node or seat takes no new requests, and a local
+        cap only lowers the effective one.
+      required: [paused, paused_seats]
+      properties:
+        paused: { type: boolean }
+        paused_seats:
+          type: array
+          items: { type: string }
+        max_in_flight:
+          type: [integer, 'null']
+          minimum: 0
+          description: A local cap on requests in flight, or null for none.
+        reason:
+          type: [string, 'null']
+          description: Why, for the admin to read.
+
+    Seat:
+      type: object
+      description: |
+        One seat as the coordinator assigns it: an engine the node offers,
+        spending one account, serving some catalog models.
+      required: [id, engine, account, serves]
+      properties:
+        id:
+          $ref: '#/components/schemas/Slug'
+          description: Unique on the node. Its full name is `<node>/<seat>`.
+        engine:
+          type: string
+          description: The id of one of the node's declared engines.
+        account:
+          type: string
+          description: The coordinator account this seat spends. Several seats, on one node or many, may name the same account and share its limits.
+        serves:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/SeatModel' }
+        data_classes:
+          type: array
+          description: Data classes this seat may carry. Defaults to `[internal]`.
+          items: { type: string }
+        concurrency:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Requests this seat serves at once.
+        enabled:
+          type: boolean
+          default: true
+        config:
+          type: object
+          description: Engine-specific, valid against the engine's `config_schema`.
+
+    SeatModel:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          description: A catalog model id.
+        as:
+          type: [string, 'null']
+          description: The engine's own name for it, when that differs, e.g. `sonnet` for `claude-sonnet-5`.
+
+    Assignment:
+      type: object
+      description: Everything the coordinator wants the node to run. The whole state each time, never a diff.
+      required: [version, max_in_flight, seats]
+      properties:
+        version:
+          type: integer
+          description: Increases with every change. The node applies the newest it has.
+        max_in_flight:
+          type: integer
+          minimum: 1
+          description: The coordinator's cap for this node, at most the node's declared `max_in_flight`.
+        seats:
+          type: array
+          description: A seat the node is running and this list leaves out is stopped once its in-flight requests finish.
+          items: { $ref: '#/components/schemas/Seat' }
+
+    SeatState:
+      type: object
+      description: One assigned seat's state on the node.
+      required: [id, status, in_flight]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [starting, up, down, disabled, paused, refused]
+          description: |
+            `down`: the engine cannot serve, e.g. its CLI is missing or logged
+            out. `paused`: a local control holds it. `refused`: the seat is
+            outside the node's capabilities, e.g. an engine it does not offer
+            or a config its engine rejects; `reason` says which.
+        reason: { type: [string, 'null'] }
+        in_flight: { type: integer, minimum: 0 }
+
+
+    Serve:
+      type: object
+      required: [type, request_id, seat, model, body, reply_to]
+      properties:
+        type: { type: string, const: serve }
+        request_id: { $ref: '#/components/schemas/RequestId' }
+        reply_to:
+          type: string
+          description: |
+            The subject prefix the node answers on: events to `<reply_to>.event`,
+            the result to `<reply_to>.result`. It names the api instance
+            holding the caller, so the answer needs no routing.
+        seat:
+          type: string
+          description: The seat's id on this node.
+        model:
+          type: string
+          description: The catalog model id the caller named.
+        engine_model:
+          type: [string, 'null']
+          description: The seat's own name for the model (`as`), when it has one.
+        deadline:
+          type: [string, 'null']
+          format: date-time
+        body:
+          description: |
+            The standard request, as the coordinator will serve it: Chat
+            Completions requests arrive converted, and `voice`, `stream`,
+            `stream_options` and `background` are removed. It is always
+            streamed on this connection.
+          type: object
+          x-voice-schema: './vendor/open-responses/openapi.json#/components/schemas/CreateResponseBody'
+
+    Event:
+      type: object
+      required: [type, request_id, event]
+      properties:
+        type: { type: string, const: event }
+        request_id: { $ref: '#/components/schemas/RequestId' }
+        event:
+          description: Any standard streaming event.
+          type: object
+          required: [type]
+          x-voice-schema: './vendor/open-responses/openapi.json#/paths/~1responses/post/responses/200/content/text~1event-stream/schema'
+
+    Result:
+      type: object
+      required: [type, request_id, outcome]
+      properties:
+        type: { type: string, const: result }
+        request_id: { $ref: '#/components/schemas/RequestId' }
+        outcome:
+          type: string
+          enum: [served, incomplete, failed, cancelled]
+        served:
+          type: object
+          description: What actually ran. Absent when nothing started.
+          required: [model]
+          properties:
+            model:
+              type: string
+              description: The model as the engine reported it.
+            quantization: { type: [string, 'null'] }
+            provider: { type: [string, 'null'] }
+        usage:
+          type: object
+          description: What the standard's `usage` does not carry.
+          properties:
+            cache_write_input_tokens:
+              type: integer
+              description: Input tokens written to the provider's cache, already counted in `input_tokens`.
+        timing:
+          type: object
+          properties:
+            first_output_ms:
+              type: integer
+              description: From `serve` received to the first output event.
+            engine_ms:
+              type: integer
+              description: From `serve` received to the result.
+        quota:
+          type: array
+          description: The account's provider windows as of this request, when the engine reports them.
+          items: { $ref: './openapi.yaml#/components/schemas/QuotaWindow' }
+        error:
+          type: object
+          description: Why, for `failed`.
+          required: [code, message, retryable]
+          properties:
+            code:
+              type: string
+              enum: [seat_unavailable, engine_failed, engine_timeout, quota_exhausted, invalid_request]
+            message: { type: string }
+            retryable:
+              type: boolean
+              description: True when another seat could serve it. `invalid_request` never is.
+
+    Cancel:
+      type: object
+      required: [type, request_id, reason]
+      properties:
+        type: { type: string, const: cancel }
+        request_id: { $ref: '#/components/schemas/RequestId' }
+        reason:
+          type: string
+          enum: [caller_gone, deadline, node_revoked]
+
+    Assign:
+      type: object
+      required: [type, assignment]
+      properties:
+        type: { type: string, const: assign }
+        assignment: { $ref: '#/components/schemas/Assignment' }
+
+    ServeAck:
+      type: object
+      description: The node's immediate answer to a `serve`.
+      required: [request_id, outcome]
+      properties:
+        request_id: { $ref: '#/components/schemas/RequestId' }
+        outcome:
+          type: string
+          enum: [accepted, refused]
+        reason:
+          type: [string, 'null']
+          description: Why, for `refused`.
+
+    # ---- the node plane's bodies (openapi.yaml refers to these) -----------
+
+    Registration:
+      type: object
+      description: What a node presents when it registers.
+      required: [protocol, version, capabilities, local]
+      properties:
+        protocol:
+          type: integer
+          const: 2
+          description: This document's version.
+        version:
+          type: string
+          description: The node software's version.
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+        local: { $ref: '#/components/schemas/LocalControls' }
+
+    Registered:
+      type: object
+      description: The coordinator's answer to a registration.
+      required: [protocol, heartbeat_interval_ms, nats, assignment]
+      properties:
+        protocol: { type: integer, const: 2 }
+        heartbeat_interval_ms: { type: integer, minimum: 1000 }
+        nats:
+          type: object
+          required: [url, subject]
+          properties:
+            url:
+              type: string
+              description: Where NATS is, from the node's side of the private network.
+              examples: ['nats://nats:4222']
+            subject:
+              type: string
+              description: The node's own subject prefix.
+              examples: ['voice.node.laptop']
+        assignment: { $ref: '#/components/schemas/Assignment' }
+
+    SeatStates:
+      type: object
+      required: [assignment_version, seats]
+      properties:
+        assignment_version:
+          type: integer
+          description: The assignment these states answer.
+        seats:
+          type: array
+          items: { $ref: '#/components/schemas/SeatState' }
+
+    Heartbeat:
+      type: object
+      required: [in_flight, seats]
+      properties:
+        in_flight:
+          type: integer
+          minimum: 0
+          description: Requests in flight across the node.
+        seats:
+          type: array
+          items: { $ref: '#/components/schemas/SeatState' }
+
+    QuotaReport:
+      type: object
+      required: [seat, windows]
+      properties:
+        seat: { type: string }
+        windows:
+          type: array
+          items: { $ref: './openapi.yaml#/components/schemas/QuotaWindow' }
+
+    Draining:
+      type: object
+      properties:
+        reason: { type: string }

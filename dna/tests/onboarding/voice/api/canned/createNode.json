@@ -1,0 +1,19 @@
+{
+  "id": "laptop",
+  "name": "Laptop",
+  "status": "pending",
+  "version": null,
+  "capabilities": null,
+  "local": null,
+  "max_in_flight": null,
+  "effective_max_in_flight": null,
+  "in_flight": 0,
+  "assignment_version": 0,
+  "applied_version": null,
+  "seats": [],
+  "connected_at": null,
+  "last_heartbeat_at": null,
+  "created_at": "2026-09-24T12:00:00Z",
+  "revoked_at": null,
+  "enrollment_token": "vn-8d2f4a1c9e7b3f5d0a6c2e8b4f1d7a3c"
+}

@@ -844,29 +844,7 @@ fn locate(app_dir: &Path) -> Result<App, String> {
             }
         })
         .unwrap_or_else(|_| ".".to_string());
-    // The main locus: parse every .hl in the seed.
-    let mut main_file = None;
-    let mut main_name = None;
-    let mut entries: Vec<PathBuf> = fs::read_dir(&seed)
-        .map_err(|e| format!("{}: {e}", seed.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("hl"))
-        .collect();
-    entries.sort();
-    for p in &entries {
-        let src = fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        if let Ok(prog) = hale_syntax::parse_source(&src) {
-            for item in &prog.items {
-                if let hale_syntax::ast::TopDecl::Locus(l) = item {
-                    if l.is_main {
-                        main_file = Some(p.clone());
-                        main_name = Some(l.name.name.clone());
-                    }
-                }
-            }
-        }
-    }
-    let (Some(main_file), Some(main_name)) = (main_file, main_name) else {
+    let Some((main_file, main_name)) = main_of(&seed)? else {
         return Err(format!(
             "{} declares no `main locus` — the DNA attaches to an application's entrypoint; run `hale dna new <name>` for a fresh one",
             seed.display()
@@ -879,12 +857,74 @@ fn locate(app_dir: &Path) -> Result<App, String> {
     Ok(App { root, seed, seed_rel, main_file, main_name, project })
 }
 
+/// The seed's main locus — its file and name — parsing every .hl in it;
+/// none when no file declares one.
+fn main_of(seed: &Path) -> Result<Option<(PathBuf, String)>, String> {
+    let mut found = None;
+    let mut entries: Vec<PathBuf> = fs::read_dir(seed)
+        .map_err(|e| format!("{}: {e}", seed.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("hl"))
+        .collect();
+    entries.sort();
+    for p in &entries {
+        let src = fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        if let Ok(prog) = hale_syntax::parse_source(&src) {
+            for item in &prog.items {
+                if let hale_syntax::ast::TopDecl::Locus(l) = item {
+                    if l.is_main {
+                        found = Some((p.clone(), l.name.name.clone()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// GH #1090: `init` on a repository rather than one application — a
+/// directory with no Hale source of its own that is no workspace's seed
+/// (voice's root, with a seed per process). A directory holding `.hl`
+/// files is a seed, and one without a main locus is refused as before.
+/// The organization is the repository's; the record is seeded with what
+/// the repository holds, as the graph, instead of one application's
+/// topology.
+fn repository_root(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let at = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !at.is_dir() {
+        return Ok(None);
+    }
+    let source = fs::read_dir(&at)
+        .map_err(|e| format!("{}: {e}", at.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .any(|p| p.extension().and_then(|x| x.to_str()) == Some("hl"));
+    if source {
+        return Ok(None);
+    }
+    match crate::find_workspace_root_pub(&at) {
+        Some(root) if root != at => Ok(None),
+        _ => Ok(Some(at)),
+    }
+}
+
 fn init(app_dir: &Path) -> Result<Vec<String>, String> {
-    let app = locate(app_dir)?;
+    // an application, or (GH #1090) a repository with none at its root
+    let app = match repository_root(app_dir)? {
+        Some(_) => None,
+        None => Some(locate(app_dir)?),
+    };
+    let root = match &app {
+        Some(a) => a.root.clone(),
+        None => app_dir.canonicalize().map_err(|e| format!("{}: {e}", app_dir.display()))?,
+    };
+    let project = match &app {
+        Some(a) => a.project.clone(),
+        None => root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".to_string()),
+    };
     let mut out: Vec<String> = Vec::new();
     // 0. the record is a branch, so the project is a repository
-    if ensure_repo(&app.root)? {
-        out.push(format!("git init {} (the record lives on {RECORD_REF})", app.root.display()));
+    if ensure_repo(&root)? {
+        out.push(format!("git init {} (the record lives on {RECORD_REF})", root.display()));
     }
     let created = |out: &mut Vec<String>, p: &Path, content: &str| -> Result<bool, String> {
         if p.exists() {
@@ -900,12 +940,12 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     };
 
     // 1. the manifest
-    let manifest = app.root.join("hale.toml");
+    let manifest = root.join("hale.toml");
     if !manifest.exists() {
         created(&mut out, &manifest, "[deps]\n")?;
     }
     // 2. the toolchain-owned core
-    let (w, same) = materialize_vendor(&app.root)?;
+    let (w, same) = materialize_vendor(&root)?;
     out.push(format!(
         "{} vendor/dna ({} file(s) written, {} unchanged; hale.lock pins toolchain {}, embedded dna {})",
         if w > 0 { "wrote  " } else { "kept   " },
@@ -914,41 +954,48 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         TOOLCHAIN,
         hale_dna::embedded_short()
     ));
-    // 3. the artifact, cut by the toolchain as a subprocess
-    let baseline = app.root.join(BASELINE_REL);
-    fs::create_dir_all(baseline.parent().unwrap()).map_err(|e| e.to_string())?;
+    // 3. the artifact, cut by the toolchain as a subprocess — an
+    //    application's; a repository's structure is read at step 7
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
-    let st = Command::new(&me)
-        .arg("check")
-        .arg(&app.seed)
-        .arg(format!("--dump-topology={}", baseline.display()))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| format!("hale check: {e}"))?;
-    let raw = fs::read_to_string(&baseline).map_err(|_| {
-        format!(
-            "hale check {} produced no artifact (exit {}); fix the application first",
-            app.seed.display(),
-            st.code().unwrap_or(-1)
-        )
-    })?;
-    let art: Value = serde_json::from_str(&raw).map_err(|e| format!("{}: not a JSON artifact: {e}", baseline.display()))?;
-    out.push(format!(
-        "cut     {} (schema {}, shape {}, verdict {})",
-        baseline.display(),
-        art["schema"].as_str().unwrap_or("?"),
-        art["shape_hash"].as_str().unwrap_or("?"),
-        art["verdict"].as_str().unwrap_or("?")
-    ));
+    let cut = match &app {
+        Some(app) => {
+            let baseline = app.root.join(BASELINE_REL);
+            fs::create_dir_all(baseline.parent().unwrap()).map_err(|e| e.to_string())?;
+            let st = Command::new(&me)
+                .arg("check")
+                .arg(&app.seed)
+                .arg(format!("--dump-topology={}", baseline.display()))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .map_err(|e| format!("hale check: {e}"))?;
+            let raw = fs::read_to_string(&baseline).map_err(|_| {
+                format!(
+                    "hale check {} produced no artifact (exit {}); fix the application first",
+                    app.seed.display(),
+                    st.code().unwrap_or(-1)
+                )
+            })?;
+            let art: Value = serde_json::from_str(&raw).map_err(|e| format!("{}: not a JSON artifact: {e}", baseline.display()))?;
+            out.push(format!(
+                "cut     {} (schema {}, shape {}, verdict {})",
+                baseline.display(),
+                art["schema"].as_str().unwrap_or("?"),
+                art["shape_hash"].as_str().unwrap_or("?"),
+                art["verdict"].as_str().unwrap_or("?")
+            ));
+            Some((art, raw))
+        }
+        None => None,
+    };
     // 4. the organization: a program of its own (GH #566 F2). The
     //    application is not touched — it carries its own law and is
     //    observable like any Hale binary; the org oversees it from outside.
-    let purpose_text = format!("{}: keep the application correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.", app.project);
+    let purpose_text = format!("{}: keep the application correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.", project);
     let purpose_digest = format!("sha256:{}", hex(&openssl::sha::sha256(purpose_text.as_bytes())));
-    let org_dir = app.root.join(ORG_SEED);
+    let org_dir = root.join(ORG_SEED);
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
-    created(&mut out, &org_dir.join("charter.hl"), &charter_hl(&app.project))?;
+    created(&mut out, &org_dir.join("charter.hl"), &charter_hl(&project))?;
     created(&mut out, &org_dir.join("law.hl"), &org_law_hl())?;
     created(&mut out, &org_dir.join("owners"), owners_text())?;
     // GH #583 M1: the catalog, from what this machine has
@@ -958,41 +1005,62 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("models  {line}"));
         }
     }
-    created(&mut out, &org_dir.join("main.hl"), &org_hl(&app.project, &purpose_digest, &app.seed_rel))?;
+    created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, &purpose_digest, app.as_ref().map_or(".", |a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
-    if created(&mut out, &app.root.join("dna/compose.yaml"), &compose_yaml(&app.project))? {
+    if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project))? {
         out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
     }
-    created(&mut out, &app.root.join("dna/nats.conf"), &nats_conf())?;
-    out.push(format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED));
+    created(&mut out, &root.join("dna/nats.conf"), &nats_conf())?;
+    let kept = match &app {
+        Some(app) => format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED),
+        None => format!("kept    {} (the repository is not modified; the organization oversees it from {})", root.display(), ORG_SEED),
+    };
+    out.push(kept);
     // 5. the manifest's environments: the application's, and the organization's
     let mtext = fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
     if !mtext.contains("[environments.") {
-        let add = format!(
-            "\n# hale dna init: the two entrypoints and where each deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the application keeps its own.\n[claims]\nno_base = true\n\n[environments.local]\nsource_only = true\nentrypoints = [\"{}\"]\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
-            app.seed_rel, ORG_SEED
-        );
+        let add = match &app {
+            Some(app) => format!(
+                "\n# hale dna init: the two entrypoints and where each deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the application keeps its own.\n[claims]\nno_base = true\n\n[environments.local]\nsource_only = true\nentrypoints = [\"{}\"]\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
+                app.seed_rel, ORG_SEED
+            ),
+            None => format!(
+                "\n# hale dna init: the organization's entrypoint and where it deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the repository's seeds keep their own.\n[claims]\nno_base = true\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
+                ORG_SEED
+            ),
+        };
         fs::write(&manifest, format!("{}{}", mtext, add)).map_err(|e| e.to_string())?;
-        out.push(format!("edited  {} ([claims] no_base, [environments.local], [environments.org])", manifest.display()));
+        out.push(format!("edited  {} ([claims] no_base, {})", manifest.display(), if app.is_some() { "[environments.local], [environments.org]" } else { "[environments.org]" }));
     } else {
         out.push(format!("kept    {} (declares environments already)", manifest.display()));
     }
-    // 7. the record, seeded from the artifact
-    if record_exists(&app.root)? {
+    // 7. the record, seeded from the artifact — or, for a repository, with
+    //    the purpose's Review and what the repository holds, as the graph
+    if record_exists(&root)? {
         out.push(format!("kept    {RECORD_REF} (a record exists; not reseeded)"));
     } else {
-        let n = seed_journal(&app.root, &app, &art, &raw, &purpose_digest)?;
-        out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
+        match (&app, &cut) {
+            (Some(app), Some((art, raw))) => {
+                let n = seed_journal(&app.root, app, art, raw, &purpose_digest)?;
+                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
+            }
+            _ => {
+                let n = seed_repository(&root, &purpose_digest)?;
+                out.push(format!("seeded  {RECORD_REF} ({n} event(s): review.requested)"));
+                let graph = host_run("graph-ingest", &root, &[])?;
+                out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
+            }
+        }
         // GH #596 C, #994: the design and the operating practices, as
         // proposals — one Review per practice, listed by family
         for (family, practices) in SEEDED {
-            let (d, _, _) = design_upgrade(&app.root, practices)?;
+            let (d, _, _) = design_upgrade(&root, practices)?;
             out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
         }
     }
     // 8. .gitignore hygiene
-    let gi = app.root.join(".gitignore");
+    let gi = root.join(".gitignore");
     let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
     let mut added = Vec::new();
     for line in ["/vendor/", "/.hale/"] {
@@ -1010,17 +1078,16 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
     }
     // 9. format what we generated and touched
-    let _ = Command::new(&me)
-        .arg("fmt")
-        .arg(app.root.join("dna"))
-        .arg(&app.seed)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let mut fmt = Command::new(&me);
+    fmt.arg("fmt").arg(root.join("dna"));
+    if let Some(app) = &app {
+        fmt.arg(&app.seed);
+    }
+    let _ = fmt.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
     out.push(String::new());
     out.push("next steps:".to_string());
-    out.push(format!("    hale check --matrix {}   # every entrypoint against its law", app.root.display()));
-    out.push(format!("    hale dna dev {}          # the organization and the application under one host, iris attached", app.root.display()));
+    out.push(format!("    hale check --matrix {}   # every entrypoint against its law", root.display()));
+    out.push(format!("    hale dna dev {}          # the organization and the application under one host, iris attached", root.display()));
     out.push("    the first Review (`purpose`) ratifies dna/org/purpose.hl: `hale dna review purpose approve --as <you>`".to_string());
     Ok(out)
 }
@@ -2153,6 +2220,29 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
         return Err(format!("record-seed appended {n} of {} rows", c.lines.len()));
     }
     Ok(n)
+}
+
+/// GH #1090: a repository's first rows — the Review that ratifies the
+/// declared purpose. What the repository holds follows as the graph
+/// (`graph-ingest`), each row checked before any lands.
+fn seed_repository(root: &Path, purpose_digest: &str) -> Result<usize, String> {
+    let row = serde_json::json!({
+        "kind": "review.requested",
+        "entity": "review:purpose",
+        "body": serde_json::json!({
+            "question": "ratify the declared purpose?", "subject_digest": purpose_digest,
+            "required_authority": "board", "author": "hale dna init",
+            "provenance": "declared"
+        })
+        .to_string()
+    });
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let path = dna_dir.join(format!("seed.{}.jsonl", std::process::id()));
+    fs::write(&path, format!("{row}\n")).map_err(|e| e.to_string())?;
+    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&path);
+    out?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))
 }
 
 /// Whether the record exists: the host answers `none` or its head.

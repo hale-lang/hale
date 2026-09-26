@@ -1,0 +1,80 @@
+// Every endpoint answers its happy path, in process: a typo in a route
+// or a missing canned body fails here rather than on the wire.
+import ".." as api;
+
+fn expect(e: api::Endpoints, method: String, path: String, status: Int) {
+    let resp = e.handle(std::http::Request { method: method, path: path });
+    std::test::assert_eq_int(resp.status, status, method + " " + path);
+    std::test::assert(len(resp.body) > 0, method + " " + path + " has a body");
+}
+
+fn main() {
+    let e = api::Endpoints { canned: canned_dir() };
+    expect(e, "GET", "/healthz", 200);
+    expect(e, "GET", "/readyz", 200);
+    expect(e, "POST", "/v1/responses", 200);
+    expect(e, "POST", "/v1/chat/completions", 200);
+    expect(e, "GET", "/v1/models", 200);
+    expect(e, "GET", "/v1/models/echo-1", 200);
+    expect(e, "GET", "/v1/capabilities", 200);
+    expect(e, "GET", "/admin/v1/projects", 200);
+    expect(e, "POST", "/admin/v1/projects", 201);
+    expect(e, "GET", "/admin/v1/projects/work", 200);
+    expect(e, "PATCH", "/admin/v1/projects/work", 200);
+    expect(e, "DELETE", "/admin/v1/projects/work", 200);
+    expect(e, "GET", "/admin/v1/projects/work/budget", 200);
+    expect(e, "PUT", "/admin/v1/projects/work/budget", 200);
+    expect(e, "GET", "/admin/v1/projects/work/limits", 200);
+    expect(e, "PUT", "/admin/v1/projects/work/limits", 200);
+    expect(e, "GET", "/admin/v1/projects/work/keys", 200);
+    expect(e, "POST", "/admin/v1/projects/work/keys", 201);
+    expect(e, "GET", "/admin/v1/projects/work/keys/k_ci", 200);
+    expect(e, "PATCH", "/admin/v1/projects/work/keys/k_ci", 200);
+    expect(e, "DELETE", "/admin/v1/projects/work/keys/k_ci", 200);
+    expect(e, "GET", "/admin/v1/usage", 200);
+    expect(e, "GET", "/admin/v1/usage/summary", 200);
+    expect(e, "GET", "/admin/v1/usage/resp_01j8z3q4v7m2k9x0", 200);
+    expect(e, "GET", "/admin/v1/models", 200);
+    expect(e, "POST", "/admin/v1/models", 201);
+    expect(e, "GET", "/admin/v1/models/echo-1", 200);
+    expect(e, "PATCH", "/admin/v1/models/echo-1", 200);
+    expect(e, "DELETE", "/admin/v1/models/echo-1", 200);
+    expect(e, "GET", "/admin/v1/accounts", 200);
+    expect(e, "POST", "/admin/v1/accounts", 201);
+    expect(e, "GET", "/admin/v1/accounts/claude-work", 200);
+    expect(e, "PATCH", "/admin/v1/accounts/claude-work", 200);
+    expect(e, "DELETE", "/admin/v1/accounts/claude-work", 200);
+    expect(e, "GET", "/admin/v1/nodes", 200);
+    expect(e, "POST", "/admin/v1/nodes", 201);
+    expect(e, "GET", "/admin/v1/nodes/laptop", 200);
+    expect(e, "PATCH", "/admin/v1/nodes/laptop", 200);
+    expect(e, "DELETE", "/admin/v1/nodes/laptop", 200);
+    expect(e, "GET", "/admin/v1/nodes/laptop/seats", 200);
+    expect(e, "POST", "/admin/v1/nodes/laptop/seats", 201);
+    expect(e, "GET", "/admin/v1/nodes/laptop/seats/static", 200);
+    expect(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", 200);
+    expect(e, "DELETE", "/admin/v1/nodes/laptop/seats/static", 200);
+    expect(e, "POST", "/admin/v1/nodes/laptop/token", 200);
+    expect(e, "GET", "/admin/v1/changes", 200);
+
+    expect(e, "GET", "/admin/v1/routes", 200);
+    expect(e, "POST", "/node/v1/register", 200);
+    expect(e, "GET", "/node/v1/assignment", 200);
+    std::test::assert_eq_int(e.handle(std::http::Request { method: "POST", path: "/node/v1/heartbeat", body: "{}" }).status, 204, "heartbeat");
+    std::test::assert_eq_int(e.handle(std::http::Request { method: "POST", path: "/node/v1/draining" }).status, 204, "draining");
+
+    let streamed = e.handle(std::http::Request { method: "POST", path: "/v1/responses", body: "{\"stream\": true}" });
+    std::test::assert(std::str::starts_with(streamed.body, "event: response.created"), "stream: true answers the event stream");
+    std::test::assert(api::is_ui_path("/nodes/laptop"), "an app route is the ui's");
+    std::test::assert(!api::is_ui_path("/node/v1/assignment"), "the node plane is not");
+    std::test::assert(api::has_extension("/assets/a.woff2"), "a file has an extension");
+    std::test::assert(!api::has_extension("/nodes/laptop"), "a route has none");
+    let missing = e.handle(std::http::Request { method: "GET", path: "/nope" });
+    std::test::assert_eq_int(missing.status, 404, "unknown route");
+}
+
+// The canned directory, from the repository root or from api/.
+fn canned_dir() -> String {
+    if std::io::fs::file_exists("api/canned/getLiveness.json") { return "api/canned"; }
+    return "canned";
+}

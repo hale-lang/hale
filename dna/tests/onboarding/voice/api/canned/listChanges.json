@@ -1,0 +1,46 @@
+{
+  "data": [
+    {
+      "id": "chg_0003",
+      "at": "2026-09-24T11:55:00Z",
+      "principal": null,
+      "action": "update",
+      "target": "projects/work/budget",
+      "before": {
+        "allowance_micros": 50000000,
+        "period": "month"
+      },
+      "after": {
+        "allowance_micros": 75000000,
+        "period": "month"
+      }
+    },
+    {
+      "id": "chg_0002",
+      "at": "2026-09-24T11:00:00Z",
+      "principal": null,
+      "action": "create",
+      "target": "accounts/claude-work",
+      "before": null,
+      "after": {
+        "id": "claude-work",
+        "name": "Claude (work)",
+        "provider": "anthropic",
+        "billing": "subscription"
+      }
+    },
+    {
+      "id": "chg_0001",
+      "at": "2026-09-24T10:00:00Z",
+      "principal": null,
+      "action": "create",
+      "target": "nodes/laptop",
+      "before": null,
+      "after": {
+        "id": "laptop",
+        "name": "Laptop"
+      }
+    }
+  ],
+  "next_cursor": null
+}

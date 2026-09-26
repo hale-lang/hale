@@ -1,0 +1,23 @@
+{
+  "id": "claude-work",
+  "name": "Claude (work)",
+  "provider": "anthropic",
+  "billing": "subscription",
+  "limits": [
+    {
+      "scope": "account",
+      "account": "claude-work",
+      "window_seconds": 3600,
+      "requests": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "concurrent": 2
+    }
+  ],
+  "status": "active",
+  "seats": [],
+  "windows": [],
+  "exhausted_until": null,
+  "created_at": "2026-09-24T12:00:00Z",
+  "archived_at": null
+}

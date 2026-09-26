@@ -1,0 +1,104 @@
+asyncapi: 3.0.0
+info:
+  title: voice internal subjects
+  version: '1'
+  description: |
+    Voice's own NATS subjects: what crosses between the brain and the api
+    instances. Not part of the seam a node plugs into; that is
+    `protocol.yaml`. Written from an api instance's side.
+
+    The one subject today carries the route table. The brain computes it
+    from the fleet's reported state (`store.md`, "The brain's read") and
+    publishes the whole table whenever it changes and every second
+    regardless, with a version. Api instances keep the latest in memory and
+    route from it. It is a snapshot, not state: a lost message costs a
+    second, and a node accepts or refuses every request regardless of what
+    the table said.
+  contact:
+    url: https://github.com/hale-lang/voice
+
+defaultContentType: application/json
+
+servers:
+  nats:
+    host: nats:4222
+    protocol: nats
+    description: The private network's NATS, shared with the nodes.
+
+channels:
+  route:
+    address: voice.route
+    messages:
+      routeTable: { $ref: '#/components/messages/routeTable' }
+
+operations:
+  receiveRouteTable:
+    action: receive
+    channel: { $ref: '#/channels/route' }
+    summary: The whole route table, from the brain.
+
+components:
+  messages:
+    routeTable:
+      name: route_table
+      payload: { $ref: '#/components/schemas/RouteTable' }
+
+  schemas:
+    RouteTable:
+      type: object
+      required: [version, at, models]
+      properties:
+        version:
+          type: integer
+          description: Increases with every publish. An instance ignores a table older than the one it holds.
+        at: { type: string, format: date-time }
+        models:
+          type: array
+          items: { $ref: '#/components/schemas/ModelRoutes' }
+
+    ModelRoutes:
+      type: object
+      required: [model, seats, exhausted]
+      properties:
+        model:
+          type: string
+          description: A catalog model id.
+        seats:
+          type: array
+          description: The seats that can serve it now, best first.
+          items: { $ref: '#/components/schemas/SeatRoute' }
+        exhausted:
+          type: array
+          description: Accounts that could serve it but have no headroom, and when they will again.
+          items:
+            type: object
+            required: [account, until]
+            properties:
+              account: { type: string }
+              until: { type: [string, 'null'], format: date-time }
+
+    SeatRoute:
+      type: object
+      required: [seat, node, account, rank, free, data_classes]
+      properties:
+        seat:
+          type: string
+          description: '`<node>/<seat>`.'
+        node: { type: string }
+        account: { type: string }
+        engine_model:
+          type: [string, 'null']
+          description: The seat's own name for the model, passed through in `serve`.
+        rank:
+          type: number
+          description: Lower is better. Account headroom first, then seat load, with a little jitter so instances spread.
+        free:
+          type: integer
+          minimum: 0
+          description: |
+            Slots the seat had free as of this table, bounded by its
+            concurrency and its node's effective cap. An instance decrements
+            its copy when it sends `serve`; the node's answer is the truth.
+        data_classes:
+          type: array
+          items: { type: string }

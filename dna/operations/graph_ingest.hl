@@ -1,0 +1,935 @@
+// dna/operations/graph_ingest.hl — a repository read into the graph (GH
+// #1090).
+//
+// `hale dna init` ingests: it reads what the repository already says and
+// writes it as `graph.*` rows (graph.hl); it never derives one perspective
+// from the other. Most of the graph is structure — the README's first
+// paragraph, compose services, manifests, the specs and their schemas, CI
+// jobs, every document, FRICTION entries. What structure cannot say is
+// written in markdown, in two forms, so ingest never guesses:
+//
+//   a marked list item  — a code span opening the item names its kind
+//     (`axiom`, `derived`, `practice`, `law`); its bold sentence is its
+//     name; the repository files an `axiom` links to are what it shaped;
+//   a declaring table   — columns `Served by | Consumed by | Over` declare
+//     where processes meet at the row's contract (its first link), and
+//     `Deployment | Runs` what a deployment runs. In a cell a name in code
+//     is a process or a seed, a link the file it points to, and plain
+//     words a party outside the repository; `Over` naming a process makes
+//     it the carrier.
+//
+// Practices (`derived`, `practice`, `law`) are knowledge ideas and are
+// proposed at record birth (GH #1091), not written here. The rows come out
+// as JSON lines (`kind`, `entity`, `body`), a node before any edge that
+// names it, each id once; the host checks every one before it appends any.
+
+import "../core" as dna;
+
+const INGEST_MANIFESTS: String = "hale.toml package.json Cargo.toml go.mod pyproject.toml";
+const INGEST_COMPOSE: String = "compose.yaml compose.yml docker-compose.yaml docker-compose.yml";
+
+// ---- paths and lines ------------------------------------------------------
+
+// The last segment of a path.
+@unbounded
+fn ingest_base(path: String) -> String {
+    let mut rest = path;
+    let mut slash = std::str::index_of(rest, "/");
+    while slash >= 0 {
+        rest = rest[(slash + 1)..len(rest)];
+        slash = std::str::index_of(rest, "/");
+    }
+    return rest;
+}
+
+// The directory of a path, "" at the root.
+fn ingest_dir(path: String) -> String {
+    let base = ingest_base(path);
+    return if len(base) == len(path) { "" } else { path[0..(len(path) - len(base) - 1)] };
+}
+
+fn ingest_ext(path: String, exts: String) -> Bool {
+    let base = ingest_base(path);
+    let dot = std::str::index_of(base, ".");
+    if dot < 0 { return false; }
+    let mut rest = base;
+    let mut at = dot;
+    while at >= 0 {
+        rest = rest[(at + 1)..len(rest)];
+        at = std::str::index_of(rest, ".");
+    }
+    return dna::word_in(rest, exts);
+}
+
+// `target` read from a document in `dir`: repository-relative, no
+// `./`, `..` folded, no fragment, no trailing `/`. "" for a link that
+// leaves the repository (a URL, a mail address, an absolute path above it).
+@unbounded
+fn ingest_join(dir: String, target: String) -> String {
+    let hash = std::str::index_of(target, "#");
+    let t = std::str::trim(if hash >= 0 { target[0..hash] } else { target });
+    if len(t) == 0 || std::str::contains(t, "://") || std::str::starts_with(t, "mailto:") { return ""; }
+    let whole = if std::str::starts_with(t, "/") { t[1..len(t)] } else if len(dir) > 0 { dir + "/" + t } else { t };
+    let mut out = "";
+    let mut rest = whole + "/";
+    while len(rest) > 0 {
+        let slash = std::str::index_of(rest, "/");
+        let seg = rest[0..slash];
+        rest = rest[(slash + 1)..len(rest)];
+        if len(seg) == 0 || seg == "." { continue; }
+        if seg == ".." {
+            if len(out) == 0 { return ""; }
+            out = ingest_dir(out);
+            continue;
+        }
+        out = if len(out) == 0 { seg } else { out + "/" + seg };
+    }
+    return out;
+}
+
+@unbounded
+fn ingest_indent(line: String) -> Int {
+    let mut n = 0;
+    while n < len(line) && line[n..(n + 1)] == " " { n = n + 1; }
+    return n;
+}
+
+// A YAML mapping key on this line ("" when the line is not one).
+fn ingest_key(line: String) -> String {
+    let t = std::str::trim(line);
+    if len(t) == 0 || std::str::starts_with(t, "#") || std::str::starts_with(t, "-") { return ""; }
+    let colon = std::str::index_of(t, ":");
+    if colon <= 0 { return ""; }
+    let key = t[0..colon];
+    if std::str::contains(key, " ") { return ""; }
+    return std::str::replace(std::str::replace(key, "\"", ""), "'", "");
+}
+
+// The scalar after a YAML key on this line, unquoted.
+fn ingest_value(line: String) -> String {
+    let t = std::str::trim(line);
+    let colon = std::str::index_of(t, ":");
+    if colon < 0 { return ""; }
+    let v = std::str::trim(t[(colon + 1)..len(t)]);
+    if len(v) >= 2 && ((std::str::starts_with(v, "\"") && std::str::ends_with(v, "\"")) || (std::str::starts_with(v, "'") && std::str::ends_with(v, "'"))) { return v[1..(len(v) - 1)]; }
+    return v;
+}
+
+// ---- markdown --------------------------------------------------------------
+
+// The first `**bold**` span's text, "" when there is none.
+fn md_bold(text: String) -> String {
+    let open = std::str::index_of(text, "**");
+    if open < 0 { return ""; }
+    let rest = text[(open + 2)..len(text)];
+    let close = std::str::index_of(rest, "**");
+    return if close < 0 { "" } else { std::str::trim(rest[0..close]) };
+}
+
+// The code spans of `text`, one per line.
+@unbounded
+fn md_code(text: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    let mut open = std::str::index_of(rest, "`");
+    while open >= 0 {
+        rest = rest[(open + 1)..len(rest)];
+        let close = std::str::index_of(rest, "`");
+        if close < 0 { return out; }
+        out = out + rest[0..close] + "\n";
+        rest = rest[(close + 1)..len(rest)];
+        open = std::str::index_of(rest, "`");
+    }
+    return out;
+}
+
+// The links of `text`, one per line, `<text>\t<target>`.
+@unbounded
+fn md_links(text: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    let mut mid = std::str::index_of(rest, "](");
+    while mid >= 0 {
+        let before = rest[0..mid];
+        let mut open = -1;
+        let mut i = 0;
+        while i < len(before) {
+            if before[i..(i + 1)] == "[" { open = i; }
+            i = i + 1;
+        }
+        let after = rest[(mid + 2)..len(rest)];
+        let close = std::str::index_of(after, ")");
+        if close < 0 { return out; }
+        if open >= 0 { out = out + before[(open + 1)..len(before)] + "\t" + after[0..close] + "\n"; }
+        rest = after[(close + 1)..len(after)];
+        mid = std::str::index_of(rest, "](");
+    }
+    return out;
+}
+
+// `text` with its links taken out whole, their text with them.
+@unbounded
+fn md_unlinked(text: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    let mut mid = std::str::index_of(rest, "](");
+    while mid >= 0 {
+        let before = rest[0..mid];
+        let mut open = -1;
+        let mut i = 0;
+        while i < len(before) {
+            if before[i..(i + 1)] == "[" { open = i; }
+            i = i + 1;
+        }
+        let after = rest[(mid + 2)..len(rest)];
+        let close = std::str::index_of(after, ")");
+        if close < 0 || open < 0 { out = out + rest; return out; }
+        out = out + before[0..open];
+        rest = after[(close + 1)..len(after)];
+        mid = std::str::index_of(rest, "](");
+    }
+    return out + rest;
+}
+
+// `text` with its links, code spans and emphasis taken out whole: what a
+// table cell says in plain words.
+@unbounded
+fn md_plain(text: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let tick = std::str::index_of(rest, "`");
+        let bracket = std::str::index_of(rest, "[");
+        let at = if tick < 0 { bracket } else if bracket < 0 { tick } else if tick < bracket { tick } else { bracket };
+        if at < 0 { out = out + rest; rest = ""; continue; }
+        out = out + rest[0..at];
+        rest = rest[at..len(rest)];
+        if std::str::starts_with(rest, "`") {
+            let close = std::str::index_of(rest[1..len(rest)], "`");
+            rest = if close < 0 { "" } else { rest[(close + 2)..len(rest)] };
+        } else {
+            let mid = std::str::index_of(rest, "](");
+            let close = if mid < 0 { -1 } else { std::str::index_of(rest[mid..len(rest)], ")") };
+            rest = if close < 0 { rest[1..len(rest)] } else { rest[(mid + close + 1)..len(rest)] };
+        }
+    }
+    return std::str::replace(out, "*", "");
+}
+
+// `text` as words: code spans and links keep their text, emphasis goes.
+@unbounded
+fn md_words(text: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    let mut mid = std::str::index_of(rest, "](");
+    while mid >= 0 {
+        let after = rest[(mid + 2)..len(rest)];
+        let close = std::str::index_of(after, ")");
+        if close < 0 { mid = -1; continue; }
+        out = out + rest[0..mid];
+        rest = after[(close + 1)..len(after)];
+        mid = std::str::index_of(rest, "](");
+    }
+    out = out + rest;
+    return std::str::trim(std::str::replace(std::str::replace(std::str::replace(out, "[", ""), "`", ""), "**", ""));
+}
+
+// Cell `n` of a table row.
+@unbounded
+fn md_cell(row: String, n: Int) -> String {
+    let mut t = std::str::trim(row);
+    if std::str::starts_with(t, "|") { t = t[1..len(t)]; }
+    let mut i = 0;
+    let mut rest = t + "|";
+    while i < n {
+        let bar = std::str::index_of(rest, "|");
+        if bar < 0 { return ""; }
+        rest = rest[(bar + 1)..len(rest)];
+        i = i + 1;
+    }
+    let bar = std::str::index_of(rest, "|");
+    return if bar < 0 { "" } else { std::str::trim(rest[0..bar]) };
+}
+
+// The column of a table's header whose text is `name`, -1 when none.
+@unbounded
+fn md_column(header: String, name: String) -> Int {
+    let mut i = 0;
+    while i < 32 {
+        let c = md_cell(header, i);
+        if std::str::lower(md_words(c)) == std::str::lower(name) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn md_separator(line: String) -> Bool {
+    let t = std::str::trim(line);
+    return std::str::starts_with(t, "|") && std::str::contains(t, "-") && len(std::str::replace(std::str::replace(std::str::replace(std::str::replace(t, "|", ""), "-", ""), ":", ""), " ", "")) == 0;
+}
+
+// The text after a list item's marker, "" when `line` opens no item.
+fn md_item(line: String) -> String {
+    let t = std::str::trim(line);
+    if std::str::starts_with(t, "- ") || std::str::starts_with(t, "* ") { return std::str::trim(t[2..len(t)]); }
+    let dot = std::str::index_of(t, ". ");
+    if dot > 0 && dot < 4 && (std::str::parse_int(t[0..dot]) or - 1) >= 0 { return std::str::trim(t[(dot + 2)..len(t)]); }
+    return "";
+}
+
+// ---- the ingest ------------------------------------------------------------
+
+type IngestAnswer { rows: String = ""; nodes: Int = 0; edges: Int = 0; counts: String = ""; error: String = ""; }
+
+locus GraphIngest {
+    params {
+        root: String = ".";
+        files: String = "\n"; // tracked, one per line
+        rows: String = "";
+        ids: String = "\n";
+        kinds: String = ""; // `<kind>` per node written, one per line
+        purpose: String = "";
+        compose: String = ""; // the compose file, "" when none
+        processes: String = "\n";
+        seeds: String = "\n";
+        contracts: String = "\n";
+        documents: String = "\n";
+        nodes: Int = 0;
+        edges: Int = 0;
+        error: String = "";
+    }
+    fn tracked(path: String) -> Bool { return std::str::contains(self.files, "\n" + path + "\n"); }
+    fn read(path: String) -> String { return std::io::fs::read_file(self.root + "/" + path) or ""; }
+    fn emit(kind: String, entity: String, body: String) -> Bool {
+        if std::str::contains(self.ids, "\n" + entity + "\n") { return false; }
+        self.ids = self.ids + entity + "\n";
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("kind", kind);
+        b.string_field("entity", entity);
+        b.string_field("body", body);
+        b.end_object();
+        self.rows = self.rows + b.result() + "\n";
+        return true;
+    }
+    fn node(kind: String, name: String, text: String, source: String) -> String {
+        if !graph_text_ok(name) { return ""; }
+        let id = graph_node_id(kind, name);
+        if self.emit("graph.node", id, graph_node_body(kind, name, text, source)) {
+            self.nodes = self.nodes + 1;
+            self.kinds = self.kinds + kind + "\n";
+        }
+        return id;
+    }
+    fn edge(e: GraphEdge) {
+        if e.size() < 2 { return; }
+        if self.emit("graph.edge", e.id(), e.body()) { self.edges = self.edges + 1; }
+    }
+    fn add(e: GraphEdge, role: String, node: String) { if len(node) > 0 && !e.has(node) { e.member(role, node); } }
+    // A repository path as the node it is: a contract, a document, the
+    // compose deployment, or the seed that holds it; "" when none.
+    @unbounded
+    fn resolve(path: String) -> String {
+        if len(path) == 0 { return ""; }
+        if std::str::contains(self.contracts, "\n" + path + "\n") { return "contract:" + path; }
+        let mut rest = self.contracts;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let c = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if std::str::starts_with(path, c + "/") { return "contract:" + c; }
+        }
+        if std::str::contains(self.documents, "\n" + path + "\n") { return "document:" + path; }
+        if len(self.compose) > 0 && path == self.compose { return "deployment:compose"; }
+        let mut best = "";
+        rest = self.seeds;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let s = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if (path == s || std::str::starts_with(path, s + "/")) && len(s) > len(best) { best = s; }
+        }
+        return if len(best) > 0 { "seed:" + best } else { "" };
+    }
+    // A name in code in a declaring table: a process, else a seed, else a
+    // repository path; "" when it names none of them.
+    fn named(name: String) -> String {
+        if std::str::contains(self.processes, "\n" + name + "\n") { return "process:" + name; }
+        if std::str::contains(self.seeds, "\n" + name + "\n") { return "seed:" + name; }
+        return self.resolve(ingest_join("", name));
+    }
+
+    // ---- structure ----------------------------------------------------
+    // The purpose: the README's title and its first paragraph.
+    @unbounded
+    fn purpose_step() {
+        let text = self.read("README.md");
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut name = ingest_base(self.root);
+        let mut para = "";
+        let mut titled = false;
+        while from >= 0 && from < len(text) {
+            let line = std::str::trim(it.line_at(text, from));
+            from = it.next_idx(text, from);
+            if !titled && std::str::starts_with(line, "# ") { name = std::str::trim(line[2..len(line)]); titled = true; continue; }
+            if len(line) == 0 || std::str::starts_with(line, "[![") || std::str::starts_with(line, "<") || std::str::starts_with(line, "#") {
+                if len(para) > 0 { from = -1; }
+                continue;
+            }
+            para = if len(para) == 0 { line } else { para + " " + line };
+        }
+        self.purpose = self.node("purpose", name, md_words(para), "README.md");
+    }
+    // The processes and the deployment compose runs.
+    @unbounded
+    fn compose_step() {
+        let mut i = 0;
+        while len(dna::nth_word(INGEST_COMPOSE, i)) > 0 {
+            if self.tracked(dna::nth_word(INGEST_COMPOSE, i)) && len(self.compose) == 0 { self.compose = dna::nth_word(INGEST_COMPOSE, i); }
+            i = i + 1;
+        }
+        if len(self.compose) == 0 { return; }
+        let text = self.read(self.compose);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut inside = false;
+        let mut names = "";
+        while from >= 0 && from < len(text) {
+            let line = it.line_at(text, from);
+            from = it.next_idx(text, from);
+            let key = ingest_key(line);
+            if len(std::str::trim(line)) == 0 || std::str::starts_with(std::str::trim(line), "#") { continue; }
+            let ind = ingest_indent(line);
+            if ind == 0 { inside = key == "services"; continue; }
+            if inside && ind == 2 && len(key) > 0 { names = names + key + "\n"; }
+        }
+        let deployment = self.node("deployment", "compose", "built", self.compose);
+        let runs = GraphEdge { kind: "runs" };
+        self.add(runs, "deployment", deployment);
+        let mut rest = names;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let p = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            self.add(runs, "process", self.node("process", p, "", self.compose));
+            self.processes = self.processes + p + "\n";
+        }
+        self.edge(runs);
+    }
+    // The seeds: a directory with a manifest, the outermost one; a process
+    // unfolds into the seed of its name.
+    @unbounded
+    fn seeds_step() {
+        let mut dirs = "\n";
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            let d = ingest_dir(f);
+            if len(d) > 0 && dna::word_in(ingest_base(f), INGEST_MANIFESTS) && !std::str::contains(dirs, "\n" + d + "\n") { dirs = dirs + d + "\n"; }
+        }
+        rest = dirs;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let d = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            let mut outer = true;
+            let mut others = dirs;
+            while len(others) > 1 {
+                others = others[1..len(others)];
+                let n2 = std::str::index_of(others, "\n");
+                let o = others[0..n2];
+                others = others[n2..len(others)];
+                if o != d && std::str::starts_with(d, o + "/") { outer = false; }
+            }
+            if !outer { continue; }
+            let seed = self.node("seed", d, "", d);
+            self.seeds = self.seeds + d + "\n";
+            if std::str::contains(self.processes, "\n" + d + "\n") {
+                let u = GraphEdge { kind: "unfold" };
+                self.add(u, "parent", "process:" + d);
+                self.add(u, "child", seed);
+                self.edge(u);
+            }
+        }
+    }
+    // The contracts: `spec/*.yaml`, `spec/*.yml`, `spec/*.md`, and each
+    // directory under `spec/vendor/` (taken by reference); the nouns each
+    // names, and what refers to what.
+    @unbounded
+    fn contracts_step() {
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if !std::str::starts_with(f, "spec/") { continue; }
+            let under = f[5..len(f)];
+            if std::str::starts_with(under, "vendor/") {
+                let v = under[7..len(under)];
+                let slash = std::str::index_of(v, "/");
+                if slash > 0 {
+                    let d = "spec/vendor/" + v[0..slash];
+                    if !std::str::contains(self.contracts, "\n" + d + "\n") {
+                        let c = self.node("contract", d, "", d);
+                        self.contracts = self.contracts + d + "\n";
+                    }
+                }
+                continue;
+            }
+            if std::str::contains(under, "/") || !ingest_ext(f, "yaml yml md") { continue; }
+            let c = self.node("contract", f, "", f);
+            self.contracts = self.contracts + f + "\n";
+            if ingest_ext(f, "md") { self.tables_of(c, self.read(f)); } else { self.schemas_of(c, self.read(f)); }
+        }
+    }
+    // A YAML contract's `components.schemas`: each a noun, each `$ref` to
+    // another a refers.
+    @unbounded
+    fn schemas_of(spec: String, text: String) {
+        let names = GraphEdge { kind: "names" };
+        self.add(names, "contract", spec);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut components = false;
+        let mut schemas = false;
+        let mut current = "";
+        while from >= 0 && from < len(text) {
+            let line = it.line_at(text, from);
+            from = it.next_idx(text, from);
+            let t = std::str::trim(line);
+            if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
+            let ind = ingest_indent(line);
+            let key = ingest_key(line);
+            if ind == 0 { components = key == "components"; schemas = false; current = ""; continue; }
+            if components && ind == 2 { schemas = key == "schemas"; current = ""; continue; }
+            if schemas && ind == 4 && len(key) > 0 {
+                current = self.node("noun", key, "", ingest_base(spec));
+                if names.size() < GRAPH_MEMBERS_MAX { self.add(names, "noun", current); }
+                continue;
+            }
+            let at = std::str::index_of(line, "#/components/schemas/");
+            if schemas && ind > 4 && len(current) > 0 && at >= 0 {
+                let rest = line[(at + 21)..len(line)];
+                let mut end = 0;
+                while end < len(rest) && rest[end..(end + 1)] != "'" && rest[end..(end + 1)] != "\"" && rest[end..(end + 1)] != " " && rest[end..(end + 1)] != "}" && rest[end..(end + 1)] != "," { end = end + 1; }
+                let target = rest[0..end];
+                if len(target) > 0 && graph_node_id("noun", target) != current { self.refers(current, graph_node_id("noun", target), "$ref"); }
+            }
+        }
+        self.edge(names);
+    }
+    // A markdown contract's SQL: each `CREATE TABLE` a noun, each
+    // `REFERENCES` a refers from the table being declared.
+    @unbounded
+    fn tables_of(spec: String, text: String) {
+        let names = GraphEdge { kind: "names" };
+        self.add(names, "contract", spec);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut current = "";
+        while from >= 0 && from < len(text) {
+            let line = it.line_at(text, from);
+            from = it.next_idx(text, from);
+            let up = std::str::upper(line);
+            let create = std::str::index_of(up, "CREATE TABLE ");
+            if create >= 0 {
+                let mut rest = std::str::trim(line[(create + 13)..len(line)]);
+                if std::str::starts_with(std::str::upper(rest), "IF NOT EXISTS ") { rest = std::str::trim(rest[14..len(rest)]); }
+                let mut end = 0;
+                while end < len(rest) && rest[end..(end + 1)] != " " && rest[end..(end + 1)] != "(" { end = end + 1; }
+                if end > 0 {
+                    current = self.node("noun", rest[0..end], "", ingest_base(spec));
+                    if names.size() < GRAPH_MEMBERS_MAX { self.add(names, "noun", current); }
+                }
+            }
+            let refs = std::str::index_of(up, "REFERENCES ");
+            if refs >= 0 && len(current) > 0 {
+                let rest = std::str::trim(line[(refs + 11)..len(line)]);
+                let mut end = 0;
+                while end < len(rest) && rest[end..(end + 1)] != " " && rest[end..(end + 1)] != "(" && rest[end..(end + 1)] != "," && rest[end..(end + 1)] != ";" { end = end + 1; }
+                let target = graph_node_id("noun", rest[0..end]);
+                if end > 0 && target != current {
+                    if !std::str::contains(self.ids, "\n" + target + "\n") { let n = self.node("noun", rest[0..end], "", ingest_base(spec)); }
+                    self.refers(current, target, "foreign key");
+                }
+            }
+        }
+        self.edge(names);
+    }
+    fn refers(from: String, to: String, via: String) {
+        let e = GraphEdge { kind: "refers", via: via };
+        self.add(e, "from", from);
+        self.add(e, "to", to);
+        self.edge(e);
+    }
+    // Every document.
+    @unbounded
+    fn documents_step() {
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if !ingest_ext(f, "md") { continue; }
+            let d = self.node("document", f, "", f);
+            self.documents = self.documents + f + "\n";
+        }
+    }
+
+    // ---- the two conventions ---------------------------------------------
+    @unbounded
+    fn markdown_step() {
+        let mut rest = self.documents;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            self.markdown(f, self.read(f));
+        }
+    }
+    @unbounded
+    fn markdown(path: String, text: String) {
+        let dir = ingest_dir(path);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut item = "";
+        let mut item_indent = 0;
+        let mut prev = "";
+        let mut table = ""; // "meets" | "runs" | "other" | ""
+        let mut header = "";
+        let mut fence = false;
+        while from >= 0 && from < len(text) {
+            let line = it.line_at(text, from);
+            from = it.next_idx(text, from);
+            let t = std::str::trim(line);
+            if std::str::starts_with(t, "```") { fence = !fence; self.item(path, dir, item); item = ""; prev = line; continue; }
+            if fence { continue; }
+            if std::str::starts_with(t, "|") {
+                self.item(path, dir, item);
+                item = "";
+                if md_separator(line) {
+                    header = prev;
+                    table = if md_column(header, "Served by") >= 0 && md_column(header, "Consumed by") >= 0 { "meets" } else if md_column(header, "Deployment") == 0 && md_column(header, "Runs") > 0 { "runs" } else { "other" };
+                } else if table == "meets" { self.meets_row(dir, header, line); }
+                else if table == "runs" { self.runs_row(path, dir, header, line); }
+                prev = line;
+                continue;
+            }
+            table = "";
+            let opened = md_item(line);
+            if len(opened) > 0 {
+                self.item(path, dir, item);
+                item = opened;
+                item_indent = ingest_indent(line);
+            } else if len(t) > 0 && len(item) > 0 && ingest_indent(line) > item_indent {
+                item = item + " " + t;
+            } else {
+                self.item(path, dir, item);
+                item = "";
+            }
+            prev = line;
+        }
+        self.item(path, dir, item);
+    }
+    // One list item, when it is a marked axiom: the node, under the
+    // purpose, and what it shaped.
+    @unbounded
+    fn item(path: String, dir: String, text: String) {
+        if !std::str::starts_with(text, "`axiom`") { return; }
+        let body = std::str::trim(text[7..len(text)]);
+        let mut name = md_bold(body);
+        while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) { name = name[0..(len(name) - 1)]; }
+        let axiom = self.node("axiom", name, md_words(body), path);
+        if len(axiom) == 0 { return; }
+        if len(self.purpose) > 0 {
+            let u = GraphEdge { kind: "unfold" };
+            self.add(u, "parent", self.purpose);
+            self.add(u, "child", axiom);
+            self.edge(u);
+        }
+        let c = GraphEdge { kind: "constrains" };
+        self.add(c, "axiom", axiom);
+        let mut links = md_links(body);
+        while len(links) > 0 {
+            let nl = std::str::index_of(links, "\n");
+            let link = links[0..nl];
+            links = links[(nl + 1)..len(links)];
+            self.add(c, "shaped", self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)])));
+        }
+        self.edge(c);
+    }
+    // One row of a `Served by | Consumed by | Over` table.
+    @unbounded
+    fn meets_row(dir: String, header: String, row: String) {
+        let e = GraphEdge { kind: "meets" };
+        let mut links = md_links(row);
+        while len(links) > 0 && e.size() == 0 {
+            let nl = std::str::index_of(links, "\n");
+            let link = links[0..nl];
+            links = links[(nl + 1)..len(links)];
+            let target = self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]));
+            if std::str::starts_with(target, "contract:") { e.member("contract", target); }
+        }
+        if e.size() == 0 { return; }
+        self.cell_members(e, dir, md_cell(row, md_column(header, "Served by")), "server", false);
+        self.cell_members(e, dir, md_cell(row, md_column(header, "Consumed by")), "consumer", true);
+        let over = md_column(header, "Over");
+        let via = if over < 0 { "" } else { md_words(md_cell(row, over)) };
+        if len(via) > 0 && via != "—" && via != "-" {
+            e.via = via;
+            if std::str::contains(self.processes, "\n" + std::str::lower(via) + "\n") { self.add(e, "carrier", "process:" + std::str::lower(via)); }
+        }
+        self.edge(e);
+    }
+    // The nodes a cell names in `role`, and when `parties`, the parties
+    // outside the repository its plain words name.
+    @unbounded
+    fn cell_members(e: GraphEdge, dir: String, cell: String, role: String, parties: Bool) {
+        // a link's text is the link's: its code spans are not names
+        let mut code = md_code(md_unlinked(cell));
+        while len(code) > 0 {
+            let nl = std::str::index_of(code, "\n");
+            let name = code[0..nl];
+            code = code[(nl + 1)..len(code)];
+            let n = self.named(name);
+            if len(n) > 0 { self.add(e, role, n); } else if parties { e.party(name); }
+        }
+        let mut links = md_links(cell);
+        while len(links) > 0 {
+            let nl = std::str::index_of(links, "\n");
+            let link = links[0..nl];
+            links = links[(nl + 1)..len(links)];
+            self.add(e, role, self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)])));
+        }
+        if !parties { return; }
+        let mut plain = md_plain(cell) + ",";
+        while len(plain) > 0 {
+            let comma = std::str::index_of(plain, ",");
+            let p = std::str::trim(plain[0..comma]);
+            plain = plain[(comma + 1)..len(plain)];
+            if len(p) > 0 && p != "—" && p != "-" && graph_text_ok(p) { e.party(p); }
+        }
+    }
+    // One row of a `Deployment | Runs` table.
+    @unbounded
+    fn runs_row(path: String, dir: String, header: String, row: String) {
+        let first = md_cell(row, 0);
+        let mut deployment = "";
+        let mut links = md_links(first);
+        while len(links) > 0 && len(deployment) == 0 {
+            let nl = std::str::index_of(links, "\n");
+            let link = links[0..nl];
+            links = links[(nl + 1)..len(links)];
+            let target = self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]));
+            if std::str::starts_with(target, "deployment:") { deployment = target; }
+        }
+        if len(deployment) == 0 {
+            let name = std::str::replace(std::str::lower(std::str::trim(md_plain(first))), " ", "-");
+            if len(name) == 0 { return; }
+            deployment = self.node("deployment", name, "named", path);
+        }
+        let e = GraphEdge { kind: "runs" };
+        self.add(e, "deployment", deployment);
+        let mut code = md_code(md_unlinked(md_cell(row, md_column(header, "Runs"))));
+        while len(code) > 0 {
+            let nl = std::str::index_of(code, "\n");
+            let name = code[0..nl];
+            code = code[(nl + 1)..len(code)];
+            if std::str::contains(self.processes, "\n" + name + "\n") { self.add(e, "process", "process:" + name); }
+        }
+        self.edge(e);
+    }
+
+    // ---- gates and witnesses ---------------------------------------------
+    // Each CI job a gate, `<workflow>/<job>`, guarding the seeds, contracts
+    // and compose deployment its steps name.
+    @unbounded
+    fn gates_step() {
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if !std::str::starts_with(f, ".github/workflows/") || !ingest_ext(f, "yml yaml") { continue; }
+            self.workflow(f, self.read(f));
+        }
+    }
+    @unbounded
+    fn workflow(path: String, text: String) {
+        let base = ingest_base(path);
+        let mut workflow = base[0..std::str::index_of(base, ".")];
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut jobs = false;
+        let mut job = "";
+        let mut name = "";
+        let mut block = "";
+        while from >= 0 && from < len(text) {
+            let line = it.line_at(text, from);
+            from = it.next_idx(text, from);
+            let t = std::str::trim(line);
+            if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
+            let ind = ingest_indent(line);
+            let key = ingest_key(line);
+            if ind == 0 {
+                if len(job) > 0 { self.gate(path, workflow, job, name, block); job = ""; }
+                if key == "name" { workflow = ingest_value(line); }
+                jobs = key == "jobs";
+                continue;
+            }
+            if !jobs { continue; }
+            if ind == 2 && len(key) > 0 {
+                if len(job) > 0 { self.gate(path, workflow, job, name, block); }
+                job = key; name = ""; block = "";
+                continue;
+            }
+            if ind == 4 && key == "name" { name = ingest_value(line); }
+            block = block + " " + t;
+        }
+        if len(job) > 0 { self.gate(path, workflow, job, name, block); }
+    }
+    @unbounded
+    fn gate(path: String, workflow: String, job: String, name: String, block: String) {
+        let g = self.node("gate", workflow + "/" + (if len(name) > 0 { name } else { job }), "", path);
+        if len(g) == 0 { return; }
+        let e = GraphEdge { kind: "gates" };
+        self.add(e, "gate", g);
+        let mut words = block;
+        let seps = "\"',;()=&|<>";
+        let mut i = 0;
+        while i < len(seps) { words = std::str::replace(words, seps[i..(i + 1)], " "); i = i + 1; }
+        words = words + " ";
+        let mut last = "";
+        while len(words) > 0 {
+            let sp = std::str::index_of(words, " ");
+            let mut w = words[0..sp];
+            words = words[(sp + 1)..len(words)];
+            if len(w) == 0 { continue; }
+            while std::str::ends_with(w, ":") || std::str::ends_with(w, "/") { w = w[0..(len(w) - 1)]; }
+            let node = if w == "compose" && last == "docker" { "deployment:compose" } else { self.resolve(ingest_join("", w)) };
+            last = w;
+            if std::str::starts_with(node, "seed:") || std::str::starts_with(node, "contract:") || (std::str::starts_with(node, "deployment:") && len(self.compose) > 0) { self.add(e, "guarded", node); }
+        }
+        self.edge(e);
+    }
+    // Each `FRICTION.md` entry a witness, and each issue it links; each
+    // about the seeds, contracts and documents the entry names.
+    @unbounded
+    fn witnesses_step() {
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            rest = rest[1..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let f = rest[0..nl];
+            rest = rest[nl..len(rest)];
+            if ingest_base(f) != "FRICTION.md" { continue; }
+            let text = self.read(f);
+            let it = std::iter::Lines { };
+            let mut from = 0;
+            let mut title = "";
+            let mut entry = "";
+            while from >= 0 && from < len(text) {
+                let line = it.line_at(text, from);
+                from = it.next_idx(text, from);
+                if std::str::starts_with(line, "## ") {
+                    self.entry(f, title, entry);
+                    title = line[3..len(line)];
+                    entry = "";
+                    continue;
+                }
+                if std::str::starts_with(line, "# ") { continue; }
+                entry = entry + line + "\n";
+            }
+            self.entry(f, title, entry);
+        }
+    }
+    @unbounded
+    fn entry(path: String, title: String, text: String) {
+        if len(std::str::trim(title)) == 0 { return; }
+        let dir = ingest_dir(path);
+        let w = self.node("witness", md_words(title), "", path);
+        if len(w) == 0 { return; }
+        let about = GraphEdge { kind: "witnesses" };
+        self.add(about, "witness", w);
+        let mut code = md_code(text);
+        while len(code) > 0 {
+            let nl = std::str::index_of(code, "\n");
+            let span = code[0..nl];
+            code = code[(nl + 1)..len(code)];
+            self.add(about, "about", self.resolve(ingest_join(dir, span)));
+        }
+        let mut issues = "";
+        let mut links = md_links(text);
+        while len(links) > 0 {
+            let nl = std::str::index_of(links, "\n");
+            let link = links[0..nl];
+            links = links[(nl + 1)..len(links)];
+            let label = md_words(link[0..std::str::index_of(link, "\t")]);
+            let hash = std::str::index_of(label, "#");
+            if hash > 0 && std::str::contains(label[0..hash], "/") && (std::str::parse_int(label[(hash + 1)..len(label)]) or - 1) > 0 { issues = issues + label + "\n"; continue; }
+            self.add(about, "about", self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)])));
+        }
+        self.edge(about);
+        while len(issues) > 0 {
+            let nl = std::str::index_of(issues, "\n");
+            let issue = self.node("witness", issues[0..nl], "", path);
+            issues = issues[(nl + 1)..len(issues)];
+            if len(issue) > 0 {
+                let again = GraphEdge { kind: "witnesses" };
+                self.add(again, "witness", issue);
+                let mut rest = about.members;
+                let first = std::str::index_of(rest, "\n");
+                rest = rest[(first + 1)..len(rest)];
+                again.members = again.members + rest;
+                self.edge(again);
+            }
+        }
+    }
+
+    // ---- the whole -------------------------------------------------------
+    @unbounded
+    fn count(kind: String) -> Int {
+        let mut n = 0;
+        let mut rest = self.kinds;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            if rest[0..nl] == kind { n = n + 1; }
+            rest = rest[(nl + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn ingest() -> IngestAnswer {
+        let listed = dna::run_tool("git\n-C\n" + self.root + "\nls-files");
+        if listed.code != 0 { return IngestAnswer { error: "git ls-files: " + dna::trim_nl(listed.stderr) }; }
+        self.files = "\n" + listed.stdout;
+        if !std::str::ends_with(self.files, "\n") { self.files = self.files + "\n"; }
+        self.purpose_step();
+        self.compose_step();
+        self.seeds_step();
+        self.contracts_step();
+        self.documents_step();
+        self.markdown_step();
+        self.gates_step();
+        self.witnesses_step();
+        let mut counts = "";
+        let mut i = 0;
+        while len(dna::nth_word(GRAPH_ROW_NODE_KINDS, i)) > 0 {
+            let k = dna::nth_word(GRAPH_ROW_NODE_KINDS, i);
+            counts = counts + (if len(counts) > 0 { ", " } else { "" }) + to_string(self.count(k)) + " " + k;
+            i = i + 1;
+        }
+        return IngestAnswer { rows: self.rows, nodes: self.nodes, edges: self.edges, counts: counts };
+    }
+}

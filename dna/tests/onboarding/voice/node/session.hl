@@ -1,0 +1,63 @@
+/// The node's session with the coordinator (../spec/protocol.yaml).
+///
+/// It registers over the api's node plane, then would hold the NATS
+/// connection and post heartbeats. Skeleton: it registers, and reports
+/// what came back; NATS and the heartbeats land with the protocol work.
+locus Session {
+    params {
+        id: String = "";
+        data: String = "node-data";
+        api: String = "";
+        token: String = "";
+        capabilities: String = "";
+        registered: Bool = false;
+    }
+    run() {
+        while true {
+            self.attempt();
+            std::time::sleep(5s);
+        }
+    }
+    /// One try. A method, so each iteration's memory is reclaimed.
+    fn attempt() {
+        let url = std::http::parse_url(self.api + "/node/v1/register") or std::http::Url { };
+        if len(url.host) == 0 {
+            self.report("refused", "bad api address: " + self.api, "null");
+            return;
+        }
+        let body = "{\"protocol\": 2, \"version\": \"" + NODE_VERSION + "\", \"capabilities\": " + self.capabilities + ", \"local\": " + read_local(self.data) + "}";
+        let req = std::http::ClientRequest {
+            method: "POST",
+            url: url,
+            headers: "Authorization: Bearer " + self.token + "\r\nContent-Type: application/json",
+            body: std::bytes::from_string(body)
+        };
+        let resp = std::http::request(req) or self.unreachable(err);
+        if resp.status == 0 {
+            return;
+        }
+        if resp.status == 401 || resp.status == 403 {
+            self.report("refused", "the coordinator refused this node's enrollment token", "null");
+            return;
+        }
+        if resp.status != 200 {
+            self.report("connecting", "registration answered " + to_string(resp.status), "null");
+            return;
+        }
+        let answer = std::str::from_bytes(resp.body);
+        let version = top_value(top_value(answer, "assignment"), "version");
+        let nats = std::json::find_string_field(top_value(answer, "nats"), "url");
+        self.registered = true;
+        self.report("connected", "registered; assignment " + version + "; NATS at " + nats + " (skeleton: not subscribed yet)", version);
+    }
+    /// The api could not be reached: report it and hand back a zero status
+    /// so `attempt` returns.
+    fn unreachable(e: std::http::HttpError) -> std::http::ClientResponse {
+        self.report("connecting", "api unreachable at " + self.api + " (" + e.kind + ")", "null");
+        return std::http::ClientResponse { status: 0, body: b"" };
+    }
+    fn report(state: String, detail: String, assignment_version: String) {
+        let body = "{\"url\": \"" + std::json::escape_string(self.api) + "\", \"state\": \"" + state + "\", \"connected_at\": null, \"last_error\": \"" + std::json::escape_string(detail) + "\", \"assignment_version\": " + assignment_version + "}";
+        std::io::fs::write_file(self.data + "/session.json", body) or discard;
+    }
+}

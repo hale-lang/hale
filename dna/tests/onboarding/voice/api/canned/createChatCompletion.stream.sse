@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-resp_01j8z3q4v7m2k9x0","object":"chat.completion.chunk","created":1790251200,"model":"echo-1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-resp_01j8z3q4v7m2k9x0","object":"chat.completion.chunk","created":1790251200,"model":"echo-1","choices":[{"index":0,"delta":{"content":"hello fr"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-resp_01j8z3q4v7m2k9x0","object":"chat.completion.chunk","created":1790251200,"model":"echo-1","choices":[{"index":0,"delta":{"content":"om voice"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-resp_01j8z3q4v7m2k9x0","object":"chat.completion.chunk","created":1790251200,"model":"echo-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16},"voice":{"request_id":"resp_01j8z3q4v7m2k9x0","project":"work","key":"k_ci","served":{"model":"echo-1","quantization":null,"node":"laptop","seat":"laptop/static","account":"static","engine":"static","provider":null},"price_micros":96,"currency":"USD","timing":{"wall_ms":3,"queue_ms":0,"load_ms":0},"attempts":[{"seat":"laptop/static","account":"static","outcome":"served","wall_ms":2}]}}
+
+data: [DONE]
+

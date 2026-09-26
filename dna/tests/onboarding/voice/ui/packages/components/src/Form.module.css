@@ -1,0 +1,97 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.label {
+  font-size: var(--size-sm);
+  color: var(--color-text-muted);
+}
+
+.required {
+  color: var(--color-amber);
+}
+
+.help {
+  font-size: var(--size-xs);
+  color: var(--color-text-faint);
+}
+
+.input {
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-bg-0);
+  border: var(--line-hair) solid var(--color-rule-strong);
+  border-radius: 0;
+  padding: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 0;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.check input {
+  accent-color: var(--color-cyan);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.error {
+  color: var(--color-coral);
+  font-size: var(--size-sm);
+  border-left: var(--line-rule) solid var(--color-coral);
+  padding-left: var(--space-2);
+}
+
+.danger {
+  border-color: var(--color-coral);
+  color: var(--color-coral);
+}
+
+.danger:hover {
+  background: rgba(248, 81, 73, 0.12);
+}
+
+.primary {
+  border-color: var(--color-cyan);
+  color: var(--color-cyan);
+}
+
+.secret {
+  border: var(--line-hair) solid var(--color-amber);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.secretValue {
+  font-family: var(--font-mono);
+  font-size: var(--size-md);
+  overflow-wrap: anywhere;
+  user-select: all;
+}

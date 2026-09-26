@@ -1,0 +1,22 @@
+: ping
+
+id: ev_0001
+event: node
+data: {"id":"ev_0001","at":"2026-09-24T11:57:00Z","type":"node","data":{"id":"laptop","name":"Laptop","status":"up","version":"0.1.0","capabilities":{"max_in_flight":4,"engines":[{"id":"static","kind":"static","description":"Answers every request with the seat's configured text.","models":null,"config_schema":{"type":"object","required":["text"],"properties":{"text":{"type":"string","minLength":1},"chunk_chars":{"type":"integer","minimum":1,"default":16},"first_output_ms":{"type":"integer","minimum":0,"default":0},"chunk_interval_ms":{"type":"integer","minimum":0,"default":0}}}},{"id":"claude-work","kind":"claude-cli","description":"Claude Code, logged in to the work account.","models":["haiku","sonnet","opus","fable"],"config_schema":{"type":"object"}}]},"local":{"paused":false,"paused_seats":[],"max_in_flight":null,"reason":null},"max_in_flight":null,"effective_max_in_flight":4,"in_flight":1,"assignment_version":7,"applied_version":7,"seats":[{"id":"static","engine":"static","account":"static","serves":[{"model":"echo-1","as":null}],"data_classes":["public","internal"],"concurrency":4,"enabled":true,"config":{"text":"hello from voice","chunk_chars":8,"first_output_ms":0,"chunk_interval_ms":0},"ref":"laptop/static","node":"laptop","status":"up","reason":null,"in_flight":0,"problems":[]},{"id":"claude-work","engine":"claude-work","account":"claude-work","serves":[{"model":"claude-sonnet-5","as":"sonnet"}],"data_classes":["public","internal"],"concurrency":2,"enabled":true,"config":{},"ref":"laptop/claude-work","node":"laptop","status":"up","reason":null,"in_flight":1,"problems":[]}],"connected_at":"2026-09-24T11:30:00Z","last_heartbeat_at":"2026-09-24T12:00:00Z","created_at":"2026-09-17T12:00:00Z","revoked_at":null}}
+
+id: ev_0002
+event: seat
+data: {"id":"ev_0002","at":"2026-09-24T11:58:00Z","type":"seat","data":{"id":"claude-work","engine":"claude-work","account":"claude-work","serves":[{"model":"claude-sonnet-5","as":"sonnet"}],"data_classes":["public","internal"],"concurrency":2,"enabled":true,"config":{},"ref":"laptop/claude-work","node":"laptop","status":"up","reason":null,"in_flight":1,"problems":[]}}
+
+id: ev_0003
+event: account
+data: {"id":"ev_0003","at":"2026-09-24T11:59:00Z","type":"account","data":{"id":"claude-work","name":"Claude (work)","provider":"anthropic","billing":"subscription","limits":[{"scope":"account","account":"claude-work","window_seconds":3600,"requests":null,"input_tokens":null,"output_tokens":null,"concurrent":2}],"status":"active","seats":["laptop/claude-work"],"windows":[{"name":"five_hour","used_percent":12,"resets_at":"2026-09-24T15:00:00Z","observed_at":"2026-09-24T12:00:00Z","seat":"laptop/claude-work"},{"name":"seven_day","used_percent":62,"resets_at":"2026-09-27T17:59:59Z","observed_at":"2026-09-24T12:00:00Z","seat":"laptop/claude-work"}],"exhausted_until":null,"created_at":"2026-09-17T12:00:00Z","archived_at":null}}
+
+id: ev_0004
+event: usage
+data: {"id":"ev_0004","at":"2026-09-24T12:00:00Z","type":"usage","data":{"id":"resp_01j8z3q4v7m2k9x0","created_at":"2026-09-24T12:00:00Z","project":"work","key":"k_ci","requested_model":"echo-1","requested_account":null,"endpoint":"responses","status":"served","served":{"model":"echo-1","quantization":null,"node":"laptop","seat":"laptop/static","account":"static","engine":"static","provider":null},"data_class":"internal","input_tokens":12,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":4,"reasoning_tokens":0,"price_micros":96,"currency":"USD","timing":{"wall_ms":3,"queue_ms":0,"load_ms":0},"attempts":[{"seat":"laptop/static","account":"static","outcome":"served","wall_ms":2}],"metadata":{"dna.attempt_id":"w-41/a2"}}}
+
+id: ev_0005
+event: change
+data: {"id":"ev_0005","at":"2026-09-24T12:00:00Z","type":"change","data":{"id":"chg_0004","at":"2026-09-24T12:00:00Z","principal":null,"action":"update","target":"nodes/laptop","before":{"max_in_flight":null},"after":{"max_in_flight":4}}}
+

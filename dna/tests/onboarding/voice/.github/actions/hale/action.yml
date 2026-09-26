@@ -1,0 +1,47 @@
+name: Install hale
+description: Installs a released hale toolchain (checksum-verified) and what it needs to build native programs.
+inputs:
+  version:
+    description: The hale release tag.
+    required: false
+    default: v0.21.0
+runs:
+  using: composite
+  steps:
+    - name: Native build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          clang-18 lld-18 libc6-dev libssl-dev \
+          libffi8 libtinfo6 libzstd1 zlib1g-dev libstdc++6
+        sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang
+    - name: Cache the toolchain
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.hale/bin
+        key: hale-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+    - name: Download and verify
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${{ runner.arch }}" in
+          X64) arch=x86_64 ;;
+          ARM64) arch=aarch64 ;;
+          *) echo "unsupported runner architecture: ${{ runner.arch }}" >&2; exit 1 ;;
+        esac
+        name="hale-${{ inputs.version }}-${arch}-unknown-linux-gnu.tar.gz"
+        base="https://github.com/hale-lang/hale/releases/download/${{ inputs.version }}"
+        mkdir -p ~/.hale/bin
+        cd "$(mktemp -d)"
+        curl -fsSLO "$base/$name"
+        curl -fsSLO "$base/$name.sha256"
+        sha256sum -c "$name.sha256"
+        tar xzf "$name" -C ~/.hale/bin ./hale ./libhale_ts_shim.a
+    - name: On PATH
+      shell: bash
+      run: |
+        echo "$HOME/.hale/bin" >> "$GITHUB_PATH"
+        ~/.hale/bin/hale --version
