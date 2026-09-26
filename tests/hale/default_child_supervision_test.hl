@@ -1,0 +1,65 @@
+// GH #1074 — a param default's child is supervised by the locus whose
+// default it is, wherever that locus is built.
+//
+// spec/semantics.md § "Which locus is the parent": a child held in a
+// param field is supervised by the locus that holds it, whether its
+// literal is the field's default or is written at the call site. #1063
+// routed the call-site spelling; the default kept the old fallback,
+// which asks the enclosing METHOD's locus first. So `let s = Sup { };`
+// inside `App.run()` sent Sup's default child to App — or, when App
+// declares no handler for it, to nobody ("no parent handler").
+//
+// Every failure below is counted by the locus that caught it: each
+// counter must end where the spec says, and App's must stay 0.
+
+locus Boom {
+    params { why: String = ""; }
+    closure fuse { captures: why; epoch inline; }
+    fn check() { self.why = "lit"; violate fuse; }
+    run() { self.check(); }
+}
+
+// A default child.
+locus Sup {
+    params { got: Int = 0; b: Boom = Boom { }; }
+    on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + 1; }
+}
+
+// A default child spelled as an `if` — each branch is the field's.
+locus Pick {
+    params { got: Int = 0; b: Boom = if std::env::var("HALE_1074_UNSET") == "" { Boom { why: "a" } } else { Boom { why: "b" } }; }
+    on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + 1; }
+}
+
+// Defaults two deep: Outer's default Mid, whose default is a Boom. The
+// Boom is Mid's child, not Outer's.
+locus Mid {
+    params { got: Int = 0; b: Boom = Boom { }; }
+    on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + 1; }
+}
+locus Outer {
+    params { got: Int = 0; m: Mid = Mid { }; }
+    on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + 1; }
+}
+
+main locus App {
+    params { got: Int = 0; }
+    on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + 1; }
+    run() {
+        let s = Sup { };
+        std::test::assert_eq_int(s.got, 1, "Sup, built in a method, supervises its default child");
+        let p = Pick { };
+        std::test::assert_eq_int(p.got, 1, "an if-spelled default is the field's child too");
+        let o = Outer { };
+        std::test::assert_eq_int(o.m.got, 1, "the Boom is Mid's default child, and Mid supervises it");
+        std::test::assert_eq_int(o.got, 0, "not Outer's");
+        std::test::assert_eq_int(self.got, 0, "and none of them reached the method's own locus");
+    }
+}
+
+fn main() {
+    // built outside any method: the route that already worked
+    let s = Sup { };
+    std::test::assert_eq_int(s.got, 1, "Sup built in fn main supervises its default child");
+    App { };
+}

@@ -1178,7 +1178,10 @@ the literal is written: as the field's default in the parent's
 (`App { b: Boom { why: w } }`), in any branch of an `if` or `match`
 that the field's value names, and one level at a time
 through nesting (`App { w: Wrap { b: Boom { } } }` — `Boom`'s
-parent is `Wrap`). An override expression is otherwise lowered
+parent is `Wrap`). Where the holder itself is built does not
+matter: `let s = Sup { };` inside another locus's method gives
+`Sup`'s default child to `Sup`, not to the method's locus (GH
+#1074). An override expression is otherwise lowered
 in the caller's context (`self.x` in it reads the caller), but
 the literal it builds belongs to the parent. A locus built
 elsewhere and passed in by name — a `let` binding, a factory's
