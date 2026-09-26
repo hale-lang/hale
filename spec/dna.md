@@ -1147,6 +1147,8 @@ record's.
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph |
+| `hold.requested` | record | someone asks the organization to propose a holder for a position (`hale dna fill`) |
+| `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
@@ -3366,14 +3368,64 @@ The live half is memory's, projected from the record by the spine
   each checked by the vocabulary before it is proposed; `knowledge.proposed`
   and `review.requested` (`required_authority: board`, `group: holes` or
   `practices`) are the rows a practice is proposed with. The existing
-  review path ratifies it (`knowledge.ratified`), and the projection,
-  seeing a ratified document of kind `graph`, puts its rows into the graph
-  at the ratifying row, checking each again. Ratifying them fills the org
-  chart. `hale dna hold <position> <holder>` proposes a holder the same
-  way (`group: holds`): the position must be one the record states or
-  proposes; a process's `reviewer` is never the same holder as its `dev`,
-  which is a warning on stderr under `dna.trust = local` (one person holds
-  every role) and refused, with the reason, under any other trust.
+  review path ratifies it (`knowledge.ratified`); the projection, seeing
+  a ratified document of kind `graph`, puts its rows into the graph at the
+  row that **proposed** it (its `knowledge.proposed`), checking each again,
+  so the org chart lists positions in the order the holes were proposed
+  whatever order the Board ratifies them in; the proposal stays in memory
+  as the idea it was, bound to nothing, so it never enters a context
+  package. Ratifying them fills the org chart. `hale dna review` lists the
+  groups `holes`, `practices` and `holds` together, as it does `design`
+  and `operating`, and `hale dna review <group> approve|reject` decides
+  each pending one in turn.
+  **`hale dna fill <position> <holder> [project] [--as <who>]`** asks the
+  running organization for a holder,
+  as `hale dna practice propose` asks for a practice (`init` alone writes
+  proposals directly, since no organism exists yet): a
+  `hold.requested <id> {request_id, position, holder, by}` row in the
+  asker's name, relayed as `HoldRequested` until the organization answers
+  `hold.proposed` (`digest`, `review_id`) or `hold.refused` (`why`). The
+  organization proposes it like any hole (`group: holds`), in the asker's
+  name, so the asker may not ratify it. The CLI checks first that the
+  position is one the record states or proposes and has not retired
+  (`graph.retired`), that the holder is a person the record knows — who
+  wrote a row in their own name, or an owner's member — and has not
+  retired (`person.retired`), and the same-holder rule. **The store is the
+  gate**: a hold is checked again where memory projects it, however it
+  reached the record — a retired holder is not projected, and a process's
+  `reviewer` held by its `dev`'s holder is a warning on stderr under
+  `dna.trust = local` (one person holds every role) and not projected,
+  with the reason, under any other trust.
+- **A repository record runs its organization alone (GH #1091).** When the
+  record's seed holds no Hale source of its own, `hale dna dev` and
+  `hale dna run` check and build the organization only; there is no application
+  to cut, build, express or restart, and `dev` says so.
+- **Review routing (GH #1087).** A change set goes to the positions that
+  must sign it, read from the graph, never guessed:
+  `hale dna route [--json] (<path>… | --diff <range>)` (the host verb
+  `route`, reading memory as the head, over
+  `graph_perspective("routing")`; the routing is
+  `dna/operations/graph_route.hl`). A path names a node — a contract (its
+  file, or a file under its directory), else a document, else the longest
+  seed holding it — and the edges say who signs. **A seed**: the reviewer
+  (the `/reviewer` position a process unfolds into) of every process that
+  unfolds into it. **A contract**: every position that `reviews` it, and
+  the reviewer of every consumer — a consuming process; the processes a
+  consuming seed belongs to; the positions reviewing a consuming contract
+  — and the `board` where the contract is law (a ratified practice is
+  bound to it). **A document**: every position that `reviews` it. A
+  `/dev` position never signs: a process's dev never signs for that
+  process. **The evidence** a verdict is given against is the run of every
+  gate guarding a node the change touches. A consumer no position reviews
+  is listed as such (`unsigned`), never dropped; a path that names no
+  node, or whose node no position signs, is left to the fallback — the
+  Review's own authority today, the task routers of GH #697 when they
+  exist. Text lists `signed by`, `against`, `reviewed by no position` and
+  `left to the fallback`, each signer with its holders and why it signs;
+  `--json` is one object: `signers` (`position`, `because`), `evidence`
+  (gate ids), `unsigned` (`node`, `because`), `fallback` (`path`,
+  `because`). Reviews do not yet take their signers from it; that wiring
+  is its own change.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb
   `show`. It takes `--json` and at most one project directory, and

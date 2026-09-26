@@ -467,6 +467,7 @@ locus Dna {
         subscribe PressureRaised as on_pressure;
         subscribe ConcernRaised as on_concern;
         subscribe PracticeRequested as on_practice_requested;
+        subscribe HoldRequested as on_hold_requested;
         subscribe KnowledgeNodeRequested as on_knowledge_node_requested;
         subscribe KnowledgeBindingRequested as on_knowledge_binding_requested;
         subscribe KnowledgeEdgeRequested as on_knowledge_edge_requested;
@@ -2647,6 +2648,96 @@ locus Dna {
         b.end_object();
         if !self.governance_once("practice.proposed", r.request_id, b.result()) { return; }
         self.membrane.notify("practice", r.by + " proposes `" + r.name + "`: the Board's to ratify as " + knowledge_review_id(digest));
+    }
+    // GH #1091: a holder proposed for a position, as the organization
+    // proposes any hole — a graph proposal whose receipt carries the
+    // `holds` edge, one Board Review of its own in the name of whoever
+    // asked (who therefore may not ratify it). What a hold may be is the
+    // projection's to check when it is ratified (the store is the gate);
+    // here only its shape is. Answered once, however often it is relayed.
+    @unbounded
+    fn on_hold_requested(r: HoldRequest) {
+        let moved = self.journal.refresh();
+        if len(r.request_id) == 0 { return; }
+        if len(self.governance_event("hold.proposed", r.request_id).kind) > 0 || len(self.governance_event("hold.refused", r.request_id).kind) > 0 { return; }
+        let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else { "" };
+        if len(name) == 0 || len(r.holder) == 0 || len(r.by) == 0 || std::str::contains(r.holder, "|") || std::str::contains(name, "|") {
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("why", "a hold names a position (`position:<name>`), a holder with no `|`, and who asks");
+            rb.end_object();
+            let x = self.governance_once("hold.refused", r.request_id, rb.result());
+            return;
+        }
+        let edge = std::json::Builder { };
+        edge.begin_object();
+        edge.string_field("kind", "holds");
+        edge.begin_array_field("members");
+        edge.begin_object(); edge.string_field("role", "position"); edge.string_field("node", r.position); edge.end_object();
+        edge.begin_object(); edge.string_field("role", "holder"); edge.string_field("node", r.holder); edge.end_object();
+        edge.end_array();
+        edge.end_object();
+        let question = "ratify " + r.holder + " holding the position `" + name + "`, as " + r.by + " proposes";
+        let d = std::json::Builder { };
+        d.begin_object();
+        d.string_field("author", r.by);
+        d.string_field("kind", "graph");
+        d.string_field("name", name + " held by " + r.holder);
+        d.string_field("provenance", "proposed by " + r.by);
+        d.string_field("question", question);
+        d.begin_array_field("rows");
+        d.begin_object();
+        d.string_field("kind", "graph.edge");
+        d.string_field("entity", "holds:" + r.position + "|" + r.holder);
+        d.string_field("body", edge.result());
+        d.end_object();
+        d.end_array();
+        d.string_field("target", r.position);
+        d.string_field("text", r.holder + " holds " + name + ".");
+        d.end_object();
+        let doc = d.result();
+        let raw = self.verification.receipts.store(doc);
+        // an unavailable receipt is pending work, answered on redelivery
+        if len(raw) != 64 || self.verification.receipts.read(raw) != doc { return; }
+        let digest = "sha256:" + raw;
+        let review_id = knowledge_review_id(digest);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("review_id", review_id);
+        b.string_field("kind", "graph");
+        b.string_field("author", r.by);
+        b.string_field("target", r.position);
+        b.string_field("class", "initiative");
+        b.string_field("name", name + " held by " + r.holder);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        if !self.governance_once("knowledge.proposed", digest, b.result()) { return; }
+        let q = std::json::Builder { };
+        q.begin_object();
+        q.string_field("question", question);
+        q.string_field("subject_digest", digest);
+        q.string_field("required_authority", "board");
+        q.string_field("author", r.by);
+        q.string_field("knowledge_digest", digest);
+        q.string_field("kind", "graph");
+        q.string_field("target", r.position);
+        q.string_field("class", "initiative");
+        q.string_field("group", "holds");
+        q.string_field("name", name + " held by " + r.holder);
+        q.end_object();
+        if !self.governance_once("review.requested", "review:" + review_id, q.result()) { return; }
+        if !self.ensure_knowledge_review(review_id) { return; }
+        let a = std::json::Builder { };
+        a.begin_object();
+        a.string_field("digest", digest);
+        a.string_field("review_id", review_id);
+        a.string_field("position", r.position);
+        a.string_field("holder", r.holder);
+        a.string_field("by", r.by);
+        a.end_object();
+        if !self.governance_once("hold.proposed", r.request_id, a.result()) { return; }
+        self.membrane.notify("holds", r.by + " proposes " + r.holder + " for " + name + ": the Board's to ratify as " + review_id);
     }
     // A generic knowledge command carries the exact native document it means
     // to propose. Delivery is the host's trust boundary; the started row is

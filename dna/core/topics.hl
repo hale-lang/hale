@@ -325,6 +325,18 @@ type PracticeRequest {
 }
 topic PracticeRequested { payload: PracticeRequest; subject: "dna.practice.requested"; }
 
+// GH #1091: someone proposes who holds a position. The organization
+// proposes it to the Board as a graph proposal, whose receipt carries the
+// `holds` edge, and the projection writes the edge once it is ratified,
+// checking it again (the same-holder rule, a retired holder).
+type HoldRequest {
+    request_id: String = "";
+    position: String = ""; // `position:<name>`
+    holder: String = "";
+    by: String = ""; // who proposes it: the review's author, who may not ratify it
+}
+topic HoldRequested { payload: HoldRequest; subject: "dna.hold.requested"; }
+
 // A scoped native command asks the Body to propose a generic Knowledge node.
 // Admission supplies the exact candidate and binding scope; Review still owns
 // adoption. request_id is the command's durable identity, not a graph node ID.

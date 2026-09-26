@@ -442,6 +442,7 @@ locus NodeRelay {
         publish dna::PressureRaised;
         publish dna::ConcernRaised;
         publish dna::PracticeRequested;
+        publish dna::HoldRequested;
         publish dna::KnowledgeNodeRequested;
         publish dna::KnowledgeBindingRequested;
         publish dna::KnowledgeEdgeRequested;
@@ -511,6 +512,14 @@ locus NodeRelay {
                 what: std::json::find_string_field(body, "what"),
                 severity: std::json::find_int_field(body, "severity"),
                 request: std::json::find_string_field(body, "request")
+            };
+        } else if kind == "hold" {
+            // GH #1091: a holder proposed for a position
+            dna::HoldRequested <- dna::HoldRequest {
+                request_id: dna::native_json_string(body, "request_id"),
+                position: dna::native_json_string(body, "position"),
+                holder: dna::native_json_string(body, "holder"),
+                by: dna::native_json_string(body, "by")
             };
         } else if kind == "practice" {
             dna::PracticeRequested <- dna::PracticeRequest {
@@ -593,8 +602,8 @@ locus NodeRelay {
                 let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
                 request.request_id == r.entity && edge_admits_here(self.root, request)
             } else { true };
-            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested" || r.kind == "attempt.outcome_requested");
-            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else if r.kind == "attempt.outcome_requested" { " attempt.outcome attempt.outcome_refused " } else { " review.settled review.refused " };
+            let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "hold.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested" || r.kind == "attempt.outcome_requested");
+            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "hold.requested" { " hold.proposed hold.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else if r.kind == "attempt.outcome_requested" { " attempt.outcome attempt.outcome_refused " } else { " review.settled review.refused " };
             if requested && trust == "signed" && !row_verified(self.root, r.digest) {
                 // Verification gates EVERY attempt. Even when writing the refusal
                 // failed, an expired retry marker must never admit an unsigned row.
@@ -622,7 +631,7 @@ locus NodeRelay {
                             let ok = append_as(self.root, "knowledge.edge.refused", r.entity, codec.refused(request, "unverified_writer", why), "host", memory);
                         }
                     } else {
-                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "observation.requested" { "observation.refused" } else if r.kind == "practice.requested" { "practice.refused" } else if r.kind == "attempt.outcome_requested" { "attempt.outcome_refused" } else { "review.refused" };
+                        let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "pressure.requested" { "pressure.refused" } else if r.kind == "observation.requested" { "observation.refused" } else if r.kind == "practice.requested" { "practice.refused" } else if r.kind == "hold.requested" { "hold.refused" } else if r.kind == "attempt.outcome_requested" { "attempt.outcome_refused" } else { "review.refused" };
                         // a request with an id of its own (a concern's, a
                         // pressure signal's) is answered only by a row naming
                         // that id; the refusal names it, so it answers
@@ -663,7 +672,7 @@ locus NodeRelay {
                     }
                     if r.kind == "knowledge.binding.requested" { let codec = dna::KnowledgeBindingCodec { }; body = codec.started(codec.decode(r.body)); }
                     if r.kind == "knowledge.edge.requested" { let codec = dna::KnowledgeEdgeCodec { }; body = codec.started(codec.decode(r.body)); }
-                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "observation.requested" { "observed" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else if r.kind == "attempt.outcome_requested" { "work-submit" } else { "verdict" }, body);
+                    let e = self.publish_fact(if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "pressure.requested" { "pressure" } else if r.kind == "observation.requested" { "observed" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "hold.requested" { "hold" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else if r.kind == "attempt.outcome_requested" { "work-submit" } else { "verdict" }, body);
                     if len(e) == 0 { state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now()); state.count = state.count + 1; }
                     else { state.error = r.kind + " (" + r.entity + "): " + e; }
                 }
@@ -727,6 +736,10 @@ main locus Host {
         genome_polls: Int = 0; // polls this node has made since it started
         org_ready: String = ""; // the organization's binary, built for `genome_sha`
         app_ready: String = ""; // the application's, under `dev`
+        // GH #1091: a repository record (init on a directory with no Hale
+        // source of its own) has no application: the organization runs
+        // alone and oversees the repository's seeds
+        repository: Bool = false;
         handled: String = "\n";
         app_gone_reported: Bool = false;
         exit_code: Int = 0;
@@ -754,6 +767,7 @@ main locus Host {
         dna::PressureRaised: nats::NatsAdapter { };
         dna::ConcernRaised: nats::NatsAdapter { };
         dna::PracticeRequested: nats::NatsAdapter { };
+        dna::HoldRequested: nats::NatsAdapter { };
         dna::KnowledgeNodeRequested: nats::NatsAdapter { };
         dna::KnowledgeBindingRequested: nats::NatsAdapter { };
         dna::KnowledgeEdgeRequested: nats::NatsAdapter { };
@@ -1080,13 +1094,21 @@ main locus Host {
         if len(again) > 0 { self.say(again); return false; }
         return true;
     }
+    // Whether the seed holds no Hale source of its own: a repository record,
+    // with no application to check, build or express (GH #1091).
+    fn no_application() -> Bool {
+        return dna::run_tool("sh\n-c\nls \"$1\"/*.hl >/dev/null 2>&1\nsh\n" + self.seed_dir()).code != 0;
+    }
     // The genome as it stands, checked and built: "" when it did, else why.
     fn build_genome() -> String {
-        let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
-        if len(cut) > 0 { return cut; }
+        self.repository = self.no_application();
+        if !self.repository {
+            let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
+            if len(cut) > 0 { return cut; }
+        }
         self.org_ready = self.build_seed(self.root + "/" + ORG_SEED);
         if len(self.org_ready) == 0 { return "`hale build " + ORG_SEED + "` failed"; }
-        if self.verb == "dev" {
+        if self.verb == "dev" && !self.repository {
             self.app_ready = self.build_seed(self.seed_dir());
             if len(self.app_ready) == 0 { return "`hale build " + self.seed_dir() + "` failed"; }
         }
@@ -1529,6 +1551,7 @@ main locus Host {
     // Under `dev`: rebuild, restart, watch the window.
     fn answer_here(id: String, body: String, rollback: Bool) {
         self.say(id + " requests a restart (" + body + ")");
+        if self.repository { self.say(id + ": a repository has no application to express here"); return; }
         let current = self.dna_dir + "/current.topology";
         let previous = self.dna_dir + "/previous.topology";
         let cur_text = std::io::fs::read_file(current) or "";
@@ -1730,8 +1753,10 @@ main locus Host {
         let bound = self.wait_nerves(20);
         if bound && self.nerves_on { self.say("the organization reads its facts from the nerves (" + dna::nerves_stream(dna::nerves_org()) + ")"); }
         else if exit_code(self.org) == -2 && self.nerves_on { self.say("the organization did not come to read the nerves within 20s; the facts wait in the stream"); }
-        // 4. dev: the application too, under this host
-        if self.verb == "dev" {
+        // 4. dev: the application too, under this host — a repository has
+        // none, and its organization runs alone
+        if self.verb == "dev" && self.repository { self.say("a repository: no application runs under this host; the organization oversees its seeds"); }
+        if self.verb == "dev" && !self.repository {
             let bin = self.app_ready;
             if len(bin) == 0 { self.stop_org(); self.quit(1); }
             self.app_bin = bin;

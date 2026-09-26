@@ -381,12 +381,16 @@ fn review_list(p: Projection) -> Answer {
     // GH #596 C, #994: the toolchain's seeded families, one Review per
     // practice (a Review pins one digest and settles with one outcome),
     // each listed under its own heading so the Board can read it as a set
-    out = out + seeded_listing(p, ids, "design") + seeded_listing(p, ids, "operating");
+    out = out + seeded_listing(p, ids, "design") + seeded_listing(p, ids, "operating") + seeded_listing(p, ids, "holes") + seeded_listing(p, ids, "practices") + seeded_listing(p, ids, "holds");
     return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
 }
 
 // Whether a Review's group is a seeded family (GH #596 C, #994).
-fn seeded_group(group: String) -> Bool { return group == "design" || group == "operating"; }
+// The groups whose Reviews are listed together and may be decided in turn
+// by their name: the toolchain's seeded practices (`design`, `operating`),
+// and a repository's holes, its marked practices and proposed holders
+// (GH #1091).
+fn seeded_group(group: String) -> Bool { return group == "design" || group == "operating" || group == "holes" || group == "practices" || group == "holds"; }
 
 // The pending Reviews of one seeded family, under its heading ("" when none).
 @unbounded
@@ -404,7 +408,8 @@ fn seeded_listing(p: Projection, ids: String, family: String) -> String {
         i = i + 1;
     }
     if count == 0 { return ""; }
-    return "  " + family + " — " + to_string(count) + " seeded practice(s), each its own Review:\n" + lines
+    let what = if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else { " seeded practice(s)" };
+    return "  " + family + " — " + to_string(count) + what + ", each its own Review:\n" + lines
         + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review " + family + " approve|reject`\n";
 }
 

@@ -6,10 +6,14 @@
 // a practice is proposed with. `init` proposes every hole of a repository
 // in the same checked seed as the graph (graph_ingest_verb), so a
 // repository whose holes cannot be proposed leaves no record either.
-// `hale dna hold <position> <holder>` proposes who holds a position; never
-// the same holder as `dev` for a process's `reviewer`, which is a warning
-// on stderr under `dna.trust = local` — one person holds every role — and
-// refused elsewhere.
+// `hale dna fill <position> <holder>` asks the running organization to
+// propose who holds a position, as `hale dna practice propose` asks for a
+// practice: `init` alone writes proposals directly, since no organism
+// exists yet. The holder is a person the record knows and has not retired;
+// never the same holder as `dev` for a process's `reviewer`, which is a
+// warning on stderr under `dna.trust = local` — one person holds every
+// role — and refused elsewhere, here and again where the projection takes
+// a ratified hold (the store is the gate).
 
 import "../core" as dna;
 import "../operations" as ops;
@@ -65,28 +69,42 @@ fn hole_row(kind: String, entity: String, body: String) -> String {
     return b.result() + "\n";
 }
 
-// ---- hale dna hold <position> <holder> -----------------------------------
+// ---- hale dna fill <position> <holder> [project] -------------------------
 
-// What the record says of positions and holders: every position a graph
-// row or a proposal names, and every holds edge that is not declined —
-// `<position>\t<holder>` per line.
-type HeldState { positions: String = "\n"; holds: String = ""; }
+// What the record says of positions and holders, in its order: every
+// position a graph row or a pending or ratified proposal names, less those
+// retired; every holds edge the same way, `<position>\t<holder>` per line;
+// the persons it knows — who wrote a row in their own name, and the owners
+// map's members — and those it retired.
+type HeldState { positions: String = "\n"; holds: String = "\n"; persons: String = "\n"; retired: String = "\n"; }
+
+// A name the organism writes as, never a person.
+fn held_machine(who: String) -> Bool { return len(who) == 0 || dna::word_in(who, "dna host spine org ledger board hale") || std::str::starts_with(who, "hale dna"); }
 
 @unbounded
 fn held_state(root: String) -> HeldState {
     let out = HeldState { };
     let j = dna::GitJournal { repo: root };
-    let declined = dna::GitJournal { repo: root };
     let mut refused = "\n";
     let mut i = 0;
-    while i < declined.revision() {
-        let e = declined.read(i);
-        if e.kind == "knowledge.declined" || e.kind == "knowledge.refused" { refused = refused + e.entity + "\n"; }
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.declined" || e.kind == "knowledge.refused" || e.kind == "knowledge.retired" { refused = refused + e.entity + "\n"; }
         i = i + 1;
     }
     i = 0;
     while i < j.revision() {
         let e = j.read(i);
+        let who = j.author_of(i);
+        if !held_machine(who) && !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
+        if e.kind == "person.retired" { out.retired = out.retired + e.entity + "\n"; }
+        if e.kind == "graph.retired" {
+            out.positions = std::str::replace(out.positions, "\n" + e.entity + "\n", "\n");
+            if std::str::starts_with(e.entity, "holds:") {
+                let bar = std::str::index_of(e.entity, "|");
+                if bar > 0 { out.holds = std::str::replace(out.holds, "\n" + e.entity[6..bar] + "\t" + e.entity[(bar + 1)..len(e.entity)] + "\n", "\n"); }
+            }
+        }
         let mut rows = "";
         if e.kind == "graph.node" || e.kind == "graph.edge" { rows = hole_row(e.kind, e.entity, e.body); }
         if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" && !std::str::contains(refused, "\n" + e.entity + "\n") {
@@ -104,13 +122,28 @@ fn held_state(root: String) -> HeldState {
             let row = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
             let entity = std::json::find_string_field(row, "entity");
-            if std::json::find_string_field(row, "kind") == "graph.node" && std::str::starts_with(entity, "position:") { out.positions = out.positions + entity + "\n"; }
+            if std::json::find_string_field(row, "kind") == "graph.node" && std::str::starts_with(entity, "position:") && !std::str::contains(out.positions, "\n" + entity + "\n") { out.positions = out.positions + entity + "\n"; }
             if std::str::starts_with(entity, "holds:") {
                 let bar = std::str::index_of(entity, "|");
-                out.holds = out.holds + entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)] + "\n";
+                let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
+                if !std::str::contains(out.holds, "\n" + pair + "\n") { out.holds = out.holds + pair + "\n"; }
             }
         }
         i = i + 1;
+    }
+    // the owners map's members are persons the record knows too
+    let owners = dna::Ownership { path: root + "/dna/org/owners", me_env: "" };
+    let names = owners.owners();
+    let mut k = 0;
+    while len(dna::nth_word(names, k)) > 0 {
+        let members = owners.members_of(dna::nth_word(names, k));
+        let mut m = 0;
+        while len(dna::nth_word(members, m)) > 0 {
+            let who = dna::nth_word(members, m);
+            if !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
+            m = m + 1;
+        }
+        k = k + 1;
     }
     return out;
 }
@@ -123,31 +156,67 @@ fn hold_sibling(position: String) -> String {
     return "";
 }
 
-fn hold_verb(root: String, name: String, holder: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna hold <position> <holder>"); }
+// Why `holder` may not hold `position` over what the record holds ("" when
+// they may); `warned` set when it is only a warning — the same holder as
+// the process's other seat, under `dna.trust = local`.
+type FillCheck { why: String = ""; warning: String = ""; }
+
+fn fill_check(root: String, position: String, holder: String) -> FillCheck {
+    let st = held_state(root);
+    if !std::str::contains(st.positions, "\n" + position + "\n") { return FillCheck { why: "`" + position + "` is no position the record states or proposes" }; }
+    if std::str::contains(holder, "|") || len(holder) == 0 { return FillCheck { why: "a holder is a person's name, with no `|`" }; }
+    if !std::str::contains(st.persons, "\n" + holder + "\n") { return FillCheck { why: holder + " is no person this record knows (no row in their name, and no owner's member)" }; }
+    if std::str::contains(st.retired, "\n" + holder + "\n") { return FillCheck { why: holder + " retired from this organism (person.retired)" }; }
+    let sibling = hold_sibling(position);
+    if len(sibling) > 0 && std::str::contains(st.holds, "\n" + sibling + "\t" + holder + "\n") {
+        let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
+        if trust_mode(root) != "local" { return FillCheck { why: "refused: " + why + " (dna.trust = " + trust_mode(root) + ")" }; }
+        return FillCheck { warning: why + " — allowed under dna.trust = local, where one person holds every role" };
+    }
+    return FillCheck { };
+}
+
+// `hale dna fill <position> <holder>`: a holder proposed, through the
+// organization, which proposes it to the Board (dna/core/assembly.hl,
+// `on_hold_requested`). The request is a row in the proposer's name; the
+// host beside the organization relays it until it is answered.
+@unbounded
+fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag: String, memory: dna::Memory) -> Answer {
+    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna fill <position> <holder> [project] [--as <who>]"); }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let position = if std::str::starts_with(name, "position:") { name } else { ops::graph_node_id("position", name) };
-    let st = held_state(root);
-    if !std::str::contains(st.positions, "\n" + position + "\n") { return fail("hold: `" + position + "` is no position the record states or proposes"); }
-    if std::str::contains("\n" + st.holds, "\n" + position + "\t" + holder + "\n") { return answer("hold: " + holder + " already holds " + position + ", or is proposed to\n"); }
-    let sibling = hold_sibling(position);
-    if len(sibling) > 0 && std::str::contains("\n" + st.holds, "\n" + sibling + "\t" + holder + "\n") {
-        let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
-        if trust_mode(root) != "local" { return fail("hold: refused: " + why + " (dna.trust = " + trust_mode(root) + ")"); }
-        eprintln("hale dna hold: warning: ", why, " — allowed under dna.trust = local, where one person holds every role");
+    let check = fill_check(root, position, holder);
+    if len(check.why) > 0 { return fail("fill: " + check.why); }
+    if len(check.warning) > 0 { eprintln("hale dna fill: warning: ", check.warning); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let request_id = "h" + hex(millis());
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request_id", request_id);
+    b.string_field("position", position);
+    b.string_field("holder", holder);
+    b.string_field("by", who);
+    b.end_object();
+    if organism_here(root, memory) {
+        let before = open_projection(root, seed, "", memory).rows();
+        if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+        // the organization answers from its bus; give a busy one a minute
+        let deadline = std::time::now() + 60;
+        while std::time::now() <= deadline {
+            let q = open_projection(root, seed, "", memory);
+            let r = find_after(q, before, " hold.proposed hold.refused ", request_id);
+            if r.seq >= 0 {
+                if r.kind == "hold.refused" { return fail("fill: refused: " + std::json::find_string_field(r.body, "why")); }
+                return answer("proposed " + holder + " to hold " + position + ": the Board ratifies it as " + std::json::find_string_field(r.body, "review_id") + " (`hale dna review` lists it under `holds`)\n");
+            }
+            std::time::sleep(150ms);
+        }
+        return fail("requested the hold, but the organization journaled no answer for " + request_id + " in time");
     }
-    let e = ops::GraphEdge { kind: "holds" };
-    e.member("position", position);
-    e.member("holder", holder);
-    let checked = ops::graph_edge_row(e.id(), e.body());
-    if !checked.ok { return fail("hold: " + checked.why); }
-    let d = ops::HoleDoc { name: name + " held by " + holder, target: position, text: holder + " holds " + name + "." };
-    d.question = "ratify " + holder + " holding the position `" + ops::show_name(position) + "`";
-    d.row("graph.edge", e.id(), e.body());
-    let rows = hole_rows(root, ops::hole_line(d.document(), d.question, "holds", "graph", d.name, d.target), "hale dna hold");
-    if len(rows) == 0 { return fail("hold: the receipt could not be kept"); }
-    let seeded = seed_rows(root, rows, "hold", memory);
-    if !seeded.ok { return seeded; }
-    return answer("proposed " + holder + " to hold " + position + ": a Board Review (`hale dna review` lists it under `holds`)\n");
+    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+    if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+    let s = sync_record(root, memory);
+    if !s.ok { return fail(s.summary); }
+    return answer("the hold of " + position + " by " + holder + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
 }

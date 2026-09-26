@@ -517,8 +517,41 @@ pub fn run(args: &[String]) -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        // GH #1091: `hale dna hold <position> <holder>`, proposed to the Board
-        Some("hold") => host_exec("hold", Path::new("."), &args[1..]),
+        // GH #1087: `hale dna route [--json] (<path>… | --diff <range>)`, the
+        // positions a change set must be signed by, from the graph
+        Some("route") => host_exec("route", Path::new("."), &args[1..]),
+        // GH #1091: `hale dna fill <position> <holder> [project] [--as <who>]`,
+        // a holder asked of the organization, which proposes it to the Board
+        Some("fill") => {
+            let mut words = Vec::new();
+            let mut forwarded = Vec::new();
+            let mut dir = PathBuf::from(".");
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                if a == "--as" {
+                    forwarded.push(a.clone());
+                    if let Some(v) = rest.next() {
+                        forwarded.push(v.clone());
+                    }
+                } else if a.starts_with('-') {
+                    eprintln!("hale dna fill: `{a}` is not a flag of fill (--as)\nusage: hale dna fill <position> <holder> [project] [--as <who>]");
+                    return ExitCode::from(2);
+                } else if words.len() < 2 {
+                    words.push(a.clone());
+                } else if words.len() == 2 && Path::new(a).is_dir() && dir == PathBuf::from(".") {
+                    dir = PathBuf::from(a);
+                } else {
+                    eprintln!("hale dna fill: `{a}` is neither a position, a holder nor a project directory\nusage: hale dna fill <position> <holder> [project] [--as <who>]");
+                    return ExitCode::from(2);
+                }
+            }
+            if words.len() < 2 {
+                eprintln!("usage: hale dna fill <position> <holder> [project] [--as <who>]");
+                return ExitCode::from(2);
+            }
+            words.extend(forwarded);
+            host_exec("fill", &dir, &words)
+        }
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
@@ -685,7 +718,10 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
-    eprintln!("       hale dna hold <position> <holder>  propose who holds a position, for the Board");
+    eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
+    eprintln!("                                    ask the organization to propose who holds a position, for the Board");
+    eprintln!("       hale dna route [--json] (<path>… | --diff <range>)");
+    eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
     eprintln!("                                    the org chart and the process model, as queries over memory");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
@@ -2146,6 +2182,7 @@ main locus Org {{
         dna::PressureRaised: nats::NatsAdapter {{ }};
         dna::ConcernRaised: nats::NatsAdapter {{ }};
         dna::PracticeRequested: nats::NatsAdapter {{ }};
+        dna::HoldRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeNodeRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
