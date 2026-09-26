@@ -1680,7 +1680,10 @@ it the entrypoint composes (GH #1104 piece 5): a library's internal
 bus is not the application's API, and a head importing its core must
 not serve the core's topics as commands. An imported *topic* a seed's
 own locus subscribes or publishes is served as any other, under its
-qualified name. A subscription by literal subject
+qualified name. An imported seed's `main locus` is not the entrypoint
+either: renamed with its seed, it does not count toward the one-main
+rule, and an `api:` entry it carries is inert — a composed head that
+imports the standalone head declares its own entry to get a socket. A subscription by literal subject
 (`subscribe "log.**" ...`) names no topic and is not part of the
 API; a command reaches the loci that subscribe the topic by name,
 not those hearing it through a parent topic. `hale run --api
