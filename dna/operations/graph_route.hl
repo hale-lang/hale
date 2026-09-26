@@ -12,8 +12,12 @@
 //                   consuming process, the processes a consuming seed
 //                   belongs to, the positions reviewing a consuming
 //                   contract; and the `board` where the contract is law
-//                   (a ratified practice is bound to it);
-//   a document    — every position that `reviews` it.
+//                   (a practice ratified as law — its receipt says
+//                   `law: true` — is bound to it; advice is not law);
+//   a document    — every position that `reviews` it;
+//   a deployment  — its file (the file the deployment was read from),
+//                   signed by the `operator` it unfolds into, against the
+//                   gates guarding it.
 //
 // A process's `dev` never signs for it: a `/dev` position is never a
 // signer. The evidence a verdict is given against is the run of every gate
@@ -48,7 +52,7 @@ fn route_has(lines: String, line: String) -> Bool { return std::str::contains("\
 
 locus Router {
     params {
-        nodes: String = ""; // `<id>\t<kind>\t<name>` per line
+        nodes: String = ""; // `<id>\t<kind>\t<name>\t<source>` per line
         unfold: String = "";
         reviews: String = "";
         holds: String = "";
@@ -61,7 +65,7 @@ locus Router {
     fn load(json: String) {
         let mut it = std::json::array_first(std::json::find_field_raw(json, "nodes"));
         while !it.done {
-            self.nodes = self.nodes + std::json::find_string_field(it.element, "id") + "\t" + std::json::find_string_field(it.element, "kind") + "\t" + std::json::find_string_field(it.element, "name") + "\n";
+            self.nodes = self.nodes + std::json::find_string_field(it.element, "id") + "\t" + std::json::find_string_field(it.element, "kind") + "\t" + std::json::find_string_field(it.element, "name") + "\t" + std::json::find_string_field(it.element, "source") + "\n";
             it = std::json::array_next(it);
         }
         self.unfold = route_pairs(std::json::find_field_raw(json, "unfold"));
@@ -69,13 +73,15 @@ locus Router {
         self.holds = route_pairs(std::json::find_field_raw(json, "holds"));
         self.meets = std::json::find_field_raw(json, "meets");
         self.gates = std::json::find_field_raw(json, "gates");
-        self.law = "\n" + show_strings(std::json::find_field_raw(json, "law"));
     }
     // The node a path names: a contract (its file or a file under its
-    // directory), else a document, else the seed holding it; "" for none.
+    // directory), else a document, else a deployment (the file it was read
+    // from, when that is no document), else the seed holding it; "" for
+    // none.
     @unbounded
     fn node_of(path: String) -> String {
         let mut seed = "";
+        let mut deployment = "";
         let mut rest = self.nodes;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
@@ -86,11 +92,16 @@ locus Router {
             let after = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(after, "\t");
             let kind = after[0..t2];
-            let name = after[(t2 + 1)..len(after)];
+            let tail = after[(t2 + 1)..len(after)];
+            let t3 = std::str::index_of(tail, "\t");
+            let name = tail[0..t3];
+            let source = tail[(t3 + 1)..len(tail)];
             if kind == "contract" && (path == name || std::str::starts_with(path, name + "/")) { return id; }
             if kind == "document" && path == name { return id; }
+            if kind == "deployment" && len(source) > 0 && !std::str::ends_with(source, ".md") && path == source { deployment = id; }
             if kind == "seed" && (path == name || std::str::starts_with(path, name + "/")) && len(name) > len(seed) { seed = name; }
         }
+        if len(deployment) > 0 { return deployment; }
         return if len(seed) > 0 { "seed:" + seed } else { "" };
     }
     // The `<b>`s of the pairs whose `<a>` is `a`, or with `reverse` the
@@ -171,7 +182,7 @@ locus Router {
     @unbounded
     fn path(p: String) {
         let node = self.node_of(p);
-        if len(node) == 0 { self.route.fallback = self.route.fallback + p + "\tnames no seed, contract or document the graph holds\n"; return; }
+        if len(node) == 0 { self.route.fallback = self.route.fallback + p + "\tnames no seed, contract, document or deployment file the graph holds\n"; return; }
         let mut signed = 0;
         if std::str::starts_with(node, "seed:") {
             let mut ps = self.related(self.unfold, node, true);
@@ -179,6 +190,15 @@ locus Router {
                 let nl = std::str::index_of(ps, "\n");
                 signed = signed + self.sign_all(self.reviewers_of(ps[0..nl]), "reviews " + show_name(ps[0..nl]) + ", whose seed " + show_name(node) + " it changes");
                 ps = ps[(nl + 1)..len(ps)];
+            }
+        } else if std::str::starts_with(node, "deployment:") {
+            // a deployment's file: the operator it unfolds into signs it
+            let mut under = self.related(self.unfold, node, false);
+            while len(under) > 0 {
+                let cut = std::str::index_of(under, "\n");
+                let operator = under[0..cut];
+                under = under[(cut + 1)..len(under)];
+                if std::str::starts_with(operator, "position:") && std::str::ends_with(operator, "/operator") && self.sign(operator, "operates " + show_name(node)) { signed = signed + 1; }
             }
         } else {
             signed = signed + self.sign_all(self.related(self.reviews, node, true), "signs " + show_name(node));
@@ -205,15 +225,20 @@ locus Router {
             if route_has(show_strings(std::json::find_field_raw(g.element, "guarded")), node) && !route_has(self.route.evidence, gate) { self.route.evidence = self.route.evidence + gate + "\n"; }
             g = std::json::array_next(g);
         }
-        if signed == 0 { self.route.fallback = self.route.fallback + p + "\tno position signs " + show_name(node) + "\n"; }
+        if signed == 0 { self.route.fallback = self.route.fallback + p + "\tno position " + (if std::str::starts_with(node, "deployment:") { "operates " } else { "signs " }) + show_name(node) + "\n"; }
     }
 }
 
 // The route for `paths` (one per line) over the routing query's answer.
 @unbounded
-fn graph_route(json: String, paths: String) -> Route {
+// `law` is the contracts (and other nodes) a practice ratified as law is
+// bound to, one per line: the caller reads each bound practice's receipt
+// (`law_targets`), for memory holds a practice's binding but not whether
+// the Board ratified it as law or as advice.
+fn graph_route(json: String, paths: String, law: String) -> Route {
     let r = Router { };
     r.load(json);
+    r.law = "\n" + law;
     let mut rest = paths;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
@@ -231,3 +256,9 @@ fn route_holders(json: String, position: String) -> String {
     r.holds = route_pairs(std::json::find_field_raw(json, "holds"));
     return show_list(r.related(r.holds, position, false), false);
 }
+
+// The `<idea>\t<target>` pairs of the routing query's `bound`: a ratified
+// practice and what it is bound to, for the caller to keep those ratified
+// as law.
+@unbounded
+fn route_bound(json: String) -> String { return route_pairs(std::json::find_field_raw(json, "bound")); }

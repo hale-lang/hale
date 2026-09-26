@@ -244,15 +244,15 @@ main locus App {
         return self.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: performer, attempt_id: attempt_id });
     }
     run() {
-        std::test::assert_eq_str(self.cat.define("ship", 1, 1, "ship it"), "", "ship");
+        std::test::assert_eq_str(self.cat.define("ship", 1, "record", "ship it"), "", "ship");
         std::test::assert_eq_str(self.cat.leaf("ship", 1, 0, "a", dna::WorkRequest { objective: "build", target: "tree" }, 1), "", "a");
         std::test::assert_eq_str(self.cat.leaf("ship", 1, 0, "b", dna::WorkRequest { objective: "test", target: "tree" }, 1), "", "b");
-        std::test::assert_eq_str(self.cat.define("retry", 1, 1, "try twice"), "", "retry");
+        std::test::assert_eq_str(self.cat.define("retry", 1, "record", "try twice"), "", "retry");
         std::test::assert_eq_str(self.cat.leaf("retry", 1, 0, "r", dna::WorkRequest { objective: "ask alice" }, 2), "", "r");
-        std::test::assert_eq_str(self.owner.cat.define("ship", 1, 1, "ship it"), "", "ship (owner)");
+        std::test::assert_eq_str(self.owner.cat.define("ship", 1, "record", "ship it"), "", "ship (owner)");
         std::test::assert_eq_str(self.owner.cat.leaf("ship", 1, 0, "a", dna::WorkRequest { objective: "build", target: "tree" }, 1), "", "a (owner)");
         std::test::assert_eq_str(self.owner.cat.leaf("ship", 1, 0, "b", dna::WorkRequest { objective: "test", target: "tree" }, 1), "", "b (owner)");
-        std::test::assert_eq_str(self.owner.cat.define("retry", 1, 1, "try twice"), "", "retry (owner)");
+        std::test::assert_eq_str(self.owner.cat.define("retry", 1, "record", "try twice"), "", "retry (owner)");
         std::test::assert_eq_str(self.owner.cat.leaf("retry", 1, 0, "r", dna::WorkRequest { objective: "ask alice" }, 2), "", "r (owner)");
 
         // ---- t1: one immediate leaf, one delayed leaf — the step waits

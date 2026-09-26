@@ -55,7 +55,7 @@ locus UsageCases {
         // an execution: one Work tried twice, the second attempt accepted;
         // the Leader's plan of the ask it was born of
         let cat = dna::WorkflowCatalog { };
-        std::test::assert_eq_str(cat.define("monthly-close", 7, 1, "Close the month"), "", "definition");
+        std::test::assert_eq_str(cat.define("monthly-close", 7, "record", "Close the month"), "", "definition");
         let bank = dna::WorkRequest { objective: "Reconcile bank feed", target: "org/finance", output_contract: "reconciliation" };
         std::test::assert_eq_str(cat.leaf("monthly-close", 7, 0, "bank", bank, 2), "", "bank member");
         let limits = dna::AdmissionLimits { };

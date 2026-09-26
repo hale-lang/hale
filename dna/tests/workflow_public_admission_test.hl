@@ -184,7 +184,7 @@ main locus App {
             genome_seed: ".", planned: planned
         };
         // an authored definition: two steps, two service leaves each
-        std::test::assert_eq_str(self.dna.catalog.define("duo", 1, 2, "two steps, two assessments each"), "", "duo");
+        std::test::assert_eq_str(self.dna.catalog.define("duo", 1, "record record", "two steps, two assessments each"), "", "duo");
         std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 0, "a", dna::WorkRequest { objective: "assess the storage", requires: "analysis" }, 1), "", "a");
         std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 0, "b", dna::WorkRequest { objective: "assess the network", requires: "analysis" }, 1), "", "b");
         std::test::assert_eq_str(self.dna.catalog.leaf("duo", 1, 1, "c", dna::WorkRequest { objective: "assess the rollout", requires: "analysis" }, 1), "", "c");
@@ -195,9 +195,9 @@ main locus App {
     // The delayed definitions, on whichever assembly is running now (a
     // catalog is the assembly's own).
     fn define_nest() {
-        std::test::assert_eq_str(self.dna.catalog.define("one", 1, 1, "one delayed assessment"), "", "one");
+        std::test::assert_eq_str(self.dna.catalog.define("one", 1, "record", "one delayed assessment"), "", "one");
         std::test::assert_eq_str(self.dna.catalog.leaf("one", 1, 0, "a", dna::WorkRequest { objective: "delayed", requires: "analysis" }, 1), "", "one a");
-        std::test::assert_eq_str(self.dna.catalog.define("nest", 1, 1, "a cancelled child"), "", "nest");
+        std::test::assert_eq_str(self.dna.catalog.define("nest", 1, "record", "a cancelled child"), "", "nest");
         std::test::assert_eq_str(self.dna.catalog.child("nest", 1, 0, "k", "one", 1), "", "nest k");
     }
     fn boot_holding(repo: String, hold: Bool, kinds: String, entity: String) {
@@ -343,9 +343,9 @@ main locus App {
         //      analysis, the second a person's — and a child workflow with
         //      its own `x`: the second step's Work is admitted as a human's
         //      and waits as a case; the child's `x` is the service's
-        std::test::assert_eq_str(self.dna.catalog.define("kid", 1, 1, "one assessment"), "", "kid");
+        std::test::assert_eq_str(self.dna.catalog.define("kid", 1, "record", "one assessment"), "", "kid");
         std::test::assert_eq_str(self.dna.catalog.leaf("kid", 1, 0, "x", dna::WorkRequest { objective: "assess the child's part", requires: "analysis" }, 1), "", "kid x");
-        std::test::assert_eq_str(self.dna.catalog.define("same-key", 1, 2, "the same key in two steps and a child"), "", "same-key");
+        std::test::assert_eq_str(self.dna.catalog.define("same-key", 1, "record record", "the same key in two steps and a child"), "", "same-key");
         std::test::assert_eq_str(self.dna.catalog.leaf("same-key", 1, 0, "x", dna::WorkRequest { objective: "assess", requires: "analysis" }, 1), "", "s0 x");
         std::test::assert_eq_str(self.dna.catalog.leaf("same-key", 1, 1, "x", dna::WorkRequest { objective: "a person decides", requires: "human" }, 1), "", "s1 x");
         std::test::assert_eq_str(self.dna.catalog.child("same-key", 1, 1, "k", "kid", 1), "", "s1 k");

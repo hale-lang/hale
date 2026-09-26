@@ -139,9 +139,9 @@ main locus App {
             work: dna::WorkSystem { service: FileStore { path: store, die_on: effect }, service_reconciler: FileStore { path: store } },
             genome_seed: "."
         };
-        let d1 = self.one.catalog.define("close-month", 1, 2, "close the month");
-        let d2 = self.one.catalog.define("collect-receipts", 1, 2, "");
-        let d3 = self.one.catalog.define("chase-supplier", 1, 1, "");
+        let d1 = self.one.catalog.define("close-month", 1, "record record", "close the month");
+        let d2 = self.one.catalog.define("collect-receipts", 1, "record record", "");
+        let d3 = self.one.catalog.define("chase-supplier", 1, "record", "");
         let l1 = self.one.catalog.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" }, 1);
         let l2 = self.one.catalog.child("close-month", 1, 0, "b", "collect-receipts", 1);
         let l3 = self.one.catalog.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries", requires: "analysis" }, 1);

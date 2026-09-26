@@ -60,9 +60,24 @@ main locus App {
     fn raise(request: String, what: String) {
         self.raise_at(request, what, 2);
     }
+    // A concern is an execution of concern-escalate (GH #995): after the
+    // delivery is handled, every execution it admitted is waited for,
+    // bounded, until it settled.
     fn raise_at(request: String, what: String, severity: Int) {
         dna::ConcernRaised <- dna::Concern { source: "org/app/worker", what: what, severity: severity, request: request };
         std::time::sleep(150ms);
+        let deadline = std::time::now() + 20;
+        while std::time::now() <= deadline && self.count("workflow.admitted") > self.count("workflow.settled") { std::time::sleep(50ms); }
+    }
+    @unbounded
+    fn count(kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            if self.dna.journal.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
     }
     run() {
         // ---- the id is a field of the row, not a shape in its text

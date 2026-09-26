@@ -191,11 +191,11 @@ main locus App {
         }
     }
     fn define() {
-        std::test::assert_eq_str(self.cat.define("staff", 1, 1, "two jobs and a wait"), "", "staff");
+        std::test::assert_eq_str(self.cat.define("staff", 1, "record", "two jobs and a wait"), "", "staff");
         std::test::assert_eq_str(self.cat.leaf("staff", 1, 0, "h1", dna::WorkRequest { objective: "file the receipts" }, 1), "", "h1");
         std::test::assert_eq_str(self.cat.leaf("staff", 1, 0, "h2", dna::WorkRequest { objective: "call the supplier" }, 1), "", "h2");
         std::test::assert_eq_str(self.cat.leaf("staff", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "s");
-        std::test::assert_eq_str(self.cat.define("shared", 1, 1, "two jobs for another owner's person, and a wait"), "", "shared");
+        std::test::assert_eq_str(self.cat.define("shared", 1, "record", "two jobs for another owner's person, and a wait"), "", "shared");
         std::test::assert_eq_str(self.cat.leaf("shared", 1, 0, "h1", dna::WorkRequest { objective: "north: file the receipts" }, 1), "", "shared h1");
         std::test::assert_eq_str(self.cat.leaf("shared", 1, 0, "h2", dna::WorkRequest { objective: "north: call the supplier" }, 1), "", "shared h2");
         std::test::assert_eq_str(self.cat.leaf("shared", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "shared s");

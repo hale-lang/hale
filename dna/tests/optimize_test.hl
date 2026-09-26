@@ -91,7 +91,11 @@ main locus App {
         let r1 = self.last(self.one.journal, "org.reviewed");
         std::test::assert(std::str::contains(r1, "\"outcome\": \"clean\"") && std::str::contains(r1, "\"proposal\": \"\""), "clean is recorded: " + r1);
         std::test::assert(std::str::contains(r1, "asks planned: 0") && std::str::contains(r1, "record rows: "), "the signals the leader read are in the row: " + r1);
-        std::test::assert_eq_int(self.count(self.one.journal, "task.born"), 0, "no work for the sake of activity");
+        // the pass is an execution of optimize-walk (GH #995): its own Task,
+        // and nothing asked
+        std::test::assert_eq_int(self.count(self.one.journal, "workflow.admitted"), 1, "the pass is one execution");
+        std::test::assert(std::str::contains(self.last(self.one.journal, "workflow.admitted"), "\"definition\": \"optimize-walk\""), "of optimize-walk: " + self.last(self.one.journal, "workflow.admitted"));
+        std::test::assert_eq_int(self.count(self.one.journal, "intent.offered"), 0, "no work for the sake of activity");
         std::test::assert_eq_int(self.lead_two.optimizations, 0, "the other organism's leader heard nothing: keyed apart");
 
         // ---- a proposal: one small change, entering as an ask in the leader's name
@@ -99,14 +103,14 @@ main locus App {
         std::time::sleep(600ms);
         let r2 = self.last(self.two.journal, "org.reviewed");
         std::test::assert(std::str::contains(r2, "\"outcome\": \"proposed\"") && std::str::contains(r2, "\"proposal\": \"add a secretary position that triages asks before the leader plans them\"") && std::str::contains(r2, "\"by\": \"leader\""), "the proposal is recorded: " + r2);
-        std::test::assert_eq_int(self.count(self.two.journal, "workflow.admitted"), 1, "and became one ask (card 18: admitted as a workflow)");
+        std::test::assert_eq_int(self.count(self.two.journal, "workflow.admitted"), 2, "and became one ask beside the pass (card 18: admitted as a workflow)");
         std::test::assert(std::str::contains(self.last(self.two.journal, "workflow.admitted"), "add a secretary position"), "the ask is the proposal: " + self.last(self.two.journal, "workflow.admitted"));
         std::test::assert(std::str::contains(self.last(self.two.journal, "intent.offered"), "add a secretary position"), "offered as intent");
         // the ask took the road every ask takes: planned by the leader —
         // here as a person's job, so it was handed rather than mutated
-        std::test::assert_eq_str(self.two.ask_plan_of("t1").kind, "person", "planned as a person's job, the word bound in the admission");
-        std::test::assert(std::str::contains(self.last(self.two.journal, "task.handed"), "\"case\": \"t1.s0.p\""), "handed as its case: " + self.last(self.two.journal, "task.handed"));
-        std::test::assert_eq_int(self.count(self.one.journal, "task.born"), 0, "the clean organism stayed clean");
+        std::test::assert_eq_str(self.two.ask_plan_of("t2").kind, "person", "planned as a person's job, the word bound in the admission");
+        std::test::assert(std::str::contains(self.last(self.two.journal, "task.handed"), "\"case\": \"t2.s0.p\""), "handed as its case: " + self.last(self.two.journal, "task.handed"));
+        std::test::assert_eq_int(self.count(self.one.journal, "intent.offered"), 0, "the clean organism stayed clean");
     }
 }
 fn main() { App { }; }

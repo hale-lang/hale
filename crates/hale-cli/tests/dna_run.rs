@@ -67,7 +67,10 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
         let p = v["processes"].as_array()?.iter().find(|p| p["name"] == "org")?;
         Some(p["loci"].as_array()?.iter().map(|l| l["type"].as_str().unwrap_or("").to_string()).collect())
     };
-    let deadline = Instant::now() + Duration::from_secs(90);
+    // the host's build when this toolchain's embedded DNA is new to the
+    // cache, the organization's against the whole vendored core, then iris
+    // over its process: the bound dna_knowledge gives the same start
+    let deadline = Instant::now() + Duration::from_secs(180);
     let mut snap = String::new();
     while Instant::now() < deadline {
         let s = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");

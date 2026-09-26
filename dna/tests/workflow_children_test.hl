@@ -224,9 +224,9 @@ main locus App {
     }
     run() {
         // ---- the canonical example, bound (contract §6)
-        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
-        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
-        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.define("close-month", 1, "record record", "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, "record record", ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, "record", ""), "", "chase-supplier");
         std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 1), "", "a");
         std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
         std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");

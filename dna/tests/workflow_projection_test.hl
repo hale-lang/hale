@@ -113,9 +113,9 @@ main locus App {
     }
     run() {
         // ---- the canonical example, bound
-        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
-        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
-        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.define("close-month", 1, "record record", "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, "record record", ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, "record", ""), "", "chase-supplier");
         std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "a");
         std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
         std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
@@ -142,9 +142,9 @@ main locus App {
         let recipe4_c = self.cat.encode_bound_under("t4.s0.b.s1.c");
         // the same execution expanded from a catalog whose child leaf says
         // something else, and from one with a leaf more
-        std::test::assert_eq_str(self.alt.define("close-month", 1, 2, ""), "", "alt");
-        std::test::assert_eq_str(self.alt.define("collect-receipts", 1, 2, ""), "", "alt");
-        std::test::assert_eq_str(self.alt.define("chase-supplier", 1, 1, ""), "", "alt");
+        std::test::assert_eq_str(self.alt.define("close-month", 1, "record record", ""), "", "alt");
+        std::test::assert_eq_str(self.alt.define("collect-receipts", 1, "record record", ""), "", "alt");
+        std::test::assert_eq_str(self.alt.define("chase-supplier", 1, "record", ""), "", "alt");
         std::test::assert_eq_str(self.alt.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "alt a");
         std::test::assert_eq_str(self.alt.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "alt b");
         std::test::assert_eq_str(self.alt.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "alt d");
@@ -154,9 +154,9 @@ main locus App {
         let xa = self.alt.expand("t1", "close-month", 1, self.limits);
         std::test::assert(xa.ok, "the altered catalog expands: " + xa.why);
         let recipe_b_altered = self.alt.encode_bound_under("t1.s0.b");
-        std::test::assert_eq_str(self.wider.define("close-month", 1, 2, ""), "", "wider");
-        std::test::assert_eq_str(self.wider.define("collect-receipts", 1, 2, ""), "", "wider");
-        std::test::assert_eq_str(self.wider.define("chase-supplier", 1, 1, ""), "", "wider");
+        std::test::assert_eq_str(self.wider.define("close-month", 1, "record record", ""), "", "wider");
+        std::test::assert_eq_str(self.wider.define("collect-receipts", 1, "record record", ""), "", "wider");
+        std::test::assert_eq_str(self.wider.define("chase-supplier", 1, "record", ""), "", "wider");
         std::test::assert_eq_str(self.wider.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "wider a");
         std::test::assert_eq_str(self.wider.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "wider b");
         std::test::assert_eq_str(self.wider.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "wider d");
@@ -168,8 +168,8 @@ main locus App {
         std::test::assert(xw.ok, "the wider catalog expands: " + xw.why);
         let recipe_b_wider = self.wider.encode_bound_under("t1.s0.b");
         // and from one where the child has one step instead of two
-        std::test::assert_eq_str(self.narrow.define("close-month", 1, 2, ""), "", "narrow");
-        std::test::assert_eq_str(self.narrow.define("collect-receipts", 1, 1, ""), "", "narrow");
+        std::test::assert_eq_str(self.narrow.define("close-month", 1, "record record", ""), "", "narrow");
+        std::test::assert_eq_str(self.narrow.define("collect-receipts", 1, "record", ""), "", "narrow");
         std::test::assert_eq_str(self.narrow.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "narrow a");
         std::test::assert_eq_str(self.narrow.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "narrow b");
         std::test::assert_eq_str(self.narrow.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "narrow d");
@@ -390,7 +390,7 @@ main locus App {
         let levels = 66;
         let mut k = 0;
         while k < levels {
-            std::test::assert_eq_str(self.deep.define("d" + to_string(k), 1, 1, ""), "", "d" + to_string(k));
+            std::test::assert_eq_str(self.deep.define("d" + to_string(k), 1, "record", ""), "", "d" + to_string(k));
             if k + 1 < levels {
                 std::test::assert_eq_str(self.deep.child("d" + to_string(k), 1, 0, "n", "d" + to_string(k + 1), 1), "", "n" + to_string(k));
             } else {

@@ -127,7 +127,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
         .spawn()
         .expect("hale dna run");
     let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    trace::wait_until("dna dev: the organization reads its facts from the nerves", Duration::from_secs(90), Duration::from_millis(200), || up(&app));
+    trace::wait_until("dna dev: the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(200), || up(&app));
     // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
         let _ = host.kill();

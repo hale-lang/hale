@@ -13,8 +13,12 @@ import "../operations" as ops;
 // exact append, slower still on a loaded machine; sixteen back-to-back
 // attempts could all land inside the organism's writes and give up with
 // "the Record kept changing" (the full DNA suite on a laptop did, GH #970).
-// Waiting a little longer each time lets one land; the sixteen together
-// wait about twelve seconds at most.
+// Waiting a little longer each time lets one land. Every decision and
+// every concern is an execution of a few steps (GH #995), and an
+// organization that restarts resumes each unfinished one at once: on a
+// git-backed record that burst is a commit per row, so the attempts
+// together wait up to about fifty seconds.
+const STALE_TRIES: Int = 32;
 fn stale_pause(tries: Int) {
     let mut w = 1;
     while w < tries {
@@ -43,6 +47,13 @@ fn hex(n: Int) -> String {
 
 fn millis() -> Int {
     return std::time::monotonic_ns() / 1000000;
+}
+
+// A request's id from the request itself (GH #1087 review): its digest at
+// the record's head, so two requests the same millisecond never share one
+// and the same request written twice at one head is one request.
+fn request_digest_id(root: String, prefix: String, request: String) -> String {
+    return prefix + dna::digest_of(record_head(root).id + "\n" + request)[7..19];
 }
 
 fn no_organism(root: String) -> String {
@@ -106,7 +117,7 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
     if len(no_head) > 0 { return fail(no_head); }
     let mut stage = 0;
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -218,7 +229,7 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -276,7 +287,7 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -397,7 +408,7 @@ fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_fl
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -448,7 +459,7 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let mut tries = 0;
-    while tries < 16 {
+    while tries < STALE_TRIES {
         tries = tries + 1;
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
@@ -921,25 +932,55 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
-    // GH #596 C, #994: `design` or `operating` names every pending seeded
-    // practice of that family; each is decided by its own verdict, in
-    // turn — a convenience over the individual Reviews, never a batch
-    // object in the record
+    // GH #596 C, #994: a group (`design`, `operating`, `purpose`, a
+    // repository's holes…) names every pending Review in it; each is
+    // decided by its own verdict — a convenience over the individual
+    // Reviews, never a batch object in the record. Every verdict is written
+    // first and the answers are waited for once (GH #995): each decision is
+    // an execution the organization runs, and one verdict waiting on the
+    // ones before it would wait on their executions too.
     if seeded_group(id) {
         let ids = p.review_ids();
         let n = list_len(ids);
+        let before = p.rows();
         let mut out = "";
+        let mut asked = "";
+        let mut count = 0;
         let mut i = 0;
         while i < n {
             let r = p.review_of(nth(ids, i));
             if r.state == "pending" && r.group == id {
-                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", no_wait, memory);
+                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", true, memory);
                 if !one.ok { return one; }
-                out = out + one.text;
+                asked = asked + r.id + "\n";
+                count = count + 1;
+                if no_wait { out = out + one.text; }
             }
             i = i + 1;
         }
-        if len(out) == 0 { return fail("no pending " + id + " Review"); }
+        if len(asked) == 0 { return fail("no pending " + id + " Review"); }
+        if no_wait { return answer(out); }
+        let deadline = std::time::now() + 60 + 5 * count;
+        let mut left = asked;
+        while len(left) > 0 {
+            if !local { let s = sync_record(root, memory); }
+            let q = open_projection(root, seed, "", memory);
+            let mut still = "";
+            let mut rest = left;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let rid = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+                let e = find_after(q, before, " review.settled review.refused ", rid);
+                if e.seq < 0 { still = still + rid + "\n"; }
+                else if e.kind == "review.settled" { out = out + "review " + rid + " settled: " + e.body + "\n"; }
+                else { out = out + "review " + rid + " refused the verdict: " + e.body + "\n"; }
+            }
+            left = still;
+            if len(left) == 0 { break; }
+            if std::time::now() > deadline { return fail(out + "wrote " + to_string(count) + " verdict(s), but the organism journaled no answer in time for: " + std::str::replace(dna::trim_nl(left), "\n", ", ")); }
+            std::time::sleep(if local { 250ms } else { 1000ms });
+        }
         return answer(out);
     }
     let r = p.review_of(id);
@@ -971,7 +1012,10 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         if !s.ok { return fail(s.summary); }
     }
     if no_wait { return answer("verdict " + verdict + " on " + id + " by " + reviewer + " written into the record; the Review answers there\n"); }
-    let deadline = std::time::now() + (if local { 20 } else { 60 });
+    // the organism answers after the steps it is running, and on a
+    // git-backed record each of their rows is a commit (GH #995): a local
+    // organism is given the time a remote one is
+    let deadline = std::time::now() + 60;
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, seed, "", memory);
@@ -1053,7 +1097,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
     if sub == "propose" {
         if len(name) == 0 || len(text) == 0 { return fail(usage); }
         let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-        let request_id = "p" + hex(millis());
+        let request_id = request_digest_id(root, "p", name + "\n" + text + "\n" + who + "\n" + because + "\n" + supersedes);
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("request_id", request_id);

@@ -237,6 +237,9 @@ fn main() {
     } else if verb == "graph-ingest" {
         // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
         ans = graph_ingest_verb(root, word(a, 0), memory);
+    } else if verb == "purpose-propose" {
+        // GH #995: the declared purpose, proposed for the Board at init
+        ans = purpose_propose_verb(root, word(a, 0), memory);
     } else if verb == "design-upgrade" {
         // `hale dna init` / `upgrade`: the toolchain's design as proposals
         ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);
@@ -281,6 +284,9 @@ fn main() {
         ans = models_verb(root, std::env::var("HALE_BIN"));
     } else if verb == "work" {
         ans = work_verb(root, std::env::var("HALE_BIN"));
+    } else if verb == "definitions" {
+        // GH #995: the workflow catalog, with revisions and each step's store
+        ans = definitions_verb(root, std::env::var("HALE_BIN"), has_flag(a, "--json"));
     }
     if ans.ok {
         print(ans.text);

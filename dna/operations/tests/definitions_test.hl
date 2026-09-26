@@ -24,9 +24,9 @@ fn invalid(document: String, label: String) {
 }
 fn test_real_catalog() {
     let cat = dna::WorkflowCatalog { };
-    let a = cat.define("root", 1, 2, "Close the month · équipe\n<literal>");
-    let b = cat.define("root", 2, 1, "Next revision");
-    let c = cat.define("child", 9007199254740993, 1, "Child exact revision");
+    let a = cat.define("root", 1, "record record", "Close the month · équipe\n<literal>");
+    let b = cat.define("root", 2, "record", "Next revision");
+    let c = cat.define("child", 9007199254740993, "record", "Child exact revision");
     let work = dna::WorkRequest { objective: "Verify \"quoted\" text\nsecond line", context_digest: "context-digest", knowledge_bindings: "opaque bindings", output_contract: "Assessment", data_class: "internal", requires: "judgment", target: "org/finance", cost_ceiling: 9223372036854775807 };
     let d = cat.leaf("root", 1, 0, "reconcile", work, 3);
     let e = cat.child("root", 1, 0, "collect", "child", 9007199254740993);
@@ -67,7 +67,7 @@ fn test_real_catalog() {
     std::test::assert_eq_str(cat.bound_node("already-admitted/wf1/s1/post").objective, "post", "preexisting bound content untouched");
     std::test::assert_eq_int(read.catalog.bound_count(), 0, "inspection materializes no execution recipe");
     std::test::assert(std::str::contains(read.basis_json(), "trusted_host_claims") && std::str::contains(read.basis_json(), "loaded-source-a"), "provenance remains explicit host claims");
-    let later = cat.define("later", 1, 1, "new provider state");
+    let later = cat.define("later", 1, "record", "new provider state");
     let later_leaf = cat.leaf("later", 1, 0, "one", dna::WorkRequest { objective: "later" }, 1);
     std::test::assert(read.load() && read.count() == 3, "captured view does not refresh itself after provider changes");
     let fresh = ops::Definitions { provider: provider };
@@ -101,10 +101,10 @@ fn test_states_and_capture() {
 }
 fn test_validation() {
     let cat = dna::WorkflowCatalog { };
-    let a = cat.define("root", 1, 1, "ASCII A");
+    let a = cat.define("root", 1, "record", "ASCII A");
     let b = cat.leaf("root", 1, 0, "one", dna::WorkRequest { objective: "leaf" }, 1);
     let doc = cat.encode();
-    invalid("{\"format\":\"dna.workflow-definitions/1\"}", "missing arrays");
+    invalid("{\"format\":\"dna.workflow-definitions/2\"}", "missing arrays");
     invalid(doc + "{}", "trailing JSON");
     invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": true"), "boolean integer");
     invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": 1.0"), "decimal integer");
@@ -113,7 +113,7 @@ fn test_validation() {
     invalid(std::str::replace(doc, "\"objective\": \"leaf\"", "\"objective\": null"), "missing text type");
     invalid(std::str::replace(doc, "\"objective\": \"leaf\"", "\"objective\": \"leaf\", \"private\": \"x\""), "unknown field");
     invalid(std::str::replace(doc, "\"title\": \"ASCII A\"", "\"title\": \"ASCII A\", \"id title\": \"joined\""), "unknown joined workflow field");
-    invalid(std::str::replace(doc, "\"format\": \"dna.workflow-definitions/1\"", "\"format\": \"dna.workflow-definitions/1\", \"format workflows\": []"), "unknown joined catalog field");
+    invalid(std::str::replace(doc, "\"format\": \"dna.workflow-definitions/2\"", "\"format\": \"dna.workflow-definitions/2\", \"format workflows\": []"), "unknown joined catalog field");
     invalid(std::str::replace(doc, "ASCII A", "bad\\q"), "bad escape");
     invalid(std::str::replace(doc, "ASCII A", "bad\\u0000"), "NUL escape");
     invalid(std::str::replace(doc, "\"workflow\": \"root\"", "\"workflow\": \"absent\""), "orphan member");
@@ -127,25 +127,25 @@ fn test_validation() {
     let source = ops::DeclaredWorkflowCatalog { catalog: cat, provenance: provenance() };
     let budget = ops::Definitions { provider: source, bounds: ops::DefinitionReadBounds { max_document_bytes: 8 } };
     std::test::assert(!budget.load() && budget.status() == "unavailable", "document byte budget explicit");
-    let c = cat.define("broken", 1, 1, "unrelated invalid definition");
+    let c = cat.define("broken", 1, "record", "unrelated invalid definition");
     invalid(cat.encode(), "every definition validated including disconnected root");
     let capped = ops::Definitions { provider: source, bounds: ops::DefinitionReadBounds { max_definitions: 1 } };
     std::test::assert(!capped.load() && capped.status() == "unavailable", "definition count budget explicit");
     let cycle = dna::WorkflowCatalog { };
-    let x = cycle.define("first", 1, 1, "");
-    let y = cycle.define("second", 1, 1, "");
+    let x = cycle.define("first", 1, "record", "");
+    let y = cycle.define("second", 1, "record", "");
     let z = cycle.child("first", 1, 0, "next", "second", 1);
     let w = cycle.child("second", 1, 0, "back", "first", 1);
     invalid(cycle.encode(), "native cycle refusal");
     let dangling = dna::WorkflowCatalog { };
-    let da = dangling.define("root", 1, 1, "");
+    let da = dangling.define("root", 1, "record", "");
     let db = dangling.child("root", 1, 0, "next", "missing", 7);
     invalid(dangling.encode(), "exact missing child revision");
     let duplicate = cat.leaf("root", 1, 0, "one", dna::WorkRequest { objective: "duplicate" }, 1);
     invalid(cat.encode(), "duplicate Step member key");
     let limited = dna::WorkflowCatalog { };
-    let la = limited.define("root", 1, 1, "");
-    let lb = limited.define("child", 1, 1, "");
+    let la = limited.define("root", 1, "record", "");
+    let lb = limited.define("child", 1, "record", "");
     let lc = limited.child("root", 1, 0, "first", "child", 1);
     let ld = limited.child("root", 1, 0, "second", "child", 1);
     let le = limited.leaf("child", 1, 0, "leaf", dna::WorkRequest { objective: "one" }, 1);
@@ -165,8 +165,8 @@ fn test_validation() {
 }
 fn test_large_shared_leaf() {
     let cat = dna::WorkflowCatalog { };
-    let a = cat.define("root", 1, 1, "many invocations");
-    let b = cat.define("shared", 1, 1, "one specification");
+    let a = cat.define("root", 1, "record", "many invocations");
+    let b = cat.define("shared", 1, "record", "one specification");
     let objective = std::str::repeat("x", 600000);
     let c = cat.leaf("shared", 1, 0, "one", dna::WorkRequest { objective: objective }, 1);
     let mut i = 0;

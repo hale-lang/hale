@@ -140,7 +140,7 @@ main locus App {
         }
     }
     fn define() {
-        std::test::assert_eq_str(self.cat.define("duo", 1, 1, "two people's jobs"), "", "duo");
+        std::test::assert_eq_str(self.cat.define("duo", 1, "record", "two people's jobs"), "", "duo");
         std::test::assert_eq_str(self.cat.leaf("duo", 1, 0, "h1", dna::WorkRequest { objective: "file the receipts" }, 1), "", "h1");
         std::test::assert_eq_str(self.cat.leaf("duo", 1, 0, "h2", dna::WorkRequest { objective: "call the supplier" }, 1), "", "h2");
     }

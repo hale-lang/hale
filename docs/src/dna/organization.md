@@ -27,7 +27,7 @@ login named in `dna.github.board`. Its queue:
 ```text
 $ hale dna board
 board: 15 review(s) need your verdict
-  purpose  ratify the declared purpose?
+  k:3f1c0a92b7e4  ratify the declared purpose?
   k:79c636063701  ratify the design practice `design/principles`: Minimal structure: add a…
   … (the eight practices of the design, one Review each)
   k:638e61e51c84  ratify the operating practice `operating/row-first`: every live signal…

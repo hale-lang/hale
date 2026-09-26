@@ -127,12 +127,12 @@ In another terminal:
 ```text
 $ hale dna status
 organism:   running (this clone's body holds the lease)
-journal:    35 event(s), chain verified at 5f0c2e9a41d7
+journal:    36 event(s), chain verified at 5f0c2e9a41d7
 expression: attached Chat (shape 3c9b9327e480d349) · current shape 3c9b9327e480d349 · build 812f3c9bd9e4
 intents:    0 offered, 0 refused
 tasks:      none
 reviews:    15 pending of 15
-  purpose [pending] needs board — ratify the declared purpose?
+  k:3f1c0a92b7e4 [pending] needs board — ratify the declared purpose?
   k:79c636063701 [pending] needs board — ratify the design practice `design/principles`: …
   … (fourteen: eight practices of the design, six operating practices)
 mutations:  0 (none applies before a human's verdict on the exact candidate)
@@ -146,11 +146,13 @@ forms — from the record alone, with or without the host up.
 
 There is already something to decide: the organization wants you to
 ratify the purpose `init` wrote. Read `dna/org/purpose.hl`, change
-the sentence to what the codebase is actually for, and approve it:
+the sentence to what the codebase is actually for, and approve it. It
+is a proposal like every practice, listed under `purpose`, and that
+name decides it:
 
 ```text
 $ hale dna review purpose approve --as riley --comment "ratified"
-review purpose settled: approve by riley
+review k:3f1c0a92b7e4 settled: approve by riley
 ```
 
 Eight more Reviews wait beside it: the **design**, the toolchain's

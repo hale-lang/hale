@@ -220,6 +220,18 @@ locus App {
     fn append(kind: String, entity: String, body: String) {
         std::test::assert(self.j.append(self.j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
     }
+    // The body of the last row of `kind` for `entity`, "" when none.
+    @unbounded
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == kind && e.entity == entity { out = std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return out;
+    }
     // One `N|…` or `E|…` line as the row it describes.
     @unbounded
     fn row(line: String) {
@@ -355,7 +367,7 @@ locus App {
         std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(store.open(), "the record's memory opens: " + store.last_error());
-        let r = ops::apply_record(store, self.j, self.receipts);
+        let r = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
         std::test::assert_eq_str(r.error, "", "the record projects clean");
         std::test::assert_eq_int(r.watermark, length, "to the record's end");
 
@@ -407,7 +419,7 @@ locus App {
         self.append("graph.edge", narrower.id(), narrower.body());
         self.append("graph.retired", "runs:deployment:scaled-out", "{}");
         self.append("graph.retired", "seed:ui", "{}");
-        let again = ops::apply_record(store, self.j, self.receipts);
+        let again = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
         std::test::assert_eq_str(again.error, "", "the change projects clean");
         std::test::assert_eq_int(again.graph, 3, "three graph rows");
         let changed = compact(store.graph_perspective("processes"));
@@ -421,7 +433,7 @@ locus App {
         let basis = store.projection_basis();
         std::test::assert(store.rebuild(basis.watermark, basis.head), "the projection emptied");
         std::test::assert_eq_int(store.graph_nodes_count(""), 0, "nothing of the graph is left");
-        let rebuilt = ops::apply_record(store, self.j, self.receipts);
+        let rebuilt = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
         std::test::assert_eq_str(rebuilt.error, "", "the rebuild projects clean");
         std::test::assert_eq_str(self.perspectives(store), before, "a rebuild reproduces both perspectives");
 
@@ -441,15 +453,31 @@ locus App {
         late.member("position", "position:nats/dev");
         late.member("holder", "carol");
         self.append("graph.edge", late.id(), late.body());
-        let gated = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "signed");
+        // and a holder the record never knew holds nothing either (GH
+        // #1087 review, G4): zed wrote no row and is no owner's member
+        let stranger = ops::GraphEdge { kind: "holds" };
+        stranger.member("position", "position:api/dev");
+        stranger.member("holder", "zed");
+        self.append("graph.edge", stranger.id(), stranger.body());
+        let gated = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "signed", KnownAuthors { });
         std::test::assert_eq_str(gated.error, "", "a refused hold stops nothing");
         std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("bob")), "position:node/dev", "bob holds node/dev, and not its reviewer too under signed trust");
         std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("carol")), "", "a retired person holds nothing");
+        std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("zed")), "", "nor does one the record never knew");
+        // each refusal is a row (G5), once
+        std::test::assert(std::str::contains(self.last("hold.refused", both.id()), "a process's reviewer is never the same holder as its dev"), "the same-holder refusal is a row: " + self.last("hold.refused", both.id()));
+        std::test::assert(std::str::contains(self.last("hold.refused", late.id()), "carol retired"), "the retired holder's: " + self.last("hold.refused", late.id()));
+        std::test::assert(std::str::contains(self.last("hold.refused", stranger.id()), "zed is no person this record knows"), "the stranger's: " + self.last("hold.refused", stranger.id()));
+        // a holder who retires after the hold was projected gives the seat back
+        self.append("person.retired", "bob", "{\"by\": \"ada\"}");
+        let after = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "signed", KnownAuthors { });
+        std::test::assert_eq_str(after.error, "", "the retirement projects");
+        std::test::assert_eq_str(dna::trim_nl(store.graph_held_by("bob")), "", "bob retired, and holds node/dev no more");
 
         // ---- a malformed row stops the projection at its row, with why
         let at = self.j.revision();
         self.append("graph.edge", "meets:contract:spec/node.yaml", "{\"kind\": \"meets\", \"members\": [{\"role\": \"contract\", \"node\": \"contract:spec/node.yaml\"}]}");
-        let refused = ops::apply_record(store, self.j, self.receipts);
+        let refused = ops::apply_record_to(store, self.j, self.receipts, self.j.revision(), "", "local", KnownAuthors { });
         std::test::assert(std::str::contains(refused.error, "invalid graph.edge (row " + to_string(at) + "): a meets edge joins two or more members"), "the reason, at its row: " + refused.error);
         std::test::assert_eq_int(store.watermark(), at, "nothing of the refused row landed");
 
@@ -466,5 +494,9 @@ locus App {
         dna::scratch_done(scratch);
     }
 }
+
+// Who wrote the fixture's first rows: ada, grace, bob and carol are persons
+// the record knows (a memory journal carries no authors of its own).
+locus KnownAuthors { fn author_of(i: Int) -> String { return dna::nth_word("ada grace bob carol", i); } }
 
 fn main() { App { }; }

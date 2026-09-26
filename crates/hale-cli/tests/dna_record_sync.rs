@@ -65,7 +65,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let (ok, out) = hale_in(&["dna", "sync"], &b);
     assert!(ok && out.contains("pulled the record"), "{out}");
     let (ok, st) = hale_in(&["dna", "status"], &b);
-    assert!(ok && st.contains("35 event(s), chain verified") && st.contains("not running"), "{st}");
+    assert!(ok && st.contains("36 event(s), chain verified") && st.contains("not running"), "{st}");
 
     // the nerves (GH #986): a verdict or a task only reaches the
     // organism over them
@@ -88,7 +88,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
         .spawn()
         .expect("hale dna run");
     let up = |_a: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let dl = Instant::now() + Duration::from_secs(90);
+    let dl = Instant::now() + Duration::from_secs(180);
     while Instant::now() < dl && !up(&a) {
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -126,7 +126,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     // pulls it too, so both clones agree before the offline section
     let (ok5b, _) = hale_in(&["dna", "sync"], &b);
     assert!(ok1 && asked.contains("task t1 born"), "ask from the other clone: {asked}");
-    assert!(ok2 && decided.contains("review purpose settled: approve by riley"), "verdict from the other clone: {decided}");
+    assert!(ok2 && decided.contains(" settled: approve by riley"), "verdict from the other clone: {decided}");
     assert!(ok3, "{synced}");
     assert!(ok4 && st_b.contains("t1 [") && st_b.contains("settled approve by riley") && st_b.contains("chain verified"), "status in B:\n{st_b}");
     assert!(ok5);

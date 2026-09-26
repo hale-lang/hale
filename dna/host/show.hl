@@ -104,6 +104,31 @@ fn route_text(lines: String, shown: Bool) -> String {
     return out;
 }
 
+// What a path no position signs falls back to (GH #1087): the Review's own
+// authority, until the task routers of GH #697 route it.
+const ROUTE_FALLBACK: String = "the Review's own authority (the task routers of GH #697 when they exist)";
+
+// The targets of the bound practices the Board ratified as law, one per
+// line: each practice's receipt says whether it was ratified as law
+// (`law: true`) or as advice, which memory's binding does not (GH #1087
+// review, G3).
+@unbounded
+fn law_targets(root: String, bound: String) -> String {
+    let mut out = "";
+    let mut rest = bound;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        let idea = line[0..tab];
+        let target = line[(tab + 1)..len(line)];
+        let raw = if std::str::starts_with(idea, "sha256:") { idea[7..len(idea)] } else { idea };
+        if std::json::find_bool_field(rec(root).body(raw).text, "law") && !std::str::contains("\n" + out, "\n" + target + "\n") { out = out + target + "\n"; }
+    }
+    return out;
+}
+
 @unbounded
 fn route_verb(root: String, args: Args) -> Answer {
     let json = has_flag(args, "--json");
@@ -127,7 +152,7 @@ fn route_verb(root: String, args: Args) -> Answer {
     if len(data) == 0 { return fail("route: memory did not answer: " + store.last_error()); }
     let rows = dna::GitJournal { repo: root }.revision();
     if basis.ok && basis.watermark < rows { eprintln("hale dna route: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the route as of row ", to_string(basis.watermark)); }
-    let r = ops::graph_route(data, paths);
+    let r = ops::graph_route(data, paths, law_targets(root, ops::route_bound(data)));
     // each signer with who holds it
     let mut signers = "";
     let mut rest = r.signers;
@@ -140,12 +165,12 @@ fn route_verb(root: String, args: Args) -> Answer {
         signers = signers + line[0..tab] + "\t" + (if len(held) > 0 { "[" + held + "] " } else { "" }) + line[(tab + 1)..len(line)] + "\n";
     }
     if json {
-        return answer("{\"signers\": " + route_json_list(signers, "position", "because") + ", \"evidence\": " + route_json_list(r.evidence, "", "") + ", \"unsigned\": " + route_json_list(r.unsigned, "node", "because") + ", \"fallback\": " + route_json_list(r.fallback, "path", "because") + "}\n");
+        return answer("{\"signers\": " + route_json_list(signers, "position", "because") + ", \"evidence\": " + route_json_list(r.evidence, "", "") + ", \"unsigned\": " + route_json_list(r.unsigned, "node", "because") + ", \"fallback\": " + route_json_list(r.fallback, "path", "because") + ", \"fallback_to\": " + dna::record_json_quote(ROUTE_FALLBACK) + "}\n");
     }
     let mut out = "";
     if len(signers) > 0 { out = out + "signed by\n" + route_text(signers, true); }
-    if len(r.evidence) > 0 { out = out + "against\n" + route_text(r.evidence, true); }
+    out = out + "against\n" + (if len(r.evidence) > 0 { route_text(r.evidence, true) } else { "  no gate guards it\n" });
     if len(r.unsigned) > 0 { out = out + "reviewed by no position\n" + route_text(r.unsigned, true); }
-    if len(r.fallback) > 0 { out = out + "left to the fallback\n" + route_text(r.fallback, false); }
+    if len(r.fallback) > 0 { out = out + "left to the fallback, " + ROUTE_FALLBACK + "\n" + route_text(r.fallback, false); }
     return answer(out);
 }

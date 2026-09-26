@@ -17,7 +17,7 @@ locus DraftProof {
     params { output: String = ""; }
     fn provenance() -> ops::DefinitionProvenance { return ops::DefinitionProvenance { source_revision: "claimed-source", source_path: "/NEVER/read/or/write/claimed-source.hl", dependency_digest: "dependencies" }; }
     fn populate(cat: dna::WorkflowCatalog) {
-        let a = cat.define("root", 1, 1, "Existing parent"); let b = cat.define("child", 9007199254740993, 1, "Original child"); let c = cat.define("tail", -3, 1, "Signed existing revision");
+        let a = cat.define("root", 1, "record", "Existing parent"); let b = cat.define("child", 9007199254740993, "record", "Original child"); let c = cat.define("tail", -3, "record", "Signed existing revision");
         let d = cat.child("root", 1, 0, "collect", "child", 9007199254740993);
         let e = cat.leaf("child", 9007199254740993, 0, "old", dna::WorkRequest { objective: "Original\x01 😀 field preserved" }, 1);
         let f = cat.leaf("tail", -3, 0, "final", dna::WorkRequest { objective: "Signed cost", cost_ceiling: (-9223372036854775807 - 1) }, 1);
@@ -26,10 +26,10 @@ locus DraftProof {
     fn basis(value: ops::DefinitionSnapshot) -> String { let provider = ops::DefinitionDraftCapture { value: value }; let read = ops::Definitions { provider: provider }; std::test::assert(read.load(), "basis fixture valid"); return read.basis_json(); }
     fn candidate(kind: String) -> String {
         let b = std::json::Builder { }; b.begin_object(); b.string_field("id", "child@9007199254740994"); b.string_field("definition_id", "child"); b.string_field("revision", "9007199254740994"); b.string_field("title", "Draft équipe 😀"); b.begin_array_field("steps");
-        b.begin_object(); b.string_field("index", "0"); b.begin_array_field("members");
+        b.begin_object(); b.string_field("index", "0"); b.string_field("store", "record"); b.begin_array_field("members");
         b.begin_object(); b.string_field("key", "changed"); b.string_field("kind", "leaf"); b.begin_object_field("leaf");
         b.string_field("objective", "Literal <script>\"\\\n\t\x08\x0c\x01\x7f — 😀"); b.string_field("context_digest", "sha256:context"); b.string_field("knowledge_bindings", "opaque binding\nsecond line"); b.string_field("output_contract", "Evidence"); b.string_field("data_class", "restricted"); b.string_field("requires", "judgment verify"); b.string_field("target", "org/research"); b.string_field("cost_ceiling", "-9223372036854775808"); b.string_field("attempts", "2"); b.end_object(); b.field("child", "null"); b.end_object(); b.end_array(); b.end_object();
-        b.begin_object(); b.string_field("index", "1"); b.begin_array_field("members"); b.begin_object(); b.string_field("key", "nested"); b.string_field("kind", "child"); b.field("leaf", "null"); b.begin_object_field("child");
+        b.begin_object(); b.string_field("index", "1"); b.string_field("store", "record"); b.begin_array_field("members"); b.begin_object(); b.string_field("key", "nested"); b.string_field("kind", "child"); b.field("leaf", "null"); b.begin_object_field("child");
         let id = if kind == "cycle" { "child" } else if kind == "missing" { "absent" } else { "tail" }; let rev = if kind == "cycle" { "9007199254740994" } else { "-3" };
         b.string_field("id", id + "@" + rev); b.string_field("definition_id", id); b.string_field("revision", rev); b.end_object(); b.end_object(); b.end_array(); b.end_object(); b.end_array(); b.end_object(); return b.result();
     }
@@ -82,9 +82,9 @@ locus DraftProof {
         let cycle = self.validate(s, basis, self.candidate("cycle")); std::test::assert(cycle.status == 200 && !cycle.valid && cycle.validation_message != "" && cycle.artifact_text == "" && cycle.catalog_digest == "", "native cycle invalid with no partial artifact");
         let missing = self.validate(s, basis, self.candidate("missing")); std::test::assert(missing.status == 200 && !missing.valid, "missing exact child invalid");
         let attempts = self.validate(s, basis, std::str::replace(self.candidate(""), "\"attempts\": \"2\"", "\"attempts\": \"9\"")); std::test::assert(attempts.status == 200 && !attempts.valid, "native attempt limit");
-        let add = cat.define("child", 9007199254740994, 1, "Already there off page"); let leaf = cat.leaf("child", 9007199254740994, 0, "prior", dna::WorkRequest { objective: "exists" }, 1);
+        let add = cat.define("child", 9007199254740994, "record", "Already there off page"); let leaf = cat.leaf("child", 9007199254740994, 0, "prior", dna::WorkRequest { objective: "exists" }, 1);
         let occupied = self.snapshot(cat); let duplicate = self.validate(occupied, self.basis(occupied), self.candidate("")); std::test::assert(duplicate.status == 200 && !duplicate.valid && duplicate.validation_code == "definition_revision_exists", "existing off-page N+1 rejected");
-        let bad = cat.define("unrelated", 1, 1, "Invalid unrelated root");
+        let bad = cat.define("unrelated", 1, "record", "Invalid unrelated root");
         let broken = self.snapshot(cat); let unavailable = self.validate(broken, basis, self.candidate("")); std::test::assert(unavailable.status == 503 && unavailable.artifact_text == "", "whole captured base must be valid");
     }
     fn catalog_limits() {
@@ -102,10 +102,10 @@ locus DraftProof {
         let empty = std::str::replace(candidate, members, "[]"); let no_member = self.validate(value, self.basis(value), empty);
         std::test::assert(no_member.status == 200 && !no_member.valid, "native empty step");
         let mut i = 0;
-        while i < 61 { let id = "additional-" + to_string(i); let a = cat.define(id, 1, 1, "Other revision"); let b = cat.leaf(id, 1, 0, "one", dna::WorkRequest { }, 1); i = i + 1; }
+        while i < 61 { let id = "additional-" + to_string(i); let a = cat.define(id, 1, "record", "Other revision"); let b = cat.leaf(id, 1, 0, "one", dna::WorkRequest { }, 1); i = i + 1; }
         let full = self.snapshot(cat); let over = self.validate(full, self.basis(full), candidate);
         std::test::assert_eq_str(over.code, "definition_read_limit", "65th definition is resource refusal");
-        let maximum = dna::WorkflowCatalog { }; let a = maximum.define("maximum", 9223372036854775807, 1, "Maximum"); let b = maximum.leaf("maximum", 9223372036854775807, 0, "one", dna::WorkRequest { }, 1);
+        let maximum = dna::WorkflowCatalog { }; let a = maximum.define("maximum", 9223372036854775807, "record", "Maximum"); let b = maximum.leaf("maximum", 9223372036854775807, 0, "one", dna::WorkRequest { }, 1);
         let max_snapshot = self.snapshot(maximum); let host = DraftHost { value: max_snapshot }; let drafts = ops::DefinitionDrafts { provider: host };
         std::test::assert_eq_str(drafts.validate("maximum@9223372036854775807", self.basis(max_snapshot), candidate).code, "definition_revision_exhausted", "N+1 cannot overflow");
     }
@@ -120,7 +120,7 @@ locus DraftProof {
         let huge = ops::DefinitionSnapshot { supported: true, available: true, document: std::str::from_bytes(b.snapshot()), digest: "unneeded", provenance: self.provenance() };
         std::test::assert_eq_str(self.validate(huge, basis, candidate).code, "definition_read_limit", "base byte budget before decode");
         let unsupported = ops::DefinitionDrafts { }; std::test::assert_eq_str(unsupported.validate("child@9007199254740993", basis, candidate).code, "definitions_unsupported", "unsupported never fake valid");
-        let a = cat.define("inactive", 1, 1, "Inactive fields"); let l = cat.leaf("inactive", 1, 0, "leaf", dna::WorkRequest { }, 1);
+        let a = cat.define("inactive", 1, "record", "Inactive fields"); let l = cat.leaf("inactive", 1, 0, "leaf", dna::WorkRequest { }, 1);
         let last = cat.member_count() - 1; let original = cat.member_at(last);
         cat.members.set(last, dna::MemberDef { workflow: original.workflow, revision: original.revision, step: original.step, key: original.key, kind: "leaf", child: "unrepresented" }) or discard;
         let noncanonical = self.snapshot(cat); std::test::assert_eq_str(self.validate(noncanonical, self.basis(noncanonical), candidate).code, "definition_export_unsupported", "do not discard inactive native fields");

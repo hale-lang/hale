@@ -40,8 +40,8 @@ locus Story {
     }
     fn seed() {
         let cat = dna::WorkflowCatalog { };
-        std::test::assert_eq_str(cat.define("monthly-close", 7, 2, "Close the month"), "", "root definition");
-        std::test::assert_eq_str(cat.define("evidence", 3, 1, "Confirm supporting evidence"), "", "child definition");
+        std::test::assert_eq_str(cat.define("monthly-close", 7, "record record", "Close the month"), "", "root definition");
+        std::test::assert_eq_str(cat.define("evidence", 3, "record", "Confirm supporting evidence"), "", "child definition");
         let bank = dna::WorkRequest { objective: "Reconcile bank feed — équipe <result>", target: "org/finance", output_contract: "reconciliation", knowledge_bindings: "exact historical binding v7" };
         let human = dna::WorkRequest { objective: "Confirm supporting evidence", target: "org/support", requires: "human", output_contract: "approval" };
         let publication = dna::WorkRequest { objective: "Publish close report", target: "org/finance" };

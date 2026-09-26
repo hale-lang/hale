@@ -220,6 +220,26 @@ locus HumanRelay {
     }
 }
 
+// ---- the organism relay (GH #995) --------------------------------------
+// A catalog step the organization performs itself — a row in its record,
+// a Review, a proposal — is the assembly's, as an edit is: the attempt is
+// relayed to the assembly serving this scope and answered pending; the
+// assembly performs the step and reports the attempt's outcome. Asked
+// again — a redelivery — the assembly performs it again, which is safe:
+// a step ensures its rows, it never writes one twice.
+locus OrganismRelay {
+    params { scope: String = ""; name: String = "organism"; relayed: Int = 0; }
+    bus { publish StepRequested; }
+    fn kind() -> String { return "organism"; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.relayed = self.relayed + 1;
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no);
+        StepRequested <- StepAsk { scope: self.scope, attempt_id: attempt, performer: self.name, request: req };
+        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt };
+    }
+}
+
 locus ServicePerformer {
     params { name: String = "analysis-service"; calls: Int = 0; }
     fn kind() -> String { return "service"; }
@@ -243,6 +263,8 @@ locus WorkSystem {
         scope: String = "";
         human_relay: HumanRelay = HumanRelay { };
         edit_relay: EditRelay = EditRelay { };
+        // GH #995: a catalog step the organization performs itself
+        organism_relay: OrganismRelay = OrganismRelay { };
         // a program that assembles the engine itself hands performers of
         // its own for every kind (a scripted person, a relay under its own
         // scope); under an assembly the person's and the editor's kinds go
@@ -261,6 +283,7 @@ locus WorkSystem {
         service_reconciler: Reconciler = NoEvidence { };
         software_reconciler: Reconciler = NoEvidence { };
         edit_reconciler: Reconciler = IdempotentReplay { };
+        organism_reconciler: Reconciler = IdempotentReplay { };
         selection: perspective(WorkRouting) = CapabilityFirstSelection { };
     }
     // The scope the relays answer under: the assembly's id, bound once at
@@ -269,6 +292,7 @@ locus WorkSystem {
         self.scope = scope;
         self.human_relay.scope = scope;
         self.edit_relay.scope = scope;
+        self.organism_relay.scope = scope;
     }
     fn relayed() -> Bool { return len(self.scope) > 0; }
     fn policy() -> String { return self.selection.policy_name(); }
@@ -282,6 +306,7 @@ locus WorkSystem {
     fn identity_of(kind: String) -> String {
         if kind == "edit" { return if self.relayed() { self.edit_relay.identity() } else { self.edit.identity() }; }
         if kind == "human" { return if self.relayed() { self.human_relay.identity() } else { self.human.identity() }; }
+        if kind == "organism" { return self.organism_relay.identity(); }
         if kind == "agent" { return self.agent.identity(); }
         if kind == "service" { return self.service.identity(); }
         return self.software.identity();
@@ -292,6 +317,7 @@ locus WorkSystem {
         let identity = self.identity_of(kind);
         if kind == "edit" { return self.edit_reconciler.reconcile(kind, identity, req); }
         if kind == "human" { return self.human_reconciler.reconcile(kind, identity, req); }
+        if kind == "organism" { return self.organism_reconciler.reconcile(kind, identity, req); }
         if kind == "agent" { return self.agent_reconciler.reconcile(kind, identity, req); }
         if kind == "service" { return self.service_reconciler.reconcile(kind, identity, req); }
         return self.software_reconciler.reconcile(kind, identity, req);
@@ -299,6 +325,7 @@ locus WorkSystem {
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
         if kind == "edit" { return if self.relayed() { self.edit_relay.perform(req) } else { self.edit.perform(req) }; }
         if kind == "human" { return if self.relayed() { self.human_relay.perform(req) } else { self.human.perform(req) }; }
+        if kind == "organism" { return self.organism_relay.perform(req); }
         if kind == "agent" { return self.agent.perform(req); }
         if kind == "service" { return self.service.perform(req); }
         return self.software.perform(req);

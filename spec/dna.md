@@ -661,7 +661,9 @@ repository:
   `practice.requested` row, which a node relays onto the topic
   `dna.practice.requested` (**The nerves**). The organization proposes
   it as knowledge of kind `practice`, author `org`, bound to `org`, with
-  the ordinary Board Review `k:<digest>`, and journals
+  the ordinary Board Review `k:<digest>` (decided, it is ratified by an
+  execution of `practice-ratify`: GH #995, **The workflow catalog**), and
+  journals
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
@@ -818,15 +820,17 @@ repository:
   routed on an exhausted window: `optimize.refused <org>`, and the
   pass waits for the next window — then claims the window
   (`optimize/<n>`, the cadence's own length; **Claims by id**, below),
-  so of the nodes running the organism one runs the pass, then reads
-  the record's structural signals
+  so of the nodes running the organism one runs the pass, as an
+  execution of `optimize-walk` (GH #995: **The workflow catalog**) whose
+  `walk` reads the record's structural signals
   — asks planned and how many took the defaults, concerns raised,
   grant contractions, verdicts refused, mutations rolled back — and
   asks the leader (`OptimizeRequested`, keyed by `org_id`) to walk the
   machinery, not the work. The leader answers with one small proposal
   or none (`OrgReviewed`), and the substrate journals `org.reviewed
-  <org>` either way, with the signals it read: "if the state is clean,
-  say so". A proposal enters as an ask in the leader's name and takes
+  <org>` either way, with the signals it read and the execution it
+  answers (`task`), which settles its `proposals` step: "if the state is
+  clean, say so". A proposal enters as an ask in the leader's name and takes
   the whole road — planned, proposed, reviewed by the Board as an
   organization change. `hale dna` runs the pass on demand through the
   substrate's `optimize()`.
@@ -1148,7 +1152,7 @@ record's.
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph |
 | `hold.requested` | record | someone asks the organization to propose a holder for a position (`hale dna fill`) |
-| `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not |
+| `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
@@ -1214,9 +1218,10 @@ record's.
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
 | `receipt.redacted` | ledger | the body removed, the digest kept |
-| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`, and since GH #995 the `parent` it is routed to and the concern-escalate execution that raised it, `task`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
-| `concern.proposed` | record | three raises became a proposal — at the raise that crosses the threshold, or at the birth that finds a source over it and unproposed |
+| `practice.read` | record | what the hat read once a proposal was ratified, at which head (`digest`, `target`, `ratified_at`, `hat`, `head`, `included`, `task`): practice-ratify's `hat` step (GH #995) |
+| `concern.proposed` | record | three raises became a proposal — at concern-escalate's `raise` step once the source crossed the threshold, including the execution a birth admits for a source over it, unproposed |
 | `pressure.requested` / `pressure.raised` | ledger | a signal from a source; the request carries its own `request` id and a node relays it until answered (GH #986); the answer is one object (`what`, `count`, `request`) and is written once per request — a row from before is `<what> x<n>` |
 | `pressure.remeasured` | ledger | the declared fitness signals, measured again after the change |
 | `appendage.proposed` | record | an organ the organization proposes for itself |
@@ -1236,8 +1241,14 @@ keep walking.
 
 A recursive workflow can be written as data (`dna/core/workflow_definition.hl`;
 the execution contract it serves is `dna/WORKFLOW-CONTRACT.md`). A
-`WorkflowCatalog` holds definitions: `define(id, revision, steps, title)`
-declares a workflow with that many ordered steps; `leaf(workflow,
+`WorkflowCatalog` holds definitions: `define(id, revision, stores, title)`
+declares a workflow whose ordered steps each write the one store its word
+names — `stores` holds one word per step, `record`, `forge`, `genome`,
+`heart`, `graph`, `nerves`, `memory`, `vault` or `host`, so the step
+count is the word count (GH #995; `every_step(n, store)` writes `n`
+alike). A step is where a fact is written: reading, or waiting on
+another writer, is part of the step whose fact it serves, never a step of
+its own; `leaf(workflow,
 revision, step, key, work, attempts)` adds a required member carrying
 the content of one Work request and its retry allowance; `child(workflow,
 revision, step, key, child, child_revision)` adds a required member that
@@ -1263,7 +1274,12 @@ authored request content and allowance (`bound_request` makes its
 depth and definition path. It refuses the whole expansion, binding
 nothing and naming what broke, when a definition is missing (by id and
 revision), a workflow has no steps, a step has no members, a member
-names a step outside its workflow's steps, a member key is not
+names a step outside its workflow's steps, a step declares no store
+(`-`), two (`record+forge`: `declares two stores (record, forge)`) or a
+word that is no store, a step writes or reads a part that is not built
+yet (named with its issue: the heart, GH #987; the vault, GH #989; a
+host the organization provisions, which only `hale dna body provision`
+reaches today), a member key is not
 `[a-z0-9-]+` or repeats in its step, a member is neither a leaf nor a
 child, a workflow invokes itself directly or through its children, or
 an `AdmissionLimits` value is exceeded: `max_depth` (8),
@@ -1275,11 +1291,13 @@ a later revision changes nothing an earlier revision expands to.
 A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
 when it is read, so an id can never carry the delimiters the definition
 path is written with. `encode()` writes every definition and member as
-one JSON document (`format: dna.workflow-definitions/1`) and
-`decode(text)` reads one back, refusing a document that does not close,
-another format, an id outside
-the grammar, an already defined revision, or a document that defines one
-revision twice, and adding nothing then.
+one JSON document (`format: dna.workflow-definitions/2`: each workflow's
+`steps` and its `stores`) and `decode(text)` reads one back, refusing a
+document that does not close, another format, an id outside the grammar,
+an already defined revision, a document that defines one revision twice,
+or a workflow whose `stores` do not name one per step, and adding
+nothing then. `latest(id)` is the newest revision the catalog holds: what
+a new Task binds.
 
 `encode_bound()` writes one bound execution as a recipe (`format:
 dna.workflow-recipe/1`; an admission nests it as an object of its own,
@@ -1296,6 +1314,113 @@ wants a real parser in front of it. A whole final node also ends in `}`, so the 
 character says nothing about the document. Every refusal binds nothing:
 half a recipe is not a smaller execution. Nothing yet executes a bound
 expansion.
+
+## The workflow catalog (GH #995)
+
+DNA ships a catalog of definitions, each a chain in which every step
+writes one store (`dna::baseline_definitions()`, in
+`dna/core/workflow_definition.hl`). A project's `dna/org/workflows.hl`,
+written by `hale dna new` and by `hale dna upgrade` when it is absent,
+returns it plus the project's own (`fn workflows() -> dna::WorkflowCatalog`),
+and the generated organization admits from it (`catalog: workflows()` on
+its `dna::Dna`; a body given no catalog takes the baseline at birth). The
+baseline is the vendored toolchain's, so an upgrade supersedes it by
+revision: a Task born under a revision finishes under it — its recipe was
+bound at admission — and a new Task binds the newest (`latest`).
+
+| id | steps (the store each writes) |
+| --- | --- |
+| `ask-triage` | `offered` · `classify` · `plan` (record each) |
+| `change-deliver` | `candidate` (record) · `review` (forge) · `verdict` (record) · `apply` (genome) · `deploy` (heart) · `settle` (record) |
+| `practice-ratify` | `ratify` · `hat` (record each) |
+| `deploy-observe` | `deploy` (heart) · `rollback` (genome) · `settle` (record) |
+| `concern-escalate` | `raise` (record) |
+| `optimize-walk` | `walk` (record) |
+| `secret-rotate` | `rotate` (vault) · `recorded` (record) |
+| `body-provision` | `provision` · `start` (host) · `lease` (memory) · `observed` (record) |
+| `ask-edit`, `ask-person` | the ask's one leaf: an edit prepared for review, or a person's job (record) |
+
+Every step writes a fact of its own. What #995 listed as steps that write
+none is folded into the step whose fact it serves: practice-ratify's
+verdict is the Review's row, so `ratify` waits for it and writes the
+ratification or the decline; memory's projection writes the idea and its
+binding, so `hat` waits for it and records the row it was fenced to; the
+request and the Review are written by whoever proposes (a person's
+request, a concern, the record's birth); a concern's routing is a field of
+its `concern.raised` row and its proposal is written in the same step at
+the threshold; the optimize pass's walk reads what its `org.reviewed` row
+records; deploy-observe's pulse is what `settle` waits for.
+
+A step the organization performs itself is one leaf that `requires:
+"organism"`. The engine relays its attempt to the assembly serving the
+scope (`OrganismRelay`, kind `organism`: `StepRequested`, answered
+pending), which performs the step and reports the attempt's outcome
+(`Dna.on_step_requested`). A step ensures its rows — performed again
+after a redelivery it writes none twice — and one that waits (a verdict,
+the leader's word, memory's projection) is kept and performed again when
+what it waits on may have arrived: a verdict, the leader's answer, the
+tick. The organization performs the steps of `practice-ratify`,
+`concern-escalate` and `optimize-walk`; a definition whose path has not
+moved onto the catalog (`ask-triage`, whose ask is still admitted as
+`ask-edit` or `ask-person` after the leader plans it) is refused at
+admission, saying so, as a definition on a part not built is refused
+naming the part — both are `workflow.refused` rows and nothing else.
+
+- **practice-ratify** carries every knowledge proposal the Board
+  decided: when a verdict settles a proposal's Review, the organization
+  admits one execution for it (`ratify:<digest>`), whoever proposed it —
+  a person (`hale dna practice propose`, proposed by the organization as
+  before), a concern, the record's birth (the purpose, the seeded
+  practices, a repository's holes and practices), a holder asked for.
+  `ratify` writes `knowledge.ratified` (and `knowledge.retired` for what
+  it supersedes, or `knowledge.refused`) under an approval, and
+  `knowledge.declined` otherwise, which fails the chain; `hat` waits for
+  memory's projection to hold the idea ratified, then reads the target's
+  package at memory's head and writes `practice.read <digest>`
+  (`target`, `ratified_at`, `hat`, `head`, `included`, `task`): what the
+  hat read, at which head. The verdict path writes no ratification of its
+  own; a settled verdict whose ratification never ran is admitted the
+  same way at the next reconciliation.
+- **concern-escalate** is a concern: `hale dna` concerns, and the
+  organization's own, are admitted as `concern:<source>:<request>` (a
+  redelivery of the request is the same execution; the same request
+  with other words is `concern.refused`, as before). Its one step,
+  `raise`, writes `concern.raised <source>` (`what`, `severity`,
+  `occurrence`, `request`, the `parent` it is routed to, `task`) and,
+  once the source crossed the threshold, proposes it as knowledge by the
+  rule that always did. A source over the threshold with no proposal and
+  no execution running for it is escalated once at birth by an execution
+  that raises nothing more (its raises are the record's).
+- **optimize-walk** is the optimize pass: the pass's budget and window
+  claim are its admission's gate (`optimize.refused` as before); `walk`
+  reads the machinery's signals, asks the leader once per incarnation and
+  is done at its `org.reviewed` row, which names the execution (`task`).
+
+**The record is the local-mode floor; the ledger is the runtime.** Every
+step is a few rows of the day's work (`step.*`, `attempt.*`,
+`work.settled`, `effect.*`). Until `hale dna ledger adopt`, each is a
+commit on `refs/dna/journal`, so an execution costs tens of commits: a
+Board deciding a repository's 35 seeded proposals waits minutes for
+their ratifications on a git-backed record, where memory takes the same
+rows in about a second. A git-backed record is what one person working
+alone starts on; an organization runs with its ledger adopted.
+`hale dna review <group> approve|reject` writes every verdict of the
+group first and then waits for the answers once, bounded by the group's
+size.
+
+**The declared purpose is a proposal like any other.** `hale dna init`
+proposes it (host verb `purpose-propose`: kind `purpose`, author `org`,
+for `org`, `provenance: declared`) with the Board's Review under the
+group `purpose`, which `hale dna review` lists first and `hale dna
+review purpose approve` decides; the generated organization holds no
+Review of its own for it.
+
+`hale dna definitions [project] [--json]` lists the catalog
+`dna/org/workflows.hl` returns, built beside a one-line main as the model
+catalog's probe is: every definition with its revision and title, each
+step with its key and store, what a newer revision
+supersedes, and what a definition is refused at admission for; `--json`
+is the catalog's own document.
 
 ## Workflow facts
 
@@ -3229,9 +3354,10 @@ The live half is memory's, projected from the record by the spine
   a child's signal about the part above it: an application's, through
   its node (K4), or `hale dna concern raise <source> <what…>
   [--severity N]`'s, each a `concern.requested` row a node relays onto
-  the nerves, and the substrate
+  the nerves, and the substrate admits it as an execution of
+  `concern-escalate` (GH #995: **The workflow catalog**) whose step
   journals `concern.raised <source>` (an object: `what`, `severity`,
-  `occurrence`, `request`), and
+  `occurrence`, `request`, `parent`, `task`), and
   when one source has raised it `concern_threshold` times (3) it
   becomes a knowledge proposal by that source bound to its parent
   path — a concern by the tower rule — through `propose_knowledge`,
@@ -3240,13 +3366,14 @@ The live half is memory's, projected from the record by the spine
   concern:<source>`. **Which occurrence a concern is counted from the
   record**, never from a number the organism keeps, so a restart
   continues the count where the record left it; a count that starts
-  again is a record read short, not a restart (GH #748). The raise
-  that crosses the threshold is also the raise that proposes, so an
-  organism that stopped between the two left a source over the
-  threshold with no `concern.proposed` of its own, owed a proposal
-  that nothing but a further concern would make — and a source that
-  has said its piece three times may never say it a fourth. At birth
-  every such source is proposed once, by the same rule (`rehydrate`);
+  again is a record read short, not a restart (GH #748). An execution
+  a restart interrupts is resumed with every other; a source over the
+  threshold with no `concern.proposed` of its own and no
+  concern-escalate running for it — rows that reached the record
+  another way — is owed a proposal that nothing but a further concern
+  would make. At birth every such source is escalated once, by an
+  execution whose `raised` step finds its raises in the record
+  (`rehydrate`);
   a source with no parent was refused where it was raised and is not
   refused again.
 - **The repository's graph (GH #1085).** An organization and its
@@ -3276,8 +3403,9 @@ The live half is memory's, projected from the record by the spine
   `process:`); a `holder` is a person, not a node; `meets` also
   carries its transport (`via`) and the parties it reaches that are
   not nodes (`outside`, e.g. callers). Two kinds are never graph rows:
-  a `practice` is a knowledge idea of kind `practice` — advice while
-  proposed, law once ratified — and `binds` is its knowledge binding;
+  a `practice` is a knowledge idea of kind `practice` — advice unless the
+  Board ratifies it as law (its document says `law: true`; one ratified
+  as advice stays advice) — and `binds` is its knowledge binding;
   a member names a practice as `practice:<digest>`. The rows are
   `graph.node` (entity the node's id, body
   `{kind, name, text?, source?}`), `graph.edge` (entity the edge's id,
@@ -3314,8 +3442,8 @@ The live half is memory's, projected from the record by the spine
   as it would for an application — `vendor/dna`, `dna/org`, the manifest
   with `[claims] no_base` and `[environments.org]` alone (there is no
   application entrypoint) — cuts no topology artifact, and seeds the
-  record with the purpose Review and then what the repository holds, as
-  the graph, through the host verb `graph-ingest`
+  record with what the repository holds, as the graph, through the host
+  verb `graph-ingest`, then proposes the declared purpose (GH #995)
   (`dna/operations/graph_ingest.hl`). It never derives one perspective
   from the other. A directory holding `.hl` files is a seed: with a main
   locus it is an application, attached as before with no graph ingest,
@@ -3419,10 +3547,16 @@ The live half is memory's, projected from the record by the spine
   wrote a row in their own name, or an owner's member — and has not
   retired (`person.retired`), and the same-holder rule. **The store is the
   gate**: a hold is checked again where memory projects it, however it
-  reached the record — a retired holder is not projected, and a process's
-  `reviewer` held by its `dev`'s holder is a warning on stderr under
-  `dna.trust = local` (one person holds every role) and not projected,
-  with the reason, under any other trust.
+  reached the record — a holder the record never knew before the row (no
+  row in their name, and no owner's member) is not projected, nor is a
+  retired one, and a process's `reviewer` held by its `dev`'s holder is a
+  warning on stderr under `dna.trust = local` (one person holds every
+  role) and not projected under any other trust. A hold the store refuses
+  is a row, once: `hold.refused <hold id>` (`why`, `row`, `by: memory`).
+  A person retired after their hold was projected gives every seat back
+  where the retirement is projected. `fill` and `practice propose` name a
+  request by its digest at the record's head (`h…`, `p…`), so two requests
+  in one millisecond never share an id.
 - **A repository record runs its organization alone (GH #1091).** When the
   record's seed holds no Hale source of its own, `hale dna dev` and
   `hale dna run` check and build the organization only; there is no application
@@ -3432,26 +3566,35 @@ The live half is memory's, projected from the record by the spine
   `hale dna route [--json] (<path>… | --diff <range>)` (the host verb
   `route`, reading memory as the head, over
   `graph_perspective("routing")`; the routing is
-  `dna/operations/graph_route.hl`). A path names a node — a contract (its
-  file, or a file under its directory), else a document, else the longest
-  seed holding it — and the edges say who signs. **A seed**: the reviewer
+  `dna/operations/graph_route.hl`). A path is the repository's: one
+  given from a subdirectory is taken from there, and the organization's
+  root is the nearest directory holding `dna/org` (a seed's own
+  `hale.toml` is not it). A path names a node — a contract (its file, or
+  a file under its directory), else a document, else a deployment (the
+  file it was read from, when that is no document: `compose.yaml`), else
+  the longest seed holding it — and the edges say who signs. **A seed**: the reviewer
   (the `/reviewer` position a process unfolds into) of every process that
   unfolds into it. **A contract**: every position that `reviews` it, and
   the reviewer of every consumer — a consuming process; the processes a
   consuming seed belongs to; the positions reviewing a consuming contract
-  — and the `board` where the contract is law (a ratified practice is
-  bound to it). **A document**: every position that `reviews` it. A
+  — and the `board` where the contract is law: a practice the Board
+  ratified as law is bound to it (its receipt says `law: true`); one
+  ratified as advice is not law, and the board does not sign for it.
+  **A document**: every position that `reviews` it. **A deployment's
+  file**: the `operator` position the deployment unfolds into, against the
+  gates guarding the deployment (`ci/image` gates `compose`). A
   `/dev` position never signs: a process's dev never signs for that
   process. **The evidence** a verdict is given against is the run of every
   gate guarding a node the change touches. A consumer no position reviews
   is listed as such (`unsigned`), never dropped; a path that names no
-  node, or whose node no position signs, is left to the fallback — the
-  Review's own authority today, the task routers of GH #697 when they
-  exist. Text lists `signed by`, `against`, `reviewed by no position` and
-  `left to the fallback`, each signer with its holders and why it signs;
-  `--json` is one object: `signers` (`position`, `because`), `evidence`
-  (gate ids), `unsigned` (`node`, `because`), `fallback` (`path`,
-  `because`). Reviews do not yet take their signers from it; that wiring
+  node, or whose node no position signs (or operates), is left to the
+  fallback — the Review's own authority today, the task routers of GH
+  #697 when they exist, which the route names. Text lists `signed by`,
+  `against` (`no gate guards it` when no gate does), `reviewed by no
+  position` and `left to the fallback, <what it falls back to>`, each
+  signer with its holders and why it signs; `--json` is one object:
+  `signers` (`position`, `because`), `evidence` (gate ids), `unsigned`
+  (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. Reviews do not yet take their signers from it; that wiring
   is its own change.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb

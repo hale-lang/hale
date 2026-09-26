@@ -43,9 +43,9 @@ main locus App {
     }
     run() {
         // ---- the admission: the engine, the bound recipe and its limits
-        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
-        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
-        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.define("close-month", 1, "record record", "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, "record record", ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, "record", ""), "", "chase-supplier");
         std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed", context_digest: "sha256:c0ffee", output_contract: "Assessment", data_class: "confidential", requires: "judgment", target: "bank.csv", cost_ceiling: 42 }, 3), "", "a");
         std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
         std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");

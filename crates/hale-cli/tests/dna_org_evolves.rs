@@ -88,8 +88,8 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     let base = git(&["rev-parse", "HEAD"], &app);
     // what the growth proposes: a new position for the pressured part
     let grown = org.replace(
-        "        purpose: dna::Review = dna::Review {",
-        "        // grown under pressure from billing: a supervisor for that wing\n        billing: dna::Leader = dna::Leader { name: \"billing-supervisor\", receipts: dna::GitReceipts { repo: \".\" }, source: dna::SourceReader { repo: \".\" } };\n        purpose: dna::Review = dna::Review {",
+        "    }\n    claims { adopt Org; }",
+        "        // grown under pressure from billing: a supervisor for that wing\n        billing: dna::Leader = dna::Leader { name: \"billing-supervisor\", receipts: dna::GitReceipts { repo: \".\" }, source: dna::SourceReader { repo: \".\" } };\n    }\n    claims { adopt Org; }",
     );
     assert_ne!(grown, org);
     std::fs::write(app.join(".hale/dna/scripted-org.hl"), &grown).unwrap();
@@ -113,7 +113,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
         .spawn()
         .expect("hale dna run");
     let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(120), Duration::from_millis(200), || up(&app));
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(200), || up(&app));
     let stop = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();

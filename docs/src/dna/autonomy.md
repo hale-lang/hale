@@ -188,7 +188,12 @@ admitted under (`workflow.admitted`: definition, revision, the bound
 recipe). Defining a new revision in the catalog changes future
 adoption only: an active execution finishes under its own recipe, and
 the next admission adopts the new one. Adoption and migration stay
-two different, auditable things.
+two different, auditable things. The baseline catalog
+(`dna/org/workflows.hl`, listed by `hale dna definitions`) is the
+vendored toolchain's, so `hale dna upgrade` is how a new baseline
+revision arrives; every step of a definition names the one store it
+writes, and one on a part not built yet is refused at admission, naming
+the part.
 
 ## Legs: the hat and the two commands
 

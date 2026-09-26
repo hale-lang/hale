@@ -196,18 +196,26 @@ knows; the proposal is in your name, so someone else ratifies it. One
 person as both dev and reviewer of the same process is a warning while
 you work alone (`dna.trust = local`), and refused once the record is
 shared — by the CLI, and again where memory takes the ratified hold.
+Memory also refuses a holder the record never knew or who retired, and
+says so as a `hold.refused` row; someone who retires later gives their
+seats back.
 
 The graph also says who must sign a change.
 `hale dna route spec/openapi.yaml` names the reviewer of the process that
 serves the contract and the reviewer of every process that consumes it,
-and the gates whose runs the verdict is given against;
-`hale dna route --diff main..HEAD` does the same for a branch. A process's
-dev never signs for it, and a path the graph does not hold is left to the
-Review's own authority.
+and the gates whose runs the verdict is given against (or says no gate
+guards it); `hale dna route --diff main..HEAD` does the same for a
+branch, a renamed file counted by both its names. A change to
+`compose.yaml` goes to the deployment's operator, against `ci/image`. The
+board signs where a practice the Board ratified *as law* binds the
+contract; advice binds nothing it must sign. A process's dev never signs
+for it, and a path the graph does not hold is left to the Review's own
+authority, which the route names.
 
 Practices are not repeated there: a practice in the graph is the
-knowledge idea it already is — advice while proposed, law once the
-Board ratifies it — and what it binds to is its binding. Memory keeps
+knowledge idea it already is — advice, unless the Board ratifies it as
+law (its document says `law: true`) — and what it binds to is its
+binding. Memory keeps
 the graph in `graph_nodes`, `graph_edges` and `graph_members`, and the
 two perspectives are queries over them: the org chart (every position,
 what it sits under, who holds it, what it signs) and the process

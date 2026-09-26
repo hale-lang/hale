@@ -210,12 +210,12 @@ main locus App {
         return self.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "delayed", attempt_id: attempt_id });
     }
     fn define(c: dna::WorkflowCatalog) {
-        std::test::assert_eq_str(c.define("two-steps", 1, 2, "two sequential steps"), "", "two-steps");
+        std::test::assert_eq_str(c.define("two-steps", 1, "record record", "two sequential steps"), "", "two-steps");
         std::test::assert_eq_str(c.leaf("two-steps", 1, 0, "a", dna::WorkRequest { objective: "first a" }, 1), "", "a");
         std::test::assert_eq_str(c.leaf("two-steps", 1, 0, "b", dna::WorkRequest { objective: "first b" }, 1), "", "b");
         std::test::assert_eq_str(c.leaf("two-steps", 1, 1, "c", dna::WorkRequest { objective: "second c" }, 1), "", "c");
         std::test::assert_eq_str(c.leaf("two-steps", 1, 1, "d", dna::WorkRequest { objective: "second d" }, 1), "", "d");
-        std::test::assert_eq_str(c.define("diamond", 1, 3, "A then B and C then D"), "", "diamond");
+        std::test::assert_eq_str(c.define("diamond", 1, "record record record", "A then B and C then D"), "", "diamond");
         std::test::assert_eq_str(c.leaf("diamond", 1, 0, "a", dna::WorkRequest { objective: "A" }, 1), "", "A");
         std::test::assert_eq_str(c.leaf("diamond", 1, 1, "b", dna::WorkRequest { objective: "B" }, 1), "", "B");
         std::test::assert_eq_str(c.leaf("diamond", 1, 1, "c", dna::WorkRequest { objective: "C" }, 1), "", "C");

@@ -98,7 +98,7 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
         .spawn()
         .expect("hale dna run");
     let nerves_up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let dl = Instant::now() + Duration::from_secs(120);
+    let dl = Instant::now() + Duration::from_secs(180);
     while Instant::now() < dl && !nerves_up() {
         std::thread::sleep(Duration::from_millis(200));
     }

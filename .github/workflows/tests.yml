@@ -649,7 +649,7 @@ jobs:
       - *toolchain-save
 
       - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
-        # The suite alone on its runner: sixteen slice tests, hashed
+        # The suite alone on its runner: twenty slice tests, hashed
         # across two jobs, running four-wide (the `dna-fixtures`
         # group in .config/nextest.toml) now that nothing else
         # competes for the four cores.

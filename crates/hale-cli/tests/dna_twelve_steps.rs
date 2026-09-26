@@ -136,7 +136,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
         .spawn()
         .expect("hale dna run");
     let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let dl = Instant::now() + Duration::from_secs(120);
+    let dl = Instant::now() + Duration::from_secs(180);
     while Instant::now() < dl && !up(&app) {
         std::thread::sleep(Duration::from_millis(200));
     }

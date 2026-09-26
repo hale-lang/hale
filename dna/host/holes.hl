@@ -190,7 +190,7 @@ fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag:
     if len(check.why) > 0 { return fail("fill: " + check.why); }
     if len(check.warning) > 0 { eprintln("hale dna fill: warning: ", check.warning); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    let request_id = "h" + hex(millis());
+    let request_id = request_digest_id(root, "h", position + "\n" + holder + "\n" + who);
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("request_id", request_id);

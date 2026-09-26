@@ -62,8 +62,30 @@ main locus App {
     fn occurrence(entity: String) -> Int {
         return std::json::find_int_field(self.last("concern.raised", entity), "occurrence");
     }
+    // A concern is an execution of concern-escalate (GH #995): its steps
+    // write its rows after it is admitted, so a raise waits, bounded, for
+    // its own `concern.raised` row.
     fn raise(entity: String, request: String) {
         self.one.on_concern(dna::Concern { source: entity, what: "mail backlog behind fulfilment", severity: 2, request: request });
+        let deadline = std::time::now() + 20;
+        while std::time::now() <= deadline && !self.raised(entity, request) { std::time::sleep(50ms); }
+        self.settle();
+    }
+    @unbounded
+    fn raised(entity: String, request: String) -> Bool {
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == "concern.raised" && e.entity == entity && dna::request_named(e.body) == request { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // Wait, bounded, until every admitted execution has settled.
+    @unbounded
+    fn settle() {
+        let deadline = std::time::now() + 20;
+        while std::time::now() <= deadline && self.rows("workflow.admitted", "") > self.rows("workflow.settled", "") { std::time::sleep(50ms); }
     }
     // one organism over the record in `self.repo`; called again where a
     // restart belongs
@@ -137,6 +159,7 @@ main locus App {
 
         // ---- it comes back
         self.born();
+        self.settle();
         std::test::assert_eq_int(self.rows("concern.proposed", MAILER), 1, "the concern it owed is proposed when it comes back");
         let proposed = self.last("knowledge.proposed", "");
         std::test::assert(std::str::contains(proposed, "\"author\": \"" + MAILER + "\"") && std::str::contains(proposed, "\"target\": \"org/app\"") && std::str::contains(proposed, "\"class\": \"concern\""), "by its source, bound to its parent: " + proposed);
@@ -152,6 +175,7 @@ main locus App {
 
         // ---- a second restart proposes nothing again
         self.born();
+        self.settle();
         std::test::assert_eq_int(self.rows("concern.proposed", MAILER), 1, "a restart over a proposed concern proposes nothing");
         std::test::assert_eq_int(self.rows("concern.proposed", WORKER), 1, "for either source");
 

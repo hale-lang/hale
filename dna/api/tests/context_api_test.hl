@@ -28,7 +28,7 @@ locus HatCases {
     }
     fn seed() {
         let cat = dna::WorkflowCatalog { };
-        std::test::assert_eq_str(cat.define("judge", 1, 1, "one judgment"), "", "definition");
+        std::test::assert_eq_str(cat.define("judge", 1, "record", "one judgment"), "", "definition");
         let request = dna::WorkRequest { objective: "assess the storage migration", target: "org", requires: "judgment", output_contract: "Assessment", knowledge_bindings: "package:sha256:none" };
         std::test::assert_eq_str(cat.leaf("judge", 1, 0, "judge", request, 2), "", "leaf");
         let limits = dna::AdmissionLimits { };

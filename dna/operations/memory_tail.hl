@@ -49,17 +49,25 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
 // begins it again. Bounded by the record.
 @unbounded
 fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> ProjectionApplied {
-    return apply_record_to(store, j, receipts, j.revision(), "", "local");
+    return apply_record_to(store, j, receipts, j.revision(), "", "local", NoAuthors { });
 }
+
+// Who wrote each row of the record (GH #1087 review, G4): the persons the
+// record knows, for the store to judge a holder by. A git record answers
+// (`GitJournal.author_of`); a projector given none knows only the owners
+// map's members.
+interface RowAuthors { fn author_of(i: Int) -> String; }
+locus NoAuthors { fn author_of(i: Int) -> String { return ""; } }
 
 // As `apply_record`, the record's first `n` rows alone. A row whose digest
 // is in `refused` (one per line) is one a reader refused (GH #1026,
 // `dna::row_admissible`): its stamp moves past it and nothing of it is
 // projected. `trust` is the record's `dna.trust` (`local` unless it says
 // otherwise): what a ratified hold that breaks the same-holder rule is
-// under it — a warning, or not projected.
+// under it — a warning, or not projected. `authors` says who wrote each
+// row: a holder is a person the record knows.
 @unbounded
-fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, n: Int, refused: String, trust: String) -> ProjectionApplied {
+fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, n: Int, refused: String, trust: String, authors: RowAuthors) -> ProjectionApplied {
     let mut out = ProjectionApplied { watermark: store.watermark() };
     let mut i = out.watermark;
     while i < n {
@@ -69,7 +77,7 @@ fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::R
         if won < 0 { out.error = store.last_error(); return out; }
         if won == 0 { out.yielded = true; return out; }
         out.rows = out.rows + 1;
-        let r = if std::str::contains("\n" + refused, "\n" + e.digest + "\n") { ProjectionApplied { } } else { apply_row(store, j, receipts, e, i, trust) };
+        let r = if std::str::contains("\n" + refused, "\n" + e.digest + "\n") { ProjectionApplied { } } else { apply_row(store, j, receipts, e, i, trust, authors) };
         if len(r.error) > 0 { store.abort_row(); out.error = r.error; return out; }
         if !store.commit_row() { out.error = store.last_error(); return out; }
         out.ratified = out.ratified + r.ratified;
@@ -87,12 +95,21 @@ fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::R
 
 // One record row's effects on the graph, inside the row's transaction.
 @unbounded
-fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, e: dna::Event, i: Int, trust: String) -> ProjectionApplied {
+fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, e: dna::Event, i: Int, trust: String, authors: RowAuthors) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
     // GH #1026: the org chart the Ledger's gate checks — a person the
     // record retired writes nothing more in memory
     if e.kind == "person.retired" && len(e.entity) > 0 {
         if !store.retire_person(e.entity, i) { out.error = store.last_error(); return out; }
+        // and gives back every seat they held: a hold projected before the
+        // retirement does not outlive it (GH #1087 review)
+        let mut held = store.graph_held_by(e.entity);
+        while len(held) > 0 {
+            let nl = std::str::index_of(held + "\n", "\n");
+            let position = held[0..nl];
+            held = if nl + 1 >= len(held) { "" } else { held[(nl + 1)..len(held)] };
+            if len(position) > 0 && !store.retire_graph("holds:" + position + "|" + e.entity) { out.error = store.last_error(); return out; }
+        }
     }
     // K3: the code's structure as the record observed it (init's
     // rows: loci, topics, bindings, effect classes, claims), keyed by
@@ -124,8 +141,8 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         let g = if e.kind == "graph.node" { graph_node_row(e.entity, e.body) } else if e.kind == "graph.edge" { graph_edge_row(e.entity, e.body) } else { graph_retired_row(e.entity) };
         if !g.ok { out.error = "invalid " + e.kind + " (row " + to_string(i) + "): " + g.why; return out; }
         // a hold is the store's to admit, however it reached the record
-        let refused_hold = if e.kind == "graph.edge" && g.kind == "holds" { hold_refusal(store, g.id, trust) } else { "" };
-        if len(refused_hold) > 0 { eprintln("hale dna: memory: a hold (row ", to_string(i), ") is not projected: ", refused_hold); return out; }
+        let refused_hold = if e.kind == "graph.edge" && g.kind == "holds" { hold_refusal(store, authors, i, g.id, trust) } else { "" };
+        if len(refused_hold) > 0 { hold_refused(j, g.id, refused_hold, i); return out; }
         let put = if e.kind == "graph.node" { store.put_graph_node(g.id, g.kind, g.name, i, e.body) } else if e.kind == "graph.edge" { store.put_graph_edge(g.id, g.kind, i, e.body, g.members) } else { store.retire_graph(g.id) };
         if !put { out.error = store.last_error(); return out; }
         out.graph = out.graph + 1;
@@ -164,7 +181,7 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
                 // at the row that proposed it, not the one that ratified it:
                 // the org chart is in the order the holes were proposed,
                 // whatever order the Board takes them in
-                let g = apply_graph_rows(store, std::json::find_field_raw(doc, "rows"), proposed_at(j, digest, i), i, trust);
+                let g = apply_graph_rows(store, j, authors, std::json::find_field_raw(doc, "rows"), proposed_at(j, digest, i), i, trust);
                 if len(g.error) > 0 { out.error = g.error; return out; }
                 out.graph = out.graph + g.graph;
             }
@@ -274,7 +291,7 @@ fn proposed_at(j: dna::Journal, digest: String, i: Int) -> Int {
 // other seat is a warning under `dna.trust = local` and not projected under
 // any other trust.
 @unbounded
-fn apply_graph_rows(store: dna::KnowledgeStore, rows: String, seq: Int, i: Int, trust: String) -> ProjectionApplied {
+fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAuthors, rows: String, seq: Int, i: Int, trust: String) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
     if !std::str::starts_with(rows, "[") { out.error = "a ratified graph proposal carries no rows (row " + to_string(i) + ")"; return out; }
     let mut it = std::json::array_first(rows);
@@ -285,9 +302,9 @@ fn apply_graph_rows(store: dna::KnowledgeStore, rows: String, seq: Int, i: Int, 
         let g = if kind == "graph.node" { graph_node_row(entity, body) } else if kind == "graph.edge" { graph_edge_row(entity, body) } else { graph_refused("`" + kind + "` is no graph row") };
         if !g.ok { out.error = "invalid " + kind + " in a ratified proposal (row " + to_string(i) + "): " + g.why; return out; }
         if g.kind == "holds" {
-            let why = hold_refusal(store, entity, trust);
+            let why = hold_refusal(store, authors, i, entity, trust);
             if len(why) > 0 {
-                eprintln("hale dna: memory: a ratified hold (row ", to_string(i), ") is not projected: ", why);
+                hold_refused(j, entity, why, i);
                 it = std::json::array_next(it);
                 continue;
             }
@@ -302,16 +319,53 @@ fn apply_graph_rows(store: dna::KnowledgeStore, rows: String, seq: Int, i: Int, 
 
 // Why a ratified hold `holds:<position>|<holder>` is not projected, ""
 // when it is (a warning said on stderr under `dna.trust = local`).
-fn hold_refusal(store: dna::KnowledgeStore, id: String, trust: String) -> String {
+fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: String, trust: String) -> String {
     let bar = std::str::index_of(id, "|");
     let position = id[6..bar];
     let holder = id[(bar + 1)..len(id)];
     if store.person_retired(holder) { return holder + " retired from this organism"; }
+    if !hold_known(store, authors, i, holder) { return holder + " is no person this record knows (no row before row " + to_string(i) + " in their name, and no owner's member)"; }
     let sibling = if std::str::ends_with(position, "/dev") { position[0..(len(position) - 4)] + "/reviewer" } else if std::str::ends_with(position, "/reviewer") { position[0..(len(position) - 9)] + "/dev" } else { "" };
     if len(sibling) == 0 || !std::str::contains("\n" + store.graph_held_by(holder) + "\n", "\n" + sibling + "\n") { return ""; }
     let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
     if trust == "local" { eprintln("hale dna: memory: warning: ", why, " — allowed under dna.trust = local"); return ""; }
     return why + " (dna.trust = " + trust + ")";
+}
+
+// Whether `holder` is a person the record knew before row `i` (GH #1087
+// review, G4): an owner's member, or who wrote a row in their own name —
+// never a name the organism writes as.
+@unbounded
+fn hold_known(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, holder: String) -> Bool {
+    if len(holder) == 0 || dna::word_in(holder, "dna host spine org ledger board hale") || std::str::starts_with(holder, "hale dna") { return false; }
+    if store.org_member(holder) { return true; }
+    let mut k = 0;
+    while k < i {
+        if authors.author_of(k) == holder { return true; }
+        k = k + 1;
+    }
+    return false;
+}
+
+// A hold the store refused, as a row (GH #1087 review, G5): the record
+// says why memory did not project it, once, and the stderr line says it
+// here too.
+@unbounded
+fn hold_refused(j: dna::Journal, id: String, why: String, i: Int) {
+    eprintln("hale dna: memory: a hold (row ", to_string(i), ") is not projected: ", why);
+    let mut k = 0;
+    while k < j.revision() {
+        let e = j.read(k);
+        if e.kind == "hold.refused" && e.entity == id { return; }
+        k = k + 1;
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("why", why);
+    b.int_field("row", i);
+    b.string_field("by", "memory");
+    b.end_object();
+    let r = j.append(j.revision(), "hold.refused", id, b.result());
 }
 
 // Whether the record redacted `digest` (GH #606).
@@ -682,7 +736,7 @@ locus MemoryProjection {
         let receipts = GraphReceipts { source: self.receipts };
         let refused = self.refused(basis.watermark, revision);
         let trust = if len(self.j.record.setting("trust")) > 0 { self.j.record.setting("trust") } else { "local" };
-        let mut r = if bounded { apply_record_to(self.store, self.j, receipts, revision, refused, trust) } else { apply_record_to(self.store, self.j, self.receipts, revision, refused, trust) };
+        let mut r = if bounded { apply_record_to(self.store, self.j, receipts, revision, refused, trust, self.j) } else { apply_record_to(self.store, self.j, self.receipts, revision, refused, trust, self.j) };
         if len(receipts.error) > 0 { r.error = receipts.error; }
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;

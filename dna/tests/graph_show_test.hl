@@ -82,7 +82,8 @@ locus App {
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
         std::test::assert(store.open(), "memory opens as the spine: " + store.last_error());
         let j = dna::GitJournal { repo: self.repo };
-        let r = ops::apply_record(store, j, dna::GitReceipts { repo: self.repo });
+        // the record's own authors: a holder is a person the record knows
+        let r = ops::apply_record_to(store, j, dna::GitReceipts { repo: self.repo }, j.revision(), "", "local", j);
         std::test::assert_eq_str(r.error, "", "the record projects clean");
         std::test::assert_eq_int(r.watermark, j.revision(), "to its end");
         store.close();
@@ -192,6 +193,8 @@ locus App {
         let holds = ops::GraphEdge { kind: "holds" };
         holds.member("position", "position:board");
         holds.member("holder", "ada");
+        // ada is a person the record knows: a row in her name
+        self.append(dna::GitJournal { repo: self.repo, author: "ada" }, "intent.offered", "i-ada", "ada was here");
         self.append(j, "graph.edge", holds.id(), holds.body());
         self.append(j, "graph.node", "position:lone", ops::graph_node_body("position", "lone", "", ""));
         self.project(owner, identity);

@@ -103,9 +103,9 @@ main locus App {
         return out;
     }
     fn define_all(c: dna::WorkflowCatalog) {
-        std::test::assert_eq_str(c.define("close-month", 1, 2, "close the month"), "", "close-month");
-        std::test::assert_eq_str(c.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
-        std::test::assert_eq_str(c.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(c.define("close-month", 1, "record record", "close the month"), "", "close-month");
+        std::test::assert_eq_str(c.define("collect-receipts", 1, "record record", ""), "", "collect-receipts");
+        std::test::assert_eq_str(c.define("chase-supplier", 1, "record", ""), "", "chase-supplier");
         std::test::assert_eq_str(c.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "a");
         std::test::assert_eq_str(c.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
         std::test::assert_eq_str(c.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");

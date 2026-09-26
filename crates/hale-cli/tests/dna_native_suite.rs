@@ -29,11 +29,35 @@ fn repo_root() -> PathBuf {
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
-/// contention (GH #795). Sixteen slices of ~5 fixtures rather than
-/// eight of ~10, so the hash partition over the slice tests spreads
-/// them evenly across two jobs. One wedged fixture still ends in a
-/// named failure within the group's timeout.
-const SLICES: usize = 16;
+/// contention (GH #795). Twenty slices of ~6 fixtures, so the hash
+/// partition over the slice tests spreads them evenly across two jobs
+/// and no slice carries two of the heaviest organism fixtures: every
+/// Board decision and every concern is an execution now (GH #995), and
+/// books_slice_test with graph_holes_test in one slice ran past the
+/// slice's fifteen minutes. One wedged fixture still ends in a named
+/// failure within the group's timeout.
+const SLICES: usize = 20;
+
+/// The fixtures that take minutes of a slice on CI's runners: an
+/// organization run through dozens of Board decisions on a git-backed
+/// record (GH #995: graph_holes_test ~520 s, books_slice_test ~280 s,
+/// receipt_retention_test ~110 s), the body fixtures that build the host
+/// cold in a cache of their own (body_claim_expired_test ~425 s,
+/// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test,
+/// which builds a head. The sorted listing's modulo paired them by
+/// accident — adding or removing any fixture reshuffled which shared a
+/// slice, and two of them run past a slice's fifteen minutes — so they
+/// lead the order: each opens a slice of its own, and the rest follow
+/// round-robin.
+const HEAVY: [&str; 7] = [
+    "graph_holes_test.hl",
+    "body_claim_expired_test.hl",
+    "body_lease_blocked_test.hl",
+    "books_slice_test.hl",
+    "body_lease_start_test.hl",
+    "legs_test.hl",
+    "receipt_retention_test.hl",
+];
 
 fn fixture_files() -> Vec<PathBuf> {
     let dir = repo_root().join("dna/tests");
@@ -44,7 +68,14 @@ fn fixture_files() -> Vec<PathBuf> {
         .filter(|p| p.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.ends_with("_test.hl")))
         .collect();
     files.sort();
-    files
+    let named = |p: &PathBuf, n: &str| p.file_name().and_then(|f| f.to_str()) == Some(n);
+    let mut ordered: Vec<PathBuf> = Vec::with_capacity(files.len());
+    for heavy in HEAVY {
+        let at = files.iter().position(|p| named(p, heavy)).unwrap_or_else(|| panic!("HEAVY names {heavy}, which is no fixture under dna/tests"));
+        ordered.push(files.remove(at));
+    }
+    ordered.extend(files);
+    ordered
 }
 
 /// The environment variable a slice stamps on every process its own
@@ -481,7 +512,7 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     // `dna::wait_scale` widens every wait at once, and the suite asks
     // for double by default; a slower runner can ask for more from the
     // environment. Two, not more: the widest wait in a fixture is 300s,
-    // and the slice's own `terminate-after` allowance is 15 minutes for
+    // and the slice's own `terminate-after` allowance is 25 minutes for
     // every fixture in it, so one stuck wait must not be able to eat
     // the whole slice. Running a fixture by hand keeps the
     // quiet-machine bounds, so a real hang is still reported in seconds
@@ -604,6 +635,7 @@ fixture_slices! {
     dna_fixtures_slice_4 => 4, dna_fixtures_slice_5 => 5, dna_fixtures_slice_6 => 6, dna_fixtures_slice_7 => 7,
     dna_fixtures_slice_8 => 8, dna_fixtures_slice_9 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
     dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
+    dna_fixtures_slice_16 => 16, dna_fixtures_slice_17 => 17, dna_fixtures_slice_18 => 18, dna_fixtures_slice_19 => 19,
 }
 
 /// The slice's own memory database is reached by editing exactly the
@@ -630,6 +662,11 @@ fn the_slices_cover_every_fixture_once() {
         covered += files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).count();
     }
     assert_eq!(covered, files.len(), "every fixture belongs to exactly one slice");
+    // no slice carries two of the heavy fixtures
+    for (k, heavy) in HEAVY.iter().enumerate() {
+        let slice = files.iter().position(|p| p.file_name().and_then(|f| f.to_str()) == Some(*heavy)).expect("a heavy fixture") % SLICES;
+        assert_eq!(slice, k, "{heavy} opens slice {k}");
+    }
 }
 
 /// GH #872: the leftover-process guard blames only what its own slice
@@ -914,6 +951,7 @@ fn dna_fixture_set_is_complete() {
             "workflow_admission_test.hl",
             "workflow_attempt_test.hl",
             "workflow_case_completion_test.hl",
+            "workflow_catalog_test.hl",
             "workflow_children_test.hl",
             "workflow_conformance_test.hl",
             "workflow_definition_test.hl",

@@ -74,7 +74,8 @@ $ hale dna review
 2 pending review(s) of 2
   m1 needs leader — apply m1 (docs): document the chat server in main.hl?
       docs · candidate bf94e503c1c0 · evidence fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0 · disposition stage
-  purpose needs board — ratify the declared purpose?
+  purpose — the declared purpose, the Board's to ratify first:
+      k:3f1c0a92b7e4 — ratify the declared purpose?
 
 $ hale dna review m1 approve --as riley --comment "fine"
 review m1 settled: approve by riley
