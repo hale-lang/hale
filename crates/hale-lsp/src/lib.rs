@@ -431,6 +431,10 @@ fn check_and_publish(
             hale_syntax::json_gen::generate_json_parsers(prog);
             let _ = hale_types::apply_sync_inference(prog);
         }
+        {
+            let mut refs: Vec<&mut Program> = programs.values_mut().collect();
+            hale_syntax::api_gen::generate_api(&mut refs);
+        }
         let bundle_programs: BTreeMap<String, &Program> = programs
             .iter()
             .map(|(p, prog)| (p.display().to_string(), prog))

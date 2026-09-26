@@ -104,6 +104,9 @@ const IMPURE_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "fs", "read_file_bytes"],
     &["std", "io", "fs", "file_size"],
     // TCP / UDP — both connect and accept have effects (sockets)
+    &["std", "io", "unix", "listen_socket"],
+    &["std", "io", "unix", "connect"],
+    &["std", "io", "unix", "connect_wait"],
     &["std", "io", "tcp", "__listen_socket"],
     &["std", "io", "tcp", "__accept_one"],
     &["std", "io", "tcp", "__connect"],

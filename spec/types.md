@@ -1262,6 +1262,13 @@ that have no caller frame to address the error channel:
   return path. Rejected at the subscribe site, not the fn
   decl (one fn may be referenced by zero subscriptions; the
   subscription is what fails to typecheck).
+  A subscribed handler MAY declare a return type (GH #1106):
+  bus dispatch ignores the value, and through an `api` binding
+  it is the reply to the caller (`spec/semantics.md` § "The api
+  binding"). At most one subscriber of a topic may declare one
+  when the program carries an api binding; the return type must
+  have a JSON form there, or the topic is left out of the API
+  with a warning.
 
 The narrowing from "no fallible on locus methods" to
 "substrate-facing surfaces only" preserves the two-channel

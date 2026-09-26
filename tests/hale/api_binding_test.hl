@@ -1,0 +1,289 @@
+// GH #1106 — the api binding: JSON over a Unix socket for the topics a
+// program already declares.
+//
+// spec/semantics.md § "The api binding": one `api:` entry on the main
+// locus's `bindings { }` (or `hale run --api <path>` with no source
+// change at all) makes every subscribed topic a command, every
+// published topic a stream and every `expose` a read, over one JSON
+// object per line. A handler's return type is the reply; a payload
+// that does not decode is refused before dispatch; a read answers a
+// snapshot with its `as_of` digest; the request bound refuses the
+// caller, never the program.
+//
+// The fixture builds a child program with the toolchain running the
+// test (`HALE_BIN`, which `hale test` exports), connects with
+// `std::io::unix::connect_wait`, and reads replies line by line with a
+// bounded recv timeout. Stream frames interleave with replies, so a
+// reply is found by its echoed `id`.
+
+fn app_source(sock: String, entry: Bool) -> String {
+    let bindings = if entry {
+        "    bindings { api: unix(\"" + sock + "\", bound: 1, on_full: refuse); }\n"
+    } else {
+        ""
+    };
+    return "type Claim { task: Int; who: String; }\n"
+        + "type Lease { task: Int; token: String; }\n"
+        + "type Slow { n: Int; }\n"
+        + "type Tick { n: Int; }\n"
+        + "type Stats { claims: Int; slow: Int; }\n"
+        + "topic Claims { payload: Claim; subject: \"t.claim\"; }\n"
+        + "topic Slows { payload: Slow; subject: \"t.slow\"; }\n"
+        + "topic Ticks { payload: Tick; subject: \"t.tick\"; }\n"
+        + "locus Head {\n"
+        + "    contract { expose stats: Stats; }\n"
+        + "    params { stats: Stats = Stats { claims: 0, slow: 0 }; n: Int = 0; }\n"
+        + "    bus { subscribe Claims as on_claim; subscribe Slows as on_slow; publish Ticks; }\n"
+        + "    fn on_claim(c: Claim) -> Lease {\n"
+        + "        self.stats.claims = self.stats.claims + 1;\n"
+        + "        return Lease { task: c.task, token: \"lease-\" + c.who };\n"
+        + "    }\n"
+        + "    fn on_slow(s: Slow) -> Slow {\n"
+        + "        std::time::sleep(300ms);\n"
+        + "        self.stats.slow = self.stats.slow + 1;\n"
+        + "        return s;\n"
+        + "    }\n"
+        + "    run() {\n"
+        + "        while !self.draining && self.n < 200 {\n"
+        + "            std::time::sleep(20ms);\n"
+        + "            self.n = self.n + 1;\n"
+        + "            Ticks <- Tick { n: self.n };\n"
+        + "        }\n"
+        + "    }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    params { head: Head = Head { }; }\n"
+        + "    placement { head: cooperative(pool = work) where async_io; }\n"
+        + bindings
+        + "    run() { std::time::sleep(8s); }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn stop() {
+        std::process::signal(self.child, 15) or discard;
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                self.out = self.out + (std::process::read_stderr(self.child) or "");
+                return;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        std::process::kill(self.child) or discard;
+    }
+}
+
+// One connection to the binding: sends lines, reads lines, finds a
+// reply by its echoed id while counting the stream frames that pass.
+locus Api {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+        frames: Int = 0;
+        last_frame: String = "";
+        connected: Bool = false;
+    }
+
+    fn connect(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 10s) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        self.connected = true;
+        return true;
+    }
+
+    fn send(line: String) {
+        self.stream.send(line + "\n") or discard;
+    }
+
+    // The next complete line, or "" after ~4s without one.
+    fn next_line() -> String {
+        let mut i = 0;
+        while i < 20 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let line = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return line;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 {
+                i = i + 1;
+            } else {
+                self.buf = self.buf + chunk;
+            }
+        }
+        return "";
+    }
+
+    // The reply carrying `"id":<id>`; stream frames on the way are counted.
+    fn reply_for(id: Int) -> String {
+        let needle = "\"id\":" + to_string(id) + ",";
+        let mut i = 0;
+        while i < 200 {
+            let line = self.next_line();
+            if len(line) == 0 {
+                return "";
+            }
+            if std::str::starts_with(line, "{\"stream\":") {
+                self.frames = self.frames + 1;
+                self.last_frame = line;
+            } else if std::str::contains(line, needle) {
+                return line;
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+
+    // Wait for one stream frame, returning it (or "" after the bound).
+    fn next_frame() -> String {
+        let mut i = 0;
+        while i < 200 {
+            let line = self.next_line();
+            if len(line) == 0 {
+                return "";
+            }
+            if std::str::starts_with(line, "{\"stream\":") {
+                self.frames = self.frames + 1;
+                self.last_frame = line;
+                return line;
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+}
+
+fn field(line: String, name: String) -> String {
+    return std::json::find_field_raw(line, name);
+}
+
+fn drive(api: Api) {
+    // A command answered by its handler's return value, correlated to
+    // the request that asked.
+    api.send("{\"id\":1,\"call\":\"Claims\",\"payload\":{\"task\":7,\"who\":\"dev\"}}");
+    let r1 = api.reply_for(1);
+    std::test::assert(std::str::contains(r1, "\"ok\":true"), "claim answered: " + r1);
+    std::test::assert_eq_str(field(r1, "value"), "{\"task\":7,\"token\":\"lease-dev\"}", "the handler's return is the reply: " + r1);
+    std::test::assert(len(field(r1, "request_id")) > 0, "the binding assigned a request id: " + r1);
+
+    // A wrong-typed field is refused before dispatch.
+    api.send("{\"id\":2,\"call\":\"Claims\",\"payload\":{\"task\":\"x\",\"who\":\"dev\"}}");
+    let r2 = api.reply_for(2);
+    std::test::assert(std::str::contains(r2, "\"ok\":false"), "malformed refused: " + r2);
+    std::test::assert(std::str::contains(r2, "\"kind\":\"malformed\""), "the receipt names malformed: " + r2);
+    std::test::assert(std::str::contains(r2, "wrong_type: task"), "the receipt names the field: " + r2);
+
+    // An unknown subject and a stream called as a command.
+    api.send("{\"id\":3,\"call\":\"Nope\",\"payload\":{}}");
+    let r3 = api.reply_for(3);
+    std::test::assert(std::str::contains(r3, "\"kind\":\"unknown\""), "unknown subject refused: " + r3);
+    api.send("{\"id\":4,\"call\":\"Ticks\",\"payload\":{}}");
+    let r4 = api.reply_for(4);
+    std::test::assert(std::str::contains(r4, "\"kind\":\"not_a_command\""), "a stream is not a command: " + r4);
+
+    // A read answers a copy with its as_of; a later write moves both.
+    api.send("{\"id\":5,\"read\":\"head.stats\"}");
+    let r5 = api.reply_for(5);
+    std::test::assert_eq_str(field(r5, "value"), "{\"claims\":1,\"slow\":0}", "the read is a copy of the field: " + r5);
+    let as_of_1 = field(r5, "as_of");
+    std::test::assert(std::str::starts_with(as_of_1, "\"sha256:"), "a read carries as_of: " + r5);
+    api.send("{\"id\":6,\"call\":\"Claims\",\"payload\":{\"task\":8,\"who\":\"ops\"}}");
+    let r6 = api.reply_for(6);
+    std::test::assert(std::str::contains(r6, "\"ok\":true"), "second claim answered: " + r6);
+    api.send("{\"id\":7,\"read\":\"head.stats\"}");
+    let r7 = api.reply_for(7);
+    std::test::assert_eq_str(field(r7, "value"), "{\"claims\":2,\"slow\":0}", "the field moved: " + r7);
+    std::test::assert(field(r7, "as_of") != as_of_1, "as_of moved with the field: " + r7);
+    std::test::assert_eq_str(field(r5, "value"), "{\"claims\":1,\"slow\":0}", "the first copy did not change");
+
+    // A stream attach receives what the program publishes.
+    api.send("{\"id\":8,\"watch\":\"Ticks\"}");
+    let r8 = api.reply_for(8);
+    std::test::assert(std::str::contains(r8, "\"attached\":\"Ticks\""), "attached: " + r8);
+    let frame = api.next_frame();
+    std::test::assert(std::str::starts_with(frame, "{\"stream\":\"Ticks\",\"value\":{\"n\":"), "a frame arrived: " + frame);
+
+    // Over the bound, the caller is refused and the handler never runs
+    // for the refused requests: bound 1, a handler that takes 300ms,
+    // three requests at once.
+    api.send("{\"id\":9,\"call\":\"Slows\",\"payload\":{\"n\":1}}");
+    api.send("{\"id\":10,\"call\":\"Slows\",\"payload\":{\"n\":2}}");
+    api.send("{\"id\":11,\"call\":\"Slows\",\"payload\":{\"n\":3}}");
+    let r10 = api.reply_for(10);
+    std::test::assert(std::str::contains(r10, "\"kind\":\"over_bound\""), "second in flight refused: " + r10);
+    let r11 = api.reply_for(11);
+    std::test::assert(std::str::contains(r11, "\"kind\":\"over_bound\""), "third in flight refused: " + r11);
+    let r9 = api.reply_for(9);
+    std::test::assert_eq_str(field(r9, "value"), "{\"n\":1}", "the first slow call answered: " + r9);
+    api.send("{\"id\":12,\"read\":\"head.stats\"}");
+    let r12 = api.reply_for(12);
+    std::test::assert_eq_str(field(r12, "value"), "{\"claims\":2,\"slow\":1}", "refused requests never reached the handler: " + r12);
+
+    // A line that is not a request.
+    api.send("not json");
+    let r0 = api.next_line();
+    std::test::assert(std::str::contains(r0, "\"kind\":\"malformed\""), "a non-request line is refused: " + r0);
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let tag = to_string(std::process::pid());
+
+    // 1. The entry in the source.
+    let sock = "/tmp/hale-api-" + tag + ".sock";
+    let src = std::io::fs::mktemp("/tmp/hale-1106-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, app_source(sock, true)) or discard;
+    let built = std::process::run(hale + "\nbuild\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
+    let bin = src[0..(len(src) - 3)];
+    let p = Proc { };
+    std::test::assert(p.start(bin), "the app started");
+    let api = Api { };
+    std::test::assert(api.connect(sock), "connected to " + sock);
+    drive(api);
+    p.stop();
+    std::test::assert(!std::io::fs::file_exists(sock), "the socket file is unlinked at exit");
+
+    // 2. Zero code: the same program with no bindings block, under
+    //    `hale run --api`.
+    let sock2 = "/tmp/hale-api-" + tag + "-b.sock";
+    let src2 = std::io::fs::mktemp("/tmp/hale-1106b-", ".hl") or "";
+    std::io::fs::write_file(src2, app_source(sock2, false)) or discard;
+    let q = Proc { };
+    std::test::assert(q.start(hale + "\nrun\n--api\n" + sock2 + "\n" + src2), "hale run --api started");
+    let api2 = Api { };
+    std::test::assert(api2.connect(sock2), "connected to the zero-code socket: " + q.out);
+    api2.send("{\"id\":1,\"call\":\"Claims\",\"payload\":{\"task\":1,\"who\":\"zero\"}}");
+    let z1 = api2.reply_for(1);
+    std::test::assert_eq_str(field(z1, "value"), "{\"task\":1,\"token\":\"lease-zero\"}", "zero-code call answered: " + z1);
+    api2.send("{\"id\":2,\"read\":\"head.stats\"}");
+    let z2 = api2.reply_for(2);
+    std::test::assert_eq_str(field(z2, "value"), "{\"claims\":1,\"slow\":0}", "zero-code read answered: " + z2);
+    q.stop();
+
+    std::io::fs::unlink(src) or discard;
+    std::io::fs::unlink(bin) or discard;
+    std::io::fs::unlink(src2) or discard;
+}

@@ -30,6 +30,7 @@ use crate::stdlib::io_fs::IoFsStdlib;
 use crate::stdlib::io_tcp::IoTcpStdlib;
 use crate::stdlib::io_tls::IoTlsStdlib;
 use crate::stdlib::io_udp::IoUdpStdlib;
+use crate::stdlib::io_unix::IoUnixStdlib;
 use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::str::StrStdlib;
 
@@ -1422,6 +1423,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )),
             ["std", "io", "tcp", "accept_one"] => Ok(Some(
                 self.lower_std_io_tcp_accept_one_fallible(args, scope)?,
+            )),
+            // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
+            ["std", "io", "unix", "listen_socket"] => Ok(Some(
+                self.lower_std_io_unix_listen_socket_fallible(args, scope)?,
+            )),
+            ["std", "io", "unix", "connect"] => Ok(Some(
+                self.lower_std_io_unix_connect_fallible(args, scope)?,
+            )),
+            ["std", "io", "unix", "connect_wait"] => Ok(Some(
+                self.lower_std_io_unix_connect_wait_fallible(args, scope)?,
             )),
             // TLS: connect handshakes + system trust verification,
             // so the failure surface is rich enough to warrant

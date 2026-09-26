@@ -474,10 +474,26 @@ birth_check_decl  = "birth_check" , "{" , expression , "}" , "->" ,
    gives a qualified bus subject, so a binding and a subscribe compare
    like with like) and the cross-seed rename pass collapses it to the
    mangled declaration. *)
-bindings_block    = "bindings" , "{" , { binding_entry } , "}" ;
+bindings_block    = "bindings" , "{" , { binding_entry | api_entry } , "}" ;
 binding_entry     = qualified_name , ":" , transport_spec ,
                     [ codec_spec ] ,
                     [ binding_where ] , ";" ;
+
+(* GH #1106: the api binding. `api` is a contextual keyword in the
+   entry-head position, told from a topic name by the `:` after it
+   and the lowercase transport head; at most one per block. It binds
+   the program's API (every subscribed topic a command, every
+   published topic a stream, every expose a read) over one JSON
+   object per line on a Unix domain stream socket. `bound` and
+   `on_full` are required by the checker; `watch_bound` and
+   `on_watch_full` go together and default to `bound` / `drop_old`.
+   See spec/semantics.md § "The api binding". *)
+api_entry         = "api" , ":" , api_transport , ";" ;
+api_transport     = "unix" , "(" , STRING_LIT , { "," , api_kwarg } , ")" ;
+api_kwarg         = ( "bound" , ":" , INT_LIT )
+                  | ( "on_full" , ":" , "refuse" )
+                  | ( "watch_bound" , ":" , INT_LIT )
+                  | ( "on_watch_full" , ":" , shed_policy ) ;
 
 (* F.36 Slice 2 (2026-05-28): optional codec(L { ... }) clause
    on a binding entry. Pluggable encode/decode for cross-binary

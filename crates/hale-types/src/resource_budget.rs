@@ -43,6 +43,9 @@ const FD_ACQUIRING_PATHS: &[&str] = &[
     "std::io::tcp::__listen_socket",
     "std::io::tcp::accept_one",
     "std::io::tcp::__accept_one",
+    "std::io::unix::listen_socket",
+    "std::io::unix::connect",
+    "std::io::unix::connect_wait",
 ];
 
 /// GH #18 item 5, leak-detection stage: warn on an fd-acquiring call whose
