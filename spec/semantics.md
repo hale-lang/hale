@@ -536,8 +536,12 @@ and reclaimed by its scope-exit flush, exactly as it would be
 written on a line of its own.
 
 A deferred dissolve is scoped to the enclosing **fn**, not to
-the enclosing block — a `let` is readable for the rest of the
-fn, including after the loop that bound it — but a locus
+the enclosing block — the slot a `let` binds lives until the fn
+exits, including after the loop that bound it, while the *name*
+is the block's: a `let` is visible from its statement to the end
+of its block, and a `let` that reuses a parameter's or an outer
+`let`'s name inside a block shadows it there and there only (GH
+#1132) — but a locus
 created in a **loop** is reclaimed when its slot is reused, and
 only the last one at scope exit. Control arriving at the same
 instantiation a second time is the end of the previous

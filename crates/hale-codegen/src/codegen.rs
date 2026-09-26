@@ -13322,7 +13322,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// A block's names are the block's (GH #1132): the checker scopes
+    /// a `let` to its block, and so must the name map here, or a `let`
+    /// that reuses a parameter's (or an outer `let`'s) name inside a
+    /// branch replaces that binding for the rest of the fn — and on the
+    /// path that never took the branch the fn then reads a slot nothing
+    /// stored (the issue's segfault). The slot itself stays where
+    /// `alloca_for` hoists it, in the entry block, and the deferred
+    /// dissolve stays fn-scoped; only what the name resolves to is
+    /// restored at block exit.
     pub(crate) fn lower_block(
+        &mut self,
+        block: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let outer = scope.locals.clone();
+        let end = self.lower_block_inner(block, scope);
+        scope.locals = outer;
+        end
+    }
+
+    fn lower_block_inner(
         &mut self,
         block: &Block,
         scope: &mut Scope<'ctx>,
@@ -13351,6 +13371,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// is a poison undef and callers should branch to merge based on
     /// the reported BlockEnd).
     fn lower_block_as_expr(
+        &mut self,
+        block: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
+        // the block's names are the block's (GH #1132); see lower_block
+        let outer = scope.locals.clone();
+        let out = self.lower_block_as_expr_inner(block, scope);
+        scope.locals = outer;
+        out
+    }
+
+    fn lower_block_as_expr_inner(
         &mut self,
         block: &Block,
         scope: &mut Scope<'ctx>,
@@ -19906,6 +19938,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(w_slot, bm)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // the body's names, the binding included, are the body's (GH #1132)
+                let outer_locals = scope.locals.clone();
                 scope
                     .locals
                     .insert(binding.name.clone(), (w_slot, CodegenTy::BytesMut));
@@ -19917,6 +19951,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some(t) => self.lower_expr(t, scope)?.0.into_int_value(),
                     None => self.context.i64_type().const_zero(),
                 };
+                scope.locals = outer_locals;
                 let commit_fn = self
                     .module
                     .get_function("lotus_bus_commit_shm_ring_layout")
