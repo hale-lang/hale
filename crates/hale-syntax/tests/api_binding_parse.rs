@@ -189,14 +189,21 @@ fn the_entry_takes_a_refusal_policy_and_a_role_source() {
     ));
     assert_eq!(api.on_unauthorized.map(|p| p.0), Some(hale_syntax::ast::ApiUnauthorizedPolicy::Drop));
     let r = api.roles.expect("a role source");
-    assert_eq!(r.locus.name, "Record");
-    assert_eq!(r.inits.len(), 1);
+    let hale_syntax::ast::Expr::Struct { path, inits, .. } = &r.expr else { panic!("a locus literal: {:?}", r.expr) };
+    assert_eq!(path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Record"]);
+    assert_eq!(inits.len(), 1);
     let api = api_of(&main_with(r#"api: unix("/run/app.sock", bound: 64, on_full: refuse, on_unauthorized: refuse);"#));
     assert_eq!(api.on_unauthorized.map(|p| p.0), Some(hale_syntax::ast::ApiUnauthorizedPolicy::Refuse));
     assert!(api.roles.is_none());
     let err = parse_source(&main_with(r#"api: unix("/run/app.sock", bound: 64, on_full: refuse, on_unauthorized: ignore);"#)).expect_err("bad policy");
     assert!(err.iter().any(|d| d.message.contains("unknown on_unauthorized policy")), "{:?}", err);
-    // A cross-seed source keeps its joined path.
+    // A cross-seed source keeps its qualified path; a main param is an
+    // expression on `self` (review F6).
     let api = api_of(&main_with(r#"api: unix("/run/app.sock", bound: 64, on_full: refuse, roles: dna::RecordRoles { });"#));
-    assert_eq!(api.roles.unwrap().locus.name, "dna::RecordRoles");
+    let hale_syntax::ast::Expr::Struct { path, .. } = &api.roles.unwrap().expr else { panic!() };
+    assert_eq!(path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["dna", "RecordRoles"]);
+    let api = api_of(&main_with(r#"api: unix("/run/app.sock", bound: 64, on_full: refuse, roles: self.roles);"#));
+    let hale_syntax::ast::Expr::Field { receiver, name, .. } = &api.roles.unwrap().expr else { panic!() };
+    assert!(matches!(**receiver, hale_syntax::ast::Expr::KwSelf(_)));
+    assert_eq!(name.name, "roles");
 }

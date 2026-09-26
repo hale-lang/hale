@@ -148,9 +148,11 @@ A refusal is an answer, never a failure of the program:
 The kinds are `malformed` (not a JSON object, no verb, or a payload
 that does not decode; the reason names the field), `unknown` (no
 such topic or read), `not_a_command` (you called a stream),
-`not_a_stream` (you watched a command), `over_bound`, and
-`unauthorized` (you lack the role; the refusal names it, see
-below). A payload
+`not_a_stream` (you watched a command), `over_bound`,
+`unauthenticated` (the kernel would not say who you are; nothing is
+served to such a peer), and `unauthorized` (you asked for the full
+description without `owner`). A gated item you may not use answers
+`unknown`, like a name that does not exist: see below. A payload
 is decoded before dispatch, strictly: a string where an `Int` is
 declared is `wrong_type`, a missing field without a default is
 `missing_field`, and the handler only ever sees a value of its
@@ -269,30 +271,54 @@ owner          = ["user:riley"]
 
 `hale build --env prod` (or `hale run --env prod`) bakes that table
 into the binding; the members are matched against the peer's
-credentials (`uid:`, `gid:` including supplementary groups, `user:`
-and `group:` resolved once at start, `*` for any authenticated
-peer). `LOTUS_API_ROLES="refund_support=uid:1000;owner=user:riley"`
-overrides it at run time, which is how a test drives it. With no
-table at all every gate refuses, and the build tells you. `hale
-check --matrix` insists that every declared role is mapped in every
-environment, `[]` meaning explicitly nobody. An app can also hand the
-binding its own source, a locus with `fn holds(p:
-std::api::Principal, r: String) -> Bool`, as `roles: RecordRoles { }`
-on the entry; that is how a program whose positions are roles
-answers from its own record.
+credentials (`uid:`; `gid:` against the primary group and the
+supplementary groups the kernel reports for the connection; `user:`
+and `group:` resolved once at start per the account database; `*`
+for any authenticated peer). `LOTUS_API_ROLES="refund_support=uid:1000;owner=user:riley"`
+overrides it at run time, which is how a test drives it. A table
+naming a role the program does not declare, or a member outside
+those spellings, is refused at start with the reason, the same rule
+`hale check --matrix` holds `hale.toml` to; with no table at all
+every gate refuses, and the build tells you. The matrix also insists
+that every declared role is mapped in every environment, `[]`
+meaning explicitly nobody.
 
-A refusal is a receipt naming what was missing:
+An app can hand the binding its own source instead: a locus with
+`fn holds(p: std::api::Principal, r: String) -> Bool`, named on the
+entry as an expression the main locus evaluates, so it can be built
+with the program's own state and kept as a handle:
+
+```hale
+main locus Head {
+    params { root: String = "."; roles: RecordRoles = RecordRoles { }; }
+    bindings { api: unix("/run/head.sock", bound: 64, on_full: refuse, roles: self.roles); }
+    birth() { self.roles.root = self.root; }
+}
+```
+
+That is how a program whose positions are roles answers from its own
+record.
+
+An item you may not use is not shown to you and, if you name it
+anyway, is `unknown`, exactly as a name that does not exist would
+be: existence is not disclosed to a principal that cannot act on it.
+The one refusal that names a role is the full description's:
 
 ```text
 {"request_id": 9, "id": 3, "ok": false,
- "refusal": {"kind": "unauthorized", "reason": "needs role auditor", "role": "auditor"},
+ "refusal": {"kind": "unauthorized", "reason": "needs role owner", "role": "owner"},
  "caller": {"mode": "unix", "name": "uid:1000", ...}}
 ```
 
-and an answer names what authorized it: `"role": "owner"` on the
-receipt, the same value in `ctx.role`. `on_unauthorized: drop` on the
-entry turns the refusal into silence, for a socket that should not
-confirm what exists.
+An answer names what authorized it: `"role": "owner"` on the receipt,
+the same value in `ctx.role`. A stream follows the gate of the topic's
+handlers unless its `publish` states its own. `on_unauthorized: drop`
+on the entry turns a refusal into silence, for a socket that should
+not even answer.
+
+A peer the kernel cannot vouch for (`uid` -1) is refused everything,
+gated or not: the binding's whole claim is that it knows who is
+calling.
 
 The description follows the same rule. `{"describe": true}` returns
 the caller's slice: the commands, reads and streams it may use, and

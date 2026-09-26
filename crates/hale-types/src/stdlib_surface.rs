@@ -502,9 +502,10 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["io", "unix"],
         fns: &[
             e("connect", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("connect_wait", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
-            e("group_id", EffectSet::SYSCALL), e("in_group", EffectSet::SYSCALL),
+            e("group_id", EffectSet::SYSCALL),
             e("listen_socket", EffectSet::SYSCALL),
-            e("peer_gid", EffectSet::SYSCALL), e("peer_pid", EffectSet::SYSCALL), e("peer_uid", EffectSet::SYSCALL),
+            e("peer_gid", EffectSet::SYSCALL), e("peer_group_at", EffectSet::SYSCALL), e("peer_groups_count", EffectSet::SYSCALL),
+            e("peer_pid", EffectSet::SYSCALL), e("peer_uid", EffectSet::SYSCALL),
             e("user_id", EffectSet::SYSCALL),
         ],
         open_prefixes: &[],
@@ -1395,7 +1396,8 @@ pub const SIGS: &[FnSig] = &[
     // GH #1109: the static role table's `user:` / `group:` spellings.
     sig!(NS_UNIX, "user_id", [Str], Int),
     sig!(NS_UNIX, "group_id", [Str], Int),
-    sig!(NS_UNIX, "in_group", [Int, Int], Bool),
+    sig!(NS_UNIX, "peer_groups_count", [Int], Int),
+    sig!(NS_UNIX, "peer_group_at", [Int, Int], Int),
     // GH #1108: the local context a handler reached in-process gets.
     sig!(NS_API, "local_context", [], Named("__StdApiContext")),
     sig!(NS_TCP, "close_fd", [Int], Int),

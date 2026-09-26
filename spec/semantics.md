@@ -1702,8 +1702,9 @@ the two go together, and when both are omitted a watcher gets
 `bound` frames and `drop_old`. Frames a watcher's queue sheds are
 counted and reported on the next frame it does receive. The third
 knob is the gate's: `on_unauthorized: refuse` (the default: a
-receipt naming the missing role) or `drop` (no answer), and
-`roles: L { … }` names the membership source (GH #1109, below).
+receipt, `unknown` for an item outside the caller's slice) or `drop`
+(no answer), and `roles: <expr>` names the membership source (GH
+#1109, below).
 
 **The wire.** A Unix domain stream socket carrying one JSON object
 per line. A request is one of
@@ -1743,10 +1744,17 @@ The refusal kinds are `malformed` (not a JSON object, no verb, no
 reason names `missing_field` or `wrong_type` and the field),
 `unknown` (no such topic or read), `not_a_command` (a stream named
 in a call), `not_a_stream` (a command named in a watch),
-`over_bound`, and `unauthorized` (GH #1109: the caller lacks the
-role the operation is gated on; the refusal carries `"role"` naming
-it, and `on_unauthorized: drop` turns it into no answer at all). A
-refusal is a value-channel answer, never a failure of the program. Answers arrive in the order the program produces
+`over_bound`, `unauthenticated` (GH #1109: the kernel would not say
+who the peer is; such a peer is refused every request, gated or not,
+since the binding vouches for who is calling and -1 is nobody), and
+`unauthorized` (the caller lacks `owner` for `{"describe": "full"}`;
+the refusal carries `"role"`). A gated command, read or stream a
+caller may not use is refused as `unknown`, exactly as a name that
+does not exist: what lies outside a caller's slice is not disclosed
+to it, and only `full`, whose existence every caller knows, names
+the role it needs. `on_unauthorized: drop` turns either refusal into
+no answer at all. A refusal is a value-channel answer, never a
+failure of the program. Answers arrive in the order the program produces
 them, so a refusal the socket side issues itself may precede the
 answer to an earlier request still with its handler; a client
 correlates by `id`.
@@ -1790,7 +1798,9 @@ that a call on the topic, a read of the member or a watch of the
 stream **arriving through the api binding** is refused unless the
 caller's principal holds R. Commands and reads are checked per
 message at the binding; a stream is checked once, when the watcher
-attaches. Holding R means the membership source answers yes for R
+attaches, and a stream follows the same gate as the topic's
+subscribers unless its `publish` member states its own. Holding R
+means the membership source answers yes for R
 itself or for any role whose `includes` chain reaches R; the first
 that answers is the **authorizing role**, and it is written on the
 receipt as `"role"` and handed to a `Context`-taking handler as
@@ -1798,12 +1808,27 @@ receipt as `"role"` and handed to a `Context`-taking handler as
 not cross the binding). The source is a locus satisfying
 `std::api::RoleSource` (`fn holds(p: Principal, r: String) ->
 Bool`, the direct question only): the one the entry names with
-`roles: L { … }`, or the stdlib's `std::api::StaticRoles`, whose
-table `hale build --env <name>` / `hale run --env <name>` bakes from
+`roles: <expr>` — an expression the main locus evaluates as a param
+default, a locus literal or one of main's own params (`self.roles`),
+so the program builds its source with its own state and keeps a
+handle to it, and the binding holds it as a `std::api::RoleSource`
+(a borrow) — or the stdlib's `std::api::StaticRoles`, whose table
+`hale build --env <name>` / `hale run --env <name>` bakes from
 `[environments.<name>.roles]` in `hale.toml` and `LOTUS_API_ROLES`
-overrides at run time. Without a table every gate refuses, and the
-build says so once. A principal the binding could not authenticate
-(uid -1) holds no role whatever the table says. The description the
+overrides at run time. The table travels as one line the binding
+re-splits, so it is held to one rule at check, at build and at
+birth: a key is a role the program declares (an identifier), a
+member is `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>` (an
+account name: letters, digits, `.`, `_`, `-`, `@`) or `*`; a table
+outside that rule is a manifest error, and at birth the binding
+refuses to start, saying which entry. A `gid:` member matches the
+peer's primary group or one of the supplementary groups the kernel
+holds for the connection (`SO_PEERGROUPS`; nothing is looked up per
+request); `user:` and `group:` resolve once, at birth, per the
+host's account database. Without a table every gate refuses, and
+the build says so once. A principal the binding could not
+authenticate (uid -1) holds no role whatever the table says, and is
+refused every request. The description the
 binding serves is the caller's slice: the commands, reads and
 streams it may use (an ungated item always), with the schemas those
 items reference; the whole document is itself a read gated on the

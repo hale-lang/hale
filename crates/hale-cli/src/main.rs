@@ -5359,7 +5359,6 @@ fn flag_value_in(
     Ok(None)
 }
 
-/// Which constitution does environment `env` require? Walks up from
 /// GH #1109: what `build --env` and `run --env` resolve before the
 /// program is parsed: the environment's section (for the constitution
 /// it binds) and, onto `options`, its role table, which the api binding
@@ -5417,6 +5416,7 @@ fn bind_build_env(
     Ok(())
 }
 
+/// Which constitution does environment `env` require? Walks up from
 /// the target for the nearest `hale.toml`, so `hale check apps/a
 /// --env prod` works from anywhere in the tree.
 fn resolve_env_constitution(

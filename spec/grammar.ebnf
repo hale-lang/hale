@@ -505,8 +505,11 @@ api_kwarg         = ( "bound" , ":" , INT_LIT )
                   | ( "watch_bound" , ":" , INT_LIT )
                   | ( "on_watch_full" , ":" , shed_policy )
                   | ( "on_unauthorized" , ":" , ( "refuse" | "drop" ) )   (* #1109 *)
-                  | ( "roles" , ":" , qualified_name , "{" ,
-                      [ struct_init , { "," , struct_init } , [ "," ] ] , "}" ) ;
+                  | ( "roles" , ":" , expression ) ;
+(* `roles:` takes an expression the main locus evaluates as a param
+   default: a locus literal (`RecordRoles { }`, `lib::RecordRoles { }`)
+   or one of main's params (`self.roles`), so the program builds its
+   source with its own state and keeps a handle to it. *)
 
 (* F.36 Slice 2 (2026-05-28): optional codec(L { ... }) clause
    on a binding entry. Pluggable encode/decode for cross-binary

@@ -3853,26 +3853,14 @@ impl Parser {
             let key = self.expect_ident("api kwarg name")?;
             self.expect(TokenKind::Colon, ":")?;
             match key.name.as_str() {
-                // GH #1109: a membership source the app provides, a
-                // locus literal like an adapter's.
+                // GH #1109: the membership source the program provides —
+                // an expression on the main locus: a locus literal, or
+                // `self.<param>` (review F6).
                 "roles" => {
-                    let locus = self.expect_joined_path("role source locus name")?;
-                    self.expect(TokenKind::LBrace, "{")?;
-                    let mut inits = Vec::new();
-                    if !self.at(&TokenKind::RBrace) {
-                        inits.push(self.parse_struct_init()?);
-                        while self.eat(&TokenKind::Comma) {
-                            if self.at(&TokenKind::RBrace) {
-                                break;
-                            }
-                            inits.push(self.parse_struct_init()?);
-                        }
-                    }
-                    let close = self.expect(TokenKind::RBrace, "}")?;
+                    let expr = self.parse_expr()?;
                     roles = Some(ApiRoles {
-                        span: locus.span.merge(close.span),
-                        locus,
-                        inits,
+                        span: expr.span(),
+                        expr,
                     });
                 }
                 // GH #1109: the refusal policy at the gate.
@@ -3886,8 +3874,8 @@ impl Parser {
                                 p.span,
                                 format!(
                                     "unknown on_unauthorized policy `{}` (a caller \
-                                     lacking the role is `refuse`d with a receipt \
-                                     naming it, or the request is `drop`ped)",
+                                     lacking the role is `refuse`d with a receipt, \
+                                     or the request is `drop`ped)",
                                     other
                                 ),
                             ));
@@ -6086,7 +6074,9 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
-                gated: None,                budget: None,                hot: false,
+                gated: None,
+                budget: None,
+                hot: false,
                 effects: Vec::new(),
                 quantities: Vec::new(),
                 decorators: Vec::new(),
@@ -6114,7 +6104,9 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
-                gated: None,                budget: None,                hot: false,
+                gated: None,
+                budget: None,
+                hot: false,
                 effects: Vec::new(),
                 quantities: Vec::new(),
                 decorators: Vec::new(),
@@ -6138,7 +6130,9 @@ impl Parser {
             ffi,
             export: false,
             unbounded: false,
-            gated: None,            budget: None,            hot: false,
+            gated: None,
+            budget: None,
+            hot: false,
             effects: Vec::new(),
             quantities: Vec::new(),
             decorators: Vec::new(),

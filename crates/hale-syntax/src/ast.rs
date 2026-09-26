@@ -1349,7 +1349,7 @@ pub struct BindingsBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApiBinding {
     pub transport: ApiTransport,
-    /// GH #1109: `roles: RecordRoles { ... }` — a locus satisfying
+    /// GH #1109: `roles: <expr>` — a locus satisfying
     /// `std::api::RoleSource` that answers whether a principal holds a
     /// role; absent, the static table from `[environments.<env>.roles]`.
     pub roles: Option<ApiRoles>,
@@ -1372,10 +1372,15 @@ pub enum ApiUnauthorizedPolicy {
     Drop,
 }
 
+/// GH #1109: `roles: <expr>` — the membership source, an expression
+/// evaluated on the main locus (review F6): a locus literal
+/// (`RecordRoles { }`, `lib::RecordRoles { }`) or a main param
+/// (`self.roles`), so the program builds the source with its own
+/// state and keeps a handle to it. The binding receives it as a
+/// `std::api::RoleSource`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApiRoles {
-    pub locus: Ident,
-    pub inits: Vec<StructInit>,
+    pub expr: Expr,
     pub span: Span,
 }
 

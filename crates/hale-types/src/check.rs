@@ -6459,7 +6459,7 @@ fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
 /// transport has no gate, so the annotation would promise a check
 /// that does not run.
 fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
-    use hale_syntax::ast::{BusSubject, ContractDirection, ContractKind, Ident};
+    use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
     use std::collections::{BTreeMap, BTreeSet};
 
     let mut decls: BTreeMap<String, (Vec<Ident>, Span)> = BTreeMap::new();
@@ -6526,9 +6526,13 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
         }
     }
 
-    // Topics bound to a transport in `bindings { }` have no gate.
+    // Topics bound to a transport in `bindings { }` have no gate; the
+    // api entry's own source, and the main locus's params (a source
+    // may be `self.<param>`).
     let mut bound: BTreeSet<String> = BTreeSet::new();
-    let mut api_roles_source: Option<Ident> = None;
+    let mut api_roles: Option<ApiRoles> = None;
+    let mut api_span: Option<Span> = None;
+    let mut main_params: Vec<(String, TypeExpr)> = Vec::new();
     for p in programs {
         walk_decls(&p.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
@@ -6538,10 +6542,43 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                             bound.insert(e.topic.name.clone());
                         }
                         if let Some(api) = &bb.api {
+                            api_span = Some(api.span);
                             if let Some(r) = &api.roles {
-                                api_roles_source = Some(r.locus.clone());
+                                api_roles = Some(r.clone());
+                            }
+                            for pm in &l.members {
+                                if let LocusMember::Params(pb) = pm {
+                                    for prm in &pb.params {
+                                        if let Some(t) = &prm.ty {
+                                            main_params.push((prm.name.name.clone(), t.clone()));
+                                        }
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+            }
+        });
+    }
+
+    // Review F3: a gate on a free fn is an error — nothing there is
+    // reached from the binding — and its role is checked all the same.
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            if let TopDecl::Fn(f) = item {
+                if let Some(g) = &f.gated {
+                    diags.push(Diag::ty(
+                        g.span,
+                        format!(
+                            "`@gated(role: {})` on the free fn `{}`: a gate goes on a subscribed \
+                             handler, an `expose` member or a `publish` — it is checked at the api \
+                             binding, and a free fn is never reached from there",
+                            g.name, f.name.name
+                        ),
+                    ));
+                    if !declared(&g.name) {
+                        diags.push(undeclared(g, &format!("`@gated` on `{}`", f.name.name)));
                     }
                 }
             }
@@ -6560,7 +6597,9 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                 return;
             }
             loci.insert(l.name.name.clone(), l);
-            let mut subscribed: BTreeMap<&str, Option<String>> = BTreeMap::new();
+            // Every subscription, by handler: one handler may subscribe
+            // several topics (review F5), and each is a site.
+            let mut subscribed: Vec<(&str, Option<String>)> = Vec::new();
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
                 for bm in &bb.members {
@@ -6570,7 +6609,7 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                                 BusSubject::Topic(id) => Some(id.name.clone()),
                                 _ => None,
                             };
-                            subscribed.insert(handler.name.as_str(), topic);
+                            subscribed.push((handler.name.as_str(), topic));
                         }
                         BusMember::Publish { subject, gated, span, .. } => {
                             if let Some(g) = gated {
@@ -6596,8 +6635,13 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                         if !declared(&g.name) {
                             diags.push(undeclared(g, &format!("`@gated` on `{}.{}`", l.name.name, f.name.name)));
                         }
-                        match subscribed.get(f.name.name.as_str()) {
-                            None => diags.push(Diag::ty(
+                        let mine: Vec<&Option<String>> = subscribed
+                            .iter()
+                            .filter(|(h, _)| *h == f.name.name.as_str())
+                            .map(|(_, t)| t)
+                            .collect();
+                        if mine.is_empty() {
+                            diags.push(Diag::ty(
                                 g.span,
                                 format!(
                                     "`@gated(role: {})` on `{}.{}`, which no `subscribe` line of \
@@ -6606,29 +6650,27 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                                      plain method is never reached from there",
                                     g.name, l.name.name, f.name.name, l.name.name
                                 ),
-                            )),
-                            Some(topic) => {
-                                if let Some(t) = topic {
-                                    if bound.contains(t) {
-                                        diags.push(Diag::ty(
-                                            g.span,
-                                            format!(
-                                                "`@gated(role: {})` on `{}.{}`, but its topic `{}` is \
-                                                 bound to a transport in `bindings {{ }}` that has no \
-                                                 gate: a message from another process would reach the \
-                                                 handler unchecked. Reach the topic through the api \
-                                                 binding, or drop the annotation",
-                                                g.name, l.name.name, f.name.name, t
-                                            ),
-                                        ));
-                                    }
-                                    sub_gates.entry(t.clone()).or_default().push((
-                                        format!("{}.{}", l.name.name, f.name.name),
-                                        Some(g.name.clone()),
-                                        g.span,
-                                    ));
-                                }
+                            ));
+                        }
+                        for topic in mine.into_iter().flatten() {
+                            if bound.contains(topic) {
+                                diags.push(Diag::ty(
+                                    g.span,
+                                    format!(
+                                        "`@gated(role: {})` on `{}.{}`, but its topic `{}` is \
+                                         bound to a transport in `bindings {{ }}` that has no \
+                                         gate: a message from another process would reach the \
+                                         handler unchecked. Reach the topic through the api \
+                                         binding, or drop the annotation",
+                                        g.name, l.name.name, f.name.name, topic
+                                    ),
+                                ));
                             }
+                            sub_gates.entry(topic.clone()).or_default().push((
+                                format!("{}.{}", l.name.name, f.name.name),
+                                Some(g.name.clone()),
+                                g.span,
+                            ));
                         }
                     }
                     LocusMember::Contract(cb) => {
@@ -6692,46 +6734,98 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
         }
     }
 
-    // An app-provided source is a locus satisfying std::api::RoleSource.
-    if let Some(src) = api_roles_source {
-        match loci.get(&src.name) {
-            None => {
-                if !src.name.starts_with("__Std") {
-                    diags.push(Diag::ty(
-                        src.span,
-                        format!(
-                            "api binding: `roles: {} {{ }}` names no locus of this bundle; \
-                             a role source is a locus with `fn holds(p: std::api::Principal, \
-                             r: String) -> Bool` (std::api::RoleSource)",
-                            src.name
-                        ),
-                    ));
-                }
-            }
-            Some(l) => {
-                let holds = l.members.iter().find_map(|m| match m {
-                    LocusMember::Fn(f) if f.name.name == "holds" => Some(f),
-                    _ => None,
-                });
-                let ok = holds.is_some_and(|f| {
-                    f.params.len() == 2
-                        && f.fallible.is_none()
-                        && matches!(&f.ret, Some(TypeExpr::Primitive(hale_syntax::ast::PrimType::Bool, _)))
-                });
-                if !ok {
-                    diags.push(Diag::ty(
-                        src.span,
-                        format!(
-                            "api binding: `roles: {} {{ }}` does not satisfy std::api::RoleSource: \
-                             it needs `fn holds(p: std::api::Principal, r: String) -> Bool`, \
-                             not fallible, answering whether the principal holds the role directly \
-                             (the binding walks `includes` itself)",
-                            src.name
-                        ),
-                    ));
-                }
-            }
+    // A program-named source is a locus satisfying std::api::RoleSource
+    // (review F6): a locus literal or `self.<param>` of the main locus
+    // is checked structurally here, with the fn's span; any other
+    // expression is typed against the interface at the generated init.
+    let Some(src) = api_roles else { return };
+    let named = |path: &hale_syntax::ast::QualifiedName| -> String {
+        path.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::")
+    };
+    let locus_name: Option<String> = match &src.expr {
+        Expr::Struct { path, .. } => Some(named(path)),
+        Expr::Field { receiver, name, .. } if matches!(**receiver, Expr::KwSelf(_)) => main_params
+            .iter()
+            .find(|(n, _)| *n == name.name)
+            .and_then(|(_, t)| match t {
+                TypeExpr::Named { path, .. } => Some(named(path)),
+                _ => None,
+            }),
+        _ => None,
+    };
+    let Some(locus_name) = locus_name else { return };
+    if locus_name.starts_with("__Std") || locus_name.starts_with("std::") {
+        return;
+    }
+    let entry = api_span.unwrap_or(src.span);
+    let Some(l) = loci.get(&locus_name) else {
+        diags.push(Diag::ty(
+            src.span,
+            format!(
+                "api binding: `roles:` names `{}`, which is no locus of this bundle; a role \
+                 source is a locus with `fn holds(p: std::api::Principal, r: String) -> Bool` \
+                 (std::api::RoleSource)",
+                locus_name
+            ),
+        ));
+        return;
+    };
+    let holds = l.members.iter().find_map(|m| match m {
+        LocusMember::Fn(f) if f.name.name == "holds" => Some(f),
+        _ => None,
+    });
+    let Some(f) = holds else {
+        diags.push(Diag::ty(
+            src.span,
+            format!(
+                "api binding: `roles:` names `{}`, which has no `fn holds`: a role source \
+                 answers `fn holds(p: std::api::Principal, r: String) -> Bool` \
+                 (std::api::RoleSource) — whether the principal holds the role directly; \
+                 the binding walks `includes` itself",
+                locus_name
+            ),
+        ));
+        return;
+    };
+    let is_principal = |t: &TypeExpr| match t {
+        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            segs == ["std", "api", "Principal"] || segs == ["__StdApiPrincipal"]
         }
+        _ => false,
+    };
+    let mut why: Vec<String> = Vec::new();
+    if f.params.len() != 2 {
+        why.push(format!("takes {} parameter(s), not 2", f.params.len()));
+    } else {
+        if !is_principal(&f.params[0].ty) {
+            why.push(format!("its first parameter is not a `std::api::Principal`"));
+        }
+        if !matches!(&f.params[1].ty, TypeExpr::Primitive(PrimType::String, _)) {
+            why.push(format!("its second parameter is not a `String`"));
+        }
+    }
+    if !matches!(&f.ret, Some(TypeExpr::Primitive(PrimType::Bool, _))) {
+        why.push("it does not return `Bool`".to_string());
+    }
+    if f.fallible.is_some() {
+        why.push("it is fallible".to_string());
+    }
+    if !why.is_empty() {
+        diags.push(
+            Diag::ty(
+                f.name.span,
+                format!(
+                    "`{}.holds` does not satisfy std::api::RoleSource: {} — a role source \
+                     answers `fn holds(p: std::api::Principal, r: String) -> Bool`, not \
+                     fallible, whether the principal holds the role directly (the binding \
+                     walks `includes` itself)",
+                    locus_name,
+                    why.join("; ")
+                ),
+            )
+            .with_related(entry, "the api entry that names it"),
+        );
     }
 }
 

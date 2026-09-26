@@ -207,6 +207,15 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
             if numeric && rest.parse::<u64>().is_err() {
                 return Err(format!("`{}` is not `{}<number>`", m, prefix));
             }
+            // The table travels as one line the binding re-splits, so an
+            // account name is confined to what an account name is:
+            // never `;`, `,`, `=`, blanks or control characters.
+            if !numeric && !account_name_ok(rest) {
+                return Err(format!(
+                    "`{}` is not an account name (letters, digits, `.`, `_`, `-`, `@`, at most 64)",
+                    m
+                ));
+            }
             return Ok(());
         }
     }
@@ -215,6 +224,23 @@ pub fn check_role_member(m: &str) -> Result<(), String> {
          `group:<name>` or `*` (any authenticated peer)",
         m
     ))
+}
+
+/// An account name the table may carry: `[A-Za-z0-9._@-]`, 1 to 64.
+pub fn account_name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+}
+
+/// A role key as `role NAME;` declares one: an identifier.
+pub fn role_key_ok(s: &str) -> bool {
+    let mut cs = s.chars();
+    match cs.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// GH #1109: the table the api binding bakes in, one line the stdlib's
@@ -601,6 +627,14 @@ pub fn read_claims_config(
         // GH #1109: a member spelling the binding could not act on
         // is a manifest error, not a role that silently holds nobody.
         for (role, members) in &spec.roles {
+            if !role_key_ok(role) {
+                return Err(format!(
+                    "{}: environment `{}` role `{}`: a role key is an identifier, as `role NAME;` declares it",
+                    manifest.display(),
+                    name,
+                    role
+                ));
+            }
             for member in members {
                 if let Err(why) = check_role_member(member) {
                     return Err(format!(

@@ -53,13 +53,17 @@ async function main() {
     const out = el("pre");
     const btn = el("button", { textContent: "call" });
     btn.onclick = async () => { try { const r = await fetch("/api/call/" + c.name, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: ta.value }); show(out, await r.json()); } catch (e) { show(out, String(e)); } };
-    $("#commands").append(card("commands", c.name, c.role), el("div", {}, el("b", { textContent: c.name }), ` payload ${c.payload}` + (c.reply ? `, reply ${c.reply}` : ", accepted") + (c.role ? `, role ${c.role}` : "")), ta, btn, out);
+    const cc = card("commands", c.name, c.role);
+    cc.append(el("div", {}, el("b", { textContent: c.name }), ` payload ${c.payload}` + (c.reply ? `, reply ${c.reply}` : ", accepted") + (c.role ? `, role ${c.role}` : "")), ta, btn, out);
+    $("#commands").append(cc);
   }
   for (const r of src.reads) {
     const out = el("pre");
     const btn = el("button", { textContent: "read" });
     btn.onclick = async () => { try { const x = await fetch("/api/read/" + r.name, { headers: headers() }); show(out, await x.json()); } catch (e) { show(out, String(e)); } };
-    $("#reads").append(card("reads", r.name, r.role), el("div", {}, el("b", { textContent: r.name }), ` ${r.type} (a snapshot with as_of)` + (r.role ? `, role ${r.role}` : "")), btn, out);
+    const rc = card("reads", r.name, r.role);
+    rc.append(el("div", {}, el("b", { textContent: r.name }), ` ${r.type} (a snapshot with as_of)` + (r.role ? `, role ${r.role}` : "")), btn, out);
+    $("#reads").append(rc);
   }
   for (const s of src.streams) {
     const out = el("pre");
@@ -68,7 +72,9 @@ async function main() {
     const stop = el("button", { textContent: "stop", className: "quiet" });
     btn.onclick = () => { if (es) es.close(); out.textContent = ""; es = new EventSource("/api/watch/" + s.name + "?token=" + TOKEN); es.onmessage = (m) => { out.textContent += m.data + "\n"; out.scrollTop = out.scrollHeight; }; es.onerror = () => { out.textContent += "(closed)\n"; es.close(); }; };
     stop.onclick = () => { if (es) es.close(); };
-    $("#streams").append(card("streams", s.name, s.role), el("div", {}, el("b", { textContent: s.name }), ` ${s.payload}` + (s.role ? `, role ${s.role}` : "")), btn, stop, out);
+    const sc = card("streams", s.name, s.role);
+    sc.append(el("div", {}, el("b", { textContent: s.name }), ` ${s.payload}` + (s.role ? `, role ${s.role}` : "")), btn, stop, out);
+    $("#streams").append(sc);
   }
 }
 main();

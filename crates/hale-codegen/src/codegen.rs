@@ -14096,7 +14096,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ffi: fd.ffi.clone(),
                 export: fd.export,
                 unbounded: fd.unbounded,
-                gated: None,
+                gated: fd.gated.clone(),
                 budget: fd.budget,
                 hot: fd.hot,
                 effects: Vec::new(),
@@ -14348,7 +14348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ffi: template.ffi.clone(),
             export: template.export,
             unbounded: template.unbounded,
-            gated: None,
+            gated: template.gated.clone(),
             budget: template.budget,
             hot: template.hot,
             effects: Vec::new(),
@@ -28764,7 +28764,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #1109: the static role table's name spellings.
             ["std", "io", "unix", "user_id"] => self.lower_std_io_unix_name_id("user_id", args, scope),
             ["std", "io", "unix", "group_id"] => self.lower_std_io_unix_name_id("group_id", args, scope),
-            ["std", "io", "unix", "in_group"] => self.lower_std_io_unix_in_group(args, scope),
+            ["std", "io", "unix", "peer_groups_count"] => self.lower_std_io_unix_peer("groups_count", args, scope),
+            ["std", "io", "unix", "peer_group_at"] => self.lower_std_io_unix_peer_group_at(args, scope),
             // GH #1108: `std::api::local_context()`, the context a handler
             // reached in-process receives (Hale source in api.hl).
             ["std", "api", "local_context"] => {

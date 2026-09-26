@@ -308,8 +308,9 @@ fn the_description_is_served_filtered_to_the_caller_and_full_is_gated() {
     let tool_names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(tool_names, ["Counts", "Refunds", "Ticks"], "only what this principal may call");
     // `hale call` works from the slice, so it cannot name the gated
-    // command; a caller that spells the request itself gets a receipt
-    // naming the role.
+    // command; a caller that spells the request itself is told
+    // `unknown`, as for a name that does not exist: what it may not use
+    // is not disclosed to it.
     let out = hale().arg("call").arg(&app.sock).arg("Audits").arg(r#"{"line": "x"}"#).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("this caller may use"), "{}", String::from_utf8_lossy(&out.stderr));
@@ -320,9 +321,9 @@ fn the_description_is_served_filtered_to_the_caller_and_full_is_gated() {
     BufReader::new(s).read_line(&mut line).unwrap();
     let v: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["ok"], false, "{}", v);
-    assert_eq!(v["refusal"]["kind"], "unauthorized", "{}", v);
-    assert_eq!(v["refusal"]["role"], "auditor", "{}", v);
-    assert_eq!(v["refusal"]["reason"], "needs role auditor", "{}", v);
+    assert_eq!(v["refusal"]["kind"], "unknown", "{}", v);
+    assert_eq!(v["refusal"]["reason"], "Audits", "{}", v);
+    assert!(!line.contains("auditor"), "the role is not disclosed: {}", line);
 }
 
 #[test]

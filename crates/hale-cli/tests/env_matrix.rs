@@ -956,4 +956,17 @@ fn the_matrix_wants_every_declared_role_mapped_or_explicitly_nobody() {
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);
     assert!(out.contains("is not a role member"), "{}", out);
+    // Review F1: the table travels as one line the binding re-splits,
+    // so an account name carrying a separator is refused before it can
+    // smuggle a second role in; a key that is not an identifier too.
+    let r = gated_workspace("roles_smuggle", "support = [\"user:nobody;owner=*\"]\nauditor = []\nowner = []\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("is not an account name"), "{}", out);
+    let r = gated_workspace("roles_key", "support = []\nauditor = []\nowner = []\n\"own er\" = []\n");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("a role key is an identifier"), "{}", out);
 }

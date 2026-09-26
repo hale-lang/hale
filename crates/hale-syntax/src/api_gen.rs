@@ -489,10 +489,13 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     }
 
     let mut streams = Vec::new();
-    for (name, role) in pubs {
+    for (name, pub_role) in pubs {
         if name.starts_with("__Api") {
             continue;
         }
+        // A stream follows the same gate as the topic's subscribers
+        // unless its publish member states its own (review ruling).
+        let role = pub_role.or_else(|| commands.iter().find(|c| c.internal == name).and_then(|c| c.role.clone()));
         let Some(t) = topics.get(&name) else { continue };
         let Some(payload) = named_type(&t.payload) else {
             excluded.push(ApiExcluded {
@@ -1111,7 +1114,18 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
         // per connection. -1 means the kernel would not say: the peer
         // is then unauthenticated, not anyone.
         let uid = std::io::unix::peer_uid(self.fd);
-        self.caller = std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: std::io::unix::peer_gid(self.fd), pid: std::io::unix::peer_pid(self.fd) };
+        let n = std::io::unix::peer_groups_count(self.fd);
+        let mut groups = "";
+        let mut k = 0;
+        while k < n {
+            let g = std::io::unix::peer_group_at(self.fd, k);
+            if g >= 0 {
+                if len(groups) > 0 { groups = groups + ","; }
+                groups = groups + to_string(g);
+            }
+            k = k + 1;
+        }
+        self.caller = std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: std::io::unix::peer_gid(self.fd), pid: std::io::unix::peer_pid(self.fd), groups: groups };
     }
     @unbounded
     run() {
@@ -1147,6 +1161,12 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             return;
         }
         let client_id = std::json::find_field_raw(t, "id");
+        // An unauthenticated peer is refused everything, gated or not:
+        // the binding vouches for who is calling, and -1 is nobody.
+        if self.caller.uid < 0 {
+            self.refuse_here(client_id, "unauthenticated", "the kernel would not say who the peer is");
+            return;
+        }
         let call = std::json::string_field(t, "call");
         if call.kind == "string" {
             let body = std::json::find_field_raw(t, "payload");
@@ -1235,13 +1255,15 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
 
 /// The Hale statements that gate one operation on `role` (none when
 /// ungated): the authorizing role lands in `cur_role`, or the caller
-/// is refused and the arm returns.
+/// is refused and the arm returns. A non-holder is told `unknown`, as
+/// for a name that does not exist: an item outside a caller's slice is
+/// not disclosed to it (the role is named only on `full`, whose
+/// existence every caller knows).
 fn gate_src(role: &Option<String>) -> String {
     match role {
         Some(r) => format!(
-            "let g = self.__api_gate_{r}(i.caller); if len(g) == 0 {{ self.unauthorized(i.peer, rid, i.client_id, {q}); return; }} self.cur_role = g;\n",
-            r = r,
-            q = q(r)
+            "let g = self.__api_gate_{r}(i.caller); if len(g) == 0 {{ self.refuse_gate(i.peer, rid, i.client_id, i.subject); return; }} self.cur_role = g;\n",
+            r = r
         ),
         None => String::new(),
     }
@@ -1252,17 +1274,19 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     b.push_str("locus __ApiBinding {\n    params {\n");
     b.push_str(&format!("        path: String = {};\n", q(path)));
     b.push_str(&format!("        bound: Int = {};\n", bound));
-    // GH #1109: the membership source — the app's own, or the stdlib's
-    // static table with the environment's roles baked in (empty when
-    // no `--env` named one: every gate then refuses until
-    // `LOTUS_API_ROLES` says otherwise, never the other way round).
-    match &surface.binding.roles {
-        Some(r) => b.push_str(&format!("        roles: {n} = {n} {{ }};\n", n = r.locus.name)),
-        None => b.push_str(&format!(
-            "        roles: std::api::StaticRoles = std::api::StaticRoles {{ table: {} }};\n",
-            q(table.unwrap_or(""))
-        )),
-    }
+    // GH #1109: the membership source, typed by the interface so the
+    // program's own (`roles: <expr>` on the entry, handed in by the main
+    // locus) and the stdlib's static table are one param. The table has
+    // the environment's roles baked in (empty when no `--env` named
+    // one: every gate then refuses until `LOTUS_API_ROLES` says
+    // otherwise, never the other way round) and the roles the program
+    // declares, so a table naming another is refused at birth.
+    let known: Vec<&str> = surface.roles.iter().map(|r| r.name.as_str()).collect();
+    b.push_str(&format!(
+        "        roles: std::api::RoleSource = std::api::StaticRoles {{ table: {}, known: {} }};\n",
+        q(table.unwrap_or("")),
+        q(&known.join(" "))
+    ));
     let drop = matches!(surface.binding.on_unauthorized, Some((ApiUnauthorizedPolicy::Drop, _)));
     b.push_str(&format!("        unauthorized_drop: Bool = {};\n", drop));
     b.push_str(
@@ -1315,6 +1339,10 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     fn unauthorized(peer: Int, rid: Int, cid: String, role: String) {
         if self.unauthorized_drop { return; }
         self.reply(peer, rid, cid, false, __api_refusal_role(role));
+    }
+    fn refuse_gate(peer: Int, rid: Int, cid: String, subject: String) {
+        if self.unauthorized_drop { return; }
+        self.reply(peer, rid, cid, false, __api_refusal("unknown", subject));
     }
     fn on_reply_seen(r: __ApiReply) {
         if r.counted { self.in_flight = self.in_flight - 1; }
@@ -1705,31 +1733,6 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         }
     }
 
-    // GH #1109: an app-provided role source carries the inits the
-    // entry wrote (`roles: RecordRoles { record: self.record }`);
-    // the generated param was parsed with none, so they go in here.
-    if let Some(r) = &surface.binding.roles {
-        if !r.inits.is_empty() {
-            walk_items_mut(&mut programs[main_idx].items, &mut |item| {
-                let TopDecl::Locus(l) = item else { return };
-                if l.name.name != "__ApiBinding" {
-                    return;
-                }
-                for m in &mut l.members {
-                    let LocusMember::Params(pb) = m else { continue };
-                    for p in &mut pb.params {
-                        if p.name.name != "roles" {
-                            continue;
-                        }
-                        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut p.init {
-                            inits.extend(r.inits.iter().cloned());
-                        }
-                    }
-                }
-            });
-        }
-    }
-
     // Subscribers and readers gain their synthesized members.
     let mut per_locus: BTreeMap<String, (Vec<BusMember>, Vec<LocusMember>)> = BTreeMap::new();
     for c in &surface.commands {
@@ -1788,7 +1791,23 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
             _ => {}
         }
     }
-    let (new_param, new_placement) = (new_param?, new_placement?);
+    let (mut new_param, new_placement) = (new_param?, new_placement?);
+    // GH #1109: the program's own membership source rides into the
+    // binding as the expression the entry wrote, evaluated on the main
+    // locus like every param default there (`self.roles` names a main
+    // param; a literal builds the source) — review F6.
+    if let Some(r) = &surface.binding.roles {
+        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
+            inits.push(crate::ast::StructInit {
+                name: Ident {
+                    name: "roles".to_string(),
+                    span: r.span,
+                },
+                value: r.expr.clone(),
+                span: r.span,
+            });
+        }
+    }
     let main_name = surface.main_locus.clone();
     walk_items_mut(&mut programs[main_idx].items, &mut |item| {
         let TopDecl::Locus(l) = item else { return };

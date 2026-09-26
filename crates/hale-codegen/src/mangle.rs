@@ -1060,12 +1060,6 @@ impl<'a> QualifiedRenameApplier<'a> {
                         self.rewrite_joined_ident(&mut codec.locus);
                     }
                 }
-                // GH #1109: and the api entry's role source.
-                if let Some(api) = &mut bb.api {
-                    if let Some(r) = &mut api.roles {
-                        self.rewrite_joined_ident(&mut r.locus);
-                    }
-                }
             }
             LocusMember::Contract(_)
             | LocusMember::Closure(_)
@@ -1727,11 +1721,11 @@ impl<'a> Mangler<'a> {
                         self.rewrite_ident(&mut codec.locus.name);
                     }
                 }
-                // GH #1109: and the api entry's role source.
+                // GH #1109: and the api entry's role source, an
+                // expression the main locus evaluates.
                 if let Some(api) = &mut bb.api {
                     if let Some(r) = &mut api.roles {
-                        self.rewrite_alias_head_joined(&mut r.locus);
-                        self.rewrite_ident(&mut r.locus.name);
+                        self.walk_expr(&mut r.expr);
                     }
                 }
             }

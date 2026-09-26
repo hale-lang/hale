@@ -387,5 +387,89 @@ locus Record {
     assert!(msgs.iter().any(|m| m.contains("does not satisfy std::api::RoleSource")), "{:?}", msgs);
     let missing = good.replace("roles: Record { n: 1 }", "roles: Nowhere { }");
     let msgs = role_msgs(&missing);
-    assert!(msgs.iter().any(|m| m.contains("names no locus of this bundle")), "{:?}", msgs);
+    assert!(msgs.iter().any(|m| m.contains("is no locus of this bundle")), "{:?}", msgs);
+    // Review F6: the parameter types are checked, with the fn's span,
+    // and the source may be a main param the program built.
+    let wrong = good.replace("fn holds(p: std::api::Principal, r: String) -> Bool", "fn holds(p: String, r: Int) -> Bool");
+    let msgs = role_msgs(&wrong);
+    assert!(msgs.iter().any(|m| m.contains("first parameter is not a `std::api::Principal`") && m.contains("second parameter is not a `String`")), "{:?}", msgs);
+    let via_self = good
+        .replace("roles: Record { n: 1 }", "roles: self.record")
+        .replace("params { desk: Desk = Desk { }; }", "params { desk: Desk = Desk { }; record: Record = Record { n: 2 }; }");
+    let msgs = role_msgs(&via_self);
+    assert!(msgs.is_empty(), "{:?}", msgs);
+    let via_self_wrong = via_self.replace("fn holds(p: std::api::Principal, r: String) -> Bool", "fn holds(p: std::api::Principal) -> Bool");
+    let msgs = role_msgs(&via_self_wrong);
+    assert!(msgs.iter().any(|m| m.contains("takes 1 parameter(s), not 2")), "{:?}", msgs);
+}
+
+#[test]
+fn a_gate_on_a_free_fn_is_refused() {
+    // Review F3: nothing at top level is reached from the binding, and
+    // the role is checked all the same.
+    let src = gated_program("role support;", "", "", "", "@gated(role: nope)
+fn helper() { }");
+    let msgs = role_msgs(&src);
+    assert!(msgs.iter().any(|m| m.contains("on the free fn `helper`")), "{:?}", msgs);
+    assert!(msgs.iter().any(|m| m.contains("names role `nope`, which nothing declares")), "{:?}", msgs);
+}
+
+#[test]
+fn one_handler_on_two_topics_is_two_sites() {
+    // Review F5: the coherence rule is per topic, so a handler that
+    // subscribes two topics cannot hide a disagreement on the second.
+    let src = r#"
+role support;
+type Refund { id: Int; }
+type Audit { id: Int; }
+topic Refunds { payload: Refund; subject: "app.refund"; }
+topic Audits { payload: Audit; subject: "app.audit"; }
+locus Desk {
+    bus { subscribe Refunds as on_any; subscribe Audits as on_any; }
+    @gated(role: support)
+    fn on_any(r: Refund) { }
+}
+locus Tally {
+    bus { subscribe Audits as on_audit; }
+    fn on_audit(a: Audit) { }
+}
+main locus App {
+    params { desk: Desk = Desk { }; tally: Tally = Tally { }; }
+    bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = role_msgs(src);
+    assert!(msgs.iter().any(|m| m.contains("topic `Audits`") && m.contains("Desk.on_any gated `support`") && m.contains("Tally.on_audit ungated")), "{:?}", msgs);
+}
+
+#[test]
+fn a_stream_follows_its_topics_subscribers_unless_the_publish_says() {
+    // Review ruling: a topic both subscribed (gated) and published is a
+    // stream under the same gate; a publish member may state its own.
+    let src = r#"
+role support;
+role auditor;
+type Refund { id: Int; }
+topic Refunds { payload: Refund; subject: "app.refund"; }
+locus Desk {
+    bus { subscribe Refunds as on_refund; publish Refunds; }
+    @gated(role: support)
+    fn on_refund(r: Refund) { }
+}
+main locus App {
+    params { desk: Desk = Desk { }; }
+    bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }
+}
+fn main() { App { }; }
+"#;
+    let mut prog = parse_source(src).expect("parse failed");
+    hale_syntax::json_gen::generate_json_parsers(&mut prog);
+    let surface = hale_syntax::api_gen::api_surface(&[&prog]).expect("a surface");
+    assert_eq!(surface.streams[0].role.as_deref(), Some("support"), "inherited from the subscribers");
+    let own = src.replace("publish Refunds;", "@gated(role: auditor) publish Refunds;");
+    let mut prog = parse_source(&own).expect("parse failed");
+    hale_syntax::json_gen::generate_json_parsers(&mut prog);
+    let surface = hale_syntax::api_gen::api_surface(&[&prog]).expect("a surface");
+    assert_eq!(surface.streams[0].role.as_deref(), Some("auditor"), "the publish member's own");
 }

@@ -183,49 +183,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((v, CodegenTy::Int))
     }
 
-    /// GH #1109: `std::io::unix::in_group(uid, gid) -> Bool`: the uid's
-    /// primary or supplementary group membership per the host.
-    pub(crate) fn lower_std_io_unix_in_group(
+    /// GH #1109 (review): `std::io::unix::peer_group_at(fd, i) -> Int`: the
+    /// i-th supplementary group the kernel holds for the peer
+    /// (SO_PEERGROUPS), -1 past the end or off Linux.
+    pub(crate) fn lower_std_io_unix_peer_group_at(
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::in_group takes 2 args (uid, gid), got {}",
+                "std::io::unix::peer_group_at takes 2 args (fd, i), got {}",
                 args.len()
             )));
         }
-        let (uid_val, uid_ty) = self.lower_expr(&args[0], scope)?;
-        let (gid_val, gid_ty) = self.lower_expr(&args[1], scope)?;
-        if uid_ty != CodegenTy::Int || gid_ty != CodegenTy::Int {
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
+        if fd_ty != CodegenTy::Int || i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::in_group: uid and gid must be Int, got {:?} and {:?}",
-                uid_ty, gid_ty
+                "std::io::unix::peer_group_at: fd and i must be Int, got {:?} and {:?}",
+                fd_ty, i_ty
             )));
         }
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), self.context.i32_type(), "peer.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let f = self
             .module
-            .get_function("lotus_unix_in_group")
-            .expect("lotus_unix_in_group declared");
-        let ret = self
+            .get_function("lotus_unix_peer_group_at")
+            .expect("lotus_unix_peer_group_at declared");
+        let v = self
             .builder
-            .build_call(f, &[uid_val.into(), gid_val.into()], "unix.in_group")
+            .build_call(f, &[fd_i32.into(), i_val.into()], "peer.group")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
-            .expect("returns i32")
-            .into_int_value();
-        let b = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                ret,
-                self.context.i32_type().const_zero(),
-                "unix.in_group.bool",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((b.into(), CodegenTy::Bool))
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
     }
 }
 

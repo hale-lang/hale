@@ -965,8 +965,10 @@ would otherwise check a library and report success.
 **Roles (GH #1109).** `[environments.<name>.roles]` is the params half
 of authorization: `role = ["uid:1000", "gid:20", "user:riley",
 "group:ops", "*"]`, one key per role the entrypoint declares
-(`spec/types.md` § "Roles and `@gated`"), a member spelling outside
-those five a manifest error. `--matrix` proves, per (entrypoint,
+(`spec/types.md` § "Roles and `@gated`"). A key that is not an
+identifier, a member spelling outside those five, or an account name
+outside letters, digits, `.`, `_`, `-` and `@` (the table travels as
+one line, so a name may not carry a separator) is a manifest error. `--matrix` proves, per (entrypoint,
 environment) pair, that every role the entrypoint declares — and
 `owner`, once it has an api binding — is mapped there (`[]` says
 explicitly that nobody holds it), and that nothing is mapped that the

@@ -1327,7 +1327,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#2 d47ddb0f666fddf1
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#3 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#4 865d341109268295
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 865d341109268295
-crates/hale-stdlib/hl/api.hl 3048eec1abe8d781
+crates/hale-stdlib/hl/api.hl 39fbf8567705bf71
 crates/hale-stdlib/hl/cli.hl f5e2f8bd9037e592
 crates/hale-stdlib/hl/core.hl 50b0f0e8be0c5f09
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
@@ -1354,6 +1354,7 @@ crates/hale-syntax/tests/wrap_main.rs#1 80e8e4543ac850e6
 crates/hale-types/tests/api_binding_check.rs#10 8209347d14c8722f
 crates/hale-types/tests/api_binding_check.rs#11 9dbcce1e7ab99412
 crates/hale-types/tests/api_binding_check.rs#20 d5e860cd50b8449d
+crates/hale-types/tests/api_binding_check.rs#24 cf5276ab3978a0ba
 crates/hale-types/tests/api_binding_check.rs#9 4bd9004a38d8c44a
 crates/hale-types/tests/artifact_integrity.rs#2 ceb97d5adb719c07
 crates/hale-types/tests/artifact_law_projection.rs#10 a35d4c64d00f5eeb

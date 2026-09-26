@@ -1423,17 +1423,19 @@ member. `R` must be declared (or be `owner`). It means one thing: a
 message on that subject, a read of that member or an external
 subscription to that stream, arriving through the api binding, is
 refused unless the caller holds `R` (`spec/semantics.md` § "The
-gate"). It is a boundary check, named so — the way `@secret` is a
+gate"); a stream whose `publish` member states no gate follows the
+gate the topic's subscribers state. It is a boundary check, named so — the way `@secret` is a
 lint and not a containment proof — and says nothing about the
 program's own call paths; a guarantee about those is a later,
 opt-in claim. So `@gated` on a plain method, on a `consume`, or on
 the `subscribe` line itself is an error: nothing there is reached
 from the binding, and an annotation must not promise a check that
-does not run. Two more rules keep the gate on the message rather
-than the handler: every subscriber of one topic (and every publisher
-of one stream) states the same gate, and a gated handler's topic
-cannot also be bound to a transport in `bindings { }`, which has no
-gate. A `@gated` in a program without an api binding is inert and
+does not run — a free fn included. Two more rules keep the gate on
+the message rather than the handler: every subscriber of one topic
+(and every publisher of one stream) states the same gate, each
+subscription of a handler that subscribes several topics being its
+own site, and a gated handler's topic cannot also be bound to a
+transport in `bindings { }`, which has no gate. A `@gated` in a program without an api binding is inert and
 legal: the requirement is form, true in every deployment; who holds
 the role is params.
 

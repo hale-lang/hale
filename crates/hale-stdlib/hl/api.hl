@@ -24,6 +24,10 @@ type __StdApiPrincipal {
     uid: Int = -1;
     gid: Int = -1;
     pid: Int = -1;
+    // GH #1109: the peer's supplementary groups as the kernel holds them
+    // for the connection (SO_PEERGROUPS on Linux; empty elsewhere),
+    // comma-separated. Not on the receipt.
+    groups: String = "";
 }
 
 /// A handler's view of the message that reached it.
@@ -48,26 +52,39 @@ fn __api_local_context() -> std::api::Context {
 // stdlib's source: a table baked from `[environments.<env>.roles]`
 // in hale.toml by `hale build --env <env>` and overridden at run
 // time by `LOTUS_API_ROLES`, spelled `role=member,member;role=`.
-// A member is `uid:<n>`, `gid:<n>` (the peer's primary or a
-// supplementary group), `user:<name>` or `group:<name>` (resolved
-// once, at birth, through the host's account database; an unknown
-// name is reported and holds nobody) or `*` (any authenticated
-// peer). A principal the binding could not authenticate (uid -1)
-// holds no role whatever the table says.
+// A member is `uid:<n>`, `gid:<n>` (the peer's primary group or one
+// of the supplementary groups the kernel holds for the connection),
+// `user:<name>` or `group:<name>` (resolved once, at birth, per the
+// host's account database; an unknown name is reported and holds
+// nobody) or `*` (any authenticated peer). A principal the binding
+// could not authenticate (uid -1) holds no role whatever the table
+// says.
 
 /// A membership source: the binding asks, the deployment answers.
 interface __StdApiRoleSource {
     fn holds(p: std::api::Principal, r: String) -> Bool;
 }
 
-/// The static table, from the environment's `roles` section.
+/// The static table, from the environment's `roles` section. Its birth
+/// refuses (and the process exits, saying why) a table that names a
+/// role the program does not declare or a member outside the five
+/// spellings — the rule `hale.toml` is held to, applied to
+/// `LOTUS_API_ROLES` as well, since the table travels as one line.
 locus __StdApiStaticRoles {
     params {
         table: String = "";
+        known: String = ""; // the roles the program declares, space-separated
     }
     birth() {
+        let mut from = "the baked [environments.<env>.roles]";
         if std::env::var_exists("LOTUS_API_ROLES") {
             self.table = std::env::var("LOTUS_API_ROLES");
+            from = "LOTUS_API_ROLES";
+        }
+        let why = __api_table_refusal(self.table, self.known);
+        if len(why) > 0 {
+            eprintln("api roles: refusing to start: " + from + ": " + why);
+            std::process::exit(2);
         }
         self.table = __api_resolve_role_names(self.table);
     }
@@ -96,6 +113,80 @@ locus __StdApiStaticRoles {
     }
 }
 
+/// Whether every byte of `s` is a letter, a digit or one of `extra`.
+@unbounded
+fn __api_chars_ok(s: String, extra: String) -> Bool {
+    let mut i = 0;
+    while i < len(s) {
+        let c = std::str::byte_at_unchecked(s, i);
+        let alnum = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+        if !alnum && !std::str::contains(extra, s[i..(i + 1)]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return len(s) > 0;
+}
+
+/// Why a table is refused ("" when it is not): a key must be a declared
+/// role (an identifier), a member one of `uid:<n>`, `gid:<n>`,
+/// `user:<name>`, `group:<name>` (an account name: letters, digits,
+/// `.`, `_`, `-`, `@`, at most 64) or `*`.
+@unbounded
+fn __api_table_refusal(table: String, known: String) -> String {
+    let mut rest = table;
+    while len(rest) > 0 {
+        let semi = std::str::index_of(rest, ";");
+        let mut seg = rest;
+        if semi >= 0 {
+            seg = rest[0..semi];
+            rest = rest[(semi + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        if len(std::str::trim(seg)) == 0 {
+            continue;
+        }
+        let eq = std::str::index_of(seg, "=");
+        if eq <= 0 {
+            return "`" + seg + "` is not `role=member,member`";
+        }
+        let role = std::str::trim(seg[0..eq]);
+        if !__api_chars_ok(role, "_") || !std::str::contains(" " + known + " ", " " + role + " ") {
+            return "`" + role + "` is not a role this program declares (declared: " + known + ")";
+        }
+        let mut mrest = seg[(eq + 1)..len(seg)];
+        while len(mrest) > 0 {
+            let comma = std::str::index_of(mrest, ",");
+            let mut m = mrest;
+            if comma >= 0 {
+                m = mrest[0..comma];
+                mrest = mrest[(comma + 1)..len(mrest)];
+            } else {
+                mrest = "";
+            }
+            m = std::str::trim(m);
+            if len(m) == 0 || m == "*" {
+                continue;
+            }
+            let mut ok = false;
+            if std::str::starts_with(m, "uid:") || std::str::starts_with(m, "gid:") {
+                ok = __api_chars_ok(m[4..len(m)], "") && (std::str::parse_int(m[4..len(m)]) or - 1) >= 0;
+            }
+            if std::str::starts_with(m, "user:") {
+                ok = __api_chars_ok(m[5..len(m)], "._-@") && len(m) <= 69;
+            }
+            if std::str::starts_with(m, "group:") {
+                ok = __api_chars_ok(m[6..len(m)], "._-@") && len(m) <= 70;
+            }
+            if !ok {
+                return "role `" + role + "`: `" + m + "` is not a role member (uid:<n>, gid:<n>, user:<name>, group:<name> or *)";
+            }
+        }
+    }
+    return "";
+}
+
 /// One role's member list against a principal.
 fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
     let mut rest = members;
@@ -120,7 +211,7 @@ fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
         }
         if std::str::starts_with(m, "gid:") {
             let n = std::str::parse_int(m[4..len(m)]) or - 1;
-            if n >= 0 && (n == p.gid || std::io::unix::in_group(p.uid, n)) {
+            if n >= 0 && (n == p.gid || std::str::contains("," + p.groups + ",", "," + to_string(n) + ",")) {
                 return true;
             }
         }
@@ -129,8 +220,8 @@ fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
 }
 
 /// `user:<name>` and `group:<name>` become `uid:<n>` and `gid:<n>`
-/// once; a name the host does not know is reported and dropped, so
-/// it holds nobody rather than someone else.
+/// once, per the host's account database; a name it does not know is
+/// reported and dropped, so it holds nobody rather than someone else.
 fn __api_resolve_role_names(table: String) -> String {
     let mut out = "";
     let mut rest = table;
