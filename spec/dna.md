@@ -1599,8 +1599,17 @@ memory is named to it.
   is `dna.attempt.release` (`attempt.released`; the attempt is another
   leg's to claim), and `friction` is `dna.friction.file`
   (`friction.filed`, a fact nobody admits). Each prints one JSON
-  object and holds nothing afterwards; a request id is minted from
-  what the verb asks, so a verb run twice under one lease is one act.
+  object and holds nothing afterwards; `submit` and `release` are
+  keyed on the lease, so run twice they are one act; `next` mints a
+  fresh id per call (a claim by its holder renews); `renew` is counted
+  by the caller. A leg's identity is a position the record knows —
+  `position:<name>` from the graph or the organization's own, with
+  `#<n>` for one worker of several — never free text, at the head as
+  at the verb. While an outcome under a lease awaits the owner the
+  lease is neither renewed nor given back, and the attempt awaits no
+  other leg; without memory the record numbers the leases (the next
+  claim row is the next token). Exit codes: 0 admitted, 1 refused (the
+  receipt printed) or unreachable, 2 usage.
   `run` is one cycle through the project's performers
   (`dna/org/work.hl`, generated at init): a person's leg renders the
   brief and leaves the outcome to `submit`; a deterministic performer

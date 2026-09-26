@@ -14,8 +14,6 @@
 // #732 gives the performers a contract of their own.
 import ".." as dna;
 
-const RENDERER_VERSION_OF_PERFORMER: String = "legs-render/1";
-
 // What a performer is handed: the Work as the hat says it, the lease it
 // is held under, and the hat rendered for the performer's kind.
 type Brief {
@@ -66,7 +64,7 @@ locus Person {
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.briefed = self.briefed + 1;
         return Performance {
-            pending: true, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION_OF_PERFORMER,
+            pending: true, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION,
             narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --attempt " + brief.attempt_id + " --holder " + brief.holder + " --token " + to_string(brief.token) + " --result <text>` hands the outcome back under the lease (until " + to_string(brief.until) + ")"
         };
     }
@@ -100,7 +98,7 @@ locus FixedAnswer {
     fn takes(performer_kind: String) -> Bool { return dna::word_in(performer_kind, self.kinds); }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.performed = self.performed + 1;
-        return Performance { disposition: "done", result: self.result, narrative: self.narrative, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION_OF_PERFORMER };
+        return Performance { disposition: "done", result: self.result, narrative: self.narrative, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION };
     }
 }
 

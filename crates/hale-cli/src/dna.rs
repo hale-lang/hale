@@ -567,7 +567,12 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // GH #946: a leg's verbs, as the project's own program over the legs seed
         Some("work") => {
-            let (dir, rest) = project_arg(&args[1..], false);
+            // the project is only ever the first argument, a directory with a
+            // manifest; the verb and every flag's value are the leg's
+            let (dir, rest) = match args.get(1) {
+                Some(p) if !p.starts_with("--") && Path::new(p).join("hale.toml").exists() => (PathBuf::from(p), args[2..].to_vec()),
+                _ => (PathBuf::from("."), args[1..].to_vec()),
+            };
             host_exec("work", &dir, &rest)
         }
         Some("deploy") => host_exec("deploy", Path::new("."), &args[1..]),

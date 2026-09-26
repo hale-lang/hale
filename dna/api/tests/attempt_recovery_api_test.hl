@@ -97,7 +97,7 @@ locus RecoveryCases {
         // row landed since, and another leg's claim at the old head still
         // answers with a receipt — refused, since the first leg holds it
         self.f.append("task.born", "leg-other", "leg-ask-2: another (workflow)");
-        let again = self.json.data(self.call(service, "POST", "/commands", self.claim_body("claim-2", head, "position:reviewer"), 200, "CommandResponse"));
+        let again = self.json.data(self.call(service, "POST", "/commands", self.claim_body("claim-2", head, "position:editor"), 200, "CommandResponse"));
         self.json.eq(again, "state", "refused");
         std::test::assert(std::str::contains(self.json.string(again, "reason"), "held by another leg") || std::str::contains(self.json.string(again, "reason"), "no admitted attempt"), "a refusal receipt at a moved head, not stale_subject: " + self.json.string(again, "reason"));
         // the lease renewed (the token stays), and friction filed on the attempt (GH #946 slice 4)

@@ -170,7 +170,10 @@ precondition; `capabilities`, `data_classes`, `organizations` as arrays, `ttl`
 an integer 1..86400) and `AttemptOutcomeCommandRequest` (target `dna.attempt`;
 `holder` and an integer `token` in the preconditions; `disposition` an enum;
 `evidence` an array of `AttemptEvidenceCall`; `receipts` an array of
-`AttemptReceiptBody`; the hat the leg wore as `hat_digest`, `hat_head`,
+`AttemptReceiptBody`; `holder`, `performer` and a friction's `position` are
+`position:<name>` ids by pattern (`^position:[A-Za-z0-9_.-]+(#[0-9]+)?$` for a
+holder or performer, without the worker suffix for a friction's position: the
+two patterns the profile admits beside the decimal ones); the hat the leg wore as `hat_digest`, `hat_head`,
 `hat_watermark` (integer, -1 for none), `prompt_digest` and `renderer`, optional
 in the schema and admitted five together or none), with `AttemptRenewCommandRequest`
 (`arguments.ttl`), `AttemptReleaseCommandRequest` (`arguments.why`) and

@@ -33,6 +33,33 @@ verbs land on the command table: `next` is `dna.attempt.claim`,
 `settle` reads that command back, `release` is `dna.attempt.release`,
 and `friction` is `dna.friction.file`.
 
+## Positions, ids, exit codes
+
+`--as` and `--holder` are positions: `position:<name>` is the graph's
+id, and `position:<name>#<n>` one worker of several. The head admits a
+position the graph names (a `graph.node` row) or one of the
+organization's own (`position:leader`, `position:editor`,
+`position:agent`, `position:human`, `position:service`,
+`position:software`); anything else is refused with the reason.
+
+Request ids: `next` mints a fresh id per call (a claim by its holder
+renews in the store, so a second `next` is the same lease); `submit`
+and `release` are `work-submit:<attempt>:<token>` and
+`work-release:<attempt>:<token>`, so a repeat is one act; `renew` is
+counted by `--renewal <n>` (1 by default: say `2`, `3`, … for the
+next), never by the clock; `friction` keys on the text and the
+attempt. `--request-id` overrides any of them.
+
+Exit codes: **0** the head admitted it (or the read answered); **1** a
+refusal — the receipt is printed, with `state: refused` and the reason
+— or a head that could not be reached; **2** a usage error, judged
+before the head is asked (a missing flag, a free-string position, a
+number that is not one).
+
+The leg is built once per project under `.hale/dna/legs/<key>`, the
+key being what it is built from (the performers, the catalog, the
+vendored seed); a change builds it again, two legs at once build apart.
+
 ## The cycle
 
 **`next`** claims the next admitted, outstanding attempt of the
@@ -41,8 +68,9 @@ default what the kind requires), may see (`--classes`, by default
 `public internal`; naming none is naming no class) and works for
 (`--orgs`), for `--ttl` seconds (600). The answer is the lease as a
 value: the attempt, its Work and task, the holder and token, until
-when. Nothing fitting is `state: refused` with the reason. Asked
-again by the same position it is the same lease.
+when. Nothing fitting is `state: refused` with the reason (exit 1);
+an attempt whose outcome is handed back and awaits the owner awaits
+nobody else. Asked again by the same position it is the same lease.
 
 **`brief`** reads the hat: the position and its charter, the
 practices as structure, the bindings, the grant, the contract, the
@@ -58,8 +86,10 @@ done, failed, declined or timeout), with the calls made as evidence
 and the receipts to file, and the hat it wore. `settle` reads whether
 the owner settled it (`--wait` polls). `renew` extends the lease and
 keeps the token; `release` gives it back without an outcome, and the
-attempt is another leg's to claim; `friction` files what got in the
-way as a row nobody admits.
+attempt is another leg's to claim (under a new token); neither is
+admitted while an outcome under the lease awaits the owner. `friction`
+files what got in the way as a row nobody admits. `brief` answers in
+the same envelope as the rest (`verb`, `state`, and the `hat`).
 
 **`run`** is one cycle through the project's performers: claim,
 brief, perform, submit, settle.

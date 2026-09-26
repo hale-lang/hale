@@ -633,6 +633,7 @@ locus GovernanceCommands {
                     // a position's friction is a fact of the record, filed at its
                     // tail: nobody admits it, and the head the leg read is not a
                     // fence on it (a leg a row behind still files)
+                    if !attempts.known_position(rj, command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows")); }
                     let fact = attempts.friction_fact(context, command, grant, s.head);
                     if fact == "" { return GovernanceResult { code: "invalid_command" }; }
                     if !self.unchanged(s) { continue; }
@@ -655,6 +656,7 @@ locus GovernanceCommands {
                     // not turned away with `stale_subject`; the loser of the race
                     // gets a refusal receipt, and a claim taken in memory that
                     // ends in no row is given back on the way out.
+                    if !attempts.known_position(rj, command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows (a `position:<name>` the graph names, or one of the organization's own)")); }
                     let scan = attempts.candidates(rj, command);
                     if len(scan.names) == 0 { return self.refusal(s, attempts.refused(context, command, attempts.nothing_awaits(command, scan))); }
                     let mut rest = scan.names; let mut taken = ""; let mut lease = dna::Lease { };
@@ -662,8 +664,14 @@ locus GovernanceCommands {
                         let nl = std::str::index_of(rest, "\n"); let candidate = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
                         // the record's word first: a live lease another leg holds is not raced for
                         if attempts.held_by_another(rj, candidate, command.performer, now) { continue; }
-                        let l = leases.claim("attempt:" + candidate, command.performer, command.ttl);
+                        let mut l = leases.claim("attempt:" + candidate, command.performer, command.ttl);
                         if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to take the claim: " + leases.last_error)); }
+                        // without memory the record numbers the leases: a claim by the holder
+                        // of the live lease renews it and keeps its token, any other is the next
+                        if !leases.ready() {
+                            let prior = dna::recorded_leg_claim(rj, candidate, rj.revision());
+                            l.token = if prior.present && prior.holder == command.performer && prior.expires > now { prior.token } else { attempts.claim_rows(rj, candidate) + 1 };
+                        }
                         if l.present && l.holder == command.performer { taken = candidate; lease = l; }
                     }
                     if len(taken) == 0 { return self.refusal(s, attempts.refused(context, command, "every attempt that awaits such a leg is held by another leg whose lease is live")); }
@@ -706,7 +714,11 @@ locus GovernanceCommands {
                 if !attempts.has_row(rj, "effect.requested", "attempt:" + a) { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never asked to run; nothing is outstanding on it")); }
                 let settled = dna::recorded_attempt_outcome(rj, a, rj.revision());
                 if settled.ok { return self.refusal(s, attempts.refused(context, command, "duplicate: attempt " + a + " is settled (" + settled.value.disposition + "); this outcome changes nothing")); }
-                if command.operation == "dna.attempt.outcome" && attempts.outcome_outstanding(rj, a, command.holder, command.token) { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
+                if attempts.outcome_outstanding(rj, a, command.holder, command.token) {
+                    if command.operation == "dna.attempt.outcome" { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
+                    // the lease is spoken for until the owner answers: given back or renewed now, the relayed outcome would be refused as stale
+                    return self.refusal(s, attempts.refused(context, command, "an outcome for attempt " + a + " is handed back under this lease and awaits the owner; the lease is neither renewed nor given back until it answers"));
+                }
                 let claim = dna::recorded_leg_claim(rj, a, rj.revision());
                 if !claim.present { return self.refusal(s, attempts.refused(context, command, "attempt " + a + " was never claimed by a leg")); }
                 if claim.holder != command.holder || claim.token != command.token { return self.refusal(s, attempts.refused(context, command, "stale: the lease on attempt " + a + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + command.holder + "'s at token " + to_string(command.token))); }
@@ -731,9 +743,6 @@ locus GovernanceCommands {
                         } else {
                             renewed = dna::Lease { key: "attempt:" + a, holder: command.holder, token: command.token, expires: now + command.ttl, present: true };
                         }
-                    } else if leases.ready() {
-                        let gone = leases.release_claim("attempt:" + a, command.holder);
-                        if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to give the lease back: " + leases.last_error)); }
                     }
                     let head = self.attempt_row_head(s, ledger, adopted);
                     let fact = if command.operation == "dna.attempt.renew" { attempts.claim_fact(context, command, grant, head, admitted.value, renewed) } else { attempts.release_fact(context, command, grant, head) };
@@ -741,6 +750,10 @@ locus GovernanceCommands {
                     if !self.unchanged(s) { continue; }
                     let landed = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: if command.operation == "dna.attempt.renew" { "attempt.claimed" } else { "attempt.released" }, entity: a, author: context.principal_name, body: fact }, id);
                     if landed.ok {
+                        // the row first, then memory's claim given back (GH #946 review): a
+                        // release retried after a lost answer finds its row, never a record
+                        // still claimed over a memory already free
+                        if command.operation == "dna.attempt.release" && leases.ready() { let gone = leases.release_claim("attempt:" + a, command.holder); }
                         let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: if adopted { s.head } else { landed.id }, revision: if adopted { s.revision } else { s.revision + 1 } };
                         let moved = rj.refresh();
                         return self.result_attempt(after, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: rj.revision() - 1, event_id: landed.id, native_body: fact, entity: a });

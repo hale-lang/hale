@@ -24,6 +24,8 @@ interface GitHand {
     // A scratch worktree of `base` (a ref or a sha) of the repository at
     // `repo`: the path, never inside `repo`.
     fn worktree(repo: String, base: String) -> HandResult;
+    // Every worktree this hand made, removed (kept under HALE_DNA_KEEP_SCRATCH).
+    fn clean();
     // A unified diff applied in the worktree, index and all.
     fn apply(worktree: String, patch: String) -> HandResult;
     // Everything staged and changed, committed: the sha.
@@ -43,17 +45,20 @@ interface ToolchainHand {
 interface DeployHand { fn express(revision: String) -> HandResult; }
 interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
 
-// Git in scratch: a clone under `scratch` (`dna::scratch_root` names one
-// per leg run), so nothing a performer does reaches the primary
-// checkout; patches through a file, commits under the leg's own name.
+// Git in scratch: a clone under a scratch root of the leg's own
+// (`dna::scratch_root`, one per worktree, swept by `clean` and by the
+// suite), so nothing a performer does reaches the primary checkout;
+// patches through a file, commits under the leg's own name.
 locus ScratchGit {
-    params { scratch: String = "/tmp"; made: Int = 0; }
+    params { made: Int = 0; roots: String = ""; }
     fn worktree(repo: String, base: String) -> HandResult {
         self.made = self.made + 1;
-        let dir = self.scratch + "/wt-" + to_string(std::process::pid()) + "-" + to_string(self.made);
-        let cloned = dna::run_tool("git\nclone\n--quiet\n--no-checkout\n" + repo + "\n" + dir);
+        let dir = dna::scratch_root("legs-git-" + to_string(self.made));
+        self.roots = self.roots + dir + "\n";
+        let cloned = dna::run_tool("git\nclone\n--quiet\n" + repo + "\n" + dir);
         if cloned.code != 0 { return hand_result(cloned, ""); }
-        let out = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n--detach\n" + (if len(base) > 0 { base } else { "HEAD" }));
+        if len(base) == 0 || base == "HEAD" { return HandResult { ok: true, output: dir }; }
+        let out = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n--detach\n" + base);
         return hand_result(out, dir);
     }
     fn apply(worktree: String, patch: String) -> HandResult {
@@ -62,6 +67,15 @@ locus ScratchGit {
         let out = dna::run_tool("git\n-C\n" + worktree + "\napply\n--index\n" + file);
         let gone = dna::run_tool("rm\n-f\n" + file);
         return hand_result(out, "");
+    }
+    @unbounded
+    fn clean() {
+        let mut rest = self.roots;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n"); let dir = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+            if len(dir) > 0 { dna::scratch_done(dir); }
+        }
+        self.roots = "";
     }
     fn commit(worktree: String, message: String) -> HandResult {
         let staged = dna::run_tool("git\n-C\n" + worktree + "\nadd\n-A");

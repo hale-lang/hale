@@ -170,7 +170,11 @@ locus App {
         let l = label + ": ";
         // the legs of this pass, named for it: an attempt a leg of the last
         // pass still holds is another leg's, and is not raced for
-        let alice_leg = "leg:alice-" + label; let bob_leg = "leg:bob-" + label;
+        // legs are positions (the graph's ids, or the organization's own), one
+        // worker each per pass, so a lease a leg of the last pass still holds
+        // is another leg's and is not raced for
+        let pass = if label == "record" { "1" } else { "2" };
+        let alice_leg = "position:agent#" + pass; let bob_leg = "position:editor#" + pass; let carol_leg = "position:leader#" + pass;
         // ---- t1: claim, outcome, relay, settled
         let a1 = self.ask();
         let head0 = record.head("journal").id;
@@ -198,7 +202,7 @@ locus App {
         std::test::assert(r2.ok && r2.receipt.state == "refused", l + "a second leg is refused, not turned away: " + r2.code + " " + r2.receipt.state);
         std::test::assert(std::str::contains(r2.receipt.reason, "held by another leg"), l + "with the reason: " + r2.receipt.reason);
         std::test::assert_eq_int(self.count_rows("attempt.claimed", a1), rows_before, l + "and writes no row");
-        let r3 = commands.submit(alice, self.claim_of(label + "c3", identity, head0, "human", alice_leg, "internal"));
+        let r3 = commands.submit(alice, self.claim_of(label + "c3", identity, head0, "human", "position:human#" + pass, "internal"));
         std::test::assert(r3.ok && r3.receipt.state == "refused" && std::str::contains(r3.receipt.reason, "none of that kind is outstanding"), l + "nothing awaits a human leg: " + r3.receipt.reason);
         // the hat the leg wears, and the outcome under the lease
         let hat = self.hat_of(a1);
@@ -261,11 +265,11 @@ locus App {
         if self.with_memory {
             let leases = dna::MemoryLeases { repo: self.app, dsn_env: dna::SPINE_DSN_ENV };
             let gone = leases.release_claim("attempt:" + a2, alice_leg);
-            let taken = leases.claim("attempt:" + a2, "leg:carol", 600);
-            std::test::assert(taken.present && taken.holder == "leg:carol", l + "carol's lease in memory: " + leases.last_error);
+            let taken = leases.claim("attempt:" + a2, carol_leg, 600);
+            std::test::assert(taken.present && taken.holder == carol_leg, l + "carol's lease in memory: " + leases.last_error);
             carol_token = taken.token;
         }
-        let stray = "{\"holder\": \"leg:carol\", \"token\": " + to_string(carol_token) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
+        let stray = "{\"holder\": \"" + carol_leg + "\", \"token\": " + to_string(carol_token) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
         let put = self.journal.append(self.journal.revision(), "attempt.claimed", a2, stray);
         std::test::assert(put.ok, l + "a later lease row: " + put.error);
         let relay2 = relay_once(self.app, "\n");
@@ -283,7 +287,7 @@ locus App {
         // the lease's holder now hands an outcome back: a refused request under
         // the earlier lease is nobody's duplicate (B3), and the owner settles it
         let carol = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "carol" };
-        let o2c = commands.submit(carol, self.outcome_of(label + "o3c", identity, a2, "leg:carol", carol_token, hat2));
+        let o2c = commands.submit(carol, self.outcome_of(label + "o3c", identity, a2, carol_leg, carol_token, hat2));
         std::test::assert(o2c.ok && o2c.receipt.attempt.state == "requested", l + "the lease's holder hands an outcome back after a refusal: " + o2c.code + " " + o2c.receipt.state + " " + o2c.receipt.reason);
         std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "and it is relayed");
         self.wait_row("attempt.outcome", a2, l + "and settles the attempt");

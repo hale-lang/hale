@@ -77,7 +77,7 @@ fn render_prompt(hat: String) -> String {
     let history = history_lines(hat, "- ");
     if len(history) > 0 { out = out + "\nWhat happened to this work so far:\n" + history; }
     let output_contract = std::json::find_string_field(hat, "output_contract");
-    out = out + "\nAnswer " + (if len(output_contract) > 0 { "as a " + output_contract } else { "with your result" }) + ", and nothing else.\n";
+    out = out + "\nAnswer " + (if len(output_contract) > 0 { "in the form the output contract names, `" + output_contract + "`" } else { "with your result" }) + ", and nothing else.\n";
     return out;
 }
 

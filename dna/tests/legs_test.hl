@@ -5,18 +5,23 @@
 // performers in dna/org/work.hl over the toolchain's legs seed), run as
 // API clients against a real head — the practice_review API, spawned
 // over the project's record. `next` claims for a position (the graph's
-// `position:<name>` id) and is idempotent by request id; `brief` reads
+// `position:<name>` id, a worker as `#<n>`; asked again it is the same
+// lease; a second position racing it is refused, exit 1); `brief` reads
 // the hat, or renders it, recording the hat digest, the prompt digest
 // and the renderer's version; `renew` extends the lease; `friction`
 // files what got in the way; `submit` hands the outcome back with the
-// hat it wore; the host's own relay carries it to the owner, and
-// `settle` reads the settlement. `release` gives a lease back and the
-// attempt is claimed anew. `run` is one cycle through the project's
-// performers: a person's leg leaves the outcome to them, a deterministic
-// performer for the kind wins and settles. `hale mcp` exposes the verbs.
-// No memory, no model, no nerves: the relay is in this process.
+// hat it wore, twice is one act; the host's own relay carries it to the
+// owner, and `settle` reads the settlement. `release` gives a lease back
+// and the attempt is claimed anew under a new token; a leg that dies
+// with a claim leaves it to expire, and the owner asks again. `run` is
+// one cycle through the project's performers. Usage errors exit 2 before
+// the head is asked; `hale mcp` exposes the verbs; the hands are tried on
+// the project's own repository. With memory (HALE_DNA_MEMORY_DSN_OWNER)
+// a pass runs again on an organism that adopted the ledger. No model, no
+// nerves: the relay is in this process.
 
 import "../core" as dna;
+import "../core/legs" as legs;
 import "../host" as host;
 import "../operations" as ops;
 
@@ -29,12 +34,11 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n" + dir + "\n" + argv);
 }
 
-// The head's binary: the one the suite names, else built from the source tree.
+// The head's binary: the one the suite names, else built from the source
+// tree here, every run — a head left by an earlier build is an older head.
 fn head_binary() -> String {
     if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
     let source = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
-    // built here, every run: a head left by an earlier build is an older
-    // head, and the verbs it refuses would look like the leg's fault
     let seed = source + "/dna/api/practice_review";
     let built = dna::run_tool(toolchain() + "\nbuild\n" + seed);
     std::test::assert_eq_int(built.code, 0, "the head builds (HALE_DNA_SOURCE names the repository): " + built.stderr);
@@ -54,22 +58,26 @@ locus App {
     params {
         app: String = "";
         api: String = "";
+        with_memory: Bool = false;
         head: std::process::Child = std::process::Child { };
         core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-legs-placeholder" } } };
+        journal: dna::RoutedJournal = dna::RoutedJournal { };
         asks: Int = 0;
     }
-    // ---- the head over the record
+    // ---- the head over the record, watched: it dies with this process
     fn start_head() {
         let record = dna::GitRecord { repo: self.app };
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.app + "/.hale/dna/authority.json", policy) or discard;
         let port = dna::free_port(46);
         self.api = "http://127.0.0.1:" + to_string(port);
-        let argv = "sh\n-c\ncd \"$1\" && export USER=riley HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.app + "\n" + head_binary() + "\n" + to_string(port);
+        let argv = "sh\n-c\ncd \"$1\" && export USER=riley HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.app + "\n" + head_binary() + "\n" + to_string(port);
         let child = std::process::spawn(argv) or std::process::Child { };
         self.head = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
         std::test::assert(self.head.pid > 0, "the head spawned");
+        // a watcher outlives this process and kills the head once it is gone, however it went
+        let watched = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + to_string(self.head.pid));
         let deadline = std::time::now() + dna::wait_secs(30);
         while std::time::now() < deadline {
             let up = dna::run_tool("curl\n-sf\n" + self.api + "/api/hale/v1/applications");
@@ -84,12 +92,12 @@ locus App {
         if self.head.pid > 0 { std::process::kill(self.head) or discard; }
         self.head.pid = -1;
     }
-    // an assertion that ends the run leaves no head behind
     dissolve() { self.stop_head(); }
     // ---- the owner, in this process, asking a leg relay
     fn start_owner() {
+        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: self.app },
+            journal: self.journal,
             work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
             verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
             claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
@@ -99,11 +107,19 @@ locus App {
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
     }
     @unbounded
-    fn has_row(kind: String, entity: String) -> Bool {
-        let moved = self.core.journal.refresh();
-        let mut i = 0;
-        while i < self.core.journal.revision() { let e = self.core.journal.read(i); if e.kind == kind && e.entity == entity { return true; } i = i + 1; }
-        return false;
+    fn count_rows(kind: String, entity: String) -> Int {
+        let moved = self.journal.refresh();
+        let mut n = 0; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { n = n + 1; } i = i + 1; }
+        return n;
+    }
+    fn has_row(kind: String, entity: String) -> Bool { return self.count_rows(kind, entity) > 0; }
+    @unbounded
+    fn row_body(kind: String, entity: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = ""; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { out = e.body; } i = i + 1; }
+        return out;
     }
     @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
@@ -119,104 +135,210 @@ locus App {
         self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
         return attempt;
     }
-    // ---- the leg: `hale dna work …` in the project, against the head
-    fn work(args: String) -> String {
+    // ---- the leg: `hale dna work …` in the project, against the head; its exit code checked
+    fn work_rc(args: String, rc: Int) -> String {
         let r = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.app + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args);
-        std::test::assert_eq_int(r.code, 0, "hale dna work " + std::str::replace(args, "\n", " ") + ": " + r.stdout + r.stderr);
+        std::test::assert_eq_int(r.code, rc, "hale dna work " + std::str::replace(args, "\n", " ") + ": " + r.stdout + r.stderr);
         return dna::trim_nl(r.stdout);
     }
+    fn work(args: String) -> String { return self.work_rc(args, 0); }
     fn attempt_of(answer: String) -> String { return std::json::find_field_raw(answer, "attempt"); }
     fn state_of(answer: String) -> String { return std::json::find_string_field(self.attempt_of(answer), "state"); }
     fn token_of(answer: String) -> String { return std::json::find_string_field(self.attempt_of(answer), "token"); }
+    // ---- one pass of the verbs, as a worker of the position
+    @unbounded
+    fn pass(label: String, n: String) {
+        let l = label + ": ";
+        let me = "position:agent#" + n;
+        let other = "position:editor#" + n;
+        let a1 = self.ask();
+        // next: the claim, for a position; asked again by the same worker it is the same lease
+        let claimed = self.work("next\n--as\nposition:agent\n--holder\n" + me);
+        std::test::assert_eq_str(self.state_of(claimed), "claimed", l + "next claims: " + claimed);
+        std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(claimed), "attempt_id"), a1, l + "the attempt that awaited a leg");
+        std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(claimed), "holder"), me, l + "held by the worker");
+        let token = self.token_of(claimed);
+        let again = self.work("next\n--as\nposition:agent\n--holder\n" + me);
+        std::test::assert(self.state_of(again) == "claimed" && self.token_of(again) == token && std::json::find_string_field(self.attempt_of(again), "attempt_id") == a1, l + "next again is the same lease: " + again);
+        // a second position racing it: refused with the receipt, exit 1
+        let racing = self.work_rc("next\n--as\nposition:editor\n--holder\n" + other + "\n--kind\nagent", 1);
+        std::test::assert(self.state_of(racing) == "refused" && std::str::contains(std::json::find_string_field(racing, "reason"), "held by another leg"), l + "a racing leg is refused: " + racing);
+        // brief: the hat in the verb's envelope, and the hat rendered
+        let briefed = self.work("brief\n--attempt\n" + a1);
+        let hat = std::json::find_field_raw(briefed, "hat");
+        std::test::assert(std::json::find_string_field(briefed, "verb") == "brief" && std::json::find_string_field(briefed, "state") == "ok", l + "the brief's envelope: " + briefed);
+        std::test::assert_eq_str(std::json::find_string_field(hat, "work_id"), a1[0..(len(a1) - 3)], l + "the hat is the Work's");
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(hat, "position"), "id"), "position:agent", l + "for the position");
+        let hat_digest = std::json::find_string_field(hat, "digest");
+        let rendered = self.work("brief\n--attempt\n" + a1 + "\n--render\ntext");
+        std::test::assert_eq_str(std::json::find_string_field(rendered, "hat_digest"), hat_digest, l + "the render records the hat's digest");
+        std::test::assert_eq_str(std::json::find_string_field(rendered, "renderer"), "legs-render/1", l + "and the renderer's version");
+        let prompt_digest = std::json::find_string_field(rendered, "prompt_digest");
+        let watermark = std::json::find_string_field(rendered, "hat_watermark");
+        std::test::assert(std::str::starts_with(prompt_digest, "sha256:"), l + "and the digest of what it rendered");
+        std::test::assert(std::str::starts_with(std::json::find_string_field(rendered, "text"), "BRIEF " + a1[0..(len(a1) - 3)]), l + "a person's brief");
+        let plain = self.work("brief\n--attempt\n" + a1 + "\n--render\nprompt\n--plain");
+        std::test::assert(std::str::starts_with(plain, "You are position:agent"), l + "a prompt, plain: " + plain);
+        std::test::assert_eq_str(dna::digest_of(plain + "\n"), std::json::find_string_field(self.work("brief\n--attempt\n" + a1 + "\n--render\nprompt"), "prompt_digest"), l + "rendering is a pure function of the hat and the mode");
+        // renew (counted), friction
+        let renewed = self.work("renew\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--ttl\n900\n--renewal\n2");
+        std::test::assert(self.state_of(renewed) == "renewed" && self.token_of(renewed) == token, l + "renew extends the lease and keeps the token: " + renewed);
+        let filed = self.work("friction\n--as\nposition:agent\n--attempt\n" + a1 + "\n--text\nthe hat named no tool grant for a judgment");
+        std::test::assert_eq_str(self.state_of(filed), "filed", l + "friction is filed: " + filed);
+        std::test::assert(self.has_row("friction.filed", a1), l + "as a row on the attempt");
+        // submit, twice one act; not released while it awaits the owner; relayed, settled
+        std::io::fs::write_file(self.app + "/.hale/calls.json", "[{\"adapter\": \"person\", \"backend\": \"desk\", \"input_tokens\": 0, \"output_tokens\": 0, \"cost_micros\": 0}]") or discard;
+        let outcome_args = "submit\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--result\nassessment: ship it\n--narrative\nread it twice\n--evidence-file\n" + self.app + "/.hale/calls.json\n--hat-digest\n" + hat_digest + "\n--hat-head\n" + std::json::find_string_field(hat, "head") + "\n--hat-watermark\n" + watermark + "\n--prompt-digest\n" + prompt_digest;
+        let submitted = self.work(outcome_args);
+        std::test::assert_eq_str(self.state_of(submitted), "requested", l + "submit hands the outcome back: " + submitted);
+        let twice = self.work(outcome_args);
+        std::test::assert(self.state_of(twice) == "requested" && std::json::find_string_field(twice, "request_id") == std::json::find_string_field(submitted, "request_id"), l + "submit twice is one act: " + twice);
+        let held = self.work_rc("release\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--why\ntoo soon", 1);
+        std::test::assert(std::str::contains(std::json::find_string_field(held, "reason"), "awaits the owner"), l + "the lease is not given back while the outcome awaits the owner: " + held);
+        let requested = self.work("settle\n--attempt\n" + a1 + "\n--token\n" + token);
+        std::test::assert_eq_str(self.state_of(requested), "requested", l + "not settled before the owner heard it");
+        std::test::assert_eq_int(relay_once(self.app), 1, l + "the relay carries it");
+        self.wait_row("attempt.outcome", a1, l + "the owner settles the attempt");
+        let settled = self.work("settle\n--attempt\n" + a1 + "\n--token\n" + token + "\n--wait\n5");
+        std::test::assert(self.state_of(settled) == "settled" && std::json::find_string_field(self.attempt_of(settled), "disposition") == "done", l + "settle reads the settlement: " + settled);
+        let outcome = self.row_body("attempt.outcome", a1);
+        std::test::assert(std::json::find_string_field(outcome, "hat_digest") == hat_digest && std::json::find_string_field(outcome, "prompt_digest") == prompt_digest && std::json::find_string_field(outcome, "renderer") == "legs-render/1", l + "the outcome records the hat, the prompt and the renderer: " + outcome);
+        std::test::assert_eq_str(to_string(std::json::find_int_field(outcome, "hat_watermark")), watermark, l + "and the watermark the brief reported");
+        // release: the lease given back, the attempt claimed anew under a new token
+        let a2 = self.ask();
+        let c2 = self.work("next\n--as\nposition:agent\n--holder\n" + me);
+        std::test::assert(self.state_of(c2) == "claimed" && std::json::find_string_field(self.attempt_of(c2), "attempt_id") == a2, l + "the next attempt: " + c2);
+        let released = self.work("release\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a2 + "\n--token\n" + self.token_of(c2) + "\n--why\nout of time");
+        std::test::assert_eq_str(self.state_of(released), "released", l + "release gives it back: " + released);
+        std::test::assert(self.has_row("attempt.released", a2), l + "as a row");
+        let c2b = self.work("next\n--as\nposition:editor\n--holder\n" + other + "\n--kind\nagent");
+        std::test::assert(self.state_of(c2b) == "claimed" && std::json::find_string_field(self.attempt_of(c2b), "attempt_id") == a2, l + "another position claims it anew: " + c2b);
+        std::test::assert(self.token_of(c2b) != self.token_of(c2), l + "under a new token: " + self.token_of(c2b) + " after " + self.token_of(c2));
+    }
+    // ---- what a single pass on the record adds: exit codes, a dead leg, run, mcp
+    @unbounded
+    fn extras() {
+        // usage before the head: judged with the head unreachable, exit 2
+        let free = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work next --as leg:free --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert_eq_int(free.code, 2, "a free string is no position, judged before the head: " + free.stdout + free.stderr);
+        let words = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work renew --as position:agent --attempt x --token abc --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert_eq_int(words.code, 2, "a token that is not a number is a usage error: " + words.stdout + words.stderr);
+        let down = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work next --as position:agent --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert(down.code == 1 && std::str::contains(down.stdout, "cannot be reached"), "a head that cannot be reached is exit 1 with the error: " + down.stdout);
+        // nothing awaits: a refusal, exit 1, the receipt printed
+        let none = self.work_rc("next\n--as\nposition:human", 1);
+        std::test::assert(self.state_of(none) == "refused" && std::str::contains(std::json::find_string_field(none, "reason"), "none of that kind"), "a refusal prints the receipt and exits 1: " + none);
+        // a leg that dies with its claim: the lease expires, the owner asks again, another leg claims
+        let a3 = self.ask();
+        let dying = self.work("next\n--as\nposition:leader\n--kind\nagent\n--ttl\n2");
+        std::test::assert(self.state_of(dying) == "claimed" && std::json::find_string_field(self.attempt_of(dying), "attempt_id") == a3, "a short lease: " + dying);
+        std::time::sleep(2500ms);
+        let mut tries = 0;
+        while tries < 40 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a3) { let n = self.core.redrive(); std::time::sleep(250ms); tries = tries + 1; }
+        std::test::assert(self.has_row("effect.redelivered", "attempt:" + a3), "the lease expired with no outcome: the owner asks again");
+        let anew = self.work("next\n--as\nposition:editor\n--kind\nagent");
+        std::test::assert(self.state_of(anew) == "claimed" && std::json::find_string_field(self.attempt_of(anew), "attempt_id") == a3, "and another leg claims it: " + anew);
+        // run: a person's cycle leaves the outcome to them; a deterministic performer wins for its kind
+        let a4 = self.ask();
+        let person = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9");
+        std::test::assert(std::json::find_string_field(person, "state") == "pending" && std::json::find_string_field(person, "performer") == "person" && std::json::find_string_field(person, "attempt_id") == a4, "a person's run is pending: " + person);
+        std::test::assert(std::str::contains(std::json::find_string_field(person, "narrative"), "hale dna work submit"), "and says how to hand it back");
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
+        let fixed = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        std::test::assert(std::json::find_string_field(fixed, "performer") == "deterministic" && std::json::find_string_field(fixed, "state") == "requested", "a deterministic performer wins for its kind and hands the outcome back: " + fixed);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a4, "and the owner settles it");
+        let s4 = self.work("settle\n--request-id\n" + std::json::find_string_field(fixed, "request_id") + "\n--wait\n5");
+        std::test::assert_eq_str(self.state_of(s4), "settled", "settled: " + s4);
+        // the leg was built once per performers file: one build directory per key
+        let builds = dna::run_tool("sh\n-c\nls -d \"$1\"/.hale/dna/legs/*/ | wc -l\nsh\n" + self.app);
+        std::test::assert_eq_int(std::str::parse_int(dna::trim_nl(builds.stdout)) or 0, 2, "one leg per performers file, built once each: " + builds.stdout);
+        // mcp: the verbs through this binary
+        let listed = dna::run_tool("sh\n-c\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$1\" mcp\nsh\n" + toolchain());
+        std::test::assert(std::str::contains(listed.stdout, "hale_dna_work"), "hale mcp lists the leg's verbs: " + listed.stdout + listed.stderr);
+    }
+    // ---- the hands, on the project's own repository
+    fn hands() {
+        let git = legs::ScratchGit { };
+        let wt = git.worktree(self.app, "HEAD");
+        std::test::assert(wt.ok && !std::str::starts_with(wt.output, self.app), "a worktree in scratch, never the checkout: " + wt.error + wt.output);
+        let applied = git.apply(wt.output, "--- /dev/null\n+++ b/legs-note.txt\n@@ -0,0 +1 @@\n+a leg was here\n");
+        std::test::assert(applied.ok, "a patch applied: " + applied.error);
+        let committed = git.commit(wt.output, "legs: a note");
+        std::test::assert(committed.ok && len(committed.output) == 40, "committed, the sha answered: " + committed.error + committed.output);
+        let dir = wt.output;
+        git.clean();
+        std::test::assert(!std::io::fs::file_exists(dir), "and cleaned away");
+        let tools = legs::Toolchain { hale: toolchain() };
+        std::test::assert(tools.check(self.app + "/dna/org").ok, "the toolchain checks the organization");
+        let deploy = legs::NoDeploy { };
+        let express = deploy.express("abc");
+        std::test::assert(!express.ok && std::str::contains(express.error, "#987"), "deploy refuses, naming #987");
+        let heart = legs::NoHeart { };
+        let asked = heart.ask("/x", "");
+        std::test::assert(!asked.ok && std::str::contains(asked.error, "#987"), "the heart refuses, naming #987");
+    }
+    @unbounded
+    fn adopt() {
+        let moved = self.journal.refresh();
+        let b = std::json::Builder { };
+        b.begin_object(); b.int_field("routing", dna::ROUTING_VERSION); b.string_field("by", "test"); b.end_object();
+        let asked = self.journal.append(self.journal.revision(), "ledger.adopting", "ledger", b.result());
+        std::test::assert(asked.ok, "adoption asked: " + asked.error);
+        let adoption = dna::LedgerAdoption { root: self.app, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV }, holder: "test" };
+        let leases = dna::MemoryLeases { repo: self.app, dsn_env: dna::SPINE_DSN_ENV };
+        std::test::assert_eq_int(adoption.tick(leases), 1, "the ledger adopted: " + adoption.last_error);
+        self.start_owner();
+    }
     run() {
-        let scratch = dna::scratch_root("legs");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
-        self.app = scratch + "/app";
-        let u1 = in_dir(self.app, "git\nconfig\nuser.name\nriley");
-        let u2 = in_dir(self.app, "git\nconfig\nuser.email\nriley@local");
+        self.app = std::env::var("HALE_DNA_LEGS_APP");
+        self.with_memory = std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE");
         std::test::assert(std::io::fs::file_exists(self.app + "/dna/org/work.hl"), "init generated the performers");
         std::test::assert(std::io::fs::file_exists(self.app + "/vendor/dna/legs/verbs.hl"), "and vendored the legs seed");
         self.start_owner();
-        let a1 = self.ask();
         self.start_head();
-        // ---- next: the claim, for a position, idempotent by request id
-        let claimed = self.work("next\n--as\nposition:agent");
-        std::test::assert_eq_str(self.state_of(claimed), "claimed", "next claims: " + claimed);
-        std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(claimed), "attempt_id"), a1, "the attempt that awaited a leg");
-        std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(claimed), "holder"), "position:agent", "held by the position");
-        let token = self.token_of(claimed);
-        // asked again by the same position: the same lease (a claim by its
-        // holder renews, the token stays), never a second attempt
-        let again = self.work("next\n--as\nposition:agent");
-        std::test::assert(self.state_of(again) == "claimed" && self.token_of(again) == token && std::json::find_string_field(self.attempt_of(again), "attempt_id") == a1, "next again is the same lease: " + again);
-        let free = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_API=\"$2\" && \"$3\" dna work next --as leg:free\nsh\n" + self.app + "\n" + self.api + "\n" + toolchain());
-        std::test::assert_eq_int(free.code, 2, "a free string is no position: " + free.stdout + free.stderr);
-        // ---- brief: the hat, and the hat rendered
-        let hat = self.work("brief\n--attempt\n" + a1);
-        std::test::assert_eq_str(std::json::find_string_field(hat, "work_id"), a1[0..(len(a1) - 3)], "the hat is the Work's: " + hat);
-        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(hat, "position"), "id"), "position:agent", "for the position");
-        let hat_digest = std::json::find_string_field(hat, "digest");
-        let rendered = self.work("brief\n--attempt\n" + a1 + "\n--render\ntext");
-        std::test::assert_eq_str(std::json::find_string_field(rendered, "hat_digest"), hat_digest, "the render records the hat's digest");
-        std::test::assert_eq_str(std::json::find_string_field(rendered, "renderer"), "legs-render/1", "and the renderer's version");
-        let prompt_digest = std::json::find_string_field(rendered, "prompt_digest");
-        std::test::assert(std::str::starts_with(prompt_digest, "sha256:"), "and the digest of what it rendered");
-        std::test::assert(std::str::starts_with(std::json::find_string_field(rendered, "text"), "BRIEF " + a1[0..(len(a1) - 3)]), "a person's brief: " + std::json::find_string_field(rendered, "text"));
-        let plain = self.work("brief\n--attempt\n" + a1 + "\n--render\nprompt\n--plain");
-        std::test::assert(std::str::starts_with(plain, "You are position:agent"), "a prompt, plain: " + plain);
-        std::test::assert_eq_str(dna::digest_of(plain + "\n"), std::json::find_string_field(self.work("brief\n--attempt\n" + a1 + "\n--render\nprompt"), "prompt_digest"), "rendering is a pure function of the hat and the mode");
-        // ---- renew, friction
-        let renewed = self.work("renew\n--as\nposition:agent\n--attempt\n" + a1 + "\n--token\n" + token + "\n--ttl\n900");
-        std::test::assert_eq_str(self.state_of(renewed), "renewed", "renew extends the lease: " + renewed);
-        std::test::assert_eq_str(self.token_of(renewed), token, "and keeps the token");
-        let filed = self.work("friction\n--as\nposition:agent\n--attempt\n" + a1 + "\n--text\nthe hat named no tool grant for a judgment");
-        std::test::assert_eq_str(self.state_of(filed), "filed", "friction is filed: " + filed);
-        std::test::assert(self.has_row("friction.filed", a1), "as a row on the attempt");
-        // ---- submit, relayed, settled
-        std::io::fs::write_file(self.app + "/.hale/calls.json", "[{\"adapter\": \"person\", \"backend\": \"desk\", \"input_tokens\": 0, \"output_tokens\": 0, \"cost_micros\": 0}]") or discard;
-        let submitted = self.work("submit\n--as\nposition:agent\n--attempt\n" + a1 + "\n--token\n" + token + "\n--result\nassessment: ship it\n--narrative\nread it twice\n--evidence-file\n" + self.app + "/.hale/calls.json\n--hat-digest\n" + hat_digest + "\n--hat-head\n" + std::json::find_string_field(hat, "head") + "\n--hat-watermark\n-1\n--prompt-digest\n" + prompt_digest);
-        std::test::assert_eq_str(self.state_of(submitted), "requested", "submit hands the outcome back: " + submitted);
-        // run twice, one act: the same request under the same lease reads the first's receipt
-        let twice = self.work("submit\n--as\nposition:agent\n--attempt\n" + a1 + "\n--token\n" + token + "\n--result\nassessment: ship it\n--narrative\nread it twice\n--evidence-file\n" + self.app + "/.hale/calls.json\n--hat-digest\n" + hat_digest + "\n--hat-head\n" + std::json::find_string_field(hat, "head") + "\n--hat-watermark\n-1\n--prompt-digest\n" + prompt_digest);
-        std::test::assert(self.state_of(twice) == "requested" && std::json::find_string_field(twice, "request_id") == std::json::find_string_field(submitted, "request_id"), "submit twice is one act: " + twice);
-        let requested = self.work("settle\n--attempt\n" + a1 + "\n--token\n" + token);
-        std::test::assert_eq_str(self.state_of(requested), "requested", "not settled before the owner heard it");
-        std::test::assert_eq_int(relay_once(self.app), 1, "the relay carries it");
-        self.wait_row("attempt.outcome", a1, "the owner settles the attempt");
-        let settled = self.work("settle\n--attempt\n" + a1 + "\n--token\n" + token + "\n--wait\n5");
-        std::test::assert(self.state_of(settled) == "settled" && std::json::find_string_field(self.attempt_of(settled), "disposition") == "done", "settle reads the settlement: " + settled);
-        let moved = self.core.journal.refresh();
-        let mut outcome = ""; let mut i = 0;
-        while i < self.core.journal.revision() { let e = self.core.journal.read(i); if e.kind == "attempt.outcome" && e.entity == a1 { outcome = e.body; } i = i + 1; }
-        std::test::assert(std::json::find_string_field(outcome, "hat_digest") == hat_digest && std::json::find_string_field(outcome, "prompt_digest") == prompt_digest && std::json::find_string_field(outcome, "renderer") == "legs-render/1", "the outcome records the hat, the prompt and the renderer: " + outcome);
-        // ---- release: the lease given back, the attempt claimed anew
-        let a2 = self.ask();
-        let c2 = self.work("next\n--as\nposition:agent");
-        std::test::assert(self.state_of(c2) == "claimed" && std::json::find_string_field(self.attempt_of(c2), "attempt_id") == a2, "the next attempt: " + c2);
-        let released = self.work("release\n--as\nposition:agent\n--attempt\n" + a2 + "\n--token\n" + self.token_of(c2) + "\n--why\nout of time");
-        std::test::assert_eq_str(self.state_of(released), "released", "release gives it back: " + released);
-        std::test::assert(self.has_row("attempt.released", a2), "as a row");
-        let c2b = self.work("next\n--as\nposition:reviewer\n--kind\nagent");
-        std::test::assert(self.state_of(c2b) == "claimed" && std::json::find_string_field(self.attempt_of(c2b), "attempt_id") == a2, "another position claims it anew: " + c2b);
-        // ---- run: a person's cycle leaves the outcome to them; a deterministic performer settles
-        let a3 = self.ask();
-        let person = self.work("run\n--as\nposition:agent");
-        std::test::assert(std::json::find_string_field(person, "state") == "pending" && std::json::find_string_field(person, "performer") == "person" && std::json::find_string_field(person, "attempt_id") == a3, "a person's run is pending: " + person);
-        std::test::assert(std::str::contains(std::json::find_string_field(person, "narrative"), "hale dna work submit"), "and says how to hand it back");
-        std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
-        let fixed = self.work("run\n--as\nposition:agent\n--wait\n0");
-        std::test::assert(std::json::find_string_field(fixed, "performer") == "deterministic" && std::json::find_string_field(fixed, "state") == "requested", "a deterministic performer wins for its kind and hands the outcome back: " + fixed);
-        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
-        self.wait_row("attempt.outcome", a3, "and the owner settles it");
-        let s3 = self.work("settle\n--request-id\n" + std::json::find_string_field(fixed, "request_id") + "\n--wait\n5");
-        std::test::assert_eq_str(self.state_of(s3), "settled", "settled: " + s3);
-        // ---- mcp: the verbs through this binary
-        let listed = dna::run_tool("sh\n-c\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$1\" mcp\nsh\n" + toolchain());
-        std::test::assert(std::str::contains(listed.stdout, "hale_dna_work"), "hale mcp lists the leg's verbs: " + listed.stdout + listed.stderr);
+        self.pass("record", "1");
+        self.extras();
+        self.hands();
+        if self.with_memory {
+            self.adopt();
+            self.pass("adopted", "2");
+            let ledger = dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV };
+            let mut i = 0; let mut claimed = 0;
+            while i < ledger.revision() { if ledger.read(i).kind == "attempt.claimed" { claimed = claimed + 1; } i = i + 1; }
+            std::test::assert(claimed >= 3, "the leg's rows are in the ledger once adopted: " + to_string(claimed) + " claimed");
+        } else {
+            eprintln("legs_test: no HALE_DNA_MEMORY_DSN_OWNER; the adopted ledger was not exercised");
+        }
         self.stop_head();
-        dna::scratch_done(scratch);
     }
 }
 
-fn main() { App { }; }
+// Phase 1: the scratch project, memory migrated for its record when the
+// suite hands one over, and phase 2 run with the roles named (the head
+// takes the head's role from the environment it is spawned with).
+fn main() {
+    if std::env::var("HALE_DNA_LEGS_PHASE") == "2" { App { }; return; }
+    let scratch = dna::scratch_root("legs");
+    let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
+    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+    let app = scratch + "/app";
+    let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+    let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    let identity = dna::GitRecord { repo: app }.identity();
+    let mut env = "HALE_DNA_LEGS_PHASE=2\nHALE_DNA_LEGS_APP=" + app + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nHALE_DNA_DISCOVER=off\n";
+    if len(owner) > 0 {
+        let spine = dna::migrated(owner, identity);
+        std::test::assert(spine.ok, "memory migrated for the record: " + spine.why);
+        let head = dna::migrated_head(owner, identity);
+        std::test::assert(head.ok, "the head's role: " + head.why);
+        env = env + "HALE_DNA_MEMORY_DSN_SPINE=" + dna::dsn_text(spine) + "\nHALE_DNA_MEMORY_DSN_HEAD=" + dna::dsn_text(head) + "\n";
+    }
+    let ran = dna::run_tool("env\n" + env + std::env::arg_or(0, ""));
+    print(ran.stdout);
+    if len(ran.stderr) > 0 { eprintln(ran.stderr); }
+    if len(owner) > 0 { std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped"); }
+    dna::scratch_done(scratch);
+    std::process::exit(if ran.code < 0 { 1 } else { ran.code });
+}

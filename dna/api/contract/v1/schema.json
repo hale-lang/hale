@@ -11615,7 +11615,8 @@
             "performer": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
             "capabilities": {
               "type": "array",
@@ -11701,7 +11702,8 @@
             "holder": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
             "token": {
               "type": "integer",
@@ -12181,7 +12183,8 @@
             "holder": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
             "token": {
               "type": "integer",
@@ -12250,7 +12253,8 @@
             "holder": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+(#[0-9]+)?$"
             },
             "token": {
               "type": "integer",
@@ -12359,7 +12363,8 @@
             "position": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "pattern": "^position:[A-Za-z0-9_.-]+$"
             },
             "attempt_id": {
               "type": "string",
