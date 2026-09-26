@@ -13897,7 +13897,9 @@ static int lotus_unix_addr(const char *path, struct sockaddr_un *addr) {
     }
     memset(addr, 0, sizeof(*addr));
     addr->sun_family = AF_UNIX;
-    strncpy(addr->sun_path, path, sizeof(addr->sun_path) - 1);
+    /* The length check above bounds this; memcpy rather than strncpy
+     * because the wasm32 build of this file declares no strncpy. */
+    memcpy(addr->sun_path, path, strlen(path));
     return 0;
 }
 
