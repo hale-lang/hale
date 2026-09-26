@@ -223,11 +223,56 @@ test('Organization mobile detail, back and browser history preserve the selected
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 });
 
+// An Organization read runs the compiler (`hale check --dump-topology`), which
+// the service bounds at 30 s. The browser waits for that bound instead of the
+// 15 s Record-read deadline, so a check that takes longer on a slow machine is
+// answered, not abandoned: an abandoned read never produced a response, and
+// its caller waited for one that could not come.
+test('an Organization read waits for the service inspection bound before timing out', async ({ page, service }) => {
+  const initial = organizationResponse(page);
+  await page.goto(service.url('organization'));
+  await organizationData(initial);
+  await page.clock.install();
+  let resume;
+  const paused = new Promise(resolve => { resume = resolve; });
+  let captured;
+  const intercepted = new Promise(resolve => { captured = resolve; });
+  const pattern = '**/dna/organization?**';
+  await page.route(pattern, async route => {
+    // Hold the real response: the service is still inspecting.
+    const response = await route.fetch();
+    captured();
+    await paused;
+    await route.fulfill({ response }).catch(() => {}); // timeout may close it
+  });
+  try {
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await intercepted;
+    await page.clock.fastForward(15_001);
+    await expect(page.locator('#content')).toHaveAttribute('aria-busy', 'true');
+    await expect(page.getByRole('heading', { name: 'Service took too long', exact: true })).toHaveCount(0);
+    await page.clock.fastForward(20_000);
+    await expect(page.getByRole('heading', { name: 'Service took too long', exact: true })).toBeVisible();
+    await expect(page.locator('body')).toContainText('within 35 seconds');
+    await expect(page.locator('#content')).toHaveAttribute('aria-busy', 'false');
+    resume();
+    await page.unroute(pattern);
+    const recovered = organizationResponse(page);
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expectTopology(page, shownRows(await organizationData(recovered)));
+  } finally {
+    resume();
+    await page.unroute(pattern);
+  }
+});
+
 test.describe('generated DNA project', () => {
   test.use({ organization: 'generated' });
-  // The case checks the generated project's vendored DNA twice through the
-  // API: under half a minute on a fast machine, a few on a loaded CI runner.
-  // Budget the checks, not a guess about the runner.
+  // The case checks the generated project's vendored DNA through the API four
+  // times (the first read, the changed dependency, and the restore after each
+  // refusal), each a compiler run the service bounds at 30 s: under half a
+  // minute in all on a fast machine, a few on a loaded CI runner. Budget the
+  // checks, not a guess about the runner.
   test.setTimeout(600_000);
   test('ignored vendored DNA is inspected without modification and dependency changes invalidate the cache', async ({ page, service }) => {
     const original = await service.projectState();

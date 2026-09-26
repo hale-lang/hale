@@ -8,6 +8,15 @@
   const API = "/api/hale/v1/applications";
   const LIMIT = 25;
   const READ_TIMEOUT_MS = 15_000;
+  // An Organization read is a compiler run, not a Record read: the service
+  // checks the committed organization with its dependencies (`hale check
+  // --dump-topology`) and bounds that check at 30 s (OrganizationInspection
+  // in dna/organization_source). The browser waits for that bound, as the
+  // organization editor's draft check does, so it hears the service's own
+  // answer (the organization, or `organization_check_failed`) instead of
+  // abandoning a check that was about to finish; how long the check takes
+  // depends on the machine.
+  const ORGANIZATION_READ_TIMEOUT_MS = 35_000;
   // Resource-specific presentation stays behind this small workspace registry;
   // request lifetime, identity, paging and auth remain shared across all reads.
   const WORKSPACES = {
@@ -28,7 +37,7 @@
       empty: "No declared instances", emptyDescription: "This source snapshot declares no static organization instances. Declarations alone do not establish occupied or vacant positions.",
       selection: "Structure, with its source", selectionDescription: "Select a declared instance to inspect its containment, contracts, and source. Viewing a position does not grant its authority.",
       fields: ["id", "declaration", "parent_id", "thread_domain", "role", "source_file"], booleans: ["in_position_outline", "sealed"],
-      sourceBound: true, rowName: (item) => item.id, badge: organizationBadge, rowMeta: organizationMeta, inspector: organizationDetail
+      sourceBound: true, readTimeoutMs: ORGANIZATION_READ_TIMEOUT_MS, rowName: (item) => item.id, badge: organizationBadge, rowMeta: organizationMeta, inspector: organizationDetail
     },
     definitions: {
       title: "Definitions", singular: "Definition revision", resource: "definitions", capability: "definitions",
@@ -1906,7 +1915,7 @@
   function sameOrganizationBasis(left, right) {
     return ["source_head", "seed", "artifact_digest", "dependency_digest", "dependency_source", "shape_hash", "schema", "coverage", "position_group_declared", "exact_ownership", "semantics", "declaration_count", "uninstantiated_declaration_count"].every((key) => left[key] === right[key]);
   }
-  async function request(path, signal) {
+  async function request(path, signal, timeoutMs = READ_TIMEOUT_MS) {
     // This deadline covers both headers and the complete response body. It is
     // a browser read deadline, not proof that the service stopped its own work.
     const pending = new AbortController();
@@ -1914,7 +1923,7 @@
     const cancelRead = () => pending.abort();
     signal.addEventListener("abort", cancelRead, { once: true });
     if (signal.aborted) cancelRead();
-    const timeout = setTimeout(() => { timedOut = true; pending.abort(); }, READ_TIMEOUT_MS);
+    const timeout = setTimeout(() => { timedOut = true; pending.abort(); }, timeoutMs);
     try {
       const response = await fetch(path, { signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
       if (response.status === 401) throw new ReadError(401, "unauthenticated", "The service needs a valid session before it can return Record data.");
@@ -1930,7 +1939,7 @@
       return body;
     } catch (error) {
       if (signal.aborted) throw new DOMException("Superseded read", "AbortError");
-      if (timedOut) throw new ReadError(0, "read_timeout", "The service did not finish this read within 15 seconds. Application data has been cleared. Retry when the service is ready.");
+      if (timedOut) throw new ReadError(0, "read_timeout", "The service did not finish this read within " + timeoutMs / 1000 + " seconds. Application data has been cleared. Retry when the service is ready.");
       if (error instanceof ReadError) throw error;
       throw new ReadError(0, "connection_failed", "The local service could not be reached. Check that it is running, then retry.");
     } finally {
@@ -2038,7 +2047,7 @@
     if (route.view !== "organization") {
       if (capabilities.reads.organization === true) {
         try {
-          const contextResponse = await request(base + "/dna/organization?limit=1", signal);
+          const contextResponse = await request(base + "/dna/organization?limit=1", signal, ORGANIZATION_READ_TIMEOUT_MS);
           ensureCurrent(token, signal);
           workingContext = contextFromOrganization(contextResponse, app.id);
         } catch (error) {
@@ -2078,7 +2087,7 @@
     const query = new URLSearchParams({ limit: String(LIMIT), offset: String(route.offset) });
     if (route.view === "tasks" && route.assignee) query.set("assignee", route.assignee);
     if (route.snapshot) query.set("snapshot", route.snapshot);
-    const collectionResponse = await request(base + "/dna/" + workspace.resource + "?" + query, signal);
+    const collectionResponse = await request(base + "/dna/" + workspace.resource + "?" + query, signal, workspace.readTimeoutMs);
     ensureCurrent(token, signal);
     validSource(collectionResponse.source, app.id);
     validPage(collectionResponse.data, collectionResponse.source, workspace);
@@ -2103,7 +2112,7 @@
     if (route.id) {
       const detailQuery = new URLSearchParams({ id: route.id, snapshot: collection.page.snapshot });
       try {
-        const response = await request(base + "/dna/" + workspace.resource + "?" + detailQuery, signal);
+        const response = await request(base + "/dna/" + workspace.resource + "?" + detailQuery, signal, workspace.readTimeoutMs);
         ensureCurrent(token, signal);
         validSource(response.source, app.id);
         validPage(response.data, response.source, workspace);
@@ -2135,7 +2144,7 @@
       else if (!organizationBranch) {
         try {
           const query = new URLSearchParams({ id: route.branch, snapshot: collection.page.snapshot });
-          const response = await request(base + "/dna/organization?" + query, signal);
+          const response = await request(base + "/dna/organization?" + query, signal, ORGANIZATION_READ_TIMEOUT_MS);
           ensureCurrent(token, signal);
           validSource(response.source, app.id);
           validPage(response.data, response.source, workspace);
