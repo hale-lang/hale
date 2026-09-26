@@ -366,7 +366,7 @@ locus Dna {
         waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
         memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
         ratified_through: String = "\n"; // GH #995: the Reviews this incarnation has ratified through practice-ratify, never scanned for again
-        optimizing: String = ""; // GH #995: the optimize-walk Task whose walk this incarnation asked of the leader
+        optimize_asked: String = "\n"; // GH #995: the optimize-walk Tasks whose walk this incarnation asked of the leader
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
         pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
@@ -914,7 +914,10 @@ locus Dna {
         if !self.governance_once("review.settled", review_id, outcome + " by " + reviewer) { return; }
         let comment = native_json_string(decision, "comment");
         if len(comment) > 0 && !self.governance_once("review.reasoned", review_id, comment) { return; }
-        let resumed = self.resume_knowledge_result(review_id, outcome, reviewer);
+        // GH #995: a decision by command is ratified as every decision is,
+        // by the practice-ratify execution it admits
+        self.ratify_through(review_id);
+        self.revisit_steps(false);
     }
     @unbounded
     fn resume_knowledge_result(review_id: String, outcome: String, reviewer: String) -> Bool {
@@ -1592,14 +1595,14 @@ locus Dna {
         b.string_field("narrative", r.narrative);
         b.string_field("package", r.package);
         b.string_field("by", r.by);
-        b.string_field("signals", self.last_signals);
+        b.string_field("signals", r.signals);
         // GH #995: the optimize-walk execution this answers
-        b.string_field("task", self.optimizing);
+        b.string_field("task", r.task);
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "org.reviewed", self.org_id, b.result());
         self.revisit_steps(false);
         if len(r.proposal) > 0 {
-            let id = self.ask(Intent { id: "opt" + to_string(self.optimizations), outcome: r.proposal, from: r.by });
+            let id = self.ask(Intent { id: "opt:" + r.task, outcome: r.proposal, from: r.by });
         }
     }
     // A planned ask becomes a Mutation under the class and target the
@@ -3771,8 +3774,11 @@ locus Dna {
             let by = verdict_by(settled.body);
             // the verdict binds this digest: approved, the ratification (and
             // the retirement of what it supersedes); otherwise the decline
+            // done only when the whole consequence landed — the ratification
+            // AND the retirement of what it supersedes; a write the record
+            // refused leaves the step waiting, to be written again
             let r = self.resume_knowledge_result(review_id, outcome, by);
-            if outcome == "approve" && self.knowledge_ratified(digest) { return step_done(digest, "ratified by " + by); }
+            if outcome == "approve" && r && self.knowledge_ratified(digest) { return step_done(digest, "ratified by " + by); }
             if outcome != "approve" && len(self.governance_event("knowledge.declined", digest).kind) > 0 { return step_failed("declined: " + settled.body); }
             let refused = self.governance_event("knowledge.refused", digest);
             if len(refused.kind) > 0 { return step_failed("not ratified: " + std::json::find_string_field(refused.body, "why")); }
@@ -3784,6 +3790,10 @@ locus Dna {
         if key == "hat" {
             let read = self.governance_event("practice.read", digest);
             if len(read.kind) > 0 { return step_done(std::json::find_string_field(read.body, "hat"), "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head"))); }
+            // no memory named: the hat is memory's to read, and nothing will
+            // come to wait for — the chain ends saying so. Memory named but
+            // behind, or unreachable a moment: the step waits for it.
+            if !self.knowledge_client.ready() { return step_failed("no memory is named (" + self.knowledge_client.dsn_env + " is not set): the hat is memory's to read"); }
             let at = self.knowledge_client.ratified_at(digest);
             if at < 0 { return step_waits(); }
             // never block the organization's handler on memory's projection:
@@ -3871,10 +3881,10 @@ locus Dna {
             if e.kind == "org.reviewed" && std::json::find_string_field(e.body, "task") == task { return step_done(std::json::find_string_field(e.body, "outcome"), std::json::find_string_field(e.body, "proposal")); }
             i = i + 1;
         }
-        if self.optimizing != task {
-            self.optimizing = task;
+        if !std::str::contains(self.optimize_asked, "\n" + task + "\n") {
+            self.optimize_asked = self.optimize_asked + task + "\n";
             self.last_signals = self.signals();
-            OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
+            OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals, task: task };
         }
         return step_waits();
     }

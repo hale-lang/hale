@@ -14,9 +14,9 @@
   const digest = value => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
   const identifier = value => typeof value === "string" && /^[a-z0-9][a-z0-9-]*$/.test(value);
   const memberKey = value => typeof value === "string" && /^[a-z0-9-]+$/.test(value);
-  // The one store a Step writes (GH #995), or `read:<store>` for a Step that only reads.
+  // The one store a Step writes (GH #995): a Step is where a fact is written.
   const STORES = ["record", "forge", "genome", "heart", "graph", "nerves", "memory", "vault", "host"];
-  const stepStore = value => typeof value === "string" && STORES.includes(value.startsWith("read:") ? value.slice(5) : value);
+  const stepStore = value => typeof value === "string" && STORES.includes(value);
   function text(value, bound = RESPONSE_LIMIT) {
     if (typeof value !== "string" || value.includes("\u0000") || bytes(value) > bound) return false;
     for (let i = 0; i < value.length; i += 1) {
@@ -127,7 +127,7 @@
       draft.steps.forEach((step, stepIndex) => {
         const name = "Step " + (stepIndex + 1);
         if (step.index !== String(stepIndex)) add(name + " has an inconsistent index.");
-        if (!stepStore(step.store)) add(name + " must name the one store it writes (" + STORES.join(", ") + "), or read:<store> when it only reads.");
+        if (!stepStore(step.store)) add(name + " must name the one store it writes (" + STORES.join(", ") + ").");
         if (!step.members.length) add(name + " requires at least one member.");
         if (BigInt(step.members.length) > BigInt(capturedBasis.limits.max_members)) add(name + " exceeds the captured member limit.");
         const keys = new Set();

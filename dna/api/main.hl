@@ -519,7 +519,9 @@ fn main() {
         eprintln("hale dna api: " + web.error + "; refusing to start");
         std::process::exit(2);
     }
-    serve(root, port, web, ops::NoWorkflowCatalog { });
+    // GH #995: the organization's catalog — the baseline and the
+    // project's own — so the face reads what the organization admits
+    serve(root, port, web, ops::ProjectWorkflowCatalog { root: root });
 }
 
 // An application-composed head supplies its real catalog through the same

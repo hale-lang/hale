@@ -108,8 +108,9 @@ test('One-command startup builds the native face for a fresh DNA project without
   await expect(page.getByRole('button', { name: 'Edit ownership', exact: true })).toBeEnabled();
   const capabilities = await page.request.get(`${service.origin}/api/hale/v1/applications/${service.application}/capabilities`);
   // The head attaches the project under a synthesized local policy, so the
-  // face it serves can write practices and verdicts; definitions stay off.
-  const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(false); expect(caps.data.writes.practice_propose).toBe(true);
+  // face it serves can write practices and verdicts, and reads the
+  // organization's workflow catalog (GH #995).
+  const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(true); expect(caps.data.read_only).toBe(false); expect(caps.data.writes.practice_propose).toBe(true);
   expect(await project.state()).toEqual(before); expect(errors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath('fresh-project-face.png') });
   await writeFile(testInfo.outputPath('startup-capabilities.json'), JSON.stringify(caps, null, 2));

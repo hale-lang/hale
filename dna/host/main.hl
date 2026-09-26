@@ -223,8 +223,8 @@ fn main() {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {
         // `hale dna init` seeds the record through the host: its rows, one
-        // JSON object per line in a file
-        ans = record_seed_verb(root, word(a, 0), memory);
+        // JSON object per line in a file, and the declared purpose (GH #995)
+        ans = record_seed_verb(root, word(a, 0), word(a, 1), memory);
     } else if verb == "show" {
         // GH #1086: `hale dna show org | processes [--json]`, queries over memory
         ans = show_verb(root, word(a, 0), has_flag(a, "--json"));
@@ -237,9 +237,6 @@ fn main() {
     } else if verb == "graph-ingest" {
         // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
         ans = graph_ingest_verb(root, word(a, 0), memory);
-    } else if verb == "purpose-propose" {
-        // GH #995: the declared purpose, proposed for the Board at init
-        ans = purpose_propose_verb(root, word(a, 0), memory);
     } else if verb == "design-upgrade" {
         // `hale dna init` / `upgrade`: the toolchain's design as proposals
         ans = design_upgrade_verb(root, word(a, 0), toolchain, memory);

@@ -42,6 +42,48 @@ locus DeclaredWorkflowCatalog {
     }
 }
 
+// The organization's own catalog (GH #995): what its `dna/org/workflows.hl`
+// returns — the baseline and the project's own — as `hale dna definitions
+// --json` reads it, with the toolchain the head was started with
+// (`HALE_BIN`); the baseline alone for a project with no workflows.hl, as
+// the organization admits then. Read again when workflows.hl or the
+// vendored catalog changes; a catalog that does not build is unavailable,
+// with the reason, never a smaller one.
+locus ProjectWorkflowCatalog {
+    params {
+        root: String = ".";
+        hale: String = "";
+        key: String = "";
+        document: String = "";
+        error: String = "";
+    }
+    fn supported() -> Bool { return true; }
+    @unbounded
+    fn snapshot() -> DefinitionSnapshot {
+        let src = std::io::fs::read_file(self.root + "/dna/org/workflows.hl") or "";
+        let own = std::io::fs::read_file(self.root + "/dna/org/own_workflows.hl") or "";
+        let vendored = std::io::fs::read_file(self.root + "/vendor/dna/workflow_definition.hl") or "";
+        let key = dna::digest_of("workflows.hl\n" + src + "\nown\n" + own + "\nvendor\n" + vendored);
+        if key != self.key {
+            self.key = key;
+            self.error = "";
+            if len(src) == 0 {
+                self.document = dna::baseline_definitions().encode();
+            } else {
+                let hale = if len(self.hale) > 0 { self.hale } else if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+                let r = dna::run_tool(hale + "\ndna\ndefinitions\n--json\n" + self.root);
+                if r.code != 0 {
+                    self.error = "the organization's catalog (dna/org/workflows.hl) could not be read: " + dna::trim_nl(r.stderr + r.stdout);
+                    self.key = "";
+                    self.document = "";
+                } else { self.document = dna::trim_nl(r.stdout); }
+            }
+        }
+        if len(self.error) > 0 { return DefinitionSnapshot { supported: true, error: self.error }; }
+        return DefinitionSnapshot { supported: true, available: true, document: self.document, digest: dna::digest_of(self.document), limits: dna::AdmissionLimits { }, provenance: DefinitionProvenance { source_revision: key, source_path: "dna/org/workflows.hl" } };
+    }
+}
+
 // Reader resource budgets, NOT workflow language or admission limits. A host
 // policy outside these budgets reports unavailable, not an invalid definition.
 type DefinitionReadBounds {

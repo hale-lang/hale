@@ -87,7 +87,8 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
         tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record };
     let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, source_capabilities: native, people: native, organization_configured: source_policy.valid };
     println("hale dna practice-review api: authority basis ", policy.basis);
-    let definitions = ops::NoWorkflowCatalog { };
+    // GH #995: the organization's catalog, as the organization admits it
+    let definitions = ops::ProjectWorkflowCatalog { root: root };
     // This optional reader is meaningful only in the same local deployment
     // root and PID namespace as Host. The status route checks the separate
     // recovery/read grant before invoking it; native identity proofs may still

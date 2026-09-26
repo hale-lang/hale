@@ -28,7 +28,8 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 main locus App {
     params {
         // receipts outside the working directory: a concern's proposal files its document
-        one: dna::Dna = dna::Dna { org_id: "cat", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-workflow-catalog-receipts" } } };
+        // no memory named: a ratification's hat has nothing to read
+        one: dna::Dna = dna::Dna { org_id: "cat", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("workflow-catalog-receipts") } }, knowledge_client: dna::MemoryKnowledge { dsn_env: "HALE_DNA_TEST_NO_MEMORY" } };
     }
     @unbounded
     fn rows(kind: String, entity: String) -> Int {
@@ -62,7 +63,6 @@ main locus App {
         return false;
     }
     run() {
-        std::io::fs::mkdir("/tmp/dna-workflow-catalog-receipts") or discard;
         // ---- the baseline, listed with revisions and each step's store
         let base = dna::baseline_definitions();
         let listed = dna::definitions_listing(base);
@@ -71,7 +71,7 @@ main locus App {
         std::test::assert(std::str::contains(listed, "optimize-walk@1") && std::str::contains(listed, "  0. walk  record\n") && !std::str::contains(listed, "(read)"), "no step only reads: " + listed);
         std::test::assert(std::str::contains(listed, "refused at admission: workflow change-deliver@1 step 4 (deploy) writes the heart (GH #987)"), "change-deliver names the heart: " + listed);
         std::test::assert(std::str::contains(listed, "refused at admission: workflow secret-rotate@1 step 0 (rotate) writes the vault (GH #989)"), "secret-rotate names the vault: " + listed);
-        std::test::assert(std::str::contains(listed, "ask-triage@1") && std::str::contains(listed, "the organization does not perform this definition's steps yet"), "ask-triage is seeded and refused, saying why: " + listed);
+        std::test::assert(std::str::contains(listed, "ask-triage@1") && std::str::contains(listed, "the organization performs no step `offered` of ask-triage"), "ask-triage is seeded and refused, naming its step: " + listed);
         let names = "ask-triage change-deliver practice-ratify deploy-observe concern-escalate optimize-walk secret-rotate body-provision ask-edit ask-person";
         let mut k = 0;
         while k < dna::word_count(names) {
@@ -89,6 +89,7 @@ main locus App {
         std::test::assert_eq_str(bad.define("none", 1, "record -", "one without"), "", "defined");
         let l3 = bad.leaf("none", 1, 0, "a", dna::WorkRequest { }, 1);
         let l4 = bad.leaf("none", 1, 1, "b", dna::WorkRequest { }, 1);
+        std::test::assert(std::str::contains(dna::definitions_listing(bad), "two@1  two at once\n  0. a  record\n  1. b  record+forge\n  refused at admission: workflow two@1 step 1 declares two stores (record, forge)"), "the listing says what an admission refuses: " + dna::definitions_listing(bad));
         let none = bad.expand("t2", "none", 1, dna::AdmissionLimits { });
         std::test::assert(!none.ok && std::str::contains(none.why, "step 1 declares no store"), "no store refused: " + none.why);
         std::test::assert_eq_str(bad.define("odd", 1, "ledger", "no such store"), "", "defined");
@@ -106,7 +107,7 @@ main locus App {
         std::test::assert(std::str::starts_with(heart, "refused") && std::str::contains(heart, "the heart (GH #987), which is not built yet"), "change-deliver refused, naming the heart: " + heart);
         std::test::assert(std::str::contains(self.last("workflow.refused", ""), "the heart (GH #987)"), "a workflow.refused row says so: " + self.last("workflow.refused", ""));
         let triage = self.one.run_workflow(dna::WorkflowAsk { id: "triage-1", definition: "ask-triage", revision: 1, inputs: "{}" });
-        std::test::assert(std::str::starts_with(triage, "refused") && std::str::contains(triage, "does not perform this definition's steps yet"), "ask-triage refused, saying why: " + triage);
+        std::test::assert(std::str::starts_with(triage, "refused") && std::str::contains(triage, "performs no step `offered` of ask-triage"), "ask-triage refused, naming its step: " + triage);
 
         // ---- a concern is an execution of concern-escalate, and a Task
         // born under revision 1 finishes under it after the catalog gains
@@ -134,6 +135,29 @@ main locus App {
         std::test::assert(self.wait_rows("concern.proposed", "org/app/worker", 1), "the third is proposed");
         std::test::assert(std::str::contains(self.last("knowledge.proposed", ""), "\"target\": \"org/app\""), "bound to its parent: " + self.last("knowledge.proposed", ""));
 
+        // ---- a Board decision is an execution of practice-ratify: ratified,
+        // and with no memory the hat step ends the chain saying so
+        self.one.on_practice_requested(dna::PracticeRequest { request_id: "p1", name: "acceptance/receipts", text: "An expense closes with its receipt.", by: "riley" });
+        std::test::assert(self.wait_rows("practice.proposed", "p1", 1), "the practice is proposed");
+        let digest = std::json::find_string_field(self.last("practice.proposed", "p1"), "digest");
+        let review = dna::knowledge_review_id(digest);
+        let verdict = self.one.journal.append(self.one.journal.revision(), "review.settled", review, "approve by ada");
+        self.one.ratify_through(review);
+        let ratification = self.one.workflow_admission_of("ratify:" + digest, self.one.journal.revision());
+        std::test::assert(len(ratification) > 0, "the decision is admitted as practice-ratify");
+        std::test::assert(self.wait_rows("workflow.settled", ratification, 1), "and settles");
+        std::test::assert(self.one.knowledge_ratified(digest), "ratified by its first step");
+        std::test::assert(std::str::contains(self.last("attempt.outcome", ratification + "/wf1/s1/hat/a0"), "no memory is named (HALE_DNA_TEST_NO_MEMORY is not set)"), "the hat fails with the reason, never waits for nothing: " + self.last("attempt.outcome", ratification + "/wf1/s1/hat/a0"));
+        std::test::assert(std::str::contains(self.last("workflow.settled", ratification), "failed"), "and the chain settles failed: " + self.last("workflow.settled", ratification));
+
+        // ---- a revision with a step this toolchain does not perform is
+        // refused at admission, naming the step
+        std::test::assert_eq_str(self.one.catalog.define("optimize-walk", 2, "record record", "a walk with a step from a newer toolchain"), "", "revision 2, from a newer toolchain");
+        let w0 = self.one.catalog.leaf("optimize-walk", 2, 0, "walk", dna::WorkRequest { requires: "organism", objective: "walked" }, 1);
+        let w1 = self.one.catalog.leaf("optimize-walk", 2, 1, "tally", dna::WorkRequest { requires: "organism", objective: "tallied" }, 1);
+        let newer = self.one.run_workflow(dna::WorkflowAsk { id: "walk-2", definition: "optimize-walk", revision: 2, inputs: "{}" });
+        std::test::assert(std::str::starts_with(newer, "refused") && std::str::contains(newer, "the organization performs no step `tally` of optimize-walk"), "refused naming the step: " + newer);
+
         // ---- through the CLI: new writes the catalog, definitions lists it
         let scratch = dna::scratch_root("workflow-catalog");
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
@@ -146,7 +170,24 @@ main locus App {
         std::test::assert(std::str::starts_with(cli.stdout, "catalog dna/org/workflows.hl\n") && std::str::contains(cli.stdout, "concern-escalate@1") && std::str::contains(cli.stdout, "writes the heart (GH #987)"), "listed with revisions: " + cli.stdout);
         let json = in_dir(app, toolchain() + "\ndna\ndefinitions\n--json");
         std::test::assert(std::str::contains(json.stdout, "\"format\": \"dna.workflow-definitions/2\""), "and as its document: " + json.stdout);
+
+        // ---- the project's own definitions are its own; the generated half
+        // is rewritten to the current shape by upgrade, whatever it holds
+        let own_path = app + "/dna/org/own_workflows.hl";
+        let own_text = "import \"vendor/dna\" as dna;\n\nfn own_workflows(catalog: dna::WorkflowCatalog) -> String {\n    let d = catalog.define(\"close-month\", 1, \"record\", \"close the month\");\n    let e = catalog.leaf(\"close-month\", 1, 0, \"books\", dna::WorkRequest { requires: \"human\", objective: \"close the books\" }, 1);\n    return d + e;\n}\n";
+        std::io::fs::write_file(own_path, own_text) or discard;
+        std::test::assert_eq_str(std::io::fs::read_file(own_path) or "", own_text, "a definition of the project's own");
+        let generated = std::io::fs::read_file(app + "/dna/org/workflows.hl") or "";
+        std::io::fs::write_file(app + "/dna/org/workflows.hl", generated + "// an earlier toolchain's shape\n") or discard;
+        std::test::assert((std::io::fs::read_file(app + "/dna/org/workflows.hl") or "") != generated, "the generated half, grown stale");
+        let up = in_dir(app, toolchain() + "\ndna\nupgrade");
+        std::test::assert_eq_int(up.code, 0, "hale dna upgrade: " + up.stdout + up.stderr);
+        std::test::assert(std::str::contains(up.stdout, "rewrote ") && (std::io::fs::read_file(app + "/dna/org/workflows.hl") or "") == generated, "the generated half is the current shape again: " + up.stdout);
+        std::test::assert_eq_str(std::io::fs::read_file(own_path) or "", own_text, "the project's own definitions are left alone");
+        let mine = in_dir(app, toolchain() + "\ndna\ndefinitions");
+        std::test::assert(std::str::contains(mine.stdout, "close-month@1  close the month\n  0. books  record\n") && std::str::contains(mine.stdout, "practice-ratify@1"), "listed beside the baseline: " + mine.stdout + mine.stderr);
         dna::scratch_done(scratch);
+        dna::scratch_done("/tmp/dna-workflow-catalog-receipts-" + to_string(std::process::pid()));
     }
 }
 

@@ -62,7 +62,7 @@ locus App {
         app: String = "";
         with_memory: Bool = false;
         // a placeholder until the scratch project exists
-        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-attempt-placeholder" } } };
+        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("attempt-placeholder") } } };
         journal: dna::RoutedJournal = dna::RoutedJournal { };
         asks: Int = 0;
     }
@@ -415,5 +415,6 @@ fn main() {
     if len(ran.stderr) > 0 { eprintln(ran.stderr); }
     if len(owner) > 0 { std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped"); }
     dna::scratch_done(scratch);
+    dna::scratch_done("/tmp/dna-attempt-placeholder-" + to_string(std::process::pid()));
     std::process::exit(if ran.code < 0 { 1 } else { ran.code });
 }
