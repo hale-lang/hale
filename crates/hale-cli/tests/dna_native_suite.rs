@@ -840,6 +840,7 @@ fn dna_fixture_set_is_complete() {
             "genome_pull_test.hl",
             "grant_layering_test.hl",
             "grant_resources_test.hl",
+            "graph_holes_test.hl",
             "graph_ingest_refusals_test.hl",
             "graph_ingest_test.hl",
             "graph_model_test.hl",

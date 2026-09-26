@@ -2,7 +2,7 @@
 // are queries over memory, and on voice they are GRAPH.md's two renderings
 // (GH #1086).
 //
-// The fixture is hale-lang/voice at 2b1cb565 (hale-lang/voice#3), vendored
+// The fixture is hale-lang/voice at 6ad244d2 (hale-lang/voice#4), vendored
 // under dna/tests/onboarding/voice. `hale dna init` reads it into the
 // record; the holes GRAPH.md fills for its org chart (a board, a dev and a
 // reviewer under every process, an operator under every deployment, what
@@ -27,7 +27,7 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// GRAPH.md at 2b1cb565, "The two perspectives, as queries".
+// GRAPH.md at 6ad244d2, "The two perspectives, as queries".
 const ORG: String = "purpose
   board
   postgres    dev, reviewer(store.md)
@@ -35,9 +35,9 @@ const ORG: String = "purpose
   api         dev, reviewer(openapi.yaml)
   brain       dev, reviewer(internal.yaml)
   node        dev, reviewer(node.yaml, protocol.yaml)
-  compose     operator
-  personal    operator
-  scaled-out  operator
+  compose     operator, support, accounts, billing, on-call
+  personal    operator, support, accounts, billing, on-call
+  scaled-out  operator, support, accounts, billing, on-call
 ";
 
 const PROCESSES: String = "callers, ui, node  --HTTP: openapi.yaml-->  api
@@ -141,9 +141,18 @@ locus App {
             self.position(j, "process:" + p, p + "/reviewer");
             k = k + 1;
         }
-        self.position(j, "deployment:compose", "compose/operator");
-        self.position(j, "deployment:personal", "personal/operator");
-        self.position(j, "deployment:scaled-out", "scaled-out/operator");
+        let deployments = "compose personal scaled-out";
+        let roles = "operator support accounts billing on-call";
+        k = 0;
+        while len(dna::nth_word(deployments, k)) > 0 {
+            let d = dna::nth_word(deployments, k);
+            let mut r = 0;
+            while len(dna::nth_word(roles, r)) > 0 {
+                self.position(j, "deployment:" + d, d + "/" + dna::nth_word(roles, r));
+                r = r + 1;
+            }
+            k = k + 1;
+        }
         self.reviews(j, "postgres/reviewer", "contract:spec/store.md");
         self.reviews(j, "api/reviewer", "contract:spec/openapi.yaml");
         self.reviews(j, "brain/reviewer", "contract:spec/internal.yaml");

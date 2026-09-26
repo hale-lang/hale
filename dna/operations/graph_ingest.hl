@@ -294,6 +294,14 @@ locus GraphIngest {
         seeds: String = "\n";
         contracts: String = "\n";
         documents: String = "\n";
+        // what the holes are proposed from (GH #1091): `<process>\t<contract>`
+        // per contract a process serves, `<node>\t<gate>` for the first gate
+        // guarding a node, the deployments in order, and each practice a
+        // document marks, as its receipt document, one per line
+        served: String = "";
+        guards: String = "";
+        deployments: String = "";
+        practices: String = "";
         nodes: Int = 0;
         edges: Int = 0;
         // the first thing the repository says that ingest cannot take; the
@@ -325,6 +333,7 @@ locus GraphIngest {
         if self.emit("graph.node", id, graph_node_body(kind, name, text, source)) {
             self.nodes = self.nodes + 1;
             self.kinds = self.kinds + kind + "\n";
+            if kind == "deployment" { self.deployments = self.deployments + id + "\n"; }
         }
         return id;
     }
@@ -698,6 +707,14 @@ locus GraphIngest {
     // names nothing, and refuses the ingest.
     @unbounded
     fn item(path: String, dir: String, text: String) {
+        let mut mark = "";
+        let mut i = 0;
+        while i < 3 && len(mark) == 0 {
+            let m = dna::nth_word("derived practice law", i);
+            if std::str::starts_with(text, "`" + m + "`") { mark = m; }
+            i = i + 1;
+        }
+        if len(mark) > 0 { self.practice(path, dir, mark, std::str::trim(text[(len(mark) + 2)..len(text)])); return; }
         if !std::str::starts_with(text, "`axiom`") { return; }
         let body = std::str::trim(text[7..len(text)]);
         let mut name = md_bold(body);
@@ -725,6 +742,38 @@ locus GraphIngest {
         }
         self.edge(c);
     }
+    // One list item marked a practice (`derived`, `practice` or `law`): its
+    // receipt document, proposed as advice at record birth (GH #1091) and
+    // ratified — as law where the Board chooses — by the knowledge path.
+    // Its target is the first node it links, else the organization.
+    @unbounded
+    fn practice(path: String, dir: String, mark: String, body: String) {
+        let mut name = md_bold(body);
+        while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) { name = name[0..(len(name) - 1)]; }
+        if len(name) == 0 { self.refuse(path + ": a `" + mark + "` item names nothing — its bold sentence is its name: " + (if len(body) > 80 { body[0..80] + "…" } else { body })); return; }
+        if !graph_text_ok(name) { self.refuse(path + ": a practice named `" + name + "` cannot be proposed: a name is one printable line with no `|`"); return; }
+        let mut target = "";
+        let mut links = md_links(body);
+        while len(links) > 0 && len(target) == 0 {
+            let nl = std::str::index_of(links, "\n");
+            let link = links[0..nl];
+            links = links[(nl + 1)..len(links)];
+            target = self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]));
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("author", "hale dna init");
+        b.string_field("kind", "practice");
+        b.bool_field("law", mark == "law");
+        b.string_field("mark", mark);
+        b.string_field("name", name);
+        b.string_field("provenance", "repository");
+        b.string_field("source", path);
+        b.string_field("target", if len(target) > 0 { target } else { "org" });
+        b.string_field("text", md_words(body));
+        b.end_object();
+        self.practices = self.practices + b.result() + "\n";
+    }
     // One row of a `Served by | Consumed by | Over` table. A row that links
     // no contract declares nothing, and refuses the ingest.
     @unbounded
@@ -748,6 +797,15 @@ locus GraphIngest {
             if std::str::contains(self.processes, "\n" + std::str::lower(via) + "\n") { self.add(e, "carrier", "process:" + std::str::lower(via)); }
         }
         self.edge(e);
+        // which process serves which contract: its reviewer signs it
+        let spec = e.members[(std::str::index_of(e.members, "\t") + 1)..std::str::index_of(e.members, "\n")];
+        let mut ms = e.members;
+        while len(ms) > 0 {
+            let nl = std::str::index_of(ms, "\n");
+            let m = ms[0..nl];
+            ms = ms[(nl + 1)..len(ms)];
+            if std::str::starts_with(m, "server\tprocess:") { self.served = self.served + m[7..len(m)] + "\t" + spec + "\n"; }
+        }
     }
     // The nodes a cell names in `role`, and when `parties`, the parties
     // outside the repository its plain words name. A name in code that is
@@ -890,7 +948,11 @@ locus GraphIngest {
             while std::str::ends_with(w, ":") || std::str::ends_with(w, "/") { w = w[0..(len(w) - 1)]; }
             let node = if w == "compose" && last == "docker" { "deployment:compose" } else { self.resolve(ingest_join("", w)) };
             last = w;
-            if std::str::starts_with(node, "seed:") || std::str::starts_with(node, "contract:") || (std::str::starts_with(node, "deployment:") && len(self.compose) > 0) { self.add(e, "guarded", node); }
+            if std::str::starts_with(node, "seed:") || std::str::starts_with(node, "contract:") || (std::str::starts_with(node, "deployment:") && len(self.compose) > 0) {
+                self.add(e, "guarded", node);
+                // the first gate guarding a node is its done-when
+                if !std::str::starts_with("\n" + self.guards, "\n" + node + "\t") && !std::str::contains("\n" + self.guards, "\n" + node + "\t") { self.guards = self.guards + node + "\t" + g + "\n"; }
+            }
         }
         self.edge(e);
     }

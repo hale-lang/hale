@@ -149,6 +149,13 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
                 if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
                 if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: dna::native_json_string(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
             }
+            // GH #1091: a ratified hole — a proposal whose document carries
+            // graph rows — writes them into the graph, each checked again
+            if dna::native_json_string(doc, "kind") == "graph" {
+                let g = apply_graph_rows(store, std::json::find_field_raw(doc, "rows"), i);
+                if len(g.error) > 0 { out.error = g.error; return out; }
+                out.graph = out.graph + g.graph;
+            }
             out.ratified = out.ratified + 1;
         } else if e.kind == "knowledge.proposed" {
             let have = store.idea(digest);
@@ -232,6 +239,27 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         let edge = dna::KnowledgeEdge { from: r.from_id, to: r.to_id, rel: r.rel };
         let applied = if e.kind == "knowledge.edge.reviewed_linked" { store.link(edge) } else { store.unlink(edge) };
         if !applied { out.error = "reviewed knowledge edge projection failed (row " + to_string(i) + ")"; return out; }
+    }
+    return out;
+}
+
+// The graph rows of a ratified proposal (GH #1091), at the ratifying row
+// `i`: each checked by the vocabulary, as a `graph.*` row is, then put.
+@unbounded
+fn apply_graph_rows(store: dna::KnowledgeStore, rows: String, i: Int) -> ProjectionApplied {
+    let mut out = ProjectionApplied { };
+    if !std::str::starts_with(rows, "[") { out.error = "a ratified graph proposal carries no rows (row " + to_string(i) + ")"; return out; }
+    let mut it = std::json::array_first(rows);
+    while !it.done {
+        let kind = std::json::find_string_field(it.element, "kind");
+        let entity = std::json::find_string_field(it.element, "entity");
+        let body = std::json::find_string_field(it.element, "body");
+        let g = if kind == "graph.node" { graph_node_row(entity, body) } else if kind == "graph.edge" { graph_edge_row(entity, body) } else { graph_refused("`" + kind + "` is no graph row") };
+        if !g.ok { out.error = "invalid " + kind + " in a ratified proposal (row " + to_string(i) + "): " + g.why; return out; }
+        let put = if kind == "graph.node" { store.put_graph_node(g.id, g.kind, g.name, i, body) } else { store.put_graph_edge(g.id, g.kind, i, body, g.members) };
+        if !put { out.error = store.last_error(); return out; }
+        out.graph = out.graph + 1;
+        it = std::json::array_next(it);
     }
     return out;
 }

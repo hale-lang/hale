@@ -3162,10 +3162,11 @@ The live half is memory's, projected from the record by the spine
   `process`, `seed`, `contract`, `noun`, `deployment`, `practice`,
   `gate`, `document`, `witness`, `position`, `work`; a node's id is
   `<kind>:<name>`. **Hyperedge kinds**, arity two or more, each a list
-  of members `{role, node}` whose first is its anchor: `unfold(parent,
-  child)`, `meets(contract; server…, consumer…, carrier…)`,
-  `names(contract; noun…)`, `refers(from, to)`, `constrains(axiom;
-  shaped…)`, `runs(deployment; process…)`, `gates(gate; guarded…)`,
+  of members `{role, node}` whose first is its anchor:
+  `unfold(parent, child)`, `meets(contract; server…, consumer…, carrier…)`,
+  `names(contract; noun…)`, `refers(from, to)`,
+  `constrains(axiom; shaped…)`, `runs(deployment; process…)`,
+  `gates(gate; guarded…)`,
   `binds`, `witnesses(witness; about…)`, `holds(position, holder)`,
   `reviews(position, subject)` — the subject a contract or a document, a
   design document being signed too. A pair kind (`unfold`, `refers`,
@@ -3182,9 +3183,10 @@ The live half is memory's, projected from the record by the spine
   a `practice` is a knowledge idea of kind `practice` — advice while
   proposed, law once ratified — and `binds` is its knowledge binding;
   a member names a practice as `practice:<digest>`. The rows are
-  `graph.node` (entity the node's id, body `{kind, name, text?,
-  source?}`), `graph.edge` (entity the edge's id, body `{kind,
-  members, via?, outside?}`) and `graph.retired` (entity the id).
+  `graph.node` (entity the node's id, body
+  `{kind, name, text?, source?}`), `graph.edge` (entity the edge's id,
+  body `{kind, members, via?, outside?}`) and `graph.retired` (entity
+  the id).
   **The tail checks a graph row whole** before memory takes it — the
   kind is the vocabulary's, the anchor comes first, every member names
   a node of the kind its role requires and no node twice, the arity is
@@ -3195,15 +3197,16 @@ The live half is memory's, projected from the record by the spine
   retired node's edges stay as the record left them, and the perspectives
   leave its memberships out (an edge whose anchor is gone is not shown).
   **There is one org chart, and it is the graph**: its `position` nodes
-  and their `holds` edges. The organization's generated `dna/org` files
-  and the owners map are renderings of it, never its source; until the
-  holes are proposed and ratified into the graph (GH #1091) they are
-  written beside it.
+  and their `holds` edges, proposed and ratified as holes (below). The
+  organization's generated `dna/org` files, the owners map and the
+  organism's program are renderings of it, never its source — pending
+  GH #1123, which derives them; until then they are written beside it,
+  and nothing reads a position from them that the graph states.
   **Perspectives are queries over memory**:
   `KnowledgeStore.graph_perspective("org")` is the positions in the
   record's order, each with the node it unfolds from (`under`), its
-  `holders` and the contracts it `reviews`; `graph_perspective(
-  "processes")` is the processes, every `meets` (`contract`, `via`,
+  `holders` and the contracts it `reviews`;
+  `graph_perspective("processes")` is the processes, every `meets` (`contract`, `via`,
   `servers`, `consumers`, `carriers`, `outside`) and every `runs`
   (`deployment`, `processes`), each as JSON the server builds.
   `graph_nodes_count(kind)` and `graph_edges_count(kind)` count them;
@@ -3251,8 +3254,8 @@ The live half is memory's, projected from the record by the spine
   bold span is its name; an `axiom` is a node under the purpose, and
   the repository files it links to are what it `constrains`. (`derived`,
   `practice` and `law` are practices, proposed at record birth, GH
-  #1091.) **A declaring table**: a table whose columns include `Served
-  by` and `Consumed by` declares one `meets` per row — the row's first
+  #1091.) **A declaring table**: a table whose columns include
+  `Served by` and `Consumed by` declares one `meets` per row — the row's first
   link to a contract is its contract, `Over` its transport — and one
   whose first column is `Deployment` and has `Runs` declares a named
   deployment and what it runs. In a cell a name in code is a process,
@@ -3276,8 +3279,34 @@ The live half is memory's, projected from the record by the spine
   Review included (init seeds it and the graph in one `graph-ingest`
   call), so the record does not exist and init can be run again once the
   document is fixed. A job's own `name:` names its gate and is not a
-  word its steps say. `init` says what it read: `graph   <n> node(s), <m> edge(s):
-  <count> <kind>, …`. A record that exists is not reseeded.
+  word its steps say. `init` says what it read:
+  `graph   <n> node(s), <m> edge(s): <count> <kind>, …; <p> proposal(s)`.
+  A record that exists is not reseeded.
+- **Holes as proposals (GH #1091).** What a repository cannot imply
+  and a delivery needs, `init` proposes at record birth, each on its own
+  with one Board Review, in the same checked seed as the graph (so a
+  repository whose holes cannot be proposed leaves no record either): a
+  `board` under the purpose; a `dev` and a `reviewer` under each process,
+  the reviewer's proposal carrying a `reviews` edge to every contract the
+  process serves (a `meets` server); under each deployment an `operator`
+  and the operational roles no artifact implies — `support`, `accounts`,
+  `billing`, `on-call` — proposed empty; one `work` item per process, an
+  `unfold` of it, its node's `done_when` the gate that guards the
+  process's seed, or none, and its text says to define one; and each item
+  a document marks `derived`, `practice` or `law`, proposed as advice (a
+  `law` item's question asks for law). A hole is a knowledge proposal:
+  its receipt (`kind: graph`, `rows`) carries the graph rows it would add,
+  each checked by the vocabulary before it is proposed; `knowledge.proposed`
+  and `review.requested` (`required_authority: board`, `group: holes` or
+  `practices`) are the rows a practice is proposed with. The existing
+  review path ratifies it (`knowledge.ratified`), and the projection,
+  seeing a ratified document of kind `graph`, puts its rows into the graph
+  at the ratifying row, checking each again. Ratifying them fills the org
+  chart. `hale dna hold <position> <holder>` proposes a holder the same
+  way (`group: holds`): the position must be one the record states or
+  proposes; a process's `reviewer` is never the same holder as its `dev`,
+  which is a warning on stderr under `dna.trust = local` (one person holds
+  every role) and refused, with the reason, under any other trust.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb
   `show`. It takes `--json` and at most one project directory, and

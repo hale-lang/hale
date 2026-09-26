@@ -517,6 +517,8 @@ pub fn run(args: &[String]) -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        // GH #1091: `hale dna hold <position> <holder>`, proposed to the Board
+        Some("hold") => host_exec("hold", Path::new("."), &args[1..]),
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
@@ -671,6 +673,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
+    eprintln!("       hale dna hold <position> <holder>  propose who holds a position, for the Board");
     eprintln!("       hale dna show org|processes [--json] [project]");
     eprintln!("                                    the org chart and the process model, as queries over memory");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
