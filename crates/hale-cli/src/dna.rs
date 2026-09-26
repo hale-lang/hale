@@ -1631,9 +1631,7 @@ fn model() -> legs::ModelPerformer {
 // model takes nothing and agent work is a person's. With a backend in
 // dna/org/models.hl, put the catalog behind the leg:
 //
-//   fn model() -> legs::ModelPerformer {
-//       return legs::ModelPerformer { router: agent_models() };
-//   }
+// fn model() -> legs::ModelPerformer { return legs::ModelPerformer { router: agent_models() }; }
 fn model() -> legs::NoModel {
     return legs::NoModel { };
 }"
