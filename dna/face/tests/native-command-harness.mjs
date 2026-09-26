@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment } from './environment.mjs';
+import { mapPeer, seatRecord } from './record-seats.mjs';
+import { settle } from './command-wire.mjs';
 
 const names = ['API', 'BODY', 'RELAY'];
 export const nativeCommandEnvironmentPresent = () => names.every(name => Boolean(process.env[`HALE_NATIVE_COMMAND_${name}`]));
@@ -157,9 +159,17 @@ export async function startService(options = {}) {
     relay = launch('relay', binaries.relay, []);
     await wait('relay startup', () => relay.output, text => text.includes('native command relay ready'));
   }
+  // The head's forwarded commands are its own uid's: that uid is the acting
+  // person, seated at the board and the reviewer position so the gates open;
+  // the policy still decides what the provider admits.
+  const seated = new Set();
+  function actAs(actor) {
+    if (seated.has(actor)) mapPeer(root, env, actor);
+    else { seatRecord(root, env, actor, ['board', 'reviewer']); seated.add(actor); }
+  }
   async function startAPI(actor = currentActor) {
     assert(!alive(api), 'Stop the current API before starting another');
-    currentActor = actor;
+    currentActor = actor; actAs(actor);
     api = launch(`api-${actor}`, binaries.api, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_COMMAND_POLICY: policy });
     await wait('API startup', async () => {
       try { return await get('/api/hale/v1/applications'); }
@@ -243,10 +253,11 @@ export async function startService(options = {}) {
       },
       waitCommand: async (requestId, predicate) => wait(`command ${requestId}`, async () => {
         const response = await read(apiPath() + '/commands?' + new URLSearchParams({ request_id: requestId }));
-        assert.equal(response.status, 200, JSON.stringify(response));
-        assert.equal(response.json.source?.record_id, application);
-        assert.equal(response.json.data.request_id, requestId);
-        return response.json.data;
+        const settled = settle(response.status, response.json);
+        assert.equal(settled.code, '', JSON.stringify(response));
+        assert.equal(settled.reply.application_id, application);
+        assert.equal(settled.receipt.request_id, requestId);
+        return settled.receipt;
       }, predicate),
     };
     exportEvidence();

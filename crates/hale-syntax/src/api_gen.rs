@@ -1167,21 +1167,21 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             nl = std::str::index_of(self.buf, "\n");
         }
     }
-    fn refuse_here(client_id: String, kind: String, reason: String) {
-        self.write_line(__api_reply_line(__ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "", caller: self.caller, role: "" }));
+    fn refuse_here(who: std::api::Principal, client_id: String, kind: String, reason: String) {
+        self.write_line(__api_reply_line(__ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "", caller: who, role: "" }));
     }
     fn handle_line(line: String) {
         let t = std::str::trim(line);
         if len(t) == 0 { return; }
         if !std::json::valid_object(t) {
-            self.refuse_here("", "malformed", "a request is one JSON object per line");
+            self.refuse_here(self.caller, "", "malformed", "a request is one JSON object per line");
             return;
         }
         let client_id = std::json::find_field_raw(t, "id");
         // An unauthenticated peer is refused everything, gated or not:
         // the binding vouches for who is calling, and -1 is nobody.
         if self.caller.uid < 0 {
-            self.refuse_here(client_id, "unauthenticated", "the kernel would not say who the peer is");
+            self.refuse_here(self.caller, client_id, "unauthenticated", "the kernel would not say who the peer is");
             return;
         }
         // `via`: a transport of the program's own (the process's uid)
@@ -1191,7 +1191,7 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
         let via = std::json::string_field(t, "via");
         if via.kind == "string" {
             if self.caller.uid != std::process::uid() || len(via.text) == 0 || len(via.text) > 64 {
-                self.refuse_here(client_id, "malformed", "\"via\" is set by the program's own transports only");
+                self.refuse_here(self.caller, client_id, "malformed", "\"via\" is set by the program's own transports only");
                 return;
             }
             who = std::api::Principal { mode: self.caller.mode, name: self.caller.name, uid: self.caller.uid, gid: self.caller.gid, pid: self.caller.pid, groups: self.caller.groups, via: via.text };
@@ -1200,7 +1200,7 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
         if call.kind == "string" {
             let body = std::json::find_field_raw(t, "payload");
             if len(body) == 0 {
-                self.refuse_here(client_id, "malformed", "a call carries a \"payload\" object");
+                self.refuse_here(who, client_id, "malformed", "a call carries a \"payload\" object");
                 return;
             }
             __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: body, caller: who };
@@ -1225,7 +1225,7 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: "full", body: "", caller: who };
             return;
         }
-        self.refuse_here(client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
+        self.refuse_here(who, client_id, "malformed", "a request is a \"call\", a \"read\", a \"watch\" or a \"describe\"");
     }
     fn on_reply(r: __ApiReply) {
 "#,

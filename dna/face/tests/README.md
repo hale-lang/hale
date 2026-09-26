@@ -146,46 +146,42 @@ and compares its full catalog encoding. Browser export alone does not establish
 that a source fragment compiles. Draft validation/export does not prove original
 source roundtrip, governed publication, activation or real DNA command recovery.
 
-## Record-command lanes waiting for the face's write path
+## Record commands over the forwarding transport
 
-The head no longer serves `POST`/`GET …/applications/{id}/commands`: every
-record command is a gated topic on the head's api binding, a unix socket a
-browser cannot reach (GH #1104 piece 5, PR #1129). `/capabilities` names that
-socket under `api{transport,socket}`, carries none of the old command profiles
-(`writes`, `commands`, `review_commands`, `task_commands`, …), and its
-`read_only` now means Knowledge writing alone. With no profile, the face treats
-record commands as unavailable; its HTTP reads are unchanged.
+Every record command is a gated topic on the head's api binding (GH #1104
+piece 5); the head's HTTP route forwards one line of that wire to its own socket
+(`dna/api/forward.hl`). The face POSTs `{"call", "payload"}` — the operation's
+call (`PracticePropose`, `ReviewVerdict`, `OrganizationPropose`, `TaskCreate`,
+`TaskReassign`, `PersonRetire`) and its flat payload — to
+`…/applications/{id}/commands` under the same `Origin`, JSON and
+`X-Hale-Command: 1` headers, recovers with `GET …/commands?request_id=`, and
+reads back the binding's receipt line verbatim: `{request_id, ok, value, caller,
+role}` with the `CommandReply` (`ok`, `code`, `application_id`, `head`,
+`revision`, the typed `receipt`) as `value`, or `{ok:false, refusal}`. A
+recorded-but-unsettled command is a 200 whose `receipt.state` says so; a
+provider's refusal is `value.ok:false` with its `code`. `/capabilities` names the
+route as `api.http` (`""` in an OIDC session); what this session may send is the
+`{"describe": true}` slice, fetched once after the capabilities, and a command is
+offered exactly when its call is in it. The describe line is a read, so lanes
+that watch for writes use `command-wire.mjs`'s `isWrite`.
 
-Lanes that submitted or looked up a real record command through a head are
-skipped with that reason until the face has a write path:
-
-- whole files: `commands-native.spec.mjs`, `native-command-browser.spec.mjs`,
-  `native-practice-lifecycle-browser.spec.mjs`, `native-task-browser.spec.mjs`,
-  `native-task-create-browser.spec.mjs`, `native-task-assignee.spec.mjs`,
-  `native-person-retirement.spec.mjs`;
-- the cases that decide a Review (a `dna.review.verdict` over HTTP) in
-  `native-knowledge-binding-browser.spec.mjs` (five),
-  `native-knowledge-edge-review-browser.spec.mjs` (three) and
-  `native-knowledge-node-browser.spec.mjs` (three). Their Knowledge-only cases
-  stay: Knowledge commands (`/dna/knowledge/commands`) were not cut.
-
-The standalone HTTP harnesses `native-commands.mjs`, `native-command-cli.mjs`
-and the `native-*-http.mjs` scripts drive the same cut route. Lanes that script
-the command route in the browser (`commands.spec.mjs`, `verdicts.spec.mjs`,
-`practice-interaction.spec.mjs`, the Task, people and Organization UI contracts)
-still run: `command-fixture.mjs` supplies the whole write surface itself, since
-the native capabilities it extends no longer carry one. The projects workspace's
+The forwarded caller is the head's own uid, which the record maps to a person
+(`dna.unix.member`); a lane that sends a real command seats that person first
+(`record-seats.mjs`: the mapping and the `holds` edges, before the head starts).
+Scripted lanes answer the route themselves through `command-wire.mjs`, so every
+lane scripts the one shape the head speaks. The projects workspace's
 `/api/hale/v1/head/commands` is the project head's own and is unaffected.
 
 ## Practice command conformance
 
-`commands.spec.mjs` uses native practice reads with scripted command capability
-and receipt responses. It checks exact replacement comparison, literal text,
-UTF-8 byte limits, principal preconditions, metadata persistence before POST,
+`commands.spec.mjs` uses native practice reads with a scripted command slice and
+receipt lines. It checks exact replacement comparison, literal text, the
+`PracticePropose` line, UTF-8 byte limits, metadata persistence before POST,
 storage failure, two-tab reservation, lost replies and lookup recovery. It also
 checks that identity changes clear confidential data, late responses cannot
 restore it, write revocation and failed collection reads preserve recovery, and
-approval remains distinct from adoption. Default startup remains read-only.
+approval remains distinct from adoption. The plain head seats nobody, so its
+slice offers no proposal and the only POST is the describe line.
 
 `verdicts.spec.mjs` adds exact-candidate decisions over real native pending Reviews
 and practice receipts. It checks the same-snapshot candidate join, deliberate
@@ -196,9 +192,11 @@ subject. Dismissing a completed request refreshes native reads so a newly
 redacted candidate cannot retain stale eligibility. Scripts still cannot
 establish native authorization or durability.
 
-`commands-native.spec.mjs` sends real HTTP requests through the Hale adapter with
-an explicitly scripted `CommandProvider`. Build `dna/api/tests/commands` explicitly
-and supply its executable to enable this lane:
+`commands-native.spec.mjs` sends real HTTP requests through the head's
+forwarding route to its socket, with an explicitly scripted `CommandProvider`
+and the head's person seated at the board and the reviewer position. Build
+`dna/api/tests/commands` explicitly and supply its executable to enable this
+lane (it needs a head whose api binding is live — see below):
 
 ```sh
 HALE_FACE_COMMAND_BIN="/absolute/path/to/scripted-command-api" \
@@ -207,8 +205,11 @@ HALE_FACE_COMMAND_BIN="/absolute/path/to/scripted-command-api" \
 
 The harness starts it as `COMMAND_BIN ROOT PORT WEBROOT` with
 `HALE_FACE_SCRIPTED_COMMANDS=1`. It uses native Record reads and the real
-authentication, Origin, codec and receipt validation paths for both operations,
-including cross-operation request-key conflict. The provider stores
+Origin checks, forwarding, gates and receipt lines for both operations,
+including cross-operation request-key conflict and a line that names its own
+forwarder. A composed head builds `api::Head` as an imported main locus, whose
+binding is inert, so this lane answers `commands_unavailable` until the
+composed head carries the api binding on its own main locus. The provider stores
 request metadata in memory and reads `ROOT/command-mode` for scripted results;
 its candidate and Review references are synthetic. Browser reload recovery is
 tested while that process stays alive. These cases prove adapter composition,
@@ -724,8 +725,9 @@ scripted Task DTOs: closed history validation, retained lifecycle states,
 literal acceptance/evidence content, keyboard and narrow layouts, eligible
 recipient selection and duplicate preparation prevention. The module sends no
 request and stores no recovery state. `task-administration-read.spec.mjs`
-exercises the full app using explicitly scripted read, capability and command
-envelopes: exact confirmation, identity storage before POST, separate fresh Task
+exercises the full app using explicitly scripted reads, command slice and
+receipt lines: exact confirmation, the `TaskReassign` line, identity storage
+before POST, recipients from the assignee's person read, separate fresh Task
 observation, lost-response GET-only reload recovery, authority/privacy clearing,
 malformed receipts and the shared unresolved-command slot.
 
@@ -749,8 +751,11 @@ covered separately by the focused native Task fixtures.
 `native-task-browser.spec.mjs` uses `native-task-harness.mjs` and two explicit,
 matching source-built binaries. It creates a fresh Git Record, invokes native
 `Dna.ask` handoffs, installs the closed application-bound Task policy and starts
-the real composed API. There is no Body, Host or graph service, and successful
-command responses and assignment outcomes are not mocked. Its three cases cover
+the real composed API. It seats the actor at the board — reassignment and
+retirement are the owner's gated commands — and grants retirement so the
+assignee's person read carries the eligible recipients the picker offers. There
+is no Body, Host or graph service, and successful command responses and
+assignment outcomes are not mocked. Its three cases cover
 preserved responsibility and exact assignment history; a genuine POST whose
 response is discarded followed by API restart and GET-only recovery; and stale
 assignment, retired-person and outside-policy refusals.
@@ -807,11 +812,12 @@ locus, the whole organization first and declared working-context loci after it,
 byte bounds, literal markup, denied sessions, DOM-tampered choices and the
 pending/corrected preparation flow. The module sends no request and stores
 nothing. `task-create-read.spec.mjs` exercises the full app with scripted
-capability, Task and command envelopes: identity storage before the one POST,
-the exact `dna.task.create` envelope with the captured `record_head`, the
+reads, command slice and receipt lines: identity storage before the one POST,
+the exact `TaskCreate` line with the captured `record_head`, the
 organism's answer followed through lookup (`requested` then `born` with its Task
 id), a refusal as a completed request, lost-response GET-only reload recovery,
-inconsistent capabilities, malformed receipts and the shared unresolved slot.
+no forwarding route or a slice without `TaskCreate`, malformed receipts and the
+shared unresolved slot.
 Both run binary-free from `dna/face`:
 
 ```sh

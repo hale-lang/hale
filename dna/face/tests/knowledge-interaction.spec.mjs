@@ -3,6 +3,7 @@
 // none of these cases claims graph publication or native write durability.
 import { readFile } from 'node:fs/promises';
 import { test, expect, errorBody } from './harness.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.skip(!process.env.HALE_FACE_KNOWLEDGE_BIN, 'Knowledge interaction requires the explicitly supplied native Knowledge fixture.');
 test.use({ knowledge: true });
@@ -37,7 +38,7 @@ async function open(page, service) {
 
 function mutations(page) {
   const requests = [];
-  page.on('request', request => { if (request.method() !== 'GET') requests.push(request.method() + ' ' + request.url()); });
+  page.on('request', request => { if (isWrite(request)) requests.push(request.method() + ' ' + request.url()); });
   return requests;
 }
 

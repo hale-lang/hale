@@ -2,6 +2,7 @@
 // Scripted receipts do not prove native authority, correlation or durability.
 import { test, expect } from './harness.mjs';
 import { STORAGE_PREFIX, recoveryMetadata, scriptedCommands } from './command-fixture.mjs';
+import { CALLS } from './command-wire.mjs';
 
 test.use({ commandSubject: true });
 const NOTE = 'Exact candidate checked — 第二版\nKeep <img src=x onerror="window.__verdictInjected=true"> literal.';
@@ -23,7 +24,7 @@ async function submit(page) {
   await page.getByRole('button', { name: 'Submit decision', exact: true }).click();
 }
 
-test('verdict browser contract: normal API and a legacy write flag cannot enable a decision', async ({ page, service }) => {
+test('verdict browser contract: the plain head, and a slice without ReviewVerdict, cannot enable a decision', async ({ page, service }) => {
   await page.goto(service.url('reviews', { id: service.pending_review }));
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
   const script = await scriptedCommands(page, service, { reviewWriteOnly: true });
@@ -49,16 +50,13 @@ test('verdict browser contract: confirm the same-snapshot canonical candidate an
   await expect.poll(() => script.posts.length).toBe(1);
   const body = script.posts[0].body;
   expect(body).toEqual({
-    request_id: expect.any(String), operation: 'dna.review.verdict', operation_version: '1',
-    context: { application_id: service.application, position_id: 'org' },
-    target: { application_id: service.application, kind: 'dna.review', id: service.pending_review },
-    preconditions: { subject_digest: service.pending_practice, principal: script.principal, review_state: 'pending' },
-    arguments: { verdict: 'approve', comment: NOTE },
+    call: 'ReviewVerdict',
+    payload: { request_id: expect.any(String), review_id: service.pending_review, subject_digest: service.pending_practice, verdict: 'approve', comment: NOTE },
   });
-  expect(body.target.id).not.toBe(body.preconditions.subject_digest);
+  expect(body.payload.review_id).not.toBe(body.payload.subject_digest);
   expect(script.savedBeforeSend[0].value).toEqual({
     version: 2, application_id: service.application, principal: script.principal,
-    request_id: body.request_id, operation: 'dna.review.verdict', operation_version: '1',
+    request_id: body.payload.request_id, operation: 'dna.review.verdict', operation_version: '1',
     position_id: 'org', target_kind: 'dna.review', target_id: service.pending_review, subject_digest: service.pending_practice,
   });
   expect(JSON.stringify(await recoveryMetadata(page))).not.toContain(NOTE);
@@ -77,7 +75,7 @@ test('verdict browser contract: choose deliberately; empty notes are valid and d
   await page.getByRole('radio', { name: 'Reject', exact: true }).check();
   await submit(page);
   await expect.poll(() => script.posts.length).toBe(1);
-  expect(script.posts[0].body.arguments).toEqual({ verdict: 'reject', comment: '' });
+  expect(script.posts[0].body.payload).toMatchObject({ verdict: 'reject', comment: '' });
   await expect(recovery(page)).toContainText(/accepted/i);
   await expect(recovery(page)).toContainText(/pending/i);
   await expect(recovery(page)).toContainText(/unknown/i);
@@ -121,7 +119,7 @@ test('verdict browser contract: lost reply recovers the original operation throu
   await prepare(page, service, 'Request revision');
   await submit(page);
   await expect.poll(() => script.posts.length).toBe(1);
-  const requestID = script.posts[0].body.request_id;
+  const requestID = script.posts[0].body.payload.request_id;
   script.getMode = 'receipt';
   script.reviewsUnavailable = true;
   script.reviewAuthorized = false;
@@ -231,8 +229,8 @@ test('verdict browser contract: proposal and verdict tabs share one request rese
     ]);
     await expect.poll(() => script.posts.length).toBe(1);
     const saved = (await recoveryMetadata(page))[0].value;
-    expect(saved.request_id).toBe(script.posts[0].body.request_id);
-    expect(saved.operation).toBe(script.posts[0].body.operation);
+    expect(saved.request_id).toBe(script.posts[0].body.payload.request_id);
+    expect(CALLS[saved.operation]).toBe(script.posts[0].body.call);
   } finally { await second.close(); }
 });
 
@@ -253,7 +251,7 @@ test('verdict browser contract: complete proposal handoff keeps the exact candid
   await page.getByRole('link', { name: 'Open proposal review', exact: true }).click();
   await expect(panel(page)).toContainText(service.pending_text);
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
-  const firstKey = script.posts[0].body.request_id;
+  const firstKey = script.posts[0].body.payload.request_id;
   await page.getByRole('button', { name: 'Dismiss completed request', exact: true }).click();
   await expect(recovery(page)).toHaveCount(0);
   expect(await recoveryMetadata(page)).toHaveLength(0);
@@ -262,9 +260,9 @@ test('verdict browser contract: complete proposal handoff keeps the exact candid
   await submit(page);
   await expect(recovery(page)).toContainText('Adopted');
   expect(script.posts).toHaveLength(2);
-  expect(script.posts[1].body.request_id).not.toBe(firstKey);
-  expect(script.posts[1].body.target.id).toBe(service.pending_review);
-  expect(script.posts[1].body.preconditions.subject_digest).toBe(service.pending_practice);
+  expect(script.posts[1].body.payload.request_id).not.toBe(firstKey);
+  expect(script.posts[1].body.payload.review_id).toBe(service.pending_review);
+  expect(script.posts[1].body.payload.subject_digest).toBe(service.pending_practice);
   expect(await service.refs()).toBe(before);
 });
 

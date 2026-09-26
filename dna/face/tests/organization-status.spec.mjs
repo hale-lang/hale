@@ -46,7 +46,7 @@ async function fixture(page, options = {}) {
     const request = route.request(), url = new URL(request.url());
     const send = (status, body) => route.fulfill({ status, contentType: 'application/json', body: typeof body === 'string' ? body : JSON.stringify(body) });
     if (url.pathname === API) return send(200, wrap({ items: [{ id: native.app, kind: 'dna', name: 'Native Organization history', capabilities_url: API + '/' + native.app + '/capabilities' }], page: native.reviews.data.page }));
-    if (url.pathname.endsWith('/capabilities')) return send(200, wrap({ application_id: native.app, principal: { mode: 'local', name: 'independent-reviewer' }, read_only: true, reads: { reviews: true, practices: false, organization: false, definitions: false, workflows: false, knowledge: false }, writes: { practice_propose: false, review_verdict: false } }));
+    if (url.pathname.endsWith('/capabilities')) return send(200, wrap({ application_id: native.app, principal: { mode: 'local', name: 'independent-reviewer' }, read_only: true, reads: { reviews: true, practices: false, organization: false, definitions: false, workflows: false, knowledge: false }, api: { transport: 'unix', socket: '/run/scripted.sock', http: '' } }));
     if (url.pathname.endsWith('/dna/reviews')) return send(200, native.reviewsText);
     if (url.pathname.endsWith('/dna/reviews/candidate')) return send(503, error('candidate_unavailable', 'Retained diff exceeds the source-comparison rendering bound.'));
     if (url.pathname.endsWith('/dna/organization/source-status')) {

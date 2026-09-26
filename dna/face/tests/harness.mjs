@@ -7,6 +7,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isolatedEnvironment, boundedNative, memoryOwner } from './environment.mjs';
+import { seatRecord } from './record-seats.mjs';
 
 const execute = promisify(execFile);
 const executeNative = (command, args, options, limits) => {
@@ -80,7 +81,10 @@ export const test = base.extend({
   workflows: [false, { option: true }],
   commandSubject: [false, { option: true }],
   commandAdapter: [false, { option: true }],
-  service: async ({ recordCount, organization, organizationDrafts, definitions, knowledge, workflows, commandSubject, commandAdapter }, use, testInfo) => {
+  // Positions the head's own person holds, so its forwarded commands pass
+  // their gates (GH #1104 piece 5); none by default, as a fresh record.
+  seats: [[], { option: true }],
+  service: async ({ recordCount, organization, organizationDrafts, definitions, knowledge, workflows, commandSubject, commandAdapter, seats }, use, testInfo) => {
     const root = await mkdtemp('/tmp/hale-face-browser.');
     const env = isolatedEnvironment();
     if (organizationDrafts) env.HALE_DNA_ORG_DRAFTS = "1";
@@ -130,6 +134,7 @@ export const test = base.extend({
       }
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
       seeded = true;
+      if (seats.length) seatRecord(root, env, env.USER, seats);
       const data = JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8'));
       if (knowledge) {
         const projected = await executeNative(native, [root, 'project'], { env: fixtureEnv, timeout: 30_000 });

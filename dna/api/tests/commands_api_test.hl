@@ -212,10 +212,16 @@ locus CommandCases {
         let text = self.repeat(8190) + "é";
         std::test::assert(self.commands.create_task(self.ask("long-outcome", text, "org"), self.caller()).ok, "8192 UTF-8 outcome bytes accepted exactly");
         self.invalid_ask(self.ask("long-outcome-over", text + "a", "org"), "8193 outcome bytes");
-        // an ungated command reaches the provider under the peer's name when the Record maps nobody
-        let unmapped = api::Commands { root: self.f.root, roles: dna::RecordRoles { memory: true }, provider: self.host };
-        std::test::assert(unmapped.create_task(self.ask("unmapped", "a", "org"), self.caller()).ok, "raising work needs only an authenticated peer");
-        std::test::assert_eq_str(self.host.last_command.expected_principal_name, "uid:1000", "an unmapped peer is named by its account");
+        // an ungated command reaches the provider under the peer's name when the Record maps nobody —
+        // the head's own uid is the local session (what /capabilities names), any other peer its account
+        let unmapped = api::Commands { root: self.f.root, roles: dna::RecordRoles { memory: true }, provider: self.host, local_name: "session" };
+        let stranger = std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:4242", uid: 4242, gid: 4242, pid: 1 } };
+        std::test::assert(unmapped.create_task(self.ask("unmapped", "a", "org"), stranger).ok, "raising work needs only an authenticated peer");
+        std::test::assert_eq_str(self.host.last_command.expected_principal_name, "uid:4242", "an unmapped peer is named by its account");
+        let me = std::process::uid();
+        let own = std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:" + to_string(me), uid: me, gid: me, pid: 1 } };
+        std::test::assert(unmapped.create_task(self.ask("unmapped-own", "a", "org"), own).ok, "the head's own uid, forwarded, raises work too");
+        std::test::assert_eq_str(self.host.last_command.expected_principal_name, "session", "and is the local session by name");
         self.host.create_authorized = false;
         std::test::assert_eq_str(self.commands.create_task(self.ask("create-denied", "a", "org"), self.caller()).code, "forbidden", "the provider's refusal");
         let submitted = self.host.submit_calls;

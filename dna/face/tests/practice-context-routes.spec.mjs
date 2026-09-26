@@ -29,7 +29,7 @@ async function fixture(page, host, options = {}) {
     const fulfill = data => route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(data) });
     if (req.method() !== 'GET') return route.fulfill({ status: 405, contentType: 'application/json', body: JSON.stringify({ api_version: 'hale.v1', error: { code: 'ui_contract_read_only', message: 'No command endpoint exists in this fixture.', retryable: false } }) });
     if (url.pathname === API) return fulfill(envelope(pageOf([{ id: APP, kind: 'dna', name: 'Scripted Practice route contract' }])));
-    if (url.pathname === API + '/' + APP + '/capabilities') return fulfill(envelope({ application_id: APP, principal, read_only: true, reads: { practices: true, knowledge: true, organization: false, reviews: false, definitions: false, workflows: false }, writes: { practice_propose: false, review_verdict: false } }));
+    if (url.pathname === API + '/' + APP + '/capabilities') return fulfill(envelope({ application_id: APP, principal, read_only: true, reads: { practices: true, knowledge: true, organization: false, reviews: false, definitions: false, workflows: false }, api: { transport: 'unix', socket: '/run/scripted.sock', http: '' } }));
     if (url.pathname.endsWith('/dna/practices')) {
       let p = practice(), source = SOURCE;
       if (state.mismatch === 'snapshot') source = { ...SOURCE, record_head: 'f'.repeat(40), record_revision: '10' };

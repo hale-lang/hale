@@ -315,7 +315,9 @@ written, with the status the refusal kind earns (`unauthenticated` 401,
 `unauthorized` 403, `unknown` 404, `over_bound` 503, else 400). A line
 that already carries a `via` is refused. `GET …/commands?request_id=`
 forwards a `CommandLookup`. The principal is the head process's, mapped
-through `dna.unix.member` like any peer; rows record that person. The
+through `dna.unix.member` like any peer; rows record that person, and
+the local session `/capabilities` names is that same person (else
+`$USER`), so a forwarded receipt matches the session. The
 local session only: an OIDC session's person is not a socket peer, so
 that mode answers `commands_unsupported` here. `/capabilities` names the
 route as `api.http`.

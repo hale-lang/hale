@@ -22,7 +22,8 @@ locus Forward {
     }
     @unbounded
     fn line(request: String) -> String {
-        let fd = std::io::unix::connect_wait(self.socket, 5s) or - 1;
+        // no wait: a head whose binding never bound answers at once
+        let fd = std::io::unix::connect(self.socket) or - 1;
         if fd < 0 { return ""; }
         std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
         self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };

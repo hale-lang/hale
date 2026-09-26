@@ -2,6 +2,7 @@
 // Each case is a small fresh Record; no browser-owned outcome or graph fixtures.
 import { test as base, expect } from '@playwright/test';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
+import { isDescribe } from './command-wire.mjs';
 
 const grant = { mode: 'local', name: 'alice', authority: 'board', edge_link: 'direct', edge_unlink: 'direct',
   node_propose: 'review', node_revise: 'review', node_retire: 'review', node_scopes: [{ author: 'org', target: 'org/elsewhere' }],
@@ -14,7 +15,6 @@ const test = base.extend({
   },
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
-test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service.');
 test.setTimeout(90_000);
 const editor = page => page.getByRole('region', { name: 'Practice change editor', exact: true });
@@ -23,7 +23,7 @@ const intervention = page => page.getByRole('region', { name: 'Review interventi
 const recovery = page => page.getByRole('region', { name: 'Command recovery', exact: true });
 const text = 'A Practice with exact café 🧭 evidence.\nKeep <literal> source history.';
 const reason = 'Preserve this scoped Practice and its human rationale.';
-const responseFor = (page, path, method) => page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === method);
+const responseFor = (page, path, method) => page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === method && !isDescribe(response.request()));
 async function reviewAndSubmit(page, service, binding = false) {
   await editor(page).getByLabel('Reason for practice change', { exact: true }).fill(reason);
   await editor(page).getByRole('button', { name: 'Review practice draft', exact: true }).click();
@@ -47,8 +47,8 @@ async function approve(page, service, proposal) {
   await intervention(page).getByRole('button', { name: 'Review decision', exact: true }).click();
   const pending = responseFor(page, service.apiPath + '/commands', 'POST');
   await intervention(page).getByRole('button', { name: 'Submit decision', exact: true }).click();
-  const response = await pending; expect([200, 202]).toContain(response.status());
-  await service.waitCommand(response.request().postDataJSON().request_id, value => value.verdict.state === 'accepted');
+  const response = await pending; expect(response.status()).toBe(200);
+  await service.waitCommand(response.request().postDataJSON().payload.request_id, value => value.verdict.state === 'accepted');
   await service.quiesce();
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await recovery(page).getByRole('button', { name: 'Dismiss completed request', exact: true }).click();

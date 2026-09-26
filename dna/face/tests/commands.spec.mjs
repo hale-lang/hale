@@ -2,6 +2,7 @@
 // responses. This does NOT prove native admission, restart durability or adoption.
 import { test, expect } from './harness.mjs';
 import { STORAGE_PREFIX, recoveryMetadata, scriptedCommands } from './command-fixture.mjs';
+import { isWrite } from './command-wire.mjs';
 
 test.use({ commandSubject: true });
 const TEXT = 'Proposed revision — 第二版\nKeep <img src=x onerror="window.__injected=true"> literal.';
@@ -22,22 +23,26 @@ async function submit(page) {
 }
 
 test('command browser contract: default provider remains read only', async ({ page, service }) => {
-  const writes = [];
-  page.on('request', request => { if (request.method() !== 'GET') writes.push(request.url()); });
+  // The plain head seats nobody: its slice is the two ungated commands, and
+  // asking for it is the one POST this page makes.
+  const writes = [], describes = [];
+  page.on('request', request => { if (isWrite(request)) writes.push(request.url()); else if (request.method() === 'POST') describes.push(request.postDataJSON()); });
   await page.goto(service.url('practices', { id: service.practice }));
   await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Propose revision', exact: true })).toBeDisabled();
   expect(writes).toEqual([]);
+  expect(describes).toEqual([{ describe: true }]);
 });
 
-test('command browser contract: legacy write boolean alone cannot enable submission', async ({ page, service }) => {
-  await scriptedCommands(page, service, { profile: false });
+test('command browser contract: a head that forwards no commands leaves submission off', async ({ page, service }) => {
+  const script = await scriptedCommands(page, service, { profile: false });
   await page.goto(service.url('practices', { id: service.practice }));
   // Assert on the rendered practice, not on a page still reading: ending the
   // test with the capabilities read in flight tears the API down under it.
   await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Submit proposal', exact: true })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Proposed text', exact: true })).toHaveCount(0);
+  expect(script.describes).toBe(0);
 });
 
 test('command browser contract: exact comparison, durable-before-send identity and literal content', async ({ page, service }, testInfo) => {
@@ -56,18 +61,18 @@ test('command browser contract: exact comparison, durable-before-send identity a
   await page.getByRole('button', { name: 'Submit proposal', exact: true }).click();
   await expect.poll(() => script.posts.length).toBe(1);
   const sent = script.posts[0];
+  // One line of the head's wire: the call and its flat payload. The head
+  // supplies the context, the target's application and the principal.
   expect(sent.body).toEqual({
-    request_id: expect.any(String), operation: 'dna.practice.propose', operation_version: '1',
-    context: { application_id: service.application, position_id: 'org' },
-    target: { application_id: service.application, kind: 'dna.practice', id: service.practice },
-    preconditions: { subject_digest: service.practice, principal: script.principal }, arguments: { text: TEXT, rationale: RATIONALE },
+    call: 'PracticePropose',
+    payload: { request_id: expect.any(String), subject_digest: service.practice, text: TEXT, rationale: RATIONALE },
   });
   expect(sent.headers['x-hale-command']).toBe('1');
   expect(sent.headers['content-type']).toContain('application/json');
   expect(script.savedBeforeSend).toHaveLength(1);
   expect(script.savedBeforeSend[0].value).toEqual({
     version: 2, application_id: service.application, principal: script.principal,
-    request_id: sent.body.request_id, operation: 'dna.practice.propose', operation_version: '1',
+    request_id: sent.body.payload.request_id, operation: 'dna.practice.propose', operation_version: '1',
     position_id: 'org', target_kind: 'dna.practice', target_id: service.practice, subject_digest: service.practice,
   });
   const stored = JSON.stringify(await recoveryMetadata(page));
@@ -83,7 +88,7 @@ test('command browser contract: lost reply and reload recover the original ident
   await openEditor(page, service);
   await submit(page);
   await expect.poll(() => script.posts.length).toBe(1);
-  const request = script.posts[0].body.request_id;
+  const request = script.posts[0].body.payload.request_id;
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toBeVisible();
   script.getMode = 'receipt';
   await page.reload();
@@ -99,7 +104,7 @@ test('command browser contract: unavailable and absent recovery retain the same 
   await openEditor(page, service);
   await submit(page);
   await expect.poll(() => script.posts.length).toBe(1);
-  const request = script.posts[0].body.request_id;
+  const request = script.posts[0].body.payload.request_id;
   const check = page.getByRole('button', { name: 'Check request status', exact: true });
   await check.click();
   await expect.poll(() => script.gets.length).toBeGreaterThan(0);
@@ -171,7 +176,7 @@ test('command browser contract: recovery survives an unavailable practice collec
   await openEditor(page, service);
   await submit(page);
   await expect.poll(() => script.posts.length).toBe(1);
-  const requestID = script.posts[0].body.request_id;
+  const requestID = script.posts[0].body.payload.request_id;
   script.readsUnavailable = true;
   script.getMode = 'receipt';
   await page.reload();
@@ -243,7 +248,7 @@ test('command browser contract: two tabs cannot overwrite an unresolved request 
     await expect.poll(() => script.posts.length).toBe(1);
     const saved = await recoveryMetadata(page);
     expect(saved).toHaveLength(1);
-    expect(saved[0].value.request_id).toBe(script.posts[0].body.request_id);
+    expect(saved[0].value.request_id).toBe(script.posts[0].body.payload.request_id);
     await second.reload();
     await expect(second.getByRole('region', { name: 'Command recovery', exact: true })).toContainText(saved[0].value.request_id);
     expect(script.posts).toHaveLength(1);
@@ -274,7 +279,7 @@ test('command browser contract: a late receipt cannot reappear under another pri
     await expect(page.locator('#principal')).toContainText('another-person');
     release();
     await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toHaveCount(0);
-    await expect(page.locator('body')).not.toContainText('command/' + script.posts[0].body.request_id);
+    await expect(page.locator('body')).not.toContainText('command/' + script.posts[0].body.payload.request_id);
     expect(script.posts).toHaveLength(1);
     expect(await recoveryMetadata(page)).toHaveLength(1);
   } finally { release(); }
@@ -288,6 +293,6 @@ test('command browser contract: an identity-change refusal clears content and pr
   await expect(page.locator('body')).not.toContainText(service.text);
   await expect(page.locator('body')).not.toContainText(TEXT);
   expect(script.posts).toHaveLength(1);
-  expect(script.posts[0].body.preconditions.principal).toEqual(script.principal);
+  expect(script.posts[0].body.payload).not.toHaveProperty('principal');
   expect((await recoveryMetadata(page))[0].value.principal).toEqual(script.principal);
 });

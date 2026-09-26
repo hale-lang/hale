@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
+import { wireLine } from './command-wire.mjs';
 
 export { nodeEnvironmentPresent as bindingEnvironmentPresent };
 export const bindingTargets = ['org/support', 'org/support/urgent', 'org/elsewhere', ...Array.from({ length: 27 }, (_, i) => 'org/page/' + String(i).padStart(2, '0'))];
@@ -35,8 +36,8 @@ export async function startBindingService(options = {}) {
   async function decide(candidate, reviewId, verdict = 'approve') {
     await service.quiesce(); await asActor('bob');
     const command = { request_id: randomUUID(), operation: 'dna.review.verdict', operation_version: '1', context: { application_id: service.application, position_id: 'org' }, target: { application_id: service.application, kind: 'dna.review', id: reviewId }, preconditions: { subject_digest: candidate, principal: { mode: 'local', name: 'bob' }, review_state: 'pending' }, arguments: { verdict, comment: 'Decide independently on the exact native fixture candidate.' } };
-    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(command) });
-    assert.equal(response.status, 202, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
+    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
+    assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
     return command;
   }
   async function createItem() {
