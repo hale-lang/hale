@@ -75,3 +75,23 @@ is re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context with the catalog lines
 taken out and the purpose Review put back. No fresh model call was made;
 every answer is unchanged.
+
+GH #946 handed the generated organization's agent work to legs, which
+changed two files. `main.hl`: the comment above the work system says
+so, and the system wires `agent: dna::LegRelay { name: "legs" }` with
+`agent_reconciler: dna::RelayReplay { }` where it wired
+`dna::AgentPerformer` over `agent_models()`. `law.hl`: its `positions`
+group names `dna::LegRelay` and `dna::RelayReplay` where it named
+`dna::AgentPerformer`. The organization-growth edit (`ef1f161b80d5…`,
+was `ab0a5da386e3…`) is re-keyed, and its recorded output carries the
+`main.hl` change and nothing else; the growth assessment
+(`65a0575ac8aa…`, was `a4eaa1dce8d8…`) is re-keyed for the changed
+context alone. Three entries carry `law.hl` in their context and no
+recorded output does: the two classifications of asks (`e589d77675dc…`,
+was `22daa9954a05…`; `21e601a79089…`, was `72800cd31bce…`) and the
+review (`cbebcc1016a6…`, was `510760d5bef1…`), re-keyed for the context
+alone. Each old context digest was reproduced from the new context,
+kept as a run's receipt, with the change taken back out, and each new
+key was the one the miss named. No fresh model call was made; every
+answer, token and cost field is unchanged, and the growth edit's output
+differs from the recording by the `main.hl` change alone.
