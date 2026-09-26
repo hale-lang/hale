@@ -1,22 +1,27 @@
-// dna/tests/attempt_commands_test.hl — the spine's two commands to a leg
-// (GH #946, slice 3): claim, outcome, settled.
+// dna/tests/attempt_commands_test.hl — the spine's commands to a leg
+// (GH #946, slice 3, hardened): claim, outcome, relay, settled.
 //
 // A judgment leaf's attempt is admitted by the engine and asked of the
 // `agent` performer, which is a leg relay: it answers pending, and the
-// attempt stays outstanding under the engine's claim. A leg claims it at
-// the head (`dna.attempt.claim`): the claim is keyed on the attempt id
-// with a TTL, an `attempt.claimed` row names the lease, and the lease
-// comes back as a value. A second leg racing the same attempt is refused
-// while the lease is live, a leg that performs no such kind finds nothing,
-// and a refusal is a receipt with the reason and no row. The leg hands
-// its outcome back (`dna.attempt.outcome`): a wrong token is refused as
-// stale, the good one is an `attempt.outcome_requested` row with its
-// receipts filed, and the owner settles the attempt from that row as it
-// settles every reply — `attempt.outcome`, `work.settled`, the calls the
-// leg made as `model.called` rows on the attempt, tokens per task
-// holding out of process. A second outcome is refused as a duplicate.
+// attempt stays outstanding. A leg claims it at the head: memory's claim
+// on the attempt id is the race (no head fence on the request), an
+// `attempt.claimed` row names the lease and the principal that took it,
+// and the lease comes back as a value; a second leg racing the same
+// attempt at an older reading of the record gets a refusal receipt, a leg
+// that names no data class is handed nothing, and a refusal writes no
+// row. The leg hands its outcome back with the hat it wore: a wrong
+// token is stale, another principal under the lease is refused, a second
+// outcome under the lease is a duplicate. The host's own relay carries
+// the requested row onto the bus; the owner settles the attempt from it
+// — `attempt.outcome` naming the request, so the relay stops — or refuses
+// it as a row when the lease moved under it. An owner restart with a leg
+// attempt in flight leaves it to its claim, and asks again when the
+// claim expires. With memory (HALE_DNA_MEMORY_DSN_OWNER) the same runs
+// with the store deciding the race, the hat kept by its digest, and the
+// whole of it again on an organism that adopted the ledger.
 
 import "../core" as dna;
+import "../host" as host;
 import "../operations" as ops;
 
 fn toolchain() -> String {
@@ -31,158 +36,337 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 const CALLS: String = "[{\"adapter\": \"fake\", \"backend\": \"deep\", \"requested_model\": \"deep-1\", \"prompt_digest\": \"sha256:1111\", \"input_tokens\": 1200, \"output_tokens\": 340, \"cost_micros\": 55, \"data_class\": \"internal\"}]";
 
-main locus App {
+// The task an attempt id is under: `t1` of `t1/wf1/s0/j/a0`.
+fn task_of(attempt: String) -> String {
+    let at = std::str::index_of(attempt, "/wf");
+    return if at < 0 { attempt } else { attempt[0..at] };
+}
+
+// A relay as a node runs it, once, over the record and the memory named.
+fn relay_once(app: String, relayed: String) -> host::NodeRelay {
+    let relay = host::NodeRelay { root: app, verb: "test", live: true, relayed: relayed };
+    let n = relay.relay(dna::Memory { repo: app, dsn_env: dna::own_dsn_env() });
+    return relay;
+}
+
+// The merged index of an attempt's requested row in a projection, -1 when none.
+@unbounded
+fn requested_at(p: host::Projection, attempt: String) -> Int {
+    let mut k = 0; let mut at = -1;
+    while k < p.j.revision() { let e = p.j.read(k); if e.kind == "attempt.outcome_requested" && e.entity == attempt { at = k; } k = k + 1; }
+    return at;
+}
+
+locus App {
     params {
-        // a placeholder until the scratch project exists; the receipts of a
-        // placeholder go nowhere near the working directory
+        app: String = "";
+        with_memory: Bool = false;
+        // a placeholder until the scratch project exists
         core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-attempt-placeholder" } } };
+        journal: dna::RoutedJournal = dna::RoutedJournal { };
+        asks: Int = 0;
+    }
+    // The organism, built (or built again: a restart) over the record —
+    // with the ledger, once adopted.
+    fn start() {
+        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
+        self.core = dna::Dna {
+            journal: self.journal,
+            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
+            // the owner's memory handles, scoped to this record (the host scopes them so)
+            claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
+            org_id: "legs"
+        };
+        std::test::assert_eq_str(self.core.catalog.define("judge", 1, 1, "one judgment"), "", "judge");
+        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
     }
     @unbounded
-    fn has_row(kind: String, entity: String) -> Bool {
-        let moved = self.core.journal.refresh();
-        let mut i = 0;
-        while i < self.core.journal.revision() {
-            let e = self.core.journal.read(i);
-            if e.kind == kind && e.entity == entity { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
+    fn has_row(kind: String, entity: String) -> Bool { return self.count_rows(kind, entity) > 0; }
     @unbounded
     fn row_body(kind: String, entity: String) -> String {
-        let moved = self.core.journal.refresh();
+        let moved = self.journal.refresh();
         let mut out = "";
         let mut i = 0;
-        while i < self.core.journal.revision() {
-            let e = self.core.journal.read(i);
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
             if e.kind == kind && e.entity == entity { out = e.body; }
             i = i + 1;
         }
         return out;
     }
     @unbounded
+    fn count_rows(kind: String, entity: String) -> Int {
+        let moved = self.journal.refresh();
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == kind && e.entity == entity { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
-        while tries < 400 && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }
+        while tries < 400 * dna::wait_scale() && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }
         std::test::assert(self.has_row(kind, entity), what + ": no `" + kind + " " + entity + "` row within the deadline");
     }
-    fn claim_of(request: String, principal: String, identity: String, head: String, kind: String, performer: String) -> ops::GovernanceCommand {
-        return ops::GovernanceCommand {
-            request_id: request, operation: "dna.attempt.claim", operation_version: "1", application_id: identity, position_id: "org",
-            target_kind: "dna.work", target_id: identity, subject_digest: head, record_head: head,
-            performer_kind: kind, performer: performer, capabilities: "judgment analysis", data_classes: "internal public", ttl: 600
-        };
-    }
-    fn outcome_of(request: String, identity: String, attempt: String, holder: String, token: Int) -> ops::GovernanceCommand {
-        return ops::GovernanceCommand {
-            request_id: request, operation: "dna.attempt.outcome", operation_version: "1", application_id: identity, position_id: "org",
-            target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
-            attempt_id: attempt, holder: holder, token: token, disposition: "done", result: "assessment: ship it", narrative: "one call on the deep tier",
-            evidence: CALLS, receipts: "[{\"class\": \"internal\", \"body\": \"the prompt as sent\"}]"
-        };
-    }
-    run() {
-        let scratch = dna::scratch_root("attempts");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
-        let app = scratch + "/app";
-        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
-        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
-        // the organism: its agent performer is a leg relay, so an agent
-        // attempt waits for a leg instead of running here
-        self.core = dna::Dna {
-            journal: dna::GitJournal { repo: app },
-            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" } },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: app }, scratch: app + "/.hale/dna/scratch", repo: app },
-            org_id: "legs"
-        };
-        std::test::assert_eq_str(self.core.catalog.define("judge", 1, 1, "one judgment"), "", "judge");
-        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
-        let t1 = self.core.run_workflow(dna::WorkflowAsk { id: "i1", definition: "judge", revision: 1, from: "test" });
-        std::test::assert_eq_str(t1, "t1", "admitted: " + t1);
-        let work = t1 + "/wf1/s0/j";
-        let attempt = dna::attempt_id_of(work, 0);
+    // One judge workflow admitted and asked of the leg relay: its attempt id.
+    fn ask() -> String {
+        self.asks = self.asks + 1;
+        let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "judge", revision: 1, from: "test" });
+        std::test::assert(len(t) > 0, "admitted");
+        let attempt = dna::attempt_id_of(t + "/wf1/s0/j", 0);
         self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
         self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
         std::test::assert(!self.has_row("attempt.outcome", attempt), "the relay answered pending: nothing settled");
-
-        // ---- the head: the commands over the same record
-        let record = dna::GitRecord { repo: app };
+        return attempt;
+    }
+    fn claim_of(request: String, identity: String, head: String, kind: String, performer: String, classes: String) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: request, operation: "dna.attempt.claim", operation_version: "1", application_id: identity, position_id: "org",
+            target_kind: "dna.work", target_id: identity, subject_digest: head, record_head: head,
+            performer_kind: kind, performer: performer, capabilities: "judgment analysis", data_classes: classes, ttl: 600
+        };
+    }
+    fn outcome_of(request: String, identity: String, attempt: String, holder: String, token: Int, hat: dna::Hat) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: request, operation: "dna.attempt.outcome", operation_version: "1", application_id: identity, position_id: "org",
+            target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
+            attempt_id: attempt, holder: holder, token: token, disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1", narrative: "one call on the deep tier",
+            evidence: CALLS, receipts: "[{\"class\": \"internal\", \"body\": \"the prompt as sent\"}]",
+            hat_digest: hat.digest, hat_head: hat.head, hat_watermark: hat.watermark, prompt_digest: dna::digest_of("the prompt as sent"), renderer: "legs-render/1"
+        };
+    }
+    // The hat a leg reads at the head, over the journal the facts live in.
+    fn hat_of(attempt: String) -> dna::Hat {
+        let head_journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV } };
+        let reader = ops::HatReader { j: head_journal, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: self.with_memory };
+        let hat = reader.read(ops::usage_work_of(attempt));
+        std::test::assert(hat.ok, "the hat reads: " + hat.code + " " + hat.why);
+        std::test::assert_eq_str(hat.attempt_id, attempt, "for the attempt admitted last");
+        if self.with_memory {
+            std::test::assert_eq_str(hat.practices_status, "resolved", "with memory the practices resolve: " + hat.practices_status);
+            std::test::assert(hat.watermark >= 0, "at memory's watermark");
+            std::test::assert_eq_int(reader.kept, 1, "and the hat is kept in memory by its digest");
+            let memory = dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV };
+            std::test::assert_eq_str(memory.hat(hat.digest), dna::hat_body(hat), "the body memory keeps under the digest is the hat's");
+        } else {
+            std::test::assert_eq_str(hat.practices_status, "no memory", "without memory the hat says so");
+        }
+        std::test::assert(std::str::starts_with(hat.practices, "["), "practices are structure: " + hat.practices);
+        return hat;
+    }
+    // ---- the whole of it, over the journal as it stands (routing 0, or adopted)
+    @unbounded
+    fn exercise(label: String) {
+        let record = dna::GitRecord { repo: self.app };
         let identity = record.identity();
-        let commands = ops::GovernanceCommands { record: dna::GitRecord { repo: app } };
+        let commands = ops::GovernanceCommands { record: dna::GitRecord { repo: self.app } };
         let alice = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "alice" };
         let bob = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "bob" };
-        let head = record.head("journal").id;
-        let r1 = commands.submit(alice, self.claim_of("c1", "alice", identity, head, "agent", "leg:alice"));
-        std::test::assert(r1.ok, "the claim is admitted: " + r1.code);
-        std::test::assert_eq_str(r1.receipt.attempt.state, "claimed", "the lease comes back as a value: " + r1.receipt.reason);
-        std::test::assert_eq_str(r1.receipt.attempt.attempt_id, attempt, "on the attempt that awaited a leg");
-        std::test::assert_eq_str(r1.receipt.attempt.task_id, t1, "of the task");
-        std::test::assert_eq_str(r1.receipt.attempt.holder, "leg:alice", "held by the leg");
-        std::test::assert(r1.receipt.attempt.until > std::time::now(), "until later than now");
+        let l = label + ": ";
+        // the legs of this pass, named for it: an attempt a leg of the last
+        // pass still holds is another leg's, and is not raced for
+        let alice_leg = "leg:alice-" + label; let bob_leg = "leg:bob-" + label;
+        // ---- t1: claim, outcome, relay, settled
+        let a1 = self.ask();
+        let head0 = record.head("journal").id;
+        // a leg that names no data class is handed nothing (D4): the refusal says why
+        let r0 = commands.submit(alice, self.claim_of(label + "c0", identity, head0, "agent", alice_leg, ""));
+        std::test::assert(r0.ok && r0.receipt.state == "refused", l + "no class named is no class: " + r0.code + " " + r0.receipt.state);
+        std::test::assert(std::str::contains(r0.receipt.reason, "data class the leg may not see"), l + "and the refusal names it: " + r0.receipt.reason);
+        let r1 = commands.submit(alice, self.claim_of(label + "c1", identity, head0, "agent", alice_leg, "internal public"));
+        std::test::assert(r1.ok, l + "the claim is admitted: " + r1.code + " " + r1.receipt.reason);
+        std::test::assert_eq_str(r1.receipt.attempt.state, "claimed", l + "the lease comes back as a value: " + r1.receipt.reason);
+        std::test::assert_eq_str(r1.receipt.attempt.attempt_id, a1, l + "on the attempt that awaited a leg");
+        std::test::assert_eq_str(r1.receipt.attempt.holder, alice_leg, l + "held by the leg");
+        std::test::assert(r1.receipt.attempt.until > std::time::now(), l + "until later than now");
         let token = r1.receipt.attempt.token;
-        std::test::assert(self.has_row("attempt.claimed", attempt), "the claim is a row");
-        let claimed = self.row_body("attempt.claimed", attempt);
-        std::test::assert_eq_str(std::json::find_string_field(claimed, "holder"), "leg:alice", "naming the holder");
-        std::test::assert_eq_int(std::json::find_int_field(claimed, "token"), token, "and the token");
-        // the head reads the lease back
-        let again = commands.lookup(alice, "c1");
-        std::test::assert(again.ok && again.receipt.attempt.state == "claimed" && again.receipt.attempt.token == token, "a lookup reads the same lease");
-        // a second leg racing the same attempt is refused while the lease is live
-        let head2 = record.head("journal").id;
-        let r2 = commands.submit(bob, self.claim_of("c2", "bob", identity, head2, "agent", "leg:bob"));
-        std::test::assert(r2.ok && r2.receipt.state == "refused", "a second leg is refused: " + r2.code + " " + r2.receipt.state);
-        std::test::assert(std::str::contains(r2.receipt.reason, "held by another leg"), "with the reason: " + r2.receipt.reason);
-        std::test::assert(!self.has_row("attempt.claimed", attempt) || std::json::find_string_field(self.row_body("attempt.claimed", attempt), "holder") == "leg:alice", "and writes no row");
-        // a leg of another kind finds nothing
-        let r3 = commands.submit(alice, self.claim_of("c3", "alice", identity, head2, "human", "leg:alice"));
-        std::test::assert(r3.ok && r3.receipt.state == "refused" && std::str::contains(r3.receipt.reason, "no admitted attempt"), "nothing awaits a human leg: " + r3.receipt.reason);
-        // a stale lease settles nothing
-        let r4 = commands.submit(alice, self.outcome_of("o0", identity, attempt, "leg:alice", token + 1));
-        std::test::assert(r4.ok && r4.receipt.state == "refused" && std::str::contains(r4.receipt.reason, "stale"), "a wrong token is stale: " + r4.receipt.reason);
-        std::test::assert(!self.has_row("attempt.outcome_requested", attempt), "and writes no row");
-        // the outcome under the lease: a row, its receipt filed, requested
-        let r5 = commands.submit(alice, self.outcome_of("o1", identity, attempt, "leg:alice", token));
-        std::test::assert(r5.ok, "the outcome is admitted: " + r5.code + " " + r5.receipt.reason);
-        std::test::assert_eq_str(r5.receipt.attempt.state, "requested", "requested until the owner settles it");
-        let requested = self.row_body("attempt.outcome_requested", attempt);
-        std::test::assert(len(requested) > 0, "the outcome is a row");
+        let claimed = self.row_body("attempt.claimed", a1);
+        std::test::assert(len(claimed) > 0, l + "the claim is a row");
+        std::test::assert_eq_str(std::json::find_string_field(claimed, "principal_name"), "alice", l + "naming the principal that took it");
+        std::test::assert_eq_int(std::json::find_int_field(claimed, "token"), token, l + "and the token");
+        let again = commands.lookup(alice, label + "c1");
+        std::test::assert(again.ok && again.receipt.attempt.state == "claimed" && again.receipt.attempt.token == token, l + "a lookup reads the same lease");
+        // a second leg racing the same attempt at the OLD head (B4): not
+        // stale_subject — a refusal receipt, and no row
+        let rows_before = self.count_rows("attempt.claimed", a1);
+        let r2 = commands.submit(bob, self.claim_of(label + "c2", identity, head0, "agent", bob_leg, "internal"));
+        std::test::assert(r2.ok && r2.receipt.state == "refused", l + "a second leg is refused, not turned away: " + r2.code + " " + r2.receipt.state);
+        std::test::assert(std::str::contains(r2.receipt.reason, "held by another leg"), l + "with the reason: " + r2.receipt.reason);
+        std::test::assert_eq_int(self.count_rows("attempt.claimed", a1), rows_before, l + "and writes no row");
+        let r3 = commands.submit(alice, self.claim_of(label + "c3", identity, head0, "human", alice_leg, "internal"));
+        std::test::assert(r3.ok && r3.receipt.state == "refused" && std::str::contains(r3.receipt.reason, "none of that kind is outstanding"), l + "nothing awaits a human leg: " + r3.receipt.reason);
+        // the hat the leg wears, and the outcome under the lease
+        let hat = self.hat_of(a1);
+        let r4 = commands.submit(alice, self.outcome_of(label + "o0", identity, a1, alice_leg, token + 1, hat));
+        std::test::assert(r4.ok && r4.receipt.state == "refused" && std::str::contains(r4.receipt.reason, "stale"), l + "a wrong token is stale: " + r4.receipt.reason);
+        // another principal under the lease (B6)
+        let r4b = commands.submit(bob, self.outcome_of(label + "o0b", identity, a1, alice_leg, token, hat));
+        std::test::assert(r4b.ok && r4b.receipt.state == "refused" && std::str::contains(r4b.receipt.reason, "taken by local alice"), l + "another principal under the lease is refused: " + r4b.receipt.reason);
+        std::test::assert(!self.has_row("attempt.outcome_requested", a1), l + "and neither writes a row");
+        let r5 = commands.submit(alice, self.outcome_of(label + "o1", identity, a1, alice_leg, token, hat));
+        std::test::assert(r5.ok, l + "the outcome is admitted: " + r5.code + " " + r5.receipt.reason);
+        std::test::assert_eq_str(r5.receipt.attempt.state, "requested", l + "requested until the owner settles it");
+        let requested = self.row_body("attempt.outcome_requested", a1);
+        std::test::assert_eq_str(std::json::find_string_field(requested, "hat_digest"), hat.digest, l + "the row carries the hat the leg wore");
+        std::test::assert_eq_str(std::json::find_string_field(requested, "hat_head"), hat.head, l + "the head it was rendered at");
+        std::test::assert_eq_int(std::json::find_int_field(requested, "hat_watermark"), hat.watermark, l + "the watermark");
+        std::test::assert_eq_str(std::json::find_string_field(requested, "renderer"), "legs-render/1", l + "and the renderer's version");
         let evidence_ref = std::json::find_string_field(requested, "evidence_ref");
-        std::test::assert(std::str::starts_with(evidence_ref, "sha256:"), "the receipt was filed: " + evidence_ref);
-        let receipts = dna::GitReceipts { repo: app };
-        std::test::assert_eq_str(receipts.read(evidence_ref[7..len(evidence_ref)]), "the prompt as sent", "and is the body, byte for byte");
-        // ---- the owner: the row reaches it as a node relays it, and it settles the attempt
-        self.core.on_work_submit(dna::WorkSubmission {
-            attempt_id: attempt, holder: std::json::find_string_field(requested, "holder"), token: std::json::find_int_field(requested, "token"),
-            disposition: std::json::find_string_field(requested, "disposition"), result: std::json::find_string_field(requested, "result"),
-            result_ref: std::json::find_string_field(requested, "result_ref"), narrative: std::json::find_string_field(requested, "narrative"),
-            evidence_ref: evidence_ref, calls: std::json::find_string_field(requested, "calls"), request: std::json::find_string_field(requested, "request")
-        });
-        self.wait_row("attempt.outcome", attempt, "the owner settles the attempt");
-        let outcome = self.row_body("attempt.outcome", attempt);
-        std::test::assert_eq_str(std::json::find_string_field(outcome, "disposition"), "done", "as the leg said");
-        std::test::assert_eq_str(std::json::find_string_field(outcome, "performer"), "legs", "under the performer the kind selects");
-        std::test::assert_eq_str(std::json::find_string_field(outcome, "evidence_ref"), evidence_ref, "with the receipt");
-        self.wait_row("work.settled", work, "the Work settles on it");
-        self.wait_row("workflow.settled", t1, "and the task");
-        std::test::assert_eq_int(self.core.submissions_settled, 1, "one submission settled");
-        std::test::assert(self.has_row("model.called", attempt), "the leg's call is the attempt's evidence");
-        let usage = ops::Usage { j: self.core.journal };
-        let t = usage.under(t1);
-        std::test::assert_eq_int(t.input_tokens, 1200, "tokens per task hold out of process");
-        std::test::assert_eq_int(t.cost_micros, 55, "and so does the cost");
-        std::test::assert(std::str::contains(t.by_position, "position:agent 1 1200 340 55"), "under the position: " + t.by_position);
-        // the head reads the settlement back
-        let settled = commands.lookup(alice, "o1");
-        std::test::assert(settled.ok && settled.receipt.attempt.state == "settled" && settled.receipt.attempt.disposition == "done", "a lookup reads the settlement: " + settled.receipt.attempt.state);
-        // a second outcome is a duplicate
-        let r6 = commands.submit(alice, self.outcome_of("o2", identity, attempt, "leg:alice", token));
-        std::test::assert(r6.ok && r6.receipt.state == "refused" && std::str::contains(r6.receipt.reason, "duplicate"), "a duplicate is refused: " + r6.receipt.reason);
-        // and a stale submission at the owner is a refusal row, not a settlement
-        self.core.on_work_submit(dna::WorkSubmission { attempt_id: attempt, holder: "leg:bob", token: token, disposition: "failed", request: "stray" });
-        std::test::assert_eq_int(self.core.submissions_settled, 1, "a stray submission settles nothing");
-        dna::scratch_done(scratch);
+        std::test::assert(std::str::starts_with(evidence_ref, "sha256:"), l + "the receipt was filed: " + evidence_ref);
+        // a second outcome under the lease is a duplicate (B3), at the head
+        let r5b = commands.submit(alice, self.outcome_of(label + "o1b", identity, a1, alice_leg, token, hat));
+        std::test::assert(r5b.ok && r5b.receipt.state == "refused" && std::str::contains(r5b.receipt.reason, "duplicate"), l + "a second outcome under the lease is a duplicate: " + r5b.receipt.reason);
+        std::test::assert_eq_int(self.count_rows("attempt.outcome_requested", a1), 1, l + "one requested row");
+        // ---- the relay: the host's own, over the record and memory, onto the bus
+        let relay = relay_once(self.app, "\n");
+        std::test::assert_eq_str(relay.error, "", l + "the relay published: " + relay.error);
+        std::test::assert_eq_int(relay.relayed_count, 1, l + "one request relayed");
+        self.wait_row("attempt.outcome", a1, l + "the owner settles the attempt from the relayed row");
+        let outcome = self.row_body("attempt.outcome", a1);
+        std::test::assert_eq_str(std::json::find_string_field(outcome, "disposition"), "done", l + "as the leg said");
+        std::test::assert_eq_str(std::json::find_string_field(outcome, "performer"), "legs", l + "under the performer the kind selects");
+        std::test::assert_eq_str(std::json::find_string_field(outcome, "result_ref"), "receipt:assessment-1", l + "the result reference travels (B5)");
+        std::test::assert_eq_str(std::json::find_string_field(outcome, "hat_digest"), hat.digest, l + "and the hat's digest (D1)");
+        std::test::assert_eq_str(std::json::find_string_field(outcome, "request"), std::json::find_string_field(requested, "request"), l + "the outcome names the request it answers (B1)");
+        self.wait_row("work.settled", ops::usage_work_of(a1), l + "the Work settles on it");
+        std::test::assert(self.has_row("model.called", a1), l + "the leg's call is the attempt's evidence");
+        // relayed again past the interval: answered, so nothing is published (B1)
+        let p = host::open_projection(self.app, ".", "", dna::Memory { repo: self.app, dsn_env: dna::own_dsn_env() });
+        let at = requested_at(p, a1);
+        std::test::assert(at >= 0, l + "the requested row is in the projection");
+        let expired = host::relay_mark("\n", host::fact_key(p, at), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
+        let again_relay = relay_once(self.app, expired);
+        std::test::assert_eq_int(again_relay.relayed_count, 0, l + "an answered request is not relayed again");
+        let settled = commands.lookup(alice, label + "o1");
+        std::test::assert(settled.ok && settled.receipt.attempt.state == "settled" && settled.receipt.attempt.disposition == "done", l + "a lookup reads the settlement: " + settled.receipt.attempt.state);
+        let r6 = commands.submit(alice, self.outcome_of(label + "o2", identity, a1, alice_leg, token, hat));
+        std::test::assert(r6.ok && r6.receipt.state == "refused" && std::str::contains(r6.receipt.reason, "duplicate"), l + "an outcome after settlement is a duplicate: " + r6.receipt.reason);
+        // ---- t2: the lease moves under a requested outcome; the owner refuses it as a row, through the relay
+        let a2 = self.ask();
+        let head2 = record.head("journal").id;
+        let c2 = commands.submit(alice, self.claim_of(label + "c4", identity, head2, "agent", alice_leg, "internal"));
+        std::test::assert(c2.ok && c2.receipt.attempt.state == "claimed" && c2.receipt.attempt.attempt_id == a2, l + "t2 claimed");
+        let hat2 = self.hat_of(a2);
+        let o2 = commands.submit(alice, self.outcome_of(label + "o3", identity, a2, alice_leg, c2.receipt.attempt.token, hat2));
+        std::test::assert(o2.ok && o2.receipt.attempt.state == "requested", l + "t2 outcome requested");
+        // the record says another leg holds it now (a later lease): the owner's lease check refuses the relayed outcome
+        let moved = self.journal.refresh();
+        let stray = "{\"holder\": \"leg:carol\", \"token\": " + to_string(c2.receipt.attempt.token + 1) + ", \"until\": " + to_string(std::time::now() + 600) + ", \"principal_mode\": \"local\", \"principal_name\": \"carol\"}";
+        let put = self.journal.append(self.journal.revision(), "attempt.claimed", a2, stray);
+        std::test::assert(put.ok, l + "a later lease row: " + put.error);
+        let relay2 = relay_once(self.app, "\n");
+        std::test::assert_eq_int(relay2.relayed_count, 1, l + "the t2 request relayed");
+        self.wait_row("attempt.outcome_refused", a2, l + "the owner refuses the stale outcome as a row");
+        let refused = self.row_body("attempt.outcome_refused", a2);
+        std::test::assert(std::str::contains(std::json::find_string_field(refused, "why"), "stale"), l + "naming why: " + std::json::find_string_field(refused, "why"));
+        std::test::assert_eq_str(std::json::find_string_field(refused, "request"), std::json::find_string_field(self.row_body("attempt.outcome_requested", a2), "request"), l + "and the request it answers");
+        std::test::assert(!self.has_row("attempt.outcome", a2), l + "nothing settled");
+        let read2 = commands.lookup(alice, label + "o3");
+        std::test::assert(read2.ok && read2.receipt.state == "refused" && read2.receipt.attempt.state == "refused", l + "the lookup reads the refusal: " + read2.receipt.state + " " + read2.receipt.reason);
+        let p2 = host::open_projection(self.app, ".", "", dna::Memory { repo: self.app, dsn_env: dna::own_dsn_env() });
+        let expired2 = host::relay_mark("\n", host::fact_key(p2, requested_at(p2, a2)), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
+        std::test::assert_eq_int(relay_once(self.app, expired2).relayed_count, 0, l + "a refused request is answered: not relayed again");
+        // ---- t3: an owner restart with a leg attempt in flight (D3)
+        let a3 = self.ask();
+        let head3 = record.head("journal").id;
+        let mut short = self.claim_of(label + "c5", identity, head3, "agent", alice_leg, "internal");
+        short.ttl = 2;
+        let c3 = commands.submit(alice, short);
+        std::test::assert(c3.ok && c3.receipt.attempt.state == "claimed" && c3.receipt.attempt.attempt_id == a3, l + "t3 claimed under a short lease");
+        self.start();
+        std::time::sleep(300ms);
+        std::test::assert(!self.has_row("effect.result", "attempt:" + a3), l + "the restarted owner leaves the attempt to its claim: no unknown result");
+        std::test::assert(!self.has_row("effect.redelivered", "attempt:" + a3), l + "and does not ask again while the lease is live");
+        // the lease expires with no outcome: the owner asks again, and the attempt is a leg's to claim anew
+        std::time::sleep(2500ms);
+        let mut tries = 0;
+        while tries < 40 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a3) { let n = self.core.redrive(); std::time::sleep(250ms); tries = tries + 1; }
+        std::test::assert(self.has_row("effect.redelivered", "attempt:" + a3), l + "past the lease the attempt is asked of a leg again");
+        std::test::assert(!self.has_row("effect.result", "attempt:" + a3), l + "never unknown");
+        let head3b = record.head("journal").id;
+        let c3b = commands.submit(bob, self.claim_of(label + "c6", identity, head3b, "agent", bob_leg, "internal"));
+        std::test::assert(c3b.ok && c3b.receipt.attempt.state == "claimed" && c3b.receipt.attempt.attempt_id == a3, l + "another leg claims it once the lease expired: " + c3b.code + " " + c3b.receipt.state + " " + c3b.receipt.reason + " attempt=" + c3b.receipt.attempt.attempt_id);
+        // tokens per task hold out of process
+        let usage = ops::Usage { j: self.journal };
+        let t = usage.under(task_of(a1));
+        std::test::assert_eq_int(t.input_tokens, 1200, l + "tokens per task hold out of process");
+        std::test::assert(std::str::contains(t.by_position, "position:agent 1 1200 340 55"), l + "under the position: " + t.by_position);
+    }
+    // ---- the ledger adopted (D5): the same, with the attempt kinds in memory
+    @unbounded
+    fn adopt() {
+        let moved = self.journal.refresh();
+        let b = std::json::Builder { };
+        b.begin_object(); b.int_field("routing", dna::ROUTING_VERSION); b.string_field("by", "test"); b.end_object();
+        let asked = self.journal.append(self.journal.revision(), "ledger.adopting", "ledger", b.result());
+        std::test::assert(asked.ok, "adoption asked: " + asked.error);
+        let adoption = dna::LedgerAdoption { root: self.app, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV }, holder: "test" };
+        let leases = dna::MemoryLeases { repo: self.app, dsn_env: dna::SPINE_DSN_ENV };
+        std::test::assert_eq_int(adoption.tick(leases), 1, "the ledger adopted: " + adoption.last_error);
+        std::test::assert(self.has_row("ledger.adopted", "ledger"), "and the record says so");
+        // the organism runs on the record with the ledger from here
+        self.start();
+    }
+    run() {
+        self.app = std::env::var("HALE_DNA_ATTEMPT_APP");
+        self.with_memory = std::env::var_exists("HALE_DNA_MEMORY_DSN_SPINE");
+        self.start();
+        self.exercise("record");
+        if !self.with_memory {
+            eprintln("attempt_commands_test: no HALE_DNA_MEMORY_DSN_OWNER; the store's race, the hat in memory and the adopted ledger were not exercised");
+            return;
+        }
+        self.adopt();
+        let git = dna::GitJournal { repo: self.app };
+        let git_rows = git.revision();
+        self.exercise("adopted");
+        // the attempt kinds landed in the ledger, under the head's role for the leg's rows
+        let ledger = dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV };
+        let mut i = 0; let mut claimed = 0; let mut requested = 0; let mut outcomes = 0;
+        while i < ledger.revision() {
+            let e = ledger.read(i);
+            if e.kind == "attempt.claimed" { claimed = claimed + 1; }
+            if e.kind == "attempt.outcome_requested" { requested = requested + 1; }
+            if e.kind == "attempt.outcome" { outcomes = outcomes + 1; }
+            i = i + 1;
+        }
+        std::test::assert(claimed >= 4 && requested >= 2 && outcomes >= 1, "the leg's rows are in the ledger: " + to_string(claimed) + " claimed, " + to_string(requested) + " requested, " + to_string(outcomes) + " outcomes");
+        let git_after = dna::GitJournal { repo: self.app };
+        let mut j = git_rows; let mut in_git = 0;
+        while j < git_after.revision() { let e = git_after.read(j); if std::str::starts_with(e.kind, "attempt.") { in_git = in_git + 1; } j = j + 1; }
+        std::test::assert_eq_int(in_git, 0, "and none of them in the record");
     }
 }
 
-fn main() { App { }; }
+// Phase 1: the scratch project, memory migrated for its record when the
+// suite hands one over, and phase 2 run with the roles named.
+fn main() {
+    if std::env::var("HALE_DNA_ATTEMPT_PHASE") == "2" { App { }; return; }
+    let scratch = dna::scratch_root("attempts");
+    let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
+    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+    let app = scratch + "/app";
+    let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+    let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    let identity = dna::GitRecord { repo: app }.identity();
+    let mut env = "HALE_DNA_ATTEMPT_PHASE=2\nHALE_DNA_ATTEMPT_APP=" + app + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nHALE_DNA_DISCOVER=off\n";
+    if len(owner) > 0 {
+        let spine = dna::migrated(owner, identity);
+        std::test::assert(spine.ok, "memory migrated for the record: " + spine.why);
+        let head = dna::migrated_head(owner, identity);
+        std::test::assert(head.ok, "the head's role: " + head.why);
+        env = env + "HALE_DNA_MEMORY_DSN_SPINE=" + dna::dsn_text(spine) + "\nHALE_DNA_MEMORY_DSN_HEAD=" + dna::dsn_text(head) + "\n";
+    }
+    let ran = dna::run_tool("env\n" + env + std::env::arg_or(0, ""));
+    print(ran.stdout);
+    if len(ran.stderr) > 0 { eprintln(ran.stderr); }
+    if len(owner) > 0 { std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped"); }
+    dna::scratch_done(scratch);
+    std::process::exit(if ran.code < 0 { 1 } else { ran.code });
+}

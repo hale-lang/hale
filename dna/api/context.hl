@@ -14,16 +14,20 @@ locus ContextWire {
         let http = Http { };
         if mode != "local" { return http.error(403, "context_source_unavailable", "hosted context reads require an owning-service visibility provider", false); }
         if len(query.id) == 0 { return http.error(400, "invalid_query", "the context read names one Work by id", false); }
-        let j = dna::GitJournal { repo: root };
-        if j.head() != source.head || j.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the context", true); }
-        let reader = ops::HatReader { j: j, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV } };
+        let record = dna::GitJournal { repo: root };
+        if record.head() != source.head || record.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the context", true); }
+        // GH #946 hardening (D5): once the organism has adopted the ledger the
+        // execution facts live there; the hat reads them under the head's role
+        let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+        let j = dna::RoutedJournal { record: record, ledger: ledger };
+        let reader = ops::HatReader { j: j, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: ledger.ready() };
         let hat = reader.read(query.id);
         if !hat.ok {
             if hat.code == "work_not_found" { return http.error(404, hat.code, hat.why, false); }
             return http.error(503, hat.code, hat.why, hat.code == "context_source_unavailable");
         }
-        let record = dna::GitRecord { repo: root };
-        let record_now = record.head("journal");
+        let git = dna::GitRecord { repo: root };
+        let record_now = git.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the context was read", true); }
         return http.success(source, ops::hat_json(hat));

@@ -576,5 +576,11 @@ type WorkSubmission {
     evidence_ref: String = ""; // the receipts filed with the outcome, digests space-separated
     calls: String = ""; // the model calls made under the attempt, a JSON array of evidence objects
     request: String = ""; // the command id the row answers
+    // GH #946 hardening: the hat the leg wore, for the outcome row
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = -1;
+    prompt_digest: String = "";
+    renderer: String = "";
 }
 topic WorkSubmit { payload: WorkSubmission; subject: "dna.work.submit"; }

@@ -11739,6 +11739,30 @@
               "items": {
                 "$ref": "#/$defs/AttemptReceiptBody"
               }
+            },
+            "hat_digest": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 128
+            },
+            "hat_head": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 256
+            },
+            "hat_watermark": {
+              "type": "integer",
+              "minimum": -1
+            },
+            "prompt_digest": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 128
+            },
+            "renderer": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 128
             }
           },
           "required": [
@@ -11749,7 +11773,8 @@
             "evidence",
             "receipts"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "The outcome, with the hat the leg wore when it wore one: the five hat fields together (hat_digest, hat_head, hat_watermark, prompt_digest, renderer) or none of them."
         }
       },
       "required": [
@@ -12119,11 +12144,24 @@
         },
         "text": {
           "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author": {
+          "type": "string"
         }
       },
       "required": [
         "id",
-        "text"
+        "name",
+        "text",
+        "kind",
+        "author"
       ],
       "additionalProperties": false
     },

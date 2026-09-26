@@ -189,8 +189,16 @@ locus SourceEditor {
         import_error: String = ""; // an in-grant write that failed: the attempt fails, never a partial candidate
         last_summary: String = ""; // the harness's one-line answer
         bindings: String = ""; // the package the owner named on this attempt's request (GH #583 K2)
+        // GH #946 hardening: the practices the owner briefs the editor with,
+        // rendered as the block a model is shown under the objective; the
+        // request itself stays the ask, and the attempt carries the hat's
+        // digest instead of the practices folded into its objective
+        practices: String = "";
     }
     fn kind() -> String { return "agent"; }
+    fn brief(practices: String) { self.practices = practices; }
+    // What a model is asked: the ask, with the brief under it.
+    fn with_practices(objective: String) -> String { return objective + self.practices; }
     fn identity() -> String { return self.name; }
     fn confine(root: String) { self.tools.confine(root); self.worktree = root; self.seed = ""; }
     // Where this Mutation's worktree is, which seed inside it the grant
@@ -414,7 +422,7 @@ locus SourceEditor {
         let mut files = "";
         while tries < self.max_tries && !done {
             let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries);
-            let r = self.harness_try(attempt, req.objective, diagnostics, req.data_class);
+            let r = self.harness_try(attempt, self.with_practices(req.objective), diagnostics, req.data_class);
             if !r.ok {
                 let rm = run_tool("rm\n-rf\n" + self.last_export);
                 return WorkResult { disposition: "failed", narrative: "harness refused: " + r.refused, performer: self.name };
@@ -449,7 +457,7 @@ locus SourceEditor {
         let assess = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
-            context: "OBJECTIVE\n" + req.objective + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(req.objective) + 64,
+            context: "OBJECTIVE\n" + self.with_practices(req.objective) + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(self.with_practices(req.objective)) + 64,
             tool_grant: self.grant(), data_class: req.data_class, knowledge_bindings: self.bindings, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
@@ -491,7 +499,7 @@ locus SourceEditor {
         if self.in_place(req.data_class) {
             return self.perform_in_place(req);
         }
-        let files = if len(req.target) > 0 { req.target } else { self.plan(attempt_id_of(req.work_id, req.attempt_no), req.objective) };
+        let files = if len(req.target) > 0 { req.target } else { self.plan(attempt_id_of(req.work_id, req.attempt_no), self.with_practices(req.objective)) };
         if len(files) == 0 {
             return WorkResult { disposition: "failed", narrative: "no target file in the request", performer: self.name };
         }
@@ -512,7 +520,7 @@ locus SourceEditor {
                 let file = rest[0..sp];
                 rest = rest[(sp + 1)..len(rest)];
                 if len(file) == 0 { continue; }
-                let e = self.edit_one(attempt, file, req.objective, diagnostics, req.data_class);
+                let e = self.edit_one(attempt, file, self.with_practices(req.objective), diagnostics, req.data_class);
                 if !e.ok { failed = "edit of " + file + " refused: " + e.refused; }
                 backends = e.backend;
                 changed = changed + "=== " + file + "\n" + unfence(e.output) + "\n";
@@ -536,7 +544,7 @@ locus SourceEditor {
         let assess = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
-            context: "OBJECTIVE\n" + req.objective + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(req.objective) + 64,
+            context: "OBJECTIVE\n" + self.with_practices(req.objective) + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(self.with_practices(req.objective)) + 64,
             tool_grant: self.grant(), data_class: req.data_class, knowledge_bindings: self.bindings, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };

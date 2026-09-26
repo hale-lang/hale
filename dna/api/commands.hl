@@ -50,6 +50,12 @@ type CommandRequest {
     disposition: String = "";
     result: String = "";
     result_ref: String = "";
+    // GH #946 hardening: the hat the leg wore, on an outcome ("" and -1 when none)
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = -1;
+    prompt_digest: String = "";
+    renderer: String = "";
     narrative: String = "";
     evidence: String = "";
     receipts: String = "";
@@ -251,7 +257,9 @@ locus CommandWire {
         if claim {
             if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "performer_kind performer capabilities data_classes organizations ttl", 6) { return CommandRequest { }; }
         } else if submit {
-            if !self.fields(conditions, "holder token principal", 3) || !self.fields(arguments, "disposition result result_ref narrative evidence receipts", 6) { return CommandRequest { }; }
+            // the hat the leg wore rides on the outcome when it wore one: the
+            // five fields together, or none of them
+            if !self.fields(conditions, "holder token principal", 3) || !(self.fields(arguments, "disposition result result_ref narrative evidence receipts", 6) || self.fields(arguments, "disposition result result_ref narrative evidence receipts hat_digest hat_head hat_watermark prompt_digest renderer", 11)) { return CommandRequest { }; }
         } else if create {
             if !self.fields(conditions, "record_head principal", 2) || !self.fields(arguments, "outcome to", 2) { return CommandRequest { }; }
         } else if person {
@@ -300,6 +308,13 @@ locus CommandWire {
                 if !std::str::starts_with(evidence, "[") || !std::str::starts_with(receipts, "[") || !self.is_text(self.raw(conditions, "holder")) || !self.is_text(self.raw(arguments, "disposition"))
                     || !self.is_text(self.raw(arguments, "result")) || !self.is_text(self.raw(arguments, "result_ref")) || !self.is_text(self.raw(arguments, "narrative")) { return CommandRequest { }; }
                 command.evidence = if evidence == "[]" { "" } else { evidence }; command.receipts = if receipts == "[]" { "" } else { receipts };
+                if len(self.raw(arguments, "hat_digest")) > 0 {
+                    let watermark_raw = std::str::trim(self.raw(arguments, "hat_watermark"));
+                    if !self.is_text(self.raw(arguments, "hat_digest")) || !self.is_text(self.raw(arguments, "hat_head")) || !std::str::can_parse_int(watermark_raw)
+                        || !self.is_text(self.raw(arguments, "prompt_digest")) || !self.is_text(self.raw(arguments, "renderer")) { return CommandRequest { }; }
+                    command.hat_digest = self.text(arguments, "hat_digest"); command.hat_head = self.text(arguments, "hat_head"); command.hat_watermark = std::str::parse_int(watermark_raw) or - 1;
+                    command.prompt_digest = self.text(arguments, "prompt_digest"); command.renderer = self.text(arguments, "renderer");
+                }
             }
             // the codec's own rules — a lease's token, a disposition the
             // outcome contract carries, bounded evidence — refuse here too
@@ -451,7 +466,8 @@ locus CommandWire {
         if claim && r.target_id != r.application_id { return false; }
         if !claim && (r.target_id != a.attempt_id || !self.bounded(a.attempt_id, 256, true, false)) { return false; }
         if a.state == "unknown" { return r.state == "outcome_unknown" && a.event_id == "" && a.until == 0; }
-        if a.state == "refused" { return r.state == "refused" && self.bounded(a.reason, 2048, true, true) && a.reason == r.reason && a.event_id == ""; }
+        // a refusal at the head names no row; one the owner wrote (`attempt.outcome_refused`) names the requested row it answers
+        if a.state == "refused" { return r.state == "refused" && self.bounded(a.reason, 2048, true, true) && a.reason == r.reason && (a.event_id == "" || source.commit_id(a.event_id)); }
         if r.state != "succeeded" || !source.commit_id(a.event_id) || !self.bounded(a.holder, 256, true, false) || a.token < 0 { return false; }
         if claim { return a.state == "claimed" && self.bounded(a.attempt_id, 256, true, false) && self.bounded(a.work_id, 256, true, false) && self.bounded(a.task_id, 256, true, false) && self.bounded(a.performer_kind, 64, true, false) && a.until > 0; }
         if a.state != "requested" && a.state != "settled" { return false; }
@@ -658,6 +674,7 @@ fn attempt_native(command: CommandRequest) -> ops::GovernanceCommand {
         performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
         organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
         disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
-        evidence: command.evidence, receipts: command.receipts
+        evidence: command.evidence, receipts: command.receipts,
+        hat_digest: command.hat_digest, hat_head: command.hat_head, hat_watermark: command.hat_watermark, prompt_digest: command.prompt_digest, renderer: command.renderer
     };
 }

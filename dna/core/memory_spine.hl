@@ -365,12 +365,18 @@ locus MemoryKnowledge {
         let at = self.store.watermark();
         if at < want { self.last_error = "memory's projection is at row " + to_string(at) + ", before the record's knowledge row " + to_string(want - 1) + "; the spine applies it on its tick"; return ContextPackage { target: target, error: self.last_error }; }
         self.store.forget_error();
-        let ids = if len(q) > 0 { self.store.ranked_ids(target, self.budget, embed_text(q)) } else { self.store.context_ids(target, self.budget) };
-        if len(self.store.last_error()) > 0 {
+        // the bound and the watermark it was read at, in one transaction
+        // (GH #946 hardening): the package names the projection it was
+        // drawn from, never one the spine's tick moved in between
+        let ranked = self.store.ranked_at(target, self.budget, if len(q) > 0 { embed_text(q) } else { "" });
+        if !ranked.ok || len(self.store.last_error()) > 0 {
             self.last_error = "the store cannot answer: " + self.store.last_error();
             return ContextPackage { target: target, error: self.last_error };
         }
+        let ids = ranked.ids;
         let out = std::str::builder_new();
+        let b = std::json::Builder { };
+        b.begin_array();
         let mut rest = ids + " ";
         while len(rest) > 1 {
             let sp = std::str::index_of(rest, " ");
@@ -379,17 +385,43 @@ locus MemoryKnowledge {
             if len(id) == 0 { continue; }
             let s = self.store.idea(id);
             std::str::builder_append(out, "- " + s.idea.kind + ": " + s.idea.text + " (" + s.idea.author + ")\n");
+            b.begin_object();
+            b.string_field("id", id);
+            b.string_field("name", s.idea.name);
+            b.string_field("text", s.idea.text);
+            b.string_field("kind", s.idea.kind);
+            b.string_field("author", s.idea.author);
+            b.end_object();
         }
+        b.end_array();
         self.answered = self.answered + 1;
         return ContextPackage {
             target: target,
-            revision: self.store.watermark(),
+            revision: ranked.watermark,
             digest: digest_of(target + ":" + ids),
             included: ids,
             included_n: count_ids(ids),
             data_class: "internal",
-            text: std::str::builder_finish(out)
+            text: std::str::builder_finish(out),
+            practices: b.result()
         };
+    }
+    // A hat by its digest, kept once (GH #946): done when memory holds it,
+    // now or before; false, with `last_error`, when memory is not there
+    // or would not take it.
+    @unbounded
+    fn keep_hat(digest: String, head: String, watermark: Int, body: String) -> Bool {
+        if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return false; }
+        if !self.ensure_open() { return false; }
+        self.store.forget_error();
+        if !self.store.keep_hat(digest, head, watermark, body) { self.last_error = "the hat was not kept: " + self.store.last_error(); return false; }
+        return true;
+    }
+    // The body memory keeps under a hat's digest, "" when none.
+    @unbounded
+    fn hat(digest: String) -> String {
+        if !self.ready() || !self.ensure_open() { return ""; }
+        return self.store.hat(digest);
     }
 }
 

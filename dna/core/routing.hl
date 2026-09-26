@@ -166,6 +166,11 @@ locus RoutedJournal {
         let e = if p.ledger { self.ledger.read(p.index) } else { self.record.read(p.index) };
         return Event { seq: i, kind: e.kind, entity: e.entity, body: e.body, prev: e.prev, digest: e.digest };
     }
+    // Which memory a merged row came from, and its index there (GH #946):
+    // a reader that checks a row's author against the record's text needs
+    // the record's index, and a ledger row's author is the ledger's.
+    fn from_ledger(i: Int) -> Bool { let p = self.order.get(i) or Placed { }; return p.ledger; }
+    fn index_of(i: Int) -> Int { let p = self.order.get(i) or Placed { index: -1 }; return p.index; }
     fn verify_chain() -> Bool { return self.record.verify_chain() && (self.routing <= 0 || self.ledger.verify_chain()); }
     fn to_ledger(kind: String) -> Bool { return route(self.routing, kind) == "ledger"; }
     // Compare-and-append against the merged revision, then the memory's

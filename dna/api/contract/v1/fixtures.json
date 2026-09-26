@@ -24488,7 +24488,12 @@
             "class": "internal",
             "body": "the prompt as sent"
           }
-        ]
+        ],
+        "hat_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "hat_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "hat_watermark": 12,
+        "prompt_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "renderer": "legs-render/1"
       }
     }
   },
@@ -24542,7 +24547,12 @@
             "class": "internal",
             "body": "the prompt as sent"
           }
-        ]
+        ],
+        "hat_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "hat_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "hat_watermark": 12,
+        "prompt_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "renderer": "legs-render/1"
       }
     }
   },
@@ -25157,7 +25167,10 @@
         "practices": [
           {
             "id": "k:0123456789ab",
-            "text": "practice: prefer the smallest change that closes the ask (riley)"
+            "text": "practice: prefer the smallest change that closes the ask (riley)",
+            "name": "design/review",
+            "kind": "practice",
+            "author": "org"
           }
         ],
         "practices_status": "resolved",
@@ -25206,7 +25219,10 @@
         "practices": [
           {
             "id": "k:0123456789ab",
-            "text": "practice: prefer the smallest change that closes the ask (riley)"
+            "text": "practice: prefer the smallest change that closes the ask (riley)",
+            "name": "design/review",
+            "kind": "practice",
+            "author": "org"
           }
         ],
         "practices_status": "resolved",
@@ -25254,7 +25270,10 @@
         "practices": [
           {
             "id": "k:0123456789ab",
-            "text": "practice: prefer the smallest change that closes the ask (riley)"
+            "text": "practice: prefer the smallest change that closes the ask (riley)",
+            "name": "design/review",
+            "kind": "practice",
+            "author": "org"
           }
         ],
         "practices_status": "stale",

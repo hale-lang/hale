@@ -158,7 +158,7 @@ placeholder equal to its name, so keep the database where only the
 people and machines you trust can reach it.
 
 The migration is one transaction and can be run again at any time.
-It writes a schema version (version 4), and every store checks it when
+It writes a schema version (version 5), and every store checks it when
 it opens: a host whose memory is at another version refuses to start,
 naming both versions and `hale dna memory migrate`, and a migration
 refuses a schema a newer toolchain wrote. Migrating a version-1 memory

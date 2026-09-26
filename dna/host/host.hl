@@ -549,7 +549,12 @@ locus NodeRelay {
                 narrative: std::json::find_string_field(body, "narrative"),
                 evidence_ref: std::json::find_string_field(body, "evidence_ref"),
                 calls: std::json::find_string_field(body, "calls"),
-                request: std::json::find_string_field(body, "request")
+                request: std::json::find_string_field(body, "request"),
+                hat_digest: std::json::find_string_field(body, "hat_digest"),
+                hat_head: std::json::find_string_field(body, "hat_head"),
+                hat_watermark: if std::str::contains(body, "\"hat_watermark\"") { std::json::find_int_field(body, "hat_watermark") } else { -1 },
+                prompt_digest: std::json::find_string_field(body, "prompt_digest"),
+                renderer: std::json::find_string_field(body, "renderer")
             };
         } else {
             return "no fact of kind `" + kind + "`";

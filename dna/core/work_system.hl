@@ -164,6 +164,19 @@ locus LegRelay {
     }
 }
 
+// A relay's reconciliation (GH #946 hardening): a relay never acts, so an
+// attempt it answered pending before its incarnation died was not acted
+// on here — the leg that holds it, if one does, holds it under a claim of
+// its own in the record, and the runtime waits on that claim before it
+// asks again. Established, not performed: the dispatch is issued again
+// and the relay answers pending as before. Wired beside `LegRelay` for
+// the kinds a program hands to legs.
+locus RelayReplay {
+    fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation {
+        return Reconciliation { kind: kind, identity: identity, established: true, performed: false, idempotent: true, why: "a relay never acts; the attempt is asked of a leg again" };
+    }
+}
+
 // An external API is a performer only when it fulfils the Work
 // contract (an assessment). Anything that changes the world stays an
 // effect behind a gateway — see dna/tests/dna_law.rs.

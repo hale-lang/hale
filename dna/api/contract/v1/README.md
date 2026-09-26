@@ -162,7 +162,7 @@ and a negative cost.
 `ContextResponse` carries a `Hat` (GH #946): one Work's context as structure,
 from `GET …/dna/context?id=<work>` (the eighteenth read path). Its `position.id`
 is the graph's `position:<name>`; `practices` are `HatPractice` rows (`id`,
-`text`); `history` is `HatFact` rows; `cost_ceiling` and `watermark` are signed
+`name`, `text`, `kind`, `author`); `history` is `HatFact` rows; `cost_ceiling` and `watermark` are signed
 decimal strings; `practices_status` is `resolved`, `no memory` or `unavailable`;
 `digest` is sha256 over the body with the digest itself left out. The two
 commands are `AttemptClaimCommandRequest` (target `dna.work`; `record_head`
@@ -170,7 +170,9 @@ precondition; `capabilities`, `data_classes`, `organizations` as arrays, `ttl`
 an integer 1..86400) and `AttemptOutcomeCommandRequest` (target `dna.attempt`;
 `holder` and an integer `token` in the preconditions; `disposition` an enum;
 `evidence` an array of `AttemptEvidenceCall`; `receipts` an array of
-`AttemptReceiptBody`), both in `CommandRequest`'s `anyOf`; their receipts
+`AttemptReceiptBody`; the hat the leg wore as `hat_digest`, `hat_head`,
+`hat_watermark` (integer, -1 for none), `prompt_digest` and `renderer`, optional
+in the schema and admitted five together or none), both in `CommandRequest`'s `anyOf`; their receipts
 (`AttemptClaimCommandReceipt`, `AttemptOutcomeCommandReceipt`, in
 `CommandResponse`'s `anyOf`) carry an `AttemptCommandOutcome` whose `token` is
 an unsigned decimal string or `""`. `/capabilities` gains `attempt_commands`

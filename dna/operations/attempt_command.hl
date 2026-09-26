@@ -46,6 +46,18 @@ fn attempt_words_ok(s: String, max: Int) -> Bool {
 }
 
 // Whether every word of `needs` is a word of `has`.
+// What a claim's scan of the record found (GH #946 hardening): the
+// attempts that await such a leg, one id per line, and why the rest of
+// the outstanding attempts of that kind did not — so a refusal names the
+// class or the organization that stood in the way, not only the kind.
+type AttemptCandidates {
+    names: String = ""; // one attempt id per line
+    of_kind: Int = 0; // outstanding attempts of the leg's kind
+    lacking: Int = 0; // ... whose `requires` the leg's capabilities do not cover
+    classed: Int = 0; // ... of a data class the leg may not see
+    owned: Int = 0; // ... under an owner the leg does not work for
+}
+
 fn attempt_words_within(needs: String, has: String) -> Bool {
     let mut i = 0;
     while i < dna::word_count(needs) {
@@ -78,6 +90,16 @@ locus AttemptCommandCodec {
         return true;
     }
     fn disposition_ok(d: String) -> Bool { return d == "done" || d == "failed" || d == "declined" || d == "timeout"; }
+    // The hat an outcome names (GH #946 hardening): a digest or none,
+    // the head and watermark it was rendered at, the prompt's digest and
+    // the renderer's version — each bounded, the digests well-formed.
+    fn hat_ok(c: GovernanceCommand) -> Bool {
+        let common = GovernanceCommandCodec { };
+        if len(c.hat_digest) > 0 && !dna::digest_well_formed(c.hat_digest) { return false; }
+        if len(c.prompt_digest) > 0 && !dna::digest_well_formed(c.prompt_digest) { return false; }
+        return common.bounded(c.hat_head, 256, false, false) && c.hat_watermark >= -1 && common.bounded(c.renderer, 128, false, false)
+            && (len(c.hat_digest) > 0 || (len(c.hat_head) == 0 && c.hat_watermark == -1 && len(c.prompt_digest) == 0 && len(c.renderer) == 0));
+    }
     // The calls a leg reports: "" or a JSON array of at most 256 objects.
     fn evidence_ok(text: String) -> Bool {
         if len(text) == 0 { return true; }
@@ -120,12 +142,13 @@ locus AttemptCommandCodec {
                 && common.bounded(c.performer_kind, 64, true, false) && !std::str::contains(c.performer_kind, " ") && common.bounded(c.performer, 256, true, false)
                 && attempt_words_ok(c.capabilities, 2048) && self.classes_ok(c.data_classes) && attempt_words_ok(c.organizations, 2048)
                 && c.ttl >= 1 && c.ttl <= ATTEMPT_TTL_MAX
-                && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == "";
+                && c.attempt_id == "" && c.holder == "" && c.token == 0 && c.disposition == "" && c.result == "" && c.result_ref == "" && c.narrative == "" && c.evidence == "" && c.receipts == ""
+                && c.hat_digest == "" && c.hat_head == "" && c.hat_watermark == -1 && c.prompt_digest == "" && c.renderer == "";
         }
         return c.target_kind == "dna.attempt" && common.bounded(c.attempt_id, 256, true, false) && c.target_id == c.attempt_id && c.record_head == ""
             && common.bounded(c.holder, 256, true, false) && c.token >= 0 && c.subject_digest == self.lease_digest(c.holder, c.token)
             && self.disposition_ok(c.disposition) && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
-            && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts)
+            && common.bounded(c.narrative, 2048, false, true) && self.evidence_ok(c.evidence) && self.receipts_ok(c.receipts) && self.hat_ok(c)
             && c.performer_kind == "" && c.performer == "" && c.capabilities == "" && c.data_classes == "" && c.organizations == "" && c.ttl == 0;
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let codec = TaskCommandCodec { }; codec.field(b, key, value); }
@@ -145,6 +168,9 @@ locus AttemptCommandCodec {
             b.append_str(",\"token\":"); b.append_str(to_string(c.token));
             self.field(b, "disposition", c.disposition); self.field(b, "result", c.result); self.field(b, "result_ref", c.result_ref); self.field(b, "narrative", c.narrative);
             self.field(b, "evidence", c.evidence); self.field(b, "receipts", c.receipts);
+            self.field(b, "hat_digest", c.hat_digest); self.field(b, "hat_head", c.hat_head);
+            b.append_str(",\"hat_watermark\":"); b.append_str(to_string(c.hat_watermark));
+            self.field(b, "prompt_digest", c.prompt_digest); self.field(b, "renderer", c.renderer);
         }
         b.append_str("}"); return std::str::from_bytes(b.snapshot());
     }
@@ -167,6 +193,8 @@ locus AttemptCommandCodec {
             c.subject_digest = self.lease_digest(c.holder, c.token);
             c.disposition = common.string(document, "disposition"); c.result = common.string(document, "result"); c.result_ref = common.string(document, "result_ref"); c.narrative = common.string(document, "narrative");
             c.evidence = common.string(document, "evidence"); c.receipts = common.string(document, "receipts");
+            c.hat_digest = common.string(document, "hat_digest"); c.hat_head = common.string(document, "hat_head"); c.hat_watermark = std::json::find_int_field(document, "hat_watermark");
+            c.prompt_digest = common.string(document, "prompt_digest"); c.renderer = common.string(document, "renderer");
         }
         return if self.valid(context, c) && self.canonical(context, c) == document { c } else { GovernanceCommand { } };
     }
@@ -185,18 +213,11 @@ locus AttemptCommandCodec {
         return false;
     }
     // The latest `attempt.claimed` row of an attempt as a lease; not
-    // present when none was taken.
+    // present when none was taken. The core reads it (`recorded_leg_claim`,
+    // with the principal that took it); this is the lease alone.
     fn recorded_claim(j: dna::Journal, attempt_id: String) -> dna::Lease {
-        let mut out = dna::Lease { key: "attempt:" + attempt_id };
-        let mut i = 0;
-        while i < j.revision() {
-            let e = j.read(i);
-            if e.kind == "attempt.claimed" && e.entity == attempt_id {
-                out = dna::Lease { key: out.key, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"), present: true };
-            }
-            i = i + 1;
-        }
-        return out;
+        let c = dna::recorded_leg_claim(j, attempt_id, j.revision());
+        return dna::Lease { key: "attempt:" + attempt_id, holder: c.holder, token: c.token, expires: c.expires, present: c.present };
     }
     // Whether an admitted attempt awaits a leg like this one: outstanding
     // (the owner asked for it to run and holds no outcome), of the kind
@@ -204,12 +225,23 @@ locus AttemptCommandCodec {
     // the leg may see, under an owner the leg works for. Whether another
     // leg holds it is the claim's question (`held_by_another`).
     fn awaits(j: dna::Journal, a: dna::AdmittedAttempt, c: GovernanceCommand) -> Bool {
-        if a.performer_kind != c.performer_kind { return false; }
-        if !self.has_row(j, "effect.requested", "attempt:" + a.attempt_id) || self.has_row(j, "attempt.outcome", a.attempt_id) { return false; }
-        if !attempt_words_within(a.request.requires, c.capabilities) { return false; }
-        if len(c.data_classes) > 0 && !dna::word_in(a.request.data_class, c.data_classes) { return false; }
+        return len(self.excluded_by(j, a, c)) == 0;
+    }
+    // Why an admitted attempt does not await this leg, "" when it does:
+    // not of the leg's kind, not outstanding (the owner asked for it to run
+    // and holds no outcome), needing what the leg lacks, of a data class
+    // the leg did not say it may see — no class named is no class, fail
+    // closed (GH #946 hardening) — or under an owner the leg does not work
+    // for (no owner named is any). Whether another leg holds it is the
+    // claim's question (`held_by_another`).
+    fn excluded_by(j: dna::Journal, a: dna::AdmittedAttempt, c: GovernanceCommand) -> String {
+        if a.performer_kind != c.performer_kind { return "kind"; }
+        if !self.has_row(j, "effect.requested", "attempt:" + a.attempt_id) || self.has_row(j, "attempt.outcome", a.attempt_id) { return "settled"; }
+        if !attempt_words_within(a.request.requires, c.capabilities) { return "capabilities"; }
+        if !dna::word_in(a.request.data_class, c.data_classes) { return "class"; }
         let owner = dna::id_owner(a.task_id);
-        return len(c.organizations) == 0 || dna::word_in(if len(owner) == 0 { "-" } else { owner }, c.organizations);
+        if len(c.organizations) > 0 && !dna::word_in(if len(owner) == 0 { "-" } else { owner }, c.organizations) { return "organization"; }
+        return "";
     }
     // Whether the record says another leg holds the attempt under a lease
     // that is still live.
@@ -217,20 +249,39 @@ locus AttemptCommandCodec {
         let held = self.recorded_claim(j, attempt_id);
         return held.present && held.holder != performer && held.expires > now;
     }
-    // The attempts that await such a leg, in record order, one id per line.
+    // The attempts that await such a leg, in record order, one id per
+    // line — and, for the refusal, why the other outstanding attempts of
+    // the leg's kind did not.
     @unbounded
-    fn candidates(j: dna::Journal, c: GovernanceCommand) -> String {
-        let mut out = "";
+    fn candidates(j: dna::Journal, c: GovernanceCommand) -> AttemptCandidates {
+        let mut out = AttemptCandidates { };
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
             if e.kind == "attempt.admitted" {
                 let d = dna::decode_attempt(e.body);
-                if d.ok && d.value.attempt_id == e.entity && self.awaits(j, d.value, c) { out = out + e.entity + "\n"; }
+                if d.ok && d.value.attempt_id == e.entity {
+                    let why = self.excluded_by(j, d.value, c);
+                    if len(why) == 0 { out.names = out.names + e.entity + "\n"; }
+                    if why != "kind" && why != "settled" { out.of_kind = out.of_kind + 1; }
+                    if why == "capabilities" { out.lacking = out.lacking + 1; }
+                    if why == "class" { out.classed = out.classed + 1; }
+                    if why == "organization" { out.owned = out.owned + 1; }
+                }
             }
             i = i + 1;
         }
         return out;
+    }
+    // Why nothing awaits the leg, from what the scan found.
+    fn nothing_awaits(c: GovernanceCommand, found: AttemptCandidates) -> String {
+        let mut why = "no admitted attempt awaits a " + c.performer_kind + " leg with capabilities `" + c.capabilities + "`";
+        if found.of_kind == 0 { return why + ": none of that kind is outstanding"; }
+        why = why + ": " + to_string(found.of_kind) + " of that kind outstanding";
+        if found.lacking > 0 { why = why + ", " + to_string(found.lacking) + " needing a capability the leg lacks"; }
+        if found.classed > 0 { why = why + ", " + to_string(found.classed) + " of a data class the leg may not see (it named " + (if len(c.data_classes) > 0 { "`" + c.data_classes + "`" } else { "none" }) + ")"; }
+        if found.owned > 0 { why = why + ", " + to_string(found.owned) + " under an owner the leg does not work for (it named `" + c.organizations + "`)"; }
+        return why;
     }
     // ---- the rows ----------------------------------------------------------
     fn command_fields(b: std::json::Builder, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, format: String) {
@@ -247,6 +298,8 @@ locus AttemptCommandCodec {
         let b = std::json::Builder { }; b.begin_object();
         b.string_field("holder", lease.holder); b.int_field("token", lease.token); b.int_field("until", lease.expires);
         b.string_field("task_id", a.task_id); b.string_field("work_id", a.work_id); b.string_field("performer_kind", a.performer_kind); b.string_field("performer", c.performer);
+        // the principal that claimed it: whose outcome the lease admits (GH #946 hardening)
+        b.string_field("principal_mode", context.principal_mode); b.string_field("principal_name", context.principal_name);
         self.command_fields(b, context, c, grant, head, ATTEMPT_CLAIM_FORMAT);
         b.end_object(); return b.result();
     }
@@ -261,6 +314,8 @@ locus AttemptCommandCodec {
         b.string_field("disposition", c.disposition); b.string_field("result", c.result); b.string_field("result_ref", c.result_ref); b.string_field("narrative", c.narrative);
         b.string_field("evidence_ref", evidence_ref); b.string_field("holder", c.holder); b.int_field("token", c.token); b.string_field("calls", c.evidence);
         b.string_field("request", common.identity(context, c.request_id));
+        b.string_field("hat_digest", c.hat_digest); b.string_field("hat_head", c.hat_head); b.int_field("hat_watermark", c.hat_watermark);
+        b.string_field("prompt_digest", c.prompt_digest); b.string_field("renderer", c.renderer);
         self.command_fields(b, context, c, grant, head, ATTEMPT_OUTCOME_FORMAT);
         b.end_object(); return b.result();
     }

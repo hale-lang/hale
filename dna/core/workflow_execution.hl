@@ -380,6 +380,16 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         let fence = recorded_fence(j, v.task_id, rev);
         if len(fence) > 0 { return Executed { why: fence + "; attempt " + id + " is not redelivered" }; }
         if !fence_holds(j, f, rev) { return fenced(j, f, "the redelivery of attempt " + id); }
+        // GH #946 hardening: an attempt a leg holds is left to its claim.
+        // The owner asks nothing of it while the lease is live — the leg
+        // is at work, and its outcome comes back under that lease — and
+        // asks again once the lease has expired with no outcome: the relay
+        // answers pending as before, and a leg claims it anew. Never
+        // `effect.result unknown`: a leg's claim says exactly what stands.
+        let leg = recorded_leg_claim(j, id, rev);
+        if leg.present && leg.expires > std::time::now() {
+            return Executed { ok: true, attached: true, why: "attempt " + id + " is " + leg.holder + "'s under a lease until " + to_string(leg.expires) + "; it waits for the leg's outcome, and is asked again when the lease expires" };
+        }
         // the claim was an incarnation's that died, and the invocation may
         // have acted before the outcome was saved: recovery reconciles
         // before it decides on a redelivery (card 12c). The adapter says
@@ -432,6 +442,36 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
     return Executed { why: "the record moved under the redelivery of attempt " + id + " " + to_string(tries) + " times; nothing ran" };
 }
 
+// A leg's claim on an attempt as the record holds it (GH #946): the
+// latest `attempt.claimed` row before `rev` — the lease (holder, token,
+// until) and the principal that took it, which is who may hand the
+// outcome back under it. Not present when none was taken.
+type LegClaim {
+    present: Bool = false;
+    holder: String = "";
+    token: Int = 0;
+    expires: Int = 0;
+    principal_mode: String = "";
+    principal_name: String = "";
+}
+
+@unbounded
+fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
+    let mut out = LegClaim { };
+    let mut i = 0;
+    while i < rev {
+        let e = j.read(i);
+        if e.kind == "attempt.claimed" && e.entity == attempt_id {
+            out = LegClaim {
+                present: true, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"),
+                principal_mode: std::json::find_string_field(e.body, "principal_mode"), principal_name: std::json::find_string_field(e.body, "principal_name")
+            };
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
 // A reply that arrives later, for an attempt that ran and was left
 // outstanding: checked by the same rules and persisted the same way. A
 // reply for an attempt whose outcome is recorded changes nothing.
@@ -467,8 +507,9 @@ fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: Strin
 fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, ran: Bool, f: Fence) -> Executed {
     let outcome = AttemptOutcome {
         attempt_id: v.attempt_id, work_id: v.work_id, disposition: r.disposition,
-        performer: r.performer, result: r.result, result_ref: "", evidence_ref: r.evidence,
+        performer: r.performer, result: r.result, result_ref: r.result_ref, evidence_ref: r.evidence,
         narrative: r.narrative,
+        request: r.request, hat_digest: r.hat_digest, hat_head: r.hat_head, hat_watermark: r.hat_watermark, prompt_digest: r.prompt_digest, renderer: r.renderer,
         transition: TransitionRef { scope: scope, key: v.attempt_id, proposal_id: transition_id(v.attempt_id, "outcome") }
     };
     let body = encode_attempt_outcome(outcome);

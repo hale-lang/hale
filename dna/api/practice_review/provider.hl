@@ -95,7 +95,8 @@ locus PracticeReviewCommands {
             performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
             organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
             disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
-            evidence: command.evidence, receipts: command.receipts
+            evidence: command.evidence, receipts: command.receipts,
+            hat_digest: command.hat_digest, hat_head: command.hat_head, hat_watermark: command.hat_watermark, prompt_digest: command.prompt_digest, renderer: command.renderer
         };
     }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {

@@ -146,6 +146,16 @@ type AttemptOutcome {
     result: String = "";
     evidence_ref: String = ""; // the evidence of this attempt (a receipt digest)
     narrative: String = "";
+    // GH #946: the command a leg handed the outcome back under ("" when
+    // the performer ran here), so the outcome answers the relayed
+    // `attempt.outcome_requested`; and the hat the attempt wore, for
+    // replay from the recorded hat
+    request: String = "";
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = -1;
+    prompt_digest: String = "";
+    renderer: String = "";
     transition: TransitionRef = TransitionRef { };
 }
 
@@ -596,6 +606,12 @@ fn encode_attempt_outcome(o: AttemptOutcome) -> String {
     b.string_field("result", o.result);
     b.string_field("evidence_ref", o.evidence_ref);
     b.string_field("narrative", o.narrative);
+    b.string_field("request", o.request);
+    b.string_field("hat_digest", o.hat_digest);
+    b.string_field("hat_head", o.hat_head);
+    b.int_field("hat_watermark", o.hat_watermark);
+    b.string_field("prompt_digest", o.prompt_digest);
+    b.string_field("renderer", o.renderer);
     transition_json(b, o.transition);
     b.end_object();
     return b.result();
@@ -628,6 +644,13 @@ fn decode_attempt_outcome(text: String) -> DecodedAttemptOutcome {
             result: std::json::find_string_field(text, "result"),
             evidence_ref: std::json::find_string_field(text, "evidence_ref"),
             narrative: std::json::find_string_field(text, "narrative"),
+            request: std::json::find_string_field(text, "request"),
+            hat_digest: std::json::find_string_field(text, "hat_digest"),
+            hat_head: std::json::find_string_field(text, "hat_head"),
+            // an outcome from before the hat carries none: -1, as a reply that wore none says
+            hat_watermark: if std::str::contains(text, "\"hat_watermark\"") { std::json::find_int_field(text, "hat_watermark") } else { -1 },
+            prompt_digest: std::json::find_string_field(text, "prompt_digest"),
+            renderer: std::json::find_string_field(text, "renderer"),
             transition: transition_of(text)
         }
     };

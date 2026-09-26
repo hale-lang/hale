@@ -253,6 +253,24 @@ locus WorkflowRuntime {
         if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
         self.reply(x, r.work_id, r.attempt_id);
     }
+    // GH #946 hardening (D3): an attempt a leg held under a lease that
+    // expired with no outcome is asked again — the dispatch as a Work's
+    // own ask, treating the attempt as not this incarnation's: the
+    // expired claim is seen, the relay's reconciliation says a relay
+    // never acts, and the attempt is redelivered pending for a leg to
+    // claim anew. The Work hears the reply as it hears every outstanding
+    // one, and keeps waiting.
+    @unbounded
+    fn reopen(attempt_id: String) -> Executed {
+        let moved = self.journal.refresh();
+        let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
+        if !admitted.ok { return Executed { why: "attempt " + attempt_id + " was never admitted; nothing is asked again" }; }
+        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, false, false, self.fence());
+        if x.fenced { self.fenced_off = self.fenced_off + 1; }
+        if x.redelivered { self.redelivered = set_add(self.redelivered, attempt_id); }
+        self.reply(x, admitted.value.work_id, attempt_id);
+        return x;
+    }
     // An execution's admission as the record holds it (card 13): the row,
     // read whole, and the projection's word that it was admitted. A task
     // the record never admitted, or admitted with a recipe that cannot be

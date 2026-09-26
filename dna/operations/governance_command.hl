@@ -56,6 +56,14 @@ type GovernanceCommand {
     narrative: String = "";
     evidence: String = ""; // a JSON array of the calls made, evidence objects
     receipts: String = ""; // a JSON array of {class, body} to file
+    // GH #946 hardening: the hat the leg wore — its digest, the head and
+    // watermark it was rendered at, the digest of what was rendered and
+    // the renderer's version; "" and -1 when the leg wore none
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = -1;
+    prompt_digest: String = "";
+    renderer: String = "";
 }
 
 // What a claim or an outcome command reads back (GH #946): the attempt

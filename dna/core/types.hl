@@ -73,6 +73,19 @@ type WorkResult {
     concerns: String = "";
     performer: String = ""; // performer identity, recorded not hidden
     attempt_id: String = ""; // the attempt this reply answers, echoed (card 08); "" from a performer that does not
+    result_ref: String = ""; // where the result is, when it is not the text (GH #946)
+    // GH #946: a leg's reply names the command that handed it back, so
+    // the outcome answers the relayed request; and the hat it wore —
+    // its digest, the head and watermark it was rendered at, the digest
+    // of what was rendered and the renderer's version — so replay
+    // renders from the recorded hat. "" and -1 from a performer that
+    // wore none.
+    request: String = "";
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = -1;
+    prompt_digest: String = "";
+    renderer: String = "";
 }
 
 // Autonomy is a property of the parent -> child relationship. The

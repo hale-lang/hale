@@ -615,7 +615,10 @@ performer kind of the attempt admitted last, or the kind the request selects
 before one is (`edit` is `position:editor`; a judgment is `position:agent`; a
 person's work `position:human`); its `charter` is the record's `graph.node`
 text for that id, `""` until the graph names it. The practices come from memory
-under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`); `practices_status` says
+under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`), as structure — `id`, `name`,
+`text`, `kind`, `author` — from one snapshot, the watermark read in the same
+transaction as the ranked bound, and the hat is kept in memory by its digest
+(`hats`, insert if absent); `practices_status` says
 `resolved`, `no memory` or `unavailable`, and `watermark` is `-1` when none was
 read. `digest` is sha256 over the canonical body with the digest itself left
 out: rendered twice at one head it is one digest, and a row that moves the head
@@ -629,40 +632,49 @@ to a leg (GH #946): `dna.attempt.claim@1` and `dna.attempt.outcome@1`. A leg
 holds nothing between tasks and has no database role: the head takes the claim
 in memory for it and writes the rows; the owner still admits and settles.
 
-`dna.attempt.claim` targets `dna.work` with the application's id, is conditioned
-on the Record head the request was prepared against (`record_head`;
-`stale_subject` when it moved), and carries a filter in `arguments`:
+`dna.attempt.claim` targets `dna.work` with the application's id, names the
+Record head the request was prepared against (`record_head`; the claim is not
+fenced on it — memory's conditional insert is the race, and a leg a row behind
+gets a receipt, never `stale_subject`), and carries a filter in `arguments`:
 `performer_kind`, `performer` (the leg's identity), `capabilities` (words the
 leg has; a Work's `requires` must all be among them), `data_classes` (classes it
-may see; none is any), `organizations` (owners it works for on a shared Record,
+may see; none is no class, and nothing is handed over), `organizations` (owners it works for on a shared Record,
 `-` for the sole owner; none is any) and `ttl` (1..86400 seconds). The head picks
 the first admitted, outstanding attempt of that kind that fits — asked to run,
 no outcome, not held by another leg under a live lease — takes memory's claim
 `attempt:<id>` for `performer` with the TTL under the head's role (the store
 decides between two legs racing; without memory nothing races and the claim is
-granted), and appends `attempt.claimed` naming the holder, its token and until
-when. The receipt's `attempt` object is the lease as a value: `state: claimed`,
+granted), and appends `attempt.claimed` naming the holder, its token, until
+when, and the principal that took it. The receipt's `attempt` object is the lease as a value: `state: claimed`,
 `attempt_id`, `work_id`, `task_id`, `performer_kind`, `holder`, `token`, `until`,
 `event_id`. Nothing fitting, or everything held, is `state: refused` with the
-`reason` and no row.
+`reason` — which names the class or the owner that stood in the way — and no row.
 
 `dna.attempt.outcome` targets `dna.attempt` with the attempt id, under the lease
 in `preconditions` (`holder`, `token`; `subject_digest` is `lease:<holder>@<token>`),
 and carries the outcome in `arguments`: `disposition` (`done`, `failed`,
 `declined`, `timeout`), `result` (at most 16384 bytes) or `result_ref`,
 `narrative`, `evidence` (the calls the leg made, as `model.called` evidence
-objects: adapter, backend, models, digests, tokens, cost) and `receipts`
+objects: adapter, backend, models, digests, tokens, cost), `receipts`
 (`{class, body}`: a `customer` or `confidential` body goes to memory alone
-through `receipt_file`, the rest are git receipts). The head refuses — a
+through `receipt_file`, the rest are git receipts) and, when the leg wore one,
+the hat — `hat_digest`, `hat_head`, `hat_watermark`, `prompt_digest`, `renderer`,
+the five together or none. The head refuses — a
 receipt with the reason, no row — an attempt never admitted or never asked to
-run, one already settled (`duplicate`), and a lease that is not this holder's at
-this token now, in the record or in memory (`stale`). Otherwise it files the
+run, one already settled or already handed back (`duplicate`: one outcome under
+one lease), a lease that is not this holder's at this token now, in the record
+or in memory (`stale`), and an outcome from a principal other than the one that
+claimed. Otherwise it files the
 receipts and appends `attempt.outcome_requested`; the receipt is `requested`. A
 node relays the row onto the nerves (`dna.work.submit`); the owner journals the
 calls on the attempt (tokens per task hold out of process), settles it as it
-settles every reply (`attempt.outcome`) or refuses it with
-`attempt.outcome_refused` naming why; `GET /commands?request_id=` re-derives
-`settled` with the disposition, or `refused` with the reason.
+settles every reply (`attempt.outcome`, naming the request and carrying
+`result_ref` and the hat) or refuses it with
+`attempt.outcome_refused` naming why and the request; `GET /commands?request_id=`
+re-derives `settled` with the disposition, or `refused` with the reason and the
+refusing row's id. Once the organism has adopted the ledger, both commands and
+the hat read and write it under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`);
+without it they answer `commands_unsupported` / `context_source_unavailable`.
 
 `/capabilities` exposes `attempt_commands` (`dna.attempt.v1`, both operations and
 their bounds) and `writes.attempt_claim` / `writes.attempt_outcome`;
