@@ -58,6 +58,8 @@ locus Head {
     fn prefix() -> String { return "/api/hale/v1/applications/" + self.application; }
     // The application the head serves, its record head, and the principal
     // the head sees this leg as: what every command's preconditions name.
+    // Once per verb, or once per renewal of a lease held through a wait.
+    @unbounded
     fn attach() -> Bool {
         let apps = self.get("/api/hale/v1/applications");
         if !apps.ok { self.error = apps.error; return false; }

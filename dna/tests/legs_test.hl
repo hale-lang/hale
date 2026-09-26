@@ -54,6 +54,21 @@ fn relay_once(app: String) -> Int {
 
 const FIXED_WORK: String = "// a deterministic performer for the fixture\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::FixedAnswer { kinds: \"agent\", result: \"assessment: fixed\", narrative: \"a program answered\" }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
+const MODEL_WORK: String = "// the model leg over fakes, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { router: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", model: \"quick-1\", answer: \"assessment: the fake says ship it\" }, deep: dna::FakeModel { name: \"deep\", model: \"deep-1\", answer: \"assessment: the fake says ship it\" } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+const THROTTLED_WORK: String = "// a rate-limited backend, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus Throttled {\n    params { calls: Int = 0; }\n    bus { publish dna::ModelCalled; }\n    fn identity() -> String { return \"throttled\"; }\n    fn model_name() -> String { return \"throttled-1\"; }\n    fn allows(data_class: String) -> Bool { return true; }\n    fn capacity_bytes() -> Int { return 100000; }\n    fn works_in_place() -> Bool { return false; }\n    fn complete(req: dna::ModelRequest) -> dna::ModelResult {\n        self.calls = self.calls + 1;\n        let mut ev = dna::ModelEvidence { attempt_id: req.attempt_id, adapter: \"fake\", backend: \"throttled\", requested_model: \"throttled-1\", reported_model: \"throttled-1\", prompt_digest: req.prompt_digest, context_digest: dna::digest_of(req.context), data_class: req.data_class, retry_of: req.retry_of };\n        if self.calls == 1 { ev.refused = \"http 429 too many requests\"; dna::ModelCalled <- ev; return dna::ModelResult { ok: false, backend: \"throttled\", model: \"throttled-1\", refused: ev.refused }; }\n        ev.input_tokens = 7; ev.output_tokens = 3; ev.cost_micros = 1;\n        dna::ModelCalled <- ev;\n        return dna::ModelResult { ok: true, backend: \"throttled\", model: \"throttled-1\", output: \"assessment: ship it, after a breath\", tokens: 10, input_tokens: 7, output_tokens: 3, cost_micros: 1 };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::ModelPerformer { backoff_ms: 100, router: dna::ModelRouter { quick: Throttled { }, deep: Throttled { } } } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+
+// A deterministic performer that takes six seconds, for a worker ended
+// mid-task; drained early it still holds the lease past the loop's grace.
+const SLOW_WORK: String = "// a slow performer for the fixture\nimport \"vendor/dna/legs\" as legs;\nlocus Slow {\n    fn kind() -> String { return \"deterministic\"; }\n    fn takes(performer_kind: String) -> Bool { return performer_kind == \"agent\"; }\n    @unbounded\n    fn perform(brief: legs::Brief, hands: legs::Hands) -> legs::Performance {\n        let until = std::time::monotonic_ns() + 6000000000;\n        while std::time::monotonic_ns() < until { std::time::sleep(100ms); }\n        return legs::Performance { disposition: \"done\", result: \"assessment: slowly\", renderer: legs::RENDERER_VERSION };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: Slow { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
+
+// The lines of a text: one per newline-terminated line, plus a last one.
+@unbounded
+fn lines_in(text: String) -> Int {
+    let mut n = 0; let mut i = 0;
+    while i < len(text) { if text[i..(i + 1)] == "\n" { n = n + 1; } i = i + 1; }
+    return if len(text) > 0 { n + 1 } else { 0 };
+}
+
 locus App {
     params {
         app: String = "";
@@ -142,6 +157,27 @@ locus App {
         return dna::trim_nl(r.stdout);
     }
     fn work(args: String) -> String { return self.work_rc(args, 0); }
+    // A loop is never left to run unbounded by the fixture: `timeout` ends it.
+    fn work_timeout(secs: Int, args: String) -> String {
+        let r = dna::run_tool_timeout(secs, "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.app + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args);
+        std::test::assert_eq_int(r.code, 0, "hale dna work " + std::str::replace(args, "\n", " ") + " (within " + to_string(secs) + "s): " + r.stdout + r.stderr);
+        return dna::trim_nl(r.stdout);
+    }
+    fn loop_argv(args: String) -> String {
+        return "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.app + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args;
+    }
+    // The loop's exit within `secs`; -2 when it is still running.
+    @unbounded
+    fn loop_exit(c: std::process::Child, secs: Int) -> Int {
+        let mut waited = 0;
+        let mut code = std::process::try_wait(c) or - 1;
+        while code == -2 && waited < secs * 10 { std::time::sleep(100ms); waited = waited + 1; code = std::process::try_wait(c) or - 1; }
+        return code;
+    }
+    fn legs_running() -> String {
+        let r = dna::run_tool("sh\n-c\npgrep -f \"$1/.hale/dna/legs/\" || true\nsh\n" + self.app);
+        return dna::trim_nl(r.stdout);
+    }
     fn attempt_of(answer: String) -> String { return std::json::find_field_raw(answer, "attempt"); }
     fn state_of(answer: String) -> String { return std::json::find_string_field(self.attempt_of(answer), "state"); }
     fn token_of(answer: String) -> String { return std::json::find_string_field(self.attempt_of(answer), "token"); }
@@ -238,9 +274,10 @@ locus App {
         std::test::assert(self.has_row("effect.redelivered", "attempt:" + a3), "the lease expired with no outcome: the owner asks again");
         let anew = self.work("next\n--as\nposition:editor\n--kind\nagent");
         std::test::assert(self.state_of(anew) == "claimed" && std::json::find_string_field(self.attempt_of(anew), "attempt_id") == a3, "and another leg claims it: " + anew);
-        // run: a person's cycle leaves the outcome to them; a deterministic performer wins for its kind
+        // run: a person's cycle leaves the outcome to them (the model takes the
+        // kind by default, so the person is asked for); a deterministic performer wins for its kind
         let a4 = self.ask();
-        let person = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9");
+        let person = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--performer\nperson");
         std::test::assert(std::json::find_string_field(person, "state") == "pending" && std::json::find_string_field(person, "performer") == "person" && std::json::find_string_field(person, "attempt_id") == a4, "a person's run is pending: " + person);
         std::test::assert(std::str::contains(std::json::find_string_field(person, "narrative"), "hale dna work submit"), "and says how to hand it back");
         std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
@@ -256,6 +293,113 @@ locus App {
         // mcp: the verbs through this binary
         let listed = dna::run_tool("sh\n-c\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$1\" mcp\nsh\n" + toolchain());
         std::test::assert(std::str::contains(listed.stdout, "hale_dna_work"), "hale mcp lists the leg's verbs: " + listed.stdout + listed.stderr);
+    }
+    // ---- the model leg and worker mode: the router behind the performer,
+    // a rate-limited call backed off inside the attempt, --parallel children
+    @unbounded
+    fn worker() {
+        // the model leg: the catalog's router behind the performer, out of process
+        let a5 = self.ask();
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", MODEL_WORK) or discard;
+        let modelled = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        std::test::assert(std::json::find_string_field(modelled, "performer") == "model" && std::json::find_string_field(modelled, "state") == "requested" && std::json::find_string_field(modelled, "attempt_id") == a5, "the model leg performs and hands the outcome back: " + modelled);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a5, "and the owner settles it");
+        std::test::assert(self.has_row("model.called", a5), "the router's answer is the attempt's evidence, journaled by the owner");
+        let s5 = self.work("settle\n--request-id\n" + std::json::find_string_field(modelled, "request_id"));
+        std::test::assert(self.state_of(s5) == "settled" && std::json::find_string_field(self.attempt_of(s5), "disposition") == "done", "settled done: " + s5);
+        // a performer forced on the leg: the person, though the model takes the kind
+        let a6 = self.ask();
+        let forced = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--performer\nperson");
+        std::test::assert(std::json::find_string_field(forced, "performer") == "person" && std::json::find_string_field(forced, "state") == "pending" && std::json::find_string_field(forced, "attempt_id") == a6, "--performer person: the run is the person's: " + forced);
+        let back = self.work("release\n--as\nposition:agent\n--holder\nposition:agent#9\n--attempt\n" + a6 + "\n--token\n" + std::json::find_string_field(forced, "token") + "\n--why\nthe fixture takes it back");
+        std::test::assert_eq_str(self.state_of(back), "released", "and given back: " + back);
+        // a rate-limited call: backed off inside the attempt, the wait recorded as
+        // evidence; the attempt is the one given back, claimed anew under a new token
+        let a7 = a6;
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", THROTTLED_WORK) or discard;
+        let throttled = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        std::test::assert(std::json::find_string_field(throttled, "performer") == "model" && std::json::find_string_field(throttled, "state") == "requested" && std::json::find_string_field(throttled, "attempt_id") == a7 && std::json::find_string_field(throttled, "token") == "2", "the throttled leg takes the released attempt anew and still hands an outcome back: " + throttled);
+        let requested7 = self.row_body("attempt.outcome_requested", a7);
+        let calls7 = std::json::find_string_field(requested7, "calls");
+        std::test::assert(std::str::contains(calls7, "backed off 100ms") && std::str::contains(calls7, "http 429") && std::str::contains(calls7, "lease renewed"), "the wait is evidence, naming the refusal and the lease kept meanwhile: " + calls7);
+        std::test::assert(std::str::contains(calls7, "\"reported_model\": \"throttled-1\"") && std::str::contains(calls7, "\"input_tokens\": 7") && std::str::contains(calls7, "\"output_tokens\": 3"), "and the answer that followed is too, with the split the backend reported: " + calls7);
+        std::test::assert(std::str::contains(calls7, "\"context_digest\": \"" + std::json::find_string_field(throttled, "hat_digest") + "\""), "the hat's digest is the context digest of every row: " + calls7);
+        std::test::assert(self.has_row("attempt.claimed", a7) && self.count_rows("attempt.claimed", a7) >= 3, "the renewal landed as a claim row under the lease");
+        std::test::assert(std::str::contains(std::json::find_string_field(requested7, "narrative"), "1 backed-off retries, 100ms waited"), "the narrative says what it cost in time: " + std::json::find_string_field(requested7, "narrative"));
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a7, "and settles");
+        std::test::assert_eq_int(self.count_rows("model.called", a7), 3, "three rows of evidence journaled: the refusal, the wait, the answer");
+        // worker mode: --parallel children, each its own holder, one task each
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", MODEL_WORK) or discard;
+        let a8 = self.ask();
+        let a9 = self.ask();
+        let looped = self.work_timeout(120, "loop\n--as\nposition:agent\n--parallel\n2\n--once\n--wait\n0");
+        std::test::assert(lines_in(looped) == 3 && std::str::starts_with(looped, "{\"verb\": \"loop\", \"worker\":"), "one JSON line per child, then the loop's own: " + looped);
+        std::test::assert(std::str::contains(looped, "\"holder\": \"position:agent#1\"") && std::str::contains(looped, "\"holder\": \"position:agent#2\""), "two workers, each its own holder: " + looped);
+        std::test::assert(std::str::contains(looped, "\"attempt_id\": \"" + a8 + "\"") && std::str::contains(looped, "\"attempt_id\": \"" + a9 + "\""), "each took one attempt: " + looped);
+        std::test::assert(std::str::contains(looped, "\"state\": \"ended\", \"workers\": 2, \"ran\": 2"), "and the loop ended after one task each: " + looped);
+        std::test::assert_eq_int(relay_once(self.app), 2, "both outcomes relayed");
+        self.wait_row("attempt.outcome", a8, "the first settles");
+        self.wait_row("attempt.outcome", a9, "and the second");
+        // a loop with nothing to claim ends its --once children on the refusal
+        let idle = self.work_timeout(60, "loop\n--as\nposition:agent\n--parallel\n1\n--once\n--only\nagent");
+        std::test::assert(std::str::contains(idle, "\"state\": \"refused\"") && std::str::contains(idle, "\"ran\": 1"), "an idle worker's refusal is reported and the loop ends: " + idle);
+        // a worker ended mid-task: SIGTERM to the loop drains it and ends its
+        // child; the lease the child held expires and the owner asks again
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", SLOW_WORK) or discard;
+        let built = self.work_rc("next\n--as\nposition:human", 1); // builds the slow leg (a refusal), so the loop below starts at once
+        let a10 = self.ask();
+        let running = std::process::spawn(self.loop_argv("loop\n--as\nposition:agent\n--parallel\n1\n--ttl\n3\n--wait\n0")) or std::process::Child { };
+        std::test::assert(running.pid > 0, "the loop starts in the background");
+        self.wait_row("attempt.claimed", a10, "its worker claims the attempt");
+        std::process::signal(running, 15) or discard;
+        let code10 = self.loop_exit(running, 15);
+        let said10 = dna::trim_nl(std::process::read_stdout(running) or "");
+        std::test::assert(code10 == 0 && std::str::contains(said10, "\"state\": \"ended\"") && std::str::contains(said10, "\"drained\": true"), "the loop drains on the signal and ends, its child ended: " + to_string(code10) + " " + said10);
+        std::test::assert_eq_str(self.legs_running(), "", "no leg of this project is left running");
+        std::test::assert(!self.has_row("attempt.outcome_requested", a10), "the child ended mid-task: no outcome");
+        let mut t10 = 0;
+        while t10 < 60 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a10) { let n = self.core.redrive(); std::time::sleep(250ms); t10 = t10 + 1; }
+        std::test::assert(self.has_row("effect.redelivered", "attempt:" + a10), "the lease expired with no outcome: the owner asks again");
+        // (the leader: the editor still holds a lease from the single pass, and a
+        // claim by the same position would be that lease)
+        let again = self.work("next\n--as\nposition:leader\n--kind\nagent");
+        std::test::assert(self.state_of(again) == "claimed" && std::json::find_string_field(self.attempt_of(again), "attempt_id") == a10, "and another leg claims it: " + again);
+        let closed10 = self.work("submit\n--as\nposition:leader\n--attempt\n" + a10 + "\n--token\n" + self.token_of(again) + "\n--result\nassessment: closed by the fixture");
+        std::test::assert_eq_str(self.state_of(closed10), "requested", "and hands it back: " + closed10);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a10, "settled");
+        // a running loop drained: the marker ends it once its children have
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", MODEL_WORK) or discard;
+        let built2 = self.work_rc("next\n--as\nposition:human", 1);
+        let idle_loop = std::process::spawn(self.loop_argv("loop\n--as\nposition:agent\n--parallel\n1\n--only\nagent\n--idle-ms\n500")) or std::process::Child { };
+        std::test::assert(idle_loop.pid > 0, "an idle loop starts in the background");
+        std::time::sleep(1500ms);
+        let draining = self.work("loop\n--drain");
+        std::test::assert(std::str::contains(draining, "\"state\": \"draining\"") && std::io::fs::file_exists(self.app + "/.hale/dna/legs/drain"), "--drain leaves the marker: " + draining);
+        let code11 = self.loop_exit(idle_loop, 20);
+        let said11 = dna::trim_nl(std::process::read_stdout(idle_loop) or "");
+        std::test::assert(code11 == 0 && std::str::contains(said11, "\"drained\": true") && std::str::contains(said11, "\"state\": \"refused\""), "the running loop read the marker and ended after its idle child: " + to_string(code11) + " " + said11);
+        std::test::assert_eq_str(self.legs_running(), "", "and nothing of it is left running");
+        // usage judged before the head
+        let many = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work loop --as position:agent --parallel 99 --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert_eq_int(many.code, 2, "--parallel out of range is a usage error before the head: " + many.stdout + many.stderr);
+        let which = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work loop --as position:agent --performer oracle --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert_eq_int(which.code, 2, "--performer names one of the three: " + which.stdout + which.stderr);
+        let which_run = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work run --as position:agent --performer oracle --api http://127.0.0.1:1\nsh\n" + self.app + "\n" + toolchain());
+        std::test::assert_eq_int(which_run.code, 2, "for run too: " + which_run.stdout + which_run.stderr);
+        // a forced performer that does not take the kind refuses, and the lease is given back
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
+        let a12 = self.ask();
+        let not_taken = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--performer\nmodel");
+        std::test::assert(std::json::find_string_field(not_taken, "state") == "released" && std::str::contains(std::json::find_string_field(not_taken, "reason"), "does not take"), "a forced model that takes nothing of the kind refuses and releases: " + not_taken);
+        let back12 = self.work("next\n--as\nposition:leader\n--kind\nagent");
+        std::test::assert(self.state_of(back12) == "claimed" && std::json::find_string_field(self.attempt_of(back12), "attempt_id") == a12, "the attempt is claimable again: " + back12);
+        let closed12 = self.work("submit\n--as\nposition:leader\n--attempt\n" + a12 + "\n--token\n" + self.token_of(back12) + "\n--result\nassessment: closed by the fixture");
+        std::test::assert_eq_str(self.state_of(closed12), "requested", "and hands it back: " + closed12);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", a12, "settled");
     }
     // ---- the hands, on the project's own repository
     fn hands() {
@@ -299,10 +443,12 @@ locus App {
         self.start_head();
         self.pass("record", "1");
         self.extras();
+        self.worker();
         self.hands();
         if self.with_memory {
             self.adopt();
             self.pass("adopted", "2");
+            self.worker();
             let ledger = dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV };
             let mut i = 0; let mut claimed = 0;
             while i < ledger.revision() { if ledger.read(i).kind == "attempt.claimed" { claimed = claimed + 1; } i = i + 1; }

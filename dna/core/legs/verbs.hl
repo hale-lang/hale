@@ -9,6 +9,8 @@
 //   release   give the lease back without an outcome    (WorkRelease, dna.attempt.release)
 //   friction  file what got in the position's way       (FrictionFiled, dna.friction.file)
 //   run       one cycle: next, brief, perform, submit, settle
+//   loop      worker mode: --parallel N supervised children, each `run` as its own holder,
+//             one JSON line per child as it ends; SIGTERM/SIGINT or `loop --drain` ends it
 //
 // Every verb prints one JSON object and holds nothing afterwards: the
 // head is read per verb (`--api`, the record head and the principal the
@@ -23,7 +25,7 @@
 import ".." as dna;
 
 // The flags with a value; every other `--flag` stands alone.
-const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --holder --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal ";
+const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --holder --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --performer --parallel --only --idle-ms ";
 
 type Args {
     verb: String = "";
@@ -162,13 +164,13 @@ locus Leg {
     }
     fn usage(why: String) -> Int {
         eprintln("hale dna work: ", why);
-        eprintln("usage: hale dna work next|brief|renew|submit|settle|release|friction|run [--api <origin>] [--as position:<name>] …");
+        eprintln("usage: hale dna work next|brief|renew|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
         return 2;
     }
-    fn fail(verb: String, error: String) -> Int { print(error_json(verb, error)); return 1; }
+    fn fail(verb: String, error: String) -> Int { println(error_json(verb, error)); return 1; }
     fn done(verb: String, request_id: String, reply: Reply) -> Int {
         if !reply.ok { return self.fail(verb, reply.error); }
-        print(answer_json(verb, request_id, reply));
+        println(answer_json(verb, request_id, reply));
         return if std::json::find_string_field(std::json::find_field_raw(reply.body, "data"), "state") == "refused" { 1 } else { 0 };
     }
     // `--as` is the graph's position id, and the holder the lease is taken for.
@@ -340,7 +342,8 @@ locus Leg {
     fn run_once() -> Int {
         if !self.position_needed() { return self.usage("`run` names the position it works as: --as position:<name>"); }
         let kind = flag_or(self.a, "--kind", kind_of_position(self.as_position));
-        let request = flag_or(self.a, "--request-id", "work-next:" + self.holder + ":" + self.head.record_head);
+        // a fresh id per run, as `next` mints one
+        let request = flag_or(self.a, "--request-id", "work-next:" + self.holder + ":" + to_string(std::time::now()) + "." + to_string(std::process::pid()));
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("performer_kind", kind);
@@ -354,13 +357,13 @@ locus Leg {
         if !claimed.ok { return self.fail("run", claimed.error); }
         let data = std::json::find_field_raw(claimed.body, "data");
         let lease = std::json::find_field_raw(data, "attempt");
-        if std::json::find_string_field(lease, "state") != "claimed" { print(answer_json("run", request, claimed)); return 0; }
+        if std::json::find_string_field(lease, "state") != "claimed" { println(answer_json("run", request, claimed)); return 0; }
         let attempt = std::json::find_string_field(lease, "attempt_id");
         let token = std::str::parse_int(std::json::find_string_field(lease, "token")) or 0;
         let context = self.head.context(std::json::find_string_field(lease, "work_id"));
         if !context.ok { return self.fail("run", "the hat: " + context.error); }
         let hat = std::json::find_field_raw(context.body, "data");
-        let who = self.catalog.chosen(kind);
+        let who = self.catalog.chosen_or(kind, flag(self.a, "--performer"));
         let mode = self.catalog.mode_for(who);
         let rendered = render(hat, mode);
         let brief = Brief {
@@ -369,7 +372,13 @@ locus Leg {
             hat_watermark: std::str::parse_int(std::json::find_string_field(hat, "watermark")) or - 1,
             holder: self.holder, token: token, until: std::str::parse_int(std::json::find_string_field(lease, "until")) or 0, rendered: rendered, render_mode: mode
         };
-        let mut performance = self.catalog.perform(brief, self.hands);
+        // the lease is the performer's to keep while it waits (a backed-off call)
+        self.hands.lease.api = self.head.api;
+        self.hands.lease.attempt = attempt;
+        self.hands.lease.holder = self.holder;
+        self.hands.lease.token = token;
+        self.hands.lease.renewals = 0;
+        let mut performance = self.catalog.perform_as(who, brief, self.hands);
         self.hands.git.clean();
         if !performance.pending && len(performance.refused) == 0 && len(performance.disposition) == 0 {
             // nothing answered: the lease is not left held on a silence
@@ -392,7 +401,7 @@ locus Leg {
             out.string_field("narrative", performance.narrative);
             out.string_field("text", rendered);
             out.end_object();
-            print(out.result());
+            println(out.result());
             return 0;
         }
         if len(performance.refused) > 0 {
@@ -402,7 +411,7 @@ locus Leg {
             out.string_field("state", if given_state == "released" { "released" } else { "refused" });
             out.string_field("reason", performance.refused + (if given_state == "released" { "" } else { "; the lease was not given back: " + (if given.ok { std::json::find_string_field(std::json::find_field_raw(given.body, "data"), "reason") } else { given.error }) }));
             out.end_object();
-            print(out.result());
+            println(out.result());
             return if given_state == "released" { 0 } else { 1 };
         }
         let submit_request = "work-submit:" + attempt + ":" + to_string(token);
@@ -410,6 +419,16 @@ locus Leg {
             brief.hat_digest, brief.hat_head, brief.hat_watermark, performance.prompt_digest, performance.renderer);
         let submitted = self.head.submit(submit_request, "dna.attempt.outcome", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), arguments);
         if !submitted.ok { return self.fail("run", submitted.error); }
+        let receipt = std::json::find_field_raw(submitted.body, "data");
+        if std::json::find_string_field(std::json::find_field_raw(receipt, "attempt"), "state") == "refused" {
+            // the outcome was not taken (the lease expired, or another's): the receipt, exit 1
+            out.string_field("state", "refused");
+            out.string_field("reason", std::json::find_string_field(receipt, "reason"));
+            out.string_field("request_id", submit_request);
+            out.end_object();
+            println(out.result());
+            return 1;
+        }
         let deadline = std::time::now() + int_flag(self.a, "--wait", 30);
         let mut reply = self.head.lookup(submit_request);
         while reply.ok && std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt"), "state") == "requested" && std::time::now() < deadline {
@@ -421,7 +440,88 @@ locus Leg {
         out.string_field("reason", std::json::find_string_field(settled, "reason"));
         out.string_field("request_id", submit_request);
         out.end_object();
-        print(out.result());
+        println(out.result());
+        return 0;
+    }
+    // ---- loop: worker mode. `--parallel N` children, each this program
+    // run once (`run`) as its own holder — `<position>#<n>`, so two workers
+    // of one position never share a lease — supervised: a child that ends
+    // is started again, at once after a task, after a per-slot backoff
+    // (`--idle-ms`, doubling to a minute) when it found nothing to do or
+    // left the Work to a person; each child's answer is printed as one
+    // JSON line as it ends, its output read as it runs. `--once` runs each
+    // child once. The loop ends on SIGTERM/SIGINT — the process drains,
+    // the children are terminated and reaped — and on `--drain`, which on
+    // its own tells a running loop, through a marker beside the leg
+    // (`.hale/dna/legs/drain`), to take no new work and end once its
+    // children have.
+    @unbounded
+    fn worker_loop() -> Int {
+        let marker = ".hale/dna/legs/drain";
+        if has_flag(self.a, "--drain") {
+            std::io::fs::write_file(marker, to_string(std::time::now())) or discard;
+            println("{\"verb\": \"loop\", \"state\": \"draining\", \"marker\": " + dna::record_json_quote(marker) + "}");
+            return 0;
+        }
+        self.position_needed();
+        let gone = dna::run_tool("rm\n-f\n" + marker);
+        let parallel = int_flag(self.a, "--parallel", 1);
+        let once = has_flag(self.a, "--once");
+        let idle_ms = int_flag(self.a, "--idle-ms", 2000);
+        // what a child is told: this program, `run`, the position, its own
+        // holder, and the flags that pass through; never a request id — each
+        // child mints its own claim id
+        let mut common = std::env::arg(0) + "\nrun\n--as\n" + self.as_position + "\n--api\n" + self.head.api + "\n--wait\n" + to_string(int_flag(self.a, "--wait", 0));
+        let passed = " --performer --capabilities --classes --orgs --ttl ";
+        let mut k = 0;
+        while k < dna::word_count(passed) {
+            let f = dna::nth_word(passed, k);
+            if len(flag(self.a, f)) > 0 { common = common + "\n" + f + "\n" + flag(self.a, f); }
+            k = k + 1;
+        }
+        if len(flag(self.a, "--only")) > 0 { common = common + "\n--kind\n" + flag(self.a, "--only"); }
+        let pool = LegPool { idle_ms: idle_ms };
+        let mut i = 0;
+        while i < parallel { pool.plan(i + 1, 0); i = i + 1; }
+        let mut done = 0;
+        let mut ran = 0;
+        let mut draining = false;
+        let mut drain_began = 0;
+        while done < parallel {
+            std::time::sleep(100ms);
+            let now = now_ms();
+            if !draining && (self.draining || std::io::fs::file_exists(marker)) {
+                draining = true;
+                drain_began = now;
+                // a signal ends the children too; the marker lets them finish
+                if self.draining { pool.terminate_all(); }
+            }
+            if draining && self.draining && now - drain_began > 3000 { pool.kill_all(); }
+            let mut w = 0;
+            while w < parallel {
+                let slot = w + 1;
+                if !pool.finished(slot) {
+                    if pool.live(slot) {
+                        let ended = pool.reap(slot);
+                        if len(ended) > 0 {
+                            ran = ran + 1;
+                            println("{\"verb\": \"loop\", \"worker\": " + to_string(slot) + ", \"holder\": " + dna::record_json_quote(self.holder + "#" + to_string(slot)) + ", \"ran\": " + ended + "}");
+                            let state = std::json::find_string_field(ended, "state");
+                            // nothing to do, or the Work left to a person, or given back: idle
+                            let idle = state == "refused" || state == "error" || state == "pending" || state == "released" || len(state) == 0;
+                            if once || draining { pool.finish(slot); done = done + 1; }
+                            else { pool.plan(slot, if idle { now + pool.backoff(slot) } else { now }); if !idle { pool.rested(slot); } }
+                        }
+                    } else if draining {
+                        pool.finish(slot); done = done + 1;
+                    } else if pool.due(slot, now) {
+                        pool.start(slot, common + "\n--holder\n" + self.holder + "#" + to_string(slot));
+                    }
+                }
+                w = w + 1;
+            }
+        }
+        println("{\"verb\": \"loop\", \"state\": \"ended\", \"workers\": " + to_string(parallel) + ", \"ran\": " + to_string(ran) + ", \"drained\": " + (if draining { "true" } else { "false" }) + "}");
         return 0;
     }
     // What a verb needs said, judged before the head is asked: a usage
@@ -431,7 +531,10 @@ locus Leg {
         if len(numbers) > 0 { return numbers; }
         let position = flag(self.a, "--as");
         let holder = flag_or(self.a, "--holder", position);
-        if (verb == "next" || verb == "friction" || verb == "run") && !is_position(position) { return "`" + verb + "` names the position it works as: --as position:<name> (the graph's id)"; }
+        if verb == "loop" && has_flag(self.a, "--drain") { return ""; }
+        if verb == "loop" && (int_flag(self.a, "--parallel", 1) < 1 || int_flag(self.a, "--parallel", 1) > 64) { return "--parallel is 1..64"; }
+        if (verb == "loop" || verb == "run") && len(flag(self.a, "--performer")) > 0 && flag(self.a, "--performer") != "person" && flag(self.a, "--performer") != "deterministic" && flag(self.a, "--performer") != "model" { return "--performer is person, deterministic or model"; }
+        if (verb == "next" || verb == "friction" || verb == "run" || verb == "loop") && !is_position(position) { return "`" + verb + "` names the position it works as: --as position:<name> (the graph's id)"; }
         if len(position) > 0 && !is_position(position) { return "--as is a position: position:<name>"; }
         if len(holder) > 0 && !is_position(holder) { return "--holder is a position, or one of its workers: position:<name>#<n>"; }
         if verb == "renew" || verb == "submit" || verb == "release" {
@@ -447,11 +550,13 @@ locus Leg {
         self.a = parse_args();
         if len(self.a.error) > 0 { return self.usage(self.a.error); }
         let verb = self.a.verb;
-        if verb != "next" && verb != "brief" && verb != "renew" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
+        if verb != "next" && verb != "brief" && verb != "renew" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
         let wrong = self.precheck(verb);
         if len(wrong) > 0 { return self.usage(wrong); }
+        if verb == "loop" && has_flag(self.a, "--drain") { return self.worker_loop(); }
         self.head.api = flag_or(self.a, "--api", if std::env::var_exists("HALE_DNA_API") { std::env::var("HALE_DNA_API") } else { "http://127.0.0.1:8793" });
         if !self.head.attach() { return self.fail(verb, self.head.error); }
+        if verb == "loop" { return self.worker_loop(); }
         if verb == "next" { return self.next(); }
         if verb == "brief" { return self.brief(); }
         if verb == "renew" { return self.renew(); }
@@ -460,6 +565,118 @@ locus Leg {
         if verb == "release" { return self.releasing(); }
         if verb == "friction" { return self.friction(); }
         return self.run_once();
+    }
+}
+
+fn now_ms() -> Int { return std::time::monotonic_ns() / 1000000; }
+// A short-lived handle around a slot's child, disarmed after the call
+// so its teardown closes nothing the slot still owns.
+fn slot_handle(w: LegSlot) -> std::process::Child {
+    return std::process::Child { pid: w.pid, stdin_fd: w.stdin_fd, stdout_fd: w.stdout_fd, stderr_fd: w.stderr_fd };
+}
+fn disarm(c: std::process::Child) { c.pid = -1; c.stdin_fd = -1; c.stdout_fd = -1; c.stderr_fd = -1; }
+
+// The workers of a loop: one child process per slot, this program run
+// once; their output read as they run and kept as what they said,
+// reaped by slot. A child's handle is kept as its pid and fds (a `Child`
+// value closes what it holds when it goes), and a short-lived, disarmed
+// handle is built around each call on it, as the API fixtures do.
+type LegSlot {
+    slot: Int = 0;
+    pid: Int = -1; stdin_fd: Int = -1; stdout_fd: Int = -1; stderr_fd: Int = -1;
+    live: Bool = false; // a child is running
+    stopped: Bool = false; // the slot is finished: nothing runs, nothing will
+    failed: Bool = false; // the last start failed
+    out: String = ""; // what the child printed so far
+    start_at: Int = 0; // when the slot's next child is due (ms, monotonic); 0 = now
+    idles: Int = 0; // consecutive idle runs, the backoff's exponent
+}
+@form(vec)
+locus LegSlotRows { capacity { heap rows of LegSlot; } }
+locus LegPool {
+    params { slots: LegSlotRows = LegSlotRows { }; idle_ms: Int = 2000; }
+    // one row per slot, replaced in place: the pool is as wide as --parallel
+    @unbounded
+    fn keep(w: LegSlot) {
+        let mut i = 0;
+        while i < self.slots.len() {
+            let have = self.slots.get(i) or LegSlot { };
+            if have.slot == w.slot { self.slots.set(i, w) or discard; return; }
+            i = i + 1;
+        }
+        self.slots.push(w);
+    }
+    @unbounded
+    fn at(slot: Int) -> LegSlot {
+        let mut i = 0;
+        while i < self.slots.len() { let w = self.slots.get(i) or LegSlot { }; if w.slot == slot { return w; } i = i + 1; }
+        return LegSlot { slot: slot };
+    }
+    fn live(slot: Int) -> Bool { return self.at(slot).live; }
+    fn finished(slot: Int) -> Bool { return self.at(slot).stopped; }
+    fn due(slot: Int, now: Int) -> Bool { return self.at(slot).start_at <= now; }
+    // The slot's next child is due at `at`.
+    fn plan(slot: Int, at: Int) { let mut w = self.at(slot); w.start_at = at; w.live = false; self.keep(w); }
+    // How long an idle slot waits before its next child: the idle pause,
+    // doubled per idle run in a row, a minute at most.
+    fn backoff(slot: Int) -> Int {
+        let mut w = self.at(slot);
+        w.idles = w.idles + 1;
+        self.keep(w);
+        let mut ms = self.idle_ms;
+        let mut n = 1;
+        while n < w.idles && ms < 60000 { ms = ms * 2; n = n + 1; }
+        return if ms > 60000 { 60000 } else { ms };
+    }
+    fn rested(slot: Int) { let mut w = self.at(slot); w.idles = 0; self.keep(w); }
+    fn start(slot: Int, argv: String) {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        let w = LegSlot { slot: slot, pid: spawned.pid, stdin_fd: spawned.stdin_fd, stdout_fd: spawned.stdout_fd, stderr_fd: spawned.stderr_fd, live: spawned.pid > 0, failed: spawned.pid <= 0, idles: self.at(slot).idles };
+        disarm(spawned);
+        self.keep(w);
+    }
+    // What the slot's child printed, once it ended; "" while it runs — its
+    // output is read meanwhile, so a child is never blocked on a full pipe.
+    // A child that could not be started is reported once, and its slot
+    // waits its backoff before another try.
+    fn reap(slot: Int) -> String {
+        let mut w = self.at(slot);
+        if w.failed { w.failed = false; w.live = false; self.keep(w); return "{\"state\": \"error\", \"error\": \"the worker could not be started\"}"; }
+        if !w.live { return ""; }
+        let c = slot_handle(w);
+        w.out = w.out + (std::process::read_stdout(c) or "");
+        let said_err = std::process::read_stderr(c) or "";
+        if len(said_err) > 0 { eprint(said_err); }
+        let code = std::process::try_wait(c) or - 1;
+        if code == -2 { disarm(c); self.keep(w); return ""; }
+        // the child is gone: what it printed last, then its fds go with this handle
+        w.out = w.out + (std::process::read_stdout(c) or "");
+        let last_err = std::process::read_stderr(c) or "";
+        if len(last_err) > 0 { eprint(last_err); }
+        let said = dna::trim_nl(w.out);
+        self.keep(LegSlot { slot: slot, idles: w.idles, start_at: w.start_at });
+        return if len(said) > 0 { said } else { "{\"state\": \"error\", \"error\": \"the worker ended with code " + to_string(code) + " and said nothing\"}" };
+    }
+    fn finish(slot: Int) { let w = self.at(slot); self.keep(LegSlot { slot: slot, stopped: true, idles: w.idles }); }
+    // The process drains: every running child is told to end (TERM), and
+    // after a grace, made to (KILL); each is reaped by `reap` as it goes.
+    @unbounded
+    fn terminate_all() {
+        let mut i = 0;
+        while i < self.slots.len() {
+            let w = self.slots.get(i) or LegSlot { };
+            if w.live { let c = slot_handle(w); std::process::signal(c, 15) or discard; disarm(c); }
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn kill_all() {
+        let mut i = 0;
+        while i < self.slots.len() {
+            let w = self.slots.get(i) or LegSlot { };
+            if w.live { let c = slot_handle(w); std::process::signal(c, 9) or discard; disarm(c); }
+            i = i + 1;
+        }
     }
 }
 
