@@ -19,11 +19,11 @@ locus RecoveryCases {
     params { f: fixture::Fixture; json: fixture::Json = fixture::Json { }; }
     fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
     fn claim(id: String, head: String, performer: String) -> api::Claim {
-        return api::Claim { request_id: id, record_head: head, performer_kind: "agent", performer: performer, capabilities: "judgment", data_classes: "internal", ttl: 600 };
+        return api::Claim { request_id: id, record_head: head, performer_kind: "agent", performer: performer, effect_class: "idempotent", capabilities: "judgment", data_classes: "internal", ttl: 600 };
     }
     fn outcome(id: String, attempt: String, token: Int, hat: String) -> api::Outcome {
         let evidence = "[{\"backend\": \"deep\", \"requested_model\": \"deep-1\", \"input_tokens\": 12, \"output_tokens\": 3, \"cost_micros\": 5}]";
-        let mut o = api::Outcome { request_id: id, attempt_id: attempt, holder: "position:agent", token: token, disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1",
+        let mut o = api::Outcome { request_id: id, attempt_id: attempt, holder: "position:agent", token: token, effect_class: "effect_free", disposition: "done", result: "assessment: ship it", result_ref: "receipt:assessment-1",
             narrative: "one call on the deep tier", evidence: evidence, receipts: "[]" };
         if len(hat) > 0 { o.hat_digest = hat; o.hat_head = self.f.journal.head(); o.prompt_digest = dna::digest_of("the prompt as sent"); o.renderer = "legs-render/1"; }
         return o;
@@ -36,7 +36,7 @@ locus RecoveryCases {
     }
     fn seed() {
         let cat = dna::WorkflowCatalog { };
-        std::test::assert_eq_str(cat.define("judge", 1, 1, "one judgment"), "", "definition");
+        std::test::assert_eq_str(cat.define("judge", 1, "record", "one judgment"), "", "definition");
         let request = dna::WorkRequest { objective: "assess the storage migration", target: "org", requires: "judgment", output_contract: "Assessment" };
         std::test::assert_eq_str(cat.leaf("judge", 1, 0, "judge", request, 2), "", "leaf");
         let limits = dna::AdmissionLimits { };

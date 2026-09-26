@@ -1186,6 +1186,10 @@
         "index": {
           "$ref": "#/$defs/DefinitionUnsignedDecimal"
         },
+        "store": {
+          "type": "string",
+          "minLength": 1
+        },
         "members": {
           "type": "array",
           "items": {
@@ -1195,6 +1199,7 @@
       },
       "required": [
         "index",
+        "store",
         "members"
       ],
       "additionalProperties": false
@@ -1306,7 +1311,7 @@
           "minLength": 1
         },
         "format": {
-          "const": "dna.workflow-definitions/1"
+          "const": "dna.workflow-definitions/2"
         },
         "provenance_kind": {
           "const": "trusted_host_claims"
@@ -2087,6 +2092,10 @@
         "index": {
           "$ref": "#/$defs/DefinitionDraftUnsignedDecimal"
         },
+        "store": {
+          "type": "string",
+          "minLength": 1
+        },
         "members": {
           "type": "array",
           "items": {
@@ -2096,6 +2105,7 @@
       },
       "required": [
         "index",
+        "store",
         "members"
       ],
       "additionalProperties": false
@@ -2136,7 +2146,7 @@
           "minLength": 1
         },
         "format": {
-          "const": "dna.workflow-definitions/1"
+          "const": "dna.workflow-definitions/2"
         },
         "provenance_kind": {
           "const": "trusted_host_claims"
@@ -5968,6 +5978,9 @@
         "requires": {
           "type": "string"
         },
+        "effects": {
+          "type": "string"
+        },
         "cost_ceiling": {
           "$ref": "#/$defs/DefinitionDecimal"
         },
@@ -6022,6 +6035,7 @@
         "output_contract",
         "data_class",
         "requires",
+        "effects",
         "cost_ceiling",
         "tool_grant",
         "knowledge_bindings",

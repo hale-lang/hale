@@ -150,7 +150,7 @@ locus App {
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
         // a chore requiring nothing in particular: the Work that admits every
         // effect class, an uncertain performer among them
-        std::test::assert_eq_str(self.core.catalog.define("chore", 1, 1, "one chore"), "", "chore");
+        std::test::assert_eq_str(self.core.catalog.define("chore", 1, "record", "one chore"), "", "chore");
         std::test::assert_eq_str(self.core.catalog.leaf("chore", 1, 0, "c", dna::WorkRequest { objective: "run the storage migration", output_contract: "Report" }, 2), "", "c");
     }
     @unbounded

@@ -53,6 +53,7 @@ type CommandRequest {
     // A leg's claim and outcome (GH #946): typed copies of the wire.
     performer_kind: String = "";
     performer: String = "";
+    effect_class: String = "";
     capabilities: String = "";
     data_classes: String = "";
     organizations: String = "";
@@ -305,13 +306,13 @@ type TaskReassignment { request_id: String = ""; task_id: String = ""; assignmen
 type PersonRetirement { request_id: String = ""; person: String = ""; subject_digest: String = ""; to: String = ""; }
 // A leg's claim (GH #946): the three lists are space-separated words.
 type Claim {
-    request_id: String = ""; record_head: String = ""; performer_kind: String = ""; performer: String = "";
+    request_id: String = ""; record_head: String = ""; performer_kind: String = ""; performer: String = ""; effect_class: String = "";
     capabilities: String = ""; data_classes: String = ""; organizations: String = ""; ttl: Int = 0;
 }
 // A leg's outcome: `evidence` and `receipts` are JSON arrays as text;
 // the hat fields are empty and -1 when no hat was worn.
 type Outcome {
-    request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0;
+    request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; effect_class: String = "";
     disposition: String = ""; result: String = ""; result_ref: String = ""; narrative: String = ""; evidence: String = ""; receipts: String = "";
     hat_digest: String = ""; hat_head: String = ""; hat_watermark: Int = -1; prompt_digest: String = ""; renderer: String = "";
 }
@@ -355,7 +356,7 @@ fn native_of(command: CommandRequest) -> ops::GovernanceCommand {
         record_head: command.record_head, source_text: command.source_text,
         expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
         outcome: command.outcome, to: command.to,
-        performer_kind: command.performer_kind, performer: command.performer, capabilities: command.capabilities, data_classes: command.data_classes,
+        performer_kind: command.performer_kind, performer: command.performer, effect_class: command.effect_class, capabilities: command.capabilities, data_classes: command.data_classes,
         organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
         disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
         evidence: command.evidence, receipts: command.receipts,
@@ -446,11 +447,11 @@ locus CommandAdmission {
     }
     fn claim(c: Claim, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: c.request_id, operation: "dna.attempt.claim", target_kind: "dna.work", subject_digest: c.record_head, record_head: c.record_head,
-            performer_kind: c.performer_kind, performer: c.performer, capabilities: c.capabilities, data_classes: c.data_classes, organizations: c.organizations, ttl: c.ttl });
+            performer_kind: c.performer_kind, performer: c.performer, effect_class: c.effect_class, capabilities: c.capabilities, data_classes: c.data_classes, organizations: c.organizations, ttl: c.ttl });
     }
     fn outcome(o: Outcome, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: o.request_id, operation: "dna.attempt.outcome", target_kind: "dna.attempt", target_id: o.attempt_id, subject_digest: lease_of(o.holder, o.token),
-            attempt_id: o.attempt_id, holder: o.holder, token: o.token, disposition: o.disposition, result: o.result, result_ref: o.result_ref, narrative: o.narrative,
+            attempt_id: o.attempt_id, holder: o.holder, token: o.token, effect_class: o.effect_class, disposition: o.disposition, result: o.result, result_ref: o.result_ref, narrative: o.narrative,
             evidence: if o.evidence == "[]" { "" } else { o.evidence }, receipts: if o.receipts == "[]" { "" } else { o.receipts },
             hat_digest: o.hat_digest, hat_head: o.hat_head, hat_watermark: o.hat_watermark, prompt_digest: o.prompt_digest, renderer: o.renderer });
     }

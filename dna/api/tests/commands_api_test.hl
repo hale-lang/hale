@@ -29,10 +29,10 @@ locus CommandCases {
     }
     fn ask(id: String, outcome: String, to: String) -> api::TaskCreation { return api::TaskCreation { request_id: id, record_head: RECORD_HEAD, outcome: outcome, to: to }; }
     fn claim(id: String) -> api::Claim {
-        return api::Claim { request_id: id, record_head: RECORD_HEAD, performer_kind: "agent", performer: "position:agent", capabilities: "judgment", data_classes: "internal", ttl: 600 };
+        return api::Claim { request_id: id, record_head: RECORD_HEAD, performer_kind: "agent", performer: "position:agent", effect_class: "idempotent", capabilities: "judgment", data_classes: "internal", ttl: 600 };
     }
     fn outcome(id: String) -> api::Outcome {
-        return api::Outcome { request_id: id, attempt_id: "t1/wf1/s0/j/a0", holder: "position:agent", token: 3, disposition: "done", result: "assessment: ship it", narrative: "one call on the deep tier",
+        return api::Outcome { request_id: id, attempt_id: "t1/wf1/s0/j/a0", holder: "position:agent", token: 3, effect_class: "effect_free", disposition: "done", result: "assessment: ship it", narrative: "one call on the deep tier",
             evidence: "[{\"backend\": \"deep\", \"requested_model\": \"deep-1\", \"input_tokens\": 1200, \"output_tokens\": 340, \"cost_micros\": 55}]", receipts: "[]" };
     }
     fn lookup(id: String) -> api::CommandReply { return self.commands.lookup(api::Lookup { request_id: id }, self.caller()); }
