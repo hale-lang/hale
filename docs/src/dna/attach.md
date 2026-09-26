@@ -106,6 +106,48 @@ one proposed responsibility per locus (`ratified: false`), and the
 purpose Review. From here every event is a commit on that branch —
 [The record](./record.md).
 
+## A repository with no application at its root
+
+Some repositories are not one application: a seed per process, specs
+they meet at, a compose file that runs them. Run `hale dna init` at the
+root of one and it makes the organization there in the same way, with
+the organization as the manifest's only environment, and seeds the
+record with what the repository holds, as one graph: its purpose (the
+README's first paragraph), its processes (the compose services), its
+seeds (every manifest), its contracts (`spec/`) and the nouns they name,
+its documents, its CI jobs as gates, its `FRICTION.md` entries as
+witnesses. The last line of what it prints counts them by kind.
+
+What a directory listing cannot say, you write in markdown, and init
+reads it as written:
+
+- **Mark a decision.** A list item that opens with a code span names
+  its kind: `` `axiom` `` for a decision, `` `derived` `` for a
+  consequence, `` `practice` `` or `` `law` `` for a rule about how work
+  is done. Its bold sentence is its name, and the files an axiom links
+  to are what it shaped.
+
+  ```markdown
+  - `axiom` **Only the api is exposed.** NATS and the nodes are on the
+    private network ([`protocol.yaml`](./spec/protocol.yaml)).
+  ```
+
+- **Declare where things meet.** A table with `Served by`, `Consumed
+  by` and `Over` columns says, for each contract it links, which
+  process serves it, who consumes it and what it travels over; a table
+  with `Deployment | Runs` columns names a deployment and what it
+  runs. A name in code is a process or a seed, a link is a file, plain
+  words are someone outside the repository.
+
+  ```markdown
+  | Document | Served by | Consumed by | Over |
+  |---|---|---|---|
+  | [`openapi.yaml`](./spec/openapi.yaml) | `api` | callers, `ui`, `node` | HTTP |
+  ```
+
+A row the graph's vocabulary refuses stops the whole seed before
+anything is written.
+
 ## The two environments
 
 ```toml

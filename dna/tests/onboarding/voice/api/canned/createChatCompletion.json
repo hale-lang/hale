@@ -1,0 +1,53 @@
+{
+  "id": "chatcmpl-resp_01j8z3q4v7m2k9x0",
+  "object": "chat.completion",
+  "created": 1790251200,
+  "model": "echo-1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "hello from voice"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 4,
+    "total_tokens": 16
+  },
+  "metadata": {
+    "dna.attempt_id": "w-41/a2"
+  },
+  "voice": {
+    "request_id": "resp_01j8z3q4v7m2k9x0",
+    "project": "work",
+    "key": "k_ci",
+    "served": {
+      "model": "echo-1",
+      "quantization": null,
+      "node": "laptop",
+      "seat": "laptop/static",
+      "account": "static",
+      "engine": "static",
+      "provider": null
+    },
+    "price_micros": 96,
+    "currency": "USD",
+    "timing": {
+      "wall_ms": 3,
+      "queue_ms": 0,
+      "load_ms": 0
+    },
+    "attempts": [
+      {
+        "seat": "laptop/static",
+        "account": "static",
+        "outcome": "served",
+        "wall_ms": 2
+      }
+    ]
+  }
+}

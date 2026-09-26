@@ -1,0 +1,65 @@
+/// The voice api, stubbed. Every endpoint in ../spec/openapi.yaml answers its
+/// happy path with a canned body from `canned/`, named by the endpoint's
+/// operationId. Each route is replaced by its real handler as the MVP is
+/// built; see endpoints.hl.
+locus Api {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 8080;
+        canned: String = "canned";
+        nats: String = "nats://127.0.0.1:4222";
+        ui: String = "";
+    }
+    run() { serve(self.host, self.port, self.canned, self.nats, self.ui); }
+}
+
+fn serve(host: String, port: Int, canned: String, nats: String, ui: String) {
+    println("voice api (stub) on http://", host, ":", port, ", canned bodies from ", canned);
+    println("voice api: request topics on ", nats, " (stub; not connected)");
+    if len(ui) > 0 { println("voice api: serving the admin ui from ", ui); }
+    let endpoints = Endpoints { canned: canned, ui: ui };
+    std::http::Server { host: host, port: port, handler: endpoints };
+}
+
+/// `api [--host H] [--port N] [--canned DIR] [--nats URL] [--ui DIR]`. The
+/// canned directory defaults to `canned` beside the binary; with no `--ui`
+/// the app is not served.
+fn main() {
+    let mut host = "127.0.0.1";
+    let mut port = 8080;
+    let mut canned = beside_binary("canned");
+    let mut nats = "nats://127.0.0.1:4222";
+    let mut ui = "";
+    let mut i = 1;
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--host" {
+            host = value;
+        } else if flag == "--port" {
+            port = std::str::parse_int(value) or port;
+        } else if flag == "--canned" {
+            canned = value;
+        } else if flag == "--nats" {
+            nats = value;
+        } else if flag == "--ui" {
+            ui = value;
+        }
+        i = i + 2;
+    }
+    Api { host: host, port: port, canned: canned, nats: nats, ui: ui };
+}
+
+/// `name` in the directory holding the running binary, or `name` as given
+/// when the binary was started without a directory in its path.
+fn beside_binary(name: String) -> String {
+    let mut dir = "";
+    let mut rest = std::env::arg(0);
+    let mut at = std::str::index_of(rest, "/");
+    while at >= 0 {
+        dir = dir + rest[0..(at + 1)];
+        rest = rest[(at + 1)..len(rest)];
+        at = std::str::index_of(rest, "/");
+    }
+    return dir + name;
+}

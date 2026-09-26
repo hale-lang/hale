@@ -1,0 +1,161 @@
+// dna/tests/graph_ingest_test.hl — `hale dna init` reads a repository into
+// the graph (GH #1090).
+//
+// The fixture is hale-lang/voice at 2b1cb565ffa4364c69a5db6204351a096b155eab
+// (hale-lang/voice#3), vendored whole under dna/tests/onboarding/voice and
+// never fetched. Its GRAPH.md says what init should yield; this runs the
+// real `hale dna init` on a copy (a repository with no application at its
+// root, a seed per process) and reads the record back: the counts under
+// "Checkable", and every `meets`, `constrains`, `runs`, `gates` and
+// `witnesses` edge "The edges, as they stand" lists, member for member.
+// Nothing here needs memory: the rows are the record's.
+
+import "../core" as dna;
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// The edges GRAPH.md lists, one per line: kind, then each member as
+// `role=node`, then `via=` and `outside=` when it has them, `|`-joined.
+const EDGES: String = "meets|contract=contract:spec/openapi.yaml|server=process:api|consumer=seed:ui|consumer=process:node|via=HTTP|outside=callers
+meets|contract=contract:spec/node.yaml|server=process:node|via=HTTP|outside=the machine's operator
+meets|contract=contract:spec/protocol.yaml|server=process:node|consumer=process:api|carrier=process:nats|via=NATS
+meets|contract=contract:spec/vendor/open-responses|consumer=contract:spec/openapi.yaml|consumer=contract:spec/protocol.yaml
+meets|contract=contract:spec/store.md|server=process:postgres|consumer=process:api|consumer=process:brain|via=SQL
+meets|contract=contract:spec/internal.yaml|server=process:brain|consumer=process:api|carrier=process:nats|via=NATS
+constrains|axiom=axiom:The caller API is an open standard|shaped=contract:spec/vendor/open-responses
+constrains|axiom=axiom:Callers never name a node|shaped=contract:spec/openapi.yaml
+constrains|axiom=axiom:Nothing is discovered|shaped=contract:spec/openapi.yaml|shaped=contract:spec/node.yaml|shaped=contract:spec/protocol.yaml
+constrains|axiom=axiom:Only the api is exposed|shaped=contract:spec/protocol.yaml|shaped=deployment:compose
+constrains|axiom=axiom:The node decides what is possible; the coordinator decides what runs|shaped=contract:spec/node.yaml|shaped=contract:spec/protocol.yaml
+constrains|axiom=axiom:Local controls only restrict|shaped=contract:spec/node.yaml
+constrains|axiom=axiom:The protocol is the seam|shaped=contract:spec/protocol.yaml
+constrains|axiom=axiom:One admin UI|shaped=document:ui/README.md|shaped=document:ui/DESIGN.md|shaped=contract:spec/openapi.yaml
+constrains|axiom=axiom:No bypass flags|shaped=seed:node
+constrains|axiom=axiom:Logins stay with the official binaries|shaped=seed:node
+constrains|axiom=axiom:The MVP runs the real process model|shaped=seed:brain|shaped=deployment:compose
+constrains|axiom=axiom:State never travels as events; it stays in Postgres|shaped=contract:spec/internal.yaml|shaped=contract:spec/store.md
+constrains|axiom=axiom:Real development is delivered through a DNA organization|shaped=document:GRAPH.md
+runs|deployment=deployment:compose|process=process:postgres|process=process:nats|process=process:api|process=process:brain|process=process:node
+runs|deployment=deployment:personal|process=process:api|process=process:brain|process=process:postgres|process=process:nats|process=process:node
+runs|deployment=deployment:scaled-out|process=process:api|process=process:brain|process=process:postgres|process=process:nats|process=process:node
+gates|gate=gate:ci/api|guarded=seed:api|guarded=contract:spec/openapi.yaml|guarded=seed:spec/validate
+gates|gate=gate:ci/brain|guarded=seed:brain
+gates|gate=gate:ci/node|guarded=seed:node|guarded=contract:spec/node.yaml|guarded=seed:spec/validate
+gates|gate=gate:ci/ui|guarded=seed:ui
+gates|gate=gate:ci/contracts|guarded=contract:spec/openapi.yaml|guarded=contract:spec/node.yaml|guarded=contract:spec/protocol.yaml|guarded=contract:spec/internal.yaml|guarded=seed:spec/validate
+gates|gate=gate:ci/image|guarded=deployment:compose
+witnesses|witness=witness:A stateful handler literal given to Router.add in a builder fn dangles|about=seed:api
+witnesses|witness=witness:hale-lang/hale#1048|about=seed:api
+witnesses|witness=witness:Triple-quoted and raw strings are in the grammar's comment, not the lexer|about=seed:api
+unfold|parent=process:api|child=seed:api
+unfold|parent=process:brain|child=seed:brain
+unfold|parent=process:node|child=seed:node
+";
+
+// One `graph.edge` row's body as a line of EDGES.
+@unbounded
+fn edge_line(body: String) -> String {
+    let mut out = std::json::find_string_field(body, "kind");
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "members"));
+    while !it.done {
+        out = out + "|" + std::json::find_string_field(it.element, "role") + "=" + std::json::find_string_field(it.element, "node");
+        it = std::json::array_next(it);
+    }
+    let via = std::json::find_string_field(body, "via");
+    if len(via) > 0 { out = out + "|via=" + via; }
+    let mut o = std::json::array_first(std::json::find_field_raw(body, "outside"));
+    while !o.done {
+        out = out + "|outside=" + std::json::unescape_string(o.element[1..(len(o.element) - 1)]);
+        o = std::json::array_next(o);
+    }
+    return out;
+}
+
+locus App {
+    params { nodes: String = ""; edges: String = "\n"; }
+    // How many lines of `text` begin with `prefix`.
+    @unbounded
+    fn count(text: String, prefix: String) -> Int {
+        let mut n = 0;
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            if std::str::starts_with(rest[0..nl], prefix) { n = n + 1; }
+            rest = rest[(nl + 1)..len(rest)];
+        }
+        return n;
+    }
+    run() {
+        let scratch = dna::scratch_root("graph-ingest");
+        let repo = scratch + "/voice";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + repo + "\n" + source());
+        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
+
+        // ---- init on the repository: no application at its root
+        let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
+        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+        std::test::assert(std::str::contains(init.stdout, "graph   150 node(s)"), "and says what it read: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 5 process, 5 seed, 6 contract, 96 noun, 3 deployment, 6 gate, 7 document, 4 witness, 0 position, 0 work"), "by kind: " + init.stdout);
+
+        // ---- the record, read back
+        let journal = dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl");
+        std::test::assert_eq_int(journal.code, 0, "the record is on refs/dna/journal: " + journal.stderr);
+        let mut rest = journal.stdout;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let kind = std::json::find_string_field(line, "kind");
+            let body = std::json::find_string_field(line, "body");
+            if kind == "graph.node" { self.nodes = self.nodes + std::json::find_string_field(body, "kind") + ":" + std::json::find_string_field(body, "name") + "\n"; }
+            if kind == "graph.edge" { self.edges = self.edges + edge_line(body) + "\n"; }
+        }
+
+        // GRAPH.md, "Checkable"
+        let kinds = "purpose axiom process seed contract deployment gate document witness position work";
+        let want = "1 17 5 5 6 3 6 7 4 0 0";
+        let mut k = 0;
+        while len(dna::nth_word(kinds, k)) > 0 {
+            let kind = dna::nth_word(kinds, k);
+            std::test::assert_eq_int(self.count(self.nodes, kind + ":"), std::str::parse_int(dna::nth_word(want, k)) or - 1, "the " + kind + " nodes: " + self.nodes);
+            k = k + 1;
+        }
+        std::test::assert(std::str::contains(self.nodes, "purpose:voice\n"), "the purpose is the README's");
+        std::test::assert(std::str::contains(self.nodes, "deployment:personal\n") && std::str::contains(self.nodes, "deployment:scaled-out\n"), "the deployments the README's table names");
+        std::test::assert(std::str::contains(self.nodes, "seed:ui\n") && !std::str::contains(self.nodes, "seed:ui/"), "ui is one seed: its workspace members are its own");
+
+        // "The edges, as they stand": each, member for member
+        let mut edges = EDGES;
+        while len(edges) > 0 {
+            let nl = std::str::index_of(edges, "\n");
+            let e = edges[0..nl];
+            edges = edges[(nl + 1)..len(edges)];
+            std::test::assert(std::str::contains(self.edges, "\n" + e + "\n"), "GRAPH.md's edge: " + e);
+        }
+        let counted = "meets 6 constrains 13 runs 3 gates 6 witnesses 3";
+        k = 0;
+        while len(dna::nth_word(counted, k)) > 0 {
+            let kind = dna::nth_word(counted, k);
+            std::test::assert_eq_int(self.count(self.edges, kind + "|"), std::str::parse_int(dna::nth_word(counted, k + 1)) or - 1, "exactly GRAPH.md's " + kind + " edges");
+            k = k + 2;
+        }
+        std::test::assert_eq_int(self.count(self.edges, "unfold|parent=purpose:voice|child=axiom:"), 17, "the purpose unfolds into every axiom");
+
+        // ---- init again: the record stands, nothing is read twice
+        let again = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
+        std::test::assert_eq_int(again.code, 0, "init again: " + again.stderr);
+        std::test::assert(std::str::contains(again.stdout, "a record exists; not reseeded") && !std::str::contains(again.stdout, "graph   "), "the record is not reseeded: " + again.stdout);
+
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

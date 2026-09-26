@@ -1,0 +1,47 @@
+{
+  "version": 412,
+  "at": "2026-09-24T12:00:00Z",
+  "models": [
+    {
+      "model": "echo-1",
+      "seats": [
+        {
+          "seat": "laptop/static",
+          "node": "laptop",
+          "account": "static",
+          "engine_model": null,
+          "rank": 0.031,
+          "free": 4,
+          "data_classes": [
+            "public",
+            "internal"
+          ]
+        }
+      ],
+      "exhausted": []
+    },
+    {
+      "model": "claude-sonnet-5",
+      "seats": [
+        {
+          "seat": "laptop/claude-work",
+          "node": "laptop",
+          "account": "claude-work",
+          "engine_model": "sonnet",
+          "rank": 0.38,
+          "free": 1,
+          "data_classes": [
+            "public",
+            "internal"
+          ]
+        }
+      ],
+      "exhausted": [
+        {
+          "account": "claude-personal",
+          "until": "2026-09-24T15:00:00Z"
+        }
+      ]
+    }
+  ]
+}

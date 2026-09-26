@@ -5,6 +5,7 @@
 // sequence, with the three-try bound GH #603 removed elsewhere).
 
 import "../core" as dna;
+import "../operations" as ops;
 
 // ---- hale dna candidates --------------------------------------------
 //
@@ -92,7 +93,15 @@ fn record_head_verb(root: String) -> Answer {
 @unbounded
 fn record_seed_verb(root: String, path: String, memory: dna::Memory) -> Answer {
     if len(path) == 0 { return fail("record-seed: a file of rows"); }
-    let text = std::io::fs::read_file(path) or "";
+    return seed_rows(root, std::io::fs::read_file(path) or "", "record-seed", memory);
+}
+
+// Rows into the record, one JSON object per line (`kind`, `entity`,
+// `body`). Every `graph.*` row is checked against the graph's vocabulary
+// before any row is appended (GH #1090): a seed the graph refuses leaves
+// the record as it was, never half written.
+@unbounded
+fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> Answer {
     let mut n = 0;
     let mut rest = text;
     while len(rest) > 0 {
@@ -100,12 +109,40 @@ fn record_seed_verb(root: String, path: String, memory: dna::Memory) -> Answer {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(dna::trim_nl(line)) == 0 { continue; }
+        n = n + 1;
         let kind = std::json::find_string_field(line, "kind");
-        if len(kind) == 0 { return fail("record-seed: row " + to_string(n + 1) + " has no kind"); }
-        if !append_as(root, kind, std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), "", memory) { return fail("record-seed: the record refused row " + to_string(n + 1) + " (" + kind + ")"); }
+        if len(kind) == 0 { return fail(who + ": row " + to_string(n) + " has no kind"); }
+        let entity = std::json::find_string_field(line, "entity");
+        let body = std::json::find_string_field(line, "body");
+        let g = if kind == "graph.node" { ops::graph_node_row(entity, body) } else if kind == "graph.edge" { ops::graph_edge_row(entity, body) } else if kind == "graph.retired" { ops::graph_retired_row(entity) } else { ops::GraphRow { ok: true } };
+        if !g.ok { return fail(who + ": row " + to_string(n) + " (" + kind + " " + entity + "): " + g.why); }
+    }
+    n = 0;
+    rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        let kind = std::json::find_string_field(line, "kind");
+        if !append_as(root, kind, std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), "", memory) { return fail(who + ": the record refused row " + to_string(n + 1) + " (" + kind + ")"); }
         n = n + 1;
     }
     return answer(to_string(n) + "\n");
+}
+
+// ---- hale dna init on a repository (GH #1090) ----------------------------
+//
+// The repository read into the graph (dna/operations/graph_ingest.hl) and
+// its rows appended to the record, each checked first. Says how many
+// nodes and edges, and the nodes by kind.
+fn graph_ingest_verb(root: String, memory: dna::Memory) -> Answer {
+    let g = ops::GraphIngest { root: root };
+    let r = g.ingest();
+    if len(r.error) > 0 { return fail("graph-ingest: " + r.error); }
+    let seeded = seed_rows(root, r.rows, "graph-ingest", memory);
+    if !seeded.ok { return seeded; }
+    return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "\n");
 }
 
 // ---- the toolchain's design, as proposals (GH #596 C) --------------------

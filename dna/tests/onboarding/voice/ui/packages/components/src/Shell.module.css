@@ -1,0 +1,148 @@
+.shell {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'rail canvas inspector'
+    'rail evidence evidence';
+  height: 100vh;
+}
+
+.rail {
+  grid-area: rail;
+  background: var(--color-bg-1);
+  border-right: 1px solid var(--color-rule);
+  padding: var(--space-4) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow: auto;
+}
+
+.canvas {
+  grid-area: canvas;
+  overflow: auto;
+  padding: var(--space-5) var(--space-6);
+  background:
+    linear-gradient(var(--color-rule) 1px, transparent 1px) 0 0 / 100% 32px,
+    linear-gradient(90deg, var(--color-rule) 1px, transparent 1px) 0 0 / 32px 100%;
+  background-color: var(--color-bg-0);
+  background-blend-mode: normal;
+}
+
+.canvasInner {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.inspector {
+  grid-area: inspector;
+  background: var(--color-bg-1);
+  border-left: 1px solid var(--color-rule);
+  padding: var(--space-4);
+  overflow: auto;
+}
+
+.evidence {
+  grid-area: evidence;
+  border-top: 1px solid var(--color-rule);
+  background: var(--color-bg-1);
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--size-xs);
+  color: var(--color-text-muted);
+  display: flex;
+  gap: var(--space-5);
+  align-items: center;
+  min-height: 28px;
+}
+
+.evidence b {
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.app {
+  font-size: var(--size-lg);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.appSub {
+  font-size: var(--size-xs);
+  color: var(--color-text-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.navLink {
+  display: block;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  border-left: 2px solid transparent;
+}
+
+.navLink:hover {
+  color: var(--color-text);
+  background: var(--color-bg-2);
+  text-decoration: none;
+}
+
+.navActive {
+  color: var(--color-text);
+  border-left-color: var(--color-cyan);
+  background: var(--color-bg-2);
+}
+
+.principal {
+  margin-top: auto;
+  font-size: var(--size-xs);
+  color: var(--color-text-faint);
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'rail'
+      'canvas'
+      'inspector'
+      'evidence';
+  }
+
+  .rail {
+    flex-direction: row;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-rule);
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .principal {
+    margin-top: 0;
+    margin-left: auto;
+  }
+
+  .inspector {
+    border-left: 0;
+    border-top: 1px solid var(--color-rule);
+    max-height: 40vh;
+  }
+
+  .canvas {
+    padding: var(--space-4);
+  }
+}

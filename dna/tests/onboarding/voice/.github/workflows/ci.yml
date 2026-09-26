@@ -1,0 +1,141 @@
+# One job per process in the model (api, brain, node), run in parallel, plus
+# the contracts and the image. Each process job is its own job rather than
+# a matrix entry so it can be split further on its own later.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: api
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hale
+      - name: Format
+        run: hale fmt --check api
+      - name: Verify
+        run: hale verify api
+      - name: Test
+        run: hale test api
+      - name: Build
+        run: hale build api
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Bundle the contract
+        run: |
+          mkdir -p build
+          npx -y @redocly/cli@1 bundle spec/openapi.yaml --dereferenced -o build/openapi.bundled.json
+      - name: Every endpoint answers its happy path, live
+        run: |
+          api/api --port 8080 --canned api/canned &
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 0.2; done
+          cd spec/validate && npm ci && npm run live -- http://127.0.0.1:8080
+
+  brain:
+    name: brain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hale
+      - name: Format
+        run: hale fmt --check brain
+      - name: Verify
+        run: hale verify brain
+      - name: Test
+        run: hale test brain
+      - name: Build
+        run: hale build brain
+
+  node:
+    name: node
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hale
+      - name: Format
+        run: hale fmt --check node
+      - name: Verify
+        run: hale verify node
+      - name: Test
+        run: hale test node
+      - name: Build
+        run: hale build node
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Bundle the contract
+        run: |
+          mkdir -p build
+          npx -y @redocly/cli@1 bundle spec/node.yaml --dereferenced -o build/node.bundled.json
+      - name: The local API answers node.yaml, live
+        run: |
+          node/node --id ci --data build/node-data --capabilities deploy/node/capabilities.json --port 8081 &
+          for i in $(seq 1 50); do curl -fsS http://127.0.0.1:8081/healthz >/dev/null 2>&1 && break; sleep 0.2; done
+          cd spec/validate && npm ci && npm run node-live -- http://127.0.0.1:8081
+
+  ui:
+    name: ui
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - name: Typecheck tokens, components and the app against the contract
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+
+  specs:
+    name: contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: openapi.yaml and node.yaml are valid
+        run: npx -y @redocly/cli@1 lint spec/openapi.yaml spec/node.yaml
+      - name: protocol.yaml and internal.yaml are valid
+        run: |
+          npx -y @asyncapi/cli@2 validate spec/protocol.yaml
+          npx -y @asyncapi/cli@2 validate spec/internal.yaml
+      - name: Every canned body matches the contract
+        run: |
+          mkdir -p build
+          npx -y @redocly/cli@1 bundle spec/openapi.yaml --dereferenced -o build/openapi.bundled.json
+          cd spec/validate && npm ci && npm run canned
+
+  image:
+    name: image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image and bring the process model up
+        run: |
+          docker compose build
+          docker compose up -d --wait --wait-timeout 120
+          docker compose ps
+          curl -fsS http://127.0.0.1:8080/healthz
+          curl -fsS http://127.0.0.1:8081/node/v1/status
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Down
+        if: always()
+        run: docker compose down -v

@@ -132,8 +132,26 @@ locus GraphEdge {
         members: String = ""; // `<role>\t<node>\n` per member, in order
         outside: String = ""; // one party per line
     }
+    // Bounded by the edge: a check refuses more than GRAPH_MEMBERS_MAX.
+    @unbounded
     fn member(role: String, node: String) { self.members = self.members + role + "\t" + node + "\n"; }
+    @unbounded
     fn party(name: String) { self.outside = self.outside + name + "\n"; }
+    // Whether `node` is a member already.
+    fn has(node: String) -> Bool { return std::str::contains("\n" + self.members, "\t" + node + "\n"); }
+    // The members so far.
+    @unbounded
+    fn size() -> Int {
+        let mut n = 0;
+        let mut at = std::str::index_of(self.members, "\n");
+        let mut rest = self.members;
+        while at >= 0 {
+            n = n + 1;
+            rest = rest[(at + 1)..len(rest)];
+            at = std::str::index_of(rest, "\n");
+        }
+        return n;
+    }
     fn id() -> String { return graph_edge_id(self.kind, self.members); }
     @unbounded
     fn body() -> String {

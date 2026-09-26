@@ -1,0 +1,121 @@
+/// Every endpoint in ../spec/openapi.yaml, in the order it has there, each
+/// answered by its canned happy path. Implementing an endpoint means
+/// replacing its line with a call to a real method.
+///
+/// One locus serves them all (the styleguide's one-locus-many-endpoints
+/// shape), so real handlers share its state as plain `self` calls.
+/// `is_route` takes the first match in written order, so a literal
+/// segment comes before a capture in the same position (`usage/summary`
+/// before `usage/:request_id`).
+locus Endpoints {
+    params {
+        canned: String = "canned";
+        ui: String = "";
+    }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let c = std::http::build_context(req);
+
+        // health
+        if std::http::is_route(c, "GET", "/healthz") { return self.json("getLiveness", 200); }
+        if std::http::is_route(c, "GET", "/readyz") { return self.json("getReadiness", 200); }
+
+        // caller plane
+        if std::http::is_route(c, "POST", "/v1/responses") { return self.inference(req, "createResponse"); }
+        if std::http::is_route(c, "POST", "/v1/chat/completions") { return self.inference(req, "createChatCompletion"); }
+        if std::http::is_route(c, "GET", "/v1/models") { return self.caller("listModels"); }
+        if std::http::is_route(c, "GET", "/v1/models/:model") { return self.caller("getModel"); }
+        if std::http::is_route(c, "GET", "/v1/capabilities") { return self.caller("getCapabilities"); }
+
+        // projects, budgets, limits, keys
+        if std::http::is_route(c, "GET", "/admin/v1/projects") { return self.json("listProjects", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/projects") { return self.json("createProject", 201); }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project") { return self.json("getProject", 200); }
+        if std::http::is_route(c, "PATCH", "/admin/v1/projects/:project") { return self.json("updateProject", 200); }
+        if std::http::is_route(c, "DELETE", "/admin/v1/projects/:project") { return self.json("archiveProject", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/budget") { return self.json("getBudget", 200); }
+        if std::http::is_route(c, "PUT", "/admin/v1/projects/:project/budget") { return self.json("setBudget", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/limits") { return self.json("getLimits", 200); }
+        if std::http::is_route(c, "PUT", "/admin/v1/projects/:project/limits") { return self.json("setLimits", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/keys") { return self.json("listKeys", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/projects/:project/keys") { return self.json("createKey", 201); }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/keys/:key") { return self.json("getKey", 200); }
+        if std::http::is_route(c, "PATCH", "/admin/v1/projects/:project/keys/:key") { return self.json("updateKey", 200); }
+        if std::http::is_route(c, "DELETE", "/admin/v1/projects/:project/keys/:key") { return self.json("revokeKey", 200); }
+
+        // usage
+        if std::http::is_route(c, "GET", "/admin/v1/usage") { return self.json("listUsage", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/usage/summary") { return self.json("summarizeUsage", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/usage/:request_id") { return self.json("getUsage", 200); }
+
+        // the catalog
+        if std::http::is_route(c, "GET", "/admin/v1/models") { return self.json("listCatalogModels", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/models") { return self.json("createCatalogModel", 201); }
+        if std::http::is_route(c, "GET", "/admin/v1/models/:model") { return self.json("getCatalogModel", 200); }
+        if std::http::is_route(c, "PATCH", "/admin/v1/models/:model") { return self.json("updateCatalogModel", 200); }
+        if std::http::is_route(c, "DELETE", "/admin/v1/models/:model") { return self.json("removeCatalogModel", 200); }
+
+        // accounts
+        if std::http::is_route(c, "GET", "/admin/v1/accounts") { return self.json("listAccounts", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/accounts") { return self.json("createAccount", 201); }
+        if std::http::is_route(c, "GET", "/admin/v1/accounts/:account") { return self.json("getAccount", 200); }
+        if std::http::is_route(c, "PATCH", "/admin/v1/accounts/:account") { return self.json("updateAccount", 200); }
+        if std::http::is_route(c, "DELETE", "/admin/v1/accounts/:account") { return self.json("archiveAccount", 200); }
+
+        // nodes
+        if std::http::is_route(c, "GET", "/admin/v1/nodes") { return self.json("listNodes", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/nodes") { return self.json("createNode", 201); }
+        if std::http::is_route(c, "GET", "/admin/v1/nodes/:node") { return self.json("getNode", 200); }
+        if std::http::is_route(c, "PATCH", "/admin/v1/nodes/:node") { return self.json("updateNode", 200); }
+        if std::http::is_route(c, "DELETE", "/admin/v1/nodes/:node") { return self.json("revokeNode", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/nodes/:node/seats") { return self.json("listSeats", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/nodes/:node/seats") { return self.json("createSeat", 201); }
+        if std::http::is_route(c, "GET", "/admin/v1/nodes/:node/seats/:seat") { return self.json("getSeat", 200); }
+        if std::http::is_route(c, "PATCH", "/admin/v1/nodes/:node/seats/:seat") { return self.json("updateSeat", 200); }
+        if std::http::is_route(c, "DELETE", "/admin/v1/nodes/:node/seats/:seat") { return self.json("removeSeat", 200); }
+        if std::http::is_route(c, "POST", "/admin/v1/nodes/:node/token") { return self.json("rotateNodeToken", 200); }
+
+        // routes
+        if std::http::is_route(c, "GET", "/admin/v1/routes") { return self.json("getRoutes", 200); }
+
+        // node plane
+        if std::http::is_route(c, "POST", "/node/v1/register") { return self.json("registerNode", 200); }
+        if std::http::is_route(c, "GET", "/node/v1/assignment") { return self.json("getAssignment", 200); }
+        if std::http::is_route(c, "POST", "/node/v1/heartbeat") { return no_content(); }
+        if std::http::is_route(c, "POST", "/node/v1/seats") { return no_content(); }
+        if std::http::is_route(c, "PUT", "/node/v1/capabilities") { return no_content(); }
+        if std::http::is_route(c, "PUT", "/node/v1/local") { return no_content(); }
+        if std::http::is_route(c, "POST", "/node/v1/quota") { return no_content(); }
+        if std::http::is_route(c, "POST", "/node/v1/draining") { return no_content(); }
+
+        // events
+        if std::http::is_route(c, "GET", "/admin/v1/events") { return canned_body(self.canned, "streamAdminEvents.stream.sse", 200, "text/event-stream", ""); }
+
+        // changes
+        if std::http::is_route(c, "GET", "/admin/v1/changes") { return self.json("listChanges", 200); }
+
+        if len(self.ui) > 0 && req.method == "GET" && is_ui_path(req.path) {
+            return serve_static(self.ui, req);
+        }
+        return not_found(req);
+    }
+
+    /// `<name>.json` with `status`.
+    fn json(name: String, status: Int) -> std::http::Response {
+        return canned_body(self.canned, name + ".json", status, "application/json", "");
+    }
+
+    /// A caller-plane read: `<name>.json` with the caller headers.
+    fn caller(name: String) -> std::http::Response {
+        return canned_body(self.canned, name + ".json", 200, "application/json", CALLER_HEADERS);
+    }
+
+    /// An inference endpoint: `<name>.stream.sse` when the request asks
+    /// for `"stream": true`, `<name>.json` otherwise.
+    fn inference(req: std::http::Request, name: String) -> std::http::Response {
+        if std::json::find_bool_field(req.body, "stream") {
+            return canned_body(self.canned, name + ".stream.sse", 200, "text/event-stream", CALLER_HEADERS);
+        }
+        return canned_body(self.canned, name + ".json", 200, "application/json", CALLER_HEADERS);
+    }
+}

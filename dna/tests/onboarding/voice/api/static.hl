@@ -1,0 +1,72 @@
+/// Serves the built admin UI from `/`, on the same origin as the planes,
+/// with the single-page fallback (a path with no extension is the app).
+///
+/// A `Response` body is a String and stops at the first NUL, so binary
+/// files (the fonts) are written to the connection directly and the
+/// server is told to write nothing (`takeover_raw`). Text goes the normal
+/// way, which also serves the in-process tests, where there is no
+/// connection.
+fn serve_static(dir: String, req: std::http::Request) -> std::http::Response {
+    let mut path = req.path;
+    let qi = std::str::index_of(path, "?");
+    if qi >= 0 { path = path[0..qi]; }
+    if std::str::contains(path, "..") || !std::str::starts_with(path, "/") {
+        return error_response(400, "invalid_request", "invalid_request", "bad path");
+    }
+    let mut file = dir + path;
+    if path == "/" || !std::io::fs::file_exists(file) || !has_extension(path) {
+        file = dir + "/index.html";
+    }
+    if !std::io::fs::file_exists(file) {
+        return error_response(404, "not_found", "not_found", "no such endpoint: " + req.method + " " + req.path + " (the ui is not built)");
+    }
+    let ct = content_type(file);
+    let immutable = std::str::contains(path, "/assets/");
+    let cache = if immutable { "public, max-age=31536000, immutable" } else { "no-cache" };
+    if req.conn_fd < 0 || !is_binary(file) {
+        let body = std::io::fs::read_file(file) or "";
+        return std::http::Response { status: 200, content_type: ct, headers: "Cache-Control: " + cache, body: body };
+    }
+    let bytes = std::io::fs::read_bytes(file) or b"";
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: " + ct + "\r\nContent-Length: " + to_string(len(bytes)) + "\r\nCache-Control: " + cache + "\r\nConnection: close\r\n\r\n";
+    std::io::tcp::send_fd(req.conn_fd, std::bytes::from_string(head)) or discard;
+    std::io::tcp::send_fd(req.conn_fd, bytes) or discard;
+    std::io::tcp::close_fd(req.conn_fd);
+    return std::http::Response { status: 200, body: "", takeover_raw: true };
+}
+
+/// True for a request that is the app's, not a plane's.
+fn is_ui_path(path: String) -> Bool {
+    return !(std::str::starts_with(path, "/v1/") || std::str::starts_with(path, "/admin/") || std::str::starts_with(path, "/node/") || path == "/healthz" || path == "/readyz");
+}
+
+/// True when the last path segment has a dot in it: a file, not a route.
+fn has_extension(path: String) -> Bool {
+    let v = std::str::bytes_view(path);
+    let mut i = len(path) - 1;
+    while i >= 0 {
+        let b = std::str::byte_at(v, i);
+        if b == 47 { return false; }
+        if b == 46 { return true; }
+        i = i - 1;
+    }
+    return false;
+}
+
+fn is_binary(file: String) -> Bool {
+    return std::str::ends_with(file, ".woff2") || std::str::ends_with(file, ".woff") || std::str::ends_with(file, ".png") || std::str::ends_with(file, ".ico");
+}
+
+fn content_type(file: String) -> String {
+    if std::str::ends_with(file, ".html") { return "text/html; charset=utf-8"; }
+    if std::str::ends_with(file, ".js") { return "text/javascript; charset=utf-8"; }
+    if std::str::ends_with(file, ".css") { return "text/css; charset=utf-8"; }
+    if std::str::ends_with(file, ".json") { return "application/json"; }
+    if std::str::ends_with(file, ".map") { return "application/json"; }
+    if std::str::ends_with(file, ".svg") { return "image/svg+xml"; }
+    if std::str::ends_with(file, ".woff2") { return "font/woff2"; }
+    if std::str::ends_with(file, ".woff") { return "font/woff"; }
+    if std::str::ends_with(file, ".png") { return "image/png"; }
+    if std::str::ends_with(file, ".ico") { return "image/x-icon"; }
+    return "application/octet-stream";
+}

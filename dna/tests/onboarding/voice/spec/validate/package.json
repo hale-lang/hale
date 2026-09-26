@@ -1,0 +1,15 @@
+{
+  "name": "voice-spec-validate",
+  "private": true,
+  "type": "module",
+  "description": "Checks the api stub's canned bodies, and a running api or node, against voice's contracts.",
+  "scripts": {
+    "canned": "node validate.mjs ../../build/openapi.bundled.json ../../api/canned",
+    "live": "node live.mjs ../../build/openapi.bundled.json",
+    "node-live": "node node-live.mjs ../../build/node.bundled.json"
+  },
+  "dependencies": {
+    "ajv": "^8",
+    "ajv-formats": "^3"
+  }
+}

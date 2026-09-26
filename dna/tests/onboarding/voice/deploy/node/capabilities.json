@@ -1,0 +1,6 @@
+{
+  "max_in_flight": 4,
+  "engines": [
+    { "id": "static", "kind": "static" }
+  ]
+}

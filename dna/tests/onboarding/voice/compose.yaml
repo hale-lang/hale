@@ -1,0 +1,108 @@
+# voice's process model on one machine: Postgres, NATS, the api, the brain
+# and a node, each its own process, as in the README's MVP.
+#
+#   docker compose up --build
+#
+# The api answers on 127.0.0.1:8080 (the admin UI at /, the planes under
+# it), the node's local API on 127.0.0.1:8081
+# and NATS on 127.0.0.1:4222 (for a process run outside Compose); nothing
+# else is published.
+#
+# Today the api is the canned stub and the brain and node are skeletons:
+# nothing reads Postgres or NATS yet, and the node registers with the stub's
+# canned answer. Schema migrations will run as a one-shot `migrate` service
+# that the api and the brain wait on (see README, "State").
+
+name: voice
+
+# The api, the brain and the node are one image, built once.
+x-voice: &voice
+  build: .
+  image: voice:dev
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: voice
+      POSTGRES_PASSWORD: voice
+      POSTGRES_DB: voice
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "voice", "-d", "voice"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["--http_port", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  api:
+    <<: *voice
+    command: ["voice-api", "--host", "0.0.0.0", "--port", "8080", "--canned", "/usr/share/voice/canned", "--nats", "nats://nats:4222", "--ui", "/usr/share/voice/ui"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  brain:
+    <<: *voice
+    command: ["voice-brain", "--database", "postgres://voice:voice@postgres:5432/voice", "--nats", "nats://nats:4222"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  node:
+    <<: *voice
+    command:
+      - voice-node
+      - --id
+      - local
+      - --api
+      - http://api:8080
+      - --data
+      - /var/lib/voice-node
+      - --capabilities
+      - /etc/voice/capabilities.json
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+    volumes:
+      - node-data:/var/lib/voice-node
+      - ./deploy/node/capabilities.json:/etc/voice/capabilities.json:ro
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  postgres:
+  node-data:

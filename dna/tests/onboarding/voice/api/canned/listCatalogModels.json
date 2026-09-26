@@ -1,0 +1,38 @@
+{
+  "data": [
+    {
+      "id": "echo-1",
+      "owned_by": "local",
+      "kind": "local",
+      "context_length": 8192,
+      "max_output_tokens": 1024,
+      "price": {
+        "input_per_mtok_micros": 3000000,
+        "output_per_mtok_micros": 15000000,
+        "currency": "USD"
+      },
+      "seats": [
+        "laptop/static"
+      ],
+      "available": true,
+      "created_at": "2026-09-17T12:00:00Z"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "owned_by": "anthropic",
+      "kind": "hosted",
+      "context_length": 1000000,
+      "max_output_tokens": 64000,
+      "price": {
+        "input_per_mtok_micros": 3000000,
+        "output_per_mtok_micros": 15000000,
+        "currency": "USD"
+      },
+      "seats": [
+        "laptop/claude-work"
+      ],
+      "available": true,
+      "created_at": "2026-09-17T12:00:00Z"
+    }
+  ]
+}

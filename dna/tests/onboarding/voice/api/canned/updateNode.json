@@ -1,0 +1,128 @@
+{
+  "id": "laptop",
+  "name": "Laptop",
+  "status": "up",
+  "version": "0.1.0",
+  "capabilities": {
+    "max_in_flight": 4,
+    "engines": [
+      {
+        "id": "static",
+        "kind": "static",
+        "description": "Answers every request with the seat's configured text.",
+        "models": null,
+        "config_schema": {
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "chunk_chars": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 16
+            },
+            "first_output_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "chunk_interval_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        }
+      },
+      {
+        "id": "claude-work",
+        "kind": "claude-cli",
+        "description": "Claude Code, logged in to the work account.",
+        "models": [
+          "haiku",
+          "sonnet",
+          "opus",
+          "fable"
+        ],
+        "config_schema": {
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "local": {
+    "paused": false,
+    "paused_seats": [],
+    "max_in_flight": null,
+    "reason": null
+  },
+  "max_in_flight": 4,
+  "effective_max_in_flight": 4,
+  "in_flight": 1,
+  "assignment_version": 7,
+  "applied_version": 7,
+  "seats": [
+    {
+      "id": "static",
+      "engine": "static",
+      "account": "static",
+      "serves": [
+        {
+          "model": "echo-1",
+          "as": null
+        }
+      ],
+      "data_classes": [
+        "public",
+        "internal"
+      ],
+      "concurrency": 4,
+      "enabled": true,
+      "config": {
+        "text": "hello from voice",
+        "chunk_chars": 8,
+        "first_output_ms": 0,
+        "chunk_interval_ms": 0
+      },
+      "ref": "laptop/static",
+      "node": "laptop",
+      "status": "up",
+      "reason": null,
+      "in_flight": 0,
+      "problems": []
+    },
+    {
+      "id": "claude-work",
+      "engine": "claude-work",
+      "account": "claude-work",
+      "serves": [
+        {
+          "model": "claude-sonnet-5",
+          "as": "sonnet"
+        }
+      ],
+      "data_classes": [
+        "public",
+        "internal"
+      ],
+      "concurrency": 2,
+      "enabled": true,
+      "config": {},
+      "ref": "laptop/claude-work",
+      "node": "laptop",
+      "status": "up",
+      "reason": null,
+      "in_flight": 1,
+      "problems": []
+    }
+  ],
+  "connected_at": "2026-09-24T11:30:00Z",
+  "last_heartbeat_at": "2026-09-24T12:00:00Z",
+  "created_at": "2026-09-17T12:00:00Z",
+  "revoked_at": null
+}

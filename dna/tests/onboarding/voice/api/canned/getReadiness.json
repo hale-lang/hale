@@ -1,0 +1,8 @@
+{
+  "status": "ok",
+  "version": "0.1.0-stub",
+  "checks": {
+    "postgres": "ok",
+    "config": "ok"
+  }
+}

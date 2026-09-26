@@ -1,0 +1,26 @@
+{
+  "name": "@hale/tokens",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Design tokens for hale's laboratory instrument: a JSON source of truth compiled to CSS custom properties. Framework-free.",
+  "type": "module",
+  "main": "tokens.css",
+  "style": "tokens.css",
+  "files": [
+    "tokens.json",
+    "tokens.css",
+    "fonts.css"
+  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "exports": {
+    ".": "./tokens.css",
+    "./fonts.css": "./fonts.css",
+    "./tokens.json": "./tokens.json"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5",
+    "@fontsource/ibm-plex-sans": "^5"
+  }
+}

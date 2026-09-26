@@ -1,0 +1,32 @@
+{
+  "name": "@voice/admin",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Voice's admin UI. Talks to voice only through spec/openapi.yaml.",
+  "type": "module",
+  "scripts": {
+    "gen": "openapi-typescript ../../../spec/openapi.yaml --empty-objects-unknown -o src/api/schema.d.ts",
+    "dev": "npm run gen && vite",
+    "build": "npm run gen && tsc -p tsconfig.json && vite build",
+    "typecheck": "npm run gen && tsc -p tsconfig.json",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@hale/components": "*",
+    "@hale/tokens": "*",
+    "@tanstack/react-query": "^5",
+    "openapi-fetch": "^0.13",
+    "openapi-typescript-helpers": "^0.0.15",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "openapi-typescript": "^7",
+    "typescript": "^5.6",
+    "vite": "^6"
+  }
+}

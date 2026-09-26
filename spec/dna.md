@@ -3150,6 +3150,56 @@ The live half is memory's, projected from the record by the spine
   `graph_nodes_count(kind)` and `graph_edges_count(kind)` count them;
   `practice` counts the practices proposed or ratified and `binds` the
   ratified practices that bind something, one hyperedge each.
+- **Ingest: `hale dna init` on a repository (GH #1090).** A directory
+  with no Hale source of its own that is no workspace's seed is a
+  repository, not one application: `init` makes the organization there
+  as it would for an application — `vendor/dna`, `dna/org`, the manifest
+  with `[claims] no_base` and `[environments.org]` alone (there is no
+  application entrypoint) — cuts no topology artifact, and seeds the
+  record with the purpose Review and then what the repository holds, as
+  the graph, through the host verb `graph-ingest`
+  (`dna/operations/graph_ingest.hl`). It never derives one perspective
+  from the other. A directory holding `.hl` files is a seed: with a main
+  locus it is an application, attached as before with no graph ingest,
+  and without one it is refused as before. Ingest reads the tracked
+  files (`git ls-files`) and recognizes: the **purpose** — the
+  `README.md`'s title and first paragraph; **processes** — the compose
+  file's services (`compose.yaml`, `compose.yml`, `docker-compose.*`),
+  and the `compose` **deployment** that runs them (built); **seeds** —
+  each directory holding `hale.toml`, `package.json`, `Cargo.toml`,
+  `go.mod` or `pyproject.toml`, the outermost only (a workspace's
+  members are its own), never the root; a process unfolds into the seed
+  of its name; **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
+  and each directory under `spec/vendor/`; **nouns** — a YAML contract's
+  `components.schemas` and a markdown contract's `CREATE TABLE`s, named
+  by the contract, with each `$ref` and `REFERENCES` a `refers`;
+  **documents** — every `.md`; **gates** — each CI job
+  (`.github/workflows/*`), named `<workflow>/<job name>`, guarding the
+  seeds, contracts and compose deployment its steps name; **witnesses**
+  — each `FRICTION.md` entry (a `##` heading) and each issue it links
+  (`<owner>/<repo>#<n>`), about the seeds, contracts and documents it
+  names. What structure cannot say is written in markdown, in two
+  forms. **A marked list item**: a code span opening a list item names
+  its kind — `axiom`, `derived`, `practice` or `law` — and its first
+  bold span is its name; an `axiom` is a node under the purpose, and
+  the repository files it links to are what it `constrains`. (`derived`,
+  `practice` and `law` are practices, proposed at record birth, GH
+  #1091.) **A declaring table**: a table whose columns include `Served
+  by` and `Consumed by` declares one `meets` per row — the row's first
+  link to a contract is its contract, `Over` its transport — and one
+  whose first column is `Deployment` and has `Runs` declares a named
+  deployment and what it runs. In a cell a name in code is a process,
+  else a seed, else a repository path; a link is the node its target
+  is (relative to the document); plain words are a party outside the
+  repository; a code span inside a link is the link's text, not a name;
+  an `Over` that names a process makes it the carrier. Links resolve to
+  a contract, else a document, else the compose deployment, else the
+  seed holding the path. Every row comes out once, a node before an edge
+  that names it, and **the host checks every `graph.*` row against the
+  vocabulary before it appends any** (`record-seed` does the same for
+  a seed file), so an ingest the graph refuses leaves the record as it
+  was. `init` says what it read: `graph   <n> node(s), <m> edge(s):
+  <count> <kind>, …`. A record that exists is not reseeded.
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the

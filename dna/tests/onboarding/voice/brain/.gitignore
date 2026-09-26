@@ -1,0 +1,4 @@
+# the build artifact (`hale build .` names it after the directory)
+/brain
+# toolchain-managed dependency clones (`hale fetch`)
+/vendor/

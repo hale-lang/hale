@@ -1,0 +1,92 @@
+{
+  "id": "resp_01j8z3q4v7m2k9x0",
+  "object": "response",
+  "created_at": 1790251200,
+  "completed_at": 1790251200,
+  "status": "completed",
+  "incomplete_details": null,
+  "model": "echo-1",
+  "previous_response_id": null,
+  "instructions": "You classify incoming asks.",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_01j8z3q4v7m2k9x1",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "hello from voice",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "error": null,
+  "tools": [],
+  "tool_choice": "auto",
+  "truncation": "disabled",
+  "parallel_tool_calls": false,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "top_p": 1,
+  "presence_penalty": 0,
+  "frequency_penalty": 0,
+  "top_logprobs": 0,
+  "temperature": 0,
+  "reasoning": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 4,
+    "total_tokens": 16,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "max_output_tokens": 256,
+  "max_tool_calls": null,
+  "store": false,
+  "background": false,
+  "service_tier": "default",
+  "metadata": {
+    "dna.attempt_id": "w-41/a2"
+  },
+  "safety_identifier": null,
+  "prompt_cache_key": null,
+  "voice": {
+    "request_id": "resp_01j8z3q4v7m2k9x0",
+    "project": "work",
+    "key": "k_ci",
+    "served": {
+      "model": "echo-1",
+      "quantization": null,
+      "node": "laptop",
+      "seat": "laptop/static",
+      "account": "static",
+      "engine": "static",
+      "provider": null
+    },
+    "price_micros": 96,
+    "currency": "USD",
+    "timing": {
+      "wall_ms": 3,
+      "queue_ms": 0,
+      "load_ms": 0
+    },
+    "attempts": [
+      {
+        "seat": "laptop/static",
+        "account": "static",
+        "outcome": "served",
+        "wall_ms": 2
+      }
+    ]
+  }
+}

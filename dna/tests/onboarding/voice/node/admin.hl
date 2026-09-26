@@ -1,0 +1,56 @@
+/// The node's local API (../spec/node.yaml), on loopback. Admin authentication
+/// is middleware that comes later; the skeleton has none.
+locus Admin {
+    params {
+        id: String = "";
+        data: String = "node-data";
+        capabilities: String = "";
+        host: String = "127.0.0.1";
+        port: Int = 8081;
+    }
+    run() {
+        println("node admin API on http://", self.host, ":", self.port);
+        let api = AdminApi { id: self.id, data: self.data, capabilities: self.capabilities };
+        std::http::Server { host: self.host, port: self.port, handler: api };
+    }
+}
+
+/// Every endpoint in ../spec/node.yaml, first match in written order.
+locus AdminApi {
+    params {
+        id: String = "";
+        data: String = "node-data";
+        capabilities: String = "";
+    }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let c = std::http::build_context(req);
+        if std::http::is_route(c, "GET", "/healthz") { return json_response(200, "{\"status\": \"ok\", \"version\": \"" + NODE_VERSION + "\"}"); }
+        if std::http::is_route(c, "GET", "/node/v1/status") { return self.status(); }
+        if std::http::is_route(c, "GET", "/node/v1/capabilities") { return json_response(200, self.capabilities); }
+        if std::http::is_route(c, "GET", "/node/v1/local") { return json_response(200, read_local(self.data)); }
+        if std::http::is_route(c, "PUT", "/node/v1/local") { return self.set_local(req.body); }
+        return error_response(404, "not_found", "not_found", "no such endpoint: " + req.method + " " + req.path);
+    }
+
+    /// The node as it sees itself. Until the protocol lands the assignment
+    /// is only its version, so no seats and nothing in flight.
+    fn status() -> std::http::Response {
+        let mut session = std::io::fs::read_file(self.data + "/session.json") or "";
+        if len(session) == 0 {
+            session = "{\"url\": \"\", \"state\": \"connecting\", \"connected_at\": null, \"last_error\": null}";
+        }
+        let local = read_local(self.data);
+        let mut version = top_value(session, "assignment_version");
+        if len(version) == 0 { version = "null"; }
+        return json_response(200, "{\"id\": \"" + std::json::escape_string(self.id) + "\", \"version\": \"" + NODE_VERSION + "\", \"coordinator\": " + session + ", \"assignment_version\": " + version + ", \"max_in_flight\": " + to_string(effective_cap(self.capabilities, local)) + ", \"in_flight\": 0, \"local\": " + local + ", \"seats\": []}");
+    }
+
+    fn set_local(body: String) -> std::http::Response {
+        let problem = local_problem(body);
+        if len(problem) > 0 { return error_response(400, "invalid_request", "invalid_request", problem); }
+        let local = normalized_local(body);
+        std::io::fs::write_file(self.data + "/local.json", local) or discard;
+        return json_response(200, local);
+    }
+}
