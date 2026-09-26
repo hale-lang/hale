@@ -116,7 +116,17 @@ export const test = base.extend({
     process.once('exit', exitCleanup);
     try {
       if (organization === 'generated') {
-        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
+        // The birth runs under the runner's own cache, not this case's
+        // empty one: `hale dna new` builds the toolchain's host into its
+        // cache on first use, and in the per-case cache that was a cold
+        // host build (minutes on a CI runner) inside this one case, for a
+        // binary nothing here runs. The API below still reads the case's
+        // own cache, and the project's bytes do not depend on which cache
+        // the host was built in.
+        const birthEnv = { ...env };
+        if (process.env.XDG_CACHE_HOME) birthEnv.XDG_CACHE_HOME = process.env.XDG_CACHE_HOME;
+        else delete birthEnv.XDG_CACHE_HOME;
+        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env: birthEnv, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
       }
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
       seeded = true;
