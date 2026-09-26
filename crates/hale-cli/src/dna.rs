@@ -1197,6 +1197,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
             (Some(app), Some((art, raw))) => {
                 let n = seed_journal(&app.root, app, art, raw, &purpose_digest)?;
                 out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
+                out.push(seat_initializer(&app.root)?);
             }
             _ => {
                 // the purpose's Review and the graph in one checked seed: a
@@ -1204,6 +1205,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
                 let graph = seed_repository(&root, &purpose_digest)?;
                 out.push(format!("seeded  {RECORD_REF} (review.requested, then the graph)"));
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
+                out.push(seat_initializer(&root)?);
             }
         }
         // GH #596 C, #994: the design and the operating practices, as
@@ -1292,6 +1294,11 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if org_dir.join("main.hl").is_file() && !performers.is_file() {
         fs::write(&performers, work_hl(&discover())).map_err(|e| format!("write {}: {e}", performers.display()))?;
         out.push(format!("created {}", performers.display()));
+    }
+    // GH #946, #1104 piece 5: a record from before the seat: its maker's
+    // uid mapped to them, so the head's socket knows the peer
+    if record_exists(&root)? {
+        out.push(seat_initializer(&root)?);
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -2341,6 +2348,38 @@ constitution Org {
 }
 "#
     .to_string()
+}
+
+/// The person who runs `init`, as the host names them (`USER`, else `human`).
+fn initializer() -> String {
+    std::env::var("USER").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| "human".to_string())
+}
+
+/// GH #946, GH #1104 piece 5: the record's first seat. The head's socket
+/// lists a verb to a peer whose person the record says holds a position;
+/// a record that declares `dna.trust = local` is one person's, who holds
+/// every position as they hold every authority there, so the seat is
+/// the record's local config alone: the initializer's uid mapped to them
+/// (`dna.unix.member`), and the trust declared. No row in the record —
+/// the graph's positions and holders stay the graph's. Says what it did.
+fn seat_initializer(root: &Path) -> Result<String, String> {
+    let name = initializer();
+    let uid = Command::new("id").arg("-u").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    if uid.is_empty() {
+        return Ok(format!("seated  this uid could not be read; map it to {name} for the head's socket: git config --local --add dna.unix.member \"uid:<n>={name}\""));
+    }
+    let entry = format!("uid:{uid}={name}");
+    let have = git(root, &["config", "--local", "--get-all", "dna.unix.member"]).unwrap_or_default();
+    if !have.lines().any(|l| l.trim() == entry) {
+        git(root, &["config", "--local", "--add", "dna.unix.member", &entry])?;
+    }
+    // the record declares its trust: local, one person holding every
+    // authority, unless it declares another already
+    let trust = git(root, &["config", "--local", "--get", "dna.trust"]).unwrap_or_default();
+    if trust.trim().is_empty() {
+        git(root, &["config", "--local", "dna.trust", "local"])?;
+    }
+    Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares dna.trust = local, where they hold every position"))
 }
 
 /// The seed events, collected then appended to the record in order.

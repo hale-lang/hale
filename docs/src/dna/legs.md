@@ -45,12 +45,19 @@ that matter.
 
 **A project, with the fake behind the model leg.** `hale dna new`
 under `HALE_DNA_DISCOVER=off` finds no backend, so the generated
-performers hand agent work to a person (`NoModel`). For a dry run,
-give the agent router the fake and put the catalog behind the leg:
+performers hand agent work to a person (`NoModel`). It also seats the
+record: the uid of whoever made it is mapped to them in the record's
+local config, and the record declares `dna.trust = local` — one
+person holding every authority — so the head's socket knows that peer
+and they hold every position; the verbs are theirs to call:
 
 ```text
 $ HALE_DNA_DISCOVER=off hale dna new demo && cd demo
+seated  the head's socket knows uid 1000 as riley (dna.unix.member); the record declares dna.trust = local, where they hold every position
 ```
+
+For a dry run, give the agent router the fake and put the catalog
+behind the leg:
 
 In `dna/org/models.hl`, point `agent_models()` at a fake:
 
@@ -92,6 +99,11 @@ hale dna run: the organization reads its facts from the nerves (DNA_8758…)
 $ dna/face/start.sh …/demo          # from a checkout of hale; the API child listens on 8793
 ```
 
+The API child is the head the verbs talk to: its reads over HTTP,
+its commands on the socket its capabilities name
+(`$XDG_RUNTIME_DIR/hale/dna/<record id>.sock`), which is where the
+leg finds it.
+
 **A judgment asked for.** A change is the leader's to classify; an
 assessment is the asker's word, and is admitted as one judgment leaf
 that capability-first routing hands to an agent — the legs' relay,
@@ -112,7 +124,7 @@ back under the lease, and read the settlement:
 ```text
 $ hale dna work next --as position:agent
 {"verb": "next", "state": "succeeded", "attempt": {"state": "claimed", "attempt_id": "t1/wf1/s0/j/a0",
- "holder": "position:agent", "token": "1", "until": "1790426442", …}}
+ "holder": "position:agent", "token": 1, "until": 1790433675, …}}
 $ hale dna work brief --attempt t1/wf1/s0/j/a0 --render text --plain
 BRIEF t1/wf1/s0/j (attempt t1/wf1/s0/j/a0) of task t1
 position: position:agent (agent)
@@ -147,10 +159,10 @@ $ hale dna work loop --as position:agent --parallel 1 --once --wait 30
 {"verb": "loop", "state": "ended", "workers": 1, "ran": 1, "drained": false}
 ```
 
-The child claimed as `position:agent#1`, rendered the hat as a
-prompt, sent the render alone to the fake through the catalog's
-router, handed the answer back with the call as evidence, and waited
-for the settlement. Without `--once` the loop keeps going: a child
+The child claimed as `position:agent#1` (its `--worker 1`), rendered
+the hat as a prompt, sent the render alone to the fake through the
+catalog's router, handed the answer back with the call as evidence,
+and waited for the settlement. Without `--once` the loop keeps going: a child
 that performed is started again at once, one that found nothing waits
 its backoff, and `hale dna work loop --drain` (or SIGTERM) ends it.
 

@@ -25,6 +25,9 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgstat"], &d);
     assert!(ok, "{out}");
+    // GH #946: the record is seated at birth — its maker's uid mapped to
+    // them in the local config, so the head's socket knows the peer
+    assert!(out.contains("seated  ") && out.contains("dna.unix.member"), "the record is seated:\n{out}");
     let app: PathBuf = d.join("orgstat");
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
 
@@ -113,7 +116,18 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     // GH #946: an ask for a judgment is admitted as one judgment leaf, an
     // agent's — the legs' relay answers pending for a leg to claim
     let (ok6, out6) = run(&["dna", "task", "create", "--judgment", "assess", "whether", "the", "queue", "is", "bounded"]);
-    let (ok7, out7) = run(&["dna", "history", "t2"]);
+    // the admission is in the answer; the leaf's effect row lands a tick later
+    let mut ok7 = false;
+    let mut out7 = String::new();
+    for _ in 0..40 {
+        let (o, t) = run(&["dna", "history", "t2"]);
+        ok7 = o;
+        out7 = t;
+        if out7.contains("by agent") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
     finish(&mut host);
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
