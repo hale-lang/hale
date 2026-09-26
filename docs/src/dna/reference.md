@@ -17,7 +17,9 @@ hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([le
                              --effect effect_free|idempotent|uncertain on next and submit (the performer's class;
                              run and loop use their performer's); an uncertain performer's failed settle or lost
                              reply is `unresolved` — friction filed, the lease kept, never retried by a program
-                             loop --parallel N is a worker (N children, holders position:<name>#n); loop --drain
+                             loop --parallel N is a worker (N children, holders position:<name>#n via --worker n);
+                             loop --drain; the commands go over the head's socket (--socket, HALE_DNA_SOCKET,
+                             or as /capabilities names it), the peer's credentials the principal
 hale dna definitions [project] [--json]
                              the workflow catalog (dna/org/workflows.hl): every definition with its
                              revision, each step with the one store it writes, and what is refused at
