@@ -47,9 +47,13 @@ carry its own value, that's a `params` field with a default
 written inside a locus body is an error at the `const` keyword,
 saying both.
 
-Shadowing — declaring a second `let x` in the same scope — is
-not allowed. Pick a new name. The language would rather you say
-what you mean than quietly reuse a name for a different value.
+A `let` is visible from its statement to the end of its block. A
+second `let x` later in the same block rebinds the name to the new
+value from there on; a `let x` inside a nested block shadows an
+outer `x` — a parameter's or an outer `let`'s — there and there only,
+and the outer binding is what the rest of the function sees. The
+slot a `let` binds lives until the function exits (that is what a
+loop's reclamation is about), but the name is the block's.
 
 ## A name that isn't declared is an error
 

@@ -314,7 +314,8 @@ while i < steps {
 Coming back round to that line is the end of the previous `m`'s life:
 it runs its `drain()` and `dissolve()` and gives back its arena before
 the new one takes its place, and the function's exit releases the last
-one — so `m` is still readable after the loop. The loop holds one
+one — the slot outlives the loop, though the name `m` is the loop
+body's and is not readable after it. The loop holds one
 instance at a time, not `steps` of them. Both spellings behave
 identically — a factory call, a `Matrix { }` literal and a literal you
 merely *use* (`Matrix { }.trace()`, `sum(Matrix { })`) all get the
