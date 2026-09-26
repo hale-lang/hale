@@ -224,11 +224,15 @@ locus App {
         let mut mark_free = self.outcome_of(label + "markfree", identity, ae, bob_leg, ue_token, self.hat_of(ae)); mark_free.effect_class = "idempotent"; mark_free.disposition = "unresolved";
         std::test::assert(!commands.submit(bob, mark_free).ok, l + "unresolved is an uncertain performer's alone");
         let mut again_e = self.claim_of(label + "ce2", identity, head_c, "agent", bob_leg, "internal public"); again_e.effect_class = "uncertain";
+        let claims_before = self.count_rows("attempt.claimed", ae);
         let rae = commands.submit(bob, again_e);
-        std::test::assert(rae.ok && rae.receipt.state == "refused" && std::str::contains(rae.receipt.reason, "unresolved"), l + "its holder is not given it again: " + rae.code + " " + rae.receipt.state + " " + rae.receipt.reason);
+        std::test::assert(rae.ok && rae.receipt.state == "refused" && rae.receipt.attempt.attempt_id != ae, l + "its holder is not given it again: " + rae.code + " " + rae.receipt.state + " " + rae.receipt.reason);
         let mut other_e = self.claim_of(label + "ce3", identity, head_c, "agent", carol_leg, "internal public"); other_e.effect_class = "uncertain";
         let roe3 = commands.submit(alice, other_e);
-        std::test::assert(roe3.ok && roe3.receipt.state == "refused" && std::str::contains(roe3.receipt.reason, "unresolved"), l + "nor another leg: " + roe3.receipt.reason);
+        std::test::assert(roe3.ok && roe3.receipt.state == "refused" && roe3.receipt.attempt.attempt_id != ae, l + "nor another leg: " + roe3.receipt.reason);
+        std::test::assert_eq_int(self.count_rows("attempt.claimed", ae), claims_before, l + "and nobody's claim lands on it");
+        // the refusal says why when the marked attempt is the only one of its kind outstanding
+        if label == "record" { std::test::assert(std::str::contains(rae.receipt.reason, "unresolved"), l + "the refusal names it unresolved: " + rae.receipt.reason); }
         let rmark2 = commands.lookup(bob, label + "mark");
         std::test::assert(rmark2.ok && rmark2.receipt.attempt.state == "unresolved", l + "the mark reads back as unresolved: " + rmark2.code + " " + rmark2.receipt.attempt.state);
         // ---- t1: claim, outcome, relay, settled
