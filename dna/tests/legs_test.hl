@@ -87,25 +87,21 @@ locus App {
         journal: dna::RoutedJournal = dna::RoutedJournal { };
         asks: Int = 0;
     }
-    // The head's commands are gated by the record (GH #1104 piece 5): the
-    // leg's verbs need `position`, so this process's uid — the head's,
-    // which forwards the verbs — is mapped to riley and riley is seated.
-    fn seat_riley() {
+    // The socket's gate (GH #1104 piece 5): the peer — this process's uid —
+    // is mapped to a person, and under the fresh record's local trust that
+    // person holds every position, so the head lists the leg's verbs to it
+    // (`hale dna new` seats its maker the same way; this record was made
+    // by the suite's user).
+    fn seat_me() {
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
-        let mapped = dna::run_tool("git\n-C\n" + self.app + "\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=riley");
-        std::test::assert_eq_int(mapped.code, 0, "the record maps this uid to riley: " + mapped.stderr);
-        let j = dna::GitJournal { repo: self.app };
-        let node = j.append(j.revision(), "graph.node", ops::graph_node_id("position", "board"), ops::graph_node_body("position", "board", "", ""));
-        std::test::assert(node.ok, "the board is a position");
-        let e = ops::GraphEdge { kind: "holds" };
-        e.member("position", ops::graph_node_id("position", "board"));
-        e.member("holder", "riley");
-        let seated = j.append(j.revision(), "graph.edge", e.id(), e.body());
-        std::test::assert(seated.ok, "riley holds the board");
+        let mapped = in_dir(self.app, "git\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=riley");
+        std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
+        let local = in_dir(self.app, "git\nconfig\n--local\ndna.trust\nlocal");
+        std::test::assert_eq_int(local.code, 0, "the record declares local trust: " + local.stderr);
     }
     // ---- the head over the record, watched: it dies with this process
     fn start_head() {
-        self.seat_riley();
+        self.seat_me();
         let record = dna::GitRecord { repo: self.app };
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.app + "/.hale/dna/authority.json", policy) or discard;
@@ -238,15 +234,15 @@ locus App {
         let other = "position:editor#" + n;
         let a1 = self.ask();
         // next: the claim, for a position; asked again by the same worker it is the same lease
-        let claimed = self.work("next\n--as\nposition:agent\n--holder\n" + me);
+        let claimed = self.work("next\n--as\nposition:agent\n--worker\n" + n);
         std::test::assert_eq_str(self.state_of(claimed), "claimed", l + "next claims: " + claimed);
         std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(claimed), "attempt_id"), a1, l + "the attempt that awaited a leg");
         std::test::assert_eq_str(std::json::find_string_field(self.attempt_of(claimed), "holder"), me, l + "held by the worker");
         let token = self.token_of(claimed);
-        let again = self.work("next\n--as\nposition:agent\n--holder\n" + me);
+        let again = self.work("next\n--as\nposition:agent\n--worker\n" + n);
         std::test::assert(self.state_of(again) == "claimed" && self.token_of(again) == token && std::json::find_string_field(self.attempt_of(again), "attempt_id") == a1, l + "next again is the same lease: " + again);
         // a second position racing it: refused with the receipt, exit 1
-        let racing = self.work_rc("next\n--as\nposition:editor\n--holder\n" + other + "\n--kind\nagent", 1);
+        let racing = self.work_rc("next\n--as\nposition:editor\n--worker\n" + n + "\n--kind\nagent", 1);
         std::test::assert(self.state_of(racing) == "refused" && std::str::contains(std::json::find_string_field(racing, "reason"), "held by another leg"), l + "a racing leg is refused: " + racing);
         // brief: the hat in the verb's envelope, and the hat rendered
         let briefed = self.work("brief\n--attempt\n" + a1);
@@ -266,19 +262,19 @@ locus App {
         std::test::assert(std::str::starts_with(plain, "You are position:agent"), l + "a prompt, plain: " + plain);
         std::test::assert_eq_str(dna::digest_of(plain + "\n"), std::json::find_string_field(self.work("brief\n--attempt\n" + a1 + "\n--render\nprompt"), "prompt_digest"), l + "rendering is a pure function of the hat and the mode");
         // renew (counted), friction
-        let renewed = self.work("renew\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--ttl\n900\n--renewal\n2");
+        let renewed = self.work("renew\n--as\nposition:agent\n--worker\n" + n + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--ttl\n900\n--renewal\n2");
         std::test::assert(self.state_of(renewed) == "renewed" && self.token_of(renewed) == token, l + "renew extends the lease and keeps the token: " + renewed);
         let filed = self.work("friction\n--as\nposition:agent\n--attempt\n" + a1 + "\n--text\nthe hat named no tool grant for a judgment");
         std::test::assert_eq_str(self.state_of(filed), "filed", l + "friction is filed: " + filed);
         std::test::assert(self.has_row("friction.filed", a1), l + "as a row on the attempt");
         // submit, twice one act; not released while it awaits the owner; relayed, settled
         std::io::fs::write_file(self.app + "/.hale/calls.json", "[{\"adapter\": \"person\", \"backend\": \"desk\", \"input_tokens\": 0, \"output_tokens\": 0, \"cost_micros\": 0}]") or discard;
-        let outcome_args = "submit\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--result\nassessment: ship it\n--narrative\nread it twice\n--evidence-file\n" + self.app + "/.hale/calls.json\n--hat-digest\n" + hat_digest + "\n--hat-head\n" + std::json::find_string_field(hat, "head") + "\n--hat-watermark\n" + watermark + "\n--prompt-digest\n" + prompt_digest;
+        let outcome_args = "submit\n--as\nposition:agent\n--worker\n" + n + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--result\nassessment: ship it\n--narrative\nread it twice\n--evidence-file\n" + self.app + "/.hale/calls.json\n--hat-digest\n" + hat_digest + "\n--hat-head\n" + std::json::find_string_field(hat, "head") + "\n--hat-watermark\n" + watermark + "\n--prompt-digest\n" + prompt_digest;
         let submitted = self.work(outcome_args);
         std::test::assert_eq_str(self.state_of(submitted), "requested", l + "submit hands the outcome back: " + submitted);
         let twice = self.work(outcome_args);
         std::test::assert(self.state_of(twice) == "requested" && std::json::find_string_field(twice, "request_id") == std::json::find_string_field(submitted, "request_id"), l + "submit twice is one act: " + twice);
-        let held = self.work_rc("release\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--why\ntoo soon", 1);
+        let held = self.work_rc("release\n--as\nposition:agent\n--worker\n" + n + "\n--attempt\n" + a1 + "\n--token\n" + token + "\n--why\ntoo soon", 1);
         std::test::assert(std::str::contains(std::json::find_string_field(held, "reason"), "awaits the owner"), l + "the lease is not given back while the outcome awaits the owner: " + held);
         let requested = self.work("settle\n--attempt\n" + a1 + "\n--token\n" + token);
         std::test::assert_eq_str(self.state_of(requested), "requested", l + "not settled before the owner heard it");
@@ -291,12 +287,12 @@ locus App {
         std::test::assert_eq_str(to_string(std::json::find_int_field(outcome, "hat_watermark")), watermark, l + "and the watermark the brief reported");
         // release: the lease given back, the attempt claimed anew under a new token
         let a2 = self.ask();
-        let c2 = self.work("next\n--as\nposition:agent\n--holder\n" + me);
+        let c2 = self.work("next\n--as\nposition:agent\n--worker\n" + n);
         std::test::assert(self.state_of(c2) == "claimed" && std::json::find_string_field(self.attempt_of(c2), "attempt_id") == a2, l + "the next attempt: " + c2);
-        let released = self.work("release\n--as\nposition:agent\n--holder\n" + me + "\n--attempt\n" + a2 + "\n--token\n" + self.token_of(c2) + "\n--why\nout of time");
+        let released = self.work("release\n--as\nposition:agent\n--worker\n" + n + "\n--attempt\n" + a2 + "\n--token\n" + self.token_of(c2) + "\n--why\nout of time");
         std::test::assert_eq_str(self.state_of(released), "released", l + "release gives it back: " + released);
         std::test::assert(self.has_row("attempt.released", a2), l + "as a row");
-        let c2b = self.work("next\n--as\nposition:editor\n--holder\n" + other + "\n--kind\nagent");
+        let c2b = self.work("next\n--as\nposition:editor\n--worker\n" + n + "\n--kind\nagent");
         std::test::assert(self.state_of(c2b) == "claimed" && std::json::find_string_field(self.attempt_of(c2b), "attempt_id") == a2, l + "another position claims it anew: " + c2b);
         std::test::assert(self.token_of(c2b) != self.token_of(c2), l + "under a new token: " + self.token_of(c2b) + " after " + self.token_of(c2));
     }
@@ -326,11 +322,11 @@ locus App {
         // run: a person's cycle leaves the outcome to them (the model takes the
         // kind by default, so the person is asked for); a deterministic performer wins for its kind
         let a4 = self.ask();
-        let person = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--performer\nperson");
+        let person = self.work("run\n--as\nposition:agent\n--worker\n9\n--performer\nperson");
         std::test::assert(std::json::find_string_field(person, "state") == "pending" && std::json::find_string_field(person, "performer") == "person" && std::json::find_string_field(person, "attempt_id") == a4, "a person's run is pending: " + person);
         std::test::assert(std::str::contains(std::json::find_string_field(person, "narrative"), "hale dna work submit"), "and says how to hand it back");
         std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
-        let fixed = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        let fixed = self.work("run\n--as\nposition:agent\n--worker\n9\n--wait\n0");
         std::test::assert(std::json::find_string_field(fixed, "performer") == "deterministic" && std::json::find_string_field(fixed, "state") == "requested", "a deterministic performer wins for its kind and hands the outcome back: " + fixed);
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
         self.wait_row("attempt.outcome", a4, "and the owner settles it");
@@ -350,7 +346,7 @@ locus App {
         // the model leg: the catalog's router behind the performer, out of process
         let a5 = self.ask();
         std::io::fs::write_file(self.app + "/dna/org/work.hl", MODEL_WORK) or discard;
-        let modelled = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        let modelled = self.work("run\n--as\nposition:agent\n--worker\n9\n--wait\n0");
         std::test::assert(std::json::find_string_field(modelled, "performer") == "model" && std::json::find_string_field(modelled, "state") == "requested" && std::json::find_string_field(modelled, "attempt_id") == a5, "the model leg performs and hands the outcome back: " + modelled);
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
         self.wait_row("attempt.outcome", a5, "and the owner settles it");
@@ -359,15 +355,15 @@ locus App {
         std::test::assert(self.state_of(s5) == "settled" && std::json::find_string_field(self.attempt_of(s5), "disposition") == "done", "settled done: " + s5);
         // a performer forced on the leg: the person, though the model takes the kind
         let a6 = self.ask();
-        let forced = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--performer\nperson");
+        let forced = self.work("run\n--as\nposition:agent\n--worker\n9\n--performer\nperson");
         std::test::assert(std::json::find_string_field(forced, "performer") == "person" && std::json::find_string_field(forced, "state") == "pending" && std::json::find_string_field(forced, "attempt_id") == a6, "--performer person: the run is the person's: " + forced);
-        let back = self.work("release\n--as\nposition:agent\n--holder\nposition:agent#9\n--attempt\n" + a6 + "\n--token\n" + std::json::find_string_field(forced, "token") + "\n--why\nthe fixture takes it back");
+        let back = self.work("release\n--as\nposition:agent\n--worker\n9\n--attempt\n" + a6 + "\n--token\n" + std::json::find_string_field(forced, "token") + "\n--why\nthe fixture takes it back");
         std::test::assert_eq_str(self.state_of(back), "released", "and given back: " + back);
         // a rate-limited call: backed off inside the attempt, the wait recorded as
         // evidence; the attempt is the one given back, claimed anew under a new token
         let a7 = a6;
         std::io::fs::write_file(self.app + "/dna/org/work.hl", THROTTLED_WORK) or discard;
-        let throttled = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        let throttled = self.work("run\n--as\nposition:agent\n--worker\n9\n--wait\n0");
         std::test::assert(std::json::find_string_field(throttled, "performer") == "model" && std::json::find_string_field(throttled, "state") == "requested" && std::json::find_string_field(throttled, "attempt_id") == a7 && std::json::find_string_field(throttled, "token") == "2", "the throttled leg takes the released attempt anew and still hands an outcome back: " + throttled);
         let requested7 = self.row_body("attempt.outcome_requested", a7);
         let calls7 = std::json::find_string_field(requested7, "calls");
@@ -441,7 +437,7 @@ locus App {
         // a forced performer that does not take the kind refuses, and the lease is given back
         std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
         let a12 = self.ask();
-        let not_taken = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--performer\nmodel");
+        let not_taken = self.work("run\n--as\nposition:agent\n--worker\n9\n--performer\nmodel");
         std::test::assert(std::json::find_string_field(not_taken, "state") == "released" && std::str::contains(std::json::find_string_field(not_taken, "reason"), "does not take"), "a forced model that takes nothing of the kind refuses and releases: " + not_taken);
         let back12 = self.work("next\n--as\nposition:leader\n--kind\nagent");
         std::test::assert(self.state_of(back12) == "claimed" && std::json::find_string_field(self.attempt_of(back12), "attempt_id") == a12, "the attempt is claimable again: " + back12);
@@ -464,7 +460,7 @@ locus App {
         std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(hat, "hat"), "effects"), "effect_free idempotent", "the hat carries the classes the Work admits: " + hat);
         // a performer that declares no class is refused when the leg is seeded
         std::io::fs::write_file(self.app + "/dna/org/work.hl", UNSEATED_WORK) or discard;
-        let unseated = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_API=\"$3\" && \"$2\" dna work run --as position:agent --holder position:agent#9\nsh\n" + self.app + "\n" + toolchain() + "\n" + self.api);
+        let unseated = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_API=\"$3\" && \"$2\" dna work run --as position:agent --worker 9\nsh\n" + self.app + "\n" + toolchain() + "\n" + self.api);
         std::test::assert(unseated.code == 2 && std::str::contains(unseated.stderr, "declares no effect class"), "no default class, refused at seed: " + unseated.stdout + unseated.stderr);
         // a lost reply behind an uncertain performer, on a chore (a Work that
         // admits one; the routing policy hands it to a software leg): unresolved,
@@ -474,7 +470,7 @@ locus App {
         std::io::fs::write_file(self.app + "/dna/org/work.hl", LOST_WORK_UNCERTAIN) or discard;
         let chore_hat = self.work("brief\n--attempt\n" + a15);
         std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(chore_hat, "hat"), "effects"), "effect_free idempotent uncertain", "a chore admits every class: " + chore_hat);
-        let held = self.work_rc("run\n--as\nposition:software\n--holder\nposition:software#1\n--wait\n0", 1);
+        let held = self.work_rc("run\n--as\nposition:software\n--worker\n1\n--wait\n0", 1);
         std::test::assert(std::json::find_string_field(held, "state") == "unresolved" && std::json::find_string_field(held, "attempt_id") == a15 && std::json::find_string_field(held, "effect_class") == "uncertain", "an uncertain performer's lost reply is unresolved: " + held);
         std::test::assert(std::str::contains(std::json::find_string_field(held, "reason"), "connection reset") && std::json::find_string_field(held, "friction") == "filed", "friction is filed naming the loss: " + held);
         std::test::assert(!self.has_row("attempt.outcome_requested", a15), "nothing was handed back");
@@ -489,7 +485,7 @@ locus App {
         // outstanding: a failed outcome, handed back
         let a14 = a13;
         std::io::fs::write_file(self.app + "/dna/org/work.hl", LOST_WORK_FREE) or discard;
-        let failed = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        let failed = self.work("run\n--as\nposition:agent\n--worker\n9\n--wait\n0");
         std::test::assert(std::json::find_string_field(failed, "state") == "requested" && std::json::find_string_field(failed, "attempt_id") == a14 && std::json::find_string_field(failed, "effect_class") == "effect_free", "an effect-free performer's lost reply is a failed outcome: " + failed);
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
         self.wait_row("attempt.outcome", a14, "and settled");
@@ -501,7 +497,7 @@ locus App {
         self.wait_row("attempt.admitted", retry, "the engine tries the judgment again");
         self.wait_row("effect.requested", "attempt:" + retry, "and asks a leg for it");
         std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
-        let closed = self.work("run\n--as\nposition:agent\n--holder\nposition:agent#9\n--wait\n0");
+        let closed = self.work("run\n--as\nposition:agent\n--worker\n9\n--wait\n0");
         std::test::assert_eq_str(std::json::find_string_field(closed, "attempt_id"), retry, "the retry is the one claimed: " + closed);
         std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
         self.wait_row("attempt.outcome", retry, "and settled");
