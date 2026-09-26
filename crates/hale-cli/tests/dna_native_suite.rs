@@ -34,23 +34,26 @@ fn repo_root() -> PathBuf {
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
-/// slice's fifteen minutes. One wedged fixture still ends in a named
+/// fifteen minutes a slice had then. One wedged fixture still ends in a named
 /// failure within the group's timeout.
 const SLICES: usize = 20;
 
 /// The fixtures that take minutes of a slice on CI's runners: an
 /// organization run through dozens of Board decisions on a git-backed
-/// record (GH #995: graph_holes_test ~520 s, books_slice_test ~280 s,
-/// receipt_retention_test ~110 s), the body fixtures that build the host
+/// record (GH #995: graph_holes_test and graph_holds_test, the two halves
+/// of what ran 523 to 1500 s as one fixture and alone ran past a slice's
+/// twenty-five minutes; books_slice_test ~280 s; receipt_retention_test
+/// ~110 s), the body fixtures that build the host
 /// cold in a cache of their own (body_claim_expired_test ~425 s,
 /// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test,
 /// which builds a head. The sorted listing's modulo paired them by
 /// accident — adding or removing any fixture reshuffled which shared a
-/// slice, and two of them run past a slice's fifteen minutes — so they
+/// slice, and two of them ran past the fifteen minutes a slice had then — so they
 /// lead the order: each opens a slice of its own, and the rest follow
 /// round-robin.
-const HEAVY: [&str; 7] = [
+const HEAVY: [&str; 8] = [
     "graph_holes_test.hl",
+    "graph_holds_test.hl",
     "body_claim_expired_test.hl",
     "body_lease_blocked_test.hl",
     "books_slice_test.hl",
@@ -876,6 +879,7 @@ fn dna_fixture_set_is_complete() {
             "genome_pull_test.hl",
             "grant_layering_test.hl",
             "grant_resources_test.hl",
+            "graph_holds_test.hl",
             "graph_holes_test.hl",
             "graph_ingest_refusals_test.hl",
             "graph_ingest_test.hl",
