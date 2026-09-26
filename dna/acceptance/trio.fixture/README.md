@@ -62,3 +62,19 @@ re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context, stored as the miss's
 evidence, with the one line taken back out. No fresh model call was made;
 every answer is unchanged.
+
+GH #946 handed the generated organization's agent work to legs, which
+changed `main.hl` in two places: the comment above the work system
+says so, and the system wires `agent: dna::LegRelay { name: "legs" }`
+with `agent_reconciler: dna::RelayReplay { }` where it wired
+`dna::AgentPerformer` over `agent_models()`. Two entries carry that
+file in their context. The organization-growth edit (`4851093b24ca…`,
+was `d9fd4a5d2943…`) is re-keyed, and its recorded output carries the
+same two changes and nothing else; the recorded fulfilment Leader is
+untouched. The growth assessment (`a9abb06dd5a0…`, was `0dfcfca7d96c…`)
+is re-keyed for the changed context alone. Each old context digest was
+checked by reproducing it from the new context, stored as the miss's
+evidence, with the two changes taken back out; each new key was the
+one the miss named. No fresh model call was made; every answer is
+unchanged, and both entries' token and cost fields remain the
+original recording's.
