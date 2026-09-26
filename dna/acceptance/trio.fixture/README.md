@@ -79,3 +79,15 @@ one the miss named. No fresh model call was made. The assessment's
 answer is unchanged; the growth edit's recorded output differs from
 the original by those two changes alone; both entries' token and cost
 fields remain the original recording's.
+
+The walkthrough's review round (GH #946) changed the generated
+organization's `law.hl` in one place: its `positions` group names
+`dna::LegRelay` and `dna::RelayReplay` where it named
+`dna::AgentPerformer`. Three entries carry that file in their context
+and no recorded output does. The two classifications of asks
+(`e589d77675dc…`, was `22daa9954a05…`; `21e601a79089…`, was
+`72800cd31bce…`) and the review (`cbebcc1016a6…`, was `510760d5bef1…`)
+are re-keyed for the changed context alone. Each new context digest was
+reproduced from the old context, kept as an earlier run's receipt, with
+the one line changed; each new key was the one the miss named. No fresh
+model call was made; every answer, token and cost field is unchanged.
