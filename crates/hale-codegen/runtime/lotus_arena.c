@@ -1477,7 +1477,10 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_on_node(
     return c;
 }
 
-/* The arena's hot entry points start on a 64-byte boundary. Code added
+/* The arena's and the bus router's hot entry points start on a 64-byte
+ * boundary (the bus ones: subject match, the cooperative queue's
+ * enqueue/drain, the mailbox drain, and the dispatch family through
+ * the static fast paths). Code added
  * anywhere earlier in this file shifts them, and a shift that moves one
  * off a cache-line or fetch-block boundary reads as a 5–15% "regression"
  * (or win) on the benches that live in them — same instructions, other
@@ -7037,6 +7040,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     if (locked) pthread_mutex_unlock(&q->lock);
 }
 
+LOTUS_HOT_ALIGN
 void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
                              void *handler,
                              void *self_ptr,
@@ -7054,6 +7058,7 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
  * placement (single-threaded bus). In that case g_bus_has_pinned can
  * never transition 1, so a non-atomic single-threaded enqueue is
  * sound and drops the per-enqueue acquire-load. */
+LOTUS_HOT_ALIGN
 void lotus_bus_queue_enqueue_st(lotus_bus_queue_t *q,
                                 void *handler,
                                 void *self_ptr,
@@ -7161,6 +7166,7 @@ static __thread int g_bus_drain_active = 0;
 void lotus_bus_drain_lost_transports(void);
 extern volatile int g_transport_lost_pending;
 
+LOTUS_HOT_ALIGN
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
     /* Fast path (2026-08-03, bench attribution): single-threaded
@@ -7737,6 +7743,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     }
 }
 
+LOTUS_HOT_ALIGN
 int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     if (!mb) return 0;
     lotus_bus_cell_t cell;
@@ -10286,6 +10293,7 @@ static __thread char g_tls_bus_struct_buf[LOTUS_PAYLOAD_MAX];
  * non-matching. Patterns without "**" fall through to strcmp —
  * the cheap path stays cheap.
  */
+LOTUS_HOT_ALIGN
 int lotus_subject_match(const char *pattern, const char *subject) {
     if (!pattern || !subject) return 0;
     /* Pointer-equal fast path: both sides typically reference the
@@ -10771,6 +10779,7 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
     return 1;
 }
 
+LOTUS_HOT_ALIGN
 void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
                               const char *subject,
                               const void *payload,
@@ -10891,6 +10900,7 @@ static int lotus_bus_log_deserialize_drop_enabled(void) {
     return cached || lotus_bus_log_drop_enabled();
 }
 
+LOTUS_HOT_ALIGN
 void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
                                      const char *subject,
                                      const void *payload,
@@ -11331,6 +11341,7 @@ int lotus_bus_dispatch_keyed_fallible(lotus_bus_queue_t *queue,
     return matched;
 }
 
+LOTUS_HOT_ALIGN
 void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
                               const char *subject,
                               const void *struct_payload,
@@ -11426,6 +11437,7 @@ int lotus_bus_dispatch_keyed_fallible_flat(lotus_bus_queue_t *queue,
 /* size/len params across the FFI surface are fixed-width uint64_t (not
  * size_t) so codegen's i64 matches on every target — see lotus_arena_alloc.
  * WASM plan size_t-ABI sweep. */
+LOTUS_HOT_ALIGN
 void lotus_bus_dispatch(lotus_bus_queue_t *queue,
                         const char *subject,
                         const void *struct_payload,
@@ -11510,6 +11522,7 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
  * serialize_fn is still threaded through: remote (CONNECT-role)
  * subscribers need the wire encoding, so we serialize ONCE and fan out
  * the bytes only when a remote transport is bound to this subject. */
+LOTUS_HOT_ALIGN
 void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
                              const char *subject,
                              const void *struct_payload,
@@ -18559,6 +18572,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     lotus_current_caller_arena = prev_tls;
 }
 
+LOTUS_HOT_ALIGN
 void lotus_bus_dispatch_wire(const char *subject,
                              const void *wire_bytes,
                              size_t wire_size) {
@@ -18714,6 +18728,7 @@ void lotus_bus_dispatch_wire(const char *subject,
  * dynamic path); the wire path mirrors lotus_bus_dispatch_wire and
  * uses g_bus_queue_for_remote for the cooperative branch. For an
  * eligible subject these are the same queue, set once at boot. */
+LOTUS_HOT_ALIGN
 void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                                uint32_t id,
                                const char *subject,
@@ -18977,6 +18992,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
  * than direct-call an off-thread locus's handler on the publisher's
  * thread — degrading a gate bug to correct-but-slower, never to a
  * cross-thread call. */
+LOTUS_HOT_ALIGN
 void lotus_bus_dispatch_static_direct(uint32_t id,
                                       const char *subject,
                                       const void *payload,
@@ -19071,6 +19087,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
  * `memory(read)` + `nounwind` + `willreturn` (NOT `memory(none)`), so a
  * store elsewhere (a quarantine) is not reordered across these reads. */
 size_t lotus_bus_static_direct_count(uint32_t id) __attribute__((pure));
+LOTUS_HOT_ALIGN
 size_t lotus_bus_static_direct_count(uint32_t id) {
     lotus_bus_static_bucket_t *b =
         (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
@@ -19079,6 +19096,7 @@ size_t lotus_bus_static_direct_count(uint32_t id) {
 
 void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k)
     __attribute__((pure));
+LOTUS_HOT_ALIGN
 void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k) {
     lotus_bus_static_bucket_t *b =
         (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
