@@ -100,7 +100,7 @@ locus App {
         let r2 = init(refused);
         std::test::assert_eq_int(r2.code, 0, "init runs again: " + r2.stdout + r2.stderr);
         let rr = rows(refused);
-        std::test::assert(std::str::starts_with(rr, "review.requested review:purpose\ngraph.node purpose:refused\n"), "the purpose's Review, then the graph: " + rr);
+        std::test::assert(std::str::starts_with(rr, "knowledge.proposed sha256:") && std::str::contains(rr, "\nreview.requested review:k:") && std::str::contains(rr, "\ngraph.node purpose:refused\n"), "the purpose proposed (GH #995), then the graph: " + rr);
         std::test::assert(std::str::contains(rr, "graph.node axiom:Now it has a name\n") && std::str::contains(rr, "graph.edge unfold:purpose:refused|axiom:Now it has a name\n"), "the axiom, under the purpose: " + rr);
         std::test::assert(std::str::contains(rr, "knowledge.proposed "), "and the practices init proposes: " + rr);
 

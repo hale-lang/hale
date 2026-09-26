@@ -76,7 +76,7 @@ locus Contended {
     fn competitor(entity: String, request: String) -> String {
         if !self.defined {
             self.defined = true;
-            let d = self.theirs.define("one-step", 1, 1, "");
+            let d = self.theirs.define("one-step", 1, "record", "");
             let l = self.theirs.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1);
         }
         let x = self.theirs.expand(entity, "one-step", 1, dna::AdmissionLimits { });
@@ -223,7 +223,7 @@ main locus App {
         return "";
     }
     run() {
-        std::test::assert_eq_str(self.dna.catalog.define("one-step", 1, 1, ""), "", "one-step");
+        std::test::assert_eq_str(self.dna.catalog.define("one-step", 1, "record", ""), "", "one-step");
         std::test::assert_eq_str(self.dna.catalog.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1), "", "a");
         let id = self.dna.admit_workflow(dna::WorkflowAsk { id: "mine", definition: "one-step", revision: 1 });
         std::test::assert_eq_str(id, "t2", "the ask that lost t1 took t2: " + id);

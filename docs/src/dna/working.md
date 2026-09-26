@@ -78,7 +78,8 @@ $ hale dna review
 2 pending review(s) of 2
   m1 needs leader — apply m1 (docs): document the chat server in main.hl?
       docs · candidate bf94e503c1c0 · evidence fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0 · disposition stage
-  purpose needs board — ratify the declared purpose?
+  purpose — the declared purpose, the Board's to ratify first:
+      k:3f1c0a92b7e4 — ratify the declared purpose?
 render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
 
@@ -283,4 +284,5 @@ refused there.
   it](./shaping.md) covers local and scripted models.
 - **The purpose review** stays pending until you answer it. It does
   not block anything; it is the organization asking you to say what
-  the codebase is for.
+  the codebase is for. It is a proposal like any practice, ratified the
+  same way (`hale dna review purpose approve`).

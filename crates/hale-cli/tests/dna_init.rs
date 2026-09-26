@@ -68,6 +68,7 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
         "dna/org/main.hl",
         "dna/org/law.hl",
         "dna/org/purpose.hl",
+        "dna/org/workflows.hl",
         ".hale/dna/baseline.topology",
         "hale.lock",
     ] {
@@ -158,13 +159,18 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     let worker = proposed.iter().find(|r| r["entity"] == "locus:Worker").unwrap();
     let guess = body(worker)["responsibility"].as_str().unwrap().to_string();
     assert!(guess.contains("Readings") && guess.contains("Cmds"), "the guess is from structure: {guess}");
-    // the baseline review names the purpose digest and the artifact
-    // (the design's own Reviews follow it in the record — GH #596 C)
-    let review = body(rows.iter().find(|r| r["kind"] == "review.requested" && r["entity"] == "review:purpose").expect("the purpose review"));
-    assert_eq!(review["provenance"], "declared");
-    assert!(review["subject_digest"].as_str().unwrap().starts_with("sha256:"));
-    let purpose = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
-    assert!(purpose.contains(review["subject_digest"].as_str().unwrap()), "the Review in the organization pins the same digest");
+    // the declared purpose is a proposal like any other (GH #995): its
+    // knowledge row and the Board's Review under the group `purpose`,
+    // pinning the same digest (the design's own Reviews follow it — GH #596 C)
+    let proposal = rows.iter().find(|r| r["kind"] == "knowledge.proposed" && body(r)["kind"] == "purpose").expect("the purpose proposed");
+    assert_eq!(body(proposal)["provenance"], "declared");
+    let digest = proposal["entity"].as_str().unwrap().to_string();
+    assert!(digest.starts_with("sha256:"));
+    let review = body(rows.iter().find(|r| r["kind"] == "review.requested" && body(r)["group"] == "purpose").expect("the purpose's Review"));
+    assert_eq!(review["subject_digest"].as_str().unwrap(), digest, "the Review pins the proposal's digest");
+    assert_eq!(review["question"], "ratify the declared purpose?");
+    let main = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
+    assert!(!main.contains("review_id: \"purpose\"") && main.contains("catalog: workflows()"), "no Review of its own in the organization; it admits from the catalog");
     // the record is ordered (its chain is git's: one commit per event)
     for (i, r) in rows.iter().enumerate() {
         assert_eq!(r["seq"].as_u64().unwrap() as usize, i);

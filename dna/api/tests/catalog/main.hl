@@ -5,9 +5,9 @@ import "../../../operations" as ops;
 import "../.." as api;
 
 fn populate(catalog: dna::WorkflowCatalog, updated: Bool) {
-    let a = catalog.define("close", 1, 2, "Close the month — équipe <workflow>");
-    let b = catalog.define("close", 2, 1, "New closing procedure");
-    let c = catalog.define("collect", 9007199254740993, 1, "Collect evidence");
+    let a = catalog.define("close", 1, "record record", "Close the month — équipe <workflow>");
+    let b = catalog.define("close", 2, "record", "New closing procedure");
+    let c = catalog.define("collect", 9007199254740993, "record", "Collect evidence");
     let d = catalog.child("close", 1, 0, "gather", "collect", 9007199254740993);
     let e = catalog.leaf("close", 1, 1, "publish", dna::WorkRequest { objective: "Publish after evidence collection", output_contract: "MonthlyReport", target: "org/finance" }, 1);
     let f = catalog.leaf("close", 2, 0, "reconcile", dna::WorkRequest { objective: "Use the new procedure" }, 1);
@@ -20,12 +20,12 @@ fn populate(catalog: dna::WorkflowCatalog, updated: Bool) {
     let mut i = 0;
     while i < 26 {
         let id = "procedure-" + to_string(i);
-        let added = catalog.define(id, 1, 1, "Procedure " + to_string(i));
+        let added = catalog.define(id, 1, "record", "Procedure " + to_string(i));
         let member = catalog.leaf(id, 1, 0, "perform", dna::WorkRequest { objective: "Do procedure " + to_string(i) }, 1);
         i = i + 1;
     }
     if updated {
-        let h = catalog.define("close", 3, 1, "Latest procedure");
+        let h = catalog.define("close", 3, "record", "Latest procedure");
         let j = catalog.leaf("close", 3, 0, "next", dna::WorkRequest { objective: "A later publication" }, 1);
     }
 }

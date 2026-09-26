@@ -635,6 +635,11 @@ pub fn run(args: &[String]) -> ExitCode {
             };
             work_exec(&dir, &rest)
         }
+        // GH #995: the workflow catalog (dna/org/workflows.hl)
+        Some("definitions") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("definitions", &dir, &rest)
+        }
         Some("deploy") => host_exec("deploy", Path::new("."), &args[1..]),
         Some("rollback") => host_exec("rollback", Path::new("."), &args[1..]),
         // a list or a render, or a verdict: the host's (GH #566 F8)
@@ -775,6 +780,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,");
     eprintln!("                                    renew, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);");
     eprintln!("                                    loop --parallel N is a worker: N children, each its own holder; loop --drain ends one");
+    eprintln!("       hale dna definitions [project] [--json]");
+    eprintln!("                                    the workflow catalog (dna/org/workflows.hl): each definition's revisions and every step's store");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
     eprintln!("                                    build and run the organization (dna/org), a node of it: relay the record's requests");
     eprintln!("                                    to it over the nerves (NATS); iris inspects its process");
@@ -1167,7 +1174,6 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         project,
         if app.is_some() { "the application" } else { "what this repository builds" }
     );
-    let purpose_digest = format!("sha256:{}", hex(&openssl::sha::sha256(purpose_text.as_bytes())));
     let org_dir = root.join(ORG_SEED);
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
     created(&mut out, &org_dir.join("charter.hl"), &charter_hl(&project))?;
@@ -1182,7 +1188,9 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     }
     // GH #946: the performers a leg of this project runs, like the catalog
     created(&mut out, &org_dir.join("work.hl"), &work_hl(&found))?;
-    created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, &purpose_digest, app.as_ref().map(|a| a.seed_rel.as_str())))?;
+    // GH #995: the workflow catalog — the baseline, and the project's own
+    created(&mut out, &org_dir.join("workflows.hl"), WORKFLOWS_HL)?;
+    created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
     if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project))? {
@@ -1218,17 +1226,24 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("kept    {RECORD_REF} (a record exists; not reseeded)"));
     } else {
         match (&app, &cut) {
-            (Some(app), Some((art, raw))) => {
-                let n = seed_journal(&app.root, app, art, raw, &purpose_digest)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
+            (Some(app), Some((art, _))) => {
+                let n = seed_journal(&app.root, app, art)?;
+                out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed)"));
             }
             _ => {
-                // the purpose's Review and the graph in one checked seed: a
-                // repository the ingest refuses leaves no record behind
-                let graph = seed_repository(&root, &purpose_digest)?;
-                out.push(format!("seeded  {RECORD_REF} (review.requested, then the graph)"));
+                // the declared purpose's proposal and the graph in one
+                // checked seed: a repository the ingest refuses leaves no
+                // record behind, and one with nothing to ingest still has one
+                let graph = seed_repository(&root, &purpose_text)?;
+                out.push(format!("seeded  {RECORD_REF} (the purpose, proposed; then the graph)"));
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
             }
+        }
+        // GH #995: the declared purpose, a proposal the Board ratifies
+        // through practice-ratify like every other, listed as `purpose`
+        if app.is_some() {
+            let review = propose_purpose(&root, &purpose_text)?;
+            out.push(format!("seeded  purpose (proposed, the Board's Review {}: `hale dna review` lists it under `purpose`)", review.trim()));
         }
         // GH #596 C, #994: the design and the operating practices, as
         // proposals — one Review per practice, listed by family
@@ -1266,7 +1281,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     out.push("next steps:".to_string());
     out.push(format!("    hale check --matrix {}   # every entrypoint against its law", root.display()));
     out.push(format!("    hale dna dev {}          # the organization and the application under one host, iris attached", root.display()));
-    out.push("    the first Review (`purpose`) ratifies dna/org/purpose.hl: `hale dna review purpose approve --as <you>`".to_string());
+    out.push("    the first Review (`purpose`) ratifies the declared purpose (dna/org/purpose.hl): `hale dna review purpose approve --as <you>`".to_string());
     Ok(out)
 }
 
@@ -1308,6 +1323,19 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if org_dir.join("main.hl").is_file() && !performers.is_file() {
         fs::write(&performers, work_hl(&discover())).map_err(|e| format!("write {}: {e}", performers.display()))?;
         out.push(format!("created {}", performers.display()));
+    }
+    // GH #995: an organization from before the workflow catalog gets one;
+    // its main is the project's and is told, not edited. One that has it
+    // keeps it: the baseline it returns is the vendored toolchain's, so the
+    // upgrade above already superseded it by revision.
+    let workflows = org_dir.join("workflows.hl");
+    if org_dir.join("main.hl").is_file() && !workflows.is_file() {
+        fs::write(&workflows, WORKFLOWS_HL).map_err(|e| format!("write {}: {e}", workflows.display()))?;
+        out.push(format!("created {}", workflows.display()));
+        let main = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+        if !main.contains("catalog: workflows()") {
+            out.push(format!("note    {}/main.hl: point the substrate at it, `catalog: workflows()` on dna::Dna, to admit the project's own definitions beside the baseline", ORG_SEED));
+        }
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -2152,7 +2180,7 @@ fn purpose() -> String {{
     )
 }
 
-fn org_hl(project: &str, purpose_digest: &str, seed: Option<&str>) -> String {
+fn org_hl(project: &str, seed: Option<&str>) -> String {
     // what the organization oversees: one application, or (GH #1090) a
     // repository's seeds
     let oversees = match seed {
@@ -2232,6 +2260,9 @@ main locus Org {{
             // worktree — the law says so.
             editor: dna::SourceEditor {{ name: "editor", models: editor_models() }},
             genome_seed: "{seed}",
+            // The workflows this organization admits (GH #995): the
+            // baseline catalog and the project's own, in workflows.hl.
+            catalog: workflows(),
             // GH #596 L: an ask is planned by the leader before it becomes a Mutation
             planned: true,
             // GH #596 O: the optimize pass — the leader walks the machinery
@@ -2268,15 +2299,6 @@ main locus Org {{
             // verdicts) is acknowledged by the stream, as the node's is
             jetstream: true,
             run_for_ms: if std::env::var_exists("HALE_DNA_ONESHOT") {{ 1 }} else {{ 0 }}
-        }};
-        // The baseline review: ratify purpose.hl. The Board's; it settles
-        // only on a verdict naming this exact digest.
-        purpose: dna::Review = dna::Review {{
-            review_id: "purpose",
-            question: "ratify the declared purpose?",
-            subject_digest: "{purpose_digest}",
-            required_authority: "board",
-            author: "hale dna init"
         }};
     }}
     claims {{ adopt Org; }}
@@ -2322,6 +2344,35 @@ fn main() {{
 "#
     )
 }
+
+/// `dna/org/workflows.hl`: the workflow catalog as source (GH #995). The
+/// baseline is the vendored toolchain's `dna::baseline_definitions()`, so
+/// an upgrade supersedes it by revision; the project adds its own beside
+/// it. Project-owned: written at `new`, and at `upgrade` only when absent.
+const WORKFLOWS_HL: &str = r#"// dna/org/workflows.hl — the workflow catalog (project-owned; generated by
+// `hale dna new`). The definitions this organization admits: DNA's
+// baseline, each a chain in which every step writes one store, and the
+// project's own beside it. `hale dna definitions` lists them.
+//
+// The baseline is the vendored toolchain's, so `hale dna upgrade`
+// supersedes it by revision: a Task born under an old revision finishes
+// under it, and a new one binds the newest. A definition with a step on a
+// part not built yet is listed, and refused at admission naming the part.
+//
+// A definition of your own names one store per step (`record`, `forge`,
+// `genome`, `heart`, `graph`, `nerves`, `memory`, `vault`, `host`, or
+// `read:<store>` for a step that only reads), then its members:
+//
+//     let d = catalog.define("close-month", 1, "record record", "close the month");
+//     let e = catalog.leaf("close-month", 1, 0, "books", dna::WorkRequest { requires: "human" }, 1);
+
+import "vendor/dna" as dna;
+
+fn workflows() -> dna::WorkflowCatalog {
+    let catalog = dna::baseline_definitions();
+    return catalog;
+}
+"#;
 
 /// The foundational law of an organization (GH #566 F2), from the rules
 /// an executable org chart lives by: a position's capabilities are its
@@ -2387,7 +2438,7 @@ impl Chain {
     }
 }
 
-fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: &str) -> Result<usize, String> {
+fn seed_journal(root: &Path, app: &App, art: &Value) -> Result<usize, String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
     let names = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().map(|x| s(x)).collect()).unwrap_or_default() };
@@ -2473,17 +2524,6 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
             &serde_json::json!({"kind": "claim", "name": cl["name"], "form": cl["form"], "result": cl["result"], "source": cl["source"], "provenance": "observed"}).to_string(),
         );
     }
-    c.push(
-        "review.requested",
-        "review:purpose",
-        &serde_json::json!({
-            "question": "ratify the declared purpose?", "subject_digest": purpose_digest,
-            "required_authority": "board", "author": "hale dna init",
-            "baseline": {"artifact_digest": s(&art["artifact_digest"]), "bytes": raw.len()},
-            "provenance": "declared"
-        })
-        .to_string(),
-    );
     // through the host, which holds the record's one implementation
     // (GH #646 stage 0): the rows as a file, one JSON object per line
     let dna_dir = root.join(".hale/dna");
@@ -2504,27 +2544,30 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
     Ok(n)
 }
 
-/// GH #1090: a repository's record — the Review that ratifies the declared
-/// purpose, then what the repository holds as the graph — seeded by the
-/// host's `graph-ingest` in one call that checks every row before any
-/// lands, so an ingest the graph refuses leaves no record and `init` can
-/// be run again. What it read, by kind.
-fn seed_repository(root: &Path, purpose_digest: &str) -> Result<String, String> {
-    let row = serde_json::json!({
-        "kind": "review.requested",
-        "entity": "review:purpose",
-        "body": serde_json::json!({
-            "question": "ratify the declared purpose?", "subject_digest": purpose_digest,
-            "required_authority": "board", "author": "hale dna init",
-            "provenance": "declared"
-        })
-        .to_string()
-    });
+/// GH #1090: a repository's record — the declared purpose's proposal
+/// (GH #995), then what the repository holds as the graph — seeded by the
+/// host's `graph-ingest` in one call that checks
+/// every row before any lands, so an ingest the graph refuses leaves no
+/// record and `init` can be run again. What it read, by kind.
+fn seed_repository(root: &Path, purpose: &str) -> Result<String, String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
-    let path = dna_dir.join(format!("seed.{}.jsonl", std::process::id()));
-    fs::write(&path, format!("{row}\n")).map_err(|e| e.to_string())?;
+    let path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
+    fs::write(&path, purpose).map_err(|e| e.to_string())?;
     let out = host_run("graph-ingest", root, &[path.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&path);
+    out
+}
+
+/// GH #995: the declared purpose, proposed as knowledge with the Board's
+/// Review (group `purpose`) by the host, which keeps its receipt. The
+/// Review's id.
+fn propose_purpose(root: &Path, text: &str) -> Result<String, String> {
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
+    fs::write(&path, text).map_err(|e| e.to_string())?;
+    let out = host_run("purpose-propose", root, &[path.to_string_lossy().to_string()]);
     let _ = fs::remove_file(&path);
     out
 }
@@ -2560,10 +2603,6 @@ fn design_upgrade(root: &Path, family: &[SeededPractice]) -> Result<(usize, usiz
             .ok_or_else(|| format!("design-upgrade answered oddly: {out}"))
     };
     Ok((field("proposed")?, field("superseding")?, field("waiting")?))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---------------------------------------------------------------

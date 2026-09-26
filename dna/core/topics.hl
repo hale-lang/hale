@@ -557,6 +557,17 @@ topic EditRequested { payload: EditAsk; subject: "dna.edit.requested"; keyed_by 
 type AttemptReport { scope: String = ""; attempt_id: String = ""; result: WorkResult = WorkResult { }; }
 topic AttemptReported { payload: AttemptReport; subject: "dna.attempt.reported"; keyed_by scope; }
 
+// ---- GH #995: a step the organization performs itself -------------------
+// A catalog step's leaf (`requires: "organism"`): the store write is the
+// assembly's own — a row in its record, a Review, a proposal — so the
+// performer of kind `organism` publishes the attempt and answers pending,
+// and the assembly performs the step (idempotent: it ensures its rows)
+// and reports the outcome for this exact attempt, now or when what the
+// step waits on (a verdict, the leader's word, memory's projection)
+// arrives.
+type StepAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
+topic StepRequested { payload: StepAsk; subject: "dna.step.requested"; keyed_by scope; }
+
 // ---- card 16: a human Work's case ---------------------------------------
 // A human leaf's attempt, handed to the assembly that owns the people,
 // the practices and the record: the performer of kind `human` publishes

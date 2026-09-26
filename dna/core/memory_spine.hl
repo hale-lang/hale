@@ -418,6 +418,19 @@ locus MemoryKnowledge {
         if !self.store.keep_hat(digest, head, watermark, body) { self.last_error = "the hat was not kept: " + self.store.last_error(); return false; }
         return true;
     }
+    // The record row memory ratified an idea at (GH #995: the idea and its
+    // binding fenced to that head), -1 while memory does not hold it
+    // ratified — not there, not yet projected, or not reachable, with
+    // `last_error` saying which.
+    @unbounded
+    fn ratified_at(digest: String) -> Int {
+        if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return -1; }
+        if !self.ensure_open() { return -1; }
+        self.store.forget_error();
+        let s = self.store.idea(digest);
+        if !s.present || !s.idea.accepted { self.last_error = "memory does not hold " + digest + " ratified yet"; return -1; }
+        return s.ratified_seq;
+    }
     // The body memory keeps under a hat's digest, "" when none.
     @unbounded
     fn hat(digest: String) -> String {

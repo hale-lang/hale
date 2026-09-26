@@ -29,10 +29,10 @@ main locus Org {
             gateway: dna::MutationGateway { leases: dna::GitLeases { repo: "." }, workspaces: dna::IsolatedWorktrees { … }, repo: dna::LocalGit { repo: "." } },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
             editor: dna::SourceEditor { name: "editor", models: … },
-            genome_seed: "."
+            genome_seed: ".",
+            catalog: workflows()
         };
         leader: dna::Leader = dna::Leader { name: "leader", models: …, receipts: dna::GitReceipts { repo: "." }, source: dna::SourceReader { repo: "." } };
-        purpose: dna::Review = dna::Review { review_id: "purpose", question: "ratify the declared purpose?", subject_digest: "sha256:…", required_authority: "board", author: "hale dna init" };
         nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, … };
     }
     claims { adopt Org; }
@@ -51,7 +51,9 @@ main locus Org {
 `core` is the substrate: the record, the work system, the grant and
 the policy, the Board as the membrane, the gateway, verification,
 the editor. `leader` is the position that decides inside the grant.
-`purpose` is the first Review. The bindings are the organization's
+`catalog` is the workflows it admits (`dna/org/workflows.hl`: DNA's
+baseline and your own; `hale dna definitions` lists them). The bindings
+are the organization's
 end of the **nerves** — the typed topics on which a verdict, an
 intent, the host's observation report, a concern and a pressure
 signal enter, over NATS; `nerves` is the connection that reads them
@@ -98,12 +100,13 @@ application keeps whatever constitution it had.
 
 ## The record is seeded, not created
 
-`init` does not write a file. It appends seven commits to
+`init` does not write a file. It appends commits to
 `refs/dna/journal`: what was attached (the entrypoint, the artifact's
 digests, the toolchain), the structure the compiler observed (one
 `structure.observed` per locus and topic, `provenance: observed`),
-one proposed responsibility per locus (`ratified: false`), and the
-purpose Review. From here every event is a commit on that branch —
+one proposed responsibility per locus (`ratified: false`); then the
+declared purpose, proposed for the Board like a practice, and the
+seeded practices. From here every event is a commit on that branch —
 [The record](./record.md).
 
 ## A repository with no application at its root

@@ -40,8 +40,8 @@ locus CatalogCases {
         return body;
     }
     fn run_cases() {
-        let a = self.host.catalog.define("root", 1, 2, "Monthly close — équipe");
-        let b = self.host.catalog.define("collect", 9007199254740993, 1, "Collect exact revision");
+        let a = self.host.catalog.define("root", 1, "record record", "Monthly close — équipe");
+        let b = self.host.catalog.define("collect", 9007199254740993, "record", "Collect exact revision");
         let c = self.host.catalog.child("root", 1, 0, "gather", "collect", 9007199254740993);
         let d = self.host.catalog.leaf("root", 1, 1, "publish", dna::WorkRequest { objective: "Publish after collection" }, 1);
         let e = self.host.catalog.leaf("collect", 9007199254740993, 0, "human", dna::WorkRequest {
@@ -83,7 +83,7 @@ locus CatalogCases {
         let basis_b = self.json.raw(self.json.data(renewed), "basis");
         self.json.eq(basis_b, "source_revision", "loaded-revision-B");
         let snapshot_b = self.json.string(self.json.page(renewed), "snapshot");
-        let f = self.host.catalog.define("root", 2, 1, "A new revision");
+        let f = self.host.catalog.define("root", 2, "record", "A new revision");
         let g = self.host.catalog.leaf("root", 2, 0, "new", dna::WorkRequest { objective: "New procedure" }, 1);
         self.error(service, "?snapshot=" + dna::url_encode(snapshot_b), 409, "snapshot_changed");
         let newer = self.response(service, "/dna/definitions", 200, "DefinitionsResponse");

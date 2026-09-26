@@ -341,7 +341,7 @@ main locus App {
         });
     }
     run() {
-        std::test::assert_eq_str(self.cat.define("flat", 1, 1, "one leaf"), "", "flat");
+        std::test::assert_eq_str(self.cat.define("flat", 1, "record", "one leaf"), "", "flat");
         std::test::assert_eq_str(self.cat.leaf("flat", 1, 0, "a", dna::WorkRequest { objective: "count the receipts" }, 1), "", "a");
         let x = self.cat.expand("t1", "flat", 1, self.limits);
         std::test::assert(x.ok, "t1 expands: " + x.why);

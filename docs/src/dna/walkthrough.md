@@ -112,7 +112,8 @@ $ hale dna review
 2 pending review(s) of 2
   m1 needs leader — apply m1 (docs): document the chat server in main.hl?
       docs · candidate bf94e503c1c0 · evidence fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0 · disposition stage
-  purpose needs board — ratify the declared purpose?
+  purpose — the declared purpose, the Board's to ratify first:
+      k:3f1c0a92b7e4 — ratify the declared purpose?
 ```
 
 `hale dna review m1` renders the source diff, the semantic diff, the
@@ -125,13 +126,13 @@ record.
 
 ```text
 $ hale dna review purpose approve --as riley --comment "ratified"
-review purpose settled: approve by riley
+review k:3f1c0a92b7e4 settled: approve by riley
 $ hale dna review m1 approve --as riley --comment "fine"
 review m1 settled: approve by riley
 ```
 
 ```text
-   27  review.settled         purpose        approve by riley
+   27  review.settled         k:3f1c0a92b7e4 approve by riley
    28  review.settled         m1             approve by riley
    29  effect.requested       apply:bf94e503…   m1
    30  effect.result          apply:bf94e503…   ok

@@ -15,6 +15,10 @@ hale dna models [project]    the catalog (dna/org/models.hl): every backend, one
 hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([legs](./legs.md)): next, brief,
                              renew, submit, settle, release, friction, run; --as position:<name>, --api <origin>;
                              loop --parallel N is a worker (N children, holders position:<name>#n); loop --drain
+hale dna definitions [project] [--json]
+                             the workflow catalog (dna/org/workflows.hl): every definition with its
+                             revision, each step with the one store it writes, and what is refused at
+                             admission for a part not built
 hale dna memory migrate [dir]
                              apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
                              dna/compose.yaml) and print the record's spine and head DSNs
@@ -264,8 +268,9 @@ sequence either way — see [The record](./record.md).
 | `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |
 | `grant.revoked` | record | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
-| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
+| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`, and the `parent` it is routed to and the concern-escalate execution, `task`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | a source | one the organization would not admit, and why |
+| `practice.read` | record | a digest | practice-ratify's `hat` step: what the hat for the proposal's target read once memory held it ratified, at which head (target, ratified_at, hat, head, included, task) |
 | `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s). Which raise a concern is — its `occurrence` — is counted from the record, so a restart continues the count; and a source found over the threshold with no proposal of its own, which an organism stopped between the third raise and its proposal leaves behind, is proposed when it comes back |
 | `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by, owner (when the clone names one) |
 | `body.provisioned` | record | `<user>@<host>` | a machine made able to run it: dir, toolchain, knowledge (`compose` or `dsn`), by |

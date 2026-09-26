@@ -134,8 +134,9 @@ fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> An
 // ---- hale dna init on a repository (GH #1090) ----------------------------
 //
 // The repository read into the graph (dna/operations/graph_ingest.hl) and
-// its rows appended to the record after `first`'s (a file of rows init
-// seeds before the graph: the purpose's Review), all of them in one
+// its rows appended to the record after the declared purpose's proposal
+// (`first`, a file holding the purpose's text, when one is given), all of
+// them in one
 // `seed_rows`, each checked before any lands — a repository ingest refuses
 // leaves no record, and init can be run again. Says how many nodes and
 // edges, and the nodes by kind.
@@ -155,7 +156,11 @@ fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer
         if len(rows) == 0 { return fail("graph-ingest: a hole's receipt could not be kept; nothing was seeded"); }
         proposals = proposals + rows;
     }
-    let before = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
+    // GH #995: the declared purpose, proposed in the same checked seed, so
+    // a repository with nothing to ingest still has its record
+    let purpose = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
+    let before = if len(purpose) > 0 { purpose_rows(root, purpose) } else { "" };
+    if len(purpose) > 0 && len(before) == 0 { return fail("graph-ingest: the purpose's receipt could not be kept; nothing was seeded"); }
     let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
     if !seeded.ok { return seeded; }
     return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n");
@@ -329,6 +334,60 @@ fn propose_design(root: String, name: String, text: String, toolchain: String, s
     q.end_object();
     if !append_as(root, "review.requested", "review:" + review_id, q.result(), "", memory) { return ""; }
     return review_id;
+}
+
+// The rows that propose the declared purpose (GH #995), one JSON object
+// per line as `seed_rows` takes them: its receipt kept, a
+// `knowledge.proposed` row — kind `purpose`, the organization's, for
+// `org` — and the Board's Review under the group `purpose`, as a seeded
+// practice is. The Board ratifies it through practice-ratify like any
+// proposal, and `hale dna review purpose approve` decides it by its
+// group. "" when the receipt could not be kept.
+fn purpose_rows(root: String, text: String) -> String {
+    let raw = rec(root).keep(dna::knowledge_document(dna::Idea { kind: "purpose", text: text, author: "org", name: "purpose", provenance: "declared" }, "org"));
+    if len(raw) == 0 { return ""; }
+    let digest = "sha256:" + raw;
+    let review_id = "k:" + raw[0..12];
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("digest", digest);
+    b.string_field("review_id", review_id);
+    b.string_field("kind", "purpose");
+    b.string_field("author", "org");
+    b.string_field("target", "org");
+    b.string_field("class", "initiative");
+    b.string_field("provenance", "declared");
+    b.string_field("name", "purpose");
+    b.string_field("supersedes", "");
+    b.end_object();
+    let q = std::json::Builder { };
+    q.begin_object();
+    q.string_field("question", "ratify the declared purpose?");
+    q.string_field("subject_digest", digest);
+    q.string_field("required_authority", "board");
+    q.string_field("author", "org");
+    q.string_field("knowledge_digest", digest);
+    q.string_field("kind", "purpose");
+    q.string_field("target", "org");
+    q.string_field("class", "initiative");
+    q.string_field("group", "purpose");
+    q.string_field("name", "purpose");
+    q.end_object();
+    return hole_row("knowledge.proposed", digest, b.result()) + hole_row("review.requested", "review:" + review_id, q.result());
+}
+
+// `purpose-propose <file>`: the declared purpose proposed into an
+// application's record, seeded before it. Prints the Review's id.
+fn purpose_propose_verb(root: String, path: String, memory: dna::Memory) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    let text = std::io::fs::read_file(path) or "";
+    if len(text) == 0 { return fail("purpose-propose: no purpose at " + path); }
+    let rows = purpose_rows(root, text);
+    if len(rows) == 0 { return fail("purpose-propose: the purpose's receipt could not be kept"); }
+    let seeded = seed_rows(root, rows, "purpose-propose", memory);
+    if !seeded.ok { return seeded; }
+    return answer(dna::knowledge_review_id(std::json::find_string_field(rows[0..std::str::index_of(rows, "\n")], "entity")) + "\n");
 }
 
 // `design-upgrade <practices>`: the practices as the toolchain states

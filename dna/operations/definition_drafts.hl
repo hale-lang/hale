@@ -35,7 +35,7 @@ locus DefinitionDraftCodec {
     fn basis_shape(basis: String) -> Bool {
         let syntax = OrganizationJson { };
         if len(basis) > 32768 || !syntax.valid(basis) || !self.fields(basis, "catalog_digest format provenance_kind source_revision source_path dependency_digest limits", 7) || !self.texts(basis, "catalog_digest format provenance_kind source_revision source_path dependency_digest") { return false; }
-        if self.text(basis, "format") != "dna.workflow-definitions/1" || self.text(basis, "provenance_kind") != "trusted_host_claims" { return false; }
+        if self.text(basis, "format") != "dna.workflow-definitions/2" || self.text(basis, "provenance_kind") != "trusted_host_claims" { return false; }
         let limits = self.raw(basis, "limits"); let keys = "max_depth max_steps max_members max_attempts max_works";
         if !self.fields(limits, keys, 5) || !self.texts(limits, keys) { return false; }
         let mut i = 0; while i < 5 { let value = self.text(limits, dna::nth_word(keys, i)); if !self.integer(value, true) || value == "0" { return false; } i = i + 1; }
@@ -56,7 +56,7 @@ locus DefinitionDraftCodec {
         let mut step = std::json::array_first(steps); let mut index = 0; let mut count = 0;
         while !step.done {
             let s = step.element;
-            if !self.fields(s, "index members", 2) || !self.is_text(self.raw(s, "index")) || self.text(s, "index") != to_string(index) || !codec.array(self.raw(s, "members")) { return false; }
+            if !self.fields(s, "index store members", 3) || !self.is_text(self.raw(s, "index")) || self.text(s, "index") != to_string(index) || !self.is_text(self.raw(s, "store")) || !codec.array(self.raw(s, "members")) { return false; }
             let mut member = std::json::array_first(self.raw(s, "members"));
             while !member.done {
                 let m = member.element;
@@ -108,10 +108,15 @@ locus DefinitionDraftCodec {
         }
         return total;
     }
+    // The steps' stores, one word each (GH #995): a store with a space in
+    // it is two words, which the step count below refuses.
+    fn step_stores(raw: String) -> String { let mut it = std::json::array_first(self.raw(raw, "steps")); let mut out = ""; while !it.done { out = out + (if len(out) > 0 { " " } else { "" }) + self.text(it.element, "store"); it = std::json::array_next(it); } return out; }
     fn step_count(raw: String) -> Int { let mut it = std::json::array_first(self.raw(raw, "steps")); let mut n = 0; while !it.done { n = n + 1; it = std::json::array_next(it); } return n; }
     fn append(catalog: dna::WorkflowCatalog, raw: String) -> String {
         let id = self.text(raw, "definition_id"); let revision = std::str::parse_int(self.text(raw, "revision")) or 0;
-        let error = catalog.define(id, revision, self.step_count(raw), self.text(raw, "title")); if error != "" { return error; }
+        let stores = self.step_stores(raw);
+        if dna::step_words(stores) != self.step_count(raw) { return "every step names the one store it writes, as one word"; }
+        let error = catalog.define(id, revision, stores, self.text(raw, "title")); if error != "" { return error; }
         let mut steps = std::json::array_first(self.raw(raw, "steps")); let mut step = 0;
         while !steps.done {
             let mut members = std::json::array_first(self.raw(steps.element, "members"));
@@ -176,7 +181,7 @@ locus DefinitionDraftCodec {
         let mut i = 0;
         while i < catalog.workflow_count() {
             let d = catalog.workflow_at(i); let var = "definition_" + to_string(i);
-            b.append_str("    let " + var + " = catalog.define(" + self.hale_literal(d.id) + ", " + self.hale_integer(d.revision) + ", " + to_string(d.steps) + ", " + self.hale_literal(d.title) + ");\n    if len(" + var + ") > 0 { return " + var + "; }\n"); i = i + 1;
+            b.append_str("    let " + var + " = catalog.define(" + self.hale_literal(d.id) + ", " + self.hale_integer(d.revision) + ", " + self.hale_literal(d.stores) + ", " + self.hale_literal(d.title) + ");\n    if len(" + var + ") > 0 { return " + var + "; }\n"); i = i + 1;
         }
         i = 0;
         while i < catalog.member_count() {

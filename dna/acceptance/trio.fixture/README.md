@@ -62,3 +62,16 @@ re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context, stored as the miss's
 evidence, with the one line taken back out. No fresh model call was made;
 every answer is unchanged.
+
+GH #995 made the declared purpose a proposal like any practice and gave
+the generated organization its workflow catalog, which changed two places
+in its `main.hl`: the substrate names `catalog: workflows()` (three lines
+after `genome_seed`), and the baseline purpose Review after the nerves'
+connection is gone. Two entries carry that file in their context. The
+organization-growth edit (`ab0a5da386e3…`, was `d9fd4a5d2943…`) is
+re-keyed, and its recorded output carries the same two changes and
+nothing else. The growth assessment (`a4eaa1dce8d8…`, was `0dfcfca7d96c…`)
+is re-keyed for the changed context alone. Each old context digest was
+checked by reproducing it from the new context with the catalog lines
+taken out and the purpose Review put back. No fresh model call was made;
+every answer is unchanged.

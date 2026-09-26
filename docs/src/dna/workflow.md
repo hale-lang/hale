@@ -33,23 +33,27 @@ ask is an edit.
 
 ## Definitions
 
-A definition is written in code, in the org chart, and bound whole
-before anything runs. It is ordered steps; a step is a set of
-members; a member is a **leaf** (one unit of work, with an objective,
+A definition is written in code, in `dna/org/workflows.hl`, and bound
+whole before anything runs. It is ordered steps, and each step names
+the **one store it writes** — `record`, `forge`, `genome`, `heart`,
+`graph`, `nerves`, `memory`, `vault` or `host` — one word per step, so
+the words are also the step count. A step is where a fact is written:
+reading something, or waiting for another writer, belongs to the step
+whose fact it serves. A step is a set of members; a member is a **leaf** (one unit of work, with an objective,
 the capability words it requires, and how many attempts it may take)
 or a **child** (another definition, run as its own execution under
 this step). The canonical example the engine's proofs use:
 
 ```hale,fragment
 let c = self.core.catalog;
-c.define("close-month", 1, 2, "close the month");
+c.define("close-month", 1, "record record", "close the month");
 c.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" }, 1);
 c.child("close-month", 1, 0, "b", "collect-receipts", 1);
 c.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries", requires: "analysis" }, 1);
-c.define("collect-receipts", 1, 2, "");
+c.define("collect-receipts", 1, "record record", "");
 c.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts", requires: "analysis" }, 1);
 c.child("collect-receipts", 1, 1, "c", "chase-supplier", 1);
-c.define("chase-supplier", 1, 1, "");
+c.define("chase-supplier", 1, "record", "");
 c.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier", requires: "analysis" }, 2);
 let id = self.core.run_workflow(dna::WorkflowAsk { id: "month-end", definition: "close-month", revision: 1, from: "books" });
 ```
@@ -59,9 +63,52 @@ let id = self.core.run_workflow(dna::WorkflowAsk { id: "month-end", definition: 
 settled. The child's second step runs a grandchild. `c1` may be tried
 twice. A definition binds whole or is refused: a name that does not
 exist, a child that would recurse, a member key outside `[a-z0-9-]+`,
-or a tree wider than the limits (depth 8, 32 steps, 32 members to a
-step, 8 attempts to a leaf, 256 units of work) is a refusal at
-admission, in the record (`workflow.refused`), with nothing started.
+a step that declares no store or two (`record+forge`), a step on a part
+not built yet (the heart, the vault), or a tree wider than the limits
+(depth 8, 32 steps, 32 members to a step, 8 attempts to a leaf, 256
+units of work) is a refusal at admission, in the record
+(`workflow.refused`), with nothing started.
+
+## The catalog
+
+DNA ships a catalog, and `hale dna new` writes `dna/org/workflows.hl`
+to return it plus your own; `hale dna definitions` lists it. Each
+baseline definition is a chain in which every step writes one store:
+
+| id | steps (store) | runs today |
+| --- | --- | --- |
+| `practice-ratify` | ratify · hat (record) | every knowledge proposal the Board decides |
+| `concern-escalate` | raise (record) | every concern |
+| `optimize-walk` | walk (record) | the optimize pass |
+| `ask-triage` | offered · classify · plan (record) | refused: the ask path still admits `ask-edit` / `ask-person` after the leader plans |
+| `change-deliver` | candidate (record) · review (forge) · verdict (record) · apply (genome) · deploy (heart) · settle (record) | refused: the heart is not built |
+| `deploy-observe` | deploy (heart) · rollback (genome) · settle (record) | refused: the heart is not built |
+| `secret-rotate` | rotate (vault) · recorded (record) | refused: the vault is not built |
+| `body-provision` | provision · start (host) · lease (memory) · observed (record) | refused: a person provisions a host with `hale dna body provision` |
+
+The steps the organization performs itself are leaves that require
+`organism`: the engine hands each to the organization, which writes the
+step's rows and reports it — at once, or when what it waits on arrives
+(the leader's answer, memory catching up). When the Board decides a
+proposal — a practice you proposed, one seeded at the record's birth,
+the declared purpose, a concern's — the decision becomes an execution you
+can follow in `history`: the ratification (or the decline), then the
+hat that now reads it (`practice.read`). A concern is one step: its row
+names the parent it is routed to, and at the threshold it is proposed.
+
+**The record is the floor; the ledger is the runtime.** Every step is a
+handful of rows of the day's work. On a git-backed record — what a new
+organization starts on, one person working alone — each row is a commit,
+so an execution costs tens of them: the Board deciding a repository's 35
+seeded proposals waits minutes for the ratifications, where an adopted
+ledger (`hale dna ledger adopt`, [The record](./record.md)) takes the same
+rows in about a second. Run an organization with its ledger adopted.
+`hale dna review <group> approve` writes every verdict of the group
+before it waits for the answers, once.
+
+`hale dna upgrade` brings the toolchain's newer baseline, a new
+revision of a definition: a Task already running finishes under the
+revision it was born with, and the next one binds the new one.
 
 Every part has an identity you will see in `history`: the root Task
 `t1`; a child Task `t1.s0.b` (the parent, the step, the key); a step

@@ -6,7 +6,7 @@ import "../../operations" as ops;
 import "./fixture" as fixture;
 
 const ORIGIN: String = "http://127.0.0.1:8792";
-const CANDIDATE: String = "{\"id\":\"close@2\",\"definition_id\":\"close\",\"revision\":\"2\",\"title\":\"Next · équipe\",\"steps\":[{\"index\":\"0\",\"members\":[{\"key\":\"inspect\",\"kind\":\"leaf\",\"leaf\":{\"objective\":\"Check \\\"literal\\\" evidence\\ncarefully\",\"context_digest\":\"ctx\",\"knowledge_bindings\":\"exact\",\"output_contract\":\"Assessment\",\"data_class\":\"internal\",\"requires\":\"judgment\",\"target\":\"org/finance\",\"cost_ceiling\":\"-9223372036854775808\",\"attempts\":\"2\"},\"child\":null}]}]}";
+const CANDIDATE: String = "{\"id\":\"close@2\",\"definition_id\":\"close\",\"revision\":\"2\",\"title\":\"Next · équipe\",\"steps\":[{\"index\":\"0\",\"store\":\"record\",\"members\":[{\"key\":\"inspect\",\"kind\":\"leaf\",\"leaf\":{\"objective\":\"Check \\\"literal\\\" evidence\\ncarefully\",\"context_digest\":\"ctx\",\"knowledge_bindings\":\"exact\",\"output_contract\":\"Assessment\",\"data_class\":\"internal\",\"requires\":\"judgment\",\"target\":\"org/finance\",\"cost_ceiling\":\"-9223372036854775808\",\"attempts\":\"2\"},\"child\":null}]}]}";
 
 locus DraftCatalogHost {
     params {
@@ -92,7 +92,7 @@ locus DraftCases {
         self.json.eq(artifact, "digest", dna::digest_of(text));
     }
     fn run_cases() {
-        let defined = self.host.catalog.define("close", 1, 1, "Original");
+        let defined = self.host.catalog.define("close", 1, "record", "Original");
         let leaf = self.host.catalog.leaf("close", 1, 0, "inspect", dna::WorkRequest { objective: "Original" }, 1);
         std::test::assert(defined == "" && leaf == "", "real shared native catalog");
         let service = api::Api { root: self.f.root, local_name: "alice", definitions: self.host, command_origin: ORIGIN };

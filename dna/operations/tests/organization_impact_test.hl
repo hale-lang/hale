@@ -61,7 +61,7 @@ locus ImpactCases {
     }
     fn workflow(mode: String) {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
-        let cat = dna::WorkflowCatalog { }; std::test::assert_eq_str(cat.define("one", 1, 1, "one job"), "", "definition");
+        let cat = dna::WorkflowCatalog { }; std::test::assert_eq_str(cat.define("one", 1, "record", "one job"), "", "definition");
         let request = dna::WorkRequest { objective: "finish work", data_class: if mode == "private" { "confidential" } else { "internal" } };
         std::test::assert_eq_str(cat.leaf("one", 1, 0, "a", request, 1), "", "leaf");
         let limits = dna::AdmissionLimits { }; std::test::assert(cat.expand("t1", "one", 1, limits).ok, "bound recipe");

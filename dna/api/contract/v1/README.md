@@ -32,7 +32,7 @@ or null, preserving values outside JavaScript's exact integer range.
 `reads.definitions` is explicit: the standalone head uses `NoWorkflowCatalog`
 and advertises false; an application-composed provider advertises support without
 promising availability. The response returns all exact definition revisions,
-ordered Steps, distinct leaf specifications and child references, and reverse
+ordered Steps (each naming the one store it writes, `store`: GH #995), distinct leaf specifications and child references, and reverse
 child dependencies. Leaf-only fields cannot occur on a child member, and a leaf
 cannot carry a child reference. IDs remain opaque. Definition revisions and cost
 ceilings are canonical signed decimal strings; indices, attempt allowances and

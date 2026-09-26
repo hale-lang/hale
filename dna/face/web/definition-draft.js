@@ -14,6 +14,9 @@
   const digest = value => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
   const identifier = value => typeof value === "string" && /^[a-z0-9][a-z0-9-]*$/.test(value);
   const memberKey = value => typeof value === "string" && /^[a-z0-9-]+$/.test(value);
+  // The one store a Step writes (GH #995), or `read:<store>` for a Step that only reads.
+  const STORES = ["record", "forge", "genome", "heart", "graph", "nerves", "memory", "vault", "host"];
+  const stepStore = value => typeof value === "string" && STORES.includes(value.startsWith("read:") ? value.slice(5) : value);
   function text(value, bound = RESPONSE_LIMIT) {
     if (typeof value !== "string" || value.includes("\u0000") || bytes(value) > bound) return false;
     for (let i = 0; i < value.length; i += 1) {
@@ -124,6 +127,7 @@
       draft.steps.forEach((step, stepIndex) => {
         const name = "Step " + (stepIndex + 1);
         if (step.index !== String(stepIndex)) add(name + " has an inconsistent index.");
+        if (!stepStore(step.store)) add(name + " must name the one store it writes (" + STORES.join(", ") + "), or read:<store> when it only reads.");
         if (!step.members.length) add(name + " requires at least one member.");
         if (BigInt(step.members.length) > BigInt(capturedBasis.limits.max_members)) add(name + " exceeds the captured member limit.");
         const keys = new Set();
@@ -176,7 +180,7 @@
     }
     function addStep() {
       if (!draft || draft.steps.length >= Math.min(Number(capturedBasis.limits.max_steps), 256)) return;
-      edit(() => { draft.steps.push({ index: String(draft.steps.length), members: [] }); selection = { step: draft.steps.length - 1, member: -1 }; }, true);
+      edit(() => { draft.steps.push({ index: String(draft.steps.length), store: "record", members: [] }); selection = { step: draft.steps.length - 1, member: -1 }; }, true);
       canvas.querySelector('[data-step="' + selection.step + '"]')?.focus();
     }
     function addMember(stepIndex, kind) {
@@ -244,7 +248,7 @@
       steps.setAttribute("aria-label", "Ordered Steps");
       value.steps.forEach((step, stepIndex) => {
         const band = el("li", "dd-step-band"); band.dataset.step = String(stepIndex); band.tabIndex = -1;
-        const heading = append(el("div", "dd-step-heading"), el("h4", "", "Step " + (stepIndex + 1)), el("span", "", step.members.length + " required members"));
+        const heading = append(el("div", "dd-step-heading"), el("h4", "", "Step " + (stepIndex + 1)), el("span", "", "writes " + step.store + " · " + step.members.length + " required members"));
         band.append(heading);
         if (draft) {
           const actions = el("div", "dd-step-actions");
@@ -295,6 +299,9 @@
       append(inspector, el("p", "eyebrow", draft ? "EDIT REQUIRED MEMBER" : "INSPECT REQUIRED MEMBER"), el("h3", "", member ? member.key || "Unnamed member" : "Member inspector"));
       if (!member) { inspector.append(el("p", "dd-boundary", "Choose a member on the canvas to inspect its exact specification.")); return; }
       inspector.append(el("p", "dd-inspector-location", "Step " + (selection.step + 1) + " · " + (member.kind === "leaf" ? "Leaf Work" : "Child definition")));
+      const step = current().steps[selection.step];
+      if (draft) inspector.append(field("Step store", step.store, value => { step.store = value; }));
+      else inspector.append(facts([["Step store", step.store]]));
       if (draft) inspector.append(field("Member key", member.key, value => { member.key = value; inspector.querySelector("h3").textContent = value || "Unnamed member"; }));
       if (member.kind === "leaf") {
         if (draft) for (const [key, label] of LEAF_FIELDS) inspector.append(field(label, member.leaf[key], value => { member.leaf[key] = value; }, ["objective", "context_digest", "knowledge_bindings", "output_contract"].includes(key)));

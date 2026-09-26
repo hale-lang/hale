@@ -78,7 +78,7 @@ locus App {
             claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
             org_id: "legs"
         };
-        std::test::assert_eq_str(self.core.catalog.define("judge", 1, 1, "one judgment"), "", "judge");
+        std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
     }
     @unbounded

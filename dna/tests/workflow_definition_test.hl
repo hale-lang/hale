@@ -63,9 +63,9 @@ main locus App {
     run() {
         let lim = dna::AdmissionLimits { };
         // ---- the canonical example
-        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month defined");
-        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts defined");
-        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier defined");
+        std::test::assert_eq_str(self.cat.define("close-month", 1, "record record", "close the month"), "", "close-month defined");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, "record record", ""), "", "collect-receipts defined");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, "record", ""), "", "chase-supplier defined");
         let a = dna::WorkRequest {
             objective: "reconcile the bank feed",
             context_digest: "sha256:c0ffee",
@@ -110,7 +110,7 @@ main locus App {
         std::test::assert(y.limits.max_works == 256 && y.limits.max_depth == 8, "the limits applied are bound with the expansion");
 
         // ---- the same child definition invoked twice
-        std::test::assert_eq_str(self.cat.define("twice", 1, 1, ""), "", "twice defined");
+        std::test::assert_eq_str(self.cat.define("twice", 1, "record", ""), "", "twice defined");
         std::test::assert_eq_str(self.cat.child("twice", 1, 0, "first", "collect-receipts", 1), "", "first invocation");
         std::test::assert_eq_str(self.cat.child("twice", 1, 0, "second", "collect-receipts", 1), "", "second invocation");
         let tw = self.cat.expand("t2", "twice", 1, lim);
@@ -119,44 +119,44 @@ main locus App {
         std::test::assert(std::str::contains(self.ids("work"), "t2.s0.first/wf1/s0/b1") && std::str::contains(self.ids("work"), "t2.s0.second/wf1/s0/b1"), "and distinct Works: " + self.ids("work"));
 
         // ---- a later revision leaves the earlier one's expansion alone
-        std::test::assert_eq_str(self.cat.define("close-month", 2, 1, "revised"), "", "close-month@2 defined");
+        std::test::assert_eq_str(self.cat.define("close-month", 2, "record", "revised"), "", "close-month@2 defined");
         std::test::assert_eq_str(self.cat.leaf("close-month", 2, 0, "e", leaf_work("close in one step"), 1), "", "its leaf");
         let v1 = self.cat.expand("t3", "close-month", 1, lim);
         std::test::assert(v1.ok && v1.works == 4 && self.cat.bound_node("t3/wf1/s1/d").objective == "post the journal entries", "revision 1 still expands as authored");
         let v2 = self.cat.expand("t4", "close-month", 2, lim);
         std::test::assert(v2.ok && v2.works == 1 && self.ids("work") == "t4/wf2/s0/e", "revision 2 is its own recipe, under /wf2: " + self.ids("work"));
-        std::test::assert(std::str::contains(self.cat.define("close-month", 2, 1, ""), "already defined"), "a revision is defined once");
+        std::test::assert(std::str::contains(self.cat.define("close-month", 2, "record", ""), "already defined"), "a revision is defined once");
         std::test::assert(std::str::contains(self.cat.leaf("nowhere", 1, 0, "x", leaf_work("x"), 1), "no workflow nowhere@1"), "a member needs its workflow");
 
         // ---- the admission rules
-        std::test::assert_eq_str(self.cat.define("empty", 1, 0, ""), "", "a workflow with no steps can be written");
+        std::test::assert_eq_str(self.cat.define("empty", 1, "", ""), "", "a workflow with no steps can be written");
         self.refused("t5", "empty", 1, lim, "has no steps", "no steps");
-        std::test::assert_eq_str(self.cat.define("gap", 1, 2, ""), "", "gap");
+        std::test::assert_eq_str(self.cat.define("gap", 1, "record record", ""), "", "gap");
         std::test::assert_eq_str(self.cat.leaf("gap", 1, 0, "only", leaf_work("x"), 1), "", "gap's first step");
         self.refused("t5", "gap", 1, lim, "gap@1 step 1 has no required members", "an empty required group");
-        std::test::assert_eq_str(self.cat.define("dupkey", 1, 2, ""), "", "dupkey");
+        std::test::assert_eq_str(self.cat.define("dupkey", 1, "record record", ""), "", "dupkey");
         std::test::assert_eq_str(self.cat.leaf("dupkey", 1, 0, "x", leaf_work("one"), 1), "", "x");
         std::test::assert_eq_str(self.cat.leaf("dupkey", 1, 1, "x", leaf_work("same key, other step"), 1), "", "x in step 1 is fine");
         let dk = self.cat.expand("t5", "dupkey", 1, lim);
         std::test::assert(dk.ok, "a key may repeat across steps: " + dk.why);
         std::test::assert_eq_str(self.cat.child("dupkey", 1, 0, "x", "chase-supplier", 1), "", "x again in step 0");
         self.refused("t5", "dupkey", 1, lim, "member `x`: the key is used twice in the step", "a duplicate key");
-        std::test::assert_eq_str(self.cat.define("badkey", 1, 1, ""), "", "badkey");
+        std::test::assert_eq_str(self.cat.define("badkey", 1, "record", ""), "", "badkey");
         std::test::assert_eq_str(self.cat.leaf("badkey", 1, 0, "Bad Key", leaf_work("x"), 1), "", "a bad key can be written");
         self.refused("t5", "badkey", 1, lim, "a member key is [a-z0-9-]+", "a malformed key");
-        std::test::assert_eq_str(self.cat.define("orphan", 1, 1, ""), "", "orphan");
+        std::test::assert_eq_str(self.cat.define("orphan", 1, "record", ""), "", "orphan");
         std::test::assert_eq_str(self.cat.child("orphan", 1, 0, "lost", "missing", 1), "", "a child that resolves to nothing");
         self.refused("t5", "orphan", 1, lim, "no workflow missing@1 is defined", "an unresolvable child");
-        std::test::assert_eq_str(self.cat.define("wrongrev", 1, 1, ""), "", "wrongrev");
+        std::test::assert_eq_str(self.cat.define("wrongrev", 1, "record", ""), "", "wrongrev");
         std::test::assert_eq_str(self.cat.child("wrongrev", 1, 0, "c", "chase-supplier", 7), "", "a child at a revision that does not exist");
         self.refused("t5", "wrongrev", 1, lim, "no workflow chase-supplier@7 is defined", "an unresolvable revision");
         self.refused("t5", "nothing", 1, lim, "no workflow nothing@1 is defined", "an unknown root");
         self.refused("", "close-month", 1, lim, "needs a root task id", "no root id");
-        std::test::assert_eq_str(self.cat.define("selfish", 1, 1, ""), "", "selfish");
+        std::test::assert_eq_str(self.cat.define("selfish", 1, "record", ""), "", "selfish");
         std::test::assert_eq_str(self.cat.child("selfish", 1, 0, "me", "selfish", 1), "", "a workflow that invokes itself");
         self.refused("t5", "selfish", 1, lim, "cannot contain itself", "direct self-reference");
-        std::test::assert_eq_str(self.cat.define("ping", 1, 1, ""), "", "ping");
-        std::test::assert_eq_str(self.cat.define("pong", 1, 1, ""), "", "pong");
+        std::test::assert_eq_str(self.cat.define("ping", 1, "record", ""), "", "ping");
+        std::test::assert_eq_str(self.cat.define("pong", 1, "record", ""), "", "pong");
         std::test::assert_eq_str(self.cat.child("ping", 1, 0, "p", "pong", 1), "", "ping invokes pong");
         std::test::assert_eq_str(self.cat.child("pong", 1, 0, "p", "ping", 1), "", "pong invokes ping");
         self.refused("t5", "ping", 1, lim, "invokes ping@1, which is already on its own path |ping@1|pong@1|", "indirect self-reference");
@@ -164,7 +164,7 @@ main locus App {
         // ---- the limits
         let mut level = 1;
         while level <= 9 {
-            std::test::assert_eq_str(self.cat.define("deep" + to_string(level), 1, 1, ""), "", "a chain level");
+            std::test::assert_eq_str(self.cat.define("deep" + to_string(level), 1, "record", ""), "", "a chain level");
             if level < 9 {
                 std::test::assert_eq_str(self.cat.child("deep" + to_string(level), 1, 0, "next", "deep" + to_string(level + 1), 1), "", "the chain descends");
             } else {
@@ -179,18 +179,18 @@ main locus App {
         self.refused("t6", "close-month", 1, dna::AdmissionLimits { max_members: 1 }, "close-month@1 step 0 has 2 members; max_members is 1", "too many members");
         self.refused("t6", "close-month", 1, dna::AdmissionLimits { max_works: 3 }, "more than max_works 3 Works", "too many works");
         self.refused("t6", "close-month", 1, dna::AdmissionLimits { max_attempts: 2 }, "an allowance of 3 attempts is outside 1..max_attempts 2", "too large an allowance");
-        std::test::assert_eq_str(self.cat.define("noattempt", 1, 1, ""), "", "noattempt");
+        std::test::assert_eq_str(self.cat.define("noattempt", 1, "record", ""), "", "noattempt");
         std::test::assert_eq_str(self.cat.leaf("noattempt", 1, 0, "z", leaf_work("never tried"), 0), "", "a leaf allowed no attempts");
         self.refused("t6", "noattempt", 1, lim, "an allowance of 0 attempts is outside 1..max_attempts 8", "no attempts");
         let fine = self.cat.expand("t7", "close-month", 1, dna::AdmissionLimits { max_depth: 3, max_steps: 2, max_members: 2, max_attempts: 3, max_works: 4 });
         std::test::assert(fine.ok, "exactly at every limit is admitted: " + fine.why);
 
         // ---- a definition error never yields a smaller, successful recipe
-        std::test::assert_eq_str(self.cat.define("stray", 1, 1, ""), "", "stray");
+        std::test::assert_eq_str(self.cat.define("stray", 1, "record", ""), "", "stray");
         std::test::assert_eq_str(self.cat.leaf("stray", 1, 0, "here", leaf_work("inside"), 1), "", "a member inside the steps");
         std::test::assert_eq_str(self.cat.leaf("stray", 1, 1, "there", leaf_work("outside"), 1), "", "and one past them");
         self.refused("t6", "stray", 1, lim, "workflow stray@1 member `there` names step 1, outside its 1 step(s)", "a member outside the declared steps");
-        std::test::assert_eq_str(self.cat.define("negative", 1, 1, ""), "", "negative");
+        std::test::assert_eq_str(self.cat.define("negative", 1, "record", ""), "", "negative");
         std::test::assert_eq_str(self.cat.leaf("negative", 1, 0, "ok", leaf_work("inside"), 1), "", "one inside");
         std::test::assert_eq_str(self.cat.child("negative", 1, -1, "back", "chase-supplier", 1), "", "a child at a negative step");
         self.refused("t6", "negative", 1, lim, "member `back` names step -1", "a member at a negative step");
@@ -208,7 +208,7 @@ main locus App {
         // inviting thirty-two children, one leaf at the bottom
         let mut lv = 1;
         while lv <= 8 {
-            std::test::assert_eq_str(self.cat.define("wide" + to_string(lv), 1, 1, ""), "", "a wide level");
+            std::test::assert_eq_str(self.cat.define("wide" + to_string(lv), 1, "record", ""), "", "a wide level");
             if lv < 8 {
                 let mut k = 0;
                 while k < 32 {
@@ -226,8 +226,8 @@ main locus App {
         std::test::assert_eq_int(self.cat.bound_count(), 0, "and nothing was built on the way");
 
         // ---- a definition id cannot carry the path's delimiters
-        std::test::assert(std::str::contains(self.cat.define("x@1|y", 1, 1, ""), "a workflow definition id is [a-z0-9][a-z0-9-]*"), "an id with delimiters is refused at construction");
-        std::test::assert(std::str::contains(self.cat.define("Wrong", 1, 1, ""), "not `Wrong`"), "and so is an id outside the grammar");
+        std::test::assert(std::str::contains(self.cat.define("x@1|y", 1, "record", ""), "a workflow definition id is [a-z0-9][a-z0-9-]*"), "an id with delimiters is refused at construction");
+        std::test::assert(std::str::contains(self.cat.define("Wrong", 1, "record", ""), "not `Wrong`"), "and so is an id outside the grammar");
 
         // ---- the machine form
         let text = self.cat.encode();
@@ -250,7 +250,7 @@ main locus App {
         let back_copy = self.copy.expand("t8", "close-month", 1, lim);
         std::test::assert(back.ok && back_copy.ok && self.cat_ids() == self.copy_ids(), "the copy expands to the same execution: " + self.copy_ids());
         // text with quotes, backslashes and newlines
-        std::test::assert_eq_str(self.dup.define("quoted", 1, 1, "a \"title\" with\\slashes"), "", "quoted");
+        std::test::assert_eq_str(self.dup.define("quoted", 1, "record", "a \"title\" with\\slashes"), "", "quoted");
         std::test::assert_eq_str(self.dup.leaf("quoted", 1, 0, "q", leaf_work("line one\nline \"two\"\t\\end"), 1), "", "a leaf with awkward text");
         let qtext = self.dup.encode();
         let fresh = dna::WorkflowCatalog { };
@@ -258,16 +258,16 @@ main locus App {
         std::test::assert(fresh.member_at(0).objective == "line one\nline \"two\"\t\\end" && fresh.workflow_at(0).title == "a \"title\" with\\slashes", "unchanged");
         std::test::assert(std::str::contains(fresh.decode(qtext), "quoted@1 is already defined") && fresh.workflow_count() == 1 && fresh.member_count() == 1, "reading the same document twice is refused and adds nothing");
         // a document that defines one revision twice is refused whole
-        let twice_doc = "{\"format\": \"dna.workflow-definitions/1\", \"workflows\": [{\"id\": \"same\", \"revision\": 1, \"steps\": 1, \"title\": \"one\"}, {\"id\": \"same\", \"revision\": 1, \"steps\": 2, \"title\": \"two\"}], \"members\": []}";
+        let twice_doc = "{\"format\": \"dna.workflow-definitions/2\", \"workflows\": [{\"id\": \"same\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"one\"}, {\"id\": \"same\", \"revision\": 1, \"steps\": 2, \"stores\": \"record record\", \"title\": \"two\"}], \"members\": []}";
         let twice_cat = dna::WorkflowCatalog { };
         std::test::assert(std::str::contains(twice_cat.decode(twice_doc), "the document defines workflow same@1 twice"), "a document cannot define one revision twice");
         std::test::assert_eq_int(twice_cat.workflow_count(), 0, "and nothing of it was added");
-        let bad_id_doc = "{\"format\": \"dna.workflow-definitions/1\", \"workflows\": [{\"id\": \"x@1|y\", \"revision\": 1, \"steps\": 1, \"title\": \"\"}], \"members\": []}";
+        let bad_id_doc = "{\"format\": \"dna.workflow-definitions/2\", \"workflows\": [{\"id\": \"x@1|y\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"\"}], \"members\": []}";
         std::test::assert(std::str::contains(twice_cat.decode(bad_id_doc), "a workflow definition id is") && twice_cat.workflow_count() == 0, "nor carry an id outside the grammar");
         std::test::assert(std::str::contains(fresh.decode("{\"format\": \"something else\"}"), "not a workflow definition document"), "another document is refused");
         // a member of a kind the builder never writes, from a document
         let odd = dna::WorkflowCatalog { };
-        std::test::assert_eq_str(odd.decode("{\"format\": \"dna.workflow-definitions/1\", \"workflows\": [{\"id\": \"odd\", \"revision\": 1, \"steps\": 1, \"title\": \"\"}], \"members\": [{\"workflow\": \"odd\", \"revision\": 1, \"step\": 0, \"key\": \"k\", \"kind\": \"loop\", \"attempts\": 1}]}"), "", "a hand-written document reads");
+        std::test::assert_eq_str(odd.decode("{\"format\": \"dna.workflow-definitions/2\", \"workflows\": [{\"id\": \"odd\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"\"}], \"members\": [{\"workflow\": \"odd\", \"revision\": 1, \"step\": 0, \"key\": \"k\", \"kind\": \"loop\", \"attempts\": 1}]}"), "", "a hand-written document reads");
         let ox = odd.expand("t10", "odd", 1, lim);
         std::test::assert(!ox.ok && std::str::contains(ox.why, "a member is a leaf or a child, not `loop`") && odd.bound_count() == 0, "an unknown member kind is refused: " + ox.why);
     }

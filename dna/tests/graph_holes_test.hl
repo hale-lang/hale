@@ -271,8 +271,10 @@ locus App {
         let practices = self.dna("review\npractices\napprove\n--as\nada\n--authority\nboard");
         std::test::assert_eq_int(practices.code, 0, "and the practices: " + practices.stdout + practices.stderr);
         // a verdict answers at `review.settled`; the ratification is the
-        // organism's next row, so it is waited for, bounded
-        let ratify_by = std::time::now() + 60;
+        // practice-ratify execution each verdict adopts (GH #995), so it
+        // is waited for, bounded
+        let ratify_from = std::time::now();
+        let ratify_by = std::time::now() + 600;
         while self.count_rows("knowledge.ratified") < 35 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
         std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 35, "35 proposals ratified by the organism");
         std::test::assert_eq_str(self.show_org(head, 240), ORG, "ratified in another order than proposed, the org chart is still GRAPH.md's");

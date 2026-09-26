@@ -1,0 +1,153 @@
+// dna/tests/workflow_catalog_test.hl — the baseline workflow catalog, one
+// store per step (GH #995).
+//
+// The catalog DNA ships is listed with its revisions and every step's
+// store. A step declaring two stores, or none, or a word that is no store,
+// is refused before anything is admitted. A definition with a step on a
+// part not built yet (the heart, the vault, a host the organization
+// provisions) is in the catalog and refused at admission naming the part;
+// one whose steps the organization does not perform yet (ask-triage) is
+// refused saying so. A concern is an execution of concern-escalate: its
+// steps write the rows the concern path wrote. And a Task born under a
+// revision finishes under it after the catalog gains the next one, while
+// a new Task binds the newest. Through the CLI, `hale dna new` writes
+// dna/org/workflows.hl and `hale dna definitions` lists it.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+main locus App {
+    params {
+        // receipts outside the working directory: a concern's proposal files its document
+        one: dna::Dna = dna::Dna { org_id: "cat", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-workflow-catalog-receipts" } } };
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { out = std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Wait, bounded, until the record holds `n` rows of `kind` for `entity`.
+    fn wait_rows(kind: String, entity: String, n: Int) -> Bool {
+        let deadline = std::time::now() + 20;
+        while std::time::now() <= deadline {
+            if self.rows(kind, entity) >= n { return true; }
+            std::time::sleep(50ms);
+        }
+        return false;
+    }
+    run() {
+        std::io::fs::mkdir("/tmp/dna-workflow-catalog-receipts") or discard;
+        // ---- the baseline, listed with revisions and each step's store
+        let base = dna::baseline_definitions();
+        let listed = dna::definitions_listing(base);
+        std::test::assert(std::str::contains(listed, "practice-ratify@1  a proposal the Board decided, ratified and read by the hat\n  0. ratify  record\n  1. hat  record\n"), "practice-ratify, a step per fact: " + listed);
+        std::test::assert(std::str::contains(listed, "concern-escalate@1  a concern: raised, routed to its source's parent, proposed at the threshold\n  0. raise  record\n"), "a concern is one step: " + listed);
+        std::test::assert(std::str::contains(listed, "optimize-walk@1") && std::str::contains(listed, "  0. walk  record\n") && !std::str::contains(listed, "(read)"), "no step only reads: " + listed);
+        std::test::assert(std::str::contains(listed, "refused at admission: workflow change-deliver@1 step 4 (deploy) writes the heart (GH #987)"), "change-deliver names the heart: " + listed);
+        std::test::assert(std::str::contains(listed, "refused at admission: workflow secret-rotate@1 step 0 (rotate) writes the vault (GH #989)"), "secret-rotate names the vault: " + listed);
+        std::test::assert(std::str::contains(listed, "ask-triage@1") && std::str::contains(listed, "the organization does not perform this definition's steps yet"), "ask-triage is seeded and refused, saying why: " + listed);
+        let names = "ask-triage change-deliver practice-ratify deploy-observe concern-escalate optimize-walk secret-rotate body-provision ask-edit ask-person";
+        let mut k = 0;
+        while k < dna::word_count(names) {
+            std::test::assert_eq_int(base.latest(dna::nth_word(names, k)), 1, dna::nth_word(names, k) + " is at revision 1");
+            k = k + 1;
+        }
+
+        // ---- a step writes exactly one store
+        let bad = dna::WorkflowCatalog { };
+        std::test::assert_eq_str(bad.define("two", 1, "record record+forge", "two at once"), "", "defined; the preflight judges the stores");
+        let l1 = bad.leaf("two", 1, 0, "a", dna::WorkRequest { }, 1);
+        let l2 = bad.leaf("two", 1, 1, "b", dna::WorkRequest { }, 1);
+        let two = bad.expand("t1", "two", 1, dna::AdmissionLimits { });
+        std::test::assert(!two.ok && std::str::contains(two.why, "workflow two@1 step 1 declares two stores (record, forge)"), "two stores refused: " + two.why);
+        std::test::assert_eq_str(bad.define("none", 1, "record -", "one without"), "", "defined");
+        let l3 = bad.leaf("none", 1, 0, "a", dna::WorkRequest { }, 1);
+        let l4 = bad.leaf("none", 1, 1, "b", dna::WorkRequest { }, 1);
+        let none = bad.expand("t2", "none", 1, dna::AdmissionLimits { });
+        std::test::assert(!none.ok && std::str::contains(none.why, "step 1 declares no store"), "no store refused: " + none.why);
+        std::test::assert_eq_str(bad.define("odd", 1, "ledger", "no such store"), "", "defined");
+        let l5 = bad.leaf("odd", 1, 0, "a", dna::WorkRequest { }, 1);
+        let odd = bad.expand("t3", "odd", 1, dna::AdmissionLimits { });
+        std::test::assert(!odd.ok && std::str::contains(odd.why, "declares `ledger`, which is no store"), "an unknown store refused: " + odd.why);
+        let doc = base.encode();
+        std::test::assert(std::str::contains(doc, "\"format\": \"dna.workflow-definitions/2\"") && std::str::contains(doc, "\"stores\": \"record forge record genome heart record\""), "the document carries each step's store: " + doc);
+        let back = dna::WorkflowCatalog { };
+        std::test::assert_eq_str(back.decode(doc), "", "and reads back");
+        std::test::assert_eq_str(dna::definitions_listing(back), listed, "whole");
+
+        // ---- refused at admission: a part not built, a path not moved
+        let heart = self.one.run_workflow(dna::WorkflowAsk { id: "deliver-1", definition: "change-deliver", revision: 1, inputs: "{}" });
+        std::test::assert(std::str::starts_with(heart, "refused") && std::str::contains(heart, "the heart (GH #987), which is not built yet"), "change-deliver refused, naming the heart: " + heart);
+        std::test::assert(std::str::contains(self.last("workflow.refused", ""), "the heart (GH #987)"), "a workflow.refused row says so: " + self.last("workflow.refused", ""));
+        let triage = self.one.run_workflow(dna::WorkflowAsk { id: "triage-1", definition: "ask-triage", revision: 1, inputs: "{}" });
+        std::test::assert(std::str::starts_with(triage, "refused") && std::str::contains(triage, "does not perform this definition's steps yet"), "ask-triage refused, saying why: " + triage);
+
+        // ---- a concern is an execution of concern-escalate, and a Task
+        // born under revision 1 finishes under it after the catalog gains
+        // revision 2 (an upgrade), while a new Task binds revision 2
+        let inputs = "{\"source\": \"org/app/worker\", \"what\": \"mail backlog\", \"severity\": 2, \"request\": \"c1\"}";
+        let first = self.one.admit_workflow(dna::WorkflowAsk { id: "concern:org/app/worker:c1", definition: "concern-escalate", revision: self.one.catalog.latest("concern-escalate"), inputs: inputs });
+        std::test::assert(len(first) > 0 && !std::str::starts_with(first, "refused"), "the concern is admitted under revision 1: " + first);
+        std::test::assert_eq_str(self.one.catalog.define("concern-escalate", 2, "record", "a concern escalated, revised"), "", "the catalog gains revision 2");
+        let r0 = self.one.catalog.leaf("concern-escalate", 2, 0, "raise", dna::WorkRequest { requires: "organism", objective: "the concern, raised and routed" }, 1);
+        self.one.start_execution(first);
+        self.one.on_concern(dna::Concern { source: "org/app/worker", what: "mail backlog", severity: 2, request: "c2" });
+        let second = self.one.workflow_admission_of("concern:org/app/worker:c2", self.one.journal.revision());
+        std::test::assert(len(second) > 0 && second != first, "the second concern is its own execution");
+        std::test::assert(self.wait_rows("workflow.settled", first, 1) && self.wait_rows("workflow.settled", second, 1), "both settle");
+        std::test::assert_eq_int(self.one.recorded_admission(first).value.revision, 1, "the first finished under the revision it was born with");
+        std::test::assert_eq_int(self.one.recorded_admission(second).value.revision, 2, "a new Task binds the newest");
+        std::test::assert(std::str::contains(self.last("workflow.settled", first), "done"), "and settled done: " + self.last("workflow.settled", first));
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 2, "each raised once, by its step");
+        std::test::assert_eq_str(std::json::find_string_field(self.last("concern.raised", "org/app/worker"), "parent"), "org/app", "routed to the source's parent: " + self.last("concern.raised", "org/app/worker"));
+        // redelivered, c1 is the same concern: no third execution
+        self.one.on_concern(dna::Concern { source: "org/app/worker", what: "mail backlog", severity: 2, request: "c1" });
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 2, "a redelivery raises nothing");
+        // the third crosses the threshold and proposes, bound to the parent
+        self.one.on_concern(dna::Concern { source: "org/app/worker", what: "mail backlog", severity: 2, request: "c3" });
+        std::test::assert(self.wait_rows("concern.proposed", "org/app/worker", 1), "the third is proposed");
+        std::test::assert(std::str::contains(self.last("knowledge.proposed", ""), "\"target\": \"org/app\""), "bound to its parent: " + self.last("knowledge.proposed", ""));
+
+        // ---- through the CLI: new writes the catalog, definitions lists it
+        let scratch = dna::scratch_root("workflow-catalog");
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/books";
+        std::test::assert(std::io::fs::file_exists(app + "/dna/org/workflows.hl"), "dna/org/workflows.hl is written at new");
+        std::test::assert(std::str::contains(std::io::fs::read_file(app + "/dna/org/main.hl") or "", "catalog: workflows()"), "and the substrate admits from it");
+        let cli = in_dir(app, toolchain() + "\ndna\ndefinitions");
+        std::test::assert_eq_int(cli.code, 0, "hale dna definitions: " + cli.stdout + cli.stderr);
+        std::test::assert(std::str::starts_with(cli.stdout, "catalog dna/org/workflows.hl\n") && std::str::contains(cli.stdout, "concern-escalate@1") && std::str::contains(cli.stdout, "writes the heart (GH #987)"), "listed with revisions: " + cli.stdout);
+        let json = in_dir(app, toolchain() + "\ndna\ndefinitions\n--json");
+        std::test::assert(std::str::contains(json.stdout, "\"format\": \"dna.workflow-definitions/2\""), "and as its document: " + json.stdout);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

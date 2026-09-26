@@ -188,6 +188,32 @@ locus PendingAsks { capacity { heap rows of Intent; } }
 // start, re-driven by `redrive`.
 @form(vec)
 locus EditAsks { capacity { heap rows of EditAsk; } }
+
+// GH #995: the catalog steps the organization performs, waiting on what
+// they wait for (a verdict, the leader's word, memory's projection).
+@form(vec)
+locus StepAsks { capacity { heap rows of StepAsk; } }
+
+// A step's outcome as its performer decides it: "done" or "failed" with
+// what it wrote, or no disposition — it waits, and is performed again.
+type StepVerdict { disposition: String = ""; result: String = ""; narrative: String = ""; }
+
+fn step_done(result: String, narrative: String) -> StepVerdict { return StepVerdict { disposition: "done", result: result, narrative: narrative }; }
+fn step_failed(why: String) -> StepVerdict { return StepVerdict { disposition: "failed", narrative: why }; }
+fn step_waits() -> StepVerdict { return StepVerdict { }; }
+
+// The outcome and who decided a `review.settled` body ("approve by ada").
+fn verdict_outcome(body: String) -> String {
+    if std::str::starts_with(body, "approve by ") { return "approve"; }
+    if std::str::starts_with(body, "reject by ") { return "reject"; }
+    if std::str::starts_with(body, "revise by ") { return "revise"; }
+    return "";
+}
+fn verdict_by(body: String) -> String {
+    let o = verdict_outcome(body);
+    if len(o) == 0 { return ""; }
+    return body[(len(o) + 4)..len(body)];
+}
 // Outcomes reported to the engine (card 15), kept until the record holds
 // the attempt's outcome: a report the record refused is put again when
 // the record resumes, or on `redrive` — never by editing again.
@@ -308,9 +334,11 @@ locus Dna {
         // nowhere else
         vault: MemoryVault = MemoryVault { };
         concern_threshold: Int = 3; // a concern raised this often from one source is proposed as knowledge
-        // GH #646 workflow card 07: the definitions an application wrote
-        // (card 04), and the limits an admission is expanded under (§3 of
-        // dna/WORKFLOW-CONTRACT.md: the assembly's, not a ceiling)
+        // GH #646 workflow card 07: the definitions this organization
+        // admits — the project's `dna/org/workflows.hl`, the baseline
+        // catalog plus its own (GH #995); a body given none takes the
+        // baseline at birth — and the limits an admission is expanded under
+        // (§3 of dna/WORKFLOW-CONTRACT.md: the assembly's, not a ceiling)
         catalog: WorkflowCatalog = WorkflowCatalog { };
         admission_limits: AdmissionLimits = AdmissionLimits { };
         genome_seed: String = "."; // the genome's seed, relative to the repository
@@ -335,6 +363,8 @@ locus Dna {
         claimed: Lease = Lease { }; // the claim this node took last
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
+        waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
+        optimizing: String = ""; // GH #995: the optimize-walk Task whose walk this incarnation asked of the leader
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
         pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
@@ -396,9 +426,9 @@ locus Dna {
     // Reviews born, as it always did in practice.
     accept(r: Review) { self.reviews_open = self.reviews_open + 1; }
     birth() {
-        // card 18: the ask definitions — one edit leaf, one person's job —
+        // GH #995: the catalog — the baseline when the org chart gave none —
         // and the engine of this scope, over this record and these performers
-        self.define_asks();
+        if self.catalog.workflow_count() == 0 { define_baseline(self.catalog); }
         self.work.bind_scope(self.org_id);
         if self.runs_engine {
             // the record and the performers are the assembly's, handed
@@ -458,6 +488,9 @@ locus Dna {
         // engine's human performer; the assembly admits its case and hands
         // it, and the attempt stays out until the person reports it done
         subscribe CaseRequested as on_case_requested where key == self.org_id;
+        // GH #995: the engine's organism performer — a catalog step the
+        // organization performs itself
+        subscribe StepRequested as on_step_requested where key == self.org_id;
         subscribe RunLives as on_run_life;
         publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
@@ -994,9 +1027,14 @@ locus Dna {
         // ratification — one row naming the digest, which the knowledge
         // service applies from the record; anything else leaves the
         // proposal as it was, in lineage.
+        // GH #995: a knowledge proposal is ratified through practice-ratify:
+        // the verdict step of its execution — the one it was proposed under,
+        // or one adopted for it now (a seeded proposal, a concern's) —
+        // hears it and the steps after it write the rest
         let kreq = self.knowledge_request_of(r.review_id);
         if len(kreq) > 0 {
-            let resumed = self.resume_knowledge_result(r.review_id, r.outcome, r.decided_by);
+            self.ratify_through(r.review_id);
+            self.revisit_steps();
             return;
         }
         let edge_codec = KnowledgeEdgeCodec { };
@@ -1316,9 +1354,10 @@ locus Dna {
         let ttl = if self.optimize_every_ms >= 1000 { self.optimize_every_ms / 1000 } else { 1 };
         if !self.take_claim("optimize/" + to_string(window), ttl) { return; }
         self.note_claim("optimize/" + to_string(window));
-        self.last_signals = self.signals();
+        // GH #995: the pass is an execution of optimize-walk — the walk,
+        // then the leader's proposals, each a row
         self.optimizations = self.optimizations + 1;
-        OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
+        let t = self.run_workflow(WorkflowAsk { id: "optimize:" + to_string(window), definition: "optimize-walk", revision: self.catalog.latest("optimize-walk"), inputs: "{\"window\": " + to_string(window) + "}" });
     }
     // Enter through the owner's queue, so work arriving during a
     // journal refresh waits for its cached view to be complete. Calling
@@ -1552,8 +1591,11 @@ locus Dna {
         b.string_field("package", r.package);
         b.string_field("by", r.by);
         b.string_field("signals", self.last_signals);
+        // GH #995: the optimize-walk execution this answers
+        b.string_field("task", self.optimizing);
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "org.reviewed", self.org_id, b.result());
+        self.revisit_steps();
         if len(r.proposal) > 0 {
             let id = self.ask(Intent { id: "opt" + to_string(self.optimizations), outcome: r.proposal, from: r.by });
         }
@@ -2543,47 +2585,53 @@ locus Dna {
         }
     }
     // GH #583 K2: a concern — a child's signal about the part above it
-    // — is journaled; when it persists from one source it becomes a
-    // knowledge proposal by that source, bound to its parent (a concern
-    // by the tower rule), for the Board to ratify. A source with no
-    // parent has nothing to bind to and is refused, saying so.
+    // — is an execution of concern-escalate (GH #995): raised, routed to
+    // its source's parent, and, when it persists from one source, a
+    // knowledge proposal by that source bound to that parent for the
+    // Board to ratify. A source with no parent has nothing to bind to and
+    // is refused at the threshold, saying so.
     @unbounded
     fn on_concern(c: Concern) {
-        let mut seen = 1;
         let n = self.journal.revision();
-        let mut i = 0;
-        let mut proposed = false;
         // the row this request already wrote, if it was delivered before
         let mut already = "";
         let mut refused = false;
+        let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "concern.raised" && e.entity == c.source {
-                if len(c.request) > 0 && request_named(e.body) == c.request { already = std::str::clone(e.body); }
-                else { seen = seen + 1; }
-            }
+            if e.kind == "concern.raised" && e.entity == c.source && len(c.request) > 0 && request_named(e.body) == c.request { already = std::str::clone(e.body); }
             if e.kind == "concern.refused" && e.entity == c.source && request_named(e.body) == c.request { refused = true; }
-            if e.kind == "concern.proposed" && e.entity == c.source { proposed = true; }
             i = i + 1;
         }
         // GH #689: a transport may deliver one request twice — the host
         // relays a row again while it stays unanswered, and an answer it
         // has not seen yet is enough to make that happen. One request is
-        // one concern: the row it already wrote is its answer, and the
+        // one concern: the execution admitted for it is its answer, and the
         // count that turns concerns into a proposal counts distinct
         // requests, never redeliveries. Two distinct requests raising the
         // same words are still two concerns.
+        let ask_id = if len(c.request) > 0 { "concern:" + c.source + ":" + c.request } else { "concern:" + c.source + "@" + to_string(n) };
+        if len(already) == 0 && len(c.request) > 0 {
+            let admitted = self.workflow_admission_of(ask_id, n);
+            if len(admitted) > 0 {
+                let x = self.recorded_admission(admitted).value.inputs;
+                already = concern_body(std::json::find_string_field(x, "what"), std::json::find_int_field(x, "severity"), 0, c.request);
+            }
+        }
         if len(already) > 0 {
             if !same_concern(already, c.what, c.severity) && !refused {
                 let r = self.journal.append(self.journal.revision(), "concern.refused", c.source, concern_refusal_body("request " + c.request + " already raised another concern here; one request is one concern", c.request));
             }
             return;
         }
-        // the answer names the request it answers (GH #689), so the host
-        // can tell which of one source's concerns has been heard
-        let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, concern_body(c.what, c.severity, seen, c.request));
-        if seen < self.concern_threshold || proposed { return; }
-        self.propose_concern(c.source, c.what, seen);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("source", c.source);
+        b.string_field("what", c.what);
+        b.int_field("severity", c.severity);
+        b.string_field("request", c.request);
+        b.end_object();
+        let t = self.run_workflow(WorkflowAsk { id: ask_id, definition: "concern-escalate", revision: self.catalog.latest("concern-escalate"), inputs: b.result() });
     }
     // A concern that persists: proposed as knowledge by its source,
     // bound to its parent (a concern by the tower rule), for the Board
@@ -2604,9 +2652,10 @@ locus Dna {
     // A person proposes a practice for the whole organization (GH #602).
     // The proposal is the organization's — author `org`, an initiative the
     // tower rule binds to `org` — and the Board ratifies it through the
-    // ordinary knowledge Review; who proposed it and what prompted it stay
-    // on the `practice.proposed` row. Nothing is in force until the Board
-    // approves it.
+    // ordinary knowledge Review, and once decided an execution of
+    // practice-ratify writes what follows (GH #995); who proposed it and
+    // what prompted it stay on the `practice.proposed` row. Nothing is in
+    // force until the Board approves it.
     @unbounded
     fn on_practice_requested(r: PracticeRequest) {
         let moved = self.journal.refresh();
@@ -3323,14 +3372,12 @@ locus Dna {
                     }
                 }
             }
-            if e.kind == "review.settled" && len(self.knowledge_request_of(e.entity)) > 0 {
-                let outcome = if std::str::starts_with(e.body, "approve by ") { "approve" } else if std::str::starts_with(e.body, "reject by ") { "reject" } else if std::str::starts_with(e.body, "revise by ") { "revise" } else { "" };
-                if len(outcome) > 0 {
-                    let resumed = self.resume_knowledge_result(e.entity, outcome, e.body[(len(outcome) + 4)..len(e.body)]);
-                }
-            }
+            // GH #995: a verdict whose ratification never ran is ratified
+            // through practice-ratify, as a fresh one is
+            if e.kind == "review.settled" && len(verdict_outcome(e.body)) > 0 && len(self.knowledge_request_of(e.entity)) > 0 { self.ratify_through(e.entity); }
             i = i + 1;
         }
+        self.revisit_steps();
     }
     // Intent enters through the membrane and births a durable Task;
     // its birth and its settlement are Journal events (the causal
@@ -3455,7 +3502,7 @@ locus Dna {
         b.bool_field("parsed", planned && p.parsed);
         b.end_object();
         let definition = if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
-        return self.run_workflow(WorkflowAsk { id: i.id, definition: definition, revision: 1, inputs: b.result(), from: i.from, to: i.to });
+        return self.run_workflow(WorkflowAsk { id: i.id, definition: definition, revision: self.catalog.latest(definition), inputs: b.result(), from: i.from, to: i.to });
     }
     // The authored-definition API (card 18): a workflow the application
     // defined (card 04), admitted (card 07) and started in the one engine
@@ -3492,7 +3539,8 @@ locus Dna {
             let n = self.catalog.bound.get(i) or BoundNode { };
             if n.kind == "work" {
                 let req = bound_request(n, self.task_of_bound(n), n.parent);
-                let kind = if std::str::contains(n.requires, "edit") { "edit" }
+                let kind = if std::str::contains(n.requires, "organism") { "organism" }
+                else if std::str::contains(n.requires, "edit") { "edit" }
                 else if std::str::contains(n.requires, "human") || std::str::contains(n.requires, "person") { "human" }
                 else { self.work.selection.select(req, 0, "") };
                 out = out + (if len(out) > 0 { " " } else { "" }) + n.id + "=" + kind;
@@ -3604,21 +3652,216 @@ locus Dna {
         self.executions_settled = self.executions_settled + 1;
         self.membrane.notify("task", w.task_id + " settled " + w.disposition + (if len(w.reason) > 0 { ": " + w.reason } else { "" }));
     }
+    // ---- GH #995: the catalog's steps, performed by the organization ------
+    //
+    // A step of a baseline definition the organization performs itself
+    // (`requires: "organism"`), relayed by the engine's organism performer:
+    // the definition and the inputs are the admission's of the step's Task,
+    // the step is the Work's member key. A step ensures its rows — asked
+    // again after a redelivery it writes none twice — and reports done or
+    // failed; one that waits (a verdict, the leader's word, memory's
+    // projection) is kept and performed again when what it waits on may
+    // have arrived: a verdict, the leader's answer, the tick.
+    @unbounded
+    fn on_step_requested(s: StepAsk) {
+        let moved = self.journal.refresh();
+        self.release_recorded();
+        if !self.perform_step(s) && !self.step_waiting(s.attempt_id) { self.waiting_steps.push(s); }
+    }
+    @unbounded
+    fn step_waiting(attempt_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.waiting_steps.len() {
+            let w = self.waiting_steps.get(i) or StepAsk { };
+            if w.attempt_id == attempt_id { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // Every waiting step performed again; those that reported leave the
+    // list, which empties when none waits.
+    @unbounded
+    fn revisit_steps() {
+        let mut left = 0;
+        let mut i = 0;
+        while i < self.waiting_steps.len() {
+            let w = self.waiting_steps.get(i) or StepAsk { };
+            if len(w.attempt_id) > 0 {
+                if self.perform_step(w) { self.waiting_steps.set(i, StepAsk { }) or discard; } else { left = left + 1; }
+            }
+            i = i + 1;
+        }
+        if left == 0 && self.waiting_steps.len() > 0 { self.waiting_steps = StepAsks { }; }
+    }
+    // Perform one step; whether its outcome was reported.
+    @unbounded
+    fn perform_step(s: StepAsk) -> Bool {
+        if self.has_row("attempt.outcome", s.attempt_id) || self.reported(s.attempt_id) { return true; }
+        let task = s.request.task_id;
+        let adm = self.recorded_admission(task);
+        if !adm.ok { return self.step_report(s, step_failed("no admission for task " + task)); }
+        let definition = adm.value.definition;
+        let key = last_segment(s.request.work_id);
+        let x = adm.value.inputs;
+        let out = if definition == "practice-ratify" { self.practice_step(task, key, x) }
+        else if definition == "concern-escalate" { self.concern_step(task, key, x) }
+        else if definition == "optimize-walk" { self.optimize_step(task, key, x) }
+        else { step_failed("the organization performs no step " + definition + "/" + key) };
+        if len(out.disposition) == 0 { return false; }
+        return self.step_report(s, out);
+    }
+    fn step_report(s: StepAsk, out: StepVerdict) -> Bool {
+        self.report_attempt(s.scope, s.attempt_id, WorkResult { disposition: out.disposition, result: out.result, narrative: out.narrative, performer: s.performer, attempt_id: s.attempt_id });
+        return true;
+    }
+    // ---- practice-ratify ----
+    // The execution a knowledge proposal is ratified under, "" when none.
+    @unbounded
+    fn ratification_of(digest: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" && std::json::find_string_field(std::json::find_string_field(e.body, "inputs"), "digest") == digest { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // A verdict on a knowledge proposal: ratified through practice-ratify.
+    // Whoever proposed it — a person's request, a concern, the record's
+    // birth — the Board's decision is admitted as one execution, once,
+    // whose steps write the ratification and what the hat reads.
+    @unbounded
+    fn ratify_through(review_id: String) {
+        let digest = native_json_string(self.knowledge_request_of(review_id), "knowledge_digest");
+        if len(digest) == 0 || len(self.ratification_of(digest)) > 0 { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("review_id", review_id);
+        b.end_object();
+        let t = self.run_workflow(WorkflowAsk { id: "ratify:" + digest, definition: "practice-ratify", revision: self.catalog.latest("practice-ratify"), inputs: b.result() });
+    }
+    @unbounded
+    fn practice_step(task: String, key: String, x: String) -> StepVerdict {
+        let digest = std::json::find_string_field(x, "digest");
+        if len(digest) == 0 { return step_failed("practice-ratify names no proposal"); }
+        let review_id = knowledge_review_id(digest);
+        if key == "ratify" {
+            let settled = self.governance_event("review.settled", review_id);
+            let outcome = verdict_outcome(settled.body);
+            if len(outcome) == 0 { return step_waits(); }
+            let by = verdict_by(settled.body);
+            // the verdict binds this digest: approved, the ratification (and
+            // the retirement of what it supersedes); otherwise the decline
+            let r = self.resume_knowledge_result(review_id, outcome, by);
+            if outcome == "approve" && self.knowledge_ratified(digest) { return step_done(digest, "ratified by " + by); }
+            if outcome != "approve" && len(self.governance_event("knowledge.declined", digest).kind) > 0 { return step_failed("declined: " + settled.body); }
+            let refused = self.governance_event("knowledge.refused", digest);
+            if len(refused.kind) > 0 { return step_failed("not ratified: " + std::json::find_string_field(refused.body, "why")); }
+            return step_waits();
+        }
+        // what the hat reads once memory's projection holds the idea and its
+        // binding: the package for the target at memory's head, and whether
+        // it carries the proposal — the row it was fenced to
+        if key == "hat" {
+            let read = self.governance_event("practice.read", digest);
+            if len(read.kind) > 0 { return step_done(std::json::find_string_field(read.body, "hat"), "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head"))); }
+            let at = self.knowledge_client.ratified_at(digest);
+            if at < 0 { return step_waits(); }
+            let target = std::json::find_string_field(self.governance_event("knowledge.proposed", digest).body, "target");
+            let pkg = self.knowledge_client.package_for(target, "");
+            if len(pkg.error) > 0 { return step_waits(); }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("digest", digest);
+            b.string_field("target", target);
+            b.int_field("ratified_at", at);
+            b.string_field("hat", pkg.digest);
+            b.int_field("head", pkg.revision);
+            b.bool_field("included", std::str::contains(" " + pkg.included + " ", " " + digest + " "));
+            b.string_field("task", task);
+            b.end_object();
+            if !self.governance_once("practice.read", digest, b.result()) { return step_waits(); }
+            return step_done(pkg.digest, "the hat for " + target + " at row " + to_string(pkg.revision));
+        }
+        return step_failed("practice-ratify has no step `" + key + "`");
+    }
+
+    // ---- concern-escalate ----
+    // One step, one burst of the record: the concern raised — its row names
+    // the parent it is routed to — and, once its source crossed the
+    // threshold, the proposal by that source bound to that parent.
+    @unbounded
+    fn concern_step(task: String, key: String, x: String) -> StepVerdict {
+        if key != "raise" { return step_failed("concern-escalate has no step `" + key + "`"); }
+        let source = std::json::find_string_field(x, "source");
+        let what = std::json::find_string_field(x, "what");
+        let owed = std::json::find_int_field(x, "owed");
+        let parent = parent_path(source);
+        let n = self.journal.revision();
+        let mut seen = 0;
+        let mut mine = false;
+        let mut proposed = false;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "concern.raised" && e.entity == source {
+                seen = seen + 1;
+                if std::json::find_string_field(e.body, "task") == task { mine = true; }
+            }
+            if e.kind == "concern.proposed" && e.entity == source { proposed = true; }
+            i = i + 1;
+        }
+        // owed: the raises are the record's already
+        if owed == 0 && !mine {
+            // the answer names the request it answers (GH #689), so the host
+            // can tell which of one source's concerns has been heard
+            seen = seen + 1;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("what", what);
+            b.int_field("severity", std::json::find_int_field(x, "severity"));
+            b.int_field("occurrence", seen);
+            b.string_field("request", std::json::find_string_field(x, "request"));
+            b.string_field("parent", parent);
+            b.string_field("task", task);
+            b.end_object();
+            let r = self.journal.append(self.journal.revision(), "concern.raised", source, b.result());
+            if !r.ok { return step_waits(); }
+        }
+        if !proposed && seen >= self.concern_threshold {
+            self.propose_concern(source, what, seen);
+            return step_done(source, "raised, occurrence " + to_string(seen) + ", and proposed for " + (if len(parent) > 0 { parent } else { "no parent" }));
+        }
+        return step_done(to_string(seen), "raised, occurrence " + to_string(seen) + ", routed to " + (if len(parent) > 0 { parent } else { "no parent" }));
+    }
+
+    // ---- optimize-walk ----
+    // One step: the machinery's signals read, the leader asked once per
+    // incarnation, and done at the `org.reviewed` row its answer is.
+    @unbounded
+    fn optimize_step(task: String, key: String, x: String) -> StepVerdict {
+        if key != "walk" { return step_failed("optimize-walk has no step `" + key + "`"); }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "org.reviewed" && std::json::find_string_field(e.body, "task") == task { return step_done(std::json::find_string_field(e.body, "outcome"), std::json::find_string_field(e.body, "proposal")); }
+            i = i + 1;
+        }
+        if self.optimizing != task {
+            self.optimizing = task;
+            self.last_signals = self.signals();
+            OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
+        }
+        return step_waits();
+    }
     // The next durable id of this owner's, minted before anything is born
     // so the record can hold the birth before the act (GH #604 rule 1).
     fn next_id() -> String {
         self.minted = self.minted + 1;
         return own_prefix(self.ownership.me) + "t" + to_string(self.minted);
-    }
-    // The ask definitions, defined once: an application change (one edit
-    // leaf, prepared for review) and a person's job (one human leaf).
-    // Their leaves bind no objective of their own: the ask's is bound at
-    // admission.
-    fn define_asks() {
-        let d1 = self.catalog.define("ask-edit", 1, 1, "an ask: one change, prepared for review");
-        let l1 = self.catalog.leaf("ask-edit", 1, 0, "e", WorkRequest { requires: "edit", output_contract: "Patch" }, 1);
-        let d2 = self.catalog.define("ask-person", 1, 1, "an ask: a person's job");
-        let l2 = self.catalog.leaf("ask-person", 1, 0, "p", WorkRequest { requires: "human" }, 1);
     }
     // GH #646 workflow card 07: admit a defined workflow. The durable
     // fact precedes everything (GH #604 rule 1): the id is minted, the
@@ -3675,6 +3918,10 @@ locus Dna {
             }
             let x = self.catalog.expand(id, a.definition, a.revision, self.admission_limits);
             if !x.ok { return self.refuse_task(id, rev, a, x.why); }
+            // GH #995: a step the organization would perform, of a
+            // definition whose path has not moved onto the catalog
+            let unperformed = self.catalog.unperformed(a.definition, a.revision);
+            if len(unperformed) > 0 { return self.refuse_task(id, rev, a, unperformed); }
             // card 18: a leaf that binds no objective of its own takes the
             // ask's, from the inputs, before the recipe is bound
             let objective = if len(a.inputs) > 0 { std::json::find_string_field(a.inputs, "objective") } else { "" };
@@ -4680,52 +4927,62 @@ locus Dna {
         // card 18: every admitted root not yet settled runs again in the
         // one engine, from its admission
         self.resume_executions();
-        self.propose_persistent_concerns();
+        self.escalate_owed_concerns();
         self.reconcile_governance();
     }
-    // GH #748: the raise that crosses the concern threshold is also the
-    // raise that proposes, so an organism that stopped between the two
-    // left a source whose concerns are in the record, persistent, and
-    // owed a proposal that nothing but another concern would now make —
-    // and a source that has said its piece three times may never say it
-    // a fourth. The count is the record's, so it is still there to be
-    // read: every source over the threshold with no `concern.proposed`
-    // of its own is proposed once, here, by the rule that would have
-    // proposed it. A source with no parent was already refused where it
-    // was raised and is left alone, so a restart does not write that
-    // refusal again.
+    // GH #748: a source whose concerns are in the record, over the
+    // threshold, with no proposal of its own and no concern-escalate
+    // execution still running for it, is owed one — rows a stopped
+    // organism left, or that reached the record another way. The count is
+    // the record's, so it is still there to be read: each such source is
+    // escalated once, here, by an execution of concern-escalate that
+    // raises nothing more (its raises are the record's) and proposes by
+    // the rule that would have. A source with no parent was already
+    // refused where it crossed the threshold and is left alone.
     @unbounded
-    fn propose_persistent_concerns() {
+    fn escalate_owed_concerns() {
         let n = self.journal.revision();
+        let mut sources = "\n";
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind != "concern.raised" || len(parent_path(e.entity)) == 0 { i = i + 1; continue; }
-            // once per source: the first row it raised is where it is counted
-            let mut first = true;
-            let mut b = 0;
-            while b < i {
-                let o = self.journal.read(b);
-                if o.kind == "concern.raised" && o.entity == e.entity { first = false; }
-                b = b + 1;
-            }
-            if !first { i = i + 1; continue; }
+            if e.kind == "concern.raised" && len(parent_path(e.entity)) > 0 && !std::str::contains(sources, "\n" + e.entity + "\n") { sources = sources + e.entity + "\n"; }
+            i = i + 1;
+        }
+        let mut rest = sources[1..len(sources)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let source = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
             let mut seen = 0;
             let mut proposed = false;
+            let mut open = false;
             let mut what = "";
+            let mut severity = 0;
             let mut k = 0;
             while k < n {
                 let o = self.journal.read(k);
-                if o.kind == "concern.raised" && o.entity == e.entity {
+                if o.kind == "concern.raised" && o.entity == source {
                     seen = seen + 1;
                     let said = concern_what(o.body);
                     what = if len(said) > 0 { said } else { std::str::clone(o.body) };
+                    severity = concern_severity(o.body);
                 }
-                if o.kind == "concern.proposed" && o.entity == e.entity { proposed = true; }
+                if o.kind == "concern.proposed" && o.entity == source { proposed = true; }
+                if o.kind == "workflow.admitted" && std::json::find_string_field(o.body, "definition") == "concern-escalate" && std::json::find_string_field(std::json::find_string_field(o.body, "inputs"), "source") == source && !self.has_row("workflow.settled", o.entity) { open = true; }
                 k = k + 1;
             }
-            if seen >= self.concern_threshold && !proposed { self.propose_concern(e.entity, what, seen); }
-            i = i + 1;
+            if seen >= self.concern_threshold && !proposed && !open {
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("source", source);
+                b.string_field("what", what);
+                b.int_field("severity", severity);
+                b.string_field("request", "");
+                b.int_field("owed", seen);
+                b.end_object();
+                let t = self.run_workflow(WorkflowAsk { id: "concern:" + source + ":owed@" + to_string(seen), definition: "concern-escalate", revision: self.catalog.latest("concern-escalate"), inputs: b.result() });
+            }
         }
     }
     // GH #604 rule 3: an effect requested and never resulted was in

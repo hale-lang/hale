@@ -44,7 +44,7 @@ main locus App {
         // 1. one judgment task — an authored definition, one agent leaf (card
         //    18: ordinary non-edit work enters through a definition): two
         //    model calls, both accounted at their time
-        std::test::assert_eq_str(self.core.catalog.define("judge", 1, 1, "one judgment"), "", "judge");
+        std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment" }, 1), "", "j");
         let t1 = self.core.run_workflow(dna::WorkflowAsk { id: "i1", definition: "judge", revision: 1, from: "test" });
         std::test::assert_eq_str(t1, "t1", "admitted: " + t1);

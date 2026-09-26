@@ -120,8 +120,9 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     assert_eq!(st["journal"]["chain"], "verified");
     assert_eq!(st["intents"]["offered"], 1);
     assert_eq!(st["tasks"][0]["id"], "t1");
-    // the purpose review, not the first row: the seeded design's Reviews sit beside it (GH #596 C)
-    let purpose = st["reviews"].as_array().unwrap().iter().find(|r| r["id"] == "purpose").expect("the purpose review in the projection");
+    // the purpose review, not the first row: the seeded design's Reviews
+    // sit beside it (GH #596 C); a proposal since GH #995, found by its question
+    let purpose = st["reviews"].as_array().unwrap().iter().find(|r| r["question"] == "ratify the declared purpose?").expect("the purpose review in the projection");
     assert_eq!(purpose["state"], "settled");
     assert!(ok5 && out5.contains("history of t1") && out5.contains("task.born") && out5.contains("intent.offered"), "history:\n{out5}");
     let _ = std::fs::remove_dir_all(&d);

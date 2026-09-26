@@ -15,6 +15,16 @@
 // binds nothing. Nothing here dispatches, persists or runs anything; cards
 // 05 onward record and execute a bound expansion.
 //
+// Every step names the ONE store it writes (GH #995): `define` takes one
+// word per step — `record`, `forge`, `genome`, `heart`, `graph`, `nerves`,
+// `memory`, `vault` or `host` — and the step count is the word count. A
+// step is where a fact is written: one that would write none (reading, or
+// waiting on another writer) is part of the step whose fact it serves,
+// never a step of its own. The preflight refuses a step declaring no
+// store (`-`), two (`record+forge`) or a word that is no store; an
+// expansion refuses a definition with a step on a part that is not built
+// yet, naming the part (`workflow_part_missing`).
+//
 // Ids (contract §4): the root Task is the caller's; a child Task is
 // `<parent task>.s<i>.<member key>`; a Workflow is `<task>/wf<revision>`;
 // a Step is `<workflow>/s<i>`; a Work is `<step>/<member key>`. Member
@@ -36,6 +46,77 @@ type WorkflowDef {
     revision: Int = 1;
     steps: Int = 0;
     title: String = "";
+    stores: String = ""; // one word per step: the store it writes
+}
+
+// The stores a step may write (GH #995; the parts of #990).
+const WORKFLOW_STORES: String = "record forge genome heart graph nerves memory vault host";
+
+// The store a step's word names ("" when it names none or two);
+// `step_store_gap` says what is wrong with the word, "" when nothing.
+fn step_store(word: String) -> String {
+    let w = word;
+    if len(w) == 0 || w == "-" || std::str::contains(w, "+") || std::str::contains(w, ",") { return ""; }
+    return w;
+}
+fn step_store_gap(word: String) -> String {
+    let w = word;
+    if len(w) == 0 || w == "-" { return "declares no store (a step writes exactly one)"; }
+    if std::str::contains(w, "+") || std::str::contains(w, ",") { return "declares two stores (" + std::str::replace(std::str::replace(w, ",", "+"), "+", ", ") + "); a step writes exactly one"; }
+    if !word_in(w, WORKFLOW_STORES) { return "declares `" + w + "`, which is no store (" + WORKFLOW_STORES + ")"; }
+    return "";
+}
+// The part a store needs that is not built yet, with its issue; "" when
+// the part is built. A definition with a step on one is seeded and
+// refused at admission, naming it (GH #995).
+fn workflow_part_missing(store: String) -> String {
+    if store == "heart" { return "the heart (GH #987), which is not built yet"; }
+    if store == "vault" { return "the vault (GH #989), which is not built yet"; }
+    if store == "host" { return "a host the organization provisions, which it cannot yet (a person provisions one with `hale dna body provision`)"; }
+    return "";
+}
+// The definitions whose organism steps the organization performs (GH
+// #995). Another definition with a step `requires: "organism"` is refused
+// at admission, saying so, until its path moves onto the catalog.
+const ORGANISM_PERFORMS: String = "practice-ratify concern-escalate optimize-walk";
+
+// `n` steps that each write `store`: for a definition whose steps are all
+// alike.
+fn every_step(n: Int, store: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < n { out = out + (if i > 0 { " " } else { "" }) + store; i = i + 1; }
+    return out;
+}
+// The words of `s`, as the catalog counts them.
+fn step_words(s: String) -> Int {
+    let mut n = 0;
+    let mut in_word = false;
+    let mut i = 0;
+    while i < len(s) {
+        let b = std::str::byte_at_unchecked(s, i);
+        let space = b == 32 || b == 10 || b == 9;
+        if !space && !in_word { n = n + 1; }
+        in_word = !space;
+        i = i + 1;
+    }
+    return n;
+}
+// The `n`-th word of `s` (0-based), "" past the end.
+fn step_word(s: String, n: Int) -> String {
+    let mut k = -1;
+    let mut start = -1;
+    let mut i = 0;
+    while i <= len(s) {
+        let space = i == len(s) || std::str::byte_at_unchecked(s, i) == 32 || std::str::byte_at_unchecked(s, i) == 10 || std::str::byte_at_unchecked(s, i) == 9;
+        if !space && start < 0 { start = i; k = k + 1; }
+        if space && start >= 0 {
+            if k == n { return s[start..i]; }
+            start = -1;
+        }
+        i = i + 1;
+    }
+    return "";
 }
 
 type MemberDef {
@@ -318,12 +399,14 @@ locus WorkflowCatalog {
 
     // ---- construction --------------------------------------------------
 
-    // A workflow definition with `steps` ordered steps. "" when defined,
-    // else why not (the same id and revision defined twice).
-    fn define(id: String, revision: Int, steps: Int, title: String) -> String {
+    // A workflow definition whose steps write `stores`, one word per step
+    // in order (see the head of this file). "" when defined, else why not
+    // (the same id and revision defined twice); the words are the
+    // preflight's to judge.
+    fn define(id: String, revision: Int, stores: String, title: String) -> String {
         if !definition_id_ok(id) { return "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + id + "`"; }
         if self.has(id, revision) { return "workflow " + definition_name(id, revision) + " is already defined"; }
-        self.workflows.push(WorkflowDef { id: id, revision: revision, steps: steps, title: title });
+        self.workflows.push(WorkflowDef { id: id, revision: revision, steps: step_words(stores), title: title, stores: std::str::trim(stores) });
         return "";
     }
     // A leaf member: `work` is the content of its Work request; its ids
@@ -370,6 +453,73 @@ locus WorkflowCatalog {
             i = i + 1;
         }
         return WorkflowDef { steps: -1 };
+    }
+    // The newest revision of `id` the catalog holds, 0 when none: what a new
+    // Task binds. A Task already born keeps the revision it was admitted
+    // under, whatever the catalog offers later.
+    @unbounded
+    fn latest(id: String) -> Int {
+        let mut best = 0;
+        let mut i = 0;
+        while i < self.workflows.len() {
+            let w = self.workflows.get(i) or WorkflowDef { };
+            if w.id == id && w.revision > best { best = w.revision; }
+            i = i + 1;
+        }
+        return best;
+    }
+    // Why a definition, or one it invokes, cannot be admitted for a part
+    // that is not built: the first step on one, named; "" when every part
+    // it touches is built.
+    @unbounded
+    fn part_missing(id: String, revision: Int) -> String {
+        let d = self.definition(id, revision);
+        if d.steps < 0 { return ""; }
+        let mut s = 0;
+        while s < d.steps {
+            let word = step_word(d.stores, s);
+            let missing = workflow_part_missing(step_store(word));
+            if len(missing) > 0 { return "workflow " + definition_name(id, revision) + " step " + to_string(s) + " (" + self.step_key(id, revision, s) + ") writes " + missing; }
+            s = s + 1;
+        }
+        let mut m = 0;
+        while m < self.members.len() {
+            let md = self.members.get(m) or MemberDef { };
+            m = m + 1;
+            if md.workflow == id && md.revision == revision && md.kind == "child" {
+                let child = self.part_missing(md.child, md.child_revision);
+                if len(child) > 0 { return child; }
+            }
+        }
+        return "";
+    }
+    // Why the organization cannot perform a definition's steps yet ("" when
+    // it can): a step it would perform itself (`requires: "organism"`), of
+    // a definition whose path has not moved onto the catalog.
+    @unbounded
+    fn unperformed(id: String, revision: Int) -> String {
+        if word_in(id, ORGANISM_PERFORMS) { return ""; }
+        let mut m = 0;
+        while m < self.members.len() {
+            let md = self.members.get(m) or MemberDef { };
+            m = m + 1;
+            if md.workflow == id && md.revision == revision && md.kind == "leaf" && std::str::contains(md.requires, "organism") {
+                return "workflow " + definition_name(id, revision) + " step " + to_string(md.step) + " (" + md.key + "): the organization does not perform this definition's steps yet (it performs " + ORGANISM_PERFORMS + ")";
+            }
+        }
+        return "";
+    }
+    // The keys of a step's members, `+`-joined: how a listing names a step.
+    @unbounded
+    fn step_key(id: String, revision: Int, step: Int) -> String {
+        let mut out = "";
+        let mut m = 0;
+        while m < self.members.len() {
+            let md = self.members.get(m) or MemberDef { };
+            m = m + 1;
+            if md.workflow == id && md.revision == revision && md.step == step { out = out + (if len(out) > 0 { "+" } else { "" }) + md.key; }
+        }
+        return out;
     }
     fn workflow_count() -> Int { return self.workflows.len(); }
     fn workflow_at(i: Int) -> WorkflowDef { return self.workflows.get(i) or WorkflowDef { }; }
@@ -452,6 +602,13 @@ locus WorkflowCatalog {
         if d.steps < 0 { self.gap = at + "no workflow " + name + " is defined"; return -1; }
         if d.steps == 0 { self.gap = "workflow " + name + " has no steps"; return -1; }
         if d.steps > limits.max_steps { self.gap = "workflow " + name + " has " + to_string(d.steps) + " steps; max_steps is " + to_string(limits.max_steps); return -1; }
+        // every step writes exactly one store (GH #995)
+        let mut w = 0;
+        while w < d.steps {
+            let bad = step_store_gap(step_word(d.stores, w));
+            if len(bad) > 0 { self.gap = "workflow " + name + " step " + to_string(w) + " " + bad; return -1; }
+            w = w + 1;
+        }
         let stray = self.stray_member(id, revision, d.steps);
         if len(stray) > 0 { self.gap = stray; return -1; }
         self.stats.push(DefStat { id: id, revision: revision, state: 1 });
@@ -533,6 +690,10 @@ locus WorkflowCatalog {
         let root = self.preflight(id, revision, "|", "", limits);
         if root < 0 { return self.refuse(self.gap, limits); }
         let rs = self.stats.get(root) or DefStat { };
+        // a definition on a part that is not built is seeded, and refused
+        // here, naming the part (GH #995)
+        let missing = self.part_missing(id, revision);
+        if len(missing) > 0 { return self.refuse(missing, limits); }
         if rs.works > limits.max_works { return self.refuse("workflow " + definition_name(id, revision) + " expands to more than max_works " + to_string(limits.max_works) + " Works", limits); }
         if rs.height > limits.max_depth { return self.refuse("workflow " + definition_name(id, revision) + " nests " + to_string(rs.height) + " levels; max_depth is " + to_string(limits.max_depth), limits); }
         self.bound.push(BoundNode {
@@ -758,7 +919,7 @@ locus WorkflowCatalog {
     fn encode() -> String {
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("format", "dna.workflow-definitions/1");
+        b.string_field("format", "dna.workflow-definitions/2");
         b.begin_array_field("workflows");
         let mut i = 0;
         while i < self.workflows.len() {
@@ -767,6 +928,7 @@ locus WorkflowCatalog {
             b.string_field("id", w.id);
             b.int_field("revision", w.revision);
             b.int_field("steps", w.steps);
+            b.string_field("stores", w.stores);
             b.string_field("title", w.title);
             b.end_object();
             i = i + 1;
@@ -804,7 +966,7 @@ locus WorkflowCatalog {
     // when read, else why not; nothing is added when it is refused.
     @unbounded
     fn decode(text: String) -> String {
-        if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/1" {
+        if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/2" {
             return "not a workflow definition document (format " + std::json::find_string_field(text, "format") + ")";
         }
         // the same rule the recipe reads under: a document that was cut off
@@ -823,6 +985,7 @@ locus WorkflowCatalog {
             if !definition_id_ok(did) { return "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + did + "`"; }
             if self.has(did, drev) { return "workflow " + dname + " is already defined"; }
             if std::str::contains(incoming, "\n" + dname + "\n") { return "the document defines workflow " + dname + " twice"; }
+            if step_words(std::json::find_string_field(e, "stores")) != std::json::find_int_field(e, "steps") { return "workflow " + dname + " names " + to_string(std::json::find_int_field(e, "steps")) + " steps and a store for " + to_string(step_words(std::json::find_string_field(e, "stores"))); }
             incoming = incoming + dname + "\n";
             it = std::json::array_next(it);
         }
@@ -833,7 +996,8 @@ locus WorkflowCatalog {
                 id: std::json::find_string_field(e, "id"),
                 revision: std::json::find_int_field(e, "revision"),
                 steps: std::json::find_int_field(e, "steps"),
-                title: std::json::find_string_field(e, "title")
+                title: std::json::find_string_field(e, "title"),
+                stores: std::json::find_string_field(e, "stores")
             });
             it = std::json::array_next(it);
         }
@@ -862,4 +1026,109 @@ locus WorkflowCatalog {
         }
         return "";
     }
+}
+
+// ---- the baseline catalog (GH #995) ------------------------------------
+//
+// The definitions DNA ships, each a chain in which every step writes one
+// store. A project's `dna/org/workflows.hl` (generated at `hale dna new`)
+// returns these plus its own; the vendored toolchain supersedes them by
+// revision, so a Task born under an old revision finishes under it and a
+// new one binds the newest (`latest`). A step the organization performs
+// itself is one leaf that `requires: "organism"`: the engine relays it to
+// the assembly (`OrganismRelay`), which writes the step's store and
+// reports the attempt (`Dna.on_step_requested`). A definition with a step
+// on a part not yet built is here too, and refused at admission naming
+// the part.
+
+// One organism step: its member key, and what it does, as a leaf.
+fn organism_leaf(c: WorkflowCatalog, id: String, step: Int, key: String, what: String) {
+    let x = c.leaf(id, 1, step, key, WorkRequest { requires: "organism", objective: what }, 1);
+}
+
+@unbounded
+fn baseline_definitions() -> WorkflowCatalog {
+    let c = WorkflowCatalog { };
+    define_baseline(c);
+    return c;
+}
+
+// The baseline, defined into `c`.
+@unbounded
+fn define_baseline(c: WorkflowCatalog) {
+    // an ask: one change prepared for review, or a person's job. The ask's
+    // own objective is bound at admission.
+    let a = c.define("ask-edit", 1, "record", "an ask: one change, prepared for review");
+    let b = c.leaf("ask-edit", 1, 0, "e", WorkRequest { requires: "edit", output_contract: "Patch" }, 1);
+    let d = c.define("ask-person", 1, "record", "an ask: a person's job");
+    let e = c.leaf("ask-person", 1, 0, "p", WorkRequest { requires: "human" }, 1);
+
+    let t = c.define("ask-triage", 1, "record record record", "an ask, triaged: what it is, then planned or split");
+    organism_leaf(c, "ask-triage", 0, "offered", "the intent offered");
+    organism_leaf(c, "ask-triage", 1, "classify", "classified: organism, appendage, product, or a person's job");
+    organism_leaf(c, "ask-triage", 2, "plan", "planned, or split");
+
+    let cd = c.define("change-deliver", 1, "record forge record genome heart record", "a change delivered: reviewed at the forge, applied, deployed, settled on the pulse");
+    organism_leaf(c, "change-deliver", 0, "candidate", "the candidate, by digest");
+    organism_leaf(c, "change-deliver", 1, "review", "a review opened at the forge, routed from the graph");
+    organism_leaf(c, "change-deliver", 2, "verdict", "the verdict pulled back");
+    organism_leaf(c, "change-deliver", 3, "apply", "the exact commit applied, pinned to the head");
+    organism_leaf(c, "change-deliver", 4, "deploy", "the deploy replaces instances");
+    organism_leaf(c, "change-deliver", 5, "settle", "settled on the pulse, or rolled back");
+
+    // proposing is the proposer's (a person's request, a concern, the
+    // record's birth): the execution ratifies what was proposed, once the
+    // Board decided it
+    let pr = c.define("practice-ratify", 1, "record record", "a proposal the Board decided, ratified and read by the hat");
+    organism_leaf(c, "practice-ratify", 0, "ratify", "ratified — the body, by digest — or declined, as the verdict bound to that digest says");
+    organism_leaf(c, "practice-ratify", 1, "hat", "what the hat read once memory held it, at which head");
+
+    let dob = c.define("deploy-observe", 1, "heart genome record", "a deploy observed: the first pulse within the lease, or rolled back");
+    organism_leaf(c, "deploy-observe", 0, "deploy", "the deploy");
+    organism_leaf(c, "deploy-observe", 1, "rollback", "rolled back when no pulse came within the lease");
+    organism_leaf(c, "deploy-observe", 2, "settle", "settled on the first pulse, or on the rollback");
+
+    let ce = c.define("concern-escalate", 1, "record", "a concern: raised, routed to its source's parent, proposed at the threshold");
+    organism_leaf(c, "concern-escalate", 0, "raise", "raised, routed to the source's parent, and at the threshold a practice proposal");
+
+    let ow = c.define("optimize-walk", 1, "record", "the optimize pass: the machinery walked on the Board's cadence");
+    organism_leaf(c, "optimize-walk", 0, "walk", "the machinery walked and the leader's proposals, each a row");
+
+    let sr = c.define("secret-rotate", 1, "vault record", "a secret rotated");
+    organism_leaf(c, "secret-rotate", 0, "rotate", "the named value rotated");
+    organism_leaf(c, "secret-rotate", 1, "recorded", "rotated by whom");
+
+    let bp = c.define("body-provision", 1, "host host memory record", "a body provisioned on a host");
+    organism_leaf(c, "body-provision", 0, "provision", "the host provisioned");
+    organism_leaf(c, "body-provision", 1, "start", "the body started");
+    organism_leaf(c, "body-provision", 2, "lease", "the lease taken");
+    organism_leaf(c, "body-provision", 3, "observed", "observed");
+}
+
+// The catalog as `hale dna definitions` prints it: every definition with
+// its revision and title, each step with its key and store, what a newer
+// revision supersedes, and what a definition is refused at admission for.
+@unbounded
+fn definitions_listing(c: WorkflowCatalog) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < c.workflow_count() {
+        let w = c.workflow_at(i);
+        i = i + 1;
+        out = out + definition_name(w.id, w.revision) + "  " + w.title + "\n";
+        let mut s = 0;
+        while s < w.steps {
+            let word = step_word(w.stores, s);
+            let store = step_store(word);
+            out = out + "  " + to_string(s) + ". " + c.step_key(w.id, w.revision, s) + "  " + (if len(store) > 0 { store } else { word }) + "\n";
+            s = s + 1;
+        }
+        let newest = c.latest(w.id);
+        if newest > w.revision { out = out + "  superseded by " + definition_name(w.id, newest) + ": a Task born under this revision finishes under it\n"; }
+        let missing = c.part_missing(w.id, w.revision);
+        let unperformed = c.unperformed(w.id, w.revision);
+        if len(missing) > 0 { out = out + "  refused at admission: " + missing + "\n"; }
+        else if len(unperformed) > 0 { out = out + "  refused at admission: " + unperformed + "\n"; }
+    }
+    return out;
 }

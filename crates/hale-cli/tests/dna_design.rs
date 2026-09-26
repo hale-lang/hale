@@ -269,7 +269,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(list.contains("operating — 6 seeded practice(s), each its own Review"), "{list}");
     assert_eq!(family_ids(&list, "operating").len(), 6, "{list}");
     let rows = journal(&app);
-    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 14, "fourteen proposals: eight design, six operating");
+    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 15, "fifteen proposals: the purpose (GH #995), eight design, six operating");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 0, "nothing ratified by the toolchain");
     let digest_of = |id: &str| -> String {
         journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap_or_else(|| panic!("no review.requested for {id}"))

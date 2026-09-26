@@ -225,7 +225,7 @@ main locus App {
         dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "p=service" };
     }
     run() {
-        std::test::assert_eq_str(self.cat.define("post", 1, 1, "post one entry"), "", "post");
+        std::test::assert_eq_str(self.cat.define("post", 1, "record", "post one entry"), "", "post");
         std::test::assert_eq_str(self.cat.leaf("post", 1, 0, "p", dna::WorkRequest { objective: "the March entry" }, 1), "", "p");
         let x = self.cat.expand("t1", "post", 1, self.limits);
         std::test::assert(x.ok, "t1 expands: " + x.why);

@@ -157,15 +157,16 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         let _ = host.kill();
         let _ = host.wait();
     };
-    // the eight seeded design practices and the six operating ones are
-    // ideas too (GH #596 C, #994), plus this proposal; wait for the
+    // the declared purpose (GH #995), the eight seeded design practices
+    // and the six operating ones are ideas too (GH #596 C, #994), plus
+    // this proposal; wait for the
     // nerves as well
     let nerves_up = || std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default().contains("the organization reads its facts from the nerves");
     let tailed = trace::wait_until("dna dev: the spine projected the record and the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(500), || {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "15" && nerves_up()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "16" && nerves_up()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();

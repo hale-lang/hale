@@ -928,25 +928,55 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
-    // GH #596 C, #994: `design` or `operating` names every pending seeded
-    // practice of that family; each is decided by its own verdict, in
-    // turn — a convenience over the individual Reviews, never a batch
-    // object in the record
+    // GH #596 C, #994: a group (`design`, `operating`, `purpose`, a
+    // repository's holes…) names every pending Review in it; each is
+    // decided by its own verdict — a convenience over the individual
+    // Reviews, never a batch object in the record. Every verdict is written
+    // first and the answers are waited for once (GH #995): each decision is
+    // an execution the organization runs, and one verdict waiting on the
+    // ones before it would wait on their executions too.
     if seeded_group(id) {
         let ids = p.review_ids();
         let n = list_len(ids);
+        let before = p.rows();
         let mut out = "";
+        let mut asked = "";
+        let mut count = 0;
         let mut i = 0;
         while i < n {
             let r = p.review_of(nth(ids, i));
             if r.state == "pending" && r.group == id {
-                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", no_wait, memory);
+                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", true, memory);
                 if !one.ok { return one; }
-                out = out + one.text;
+                asked = asked + r.id + "\n";
+                count = count + 1;
+                if no_wait { out = out + one.text; }
             }
             i = i + 1;
         }
-        if len(out) == 0 { return fail("no pending " + id + " Review"); }
+        if len(asked) == 0 { return fail("no pending " + id + " Review"); }
+        if no_wait { return answer(out); }
+        let deadline = std::time::now() + (if local { 20 } else { 60 }) + 5 * count;
+        let mut left = asked;
+        while len(left) > 0 {
+            if !local { let s = sync_record(root, memory); }
+            let q = open_projection(root, seed, "", memory);
+            let mut still = "";
+            let mut rest = left;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let rid = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+                let e = find_after(q, before, " review.settled review.refused ", rid);
+                if e.seq < 0 { still = still + rid + "\n"; }
+                else if e.kind == "review.settled" { out = out + "review " + rid + " settled: " + e.body + "\n"; }
+                else { out = out + "review " + rid + " refused the verdict: " + e.body + "\n"; }
+            }
+            left = still;
+            if len(left) == 0 { break; }
+            if std::time::now() > deadline { return fail(out + "wrote " + to_string(count) + " verdict(s), but the organism journaled no answer in time for: " + std::str::replace(dna::trim_nl(left), "\n", ", ")); }
+            std::time::sleep(if local { 250ms } else { 1000ms });
+        }
         return answer(out);
     }
     let r = p.review_of(id);
