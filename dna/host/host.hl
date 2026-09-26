@@ -490,7 +490,8 @@ locus NodeRelay {
                 verdict: dna::native_json_string(body, "verdict"),
                 reviewer: dna::native_json_string(body, "reviewer"),
                 authority: dna::native_json_string(body, "authority"),
-                comment: dna::native_json_string(body, "comment")
+                comment: dna::native_json_string(body, "comment"),
+                evidence: dna::native_json_string(body, "evidence")
             };
         } else if kind == "observed" {
             dna::ExpressionObserved <- dna::Observation {
@@ -603,7 +604,7 @@ locus NodeRelay {
                 request.request_id == r.entity && edge_admits_here(self.root, request)
             } else { true };
             let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "hold.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested" || r.kind == "attempt.outcome_requested");
-            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "hold.requested" { " hold.proposed hold.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else if r.kind == "attempt.outcome_requested" { " attempt.outcome attempt.outcome_refused " } else { " review.settled review.refused " };
+            let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "hold.requested" { " hold.proposed hold.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else if r.kind == "attempt.outcome_requested" { " attempt.outcome attempt.outcome_refused " } else { " review.settled review.refused review.signed " };
             if requested && trust == "signed" && !row_verified(self.root, r.digest) {
                 // Verification gates EVERY attempt. Even when writing the refusal
                 // failed, an expired retry marker must never admit an unsigned row.

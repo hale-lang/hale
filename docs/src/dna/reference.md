@@ -50,7 +50,9 @@ hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (offline)
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]
-                             [--comment <c>] [--digest <sha>] [--no-wait]
+                             [--comment <c>] [--digest <sha>] [--evidence <receipt>[,<receipt>…]] [--no-wait]
+                             a routed Review admits only holders of the positions it requires;
+                             --evidence cites filed gate runs, checked against the candidate
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna fill <position> <holder> [project] [--as <who>]
                              ask the organization to propose who holds a position: a Board Review in

@@ -602,7 +602,8 @@ repository:
   candidate re-runs the whole gate (`mutation.apply_retried`, then
   `review.settled` again so a waiting `hale dna review` hears it):
   the Review readmits only the same approval in full — digest,
-  authority, independence, the word `approve` — and refuses any other
+  standing (a required position, or with none the authority),
+  independence, cited evidence, the word `approve` — and refuses any other
   verdict; a Review approved and never applied is rehydrated settled,
   so the road survives a restart.
 - **A person's job (GH #596 W; GH #604 rules 4 and 5).** A plan of kind
@@ -1181,6 +1182,8 @@ record's.
 | `evidence.<step>` | record | a verification step's output, kept by the digest the row names |
 | `evidence.magnitude` | record | the measured magnitude of the change |
 | `review.requested` | record | the Review: question, authority, candidate, disposition, evidence, diffs |
+| `review.routed` | record | what a routed Review requires: `definition`, `signers` (`<position>=<holder>,…`), `gates`, `fallback`; written when it opens and again when its holders change (the latest is the requirement) |
+| `review.signed` | record | an approval a routed Review admitted that settled nothing: `by`, `awaiting` |
 | `review.settled` / `review.refused` | record | the verdict that decided it, or why one was not admitted |
 | `review.reasoned` | record | the deciding verdict's comment — a person's note or the Leader's reasoning — right after `review.settled` (`hale dna review <id>` renders it as `why:`) |
 | `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
@@ -2569,6 +2572,66 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   `constitutional`, `process-policy` or `topology`, requires the
   Board; a change outside the grant (disposition `escalate`) requires
   the Board; everything else inside the grant requires the Leader.
+  That required authority is the **fallback**: it decides only a Review
+  whose route defines no signers.
+- **Signers from the route (GH #1089).** A Review is opened by a
+  definition, and the definition says what it requires: change-deliver's
+  Review (a mutation's, a prepared source's) requires what `hale dna
+  route` computes for the paths its candidate changes against its base;
+  practice-ratify's (every proposal the Board decides — a practice, a
+  hold, a hole, a binding, an edge) requires the `board` position under
+  the purpose. The organization asks memory's graph when it opens the
+  Review and records the answer once as `review.routed <review>`
+  {`definition`, `signers`, `gates`}; that row is what the Review
+  requires from then on, a restart included. `signers` is every position
+  the route names with the holders it has then,
+  `<position>=<holder>,<holder> …`; `gates` is the gates guarding the
+  change, and `fallback` whether the route left some path to the
+  fallback. A route that names no held position defines no signers, and
+  nothing is written: with no memory, or before anyone holds a signing
+  position (the Board's own first holder is ratified this way), the
+  Review keeps its required authority. The Review is not opened when the
+  record does not take its routing. With signers, **a verdict is
+  admitted only from a holder of a required position**, whatever
+  authority it claims (`reviewer <who> holds no position this Review
+  requires (<positions>)`) — or from a member of an affected owner for an
+  owners change (GH #664), or, **where the route left a path to the
+  fallback, from one claiming the Review's own required authority**; a
+  verdict counts toward every requirement it meets. The author is still
+  refused; one rejection or revision from a required position settles
+  it; **approval settles only once every required position has
+  approved** — one holder of two positions signs for both — every
+  affected owner, the required authority where the route left it a path,
+  and **every gate has a passing run at the candidate cited as
+  evidence**. An approval that settles nothing is answered all the same,
+  `review.signed <review> {by, awaiting}`, and `hale dna review <id>`
+  shows what it awaits. **Holders are routed again**: while a routed
+  Review is open the organization reads who holds its positions on each
+  reconciliation, and when that changed — a position filled after it
+  opened, a holder retired — writes `review.routed` again (the latest
+  row is the requirement) and the Review takes the new holders; the
+  positions stay the route's, and what was signed stays signed. The
+  Leader never decides a routed Review. **Evidence** is a verdict's
+  `evidence`: filed receipts, by digest (64 hex digits, `sha256:`
+  optional), each a gate run — `{kind: "gate.run", gate, sha,
+  conclusion, url}`. Each is checked against the candidate: a word that
+  is no digest, a digest nobody filed, a receipt that is no gate run, a
+  run of a gate guarding nothing the change touches, a run at another
+  commit (**stale**) or a run whose conclusion is not `success`
+  (**rejected**) refuses the verdict whole, saying which. A gate run is
+  attested by whoever filed its receipt; binding it to the gate's own
+  runner is GH #1161. A prepared source's Review (an organization change)
+  takes the route's positions and no gate: its verdict is a typed command
+  that cites no run. A command verdict (`command_id`) is decided once by
+  the same rules: redelivered after a lost response, or asked of the
+  Review a restart rebuilds from `review.command_decided`, it answers
+  the decision it made and writes nothing. The typed `dna.review.verdict`
+  command applies the same standing, over the latest `review.routed`
+  row, in every Review profile (a practice, a binding, an edge, a
+  prepared source), naming its reviewer by the principal; the plain path
+  (`hale dna review <id> approve --as <who>`) names its reviewer as the
+  row's writer says, so under `dna.trust = signed` the position check is
+  as strong as the writer's signature.
 - **Owners (stage B2, GH #664).** A shared record's org chart has
   one owner per position: the firm whose controller admits intents
   for it. The map is the genome's file `dna/org/owners` (`org =
@@ -3615,7 +3678,7 @@ The live half is memory's, projected from the record by the spine
   `hale dna route [--json] (<path>… | --diff <range>)` (the host verb
   `route`, reading memory as the head, over
   `graph_perspective("routing")`; the routing is
-  `dna/operations/graph_route.hl`). A path is the repository's: one
+  `dna/core/route.hl`). A path is the repository's: one
   given from a subdirectory is taken from there, and the organization's
   root is the nearest directory holding `dna/org` (a seed's own
   `hale.toml` is not it). A path names a node — a contract (its file, or
@@ -3637,14 +3700,15 @@ The live half is memory's, projected from the record by the spine
   gate guarding a node the change touches. A consumer no position reviews
   is listed as such (`unsigned`), never dropped; a path that names no
   node, or whose node no position signs (or operates), is left to the
-  fallback — the Review's own authority today, the task routers of GH
+  fallback — the Review's own required authority, the task routers of GH
   #697 when they exist, which the route names. Text lists `signed by`,
   `against` (`no gate guards it` when no gate does), `reviewed by no
   position` and `left to the fallback, <what it falls back to>`, each
   signer with its holders and why it signs; `--json` is one object:
   `signers` (`position`, `because`), `evidence` (gate ids), `unsigned`
-  (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. Reviews do not yet take their signers from it; that wiring
-  is its own change.
+  (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. A
+  Review takes its signers and gates from the same computation when it
+  opens (**Signers from the route**, above).
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb
   `show`. It takes `--json` and at most one project directory, and

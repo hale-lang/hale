@@ -177,7 +177,7 @@ fn main() {
         return;
     }
     if verb == "verdict" {
-        ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"), flag(a, "--request-id"), memory);
+        ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), flag(a, "--evidence"), has_flag(a, "--no-wait"), flag(a, "--request-id"), memory);
     } else if verb == "raise" {
         ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)), memory);
     } else if verb == "concern-raise" {

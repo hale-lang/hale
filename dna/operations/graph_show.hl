@@ -27,40 +27,6 @@
 //   api  --NATS: protocol.yaml-->  node  (carried by nats)
 //   compose runs { postgres, nats, api, brain, node }
 
-// How a node is shown: the last segment of its name.
-fn show_name(id: String) -> String {
-    let colon = std::str::index_of(id, ":");
-    return ingest_base(if colon >= 0 { id[(colon + 1)..len(id)] } else { id });
-}
-
-// A JSON array of strings, one per line.
-@unbounded
-fn show_strings(raw: String) -> String {
-    let mut out = "";
-    if !std::str::starts_with(std::str::trim(raw), "[") { return out; }
-    let mut it = std::json::array_first(raw);
-    while !it.done {
-        let e = std::str::trim(it.element);
-        if len(e) >= 2 && std::str::starts_with(e, "\"") { out = out + std::json::unescape_string(e[1..(len(e) - 1)]) + "\n"; }
-        it = std::json::array_next(it);
-    }
-    return out;
-}
-
-// Lines as a `, `-joined list, each shown by `show_name` when `names`.
-@unbounded
-fn show_list(lines: String, names: Bool) -> String {
-    let mut out = "";
-    let mut rest = lines;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let v = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
-        out = out + (if len(out) > 0 { ", " } else { "" }) + (if names { show_name(v) } else { v });
-    }
-    return out;
-}
-
 // The org chart, from `graph_perspective("org")`.
 @unbounded
 fn show_org(json: String) -> String {
@@ -72,7 +38,7 @@ fn show_org(json: String) -> String {
         let under = std::json::find_string_field(it.element, "under");
         if !std::str::contains(parents, "\n" + under + "\n") {
             parents = parents + under + "\n";
-            let shown = if len(under) == 0 { "(unplaced)" } else { show_name(under) };
+            let shown = if len(under) == 0 { "(unplaced)" } else { dna::show_name(under) };
             if graph_id_kind(under) != "purpose" && std::str::cp_count(shown) > width { width = std::str::cp_count(shown); }
         }
         it = std::json::array_next(it);
@@ -85,7 +51,7 @@ fn show_org(json: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let under = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        let shown = if len(under) == 0 { "(unplaced)" } else { show_name(under) };
+        let shown = if len(under) == 0 { "(unplaced)" } else { dna::show_name(under) };
         let mut roles = "";
         let mut p = std::json::array_first(json);
         while !p.done {
@@ -93,9 +59,9 @@ fn show_org(json: String) -> String {
                 let name = std::json::find_string_field(p.element, "name");
                 let prefix = (if len(under) > 0 { under[(std::str::index_of(under, ":") + 1)..len(under)] } else { "" }) + "/";
                 let mut role = if std::str::starts_with(name, prefix) { name[len(prefix)..len(name)] } else { name };
-                let reviews = show_list(show_strings(std::json::find_field_raw(p.element, "reviews")), true);
+                let reviews = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "reviews")), true);
                 if len(reviews) > 0 { role = role + "(" + reviews + ")"; }
-                let holders = show_list(show_strings(std::json::find_field_raw(p.element, "holders")), false);
+                let holders = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "holders")), false);
                 if len(holders) > 0 { role = role + " [" + holders + "]"; }
                 if graph_id_kind(under) == "purpose" { out = out + "  " + role + "\n"; }
                 else { roles = roles + (if len(roles) > 0 { ", " } else { "" }) + role; }
@@ -115,18 +81,18 @@ fn show_processes(json: String) -> String {
     let mut it = std::json::array_first(std::json::find_field_raw(json, "meets"));
     while !it.done {
         let e = it.element;
-        let outside = show_list(show_strings(std::json::find_field_raw(e, "outside")), false);
-        let consumers = show_list(show_strings(std::json::find_field_raw(e, "consumers")), true);
+        let outside = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "outside")), false);
+        let consumers = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "consumers")), true);
         let from = if len(outside) > 0 && len(consumers) > 0 { outside + ", " + consumers } else if len(outside) > 0 { outside } else if len(consumers) > 0 { consumers } else { "(nobody)" };
-        let servers = show_list(show_strings(std::json::find_field_raw(e, "servers")), true);
+        let servers = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "servers")), true);
         let via = std::json::find_string_field(e, "via");
-        let carriers = show_list(show_strings(std::json::find_field_raw(e, "carriers")), true);
-        out = out + from + "  --" + (if len(via) > 0 { via + ": " } else { "" }) + show_name(std::json::find_string_field(e, "contract")) + "-->  " + (if len(servers) > 0 { servers } else { "(nobody here)" }) + (if len(carriers) > 0 { "  (carried by " + carriers + ")" } else { "" }) + "\n";
+        let carriers = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "carriers")), true);
+        out = out + from + "  --" + (if len(via) > 0 { via + ": " } else { "" }) + dna::show_name(std::json::find_string_field(e, "contract")) + "-->  " + (if len(servers) > 0 { servers } else { "(nobody here)" }) + (if len(carriers) > 0 { "  (carried by " + carriers + ")" } else { "" }) + "\n";
         it = std::json::array_next(it);
     }
     let mut r = std::json::array_first(std::json::find_field_raw(json, "runs"));
     while !r.done {
-        out = out + show_name(std::json::find_string_field(r.element, "deployment")) + " runs { " + show_list(show_strings(std::json::find_field_raw(r.element, "processes")), true) + " }\n";
+        out = out + dna::show_name(std::json::find_string_field(r.element, "deployment")) + " runs { " + dna::show_list(dna::show_strings(std::json::find_field_raw(r.element, "processes")), true) + " }\n";
         r = std::json::array_next(r);
     }
     return out;

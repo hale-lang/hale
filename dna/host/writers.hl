@@ -907,23 +907,25 @@ fn practice_command_verb(root: String, seed: String, sub: String, name: String, 
     return practice_verb(root, seed, sub, name, text, because, supersedes, who_flag, memory);
 }
 
-fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
+fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, evidence: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
+    if len(evidence) > 0 && seeded_group(id) { return fail("--evidence names gate runs at one candidate; a group's Reviews are decided one by one"); }
     if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && !seeded_group(id) {
         let cli = GovernanceCli { root: root, memory: memory };
         let selected = cli.review_profile(id);
         if !selected.ok { return fail("cannot determine native Review profile: " + selected.error); }
         if selected.supported {
+            if len(evidence) > 0 { return fail("--evidence names gate runs, and a Practice Review has no gate"); }
             return cli.verdict(id, verdict, reviewer_flag, authority_flag, comment, if len(digest_flag) > 0 { digest_flag } else { selected.subject_digest }, request_id, no_wait);
         }
     }
     if len(request_id) > 0 { return fail("--request-id requires a configured native Practice Review command; design batches and unrelated Reviews keep their existing paths"); }
-    return verdict_verb(root, seed, id, verdict, reviewer_flag, authority_flag, comment, digest_flag, no_wait, memory);
+    return verdict_verb(root, seed, id, verdict, reviewer_flag, authority_flag, comment, digest_flag, evidence, no_wait, memory);
 }
 
 // ---- a verdict ------------------------------------------------------
 
 @unbounded
-fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, memory: dna::Memory) -> Answer {
+fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, evidence: String, no_wait: Bool, memory: dna::Memory) -> Answer {
     if !(verdict == "approve" || verdict == "revise" || verdict == "reject" || verdict == "abstain") {
         return fail("review: verdict `" + verdict + "` is not one of approve | revise | reject | abstain");
     }
@@ -950,7 +952,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         while i < n {
             let r = p.review_of(nth(ids, i));
             if r.state == "pending" && r.group == id {
-                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", true, memory);
+                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", "", true, memory);
                 if !one.ok { return one; }
                 asked = asked + r.id + "\n";
                 count = count + 1;
@@ -971,9 +973,10 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
                 let nl = std::str::index_of(rest, "\n");
                 let rid = rest[0..nl];
                 rest = rest[(nl + 1)..len(rest)];
-                let e = find_after(q, before, " review.settled review.refused ", rid);
+                let e = find_after(q, before, " review.settled review.refused review.signed ", rid);
                 if e.seq < 0 { still = still + rid + "\n"; }
                 else if e.kind == "review.settled" { out = out + "review " + rid + " settled: " + e.body + "\n"; }
+                else if e.kind == "review.signed" { out = out + "review " + rid + " signed by " + dna::native_json_string(e.body, "by") + "; it awaits " + dna::native_json_string(e.body, "awaiting") + "\n"; }
                 else { out = out + "review " + rid + " refused the verdict: " + e.body + "\n"; }
             }
             left = still;
@@ -999,6 +1002,8 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     b.string_field("reviewer", reviewer);
     b.string_field("authority", authority);
     b.string_field("comment", comment);
+    // GH #1089: the gate runs the verdict cites, filed receipts by digest
+    if len(evidence) > 0 { b.string_field("evidence", dna::trim_nl(std::str::replace(evidence, ",", " "))); }
     b.end_object();
     if local {
         // GH #682, #986: the row is the fact; the host beside the organism
@@ -1019,9 +1024,11 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, seed, "", memory);
-        let e = find_after(q, before, " review.settled review.refused ", id);
+        let e = find_after(q, before, " review.settled review.refused review.signed ", id);
         if e.seq >= 0 {
             if e.kind == "review.settled" { return answer("review " + id + " settled: " + e.body + "\n"); }
+            // GH #1089: a required position signed, and the Review awaits the rest
+            if e.kind == "review.signed" { return answer("review " + id + " signed by " + dna::native_json_string(e.body, "by") + "; it awaits " + dna::native_json_string(e.body, "awaiting") + "\n"); }
             return answer("review " + id + " refused the verdict: " + e.body + "\n");
         }
         if std::time::now() > deadline { return fail("wrote the verdict, but the organism journaled no answer for `" + id + "` in time"); }

@@ -1,4 +1,4 @@
-// dna/operations/graph_route.hl — a change set to the positions that must
+// dna/core/route.hl — a change set to the positions that must
 // sign it (GH #1087).
 //
 // Routing is read from the graph, never guessed: the paths a change
@@ -24,7 +24,7 @@
 // guarding a node the change touches. A consumer no position reviews is
 // said, not dropped; a path that names no node, or whose nodes no
 // position signs, is left to the fallback — the Review's own authority
-// today, the task routers of GH #697 when they exist.
+// (review.hl), the task routers of GH #697 when they exist.
 
 type Route {
     signers: String = ""; // `<position>\t<because>` per line, first reason kept
@@ -41,7 +41,7 @@ fn route_pairs(raw: String) -> String {
     while !it.done {
         let pair = show_strings(it.element);
         let nl = std::str::index_of(pair, "\n");
-        if nl > 0 { out = out + pair[0..nl] + "\t" + dna::trim_nl(pair[(nl + 1)..len(pair)]) + "\n"; }
+        if nl > 0 { out = out + pair[0..nl] + "\t" + trim_nl(pair[(nl + 1)..len(pair)]) + "\n"; }
         it = std::json::array_next(it);
     }
     return out;
@@ -262,3 +262,162 @@ fn route_holders(json: String, position: String) -> String {
 // as law.
 @unbounded
 fn route_bound(json: String) -> String { return route_pairs(std::json::find_field_raw(json, "bound")); }
+
+// ---- what a Review requires, from its route (GH #1089) ----------------------
+//
+// A Review a definition opens records who must sign it and the gates whose
+// runs are its evidence, as the route computes them for its candidate. A
+// signer is a position with the holders it has when the Review opens,
+// `<position>=<holder>,<holder>`, and every one must approve; a position
+// nobody holds is required all the same, and keeps the Review open until
+// its holders are routed again (the organization re-routes an open Review
+// when who holds its positions changes). A route that names no held
+// position defines no signers: the Review falls back to its own required
+// authority, which is how an organization with no Board holder yet
+// ratifies the hold that gives it one. A route that signs some paths and
+// leaves others to the fallback requires both: every position, and an
+// approval carrying the Review's own required authority.
+
+type RouteRequirement {
+    signers: String = ""; // `<position>=<holder>,<holder>`, space-separated; "" is the fallback
+    gates: String = ""; // the gate ids whose passing run at the candidate is its evidence, space-separated
+    fallback: Bool = false; // some path is left to the Review's own required authority as well
+    recorded: Bool = true; // false when the record did not take the routing: the Review is not opened
+}
+
+// The targets of the bound practices ratified as law, one per line: a
+// practice's receipt says whether it was ratified as law (`law: true`) or
+// as advice, which memory's binding does not (GH #1087 review, G3).
+@unbounded
+fn route_law(bound: String, receipts: Receipts) -> String {
+    let mut out = "";
+    let mut rest = bound;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        let idea = line[0..tab];
+        let target = line[(tab + 1)..len(line)];
+        let raw = if std::str::starts_with(idea, "sha256:") { idea[7..len(idea)] } else { idea };
+        if std::json::find_bool_field(receipts.read(raw), "law") && !route_has(out, target) { out = out + target + "\n"; }
+    }
+    return out;
+}
+
+// The holders of `position`, `,`-joined, from the routing query's holds.
+@unbounded
+fn route_held_by(json: String, position: String) -> String {
+    let r = Router { };
+    r.holds = route_pairs(std::json::find_field_raw(json, "holds"));
+    let mut out = "";
+    let mut rest = r.related(r.holds, position, false);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        out = out + (if len(out) > 0 { "," } else { "" }) + rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return out;
+}
+
+// What a Review of `r` requires over the routing query's answer `json`.
+@unbounded
+fn route_requirement(json: String, r: Route) -> RouteRequirement {
+    let mut signers = "";
+    let mut held = false;
+    let mut rest = r.signers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let position = line[0..std::str::index_of(line, "\t")];
+        let holders = route_held_by(json, position);
+        if len(holders) > 0 { held = true; }
+        signers = signers + (if len(signers) > 0 { " " } else { "" }) + position + "=" + holders;
+    }
+    if !held { return RouteRequirement { }; }
+    let fallback = len(r.fallback) > 0;
+    let mut gates = "";
+    let mut g = r.evidence;
+    while len(g) > 0 {
+        let nl = std::str::index_of(g, "\n");
+        gates = gates + (if len(gates) > 0 { " " } else { "" }) + g[0..nl];
+        g = g[(nl + 1)..len(g)];
+    }
+    return RouteRequirement { signers: signers, gates: gates, fallback: fallback };
+}
+
+// `signers` with each position's holders read again from the routing
+// query's answer: the positions a Review requires stay the route's, and
+// who holds them is who holds them now.
+@unbounded
+fn signers_held_now(json: String, signers: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while len(nth_word(signers, i)) > 0 {
+        let entry = nth_word(signers, i);
+        let eq = std::str::index_of(entry, "=");
+        let position = if eq > 0 { entry[0..eq] } else { entry };
+        out = out + (if len(out) > 0 { " " } else { "" }) + position + "=" + route_held_by(json, position);
+        i = i + 1;
+    }
+    return out;
+}
+
+// The Board's requirement: the `board` position under the purpose, with
+// its holders — what practice-ratify's Review requires. None while nobody
+// holds it (the fallback).
+@unbounded
+fn board_requirement(json: String) -> RouteRequirement {
+    let holders = route_held_by(json, "position:board");
+    if len(holders) == 0 { return RouteRequirement { }; }
+    return RouteRequirement { signers: "position:board=" + holders };
+}
+
+// ---- how the graph's names are shown ---------------------------------------
+
+// The last segment of a path.
+@unbounded
+fn ingest_base(path: String) -> String {
+    let mut rest = path;
+    let mut slash = std::str::index_of(rest, "/");
+    while slash >= 0 {
+        rest = rest[(slash + 1)..len(rest)];
+        slash = std::str::index_of(rest, "/");
+    }
+    return rest;
+}
+
+// How a node is shown: the last segment of its name.
+fn show_name(id: String) -> String {
+    let colon = std::str::index_of(id, ":");
+    return ingest_base(if colon >= 0 { id[(colon + 1)..len(id)] } else { id });
+}
+
+// A JSON array of strings, one per line.
+@unbounded
+fn show_strings(raw: String) -> String {
+    let mut out = "";
+    if !std::str::starts_with(std::str::trim(raw), "[") { return out; }
+    let mut it = std::json::array_first(raw);
+    while !it.done {
+        let e = std::str::trim(it.element);
+        if len(e) >= 2 && std::str::starts_with(e, "\"") { out = out + std::json::unescape_string(e[1..(len(e) - 1)]) + "\n"; }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// Lines as a `, `-joined list, each shown by `show_name` when `names`.
+@unbounded
+fn show_list(lines: String, names: Bool) -> String {
+    let mut out = "";
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let v = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        out = out + (if len(out) > 0 { ", " } else { "" }) + (if names { show_name(v) } else { v });
+    }
+    return out;
+}

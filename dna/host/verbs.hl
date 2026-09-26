@@ -461,12 +461,54 @@ fn indent_lines(text: String, prefix: String) -> String {
     return out;
 }
 
+// The `review.routed` body of a Review (GH #1089), "" when its route
+// named no held position.
+@unbounded
+fn routed_of(p: Projection, id: String) -> String {
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "review.routed" && e.entity == id { return e.body; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// `<position>=<holder>,<holder> …` as `position (holder, holder), …`.
+@unbounded
+fn signers_shown(signers: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while len(dna::nth_word(signers, i)) > 0 {
+        let w = dna::nth_word(signers, i);
+        let eq = std::str::index_of(w, "=");
+        let held = std::str::replace(w[(eq + 1)..len(w)], ",", ", ");
+        out = out + (if i > 0 { ", " } else { "" }) + w[0..eq] + " (" + (if len(held) > 0 { held } else { "held by nobody" }) + ")";
+        i = i + 1;
+    }
+    return out;
+}
+
 @unbounded
 fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     let r = p.review_of(id);
     if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
     let mut out = "review " + id + " [" + r.state + "]: " + r.question + "\n";
-    out = out + "  needs " + r.required_authority + " · candidate " + r.subject_digest + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
+    // GH #1089: a routed Review names its signers and gates, not an authority
+    let routed = routed_of(p, id);
+    let signers = dna::native_json_string(routed, "signers");
+    let gates = dna::native_json_string(routed, "gates");
+    out = out + "  needs " + (if len(signers) > 0 { "every one of " + signers_shown(signers) } else { r.required_authority }) + " · candidate " + r.subject_digest + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
+    if len(gates) > 0 { out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ") + " at the candidate, cited as --evidence <receipt> (a filed `gate.run` document)\n"; }
+    // what it still awaits, as its last signature said
+    let mut awaiting = "";
+    let mut k = 0;
+    while k < p.rows() {
+        let e = p.row(k);
+        if e.kind == "review.signed" && e.entity == id { awaiting = dna::native_json_string(e.body, "awaiting"); }
+        k = k + 1;
+    }
+    if len(signers) > 0 && r.state == "pending" && len(awaiting) > 0 { out = out + "  awaits " + std::str::replace(awaiting, " ", ", ") + "\n"; }
     if r.refusal_count > 0 { out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: "); }
     if r.has_reasoned { out = out + "  why:\n" + indent_lines(dna::trim_nl(r.reasoned), "    "); }
     if !r.is_mutation {
@@ -492,7 +534,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         i = i + 1;
     }
     out = out + "  receipts: refs/dna/receipts/<digest> (git cat-file -p)\n\n";
-    out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]\n";
+    out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]" + (if len(gates) > 0 { " [--evidence <receipt>]" } else { "" }) + "\n";
     if iris {
         if len(r.diff_json) == 0 { return fail("--iris: this review has no semantic diff document"); }
         let doc = receipt_read(p.root, r.diff_json);
