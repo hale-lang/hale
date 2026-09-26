@@ -16,7 +16,11 @@
 // no bus pump between its call and its answer. A rate-limited call is
 // backed off inside the attempt — a bounded, doubling wait — and every
 // wait is recorded as evidence of its own, so the attempt's cost in time
-// is in the record beside its cost in tokens.
+// is in the record beside its cost in tokens, and the lease is renewed
+// through the lease hand before each wait, so the Work is not lost to
+// another leg mid-wait. The model is sent the render alone: the hat is
+// structure, the leg renders it, and the hat's digest is the context
+// digest on every row of evidence (the tape's key).
 import ".." as dna;
 
 // The evidence of one call, as the owner's `journal_calls` reads it.
@@ -85,23 +89,25 @@ locus ModelPerformer {
     }
     fn kind() -> String { return "model"; }
     fn takes(performer_kind: String) -> Bool { return dna::word_in(performer_kind, self.kinds); }
-    // The wait as evidence: a call that was not made, saying why and for how long.
-    fn waited(brief: Brief, refused: String, ms: Int) {
+    // The wait as evidence: a call that was not made, saying why, for how
+    // long, and whether the lease was kept meanwhile.
+    fn waited(brief: Brief, refused: String, ms: Int, renewed: String) {
         self.on_called(dna::ModelEvidence {
-            attempt_id: brief.attempt_id, adapter: "legs", backend: self.router.last_backend,
-            prompt_digest: prompt_digest(brief.rendered), context_digest: dna::digest_of(brief.hat),
+            attempt_id: brief.attempt_id, adapter: "legs-router", backend: self.router.last_backend,
+            prompt_digest: prompt_digest(brief.rendered), context_digest: brief.hat_digest,
             elapsed: to_string(ms) + "ms", retry_of: brief.attempt_id, data_class: std::json::find_string_field(brief.hat, "data_class"),
-            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused
+            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused + renewed
         });
     }
-    // One call through the router, its answer as evidence.
+    // One call through the router, its answer as evidence: the split of
+    // tokens as the backend reported it (what its own `ModelCalled` says).
     fn asked(brief: Brief, req: dna::ModelRequest) -> dna::ModelResult {
         let t0 = std::time::monotonic();
         let r = self.router.ask(req);
         self.on_called(dna::ModelEvidence {
             attempt_id: brief.attempt_id, adapter: "legs-router", backend: r.backend, requested_model: r.model, reported_model: r.model,
-            prompt_digest: req.prompt_digest, context_digest: dna::digest_of(req.context), knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
-            response_digest: if r.ok { dna::digest_of(r.output) } else { "" }, input_tokens: r.tokens, output_tokens: 0, cost_micros: r.cost_micros,
+            prompt_digest: req.prompt_digest, context_digest: brief.hat_digest, knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            response_digest: if r.ok { dna::digest_of(r.output) } else { "" }, input_tokens: r.input_tokens, output_tokens: r.output_tokens, cost_micros: r.cost_micros,
             elapsed: to_string(std::time::monotonic() - t0), retry_of: req.retry_of, data_class: req.data_class, refused: r.refused
         });
         return r;
@@ -112,10 +118,11 @@ locus ModelPerformer {
         self.calls = "";
         self.waited_ms = 0;
         let class = std::json::find_string_field(brief.hat, "data_class");
+        // the render alone reaches the model; the hat stays structure
         let mut req = dna::ModelRequest {
             attempt_id: brief.attempt_id, role: role_of(brief.performer_kind),
             prompt: brief.rendered, prompt_digest: prompt_digest(brief.rendered),
-            context: brief.hat, context_bytes: len(brief.hat) + len(brief.rendered),
+            context: "", context_bytes: len(brief.rendered),
             knowledge_bindings: std::json::find_string_field(brief.hat, "knowledge_bindings"),
             tool_grant: std::json::find_string_field(brief.hat, "tool_grant"),
             data_class: if len(class) > 0 { class } else { "internal" },
@@ -125,7 +132,9 @@ locus ModelPerformer {
         let mut tries = 0;
         let mut wait = self.backoff_ms;
         while !r.ok && rate_limited(r.refused) && tries < self.retries {
-            self.waited(brief, r.refused, wait);
+            // the lease outlives the wait: renewed for the wait and a margin
+            let kept = hands.lease.renew(wait / 1000 + 60);
+            self.waited(brief, r.refused, wait, if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error });
             sleep_for_ms(wait);
             self.waited_ms = self.waited_ms + wait;
             wait = wait * 2;

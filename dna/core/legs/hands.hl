@@ -44,6 +44,29 @@ interface ToolchainHand {
 }
 interface DeployHand { fn express(revision: String) -> HandResult; }
 interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
+// The lease the brief is held under: a performer that waits — a
+// backed-off call — keeps it alive rather than losing the Work to
+// another leg mid-wait. The verb points it at the lease per run;
+// outside a run there is no lease to renew. Renewed through the head
+// under the same holder and token, counted per renewal so each is its
+// own act.
+locus HeadLease {
+    params { api: String = ""; attempt: String = ""; holder: String = ""; token: Int = 0; renewals: Int = 0; }
+    @unbounded
+    fn renew(ttl: Int) -> HandResult {
+        if len(self.attempt) == 0 { return HandResult { error: "no lease is held" }; }
+        self.renewals = self.renewals + 1;
+        let head = Head { api: self.api };
+        if !head.attach() { return HandResult { error: head.error }; }
+        let request = "work-renew:" + self.attempt + ":" + to_string(self.token) + ":" + to_string(ttl) + ":" + to_string(self.renewals);
+        let reply = head.submit(request, "dna.attempt.renew", "dna.attempt", self.attempt, head.lease_conditions(self.holder, self.token), "{\"ttl\": " + to_string(ttl) + "}");
+        if !reply.ok { return HandResult { error: reply.error }; }
+        let receipt = std::json::find_field_raw(reply.body, "data");
+        let state = std::json::find_string_field(std::json::find_field_raw(receipt, "attempt"), "state");
+        if state == "refused" { return HandResult { error: std::json::find_string_field(receipt, "reason") }; }
+        return HandResult { ok: true, output: state };
+    }
+}
 
 // Git in scratch: a clone under a scratch root of the leg's own
 // (`dna::scratch_root`, one per worktree, swept by `clean` and by the
@@ -130,5 +153,6 @@ locus Hands {
         toolchain: ToolchainHand = Toolchain { };
         deploy: DeployHand = NoDeploy { };
         heart: HeartHand = NoHeart { };
+        lease: HeadLease = HeadLease { };
     }
 }
