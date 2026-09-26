@@ -21,12 +21,12 @@ async function stop(child) {
   await closed; clearTimeout(timeout);
 }
 const test = base.extend({
-  project: async ({}, use) => {
+  project: async ({}, use, testInfo) => {
     const scratch = await mkdtemp('/tmp/hale-face-startup.'), root = path.join(scratch, 'fresh project $literal');
     const env = isolatedEnvironment(); env.HALE_BIN = process.env.HALE_BIN;
     if (!env.HALE_BIN || !process.env.HALE_API_BIN) throw new Error('Run through the native browser test launcher or provide HALE_BIN and HALE_API_BIN.');
     const generated = boundedNative(env.HALE_BIN, ['dna', 'new', root], { build: true });
-    const children = [], stateDirs = [];
+    const children = [], stateDirs = [], launches = [];
     const stopRecordedChildren = async () => {
       for (const dir of stateDirs) {
         let names = [];
@@ -76,7 +76,12 @@ const test = base.extend({
         const child = spawn(bounded.command, bounded.args, { env: childEnv, cwd: scratch, stdio: ['ignore', 'pipe', 'pipe'] });
         children.push(child); let log = ''; let failure;
         child.on('error', error => { failure = error; });
-        child.stdout.on('data', chunk => { log = (log + chunk).slice(-262144); }); child.stderr.on('data', chunk => { log = (log + chunk).slice(-262144); });
+        // Each line carries its seconds since the launch, so a failed case's
+        // attached log shows which build or read the time went to.
+        const launched = Date.now(), stamp = chunk => String(chunk).replace(/^(?=.)/gm, () => `[+${((Date.now() - launched) / 1000).toFixed(1)}s] `);
+        const capture = chunk => { log = (log + stamp(chunk)).slice(-262144); };
+        child.stdout.on('data', capture); child.stderr.on('data', capture);
+        launches.push({ name: `launcher-${chosenPort}.log`, log: () => log });
         // A launcher that builds the head or the API tree needs the build budget's wall time.
         const deadline = Date.now() + (builds ? 600000 : 45000);
         while (Date.now() < deadline && child.exitCode === null && !failure) {
@@ -90,7 +95,19 @@ const test = base.extend({
         throw failure || new Error('Face launcher did not become ready: ' + log);
       };
       await use({ root, env, scratch, state, start });
-    } finally { for (const child of children) await stop(child); await stopRecordedChildren(); await rm(scratch, { recursive: true, force: true }); }
+    } finally {
+      for (const child of children) await stop(child); await stopRecordedChildren();
+      if (testInfo.status !== testInfo.expectedStatus) {
+        for (const launch of launches) await testInfo.attach(launch.name, { body: launch.log(), contentType: 'text/plain' });
+        // The head's children (its API) log under its state directory.
+        for (const dir of stateDirs) {
+          let names = [];
+          try { names = await readdir(path.join(dir, 'children')); } catch { continue; }
+          for (const name of names.filter(n => n.endsWith('.log'))) await testInfo.attach(`${path.basename(dir)}-${name}`, { path: path.join(dir, 'children', name), contentType: 'text/plain' });
+        }
+      }
+      await rm(scratch, { recursive: true, force: true });
+    }
   },
 });
 test.setTimeout(900000);
