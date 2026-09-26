@@ -236,7 +236,9 @@ locality_tier     = "L1" | "L2" | "L3" | "any" ;
 
 (* Phase 2: optional `main` modifier marks the locus as the
    binary's entry-point holder. Only a `main` locus may host a
-   `bindings { }` member. At most one `main` locus per bundle.
+   `bindings { }` member. At most one `main` locus of the bundle's
+   own per bundle: an imported seed's main is renamed with its seed,
+   its bindings inert, and is not a second one (GH #1104 piece 5).
    `main` is a contextual keyword (lexed as IDENTIFIER) recognized
    only in this prefix position.
 
@@ -499,7 +501,11 @@ binding_entry     = qualified_name , ":" , transport_spec ,
    `on_watch_full` go together and default to `bound` / `drop_old`.
    See spec/semantics.md § "The api binding". *)
 api_entry         = "api" , ":" , api_transport , ";" ;
-api_transport     = "unix" , "(" , STRING_LIT , { "," , api_kwarg } , ")" ;
+(* The path is an expression the main locus evaluates as a param
+   default (GH #1109 review): a string literal, or `self.<param>` the
+   program computed — a per-record path under XDG_RUNTIME_DIR, say.
+   `LOTUS_API` overrides it at run time. *)
+api_transport     = "unix" , "(" , expression , { "," , api_kwarg } , ")" ;
 api_kwarg         = ( "bound" , ":" , INT_LIT )
                   | ( "on_full" , ":" , "refuse" )
                   | ( "watch_bound" , ":" , INT_LIT )

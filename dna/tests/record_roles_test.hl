@@ -5,7 +5,7 @@
 // a principal mapped to a known person holds a role when the graph has
 // a live `holds` edge from the position the role names to that person.
 // The mapping is the `dna.unix.member` shape (`uid:<n>=<person>`);
-// `owner` is the board; a role spells a position's `/` as `_`; a
+// `owner` is the board; a role's `_` is the position's `/`, and only that; a
 // retired edge, position, or person holds nothing; an unmapped or
 // unauthenticated principal holds nothing; and the source re-reads a
 // record that moved, never one that did not.
@@ -54,7 +54,7 @@ locus App {
         std::test::assert(self.roles.holds(ada, "api_dev"), "a role names a position, `/` as `_`");
         std::test::assert(!self.roles.holds(ada, "api_reviewer"), "and only that position");
         std::test::assert(self.roles.holds(grace, "api_reviewer"), "another holder, another position");
-        std::test::assert(self.roles.holds(grace, "ops_desk"), "a position spelled with `_` matches as written");
+        std::test::assert(!self.roles.holds(grace, "ops_desk"), "a role's `_` is the position's `/`: a position spelled with `_` is not what `ops_desk` names");
         std::test::assert(!self.roles.holds(ghost, "owner") && !self.roles.holds(ghost, "api_dev"), "a mapped principal the graph never names holds nothing");
         std::test::assert(!self.roles.holds(nobody, "owner"), "an unmapped principal holds nothing");
         std::test::assert(!self.roles.holds(std::api::Principal { }, "owner"), "an unauthenticated principal holds nothing");

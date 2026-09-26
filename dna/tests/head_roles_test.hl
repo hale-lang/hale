@@ -111,6 +111,9 @@ locus App {
         let hale = toolchain();
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
         let scratch = dna::scratch_root("head-roles");
+        // whatever this fixture starts under its scratch stops when it does
+        // — on a failed assertion too
+        dna::reap_on_exit(scratch);
 
         // The head, built from a copy of the tree so the binary lands
         // nowhere near the source.

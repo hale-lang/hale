@@ -29,8 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     ApiBinding, ApiTransport, ApiUnauthorizedPolicy, BusMember, BusSubject, ContractDirection,
-    ContractKind, ContractName, Expr, Ident, LocusDecl, LocusMember, ParamInit, PlacementBlock,
-    Program, ShedPolicy, StructField, TopDecl, TopicDecl, TypeDeclBody, TypeExpr,
+    ContractKind, ContractName, Expr, Ident, Literal, LocusDecl, LocusMember, ParamInit,
+    PlacementBlock, Program, ShedPolicy, StructField, TopDecl, TopicDecl, TypeDeclBody, TypeExpr,
 };
 use crate::span::Span;
 use crate::json_gen;
@@ -39,6 +39,12 @@ use crate::parse_source;
 /// The dev defaults `hale run --api` fills in, and the wording a
 /// missing knob's diagnostic quotes.
 pub const DEV_BOUND: i64 = 64;
+
+/// The parse space of the synthesized source (GH #1109 review): every
+/// span of a generated item starts here, past any file of a bundle, so
+/// a diagnostic about the binding is rendered as such rather than at a
+/// position in whatever file the bundle lists first.
+pub const API_SYNTH_BASE: u32 = 0x7000_0000;
 
 /// A subscriber of a command topic.
 #[derive(Debug, Clone)]
@@ -985,7 +991,7 @@ pub fn inject_api_entry(program: &mut Program, path: &str) -> Result<(), String>
         main_seen = true;
         let span = l.name.span;
         let entry = ApiBinding {
-            transport: ApiTransport::Unix { path: path.clone(), span },
+            transport: ApiTransport::Unix { path: Expr::Literal(Literal::String(path.clone()), span), span },
             roles: None,
             bound: Some((DEV_BOUND, span)),
             on_full: Some((crate::ast::ApiFullPolicy::Refuse, span)),
@@ -1278,10 +1284,11 @@ fn gate_src(role: &Option<String>) -> String {
     }
 }
 
-fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>) -> String {
+fn binding_src(surface: &ApiSurface, bound: i64, table: Option<&str>) -> String {
     let mut b = String::new();
     b.push_str("locus __ApiBinding {\n    params {\n");
-    b.push_str(&format!("        path: String = {};\n", q(path)));
+    // The path comes in from the main locus (the entry's expression).
+    b.push_str("        path: String = \"\";\n");
     b.push_str(&format!("        bound: Int = {};\n", bound));
     // GH #1109: the membership source, typed by the interface so the
     // program's own (`roles: <expr>` on the entry, handed in by the main
@@ -1299,7 +1306,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     let drop = matches!(surface.binding.on_unauthorized, Some((ApiUnauthorizedPolicy::Drop, _)));
     b.push_str(&format!("        unauthorized_drop: Bool = {};\n", drop));
     b.push_str(
-        "        listen_fd: Int = -1;\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        cur_role: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
+        "        listen_fd: Int = -1;\n        bind_failed: String = \"\";\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        cur_role: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
     );
     for s in &surface.streams {
         b.push_str(&format!(
@@ -1316,17 +1323,21 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     }
     b.push_str(
         r#"    }
-    closure listen_failed {
-        captures: path;
-        epoch inline;
-    }
     birth() {
         if std::env::var_exists("LOTUS_API") { self.path = std::env::var("LOTUS_API"); }
         self.listen_fd = std::io::unix::listen_socket(self.path) or -1;
-        if self.listen_fd < 0 { violate listen_failed; }
+        // A socket that cannot be bound (the path is held by a live
+        // process, or cannot be made) does not take the program with it:
+        // the rest of the program serves, and the binding says why it does
+        // not (review B3).
+        if self.listen_fd < 0 {
+            self.bind_failed = "the api binding could not listen on " + self.path;
+            eprintln("api: " + self.bind_failed + "; the program runs without its socket");
+        }
     }
     @unbounded
     run() {
+        if self.listen_fd < 0 { return; }
         while !self.draining {
             let conn = std::io::tcp::__accept_one(self.listen_fd);
             if conn < 0 { break; }
@@ -1338,6 +1349,7 @@ fn binding_src(surface: &ApiSurface, path: &str, bound: i64, table: Option<&str>
     accept(c: __ApiPeer) { }
     release(c: __ApiPeer) { }
     dissolve() {
+        if self.listen_fd < 0 { return; }
         std::io::tcp::__shutdown_listen_socket(self.listen_fd);
         std::io::tcp::__close_fd(self.listen_fd);
         std::io::fs::unlink(self.path) or discard;
@@ -1612,7 +1624,7 @@ fn read_members(r: &ApiRead) -> Result<(BusMember, Vec<LocusMember>), String> {
 }
 
 fn parse_locus_members(src: &str) -> Result<Vec<LocusMember>, String> {
-    let prog = parse_source(src).map_err(|ds| {
+    let prog = crate::parse_source_at(src, API_SYNTH_BASE).map_err(|ds| {
         format!(
             "api_gen: generated source did not parse: {}\n{}",
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; "),
@@ -1720,6 +1732,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         let drop_old = !matches!(b.on_watch_full, Some((ShedPolicy::DropNew, _)));
         (path.clone(), bound, watch_bound, drop_old)
     };
+    let path_span = surface.binding.transport_span();
 
     // JSON codecs for every type that reaches the binding, strict.
     json_gen::generate_api_codecs(programs, main_idx, &surface.json_types);
@@ -1728,8 +1741,8 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     let mut src = common_src(watch_bound);
     src.push_str(&envelopes_src(&surface));
     src.push_str(&peer_src(&surface, drop_old));
-    src.push_str(&binding_src(&surface, &path, bound, roles_table));
-    match parse_source(&src) {
+    src.push_str(&binding_src(&surface, bound, roles_table));
+    match crate::parse_source_at(&src, API_SYNTH_BASE) {
         Ok(generated) => programs[main_idx].items.extend(generated.items),
         Err(ds) => {
             // A generator bug, never user error; leave the program as
@@ -1780,8 +1793,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     // The main locus holds the binding as its last param, on a pool
     // of its own.
     let param_src = format!(
-        "main locus __ApiTmp {{\n    params {{ __api: __ApiBinding = __ApiBinding {{ path: {}, bound: {} }}; }}\n    placement {{ __api: cooperative(pool = __api_io) where async_io; }}\n}}\n",
-        q(&path),
+        "main locus __ApiTmp {{\n    params {{ __api: __ApiBinding = __ApiBinding {{ bound: {} }}; }}\n    placement {{ __api: cooperative(pool = __api_io) where async_io; }}\n}}\n",
         bound
     );
     let members = match parse_locus_members(&param_src) {
@@ -1801,6 +1813,19 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         }
     }
     let (mut new_param, new_placement) = (new_param?, new_placement?);
+    // The socket path is the entry's expression, evaluated on the main
+    // locus like every param default there (a literal, or `self.socket`
+    // the program computed) — review B3.
+    if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
+        inits.push(crate::ast::StructInit {
+            name: Ident {
+                name: "path".to_string(),
+                span: path_span,
+            },
+            value: path,
+            span: path_span,
+        });
+    }
     // GH #1109: the program's own membership source rides into the
     // binding as the expression the entry wrote, evaluated on the main
     // locus like every param default there (`self.roles` names a main

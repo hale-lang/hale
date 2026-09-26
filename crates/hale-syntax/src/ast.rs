@@ -1370,6 +1370,14 @@ pub struct ApiBinding {
 }
 
 /// GH #1109: `on_unauthorized: refuse | drop`.
+impl ApiBinding {
+    /// Where the transport (the socket path expression) was written.
+    pub fn transport_span(&self) -> Span {
+        let ApiTransport::Unix { span, .. } = &self.transport;
+        *span
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiUnauthorizedPolicy {
     /// An `unauthorized` receipt naming the missing role.
@@ -1392,9 +1400,12 @@ pub struct ApiRoles {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApiTransport {
-    /// `unix("/path")` — a Unix domain stream socket speaking one JSON
-    /// object per line.
-    Unix { path: String, span: Span },
+    /// `unix(path, …)` — a Unix domain stream socket speaking one JSON
+    /// object per line. `path` is an expression the main locus evaluates
+    /// as a param default: a string literal, or `self.<param>` the
+    /// program computed (a per-record path under XDG_RUNTIME_DIR, say).
+    /// `LOTUS_API` overrides it at run time.
+    Unix { path: Expr, span: Span },
 }
 
 /// What the binding does with the request over `bound`. `refuse`
