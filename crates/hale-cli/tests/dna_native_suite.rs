@@ -38,6 +38,16 @@ fn repo_root() -> PathBuf {
 /// failure within the group's timeout.
 const SLICES: usize = 20;
 
+/// The fixtures that take minutes of a slice on CI's runners, each an
+/// organization run through dozens of Board decisions on a git-backed
+/// record (GH #995): graph_holes_test ~520 s, body_lease_blocked_test
+/// ~380 s, books_slice_test ~280 s, receipt_retention_test ~110 s. The
+/// sorted listing's modulo paired them by accident — adding or removing
+/// any fixture reshuffled which two shared a slice, and two of them run
+/// past a slice's fifteen minutes — so they lead the order: each opens a
+/// slice of its own, and the rest follow round-robin.
+const HEAVY: [&str; 4] = ["graph_holes_test.hl", "body_lease_blocked_test.hl", "books_slice_test.hl", "receipt_retention_test.hl"];
+
 fn fixture_files() -> Vec<PathBuf> {
     let dir = repo_root().join("dna/tests");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -47,7 +57,14 @@ fn fixture_files() -> Vec<PathBuf> {
         .filter(|p| p.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.ends_with("_test.hl")))
         .collect();
     files.sort();
-    files
+    let named = |p: &PathBuf, n: &str| p.file_name().and_then(|f| f.to_str()) == Some(n);
+    let mut ordered: Vec<PathBuf> = Vec::with_capacity(files.len());
+    for heavy in HEAVY {
+        let at = files.iter().position(|p| named(p, heavy)).unwrap_or_else(|| panic!("HEAVY names {heavy}, which is no fixture under dna/tests"));
+        ordered.push(files.remove(at));
+    }
+    ordered.extend(files);
+    ordered
 }
 
 /// The environment variable a slice stamps on every process its own
@@ -634,6 +651,11 @@ fn the_slices_cover_every_fixture_once() {
         covered += files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).count();
     }
     assert_eq!(covered, files.len(), "every fixture belongs to exactly one slice");
+    // no slice carries two of the heavy fixtures
+    for (k, heavy) in HEAVY.iter().enumerate() {
+        let slice = files.iter().position(|p| p.file_name().and_then(|f| f.to_str()) == Some(*heavy)).expect("a heavy fixture") % SLICES;
+        assert_eq!(slice, k, "{heavy} opens slice {k}");
+    }
 }
 
 /// GH #872: the leftover-process guard blames only what its own slice
