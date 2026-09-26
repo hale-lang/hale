@@ -1,0 +1,35 @@
+// dna/host/show.hl — `hale dna show org | processes [--json]` (GH #1086).
+//
+// The two perspectives over the repository's graph, as queries over
+// memory: the org chart (positions, what each sits under, who holds it,
+// what it signs) and the process model (where the processes meet, over
+// what, and what runs them). Read under this head's own role; nothing is
+// edited through them — a change moves through the record's rows, and the
+// spine projects it into both. Text renders as graph_show.hl says; `--json`
+// is the query's answer as memory built it, with how far memory has
+// projected the record.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn show_verb(root: String, what: String, json: Bool) -> Answer {
+    if what != "org" && what != "processes" { return fail("usage: hale dna show org | processes [--json]"); }
+    let env = dna::own_dsn_env();
+    if !dna::dsn_set(env) {
+        return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + dna::HEAD_DSN_ENV + "); `hale dna memory migrate` prints it, and a running spine (`hale dna dev`) projects the record into it");
+    }
+    let store = dna::Pq { dsn_env: env };
+    store.scope(dna::record_scope(root));
+    if !store.reopen() { return fail("hale dna show " + what + ": memory is not open: " + store.last_error()); }
+    let data = store.graph_perspective(what);
+    if len(data) == 0 { return fail("hale dna show " + what + ": memory did not answer: " + store.last_error()); }
+    let basis = store.projection_basis();
+    let record = dna::GitJournal { repo: root };
+    let rows = record.revision();
+    if !json {
+        // the graph as of the row memory reached: said beside it, never in it
+        if basis.ok && basis.watermark < rows { eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the graph as of row ", to_string(basis.watermark)); }
+        return answer(if what == "org" { ops::show_org(data) } else { ops::show_processes(data) });
+    }
+    return answer("{\"perspective\": \"" + what + "\", \"record_rows\": " + to_string(rows) + ", \"projected_rows\": " + to_string(if basis.ok { basis.watermark } else { 0 }) + ", \"graph\": " + data + "}\n");
+}

@@ -1,0 +1,172 @@
+// dna/tests/graph_show_test.hl — `hale dna show org` and `show processes`
+// are queries over memory, and on voice they are GRAPH.md's two renderings
+// (GH #1086).
+//
+// The fixture is hale-lang/voice at 2b1cb565 (hale-lang/voice#3), vendored
+// under dna/tests/onboarding/voice. `hale dna init` reads it into the
+// record; the holes GRAPH.md fills for its org chart (a board, a dev and a
+// reviewer under every process, an operator under every deployment, what
+// each reviewer signs) are written as rows the way a ratification would;
+// the record is projected into memory as the spine projects it; and the
+// real `hale dna show`, reading as the head, prints GRAPH.md's text,
+// byte for byte. `--json` is the query's answer with how far memory has
+// projected the record, and a row memory has not reached yet is said, not
+// shown. Memory is Postgres: without HALE_DNA_MEMORY_DSN_OWNER the
+// fixture is not exercised.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// GRAPH.md at 2b1cb565, "The two perspectives, as queries".
+const ORG: String = "purpose
+  board
+  postgres    dev, reviewer(store.md)
+  nats        dev, reviewer
+  api         dev, reviewer(openapi.yaml)
+  brain       dev, reviewer(internal.yaml)
+  node        dev, reviewer(node.yaml, protocol.yaml)
+  compose     operator
+  personal    operator
+  scaled-out  operator
+";
+
+const PROCESSES: String = "callers, ui, node  --HTTP: openapi.yaml-->  api
+the machine's operator  --HTTP: node.yaml-->  node
+api  --NATS: protocol.yaml-->  node  (carried by nats)
+openapi.yaml, protocol.yaml  --open-responses-->  (nobody here)
+api, brain  --SQL: store.md-->  postgres
+api  --NATS: internal.yaml-->  brain  (carried by nats)
+compose runs { postgres, nats, api, brain, node }
+personal runs { api, brain, postgres, nats, node }
+scaled-out runs { api, brain, postgres, nats, node }
+";
+
+locus App {
+    params { repo: String = ""; head: String = ""; }
+    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+        std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
+    }
+    fn position(j: dna::GitJournal, parent: String, name: String) {
+        self.append(j, "graph.node", ops::graph_node_id("position", name), ops::graph_node_body("position", name, "", ""));
+        let u = ops::GraphEdge { kind: "unfold" };
+        u.member("parent", parent);
+        u.member("child", ops::graph_node_id("position", name));
+        self.append(j, "graph.edge", u.id(), u.body());
+    }
+    fn reviews(j: dna::GitJournal, position: String, subject: String) {
+        let r = ops::GraphEdge { kind: "reviews" };
+        r.member("position", ops::graph_node_id("position", position));
+        r.member("subject", subject);
+        self.append(j, "graph.edge", r.id(), r.body());
+    }
+    // `hale dna show <args>` in the repository, reading as the head.
+    fn show(args: String) -> dna::RunResult {
+        return dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\nshow\n" + args);
+    }
+    @unbounded
+    fn project(owner: String, identity: String) {
+        let spine = dna::migrated(owner, identity);
+        std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);
+        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
+        std::test::assert(store.open(), "memory opens as the spine: " + store.last_error());
+        let j = dna::GitJournal { repo: self.repo };
+        let r = ops::apply_record(store, j, dna::GitReceipts { repo: self.repo });
+        std::test::assert_eq_str(r.error, "", "the record projects clean");
+        std::test::assert_eq_int(r.watermark, j.revision(), "to its end");
+        store.close();
+    }
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        if len(owner) == 0 { eprintln("graph_show_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let scratch = dna::scratch_root("graph-show");
+
+        self.repo = scratch + "/voice";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
+        let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + self.repo + "\n" + toolchain());
+        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+
+        // ---- the holes, filled as GRAPH.md renders its org chart
+        let j = dna::GitJournal { repo: self.repo };
+        self.position(j, "purpose:voice", "board");
+        let procs = "postgres nats api brain node";
+        let mut k = 0;
+        while len(dna::nth_word(procs, k)) > 0 {
+            let p = dna::nth_word(procs, k);
+            self.position(j, "process:" + p, p + "/dev");
+            self.position(j, "process:" + p, p + "/reviewer");
+            k = k + 1;
+        }
+        self.position(j, "deployment:compose", "compose/operator");
+        self.position(j, "deployment:personal", "personal/operator");
+        self.position(j, "deployment:scaled-out", "scaled-out/operator");
+        self.reviews(j, "postgres/reviewer", "contract:spec/store.md");
+        self.reviews(j, "api/reviewer", "contract:spec/openapi.yaml");
+        self.reviews(j, "brain/reviewer", "contract:spec/internal.yaml");
+        self.reviews(j, "node/reviewer", "contract:spec/node.yaml");
+        self.reviews(j, "node/reviewer", "contract:spec/protocol.yaml");
+
+        let identity = dna::GitRecord { repo: self.repo }.identity();
+        let m = dna::migrate(dna::parse_dsn(owner), identity);
+        std::test::assert(m.ok, "memory migrates: " + m.why);
+        self.head = m.head_dsn;
+
+        // ---- no memory named: said, not guessed
+        let none = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_OWNER && exec \"$2\" dna show org\nsh\n" + self.repo + "\n" + toolchain());
+        std::test::assert(none.code != 0 && std::str::contains(none.stderr, "no memory is named"), "without memory, show says so: " + none.stdout + none.stderr);
+
+        self.project(owner, identity);
+
+        // ---- GRAPH.md's two renderings, byte for byte
+        let org = self.show("org");
+        std::test::assert_eq_int(org.code, 0, "show org: " + org.stderr);
+        std::test::assert_eq_str(org.stdout, ORG, "the org chart is GRAPH.md's");
+        let processes = self.show("processes");
+        std::test::assert_eq_int(processes.code, 0, "show processes: " + processes.stderr);
+        std::test::assert_eq_str(processes.stdout, PROCESSES, "the process model is GRAPH.md's");
+        std::test::assert(!std::str::contains(org.stderr + processes.stderr, "memory has projected"), "memory is at the record's end: nothing is said beside them");
+
+        // ---- JSON: the query's answer and how far memory has come
+        let rows = j.revision();
+        let json = self.show("org\n--json");
+        std::test::assert_eq_int(json.code, 0, "show org --json: " + json.stderr);
+        std::test::assert(std::json::valid_object(dna::trim_nl(json.stdout)), "one JSON object: " + json.stdout);
+        std::test::assert_eq_str(std::json::find_string_field(json.stdout, "perspective"), "org", "which perspective");
+        std::test::assert_eq_int(std::json::find_int_field(json.stdout, "record_rows"), rows, "the record's rows");
+        std::test::assert_eq_int(std::json::find_int_field(json.stdout, "projected_rows"), rows, "all of them projected");
+        std::test::assert(std::str::contains(json.stdout, "\"position:node/reviewer\"") && std::str::contains(json.stdout, "\"contract:spec/protocol.yaml\""), "positions and what they sign, by id: " + json.stdout);
+        let pjson = self.show("processes\n--json");
+        std::test::assert(std::json::valid_object(dna::trim_nl(pjson.stdout)) && std::str::contains(pjson.stdout, "\"carriers\""), "the process model as JSON: " + pjson.stdout);
+
+        // ---- a holder is shown with the position it holds
+        let holds = ops::GraphEdge { kind: "holds" };
+        holds.member("position", "position:board");
+        holds.member("holder", "ada");
+        self.append(j, "graph.edge", holds.id(), holds.body());
+        self.project(owner, identity);
+        let held = self.show("org");
+        std::test::assert(std::str::starts_with(held.stdout, "purpose\n  board [ada]\n  postgres    dev, reviewer(store.md)\n"), "the board, held by ada: " + held.stdout);
+
+        // ---- a row memory has not reached is said beside the graph, not shown
+        self.append(j, "graph.retired", "runs:deployment:scaled-out", "{}");
+        let behind = self.show("processes");
+        std::test::assert_eq_int(behind.code, 0, "show while memory is behind: " + behind.stderr);
+        std::test::assert(std::str::contains(behind.stdout, "scaled-out runs {"), "the graph as memory holds it");
+        std::test::assert(std::str::contains(behind.stderr, "memory has projected " + to_string(j.revision() - 1) + " of the record's " + to_string(j.revision()) + " rows"), "and how far behind the record it is: " + behind.stderr);
+
+        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

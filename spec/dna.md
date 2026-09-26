@@ -3278,6 +3278,31 @@ The live half is memory's, projected from the record by the spine
   document is fixed. A job's own `name:` names its gate and is not a
   word its steps say. `init` says what it read: `graph   <n> node(s), <m> edge(s):
   <count> <kind>, …`. A record that exists is not reseeded.
+- **Perspectives: `hale dna show` (GH #1086).** `hale dna show org |
+  processes [--json] [project]` is the host verb `show`: it opens memory
+  under this process's own role (`HALE_DNA_MEMORY_DSN_HEAD`, the spine's
+  when it holds that one), scoped to the record, and prints what
+  `graph_perspective` answers. Nothing is edited through it: a change
+  moves through the record's rows, and the spine projects it into both
+  perspectives. With no memory named it refuses, and says the graph is
+  memory's. Text (`dna/operations/graph_show.hl`) shows a node by the
+  last segment of its name. **The org chart** is `purpose`, then a line
+  per node positions sit under, in the record's order: a position under
+  the purpose is a line of its own (`  board`); any other node is `
+  <name, padded to the widest>  <role>, <role>`, a role being the
+  position's name less its node's (`api/reviewer` under `api` is
+  `reviewer`), followed by `(<what it reviews>)` and, when it has
+  holders, `[<holders>]`; a position under no node is under
+  `(unplaced)`. **The process model** is a line per `meets` — `<outside
+  parties>, <consumers>  --<via>: <contract>-->  <servers>`, `(nobody
+  here)` for no server, `  (carried by <carriers>)` after — then `<deployment>
+  runs { <processes> }` per `runs`. `--json` prints one object:
+  `perspective`, `record_rows` (the record's length), `projected_rows`
+  (memory's watermark) and `graph`, the query's answer as memory built
+  it. When memory is behind the record the text is the graph as memory
+  holds it, and stderr says `memory has projected <m> of the record's
+  <n> rows`. On voice's record with its holes filled the two texts are
+  GRAPH.md's renderings, byte for byte (`dna/tests/graph_show_test.hl`).
 - **Projections and ranking (K3).** The tail also projects the
   record's `structure.observed` rows (init's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the
