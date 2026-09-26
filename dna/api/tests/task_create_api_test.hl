@@ -1,5 +1,6 @@
 // The composed head raises work: the real GovernanceCommands over a fresh Git
-// Record, the practice_review adapter and the real Api. The organism's answers
+// Record, the practice_review adapter and the head's command handlers
+// (api::Commands), called in-process. The organism's answers
 // below are explicit fixture rows; no body or host is started, and no
 // HALE_API_BIN process is spawned.
 import ".." as api;
@@ -7,29 +8,12 @@ import "../practice_review" as head;
 import "../../core" as dna;
 import "../../operations" as ops;
 
-const ORIGIN: String = "http://127.0.0.1:8792";
-const HEADERS: String = "Origin: http://127.0.0.1:8792\r\nContent-Type: application/json\r\nX-Hale-Command: 1";
-
 locus CreateApiCases {
     params { root: String = ""; identity: String = ""; }
-    fn body(id: String, record_head: String, outcome: String, to: String) -> String {
-        let b = std::json::Builder { }; b.begin_object();
-        b.string_field("request_id", id); b.string_field("operation", "dna.task.create"); b.string_field("operation_version", "1");
-        b.begin_object_field("context"); b.string_field("application_id", self.identity); b.string_field("position_id", "org"); b.end_object();
-        b.begin_object_field("target"); b.string_field("application_id", self.identity); b.string_field("kind", "dna.record"); b.string_field("id", self.identity); b.end_object();
-        b.begin_object_field("preconditions"); b.string_field("record_head", record_head);
-        b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "riley"); b.end_object(); b.end_object();
-        b.begin_object_field("arguments"); b.string_field("outcome", outcome); b.string_field("to", to); b.end_object();
-        b.end_object(); return b.result();
-    }
+    fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
+    fn ask(id: String, record_head: String, outcome: String, to: String) -> api::TaskCreation { return api::TaskCreation { request_id: id, record_head: record_head, outcome: outcome, to: to }; }
     fn cli_row(outcome: String, from: String, to: String) -> String {
         let b = std::json::Builder { }; b.begin_object(); b.string_field("outcome", outcome); b.string_field("from", from); b.string_field("to", to); b.end_object(); return b.result();
-    }
-    fn call(service: api::Api, method: String, suffix: String, headers: String, body: String, status: Int, code: String) -> String {
-        let response = service.handle(std::http::Request { method: method, path: api::API_PREFIX + "/" + self.identity + suffix, headers: headers, body: body });
-        std::test::assert_eq_int(response.status, status, response.body);
-        if len(code) > 0 { std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(response.body, "error"), "code"), code, response.body); }
-        return response.body;
     }
     fn last(j: dna::Journal, kind: String) -> dna::Event {
         let refreshed = j.refresh(); let mut found = dna::Event { }; let mut i = 0;
@@ -39,53 +23,55 @@ locus CreateApiCases {
     fn run_cases() {
         let record = dna::GitRecord { repo: self.root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
         std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
-        self.identity = record.identity(); let wire = api::CommandWire { };
+        self.identity = record.identity();
         let codec = ops::AuthorityPolicyCodec { };
         let policy = codec.decode("{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}", self.identity, "local");
         std::test::assert(policy.valid, "recover-only authority policy");
         let native = ops::GovernanceCommands { record: record, authority: ops::FixedAuthority { policy: policy } };
-        let commands = head::PracticeReviewCommands { root: self.root, application_id: self.identity, service: native, source_capabilities: native, people: native };
-        let service = api::Api { root: self.root, local_name: "riley", commands: commands, command_origin: ORIGIN };
-        let data = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
-        std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "task_create"), "true", "any authenticated principal may raise work");
-        std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "practice_propose"), "false", "without a practice grant");
-        std::test::assert_eq_str(wire.raw(data, "read_only"), "false", "raising work is a write");
-        std::test::assert_eq_str(wire.text(wire.raw(data, "task_create_commands"), "profile"), "dna.task.create.v1", "profile advertised");
+        let provider = head::PracticeReviewCommands { root: self.root, application_id: self.identity, service: native, people: native };
+        let commands = api::Commands { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" }, provider: provider };
         let before = record.head("journal").id; let outcome = "Confirm the supplier handover\r\né 🧭 <literal & markup>";
-        let admitted = wire.raw(self.call(service, "POST", "/commands", HEADERS, self.body("create-1", before, outcome, "org"), 200, ""), "data");
-        let create = wire.raw(admitted, "task_create"); let intent = wire.text(create, "intent_id");
-        std::test::assert_eq_str(wire.text(create, "intent_state"), "requested", "admitted once its row is in the Record");
-        std::test::assert_eq_str(wire.text(create, "event_id"), record.head("journal").id, "the row is the new head");
-        std::test::assert_eq_str(wire.text(admitted, "subject_digest"), before, "the subject is the head the request was prepared against");
+        let admitted = commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller());
+        std::test::assert(admitted.ok, "any authenticated principal may raise work: " + admitted.code);
+        let create = admitted.receipt.task_create; let intent = create.intent_id;
+        std::test::assert_eq_str(create.intent_state, "requested", "admitted once its row is in the Record");
+        std::test::assert_eq_str(create.event_id, record.head("journal").id, "the row is the new head");
+        std::test::assert_eq_str(admitted.head, create.event_id, "the reply carries the Record evidence it was admitted at");
+        std::test::assert_eq_str(admitted.receipt.subject_digest, before, "the subject is the head the request was prepared against");
+        std::test::assert(admitted.receipt.target_kind == "dna.record" && admitted.receipt.target_id == self.identity, "the target is this Record");
         let journal = dna::GitJournal { repo: self.root }; let row = self.last(journal, "intent.requested");
-        std::test::assert(row.entity == intent && row.digest == wire.text(create, "event_id") && row.prev == before, "one intent.requested row, entity = intent id, at the captured head");
+        std::test::assert(row.entity == intent && row.digest == create.event_id && row.prev == before, "one intent.requested row, entity = intent id, at the captured head");
         let cli = self.cli_row(outcome, "riley", "org");
         std::test::assert(std::str::starts_with(row.body, cli[0..(len(cli) - 1)] + ", \"command_format\": \"dna.task-create-command/1\""), "the row begins with the bytes hale dna ask writes for the same outcome/from/to");
         std::test::assert(!std::str::contains(row.body, "\"via\"") && !std::str::contains(row.body, "\"intent_id\""), "no via and no intent_id");
-        std::test::assert_eq_str(std::json::find_string_field(dna::line_at(record.text_at(record.head("journal").id), row.seq), "author"), "riley", "the acting principal is the row's author");
-        std::test::assert_eq_str(std::json::find_string_field(row.body, "command_id"), wire.text(admitted, "command_id"), "the row carries the command id");
-        let recovered = wire.raw(self.call(service, "GET", "/commands?request_id=create-1", "", "", 200, ""), "data");
-        std::test::assert(wire.text(recovered, "command_id") == wire.text(admitted, "command_id") && wire.text(wire.raw(recovered, "task_create"), "intent_id") == intent, "lookup recovers the same ask");
-        self.call(service, "POST", "/commands", HEADERS, self.body("create-2", before, "Another", "org"), 409, "stale_subject");
-        std::test::assert_eq_str(wire.text(wire.raw(wire.raw(self.call(service, "POST", "/commands", HEADERS, self.body("create-1", before, outcome, "org"), 200, ""), "data"), "task_create"), "intent_id"), intent, "identical retry is lookup");
-        self.call(service, "POST", "/commands", HEADERS, self.body("create-1", before, outcome + "!", "org"), 409, "request_conflict");
-        // the organism answers in the Record; the face sees it through GET lookup
+        std::test::assert_eq_str(std::json::find_string_field(dna::line_at(record.text_at(record.head("journal").id), row.seq), "author"), "riley", "the mapped person is the row's author");
+        std::test::assert_eq_str(std::json::find_string_field(row.body, "command_id"), admitted.receipt.command_id, "the row carries the command id");
+        let recovered = commands.lookup(api::Lookup { request_id: "create-1" }, self.caller());
+        std::test::assert(recovered.ok && recovered.receipt.command_id == admitted.receipt.command_id && recovered.receipt.task_create.intent_id == intent, "lookup recovers the same ask");
+        std::test::assert_eq_str(commands.create_task(self.ask("create-2", before, "Another", "org"), self.caller()).code, "stale_subject", "a moved head is a stale subject");
+        std::test::assert_eq_str(commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller()).receipt.task_create.intent_id, intent, "identical retry is lookup");
+        std::test::assert_eq_str(commands.create_task(self.ask("create-1", before, outcome + "!", "org"), self.caller()).code, "request_conflict", "one request identity, one content");
+        // the organism answers in the Record; the caller sees it through lookup
         std::test::assert(journal.append(journal.revision(), "intent.offered", intent, outcome + " (from riley)").ok, "offered");
-        std::test::assert_eq_str(wire.text(wire.raw(wire.raw(self.call(service, "GET", "/commands?request_id=create-1", "", "", 200, ""), "data"), "task_create"), "intent_state"), "offered", "offer observed");
+        std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "create-1" }, self.caller()).receipt.task_create.intent_state, "offered", "offer observed");
         std::test::assert(journal.append(journal.revision(), "task.born", "org:t1", intent + ": " + outcome).ok, "born");
-        let born = wire.raw(wire.raw(self.call(service, "GET", "/commands?request_id=create-1", "", "", 200, ""), "data"), "task_create");
-        std::test::assert(wire.text(born, "intent_state") == "born" && wire.text(born, "task_id") == "org:t1", "birth observed with the Task id");
+        let born = commands.lookup(api::Lookup { request_id: "create-1" }, self.caller()).receipt.task_create;
+        std::test::assert(born.intent_state == "born" && born.task_id == "org:t1", "birth observed with the Task id");
         let now = record.head("journal").id;
-        let second = wire.raw(wire.raw(self.call(service, "POST", "/commands", HEADERS, self.body("create-3", now, "Another outcome", "org/support"), 200, ""), "data"), "task_create");
-        std::test::assert(wire.text(second, "intent_state") == "requested" && wire.text(second, "intent_id") != intent, "a distinct intent id");
-        std::test::assert(journal.append(journal.revision(), "intent.refused", wire.text(second, "intent_id"), "refused: not this organization's to admit").ok, "refused");
-        let refused = wire.raw(self.call(service, "GET", "/commands?request_id=create-3", "", "", 200, ""), "data");
-        std::test::assert(wire.text(refused, "state") == "succeeded" && wire.text(wire.raw(refused, "task_create"), "intent_state") == "refused", "the organism's refusal is a separate fact on a succeeded command");
-        self.call(service, "GET", "/commands?request_id=never-sent", "", "", 404, "command_not_found");
-        let absent = api::Api { root: self.root };
-        self.call(absent, "POST", "/commands", HEADERS, self.body("create-4", now, "Plain head", "org"), 405, "method_not_allowed");
-        let switched = api::Api { root: self.root, local_name: "bob", commands: commands, command_origin: ORIGIN };
-        self.call(switched, "POST", "/commands", HEADERS, self.body("create-4", now, "Someone else", "org"), 409, "command_context_changed");
+        let second = commands.create_task(self.ask("create-3", now, "Another outcome", "org/support"), self.caller()).receipt.task_create;
+        std::test::assert(second.intent_state == "requested" && second.intent_id != intent, "a distinct intent id");
+        std::test::assert(journal.append(journal.revision(), "intent.refused", second.intent_id, "refused: not this organization's to admit").ok, "refused");
+        let refused = commands.lookup(api::Lookup { request_id: "create-3" }, self.caller());
+        std::test::assert(refused.receipt.state == "succeeded" && refused.receipt.task_create.intent_state == "refused", "the organism's refusal is a separate fact on a succeeded command");
+        std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "never-sent" }, self.caller()).code, "command_not_found", "no command under an unknown request identity");
+        std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "" }, self.caller()).code, "invalid_query", "lookup needs a request identity");
+        std::test::assert_eq_str(commands.create_task(self.ask("create-4", now, "", "org"), self.caller()).code, "invalid_command", "an empty outcome is refused by the codec");
+        // recovery is under the provider's own grant: bob, mapped but ungranted, reads nothing
+        let switched = api::Commands { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: provider };
+        let foreign = switched.lookup(api::Lookup { request_id: "create-1" }, self.caller());
+        std::test::assert(foreign.code == "forbidden" && foreign.receipt.command_id == "", "another principal cannot recover riley's ask: " + foreign.code);
+        let moved = api::CommandContext { root: self.root, source: api::Source { ok: true, identity: self.identity, head: now, revision: 1 }, principal_mode: "local", principal_name: "bob" };
+        std::test::assert_eq_str(provider.submit(moved, api::CommandRequest { valid: true, request_id: "create-4", operation: "dna.task.create", expected_principal_mode: "local", expected_principal_name: "riley" }).code, "command_context_changed", "the expected principal cannot be replaced");
     }
 }
 fn main() {

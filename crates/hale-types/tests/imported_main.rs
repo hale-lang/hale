@@ -7,12 +7,16 @@ use hale_syntax::ast::TopDecl;
 use hale_syntax::parse_source;
 use hale_types::check_program;
 
+// The imported seed's `fn main` is renamed as the rename pass would
+// (`lib::main`), so the bundle has one entry point.
 fn merged(own: &str, lib: &str) -> hale_syntax::ast::Program {
     let mut prog = parse_source(own).expect("own parses");
     let mut imported = parse_source(lib).expect("lib parses");
     for item in &mut imported.items {
-        if let TopDecl::Locus(l) = item {
-            l.imported = true;
+        match item {
+            TopDecl::Locus(l) => l.imported = true,
+            TopDecl::Fn(f) if f.name.name == "main" => f.name.name = "lib::main".to_string(),
+            _ => {}
         }
     }
     prog.items.extend(imported.items);
@@ -26,6 +30,7 @@ main locus LibHead {
     bus { publish LibTopic; }
     bindings { LibTopic: unix("/tmp/lib.sock", role: listen); api: unix("/tmp/lib-api.sock", bound: 8, on_full: refuse); }
 }
+fn main() { LibHead { }; }
 "#;
 
 #[test]

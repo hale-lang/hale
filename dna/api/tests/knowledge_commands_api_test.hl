@@ -154,9 +154,9 @@ locus KnowledgeCommandCases {
         let reads = api::Wire { };
         let writable = wire.writable(context, self.host, ORIGIN);
         std::test::assert(writable, "authorized direct capability enables Knowledge writes");
-        let capabilities = reads.capabilities(context.source, "local", "alice", false, false, true, false, api::CommandCapability { }, false, api::CommandCapability { }, ORIGIN, writable);
-        std::test::assert_eq_str(common.raw(capabilities, "read_only"), "false", "global capability reflects Knowledge writes without Practice or Review commands");
-        std::test::assert_eq_str(common.raw(common.raw(capabilities, "writes"), "practice_propose"), "false", "Knowledge capability never grants a Practice command");
+        let capabilities = reads.capabilities(context.source, "local", "alice", false, false, true, writable, false, ORIGIN, "/run/head.sock");
+        std::test::assert_eq_str(common.raw(capabilities, "read_only"), "false", "global capability reflects Knowledge writes");
+        std::test::assert_eq_str(common.raw(capabilities, "writes"), "", "record commands are the api socket's, never a capability field");
         self.host.mode = "review";
         let reviewed = wire.handle(std::http::Request { method: "GET", path: "/capability" }, "", true, context, self.host, ORIGIN);
         std::test::assert_eq_int(reviewed.status, 200, reviewed.body);

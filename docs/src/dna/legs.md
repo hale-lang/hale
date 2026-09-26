@@ -2,8 +2,8 @@
 
 A leg is what performs a Work: a person, a program, a model. It holds
 nothing between tasks and has no database role. Everything it knows
-it reads from the head's API, and everything it does is a command on
-the head's table: it claims an attempt, reads the hat, works, hands
+it reads from the head's API, and everything it does is a call on
+the head's gated topics: it claims an attempt, reads the hat, works, hands
 the outcome back under the lease it was given, and lets go. The owner
 still admits and settles.
 
@@ -30,10 +30,11 @@ hale dna work loop --drain
 
 `--api` names the head (default `HALE_DNA_API`, else
 `http://127.0.0.1:8793`, the API child of `dna/face/start.sh`). The
-verbs land on the command table: `next` is `dna.attempt.claim`,
-`renew` is `dna.attempt.renew`, `submit` is `dna.attempt.outcome`,
-`settle` reads that command back, `release` is `dna.attempt.release`,
-and `friction` is `dna.friction.file`.
+verbs land on the head's gated topics: `next` is `AttemptClaim`,
+`renew` is `AttemptRenew`, `submit` is `AttemptOutcome`, `settle`
+reads that call back, `release` is `AttemptRelease`, and `friction` is
+`FrictionFile` — all gated `position`, and listed to the leg by `hale
+describe`.
 
 ## Positions, ids, exit codes
 

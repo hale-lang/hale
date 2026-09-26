@@ -1,7 +1,9 @@
 // Build: hale build dna/api/practice_review
 // Run: HALE_DNA_COMMAND_POLICY=authority.json practice_review <root> <port> [webroot]
-// One loopback Record/body/host deployment. The ordinary dna/api head remains
-// read-only. This head composes the shared native Governance service explicitly.
+// One loopback Record/body/host deployment. The ordinary dna/api head answers
+// every command `commands_unsupported`. This head composes the shared native
+// Governance service explicitly; the commands are the api binding's (see
+// dna/api/commands.hl), gated by the record's positions and admitted here.
 import ".." as api;
 import "../../core" as dna;
 import "../../operations" as ops;
@@ -85,7 +87,7 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
     let native = ops::GovernanceCommands { record: record, authority: authority, sign: policy.sign,
         organization_authority: source_authority, organization_enabled: false, organization_reviews_enabled: false,
         tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record };
-    let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, source_capabilities: native, people: native, organization_configured: source_policy.valid };
+    let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, people: native, organization_configured: source_policy.valid };
     println("hale dna practice-review api: authority basis ", policy.basis);
     let definitions = ops::NoWorkflowCatalog { };
     // This optional reader is meaningful only in the same local deployment
@@ -94,10 +96,10 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
     // return unavailable. No configured source policy keeps the old default.
     if source_policy.valid {
         let current = runtime::OrganizationRuntime { root: root };
-        api::serve_with_people(root, port, web, definitions, commands, source_authority, commands, current, commands);
+        api::serve_with_people(root, port, web, definitions, commands, source_authority, current, commands);
     } else {
         let absent = api::NoOrganizationRuntime { };
-        api::serve_with_people(root, port, web, definitions, commands, source_authority, commands, absent, commands);
+        api::serve_with_people(root, port, web, definitions, commands, source_authority, absent, commands);
     }
 }
 

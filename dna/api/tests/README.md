@@ -55,8 +55,10 @@ Coverage includes:
   and dependency links, imports outside the snapshot, archive attributes that
   omit or substitute committed bytes, and subprocess deadlines exercise the
   loader's unavailable/error and cleanup paths.
-- Stable Record/application identity, source head/revision and honest read-only
-  capabilities; typed application/object/query/method failures without ref writes.
+- Stable Record/application identity, source head/revision and capabilities that
+  name the head's api socket and offer no HTTP writes; typed
+  application/object/query/method failures without ref writes, including 405 for
+  every mutation method on the reads and on `/commands`.
 - Unicode, multiline text and opaque slash-bearing ids; approved Review versus
   pending/refused activation; retirement and ratification precedence.
 - Snapshot-bound pagination, refresh after Record advancement, missing/corrupt
@@ -103,27 +105,41 @@ The same run limits apply to the native contract checker and validator tests.
 These checks do not prove the native HTTP client's unenforced timeout field is a
 deadline; see the API README's transport prerequisites.
 
-## Practice and Review command adapter
+## The head's commands
 
-`commands_api_test.hl` injects a typed scripted `CommandProvider` into the real
-API handler. It checks trusted Origin configuration, authentication before
-provider access, the expected-principal precondition, exact query/body/header
-shapes, opaque IDs, Unicode, byte limits, sanitized failures and consistent
-receipt identities and state relationships. Identity changes return
-`409 command_context_changed` before capability or submit calls. The ordinary
-executable injects `NoCommands`, advertises no writes and retains POST 405.
-Review verdict cases require distinct Review/subject IDs and the pending-state
-precondition, reject abstention, and keep the request's verdict acceptance/refusal
-separate from observed Review settlement and adoption. Both operations use one
-lookup namespace; script-only cross-operation key conflict is conformance evidence.
+Record commands are gated topics on the head's api binding
+([`commands.hl`](../commands.hl)), not HTTP routes. The tests call the handlers
+of `api::Commands` in-process with a `std::api::Context` whose caller the Record
+maps to a person (`dna::RecordRoles` with a fixture mapping), and assert the
+`CommandReply`. The binding's gate is not exercised in-process;
+`dna/tests/head_roles_test.hl` proves it at the process level.
 
-`commands/main.hl` is an opt-in HTTP fixture for browser conformance. It requires
-`HALE_FACE_SCRIPTED_COMMANDS=1` and takes `ROOT PORT WEBROOT`. Its provider holds
-request metadata in memory and returns scripted proposal/review/adoption states
-selected by `ROOT/command-mode`. It does not write domain facts or provide durable
-recovery. The browser tests verify real API transport and reload recovery against
-the same process; they do not prove native admission, restart recovery or the
-complete administration loop. See the [browser test README](../../face/tests/README.md).
+`commands_api_test.hl` runs the handlers over a real Record with the scripted
+`CommandProvider` of `commands/main.hl`. It checks what the head supplies (the
+Record's identity, the target, the mapped person as principal, an unmapped peer
+by its account name), what the operations' own codecs refuse as
+`invalid_command` before the provider (byte bounds, missing fields, unknown
+verdicts, data classes and dispositions, a partial hat), the provider's codes as
+the reply, per-operation support, a head without a provider, an unreadable
+Record, and recovery by request identity through `lookup` — which never submits
+and is the caller's own. Receipt variants cover proposals, verdicts (acceptance
+kept separate from Review settlement and adoption), raised work and a leg's
+claim and outcome. The scripted provider holds one request in memory and writes
+no domain facts; it does not prove native admission or durable recovery.
+
+`organization_command_wire_test.hl` is the typed mapping: an
+`OrganizationProposal` given to `Commands.propose_organization` reaches the
+provider as exactly the operations' `GovernanceCommand` (`api::native_of`), and
+Practice and Review keep their historical canonical bytes.
+`organization_receipt_api_test.hl` checks the practice_review provider's result
+mapping and its context binding. `task_create_api_test.hl` and
+`attempt_recovery_api_test.hl` drive the real `GovernanceCommands` over a fresh
+Git Record through the same handlers.
+
+`commands/main.hl` is also an opt-in fixture for browser conformance. It requires
+`HALE_FACE_SCRIPTED_COMMANDS=1`, takes `ROOT PORT WEBROOT` and composes the
+scripted provider into a real head; its answers are selected by
+`ROOT/command-mode`. See the [browser test README](../../face/tests/README.md).
 
 Build and run `commands_api_test.hl` as a focused native test with the same shared
 lock and per-process limits above. Do not infer production command capability

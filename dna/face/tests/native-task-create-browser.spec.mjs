@@ -16,6 +16,7 @@ const test = base.extend({
   },
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
 });
+test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!nativeTaskEnvironmentPresent(), 'Supply matching native Task seed and configured command API binaries.');
 test.setTimeout(45_000);
 const region = page => page.getByRole('region', { name: 'New task', exact: true });

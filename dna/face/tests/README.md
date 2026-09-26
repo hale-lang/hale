@@ -146,6 +146,37 @@ and compares its full catalog encoding. Browser export alone does not establish
 that a source fragment compiles. Draft validation/export does not prove original
 source roundtrip, governed publication, activation or real DNA command recovery.
 
+## Record-command lanes waiting for the face's write path
+
+The head no longer serves `POST`/`GET …/applications/{id}/commands`: every
+record command is a gated topic on the head's api binding, a unix socket a
+browser cannot reach (GH #1104 piece 5, PR #1129). `/capabilities` names that
+socket under `api{transport,socket}`, carries none of the old command profiles
+(`writes`, `commands`, `review_commands`, `task_commands`, …), and its
+`read_only` now means Knowledge writing alone. With no profile, the face treats
+record commands as unavailable; its HTTP reads are unchanged.
+
+Lanes that submitted or looked up a real record command through a head are
+skipped with that reason until the face has a write path:
+
+- whole files: `commands-native.spec.mjs`, `native-command-browser.spec.mjs`,
+  `native-practice-lifecycle-browser.spec.mjs`, `native-task-browser.spec.mjs`,
+  `native-task-create-browser.spec.mjs`, `native-task-assignee.spec.mjs`,
+  `native-person-retirement.spec.mjs`;
+- the cases that decide a Review (a `dna.review.verdict` over HTTP) in
+  `native-knowledge-binding-browser.spec.mjs` (five),
+  `native-knowledge-edge-review-browser.spec.mjs` (three) and
+  `native-knowledge-node-browser.spec.mjs` (three). Their Knowledge-only cases
+  stay: Knowledge commands (`/dna/knowledge/commands`) were not cut.
+
+The standalone HTTP harnesses `native-commands.mjs`, `native-command-cli.mjs`
+and the `native-*-http.mjs` scripts drive the same cut route. Lanes that script
+the command route in the browser (`commands.spec.mjs`, `verdicts.spec.mjs`,
+`practice-interaction.spec.mjs`, the Task, people and Organization UI contracts)
+still run: `command-fixture.mjs` supplies the whole write surface itself, since
+the native capabilities it extends no longer carry one. The projects workspace's
+`/api/hale/v1/head/commands` is the project head's own and is unaffected.
+
 ## Practice command conformance
 
 `commands.spec.mjs` uses native practice reads with scripted command capability

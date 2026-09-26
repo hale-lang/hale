@@ -22,6 +22,8 @@
 //     (`role api_dev;` is `position:api/dev`; a position spelled with
 //     `_` cannot be named by a role). `owner`, the role the full
 //     description is gated on, is the board: `position:board`.
+//     `position` is any live position at all: the role a leg's verbs
+//     are gated on.
 //
 // The hierarchy (`role owner includes …`) is the program's and the
 // binding walks it; this source answers only the direct question. The
@@ -130,22 +132,33 @@ locus RecordRoles {
         }
     }
     // Whether `p` holds `r` directly: mapped to a known person who holds
-    // the position the role names — `owner` is the board, any other role
-    // the position spelled with `/` where the role has `_`.
+    // the position the role names — `owner` is the board, `position` any
+    // live position at all, any other role the position spelled with `/`
+    // where the role has `_`.
     @unbounded
     fn holds(p: std::api::Principal, r: String) -> Bool {
         if p.uid < 0 || len(r) == 0 { return false; }
         self.scan();
         let person = member_of(self.mapping, p.name);
         if len(person) == 0 || std::str::contains("\n" + self.retired_people, "\n" + person + "\n") { return false; }
+        let any = r == "position";
         let want = if r == "owner" { "position:board" } else { "position:" + std::str::replace(r, "_", "/") };
         let mut k = 0;
         while k < self.live.len() {
             let h = self.live.get(k) or Holds { };
-            if !h.gone && h.holder == person && h.position == want { return true; }
+            if !h.gone && h.holder == person && (any || h.position == want) { return true; }
             k = k + 1;
         }
         return false;
+    }
+    // The person the record maps `p` to ("" when it maps nobody, or the
+    // person was retired): who a command is recorded as coming from.
+    fn person(p: std::api::Principal) -> String {
+        if p.uid < 0 { return ""; }
+        self.scan();
+        let person = member_of(self.mapping, p.name);
+        if len(person) == 0 || std::str::contains("\n" + self.retired_people, "\n" + person + "\n") { return ""; }
+        return person;
     }
 }
 

@@ -16,6 +16,8 @@ const test = base.extend({
   },
 });
 test.skip(!nodeEnvironmentPresent(), 'Supply matching native Review API, Body, relay and Knowledge service binaries.');
+// A test that decides a Review submits a record command (a verdict) over HTTP.
+const CUT = "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.";
 test.setTimeout(90_000);
 
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
@@ -95,7 +97,7 @@ async function openObserved(page, service, id, retiring = false) {
   await expect(detail(page)).toContainText(id);
 }
 
-test('native Knowledge nodes: create a generic idea, decide its exact Review, revise and retire with history retained', async ({ page, service }, testInfo) => {
+test.skip('native Knowledge nodes: create a generic idea, decide its exact Review, revise and retire with history retained', { annotation: { type: 'skip', description: CUT } }, async ({ page, service }, testInfo) => {
   const submitted = posts(page);
   const first = await propose(page, service);
   expect(first.command.target).toEqual({ application_id: service.application, kind: 'dna.knowledge.collection', id: 'org' });
@@ -151,7 +153,7 @@ test('native Knowledge nodes: stale Record precondition refuses admission withou
   service.resumeDelivery();
 });
 
-test('native Knowledge nodes: approved competing revision reports adoption refusal separately', async ({ page, service }, testInfo) => {
+test.skip('native Knowledge nodes: approved competing revision reports adoption refusal separately', { annotation: { type: 'skip', description: CUT } }, async ({ page, service }, testInfo) => {
   const original = await propose(page, service); await approve(page, service, original);
   const id = original.native.node.candidate_digest; await openObserved(page, service, id); await dismissNode(page);
   const first = await propose(page, service, { operation: 'node.revise', id, text: 'First independently reviewed revision.' }); await dismissNode(page);
@@ -163,7 +165,7 @@ test('native Knowledge nodes: approved competing revision reports adoption refus
   await receipt(page).scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('generic-revision-approved-activation-refused.png') });
 });
 
-test('native Knowledge nodes: graph observation requires the final receipt at the same Record head', async ({ page, service }) => {
+test.skip('native Knowledge nodes: graph observation requires the final receipt at the same Record head', { annotation: { type: 'skip', description: CUT } }, async ({ page, service }) => {
   const proposal = await propose(page, service); await approve(page, service, proposal); await service.pauseDelivery();
   let lookups = 0, changedHead;
   await page.route('**/dna/knowledge/commands?*', async route => {

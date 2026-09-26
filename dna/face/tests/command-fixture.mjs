@@ -70,6 +70,9 @@ export async function scriptedCommands(page, service, options = {}) {
       script.source = payload.source;
       script.principal ||= payload.data.principal;
       payload.data.principal = script.principal;
+      // The API no longer carries command profiles (GH #1104 piece 5), so
+      // the script supplies the whole write surface the face reads.
+      payload.data.writes ??= {};
       payload.data.writes.practice_propose = script.available && script.authorized;
       payload.data.writes.review_verdict = Boolean(script.reviewProfile || script.reviewWriteOnly) && script.reviewAvailable && script.reviewAuthorized;
       payload.data.read_only = !(payload.data.writes.practice_propose || payload.data.writes.review_verdict);
