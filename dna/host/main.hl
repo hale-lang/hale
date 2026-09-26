@@ -186,7 +186,7 @@ fn main() {
     } else if verb == "task" {
         // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
         // the outcome is every word after the subverb (asking is one kind of task)
-        if word(a, 0) == "create" { ans = task_create_verb(root, join_words(drop_first_word(a.words)), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"), memory); }
+        if word(a, 0) == "create" { ans = task_create_verb(root, join_words(drop_first_word(a.words)), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"), has_flag(a, "--judgment"), memory); }
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         else if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note"), flag(a, "--evidence"), flag(a, "--exception"), flag(a, "--authorized-by"), memory); }
         else if word(a, 0) == "reassign" { ans = task_reassign_verb(root, seed, word(a, 1), flag(a, "--to"), flag(a, "--as"), memory); }

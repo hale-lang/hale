@@ -22,7 +22,7 @@ main locus Org {
     params {
         core: dna::Dna = dna::Dna {
             journal: dna::GitJournal { repo: "." },
-            work: dna::WorkSystem { agent: dna::AgentPerformer { name: "agent", models: … } },
+            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
             boundary: dna::AutonomyBoundary { child: "chat", grant: dna::Grant { … } },
             review_policy: dna::OrgPolicy { },
             membrane: dna::Board { who: "board" },

@@ -665,7 +665,7 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
 // `workflow.admitted`) and the fact `intent` keep their names. The verb
 // writes the row and never publishes (GH #986): the host beside the
 // organism relays it onto the nerves.
-fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, memory: dna::Memory) -> Answer {
+fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, judgment: Bool, memory: dna::Memory) -> Answer {
     if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
     let s0 = sync_record(root, memory);
     let no_head = record_refusal(root);
@@ -685,6 +685,8 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     b.string_field("outcome", outcome);
     b.string_field("from", who);
     b.string_field("to", to);
+    // GH #946: an assessment, not a change — admitted as a judgment a leg performs
+    if judgment { b.string_field("kind", "judgment"); }
     b.end_object();
     // `--no-wait`: the one notice, on either path, once the row is in the record
     // where the ask's row lands: the record, or the ledger once it is adopted

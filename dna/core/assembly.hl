@@ -2446,7 +2446,7 @@ locus Dna {
         // Intent through the membrane asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
-        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to });
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind });
     }
     // An uncertain exact append may have landed. Only its exact slot and
     // bytes establish that outcome; absence never becomes success.
@@ -3401,6 +3401,9 @@ locus Dna {
         // job, an organism change, an application change — and the
         // admission binds that word; without a leader the ask is an
         // application change, as before
+        // an ask for a judgment is the asker's word: no plan is asked, the
+        // assessment is admitted as one judgment leaf, a leg's to perform
+        if i.kind == "judgment" { return self.admit_ask(i, Plan { kind: "judgment", change_class: "application" }, false); }
         if self.planned {
             // the intent is this resident's to keep: what a handler's arena
             // handed in dies with the handler
@@ -3443,7 +3446,7 @@ locus Dna {
         b.begin_object();
         b.string_field("objective", i.outcome);
         b.string_field("from", i.from);
-        b.string_field("kind", if planned { p.kind } else { "app" });
+        b.string_field("kind", if i.kind == "judgment" { "judgment" } else if planned { p.kind } else { "app" });
         b.string_field("class", class);
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);
@@ -3454,7 +3457,7 @@ locus Dna {
         b.bool_field("planned", planned);
         b.bool_field("parsed", planned && p.parsed);
         b.end_object();
-        let definition = if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
+        let definition = if i.kind == "judgment" { "ask-judge" } else if planned && p.kind == "person" { "ask-person" } else { "ask-edit" };
         return self.run_workflow(WorkflowAsk { id: i.id, definition: definition, revision: 1, inputs: b.result(), from: i.from, to: i.to });
     }
     // The authored-definition API (card 18): a workflow the application
@@ -3611,7 +3614,8 @@ locus Dna {
         return own_prefix(self.ownership.me) + "t" + to_string(self.minted);
     }
     // The ask definitions, defined once: an application change (one edit
-    // leaf, prepared for review) and a person's job (one human leaf).
+    // leaf, prepared for review), a person's job (one human leaf) and a
+    // judgment (an assessment).
     // Their leaves bind no objective of their own: the ask's is bound at
     // admission.
     fn define_asks() {
@@ -3619,6 +3623,11 @@ locus Dna {
         let l1 = self.catalog.leaf("ask-edit", 1, 0, "e", WorkRequest { requires: "edit", output_contract: "Patch" }, 1);
         let d2 = self.catalog.define("ask-person", 1, 1, "an ask: a person's job");
         let l2 = self.catalog.leaf("ask-person", 1, 0, "p", WorkRequest { requires: "human" }, 1);
+        // a judgment: one leaf requiring judgment under the `Assessment`
+        // contract — capability first, an agent's, so a leg's (GH #946); a
+        // person's on the second attempt
+        let d3 = self.catalog.define("ask-judge", 1, 1, "an ask: a judgment, an assessment handed back");
+        let l3 = self.catalog.leaf("ask-judge", 1, 0, "j", WorkRequest { requires: "judgment", output_contract: "Assessment" }, 2);
     }
     // GH #646 workflow card 07: admit a defined workflow. The durable
     // fact precedes everything (GH #604 rule 1): the id is minted, the

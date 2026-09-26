@@ -25,6 +25,9 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgstat"], &d);
     assert!(ok, "{out}");
+    // GH #946: the record is seated at birth — its maker's uid mapped to
+    // them in the local config, so the head's socket knows the peer
+    assert!(out.contains("seated  ") && out.contains("dna.unix.member"), "the record is seated:\n{out}");
     let app: PathBuf = d.join("orgstat");
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
 
@@ -110,6 +113,21 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let (ok3, out3) = run(&["dna", "status"]);
     let (ok4, out4) = run(&["dna", "status", "--json"]);
     let (ok5, out5) = run(&["dna", "history", "t1"]);
+    // GH #946: an ask for a judgment is admitted as one judgment leaf, an
+    // agent's — the legs' relay answers pending for a leg to claim
+    let (ok6, out6) = run(&["dna", "task", "create", "--judgment", "assess", "whether", "the", "queue", "is", "bounded"]);
+    // the admission is in the answer; the leaf's effect row lands a tick later
+    let mut ok7 = false;
+    let mut out7 = String::new();
+    for _ in 0..40 {
+        let (o, t) = run(&["dna", "history", "t2"]);
+        ok7 = o;
+        out7 = t;
+        if out7.contains("attempt t2/wf1/s0/j/a0 by agent") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
     finish(&mut host);
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
@@ -124,5 +142,8 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let purpose = st["reviews"].as_array().unwrap().iter().find(|r| r["id"] == "purpose").expect("the purpose review in the projection");
     assert_eq!(purpose["state"], "settled");
     assert!(ok5 && out5.contains("history of t1") && out5.contains("task.born") && out5.contains("intent.offered"), "history:\n{out5}");
+    assert!(ok6 && out6.contains("task t2 born"), "a judgment asked: {out6}");
+    assert!(ok7 && out7.contains("\"definition\": \"ask-judge\"") && out7.contains("attempt t2/wf1/s0/j/a0 by agent"), "the judgment is one leaf for an agent, pending for a leg:\n{out7}");
+    assert!(!out7.contains("attempt.outcome        t2/wf1/s0/j/a0"), "nothing performed it in process: no outcome for the leg's attempt:\n{out7}");
     let _ = std::fs::remove_dir_all(&d);
 }

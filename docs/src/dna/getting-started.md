@@ -33,10 +33,15 @@ memory  dna/compose.yaml: `hale dna dev` brings its Postgres up and applies memo
 kept    …/chat/main.hl (the application is not modified; the organization oversees it from dna/org)
 edited  …/chat/hale.toml ([claims] no_base, [environments.local], [environments.org])
 seeded  refs/dna/journal (7 event(s): application.attached, structure.observed, responsibility.proposed, review.requested)
+seated  the head's socket knows uid 1000 as riley (dna.unix.member); the record declares dna.trust = local, where they hold every position
 ```
 
 `init` refuses a program that does not check, and it does not touch
-your application. What appeared:
+your application. The last line is the seat: your uid mapped to you
+in the record's local config, so the head's socket knows you, and
+`dna.trust = local` declared there — one person's record, in which
+you hold every position (`hale dna upgrade` on a record from before
+maps the uid and leaves the trust to you). What appeared:
 
 | what | where | yours? |
 |---|---|---|
