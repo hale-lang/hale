@@ -13,21 +13,24 @@
 //             one JSON line per child as it ends; SIGTERM/SIGINT or `loop --drain` ends it
 //
 // Every verb prints one JSON object and holds nothing afterwards: the
-// head is read per verb (`--api`, or its api socket — `--socket`,
-// `HALE_DNA_SOCKET`, or the one the head declares — where the principal
-// is the peer's credentials and `--holder` has no say; the record head
-// and the principal the head sees this leg as), the position is the graph's `position:<name>`
-// id (`--as`, never a free string), and a request id is minted from what
-// the verb asks, so a verb run twice is one act and the second run reads
-// the first's receipt. No database role: everything is a command on the
-// head's table or a read of it. Exit codes: 0 the head admitted it (or
-// the read answered), 1 a refusal (the receipt is printed, `state:
-// refused`) or a head that could not be reached, 2 a usage error, judged
-// before the head is asked.
+// head is read per verb (`--api`: the record head and the hat, reads),
+// every command is a call on the head's gated topics over its api
+// socket (`--socket`, `HALE_DNA_SOCKET`, or the one the head names in
+// its capabilities), where the principal is the peer's credentials: who
+// a leg is comes from the socket, and the lease's holder is the
+// position it works as (`--as`; a worker of a loop is `--worker <n>`,
+// `position:<name>#<n>`). The position is the graph's `position:<name>`
+// id, never a free string, and a request id is minted from what the
+// verb asks, so a verb run twice is one act and the second run reads
+// the first's receipt. No database role. Exit codes: 0 the head
+// admitted it (or the read answered), 1 a refusal (the receipt is
+// printed, `state: refused`), a verb this peer may not call, or a head
+// that could not be reached, 2 a usage error, judged before the head is
+// asked.
 import ".." as dna;
 
 // The flags with a value; every other `--flag` stands alone.
-const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --holder --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --performer --parallel --only --idle-ms --socket ";
+const VALUED: String = " --api --as --kind --capabilities --classes --orgs --ttl --attempt --work --worker --token --disposition --result --result-file --narrative --evidence-file --receipt-file --receipt-class --render --request-id --wait --why --text --hat-digest --hat-head --hat-watermark --prompt-digest --renderer --renewal --performer --parallel --only --idle-ms --socket ";
 
 type Args {
     verb: String = "";
@@ -78,7 +81,7 @@ fn int_flag(a: Args, name: String, fallback: Int) -> Int {
 // The number flags a verb takes, checked before the head is asked: a
 // value that is not a number is a usage error, never a default.
 fn ints_ok(a: Args) -> String {
-    let names = "--ttl --token --wait --hat-watermark --renewal --parallel --idle-ms";
+    let names = "--ttl --token --wait --hat-watermark --renewal --parallel --idle-ms --worker";
     let mut i = 0;
     while i < dna::word_count(names) {
         let n = dna::nth_word(names, i);
@@ -90,16 +93,12 @@ fn ints_ok(a: Args) -> String {
 }
 fn is_position(s: String) -> Bool { return std::str::starts_with(s, "position:") && len(s) >= 10; }
 
-// Comma- or space-separated words as a JSON array of strings.
-fn words_json(s: String) -> String {
-    let b = std::json::Builder { };
-    b.begin_array();
-    let spaced = std::str::replace(s, ",", " ");
-    let mut i = 0;
-    while i < dna::word_count(spaced) { b.string_value(dna::nth_word(spaced, i)); i = i + 1; }
-    b.end_array();
-    return b.result();
+// The holder of a lease: the position, and `#<n>` for one worker of several.
+fn worker_holder(position: String, worker: Int) -> String {
+    return if len(position) > 0 && worker > 0 { position + "#" + to_string(worker) } else { position };
 }
+// Comma- or space-separated words, space-separated: what the wire's lists are.
+fn words(s: String) -> String { return std::str::trim(std::str::replace(std::str::replace(s, ",", " "), "  ", " ")); }
 
 // The performer kind a position id names: the generated organization's
 // `position:editor` is the edit kind, and every other position its name.
@@ -179,7 +178,7 @@ locus Leg {
     fn position_needed() -> Bool {
         self.as_position = flag(self.a, "--as");
         if !std::str::starts_with(self.as_position, "position:") || len(self.as_position) < 10 { return false; }
-        self.holder = flag_or(self.a, "--holder", self.as_position);
+        self.holder = worker_holder(self.as_position, int_flag(self.a, "--worker", 0));
         return true;
     }
     // ---- next: WorkClaim
@@ -194,16 +193,7 @@ locus Leg {
         // adopted, and a claim by its holder renews in the store, so a second
         // `next` is the same lease either way
         let request = flag_or(self.a, "--request-id", "work-next:" + self.holder + ":" + to_string(std::time::now()) + "." + to_string(std::process::pid()));
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("performer_kind", kind);
-        b.string_field("performer", self.holder);
-        b.field("capabilities", words_json(capabilities));
-        b.field("data_classes", words_json(classes));
-        b.field("organizations", words_json(orgs));
-        b.int_field("ttl", ttl);
-        b.end_object();
-        return self.done("next", request, self.head.submit(request, "dna.attempt.claim", "dna.work", self.head.application, self.head.head_conditions(), b.result()));
+        return self.done("next", request, self.head.claim(request, kind, self.holder, words(capabilities), words(classes), words(orgs), ttl));
     }
     // ---- brief: the hat, or the hat rendered
     fn brief() -> Int {
@@ -244,42 +234,22 @@ locus Leg {
         print(b.result());
         return 0;
     }
-    // The lease a verb acts under: --attempt, --token, --holder (or --as).
+    // The lease a verb acts under: --attempt, --token, --as (and --worker for a loop's child).
     fn lease_needed(verb: String) -> Bool {
-        if len(flag(self.a, "--attempt")) == 0 || len(flag(self.a, "--token")) == 0 { return false; }
         self.as_position = flag(self.a, "--as");
-        self.holder = flag_or(self.a, "--holder", self.as_position);
+        self.holder = worker_holder(self.as_position, int_flag(self.a, "--worker", 0));
         return len(self.holder) > 0;
     }
     // ---- renew: WorkRenew
     fn renew() -> Int {
-        if !self.lease_needed("renew") { return self.usage("`renew` names the lease: --attempt <id> --token <n> and --as position:<name> (or --holder)"); }
+        if !self.lease_needed("renew") { return self.usage("`renew` names the lease: --attempt <id> --token <n> and --as position:<name>"); }
         let attempt = flag(self.a, "--attempt"); let token = int_flag(self.a, "--token", -1);
         // one renewal per count: the caller counts (`--renewal 2`, `3`, …), so a
         // renewal repeated is one act and the next one lands
         let request = flag_or(self.a, "--request-id", "work-renew:" + attempt + ":" + to_string(token) + ":" + to_string(int_flag(self.a, "--ttl", 600)) + ":" + to_string(int_flag(self.a, "--renewal", 1)));
-        return self.done("renew", request, self.head.submit(request, "dna.attempt.renew", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), "{\"ttl\": " + to_string(int_flag(self.a, "--ttl", 600)) + "}"));
+        return self.done("renew", request, self.head.renew(request, attempt, self.holder, token, int_flag(self.a, "--ttl", 600)));
     }
     // ---- submit: WorkSubmit
-    fn outcome_arguments(disposition: String, result: String, result_ref: String, narrative: String, calls: String, receipts: String, hat_digest: String, hat_head: String, hat_watermark: Int, prompt_digest_: String, renderer: String) -> String {
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("disposition", disposition);
-        b.string_field("result", result);
-        b.string_field("result_ref", result_ref);
-        b.string_field("narrative", narrative);
-        b.field("evidence", if len(calls) > 0 { calls } else { "[]" });
-        b.field("receipts", if len(receipts) > 0 { receipts } else { "[]" });
-        if len(hat_digest) > 0 {
-            b.string_field("hat_digest", hat_digest);
-            b.string_field("hat_head", hat_head);
-            b.int_field("hat_watermark", hat_watermark);
-            b.string_field("prompt_digest", prompt_digest_);
-            b.string_field("renderer", renderer);
-        }
-        b.end_object();
-        return b.result();
-    }
     fn receipts_json() -> String {
         let file = flag(self.a, "--receipt-file");
         if len(file) == 0 { return "[]"; }
@@ -294,16 +264,15 @@ locus Leg {
         return b.result();
     }
     fn submit() -> Int {
-        if !self.lease_needed("submit") { return self.usage("`submit` names the lease: --attempt <id> --token <n> and --as position:<name> (or --holder)"); }
+        if !self.lease_needed("submit") { return self.usage("`submit` names the lease: --attempt <id> --token <n> and --as position:<name>"); }
         let attempt = flag(self.a, "--attempt"); let token = int_flag(self.a, "--token", -1);
         let result_file = flag(self.a, "--result-file");
         let result = if len(result_file) > 0 { std::io::fs::read_file(result_file) or "" } else { flag(self.a, "--result") };
         let evidence_file = flag(self.a, "--evidence-file");
         let calls = if len(evidence_file) > 0 { std::io::fs::read_file(evidence_file) or "[]" } else { "[]" };
         let request = flag_or(self.a, "--request-id", "work-submit:" + attempt + ":" + to_string(token));
-        let arguments = self.outcome_arguments(flag_or(self.a, "--disposition", "done"), result, flag(self.a, "--result-ref"), flag(self.a, "--narrative"), calls, self.receipts_json(),
-            flag(self.a, "--hat-digest"), flag(self.a, "--hat-head"), int_flag(self.a, "--hat-watermark", -1), flag(self.a, "--prompt-digest"), flag_or(self.a, "--renderer", RENDERER_VERSION));
-        return self.done("submit", request, self.head.submit(request, "dna.attempt.outcome", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), arguments));
+        return self.done("submit", request, self.head.outcome(request, attempt, self.holder, token, flag_or(self.a, "--disposition", "done"), result, flag(self.a, "--result-ref"), flag(self.a, "--narrative"), calls, self.receipts_json(),
+            flag(self.a, "--hat-digest"), flag(self.a, "--hat-head"), int_flag(self.a, "--hat-watermark", -1), flag(self.a, "--prompt-digest"), flag_or(self.a, "--renderer", RENDERER_VERSION)));
     }
     // ---- settle: WorkSettle — the outcome's command read back until the owner answered
     fn settle() -> Int {
@@ -320,10 +289,10 @@ locus Leg {
     }
     // ---- release: WorkRelease
     fn releasing() -> Int {
-        if !self.lease_needed("release") { return self.usage("`release` names the lease: --attempt <id> --token <n> and --as position:<name> (or --holder)"); }
+        if !self.lease_needed("release") { return self.usage("`release` names the lease: --attempt <id> --token <n> and --as position:<name>"); }
         let attempt = flag(self.a, "--attempt"); let token = int_flag(self.a, "--token", -1);
         let request = flag_or(self.a, "--request-id", "work-release:" + attempt + ":" + to_string(token));
-        return self.done("release", request, self.head.submit(request, "dna.attempt.release", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), "{\"why\": " + dna::record_json_quote(flag_or(self.a, "--why", "released by the leg")) + "}"));
+        return self.done("release", request, self.head.give_back(request, attempt, self.holder, token, flag_or(self.a, "--why", "released by the leg")));
     }
     // ---- friction: FrictionFiled
     fn friction() -> Int {
@@ -332,13 +301,7 @@ locus Leg {
         if len(text) == 0 { return self.usage("`friction` says what got in the way: --text <what>"); }
         let attempt = flag(self.a, "--attempt");
         let request = flag_or(self.a, "--request-id", "work-friction:" + self.as_position + ":" + dna::digest_of(attempt + "\n" + text)[7..23]);
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("position", self.as_position);
-        b.string_field("attempt_id", attempt);
-        b.string_field("text", text);
-        b.end_object();
-        return self.done("friction", request, self.head.submit(request, "dna.friction.file", "dna.friction", self.head.application, self.head.head_conditions(), b.result()));
+        return self.done("friction", request, self.head.friction(request, self.as_position, attempt, text));
     }
     // ---- run: one cycle through the project's performers
     fn run_once() -> Int {
@@ -346,24 +309,13 @@ locus Leg {
         let kind = flag_or(self.a, "--kind", kind_of_position(self.as_position));
         // a fresh id per run, as `next` mints one
         let request = flag_or(self.a, "--request-id", "work-next:" + self.holder + ":" + to_string(std::time::now()) + "." + to_string(std::process::pid()));
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("performer_kind", kind);
-        b.string_field("performer", self.holder);
-        b.field("capabilities", words_json(flag_or(self.a, "--capabilities", default_capabilities(kind))));
-        b.field("data_classes", words_json(flag_or(self.a, "--classes", "public internal")));
-        b.field("organizations", words_json(flag(self.a, "--orgs")));
-        b.int_field("ttl", int_flag(self.a, "--ttl", 600));
-        b.end_object();
-        let claimed = self.head.submit(request, "dna.attempt.claim", "dna.work", self.head.application, self.head.head_conditions(), b.result());
+        let claimed = self.head.claim(request, kind, self.holder, words(flag_or(self.a, "--capabilities", default_capabilities(kind))), words(flag_or(self.a, "--classes", "public internal")), words(flag(self.a, "--orgs")), int_flag(self.a, "--ttl", 600));
         if !claimed.ok { return self.fail("run", claimed.error); }
         let data = std::json::find_field_raw(claimed.body, "data");
         let lease = std::json::find_field_raw(data, "attempt");
         if std::json::find_string_field(lease, "state") != "claimed" { println(answer_json("run", request, claimed)); return 0; }
         let attempt = std::json::find_string_field(lease, "attempt_id");
         let token = std::str::parse_int(std::json::find_string_field(lease, "token")) or 0;
-        // over the binding the holder is the head's to name: the peer it established
-        if self.head.over_socket { self.holder = std::json::find_string_field(lease, "holder"); }
         let context = self.head.context(std::json::find_string_field(lease, "work_id"));
         if !context.ok { return self.fail("run", "the hat: " + context.error); }
         let hat = std::json::find_field_raw(context.body, "data");
@@ -410,7 +362,7 @@ locus Leg {
         }
         if len(performance.refused) > 0 {
             // nothing performed: the lease is given back, saying why
-            let given = self.head.submit("work-release:" + attempt + ":" + to_string(token), "dna.attempt.release", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), "{\"why\": " + dna::record_json_quote(performance.refused) + "}");
+            let given = self.head.give_back("work-release:" + attempt + ":" + to_string(token), attempt, self.holder, token, performance.refused);
             let given_state = if given.ok { std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(given.body, "data"), "attempt"), "state") } else { "error" };
             out.string_field("state", if given_state == "released" { "released" } else { "refused" });
             out.string_field("reason", performance.refused + (if given_state == "released" { "" } else { "; the lease was not given back: " + (if given.ok { std::json::find_string_field(std::json::find_field_raw(given.body, "data"), "reason") } else { given.error }) }));
@@ -419,9 +371,8 @@ locus Leg {
             return if given_state == "released" { 0 } else { 1 };
         }
         let submit_request = "work-submit:" + attempt + ":" + to_string(token);
-        let arguments = self.outcome_arguments(performance.disposition, performance.result, performance.result_ref, performance.narrative, performance.calls, performance.receipts,
+        let submitted = self.head.outcome(submit_request, attempt, self.holder, token, performance.disposition, performance.result, performance.result_ref, performance.narrative, performance.calls, performance.receipts,
             brief.hat_digest, brief.hat_head, brief.hat_watermark, performance.prompt_digest, performance.renderer);
-        let submitted = self.head.submit(submit_request, "dna.attempt.outcome", "dna.attempt", attempt, self.head.lease_conditions(self.holder, token), arguments);
         if !submitted.ok { return self.fail("run", submitted.error); }
         let receipt = std::json::find_field_raw(submitted.body, "data");
         if std::json::find_string_field(std::json::find_field_raw(receipt, "attempt"), "state") == "refused" {
@@ -476,9 +427,7 @@ locus Leg {
         // holder, and the flags that pass through; never a request id — each
         // child mints its own claim id
         let mut common = std::env::arg(0) + "\nrun\n--as\n" + self.as_position + "\n--api\n" + self.head.api + "\n--wait\n" + to_string(int_flag(self.a, "--wait", 0));
-        // over the binding each child is its own peer (its pid), and the head names the holder
-        let socketed = self.head.over_socket;
-        if socketed { common = common + "\n--socket\n" + self.head.socket; }
+        if len(flag(self.a, "--socket")) > 0 { common = common + "\n--socket\n" + flag(self.a, "--socket"); }
         let passed = " --performer --capabilities --classes --orgs --ttl ";
         let mut k = 0;
         while k < dna::word_count(passed) {
@@ -522,7 +471,7 @@ locus Leg {
                     } else if draining {
                         pool.finish(slot); done = done + 1;
                     } else if pool.due(slot, now) {
-                        pool.start(slot, if socketed { common } else { common + "\n--holder\n" + self.holder + "#" + to_string(slot) });
+                        pool.start(slot, common + "\n--worker\n" + to_string(slot));
                     }
                 }
                 w = w + 1;
@@ -537,15 +486,16 @@ locus Leg {
         let numbers = ints_ok(self.a);
         if len(numbers) > 0 { return numbers; }
         let position = flag(self.a, "--as");
-        let holder = flag_or(self.a, "--holder", position);
+        if len(flag(self.a, "--holder")) > 0 { return "the holder is the position a leg works as (--as); a worker of a loop is --worker <n>"; }
+        if len(flag(self.a, "--worker")) > 0 && int_flag(self.a, "--worker", 0) < 1 { return "--worker is 1 or more"; }
+        let holder = worker_holder(position, int_flag(self.a, "--worker", 0));
         if verb == "loop" && has_flag(self.a, "--drain") { return ""; }
         if verb == "loop" && (int_flag(self.a, "--parallel", 1) < 1 || int_flag(self.a, "--parallel", 1) > 64) { return "--parallel is 1..64"; }
         if (verb == "loop" || verb == "run") && len(flag(self.a, "--performer")) > 0 && flag(self.a, "--performer") != "person" && flag(self.a, "--performer") != "deterministic" && flag(self.a, "--performer") != "model" { return "--performer is person, deterministic or model"; }
         if (verb == "next" || verb == "friction" || verb == "run" || verb == "loop") && !is_position(position) { return "`" + verb + "` names the position it works as: --as position:<name> (the graph's id)"; }
         if len(position) > 0 && !is_position(position) { return "--as is a position: position:<name>"; }
-        if len(holder) > 0 && !is_position(holder) { return "--holder is a position, or one of its workers: position:<name>#<n>"; }
         if verb == "renew" || verb == "submit" || verb == "release" {
-            if len(flag(self.a, "--attempt")) == 0 || len(flag(self.a, "--token")) == 0 || len(holder) == 0 { return "`" + verb + "` names the lease: --attempt <id> --token <n> and --as position:<name> (or --holder)"; }
+            if len(flag(self.a, "--attempt")) == 0 || len(flag(self.a, "--token")) == 0 || len(holder) == 0 { return "`" + verb + "` names the lease: --attempt <id> --token <n> and --as position:<name>"; }
         }
         if verb == "settle" && len(flag(self.a, "--attempt")) == 0 && len(flag(self.a, "--request-id")) == 0 { return "`settle` names the outcome: --attempt <id> --token <n>, or --request-id"; }
         if verb == "brief" && len(flag(self.a, "--work")) == 0 && len(flag(self.a, "--attempt")) == 0 { return "`brief` names the Work: --work <id> or --attempt <id>"; }
@@ -564,7 +514,6 @@ locus Leg {
         self.head.api = flag_or(self.a, "--api", if std::env::var_exists("HALE_DNA_API") { std::env::var("HALE_DNA_API") } else { "http://127.0.0.1:8793" });
         self.head.socket = flag_or(self.a, "--socket", if std::env::var_exists("HALE_DNA_SOCKET") { std::env::var("HALE_DNA_SOCKET") } else { "" });
         if !self.head.attach() { return self.fail(verb, self.head.error); }
-        if self.head.over_socket && len(flag(self.a, "--holder")) > 0 { eprintln("hale dna work: --holder is ignored over the head's socket; the lease's holder is the peer the head established"); }
         if verb == "loop" { return self.worker_loop(); }
         if verb == "next" { return self.next(); }
         if verb == "brief" { return self.brief(); }

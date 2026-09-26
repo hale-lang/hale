@@ -1647,14 +1647,23 @@ memory is named to it.
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
-  `hale_dna_work`. Where the head carries its api binding (GH #1104
-  piece 5) the verbs go over its socket — a `call` per verb on the
-  head's topics, the receipt on the value channel, the hat a query
-  topic — and the principal is the peer's credentials: the head names
-  the lease's holder, `--holder` has no say, and a verb outside the
-  caller's slice is `unknown`. A head without the binding is spoken
-  to over HTTP; the leg takes the socket from `--socket`,
-  `HALE_DNA_SOCKET`, or the head's own declaration.
+  `hale_dna_work`. The commands go over the head's api socket (GH
+  #1104 piece 5): each verb a `call` on the head's gated topic —
+  `AttemptClaim`, `AttemptRenew`, `AttemptOutcome`, `AttemptRelease`,
+  `FrictionFile`, gated `position`; `CommandLookup` for `settle` —
+  with the receipt on the value channel as the record wrote it; the
+  reads (the record head, the hat, the socket's path in
+  `/capabilities`) stay HTTP. The principal is the peer's credentials
+  mapped to a person by the record (`dna.unix.member`; a record that
+  declares `dna.trust = local`, as `hale dna new` declares for the one
+  it makes, is that person's — they hold every position — and one that
+  declares nothing, or another trust, leaves it to the graph's `holds`
+  edges); the lease's holder is the position
+  the leg works as (`--as`, `#<n>` for a worker, `--worker <n>`), never
+  a free flag; a peer whose person holds no position is told so at
+  attach, and a verb outside the caller's slice is `unknown`, exit 1.
+  The leg takes the socket from `--socket`, `HALE_DNA_SOCKET`, or the
+  head's capabilities.
 
 ## Workflow execution: one step
 

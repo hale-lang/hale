@@ -14,7 +14,7 @@ receipt. The position a leg works as is the graph's `position:<name>`
 id, never a free string.
 
 ```text
-hale dna work next --as position:agent          claim the next attempt for a position
+hale dna work next --as position:agent [--worker n]   claim the next attempt for a position
 hale dna work brief --attempt <id> [--render text|prompt|agent] [--plain]
 hale dna work renew --as … --attempt <id> --token <n> [--ttl 900]
 hale dna work submit --as … --attempt <id> --token <n> --result <text> [--result-file f]
@@ -38,12 +38,17 @@ describe`.
 
 ## Positions, ids, exit codes
 
-`--as` and `--holder` are positions: `position:<name>` is the graph's
-id, and `position:<name>#<n>` one worker of several. The head admits a
-position the graph names (a `graph.node` row) or one of the
+`--as` is a position: `position:<name>`, the graph's id. The head
+admits a position the graph names (a `graph.node` row) or one of the
 organization's own (`position:leader`, `position:editor`,
 `position:agent`, `position:human`, `position:service`,
-`position:software`); anything else is refused with the reason.
+`position:software`); anything else is refused with the reason. The
+lease's holder is the position a leg works as; a worker of a loop is
+`--worker <n>`, held as `position:<name>#<n>`, so two workers of one
+position never share a lease. Who the leg *is* comes from the socket:
+the peer's credentials, mapped to a person by the record
+(`git config --local --add dna.unix.member "uid:<n>=<person>"`), and
+the verbs are listed to a peer whose person holds a position.
 
 Request ids: `next` mints a fresh id per call (a claim by its holder
 renews in the store, so a second `next` is the same lease); `submit`
@@ -55,9 +60,10 @@ attempt. `--request-id` overrides any of them.
 
 Exit codes: **0** the head admitted it (or the read answered); **1** a
 refusal — the receipt is printed, with `state: refused` and the reason
-— or a head that could not be reached; **2** a usage error, judged
-before the head is asked (a missing flag, a free-string position, a
-number that is not one).
+— a verb this peer may not call (`unknown`: outside the caller's
+slice), or a head that could not be reached; **2** a usage error,
+judged before the head is asked (a missing flag, a free-string
+position, a number that is not one).
 
 The leg is built once per project under `.hale/dna/legs/<key>`, the
 key being what it is built from (the performers, the catalog, the
@@ -207,18 +213,30 @@ calls.json` hands it back with its calls as evidence (the array of
 
 ## Over the head's socket
 
-When the head carries its api binding (GH #1104 piece 5, the head of
-#1129), the verbs go over its Unix socket instead of HTTP: one JSON
-object per line, the verb a `call` on its topic, the receipt on the
-value channel, the hat a query. The leg takes the socket from
-`--socket`, from `HALE_DNA_SOCKET`, or from the head itself when its
-HTTP answer declares one; a head with no socket is spoken to over
-HTTP as before. Over the socket the principal is the peer's
-credentials, as the kernel vouches for them: `--holder` has no say
-(it is ignored with a note), the head names the lease's holder in the
-claim it answers, and the workers of a `loop` are told apart by their
-pids. A verb the principal may not use answers `unknown`, exit 1, as
-the binding refuses everything outside a caller's slice.
+The head's commands are its gated topics on its api socket (GH #1104
+piece 5): one JSON object per line, each verb a `call` on its topic
+with the payload the description gives it — `AttemptClaim`,
+`AttemptRenew`, `AttemptOutcome`, `AttemptRelease`, `FrictionFile`,
+all gated `position`, and `CommandLookup`, which `settle` reads a
+command back with — and the receipt on the value channel, exactly as
+the record wrote it. The reads stay HTTP: the record head from
+`/applications`, the hat from `/dna/context`, and the socket's path
+from `/capabilities` (`api.socket`), which is where the leg finds it;
+`--socket` or `HALE_DNA_SOCKET` name it outright. One socket per
+record, under `$XDG_RUNTIME_DIR/hale/dna/`; `LOTUS_API` overrides it
+where the head runs.
+
+The socket authenticates: the principal is the peer's credentials, as
+the kernel vouches for them, and the record maps them to a person
+(`dna.unix.member`, in the record's local config; `hale dna new` maps
+its maker). A record that declares `dna.trust = local` — as the one
+`hale dna new` makes does — is one person's: whoever a peer maps to
+holds every position; a record that declares nothing, or any other
+trust, leaves it to the graph's `holds` edges. A leg is not asked who it is —
+there is no holder flag — and a peer whose person holds no position
+sees no verb at all: the leg says so at attach, before it asks
+anything. `hale describe <socket>` lists what a peer may call;
+`hale call <socket> AttemptClaim '{…}'` is the same claim by hand.
 
 ## Through `hale mcp`
 

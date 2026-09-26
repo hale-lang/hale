@@ -56,6 +56,12 @@ interface Performer {
     fn perform(brief: Brief, hands: Hands) -> Performance;
 }
 
+// The `--worker <n>` a holder `position:<name>#<n>` was claimed with, or nothing.
+fn worker_flag(holder: String) -> String {
+    let i = std::str::index_of(holder, "#");
+    return if i >= 0 { " --worker " + holder[(i + 1)..len(holder)] } else { "" };
+}
+
 // A person: the brief is rendered as text for them; the outcome comes
 // back through `hale dna work submit`, under the lease the brief names.
 locus Person {
@@ -66,7 +72,7 @@ locus Person {
         self.briefed = self.briefed + 1;
         return Performance {
             pending: true, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION,
-            narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --attempt " + brief.attempt_id + " --holder " + brief.holder + " --token " + to_string(brief.token) + " --result <text>` hands the outcome back under the lease (until " + to_string(brief.until) + ")"
+            narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --as " + brief.position + worker_flag(brief.holder) + " --attempt " + brief.attempt_id + " --token " + to_string(brief.token) + " --result <text>` hands the outcome back under the lease (until " + to_string(brief.until) + ")"
         };
     }
 }

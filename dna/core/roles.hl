@@ -50,6 +50,8 @@ locus RecordRoles {
         git: GitJournal = GitJournal { };
         opened: Bool = false;
         given: Bool = false; // the mapping was handed in, not read from the record
+        trust: String = ""; // `dna.trust` as read from the record ("" = local); a fixture hands one in
+        local_trust: Bool = false; // under local trust the person a peer maps to holds every position
         scanned: Int = -1; // the revision the live edges were read at
         looked: Int = 0; // when the git record was last asked whether it moved (monotonic ns)
         live: HoldsRows = HoldsRows { };
@@ -73,10 +75,25 @@ locus RecordRoles {
     // The mapping as the record's own local config holds it — `--local`
     // only, never a global or an included file — read again whenever the
     // record moves.
+    // The mapping, and the trust the record declares: a record that
+    // declares `dna.trust = local` — one person holding every authority,
+    // as `hale dna new` declares for the record it makes — is that
+    // person's: whoever a peer maps to holds every position, the board
+    // included, so a fresh record is its maker's to work as soon as the
+    // socket knows them. A record that declares nothing, or any other
+    // trust, leaves it to the graph's `holds` edges. A fixture's memory
+    // record says its trust in `trust`.
     fn read_mapping() {
-        if self.given || self.memory { return; }
-        let r = self.git.record.git("config\n--local\n--get-all\ndna.unix.member");
-        self.mapping = if r.code == 0 { r.stdout } else { "" };
+        if self.memory {
+            self.local_trust = self.trust == "local";
+            return;
+        }
+        if !self.given {
+            let r = self.git.record.git("config\n--local\n--get-all\ndna.unix.member");
+            self.mapping = if r.code == 0 { r.stdout } else { "" };
+        }
+        let t = self.git.record.git("config\n--get\ndna.trust");
+        self.local_trust = trim_nl(if t.code == 0 { t.stdout } else { "" }) == "local";
     }
     // The live holds edges and the retired people, as of the record now.
     // A git record is asked whether it moved at most once a second: the
@@ -141,6 +158,7 @@ locus RecordRoles {
         self.scan();
         let person = member_of(self.mapping, p.name);
         if len(person) == 0 || std::str::contains("\n" + self.retired_people, "\n" + person + "\n") { return false; }
+        if self.local_trust { return true; }
         let any = r == "position";
         let want = if r == "owner" { "position:board" } else { "position:" + std::str::replace(r, "_", "/") };
         let mut k = 0;
