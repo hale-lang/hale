@@ -69,10 +69,12 @@ locus App {
         r.member("subject", subject);
         self.append(j, "graph.edge", r.id(), r.body());
     }
-    // `hale dna show <args>` in the repository, reading as the head.
-    fn show(args: String) -> dna::RunResult {
-        return dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\nshow\n" + args);
+    // `hale dna show <args>` in `dir`, the head's DSN named and `spine` as
+    // the spine's ("" for none) — show reads as the head either way.
+    fn show_in(dir: String, spine: String, args: String) -> dna::RunResult {
+        return dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && if [ -n \"$3\" ]; then export HALE_DNA_MEMORY_DSN_SPINE=\"$3\"; fi && shift 3 && exec \"$@\"\nsh\n" + dir + "\n" + self.head + "\n" + spine + "\n" + toolchain() + "\ndna\nshow\n" + args);
     }
+    fn show(args: String) -> dna::RunResult { return self.show_in(self.repo, "", args); }
     @unbounded
     fn project(owner: String, identity: String) {
         let spine = dna::migrated(owner, identity);
@@ -90,11 +92,43 @@ locus App {
         if len(owner) == 0 { eprintln("graph_show_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
         let scratch = dna::scratch_root("graph-show");
 
+        // ---- a project with no record: the empty perspective, no memory asked
+        let bare = scratch + "/bare";
+        let made_bare = dna::run_tool("sh\n-c\nmkdir -p \"$1/dna\" && cd \"$1\" && git init -q -b main\nsh\n" + bare);
+        std::test::assert_eq_int(made_bare.code, 0, "a project whose record has no rows: " + made_bare.stderr);
+        let empty_org = self.show_in(bare, "", "org");
+        std::test::assert(empty_org.code == 0 && empty_org.stdout == "" && std::str::contains(empty_org.stderr, "the record has no rows"), "no rows, no chart, and why: " + empty_org.stdout + empty_org.stderr);
+        let empty_json = self.show_in(bare, "", "processes\n--json");
+        std::test::assert(empty_json.code == 0 && std::json::find_int_field(empty_json.stdout, "record_rows") == 0 && std::str::contains(empty_json.stdout, "\"meets\": []"), "the empty process model as JSON: " + empty_json.stdout);
+
+        // ---- what show does not take, it refuses
+        let flag = self.show_in(bare, "", "org\n--bogus");
+        std::test::assert(flag.code == 2 && std::str::contains(flag.stderr, "`--bogus` is not a flag of show"), "an unknown flag is refused: " + flag.stderr);
+        let nodir = self.show_in(bare, "", "org\n" + scratch + "/nowhere");
+        std::test::assert(nodir.code == 2 && std::str::contains(nodir.stderr, "is not a directory"), "a project that is not a directory is refused: " + nodir.stderr);
+        let two = self.show_in(bare, "", "org\n.\n.");
+        std::test::assert(two.code == 2 && std::str::contains(two.stderr, "one project at most"), "a second project is refused: " + two.stderr);
+
         self.repo = scratch + "/voice";
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + self.repo + "\n" + toolchain());
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+
+        let identity = dna::GitRecord { repo: self.repo }.identity();
+        let m = dna::migrate(dna::parse_dsn(owner), identity);
+        std::test::assert(m.ok, "memory migrates: " + m.why);
+        self.head = m.head_dsn;
+
+        // ---- no memory named: said, not guessed
+        let none = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_OWNER && exec \"$2\" dna show org\nsh\n" + self.repo + "\n" + toolchain());
+        std::test::assert(none.code != 0 && std::str::contains(none.stderr, "no memory is named"), "without memory, show says so: " + none.stdout + none.stderr);
+
+        // ---- the ingest alone: the process model, and no chart without positions
+        self.project(owner, identity);
+        let before = self.show("org");
+        std::test::assert(before.code == 0 && before.stdout == "", "no positions, no chart — not a purpose header over nothing: " + before.stdout + before.stderr);
+        std::test::assert_eq_str(self.show("processes").stdout, PROCESSES, "the process model needs no holes filled");
 
         // ---- the holes, filled as GRAPH.md renders its org chart
         let j = dna::GitJournal { repo: self.repo };
@@ -115,16 +149,6 @@ locus App {
         self.reviews(j, "brain/reviewer", "contract:spec/internal.yaml");
         self.reviews(j, "node/reviewer", "contract:spec/node.yaml");
         self.reviews(j, "node/reviewer", "contract:spec/protocol.yaml");
-
-        let identity = dna::GitRecord { repo: self.repo }.identity();
-        let m = dna::migrate(dna::parse_dsn(owner), identity);
-        std::test::assert(m.ok, "memory migrates: " + m.why);
-        self.head = m.head_dsn;
-
-        // ---- no memory named: said, not guessed
-        let none = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_OWNER && exec \"$2\" dna show org\nsh\n" + self.repo + "\n" + toolchain());
-        std::test::assert(none.code != 0 && std::str::contains(none.stderr, "no memory is named"), "without memory, show says so: " + none.stdout + none.stderr);
-
         self.project(owner, identity);
 
         // ---- GRAPH.md's two renderings, byte for byte
@@ -136,6 +160,11 @@ locus App {
         std::test::assert_eq_str(processes.stdout, PROCESSES, "the process model is GRAPH.md's");
         std::test::assert(!std::str::contains(org.stderr + processes.stderr, "memory has projected"), "memory is at the record's end: nothing is said beside them");
 
+        // ---- read as the head even where the spine's DSN is set: a spine
+        // DSN that answers nothing changes nothing
+        let spined = self.show_in(self.repo, "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable", "org");
+        std::test::assert(spined.code == 0 && spined.stdout == ORG, "show reads as the head, never the spine: " + spined.stderr);
+
         // ---- JSON: the query's answer and how far memory has come
         let rows = j.revision();
         let json = self.show("org\n--json");
@@ -144,18 +173,29 @@ locus App {
         std::test::assert_eq_str(std::json::find_string_field(json.stdout, "perspective"), "org", "which perspective");
         std::test::assert_eq_int(std::json::find_int_field(json.stdout, "record_rows"), rows, "the record's rows");
         std::test::assert_eq_int(std::json::find_int_field(json.stdout, "projected_rows"), rows, "all of them projected");
+        std::test::assert(std::json::find_bool_field(json.stdout, "stamp_valid"), "under a stamp that vouches for them");
         std::test::assert(std::str::contains(json.stdout, "\"position:node/reviewer\"") && std::str::contains(json.stdout, "\"contract:spec/protocol.yaml\""), "positions and what they sign, by id: " + json.stdout);
         let pjson = self.show("processes\n--json");
         std::test::assert(std::json::valid_object(dna::trim_nl(pjson.stdout)) && std::str::contains(pjson.stdout, "\"carriers\""), "the process model as JSON: " + pjson.stdout);
 
-        // ---- a holder is shown with the position it holds
+        // ---- a holder is shown with the position it holds; a position
+        // under no node is under (unplaced)
         let holds = ops::GraphEdge { kind: "holds" };
         holds.member("position", "position:board");
         holds.member("holder", "ada");
         self.append(j, "graph.edge", holds.id(), holds.body());
+        self.append(j, "graph.node", "position:lone", ops::graph_node_body("position", "lone", "", ""));
         self.project(owner, identity);
         let held = self.show("org");
         std::test::assert(std::str::starts_with(held.stdout, "purpose\n  board [ada]\n  postgres    dev, reviewer(store.md)\n"), "the board, held by ada: " + held.stdout);
+        std::test::assert(std::str::contains(held.stdout, "\n  (unplaced)  lone\n"), "a position under no node: " + held.stdout);
+
+        // ---- a retired node leaves the rendering
+        self.append(j, "graph.retired", "process:node", "{}");
+        self.project(owner, identity);
+        let retired = self.show("processes");
+        std::test::assert(std::str::contains(retired.stdout, "callers, ui  --HTTP: openapi.yaml-->  api\nthe machine's operator  --HTTP: node.yaml-->  (nobody here)\n"), "node, retired, is no consumer and no server: " + retired.stdout);
+        std::test::assert(std::str::contains(retired.stdout, "compose runs { postgres, nats, api, brain }"), "and runs nowhere: " + retired.stdout);
 
         // ---- a row memory has not reached is said beside the graph, not shown
         self.append(j, "graph.retired", "runs:deployment:scaled-out", "{}");
@@ -163,6 +203,14 @@ locus App {
         std::test::assert_eq_int(behind.code, 0, "show while memory is behind: " + behind.stderr);
         std::test::assert(std::str::contains(behind.stdout, "scaled-out runs {"), "the graph as memory holds it");
         std::test::assert(std::str::contains(behind.stderr, "memory has projected " + to_string(j.revision() - 1) + " of the record's " + to_string(j.revision()) + " rows"), "and how far behind the record it is: " + behind.stderr);
+
+        // ---- a stamp that vouches for nothing is said
+        let admin = dna::pq_conn(dna::parse_dsn(owner));
+        std::test::assert(admin.open().ok, "the owner connects");
+        std::test::assert(admin.exec("UPDATE " + dna::schema_for(identity) + ".knowledge_meta SET value = 'corrupt' WHERE key = 'graph_projection_protocol'").ok, "a stamp at no protocol");
+        admin.close();
+        let stamp = self.show("org\n--json");
+        std::test::assert(stamp.code == 0 && std::str::contains(stamp.stderr, "vouches for nothing") && !std::json::find_bool_field(stamp.stdout, "stamp_valid"), "a stamp that vouches for nothing is said: " + stamp.stdout + stamp.stderr);
 
         std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);

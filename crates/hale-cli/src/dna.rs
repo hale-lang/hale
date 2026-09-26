@@ -14,7 +14,7 @@
 //!   hale dna status [--json]    the status projection, from the Journal
 //!   hale dna task create <outcome…>  ask for an outcome: a Task, a row a node relays to the organism
 //!   hale dna history [<entity>] walk the Journal by causal links
-//!   hale dna show org|processes [--json]  the graph's two perspectives, from memory
+//!   hale dna show org|processes [--json] [project]  the graph's two perspectives, from memory
 //!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
@@ -487,9 +487,29 @@ pub fn run(args: &[String]) -> ExitCode {
         // two perspectives over the graph, read from memory
         Some("show") => match args.get(1).map(String::as_str) {
             Some(what @ ("org" | "processes")) => {
-                let (dir, rest) = project_arg(&args[2..], false);
+                // `--json` and at most one project directory, nothing else:
+                // a flag or a path this verb does not take is said, never
+                // ignored (the review of #1120)
+                let mut dir = PathBuf::from(".");
                 let mut forwarded = vec![what.to_string()];
-                forwarded.extend(rest);
+                let mut project = false;
+                for a in &args[2..] {
+                    if a == "--json" {
+                        forwarded.push(a.clone());
+                    } else if a.starts_with('-') {
+                        eprintln!("hale dna show: `{a}` is not a flag of show (--json)\nusage: hale dna show org | processes [--json] [project]");
+                        return ExitCode::from(2);
+                    } else if project {
+                        eprintln!("hale dna show: one project at most (`{a}` is a second)\nusage: hale dna show org | processes [--json] [project]");
+                        return ExitCode::from(2);
+                    } else if !Path::new(a).is_dir() {
+                        eprintln!("hale dna show: `{a}` is not a directory (the project)");
+                        return ExitCode::from(2);
+                    } else {
+                        project = true;
+                        dir = PathBuf::from(a);
+                    }
+                }
                 host_exec("show", &dir, &forwarded)
             }
             _ => {
@@ -651,7 +671,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
-    eprintln!("       hale dna show org|processes [--json]  the org chart and the process model, as queries over memory");
+    eprintln!("       hale dna show org|processes [--json] [project]");
+    eprintln!("                                    the org chart and the process model, as queries over memory");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna ledger [status | rows | adopt | abandon --why <w>]");
     eprintln!("                                    the operational memory: where the day's work lives, its rows as JSON lines, and the one-way");

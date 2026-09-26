@@ -6,7 +6,8 @@
 // rows and shows up in both. A node is shown by the last segment of its
 // name (`contract:spec/openapi.yaml` is `openapi.yaml`).
 //
-// The org chart: `purpose`, then one line per node positions sit under, in
+// The org chart — nothing at all when there are no positions — is
+// `purpose`, then one line per node positions sit under, in
 // the record's order. A position under the purpose is a line of its own;
 // the others are `<node>  <role>, <role>(<what it reviews>)` with the
 // node's name padded so the roles line up, a role being the position's
@@ -72,10 +73,12 @@ fn show_org(json: String) -> String {
         if !std::str::contains(parents, "\n" + under + "\n") {
             parents = parents + under + "\n";
             let shown = if len(under) == 0 { "(unplaced)" } else { show_name(under) };
-            if graph_id_kind(under) != "purpose" && len(shown) > width { width = len(shown); }
+            if graph_id_kind(under) != "purpose" && std::str::cp_count(shown) > width { width = std::str::cp_count(shown); }
         }
         it = std::json::array_next(it);
     }
+    // no positions, no chart: an empty graph prints nothing
+    if len(parents) == 1 { return ""; }
     let mut out = "purpose\n";
     let mut rest = parents[1..len(parents)];
     while len(rest) > 0 {
@@ -99,7 +102,8 @@ fn show_org(json: String) -> String {
             }
             p = std::json::array_next(p);
         }
-        if graph_id_kind(under) != "purpose" { out = out + "  " + std::str::pad_right(shown, width, " ") + "  " + roles + "\n"; }
+        // padded by what a reader sees, code points, not bytes
+        if graph_id_kind(under) != "purpose" { out = out + "  " + shown + std::str::repeat(" ", width - std::str::cp_count(shown)) + "  " + roles + "\n"; }
     }
     return out;
 }
