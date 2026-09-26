@@ -1647,7 +1647,19 @@ memory is named to it.
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
-  `hale_dna_work`.
+  `hale_dna_work`. The commands go over the head's api socket (GH
+  #1104 piece 5): each verb a `call` on the head's gated topic —
+  `AttemptClaim`, `AttemptRenew`, `AttemptOutcome`, `AttemptRelease`,
+  `FrictionFile`, gated `position`; `CommandLookup` for `settle` —
+  with the receipt on the value channel as the record wrote it; the
+  reads (the record head, the hat, the socket's path in
+  `/capabilities`) stay HTTP. The principal is the peer's credentials
+  mapped to a person by the record; the lease's holder is the position
+  the leg works as (`--as`, `#<n>` for a worker, `--worker <n>`), never
+  a free flag; a peer whose person holds no position is told so at
+  attach, and a verb outside the caller's slice is `unknown`, exit 1.
+  The leg takes the socket from `--socket`, `HALE_DNA_SOCKET`, or the
+  head's capabilities.
 
 ## Workflow execution: one step
 

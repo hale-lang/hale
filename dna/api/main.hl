@@ -552,7 +552,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
-        Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, port: port, commands: Commands { root: root, roles: dna::RecordRoles { root: root }, provider: commands },
+        Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, port: port, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands } },
             handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
         return;
     }
@@ -562,6 +562,6 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     }
     let user = std::env::var("USER");
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local; ", command_label, ")");
-    Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, port: port, commands: Commands { root: root, roles: dna::RecordRoles { root: root }, provider: commands },
+    Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, port: port, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands } },
         handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, knowledge_commands: knowledge_commands, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: if len(user) > 0 { user } else { "local" } } };
 }

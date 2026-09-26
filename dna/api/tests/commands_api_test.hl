@@ -90,7 +90,7 @@ locus CommandCases {
         self.host.mode = "unavailable"; std::test::assert_eq_str(self.lookup("stable-request").code, "commands_unavailable", "unavailable code");
         self.host.mode = "recorded";
         // the request identity belongs to the caller: bob's lookup of alice's key finds nothing
-        let bob = api::Commands { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: self.host };
+        let bob = api::CommandAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: self.host };
         std::test::assert_eq_str(bob.lookup(api::Lookup { request_id: "stable-request" }, self.caller()).code, "command_not_found", "another principal cannot recover alice's command");
         std::test::assert_eq_str(self.host.last_context.principal_name, "bob", "bob is recorded as bob");
         // the operations' bounds, before the provider
@@ -115,12 +115,12 @@ locus CommandCases {
         let before_unsupported = self.host.submit_calls;
         self.stopped(self.commands.propose(self.practice("unsupported", "a", "why"), self.caller()), "commands_unsupported", before_unsupported, "unsupported operation");
         self.host.practice_supported = true;
-        let absent = api::Commands { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" } };
+        let absent = api::CommandAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" } };
         std::test::assert_eq_str(absent.propose(self.practice("absent", "a", "why"), self.caller()).code, "commands_unsupported", "the default provider admits nothing");
         std::test::assert_eq_str(absent.lookup(api::Lookup { request_id: "stable-request" }, self.caller()).code, "commands_unsupported", "nor recovers anything");
         // no Record, no command
         let before_missing = self.host.submit_calls;
-        let missing = api::Commands { root: self.f.root + "/missing", roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: self.host };
+        let missing = api::CommandAdmission { root: self.f.root + "/missing", roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: self.host };
         self.stopped(missing.propose(self.practice("missing", "a", "why"), self.caller()), "record_unavailable", before_missing, "an unreadable Record");
         std::test::assert_eq_str(self.f.refs(), refs, "scripted conformance never writes native Record");
     }
@@ -213,7 +213,7 @@ locus CommandCases {
         std::test::assert(self.commands.create_task(self.ask("long-outcome", text, "org"), self.caller()).ok, "8192 UTF-8 outcome bytes accepted exactly");
         self.invalid_ask(self.ask("long-outcome-over", text + "a", "org"), "8193 outcome bytes");
         // an ungated command reaches the provider under the peer's name when the Record maps nobody
-        let unmapped = api::Commands { root: self.f.root, roles: dna::RecordRoles { memory: true }, provider: self.host };
+        let unmapped = api::CommandAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true }, provider: self.host };
         std::test::assert(unmapped.create_task(self.ask("unmapped", "a", "org"), self.caller()).ok, "raising work needs only an authenticated peer");
         std::test::assert_eq_str(self.host.last_command.expected_principal_name, "uid:1000", "an unmapped peer is named by its account");
         self.host.create_authorized = false;
@@ -331,7 +331,7 @@ fn main() {
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
     let host = scripted::ScriptedCommands { };
-    let commands = api::Commands { root: f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: host };
+    let commands = api::CommandAdmission { root: f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: host };
     let cases = CommandCases { f: f, host: host, commands: commands };
     cases.practice_cases(); cases.review_cases(); cases.create_cases(); cases.attempt_cases();
 }
