@@ -1,5 +1,6 @@
-// The HTTP adapter copies typed values only. Native admission, identity,
-// authority, eligibility and recovery remain in operations::GovernanceCommands.
+// The head's command provider copies typed values only. Native admission,
+// identity, authority, eligibility and recovery remain in
+// operations::GovernanceCommands; the gate is the api binding's.
 import ".." as api;
 import "../../operations" as ops;
 
@@ -10,9 +11,6 @@ interface GovernanceService {
     fn lookup(context: ops::GovernanceContext, request_id: String) -> ops::GovernanceResult;
 }
 
-interface GovernanceOrganizationCapabilities {
-    fn organization_capability(context: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability;
-}
 interface GovernancePeople {
     fn retirement_read(context: ops::GovernanceContext, person: String) -> ops::PersonAdministrationRead;
 }
@@ -20,12 +18,9 @@ locus NoGovernancePeople {
     params { }
     fn retirement_read(context: ops::GovernanceContext, person: String) -> ops::PersonAdministrationRead { return ops::PersonAdministrationRead { code: "commands_unsupported" }; }
 }
-locus NoGovernanceOrganizationCapabilities {
-    params { }
-    fn organization_capability(context: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability { return ops::GovernanceCapability { }; }
-}
 locus PracticeReviewCommands {
-    params { root: String = ""; application_id: String = ""; service: GovernanceService; source_capabilities: GovernanceOrganizationCapabilities = NoGovernanceOrganizationCapabilities { }; organization_configured: Bool = false; people: GovernancePeople = NoGovernancePeople { }; }
+    params { root: String = ""; application_id: String = ""; service: GovernanceService; organization_configured: Bool = false; people: GovernancePeople = NoGovernancePeople { }; }
+    fn present() -> Bool { return true; }
     fn person(context: api::CommandContext, id: String) -> ops::PersonAdministrationRead {
         if !self.bound(context) { return ops::PersonAdministrationRead { code: "command_context_changed" }; }
         return self.people.retirement_read(self.context(context), id);
@@ -38,20 +33,6 @@ locus PracticeReviewCommands {
     }
     fn context(context: api::CommandContext) -> ops::GovernanceContext {
         return ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
-    }
-    fn capability(context: api::CommandContext, operation: String, version: String) -> api::CommandCapability {
-        if !self.bound(context) { return api::CommandCapability { reason: "The command provider is not bound to this application." }; }
-        if operation == "dna.organization.propose" { if version != "1" { return api::CommandCapability { reason: "This Organization command version is not supported." }; } let source = self.organization_capabilities(context); return source.proposal; }
-        let value = self.service.capability(self.context(context), operation, version);
-        return api::CommandCapability { available: value.available, authorized: value.authorized, reason: value.reason, recipients: value.recipients };
-    }
-    fn organization_capabilities(context: api::CommandContext) -> api::OrganizationCommandCapabilities {
-        if !self.organization_configured || !self.bound(context) { return api::OrganizationCommandCapabilities { }; }
-        let proposal = self.source_capabilities.organization_capability(self.context(context), "dna.organization.propose", "1");
-        let review = self.source_capabilities.organization_capability(self.context(context), "dna.review.verdict", "1");
-        return api::OrganizationCommandCapabilities { configured: true,
-            proposal: api::CommandCapability { available: proposal.available, authorized: proposal.authorized, reason: proposal.reason },
-            review: api::CommandCapability { available: review.available, authorized: review.authorized, reason: review.reason } };
     }
     fn receipt(value: ops::GovernanceReceipt) -> api::CommandReceipt {
         return api::CommandReceipt {
@@ -81,29 +62,11 @@ locus PracticeReviewCommands {
         let source = api::Source { ok: value.ok, identity: value.application_id, head: value.head, revision: value.revision, name: context.source.name, code: if value.ok { "" } else { value.code }, error: "" };
         return api::CommandResult { ok: value.ok, code: value.code, source: source, receipt: self.receipt(value.receipt) };
     }
-    // Pure field mapping: expected principal never becomes trusted context.
-    fn native_request(command: api::CommandRequest) -> ops::GovernanceCommand {
-        return ops::GovernanceCommand {
-            request_id: command.request_id, operation: command.operation, operation_version: command.operation_version,
-            application_id: command.application_id, position_id: command.position_id, target_kind: command.target_kind,
-            target_id: command.target_id, subject_digest: command.subject_digest, text: command.text, rationale: command.rationale,
-            expected_review_state: command.expected_review_state, verdict: command.verdict, comment: command.comment,
-            source_head: command.source_head, dependency_source: command.dependency_source, dependency_digest: command.dependency_digest,
-            record_head: command.record_head, source_text: command.source_text,
-            expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
-            outcome: command.outcome, to: command.to,
-            performer_kind: command.performer_kind, performer: command.performer, effect_class: command.effect_class, capabilities: command.capabilities, data_classes: command.data_classes,
-            organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
-            disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
-            evidence: command.evidence, receipts: command.receipts,
-            hat_digest: command.hat_digest, hat_head: command.hat_head, hat_watermark: command.hat_watermark, prompt_digest: command.prompt_digest, renderer: command.renderer
-        };
-    }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         if !self.bound(context) || command.expected_principal_mode != context.principal_mode || command.expected_principal_name != context.principal_name { return api::CommandResult { code: "command_context_changed" }; }
         if !command.valid { return api::CommandResult { code: "invalid_command" }; }
         if command.operation == "dna.organization.propose" && !self.supported(command.operation, command.operation_version) { return api::CommandResult { code: "commands_unsupported" }; }
-        let value = self.native_request(command);
+        let value = api::native_of(command);
         return self.result(context, self.service.submit(self.context(context), value));
     }
     fn lookup(context: api::CommandContext, request_id: String) -> api::CommandResult {

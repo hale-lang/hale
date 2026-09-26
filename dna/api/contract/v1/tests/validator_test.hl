@@ -129,88 +129,21 @@ locus Cases {
         let reads = std::json::find_field_raw(capabilities, "reads");
         self.expect("Capabilities", self.field(capabilities, "reads", self.field(reads, "definitions", "")), false, "definition support is explicit even for the default head");
     }
-    fn command_cases() {
-        let legacy = self.example("read-only-capabilities");
-        self.expect("CapabilitiesResponse", legacy, true, "provider absence preserves legacy capabilities");
-        let request = self.example("practice-replacement-request");
-        self.expect("PracticeCommandRequest", request, true, "exact versioned replacement envelope");
-        self.expect("PracticeCommandRequest", self.field(request, "operation_version", "1"), false, "operation version remains a string");
-        self.expect("PracticeCommandRequest", self.field(request, "request_id", "\"\""), false, "recovery identity cannot be empty");
-        self.expect("PracticeCommandRequest", self.field(request, "principal", "{}"), false, "caller cannot supply trusted principal");
-        let conditions = std::json::find_field_raw(request, "preconditions");
-        let expected = std::json::find_field_raw(conditions, "principal");
-        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", "")), false, "expected authenticated identity is required");
-        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", self.field(expected, "mode", ""))), false, "expected identity requires mode");
-        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", self.field(expected, "name", ""))), false, "expected identity requires name");
-        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", self.field(expected, "name", "123"))), false, "expected name is a string");
-        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", "{\"mode\":\"local\",\"mode\":\"oidc\",\"name\":\"riley\"}")), false, "expected identity rejects duplicate nested keys");
-        self.expect("PracticeCommandRequest", self.example("practice-replacement-request-oidc"), true, "OIDC expected identity has the same closed shape");
-        let arguments = std::json::find_field_raw(request, "arguments");
-        self.expect("PracticeCommandRequest", self.field(request, "arguments", self.field(arguments, "text", "\"\"")), false, "replacement text cannot be empty");
-        self.expect("PracticeCommandRequest", self.field(request, "arguments", self.field(arguments, "supersedes", "\"caller-selected\"")), false, "provider obtains predecessor metadata");
-        self.expect("PracticeCommandRequest", "{\"request_id\":\"one\",\"request_id\":\"two\"}", false, "duplicate request fields rejected before interpretation");
-        self.expect("PracticeCommandRequest", "{\"request_\\u0069d\":\"one\"}", false, "escaped request keys fail closed");
-        self.expect("PracticeCommandRequest", self.field(request, "request_id", "\"\\ud800\""), false, "malformed Unicode request identity");
-        let recorded = std::json::find_field_raw(self.example("command-recorded"), "data");
-        self.expect("PracticeCommandReceipt", self.field(recorded, "command_id", "\"\""), false, "receipt has a native command identity");
-        self.expect("PracticeCommandReceipt", self.field(recorded, "fingerprint", "\"\""), false, "receipt has a native equivalence fingerprint");
-        self.expect("PracticeCommandReceipt", self.field(recorded, "state", "\"published\""), false, "publication is not a command receipt state");
-        let principal = std::json::find_field_raw(recorded, "principal");
-        self.expect("PracticeCommandReceipt", self.field(recorded, "principal", self.field(principal, "mode", "\"position\"")), false, "acting position cannot impersonate a principal mode");
-        self.expect("CommandResponse", self.example("command-approved-not-adopted"), true, "settled approval leaves activation pending");
-        self.expect("CommandResponse", self.example("command-approval-activation-refused"), true, "settled approval does not imply adoption");
-    }
-    fn review_command_cases() {
-        self.expect("CommandRequest", self.example("practice-replacement-request"), true, "shared request envelope preserves practice wire");
-        let request = self.example("review-verdict-request-empty-comment");
-        self.expect("CommandRequest", request, true, "shared request envelope accepts a pending exact-candidate verdict");
-        self.expect("CommandRequest", self.example("invalid-review-verdict-request-practice-target"), false, "another operation cannot rescue a malformed verdict envelope");
-        let conditions = std::json::find_field_raw(request, "preconditions");
-        self.expect("ReviewCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", "{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\"}")), false, "expected identity cannot supply Review authority");
-        let receipt = std::json::find_field_raw(self.example("review-command-accepted-review-pending"), "data");
-        self.expect("PracticeCommandReceipt", receipt, false, "verdict completion is not a practice proposal receipt");
-        self.expect("ReviewCommandReceipt", self.field(receipt, "verdict", ""), false, "Review settlement cannot replace this command's verdict result");
-    }
-    fn task_create_cases() {
-        let request = self.example("task-create-request");
-        self.expect("TaskCreateCommandRequest", request, true, "exact raise-work envelope");
-        self.expect("CommandRequest", request, true, "shared request envelope accepts raising work");
-        self.expect("TaskCommandRequest", request, false, "raising work is not a reassignment");
-        let arguments = std::json::find_field_raw(request, "arguments");
-        let conditions = std::json::find_field_raw(request, "preconditions");
-        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "outcome", "\"\"")), false, "an outcome is required");
-        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "to", "\"\"")), false, "a position is required");
-        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "from", "\"caller-selected\"")), false, "the asker is the authenticated principal, never an argument");
-        self.expect("TaskCreateCommandRequest", self.field(request, "arguments", self.field(arguments, "intent_id", "\"i1f4\"")), false, "the intent id is minted by the service");
-        self.expect("TaskCreateCommandRequest", self.field(request, "preconditions", self.field(conditions, "record_head", "\"\"")), false, "the head precondition is required");
-        self.expect("TaskCreateCommandRequest", self.field(request, "preconditions", self.field(conditions, "record_head", "")), false, "the head precondition cannot be omitted");
-        self.expect("TaskCreateCommandRequest", self.field(request, "target", self.field(std::json::find_field_raw(request, "target"), "kind", "\"dna.task\"")), false, "a create targets the Record, not a Task");
-        self.expect("TaskCreateCommandRequest", self.field(request, "operation", "\"dna.task.reassign\""), false, "operation is constant");
-        let receipt = std::json::find_field_raw(self.example("task-create-shared-command-response"), "data");
-        self.expect("TaskCreateCommandReceipt", receipt, true, "requested receipt");
-        self.expect("TaskCommandReceipt", receipt, false, "raising work is not a reassignment receipt");
-        self.expect("PracticeCommandReceipt", receipt, false, "raising work is not a practice receipt");
-        let create = std::json::find_field_raw(receipt, "task_create");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "task_id", "\"org:t1\"")), false, "a requested ask names no Task");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"born\"")), false, "born needs a Task id");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"offered\"")), true, "offered is a later answer on the same receipt");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "event_id", "\"\"")), false, "an admitted ask has its Record event");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"unknown\"")), false, "unknown is not a succeeded command");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "task_create", self.field(create, "intent_state", "\"pending\"")), false, "intent states are closed");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "state", "\"recorded\""), false, "an ask is admitted or unknown, never pending");
-        self.expect("TaskCreateCommandReceipt", self.field(receipt, "review", "{\"state\":\"pending\",\"outcome\":\"\",\"subject_digest\":\"\"}"), false, "no Review is opened by an ask");
-        let unknown = self.example("task-create-uncertain-receipt");
-        self.expect("TaskCreateCommandReceipt", self.field(unknown, "task_create", self.field(std::json::find_field_raw(unknown, "task_create"), "intent_id", "\"i1f4\"")), false, "no intent id without a recorded row");
-        let capability = self.example("task-create-capability");
-        self.expect("TaskCreateCommandCapabilities", self.field(capability, "recipients", "[]"), false, "raising work has no recipient list");
-        self.expect("TaskCreateCommandCapabilities", self.field(capability, "max_outcome_bytes", "8192"), false, "bounds are strings");
-        self.expect("TaskCreateCommandCapabilities", self.field(capability, "profile", "\"dna.task.reassign.v1\""), false, "profile is constant");
-        let capabilities = self.example("task-create-capabilities");
-        let data = std::json::find_field_raw(capabilities, "data");
-        self.expect("CapabilitiesResponse", self.field(capabilities, "data", self.field(data, "task_create_commands", "")), false, "a true write flag needs its profile");
-        self.expect("CapabilitiesResponse", self.field(capabilities, "data", self.field(data, "read_only", "true")), false, "a true write flag is not read only");
-        let profile = std::json::find_field_raw(data, "task_create_commands");
-        self.expect("CapabilitiesResponse", self.field(capabilities, "data", self.field(data, "task_create_commands", self.field(profile, "authorized", "false"))), false, "a true write flag needs an authorized profile");
+    // The record's commands are the head's api binding: capabilities say
+    // where (`api`) and carry no write flags or command profiles.
+    fn capabilities_cases() {
+        let response = self.example("read-only-capabilities");
+        self.expect("CapabilitiesResponse", response, true, "a read-only head names its api socket");
+        self.expect("CapabilitiesResponse", self.example("knowledge-only-writable-capabilities"), true, "Knowledge commands alone make the listener writable");
+        let data = std::json::find_field_raw(response, "data");
+        let api = std::json::find_field_raw(data, "api");
+        self.expect("Capabilities", self.field(data, "api", ""), false, "where the commands are is required");
+        self.expect("Capabilities", self.field(data, "api", self.field(api, "transport", "\"tcp\"")), false, "the api binding is a unix socket");
+        self.expect("Capabilities", self.field(data, "api", self.field(api, "socket", "")), false, "the socket is named, even when empty");
+        self.expect("Capabilities", self.field(data, "api", self.field(api, "socket", "\"\"")), true, "an in-process listener has no socket");
+        self.expect("Capabilities", self.field(data, "api", self.field(api, "roles", "[]")), false, "gates are the socket's description, not capabilities");
+        self.expect("Capabilities", self.field(data, "writes", "{\"practice_propose\":false,\"review_verdict\":false}"), false, "no record write flags over HTTP");
+        self.expect("Capabilities", self.field(data, "commands", "{}"), false, "no record command profile over HTTP");
     }
     fn profile_cases() {
         self.custom("{\"type\":\"array\",\"maxItems\":1}", "[1]", true, "array at bound");
@@ -293,7 +226,7 @@ locus Cases {
     // is not a Record envelope, the request's arguments are closed (a
     // secret request can never carry a value), the state set is fixed,
     // and the OpenAPI describes the command headers, the count and the
-    // read-only recovery exactly as for the Record commands.
+    // read-only recovery exactly as for the Knowledge commands.
     fn head_cases() {
         self.expect("HeadResponse", self.example("head-detached"), true, "detached head state");
         self.expect("HeadResponse", self.example("head-attached"), true, "attached head state");
@@ -351,7 +284,7 @@ locus Cases {
         let body = std::json::find_field_raw(post, "requestBody");
         let get_body = self.field(command, "get", self.field(get, "requestBody", body));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, get_body)), self.schema).ok, "head recovery is a read without a command body");
-        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/CommandRequest\"}}}");
+        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/KnowledgeCommandRequest\"}}}");
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, head_path, self.field(command, "post", self.field(post, "requestBody", wrong_body)))), self.schema).ok, "the head request is its own envelope");
         let projects_path = "/api/hale/v1/head/projects";
         let projects = std::json::find_field_raw(paths, projects_path);
@@ -389,15 +322,17 @@ locus Cases {
         let unsupported_schema = self.field(self.schema, "format", "\"unsupported\"");
         let unsupported_fixtures = files.fixtures(self.fixtures, unsupported_schema);
         std::test::assert(!unsupported_fixtures.ok && std::str::contains(unsupported_fixtures.error, "format"), "fixture batch rejects unsupported schema before evaluating examples");
-        let command_path = "/api/hale/v1/applications/{application_id}/commands";
+        let gone = self.field(paths, "/api/hale/v1/applications/{application_id}/commands", std::json::find_field_raw(paths, "/api/hale/v1/head/commands"));
+        std::test::assert(!files.openapi(self.field(spec, "paths", gone), self.schema).ok, "the record's commands are the api binding, not an HTTP route");
+        let command_path = "/api/hale/v1/applications/{application_id}/dna/knowledge/commands";
         let command = std::json::find_field_raw(paths, command_path);
         let post = std::json::find_field_raw(command, "post");
         let get = std::json::find_field_raw(command, "get");
         let post_responses = std::json::find_field_raw(post, "responses");
         let no_accepted = self.field(command, "post", self.field(post, "responses", self.field(post_responses, "202", "")));
-        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_accepted)), self.schema).ok, "command submission must describe ambiguous and pending receipts");
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_accepted)), self.schema).ok, "command submission must describe its recorded receipt");
         let body = std::json::find_field_raw(post, "requestBody");
-        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/CommandResponse\"}}}");
+        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/KnowledgeCommandResponse\"}}}");
         let wrong_post = self.field(command, "post", self.field(post, "requestBody", wrong_body));
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, wrong_post)), self.schema).ok, "command request reference cannot be a receipt");
         let optional_body = self.field(command, "post", self.field(post, "requestBody", self.field(body, "required", "false")));
@@ -432,8 +367,6 @@ fn main() {
     suite.definition_cases();
     suite.profile_cases();
     suite.knowledge_cases();
-    suite.command_cases();
-    suite.review_command_cases();
+    suite.capabilities_cases();
     suite.head_cases();
-    suite.task_create_cases();
 }

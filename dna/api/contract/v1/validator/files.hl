@@ -191,11 +191,11 @@ locus ContractFiles {
             let head_command = path == "/api/hale/v1/head/commands";
             let head_events = path == "/api/hale/v1/head/events";
             let head_read = path == "/api/hale/v1/head" || path == "/api/hale/v1/head/projects" || path == "/api/hale/v1/head/logs";
-            let command = knowledge_command || head_command || path == "/api/hale/v1/applications/{application_id}/commands";
+            let command = knowledge_command || head_command;
             let ownership_draft = path == "/api/hale/v1/applications/{application_id}/dna/organization/ownership/draft";
             let organization_draft = ownership_draft || path == "/api/hale/v1/applications/{application_id}/dna/organization/draft";
             let draft = path == "/api/hale/v1/applications/{application_id}/dna/definitions/draft";
-            let response_name = if head_events { "text/event-stream" } else if knowledge_command { "KnowledgeCommandResponse" } else if head_command { "HeadCommandResponse" } else if path == "/api/hale/v1/head" { "HeadResponse" } else if path == "/api/hale/v1/head/projects" { "HeadProjectsResponse" } else if path == "/api/hale/v1/head/logs" { "HeadLogResponse" } else if knowledge_capability { "KnowledgeCommandCapabilityResponse" } else if ownership_draft { "OwnershipDraftResponse" } else if organization_draft { "OrganizationDraftResponse" } else if draft { "DefinitionDraftResponse" } else if command { "CommandResponse" } else if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews/candidate" { "ReviewCandidateResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-status" { "OrganizationSourceStatusResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-impact" { "OrganizationSourceImpactResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization" { "OrganizationResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/tasks" { "TasksResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/people" { "PersonResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/workflows" { "WorkflowsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/context" { "ContextResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/definitions" { "DefinitionsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/nodes" { "KnowledgeNodesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/edges" { "KnowledgeEdgesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/bindings" { "KnowledgeBindingsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/dependents" { "KnowledgeBindingsResponse" } else { "" };
+            let response_name = if head_events { "text/event-stream" } else if knowledge_command { "KnowledgeCommandResponse" } else if head_command { "HeadCommandResponse" } else if path == "/api/hale/v1/head" { "HeadResponse" } else if path == "/api/hale/v1/head/projects" { "HeadProjectsResponse" } else if path == "/api/hale/v1/head/logs" { "HeadLogResponse" } else if knowledge_capability { "KnowledgeCommandCapabilityResponse" } else if ownership_draft { "OwnershipDraftResponse" } else if organization_draft { "OrganizationDraftResponse" } else if draft { "DefinitionDraftResponse" } else if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews/candidate" { "ReviewCandidateResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-status" { "OrganizationSourceStatusResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization/source-impact" { "OrganizationSourceImpactResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization" { "OrganizationResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/tasks" { "TasksResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/people" { "PersonResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/workflows" { "WorkflowsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/context" { "ContextResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/definitions" { "DefinitionsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/nodes" { "KnowledgeNodesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/edges" { "KnowledgeEdgesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/bindings" { "KnowledgeBindingsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/knowledge/dependents" { "KnowledgeBindingsResponse" } else { "" };
             if len(response_name) == 0 { return ValidationResult { error: "OpenAPI: unexpected route " + path }; }
             count = count + 1;
             let route = std::json::obj_value_raw(routes, paths);
@@ -245,7 +245,7 @@ locus ContractFiles {
                 if !parameters.ok { return parameters; }
             }
             if command {
-                let request_name = if knowledge_command { "KnowledgeCommandRequest" } else if head_command { "HeadCommandRequest" } else { "CommandRequest" };
+                let request_name = if knowledge_command { "KnowledgeCommandRequest" } else { "HeadCommandRequest" };
                 let lookup = self.command_parameters(operation, schema, false, request_name);
                 if !lookup.ok { return lookup; }
                 let post = std::json::find_field_raw(route, "post");
@@ -256,7 +256,7 @@ locus ContractFiles {
             }
             routes = std::json::object_next(routes, paths);
         }
-        if count != 28 { return ValidationResult { error: "OpenAPI: expected eighteen read paths, two command submit/recovery paths, three draft preparation paths and five head paths" }; }
+        if count != 27 { return ValidationResult { error: "OpenAPI: expected eighteen read paths, the Knowledge command submit/recovery path, three draft preparation paths and five head paths" }; }
         return ValidationResult { ok: true };
     }
     fn fixtures(fixtures: String, schema: String) -> ValidationResult {
@@ -282,23 +282,10 @@ locus ContractFiles {
         let mut knowledge_command_capability = false; let mut knowledge_command_request = false; let mut knowledge_command_receipt = false; let mut knowledge_command_hidden = false; let mut knowledge_command_invalid = false;
         let mut definitions_unsupported = false;
         let mut definitions_invalid = false;
-        let mut legacy_capabilities = false;
-        let mut command_capabilities = false;
-        let mut command_request = false;
-        let mut command_receipt = false;
-        let mut command_unknown = false;
-        let mut command_invalid = false;
-        let mut command_unsupported = false;
-        let mut review_capabilities = false;
-        let mut review_request = false;
-        let mut review_receipt = false;
-        let mut review_unknown = false;
-        let mut review_independent = false;
-        let mut review_invalid = false;
+        let mut capabilities_read_only = false; let mut capabilities_writable = false; let mut capabilities_invalid = false;
         let mut draft_request = false; let mut draft_valid = false; let mut draft_invalid = false; let mut draft_rejected = false;
         let mut head_state = false; let mut head_projects = false; let mut head_command_request = false; let mut head_command_receipt = false;
         let mut head_command_refused = false; let mut head_command_unknown = false; let mut head_command_invalid = false; let mut head_log = false;
-        let mut task_create_request = false; let mut task_create_receipt = false; let mut task_create_unknown = false; let mut task_create_invalid = false;
         while !examples.done {
             let example = examples.element;
             let name = std::json::find_string_field(example, "name");
@@ -328,15 +315,8 @@ locus ContractFiles {
                     if std::json::find_field_raw(std::json::find_field_raw(value, "data"), "details_visible") == "false" { knowledge_command_hidden = true; }
                 }
                 if definition == "CapabilitiesResponse" {
-                    let data = std::json::find_field_raw(value, "data");
-                    let practice = len(std::json::find_field_raw(data, "commands")) > 0;
-                    let review = len(std::json::find_field_raw(data, "review_commands")) > 0;
-                    if !practice && !review { legacy_capabilities = true; }
-                    if practice { command_capabilities = true; }
-                    if review { review_capabilities = true; }
+                    if std::json::find_field_raw(std::json::find_field_raw(value, "data"), "read_only") == "true" { capabilities_read_only = true; } else { capabilities_writable = true; }
                 }
-                if definition == "PracticeCommandRequest" { command_request = true; }
-                if definition == "ReviewCommandRequest" { review_request = true; }
                 if definition == "HeadResponse" { head_state = true; }
                 if definition == "HeadProjectsResponse" { head_projects = true; }
                 if definition == "HeadCommandRequest" { head_command_request = true; }
@@ -347,29 +327,11 @@ locus ContractFiles {
                     if state == "refused" { head_command_refused = true; }
                     if state == "outcome_unknown" { head_command_unknown = true; }
                 }
-                if definition == "TaskCreateCommandRequest" { task_create_request = true; }
-                if definition == "CommandResponse" {
-                    let data = std::json::find_field_raw(value, "data");
-                    let state = std::json::find_string_field(data, "state");
-                    if std::json::find_string_field(data, "operation") == "dna.review.verdict" {
-                        review_receipt = true;
-                        if state == "outcome_unknown" { review_unknown = true; }
-                        if state == "refused" && std::json::find_string_field(std::json::find_field_raw(data, "review"), "outcome") == "approve" { review_independent = true; }
-                    } else {
-                        command_receipt = true;
-                        if state == "outcome_unknown" { command_unknown = true; }
-                        if std::json::find_string_field(data, "operation") == "dna.task.create" {
-                            task_create_receipt = true;
-                            if state == "outcome_unknown" { task_create_unknown = true; }
-                        }
-                    }
-                }
                 if definition == "ErrorResponse" {
                     let code = std::json::find_string_field(std::json::find_field_raw(value, "error"), "code");
                     if code == "knowledge_unsupported" { knowledge_unsupported = true; }
                     if code == "definitions_unsupported" { definitions_unsupported = true; }
                     if code == "definition_invalid" { definitions_invalid = true; }
-                    if code == "commands_unsupported" { command_unsupported = true; }
                 }
                 if rules.kind(value) != "object" { return ValidationResult { error: "fixture " + name + ": payload must be an object" }; }
                 let injected = value[0..(len(value) - 1)] + ",\"actor\":\"caller-selected\"}";
@@ -380,10 +342,8 @@ locus ContractFiles {
                 if definition == "DefinitionDraftRequest" || definition == "DefinitionDraftResponse" { draft_rejected = true; }
                 if definition == "KnowledgeNodesResponse" { knowledge_invalid = true; }
                 if definition == "KnowledgeCommandResponse" || definition == "KnowledgeCommandRequest" || definition == "KnowledgeCommandCapabilityResponse" { knowledge_command_invalid = true; }
-                if definition == "PracticeCommandRequest" || definition == "CommandResponse" { command_invalid = true; }
+                if definition == "CapabilitiesResponse" { capabilities_invalid = true; }
                 if definition == "HeadCommandRequest" || definition == "HeadCommandResponse" || definition == "HeadResponse" { head_command_invalid = true; }
-                if definition == "TaskCreateCommandRequest" || definition == "TaskCreateCommandReceipt" || definition == "TaskCreateCommandCapabilities" { task_create_invalid = true; }
-                if definition == "ReviewCommandRequest" || (definition == "CommandResponse" && std::json::find_string_field(std::json::find_field_raw(value, "data"), "operation") == "dna.review.verdict") { review_invalid = true; }
             }
             examples = std::json::array_next(examples);
         }
@@ -392,11 +352,9 @@ locus ContractFiles {
         if !definitions || !definitions_unsupported || !definitions_invalid { return ValidationResult { error: "fixtures: definitions need success, unsupported and invalid-catalog examples" }; }
         if !knowledge_nodes || !knowledge_edges || !knowledge_bindings || !knowledge_unsupported || !knowledge_invalid { return ValidationResult { error: "fixtures: Knowledge needs nodes, edges, bindings, unsupported and invalid-response examples" }; }
         if !knowledge_command_capability || !knowledge_command_request || !knowledge_command_receipt || !knowledge_command_hidden || !knowledge_command_invalid { return ValidationResult { error: "fixtures: Knowledge commands need capability, exact request, recorded and hidden receipt, and invalid shape examples" }; }
-        if !legacy_capabilities || !command_capabilities || !command_request || !command_receipt || !command_unknown || !command_invalid || !command_unsupported { return ValidationResult { error: "fixtures: preserve legacy capabilities and optional command profile, request, receipt, unknown-outcome and refusal coverage" }; }
+        if !capabilities_read_only || !capabilities_writable || !capabilities_invalid { return ValidationResult { error: "fixtures: capabilities need read-only, Knowledge-writable and refused examples" }; }
         if !draft_request || !draft_valid || !draft_invalid || !draft_rejected { return ValidationResult { error: "fixtures: draft needs exact request, native valid/invalid and closed-envelope rejection coverage" }; }
-        if !review_capabilities || !review_request || !review_receipt || !review_unknown || !review_independent || !review_invalid { return ValidationResult { error: "fixtures: Review commands need independent capabilities, request, receipt, unknown-outcome, per-command refusal and invalid-envelope coverage" }; }
         if !head_state || !head_projects || !head_command_request || !head_command_receipt || !head_command_refused || !head_command_unknown || !head_command_invalid || !head_log { return ValidationResult { error: "fixtures: the head needs state, projects, request, receipt, refused, unknown-outcome, invalid-shape and log-page coverage" }; }
-        if !task_create_request || !task_create_receipt || !task_create_unknown || !task_create_invalid { return ValidationResult { error: "fixtures: raising work needs request, receipt, unknown-outcome and invalid-shape coverage" }; }
         return ValidationResult { ok: true };
     }
     fn check() -> ValidationResult {

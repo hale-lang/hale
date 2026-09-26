@@ -19,6 +19,7 @@ const test = base.extend({
     expect(errors, 'No unhandled face JavaScript error').toEqual([]);
   },
 });
+test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!nativeCommandEnvironmentPresent(), 'Supply explicit HALE_NATIVE_COMMAND_API/BODY/RELAY binaries for real native browser acceptance.');
 test.setTimeout(75_000);
 

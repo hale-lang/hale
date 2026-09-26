@@ -2,6 +2,7 @@
 // covered separately by scripted source reads; this seed has no invented map.
 import { test, expect } from '@playwright/test';
 import {startTaskService,nativeTaskEnvironmentPresent} from './native-task-harness.mjs';
+test.skip(true, "The HTTP record-command route was cut (GH #1104 piece 5, PR #1129): record commands are the head socket's gated topics, which a browser cannot reach; this lane waits for the face's write path.");
 test.skip(!nativeTaskEnvironmentPresent(),'Supply matching native Task API and accepted actual-handoff seed');
 test('exact assignee list follows native reassignment while the same Task detail stays available',async({page},info)=>{
  const service=await startTaskService({taskPolicy:(application_id,name)=>({format:'dna.task-authority/1',application_id,owner:'operations',members:['alex','blair'],grants:[{mode:'local',name,reassign:true,recover:true}]})});
