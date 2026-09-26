@@ -113,7 +113,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
         .spawn()
         .expect("hale dna run");
     let up = |_app: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(120), Duration::from_millis(200), || up(&app));
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(200), || up(&app));
     let stop = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();

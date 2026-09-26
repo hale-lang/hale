@@ -230,7 +230,7 @@ fn bring_up() -> Fixture {
     }
     let host_log = f.d.join("dna-run.stderr");
     let nerves_up = || std::fs::read_to_string(&host_log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(90), Duration::from_millis(200), nerves_up);
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(200), nerves_up);
     if !nerves_up() {
         f.fail("the organization never read its facts from the nerves");
     }

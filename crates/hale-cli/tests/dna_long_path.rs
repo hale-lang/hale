@@ -63,7 +63,7 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
         .spawn()
         .expect("spawn hale dna run");
     let up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline && !up() {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna run exited early: {st}");

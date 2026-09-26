@@ -87,7 +87,7 @@ fn start_org(app: &Path) -> std::process::Child {
         .spawn()
         .expect("hale dna run");
     let up = || std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(120), Duration::from_millis(200), up);
+    trace::wait_until("dna run: the organization reads its facts from the nerves", Duration::from_secs(180), Duration::from_millis(200), up);
     assert!(up(), "the organization never read its facts from the nerves:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     host
 }

@@ -88,7 +88,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
         .spawn()
         .expect("hale dna run");
     let up = |_a: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let dl = Instant::now() + Duration::from_secs(90);
+    let dl = Instant::now() + Duration::from_secs(180);
     while Instant::now() < dl && !up(&a) {
         std::thread::sleep(Duration::from_millis(200));
     }

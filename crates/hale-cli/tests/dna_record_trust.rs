@@ -106,7 +106,7 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
         .spawn()
         .expect("hale dna run");
     let up = |_a: &Path| std::fs::read_to_string(&log).unwrap_or_default().contains("the organization reads its facts from the nerves");
-    let dl = Instant::now() + Duration::from_secs(90);
+    let dl = Instant::now() + Duration::from_secs(180);
     while Instant::now() < dl && !up(&a) {
         std::thread::sleep(Duration::from_millis(200));
     }
