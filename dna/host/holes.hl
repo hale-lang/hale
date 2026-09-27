@@ -194,13 +194,14 @@ fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag:
     b.string_field("by", who);
     b.end_object();
     if organism_here(root, memory) {
-        let before = open_projection(root, seed, "", memory).rows();
+        let watched = open_projection(root, seed, "", memory);
+        let before = watched.rows();
         if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
         // the organization answers from its bus; give a busy one a minute
-        let deadline = std::time::now() + 60;
+        let deadline = std::time::now() + dna::wait_secs(60);
         while std::time::now() <= deadline {
-            let q = open_projection(root, seed, "", memory);
-            let r = find_after(q, before, " hold.proposed hold.refused ", request_id);
+            let fresh = watch(watched);
+            let r = find_after(watched, before, " hold.proposed hold.refused ", request_id);
             if r.seq >= 0 {
                 if r.kind == "hold.refused" { return fail("fill: refused: " + std::json::find_string_field(r.body, "why")); }
                 return answer("proposed " + holder + " to hold " + position + ": the Board ratifies it as " + std::json::find_string_field(r.body, "review_id") + " (`hale dna review` lists it under `holds`)\n");
