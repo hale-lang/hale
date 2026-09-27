@@ -1077,7 +1077,7 @@ fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: 
         if !known { return fail("schedule " + sub + ": no schedule `" + id + "` is declared in the record"); }
         if sub == "pause" && paused { return answer("schedule " + id + " is already paused\n"); }
         if sub == "resume" && !paused { return answer("schedule " + id + " is not paused\n"); }
-        let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + "}", who, memory);
+        let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + (if sub == "resume" { ", \"at\": " + to_string(std::time::nanos(std::time::current()) / 1000000) } else { "" }) + "}", who, memory);
         if !ok { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
         return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; nothing occurs until it is resumed, and nothing is missed)" } else { "resumed (schedule.resumed)" }) + "\n");

@@ -180,10 +180,9 @@ fn graph_org_sql() -> String {
 }
 
 // GH #1085, the process model: the processes, every `meets` with its
-// transport and the parties outside the graph, and every `runs` — an edge
-// whose anchor was retired is not shown.
-// The process model: the processes, where they meet, what each
-// deployment runs, and (GH #1143) what each position convenes on a cadence.
+// transport and the parties outside the graph, every `runs`, and (GH
+// #1143) what each position convenes on a cadence — an edge whose anchor
+// was retired is not shown.
 fn graph_processes_sql() -> String {
     return "SELECT json_build_object("
         + "'processes', coalesce((SELECT json_agg(json_build_object('id', n.id, 'name', n.name) ORDER BY n.seq, n.id) FROM graph_nodes n WHERE n.kind = 'process'), '[]'::json), "

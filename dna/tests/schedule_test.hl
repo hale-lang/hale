@@ -8,8 +8,10 @@
 // concurrency (skip, overlap) decides what an occurrence does while the
 // last is open. A paused schedule fires nothing. A declaration whose
 // convener nobody holds is refused, and the refusal names the hole. The
-// optimize pass is a scheduled definition. The hole case reads memory
-// (HALE_DNA_MEMORY_DSN_OWNER); without it that case is not exercised.
+// optimize pass is a scheduled definition, and a ratified practice that
+// carries a schedule declares it. Declaring through the store is the
+// Board's or the convener's holder's. The hole and authority cases read
+// memory (HALE_DNA_MEMORY_DSN_OWNER); without it they are not exercised.
 
 import "../core" as dna;
 import "../operations" as ops;
@@ -32,6 +34,9 @@ main locus App {
             name: "leader", org: "sched-opt", charter: "You are the architect.",
             models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
         };
+        // a practice ratified with its schedule: receipts outside the
+        // working directory, and no memory (its hat step says so)
+        rat: dna::Dna = dna::Dna { planned: true, org_id: "sched-rat", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("schedule-receipts") } }, knowledge_client: dna::MemoryKnowledge { dsn_env: "HALE_DNA_TEST_NO_MEMORY" } };
     }
     placement { cadence_publisher: pinned; }
     @unbounded
@@ -103,6 +108,21 @@ main locus App {
         std::test::assert(std::str::contains(e.schedule(dna::Schedule { id: "bare", every_ms: 1000, definition: "ask-person", args: "{}", convener: "position:leader" }), "takes `objective`"), "args that do not name what the definition takes are refused");
         std::test::assert(std::str::contains(e.schedule(dna::Schedule { id: "nobody", every_ms: 1000, definition: "ask-person", args: OBJECTIVE }), "a convener"), "a schedule nobody convenes is refused");
         std::test::assert_eq_int(self.rows(e.journal, "schedule.refused", ""), 4, "each refusal is a row");
+        // a cron with no match in the week before counts from the
+        // declaration itself, never from nothing
+        std::test::assert_eq_str(e.schedule(dna::Schedule { id: "leap", cron: "0 0 31 2 *", definition: "ask-person", args: OBJECTIVE, convener: "position:leader" }), "", "a cron that has not matched lately is declared");
+        std::test::assert(self.from(e.journal, "leap") > 0, "and counts from its declaration: " + self.last_body(e.journal, "schedule.declared", "leap"));
+        // two schedules of one pair are one rhythm with both cadences; one
+        // moved to another pair leaves the first, and an edge no schedule
+        // is left on is retired
+        let pair = "convenes:position:leader|definition:ask-person";
+        std::test::assert(std::str::contains(self.last_body(e.journal, "graph.edge", pair), "\"cadence\": \"every 1s; cron 0 0 31 2 *\"") && std::str::contains(self.last_body(e.journal, "graph.edge", pair), "\"schedule\": \"hourly leap\""), "one rhythm, both cadences: " + self.last_body(e.journal, "graph.edge", pair));
+        std::test::assert_eq_str(e.schedule(dna::Schedule { id: "leap", cron: "0 0 31 2 *", definition: "ask-person", args: OBJECTIVE, convener: "position:editor" }), "", "moved to the editor");
+        std::test::assert(std::str::contains(self.last_body(e.journal, "graph.edge", pair), "\"schedule\": \"hourly\""), "the leader's rhythm is the hourly one again: " + self.last_body(e.journal, "graph.edge", pair));
+        let moved = "convenes:position:editor|definition:ask-person";
+        std::test::assert(std::str::contains(self.last_body(e.journal, "graph.edge", moved), "\"schedule\": \"leap\""), "the editor convenes it: " + self.last_body(e.journal, "graph.edge", moved));
+        std::test::assert_eq_str(e.schedule(dna::Schedule { id: "leap", cron: "0 0 31 2 *", definition: "ask-person", args: OBJECTIVE, convener: "position:leader" }), "", "and back to the leader");
+        std::test::assert_eq_int(self.rows(e.journal, "graph.retired", moved), 1, "the editor's rhythm, empty, is retired");
 
         // ---- one execution per cadence, never twice for one occurrence;
         // occurrences are named by the wall clock, counted from the one the
@@ -121,6 +141,7 @@ main locus App {
         e.tick(t0 + 2000);
         std::test::assert_eq_int(self.occurrences(e.journal, "hourly", self.at(t0 + 2000)), 1, "and one at the next: overlap admits beside the open one");
         std::test::assert(std::str::contains(self.last_body(e.journal, "workflow.admitted", ""), "\"definition\": \"ask-person\""), "an execution of the definition: " + self.last_body(e.journal, "workflow.admitted", ""));
+        std::test::assert_eq_str(std::json::find_string_field(self.last_body(e.journal, "workflow.admitted", ""), "convener"), "position:leader", "convened by the leader, as its admission says");
         // ---- paused: nothing fires, nothing is skipped or missed
         let p = e.journal.append(e.journal.revision(), "schedule.paused", "hourly", "{\"by\": \"riley\"}");
         e.tick(t0 + 3000);
@@ -179,7 +200,32 @@ main locus App {
         std::test::assert(std::str::contains(self.last_body(q.journal, "workflow.admitted", ""), "\"definition\": \"optimize-walk\""), "of optimize-walk");
         std::test::assert_eq_int(q.optimizations, 1, "and the organism walked its machinery once");
 
+        self.ratified();
         self.hole();
+    }
+    // ---- a practice that carries a schedule declares it once the Board
+    // ratifies it, as the seeded `operating/optimize-cadence` does
+    @unbounded
+    fn ratified() {
+        let r = self.rat;
+        let sched = "{\"id\": \"optimize\", \"every_ms\": 86400000, \"definition\": \"optimize-walk\", \"args\": \"{}\", \"convener\": \"position:leader\"}";
+        let q = std::json::Builder { };
+        let doc = "{\"author\":\"org\",\"kind\":\"practice\",\"name\":\"operating/optimize-cadence\",\"provenance\":\"design\",\"schedule\":" + q.quote(sched) + ",\"target\":\"org\",\"text\":\"walk the machinery on a cadence\",\"toolchain\":\"test\"}";
+        let raw = r.verification.receipts.store(doc);
+        std::test::assert_eq_int(len(raw), 64, "the practice's receipt is kept");
+        let digest = "sha256:" + raw;
+        let review = dna::knowledge_review_id(digest);
+        let p = r.journal.append(r.journal.revision(), "knowledge.proposed", digest, "{\"digest\": \"" + digest + "\", \"review_id\": \"" + review + "\", \"kind\": \"practice\", \"author\": \"org\", \"target\": \"org\", \"class\": \"initiative\", \"provenance\": \"design\", \"name\": \"operating/optimize-cadence\", \"supersedes\": \"\"}");
+        let asked = r.journal.append(r.journal.revision(), "review.requested", "review:" + review, "{\"question\": \"ratify it\", \"subject_digest\": \"" + digest + "\", \"required_authority\": \"board\", \"author\": \"org\", \"knowledge_digest\": \"" + digest + "\", \"kind\": \"practice\", \"target\": \"org\", \"class\": \"initiative\", \"group\": \"operating\", \"name\": \"operating/optimize-cadence\"}");
+        std::test::assert(p.ok && asked.ok, "proposed, for the Board");
+        let v = r.journal.append(r.journal.revision(), "review.settled", review, "approve by ada");
+        r.ratify_through(review);
+        let mut waited = 0;
+        while self.rows(r.journal, "schedule.declared", "optimize") == 0 && waited < 50 { std::time::sleep(100ms); waited = waited + 1; }
+        std::test::assert(r.knowledge_ratified(digest), "ratified");
+        let declared = self.last_body(r.journal, "schedule.declared", "optimize");
+        std::test::assert(std::str::contains(declared, "\"definition\": \"optimize-walk\"") && std::str::contains(declared, "\"convener\": \"position:leader\""), "and its schedule declared, convened by the leader: " + declared);
+        dna::scratch_done("/tmp/dna-schedule-receipts-" + to_string(std::process::pid()));
     }
     // ---- a convener nobody holds: refused, naming the hole
     @unbounded
@@ -217,6 +263,14 @@ main locus App {
         let rhythm = std::json::array_first(std::json::find_field_raw(processes, "convenes"));
         std::test::assert(!rhythm.done && std::json::find_string_field(rhythm.element, "position") == "position:board" && std::json::find_string_field(rhythm.element, "definition") == "definition:ask-person" && std::json::find_string_field(rhythm.element, "cadence") == "every 7d", "the processes perspective lists the rhythm: " + processes);
         std::test::assert(std::str::contains(ops::show_processes(processes), "board convenes ask-person every 7d\n"), "and `show processes` says it: " + ops::show_processes(processes));
+        // ---- declaring through the store is the Board's, or the
+        // convener's holder's: ada holds the Board, mallory nothing
+        h.on_schedule_requested(dna::ScheduleRequest { request_id: "s-mallory", schedule: "sneak", every_ms: 60000, definition: "ask-person", args: "{\"objective\": \"burn the budget\"}", convener: "position:leader", by: "mallory" });
+        let denied = self.last_body(h.journal, "schedule.answered", "s-mallory");
+        std::test::assert(std::str::contains(denied, "\"declared\": false") && std::str::contains(denied, "mallory holds neither the Board nor position:leader"), "mallory may not declare: " + denied);
+        std::test::assert_eq_int(self.rows(h.journal, "schedule.declared", "sneak"), 0, "and nothing is declared");
+        h.on_schedule_requested(dna::ScheduleRequest { request_id: "s-ada", schedule: "standup", every_ms: 86400000, definition: "ask-person", args: "{\"objective\": \"stand up\"}", convener: "position:leader", by: "ada" });
+        std::test::assert(std::str::contains(self.last_body(h.journal, "schedule.answered", "s-ada"), "\"declared\": true"), "the Board's holder may: " + self.last_body(h.journal, "schedule.answered", "s-ada"));
         store.close();
         std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema dropped");
         dna::scratch_done(root);

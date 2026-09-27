@@ -70,8 +70,8 @@ says so and names the fix: `hale dna fill <position> <holder>`.
 A practice can carry a schedule too, and ratifying the practice
 declares it. That is how the optimize pass gets its cadence: the
 seeded practice `operating/optimize-cadence` declares an `optimize`
-schedule that runs `optimize-walk` once a day, convened by the Board.
-Until someone holds the Board it is refused as a hole.
+schedule that runs `optimize-walk` once a day, convened by the leader,
+who walks the machinery; the Board decided the cadence by ratifying it.
 
 Each occurrence is named by its time — the interval's step, or the
 cron's minute — so an occurrence asked twice, or asked again after a
@@ -82,6 +82,10 @@ open is the definition's: by default the new occurrence is skipped,
 and the skip is a row you can read; a definition can say `overlap` to
 run beside it instead.
 
+Declaring one yourself is the Board's, or the convener's holder's:
+once memory knows who holds the Board, someone who holds neither is
+answered no.
+
 `hale dna schedule` lists them, and `hale dna schedule pause nightly`
 / `resume nightly` are rows in your name that the organization reads
 at its next tick. A paused schedule's occurrences pass unrun and
@@ -91,11 +95,11 @@ unmissed; a resume goes on from the next one:
 $ hale dna schedule
 schedules: 2
   nightly [live] cron `0 2 * * *` (UTC) — ask-edit, convened by position:editor · occurred 3, skipped 1, missed 0 · last t9
-  optimize [paused] every 86400000ms — optimize-walk, convened by position:board · occurred 1, skipped 0, missed 2 · last t4
+  optimize [paused] every 86400000ms — optimize-walk, convened by position:leader · occurred 1, skipped 0, missed 2 · last t4
 ```
 
 Declaring a schedule also puts it in the graph: `hale dna show
-processes` ends with a line per rhythm, `board convenes optimize-walk
+processes` ends with a line per rhythm, `leader convenes optimize-walk
 every 1d`.
 
 ## Review

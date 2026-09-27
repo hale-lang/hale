@@ -27,7 +27,7 @@
 //   callers, ui, node  --HTTP: openapi.yaml-->  api
 //   api  --NATS: protocol.yaml-->  node  (carried by nats)
 //   compose runs { postgres, nats, api, brain, node }
-//   board convenes optimize-walk every 1d
+//   leader convenes optimize-walk every 1d
 
 // The org chart, from `graph_perspective("org")`.
 @unbounded

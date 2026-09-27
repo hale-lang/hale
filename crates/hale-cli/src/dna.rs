@@ -1431,7 +1431,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("rewrote {} (the optimize pass is a schedule: `optimize_every_ms` goes, and the loop ticks on the wall clock)", main_path.display()));
         }
         if next.contains("optimize_every_ms") || next.contains("request_tick(std::time::monotonic_ns()") {
-            out.push(format!("note    {}: `optimize_every_ms` no longer builds and a monotonic tick names no occurrence; delete the field and tick with `std::time::nanos(std::time::current()) / 1000000` (GH #1143)", main_path.display()));
+            out.push(format!("note    {}: `optimize_every_ms` no longer builds and a monotonic tick names no occurrence; delete the field, tick with `std::time::nanos(std::time::current()) / 1000000`, and declare a cadence other than the seeded one with `hale dna schedule declare` (GH #1143)", main_path.display()));
         }
     }
     // the generated main.hl's owners map line goes with it
@@ -2895,7 +2895,7 @@ const OPERATING: &[SeededPractice] = &[
     SeededPractice { name: "operating/legs-hold-nothing", text: "a leg holds nothing between tasks. The hat is read per task, the credential fetched per task, the result settled per task. A leg that remembers is a bug, and a leg that cannot settle within its lease is a violation its owner records.", schedule: "" },
     SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record.", schedule: "" },
     SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism.", schedule: "" },
-    SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the Board once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:board"}"# },
+    SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"# },
 ];
 
 /// Every seeded family, by the name the Board lists it under.

@@ -1479,10 +1479,10 @@ locus Dna {
     fn on_tick(ev: TickRequest) { self.tick(ev.now); }
     // Synchronous cadence processing, for this owner's handler or an
     // isolated caller with no incoming bus work. Live org loops use
-    // request_tick with a millisecond clock (the
-    // scaffold passes `std::time::monotonic_ns() / 1000000`; `now()` is
-    // seconds and would make a 60s cadence an hour's); the cadence is
-    // the Board's.
+    // request_tick with the wall clock in milliseconds (the scaffold
+    // passes `std::time::nanos(std::time::current()) / 1000000`): an
+    // occurrence is a time the cadence names, so a monotonic clock names
+    // none (GH #1143).
     @unbounded
     fn tick(now: Int) {
         // pause/resume rows appended from a clone reach the record the
@@ -1513,12 +1513,18 @@ locus Dna {
         let mut i = 0;
         while i < n {
             let mut s = self.schedules.get(i) or Schedule { };
+            // on a shared record an occurrence is its convener's owner's
+            // to admit: another body leaves the schedule to it, with no row
+            if !self.ownership.admits(schedule_to(s)) { i = i + 1; continue; }
             if !s.paused { self.schedules.set(i, self.evaluate(s, now)) or discard; }
-            else {
+            else if len(s.cron) == 0 || now / 60000 != s.last_minute {
                 // paused, nothing is due: its occurrences pass unfired and
-                // unmissed, and a resume goes on from the next one
+                // unmissed, and a resume goes on from the next one (a cron
+                // is placed once per minute, as `evaluate` reads it)
+                if len(s.cron) > 0 { s.last_minute = now / 60000; }
                 let cur = occurrence_at(s, now);
-                if cur > s.last_occurrence { s.last_occurrence = cur; self.schedules.set(i, s) or discard; }
+                if cur > s.last_occurrence { s.last_occurrence = cur; }
+                self.schedules.set(i, s) or discard;
             }
             i = i + 1;
         }
@@ -1583,14 +1589,17 @@ locus Dna {
     // Admit occurrence `t` of `s`: an execution of the definition through
     // its first store, with the ask id `sched:<id>@<t>` — the occurrence's
     // key, so a restart or a redelivery asking it again is one execution —
-    // and the convener as its position. A refusal is a row naming the
-    // occurrence.
+    // and the convener as its position: its owner admits it, and the
+    // admission names it. A refusal is a row naming the occurrence.
     @unbounded
     fn admit_occurrence(sched: Schedule, t: Int) -> Schedule {
         let mut s = sched;
         if t > s.last_occurrence { s.last_occurrence = t; }
         let key = s.id + "@" + to_string(t);
-        let task = self.run_workflow(WorkflowAsk { id: "sched:" + key, definition: s.definition, revision: self.catalog.latest(s.definition), inputs: s.args, from: s.convener });
+        // asked again (a redelivery, a restart): the execution it already is
+        let had = self.workflow_admission_of("sched:" + key, self.journal.revision());
+        if len(had) > 0 { s.task = had; return s; }
+        let task = self.run_workflow(WorkflowAsk { id: "sched:" + key, definition: s.definition, revision: self.catalog.latest(s.definition), inputs: s.args, to: schedule_to(s), convener: s.convener });
         if len(task) == 0 || std::str::starts_with(task, "refused") {
             let b = std::json::Builder { };
             b.begin_object();
@@ -1634,25 +1643,51 @@ locus Dna {
         }
         if len(last) == 0 || schedule_terms(last) != schedule_terms(schedule_json(s)) {
             let mut d = s;
-            d.from = occurrence_at(s, wall_ms());
+            // the occurrence it was declared at; a cron with none in the
+            // week before counts from the declaration itself, so its first
+            // occurrence is due, not placed
+            let now = wall_ms();
+            d.from = occurrence_at(s, now);
+            if d.from <= 0 { d.from = now; }
             let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, schedule_json(d));
             if !x.ok { return "schedule " + s.id + ": the record did not take the declaration (" + x.error + ")"; }
-            self.convenes_rows(s);
+            self.read_schedule_rows();
+            self.convenes_rows(s.convener, s.definition);
+            // re-declared for another pair: the rhythm it left
+            let was = schedule_of(s.id, last);
+            if len(last) > 0 && (was.convener != s.convener || was.definition != s.definition) { self.convenes_rows(was.convener, was.definition); }
         }
         self.read_schedule_rows();
         return "";
     }
     // GH #1143: the rhythm in the graph — the definition as a node, once,
-    // and `convenes(position, definition)` with the cadence in its body;
-    // memory projects them as it does every graph row.
+    // and `convenes(position, definition)` with the cadence of every
+    // schedule declared for that pair in its body, or the edge retired
+    // when none is left; memory projects them as it does every graph row.
     @unbounded
-    fn convenes_rows(s: Schedule) {
-        let node = "definition:" + s.definition;
+    fn convenes_rows(convener: String, definition: String) {
+        let node = "definition:" + definition;
+        let edge = "convenes:" + convener + "|" + node;
+        let mut cadence = "";
+        let mut ids = "";
+        let mut k = 0;
+        while k < self.schedules.len() {
+            let t = self.schedules.get(k) or Schedule { };
+            if t.convener == convener && t.definition == definition {
+                cadence = cadence + (if len(cadence) > 0 { "; " } else { "" }) + cadence_text(t);
+                ids = ids + (if len(ids) > 0 { " " } else { "" }) + t.id;
+            }
+            k = k + 1;
+        }
+        if len(ids) == 0 {
+            if self.has_row("graph.edge", edge) { let r = self.journal.append(self.journal.revision(), "graph.retired", edge, "{}"); }
+            return;
+        }
         if !self.has_row("graph.node", node) {
             let nb = std::json::Builder { };
             nb.begin_object();
             nb.string_field("kind", "definition");
-            nb.string_field("name", s.definition);
+            nb.string_field("name", definition);
             nb.end_object();
             let n = self.journal.append(self.journal.revision(), "graph.node", node, nb.result());
         }
@@ -1660,13 +1695,13 @@ locus Dna {
         b.begin_object();
         b.string_field("kind", "convenes");
         b.begin_array_field("members");
-        b.begin_object(); b.string_field("role", "position"); b.string_field("node", s.convener); b.end_object();
+        b.begin_object(); b.string_field("role", "position"); b.string_field("node", convener); b.end_object();
         b.begin_object(); b.string_field("role", "definition"); b.string_field("node", node); b.end_object();
         b.end_array();
-        b.string_field("cadence", cadence_text(s));
-        b.string_field("schedule", s.id);
+        b.string_field("cadence", cadence);
+        b.string_field("schedule", ids);
         b.end_object();
-        let e = self.journal.append(self.journal.revision(), "graph.edge", "convenes:" + s.convener + "|" + node, b.result());
+        let e = self.journal.append(self.journal.revision(), "graph.edge", edge, b.result());
     }
     // Why `s` cannot be declared, "" when it can.
     @unbounded
@@ -1762,7 +1797,13 @@ locus Dna {
                 if t > s.last_occurrence { s.last_occurrence = t; }
             }
             if e.entity == id && e.kind == "schedule.paused" { s.paused = true; }
-            if e.entity == id && e.kind == "schedule.resumed" { s.paused = false; }
+            if e.entity == id && e.kind == "schedule.resumed" {
+                s.paused = false;
+                // resumed while the organization was down: the paused span
+                // was not due, so misses count from the resume
+                let at = std::json::find_int_field(e.body, "at");
+                if at > 0 && occurrence_at(s, at) > s.last_occurrence { s.last_occurrence = occurrence_at(s, at); }
+            }
             i = i + 1;
         }
         let mut k = 0;
@@ -2955,19 +2996,16 @@ locus Dna {
         if !self.governance_once("practice.proposed", r.request_id, b.result()) { return; }
         self.membrane.notify("practice", r.by + " proposes `" + r.name + "`: the Board's to ratify as " + knowledge_review_id(digest));
     }
-    // GH #1091: a holder proposed for a position, as the organization
-    // proposes any hole — a graph proposal whose receipt carries the
-    // `holds` edge, one Board Review of its own in the name of whoever
-    // asked (who therefore may not ratify it). What a hold may be is the
-    // projection's to check when it is ratified (the store is the gate);
-    // here only its shape is. Answered once, however often it is relayed.
-    @unbounded
     // GH #1143: a schedule asked of the organization, declared or refused,
-    // answered once under the request's id.
+    // answered once under the request's id. Declaring is the Board's, or
+    // the convener's own holder's.
+    @unbounded
     fn on_schedule_requested(r: ScheduleRequest) {
+        let moved = self.journal.refresh();
         if len(r.request_id) == 0 { return; }
         if len(self.governance_event("schedule.answered", r.request_id).kind) > 0 { return; }
-        let why = self.schedule(Schedule { id: r.schedule, every_ms: r.every_ms, cron: r.cron, definition: r.definition, args: if len(r.args) > 0 { r.args } else { "{}" }, convener: r.convener });
+        let denied = self.schedule_authority(r.by, r.convener);
+        let why = if len(denied) > 0 { denied } else { self.schedule(Schedule { id: r.schedule, every_ms: r.every_ms, cron: r.cron, definition: r.definition, args: if len(r.args) > 0 { r.args } else { "{}" }, convener: r.convener }) };
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("schedule", r.schedule);
@@ -2977,6 +3015,29 @@ locus Dna {
         b.end_object();
         let x = self.governance_once("schedule.answered", r.request_id, b.result());
     }
+    // Why `by` may not declare a schedule convened by `convener`, "" when
+    // they may: they hold the Board, or the convener itself, as memory's
+    // graph says. While nobody holds the Board, or no memory is named, the
+    // verified requester declares, as a Review's fallback decides by its
+    // required authority (#1153).
+    @unbounded
+    fn schedule_authority(by: String, convener: String) -> String {
+        if len(by) == 0 { return "a schedule is declared by someone (`--as`)"; }
+        if !self.knowledge_client.ready() { return ""; }
+        let data = self.knowledge_client.routing();
+        if len(data) == 0 { return "who may declare it is the graph's, and memory did not answer"; }
+        let board = route_held_by(data, "position:board");
+        if len(board) == 0 { return ""; }
+        if word_in(by, std::str::replace(board, ",", " ")) { return ""; }
+        if std::str::starts_with(convener, "position:") && word_in(by, std::str::replace(route_held_by(data, convener), ",", " ")) { return ""; }
+        return by + " holds neither the Board nor " + convener + ": declaring a schedule is the Board's, or the convener's own holder's";
+    }
+    // GH #1091: a holder proposed for a position, as the organization
+    // proposes any hole — a graph proposal whose receipt carries the
+    // `holds` edge, one Board Review of its own in the name of whoever
+    // asked (who therefore may not ratify it). What a hold may be is the
+    // projection's to check when it is ratified (the store is the gate);
+    // here only its shape is. Answered once, however often it is relayed.
     @unbounded
     fn on_hold_requested(r: HoldRequest) {
         let moved = self.journal.refresh();
@@ -4276,7 +4337,7 @@ locus Dna {
             if len(objective) > 0 { self.catalog.bind_objective(objective); }
             let body = encode_admission(AdmittedWorkflow {
                 task_id: id, definition: a.definition, revision: a.revision,
-                inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id,
+                inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id, convener: a.convener,
                 recipe: self.catalog.encode_bound(), limits: self.admission_limits,
                 works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth,
                 transition: TransitionRef { scope: self.org_id, key: id, proposal_id: transition_id(id, "admitted") }
@@ -5842,6 +5903,13 @@ fn cadence_text(s: Schedule) -> String {
 
 // GH #1143: the organism's own positions: they convene with no holder.
 const ORGANISM_POSITIONS: String = "leader editor";
+
+// The position whose owner admits an occurrence of `s` (GH #664): a graph
+// position's name, or "" — the organization — for the organism's own.
+fn schedule_to(s: Schedule) -> String {
+    let p = if std::str::starts_with(s.convener, "position:") { s.convener[9..len(s.convener)] } else { s.convener };
+    return if word_in(p, ORGANISM_POSITIONS) { "" } else { p };
+}
 
 // A declaration's terms — everything but the occurrence it was made at —
 // so declaring the same schedule again writes nothing.

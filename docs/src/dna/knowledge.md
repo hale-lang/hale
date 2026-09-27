@@ -309,7 +309,7 @@ scaled-out runs { api, brain, postgres, nats, node }
 
 That is voice's whole process model, as its repository states it. Once
 a schedule is declared, its rhythm follows the `runs` lines, one per
-schedule — `board convenes optimize-walk every 1d`.
+schedule — `leader convenes optimize-walk every 1d`.
 
 ## Ranking inside the bound
 

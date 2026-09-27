@@ -801,11 +801,18 @@ repository:
   the organization through the store: a `schedule.requested` row the
   host relays, answered once under the request's id by
   `schedule.answered {schedule, declared, why, by}` (the CLI takes a
-  bare position name as `position:<name>`). A declaration is
+  bare position name as `position:<name>`). Declaring through the
+  store is the Board's, or the convener's own holder's: with memory
+  naming who holds the Board, a requester who holds neither it nor the
+  convener is answered `declared: false` with why, and nothing is
+  declared; while nobody holds the Board, or no memory is named, the
+  verified requester declares, as a Review's fallback decides by its
+  required authority. A declaration is
   `schedule.declared <id> {every_ms, cron, definition, args, convener,
   from}`, written when new or changed — declaring the same schedule
   unchanged writes nothing — and `from` is the occurrence it was
-  declared at: nothing at or before it is due. It is refused, a
+  declared at (a cron with no match in the week before counts from the
+  declaration's own time): nothing at or before it is due. It is refused, a
   `schedule.refused <id> {why}` row and the reason, when it has no id
   or one with `@` or a space; names neither an interval nor a cron, or
   both; names a malformed cron (five fields, minute hour day-of-month
@@ -819,15 +826,19 @@ repository:
   organism's own positions (`leader`, `editor`) reach every store its
   workflows write; a position of the graph reaches it through who
   holds it — a person, or an organization's members — as memory's
-  routing says; with no memory named, or memory not answering, a graph
+  routing says, and in this slice being held is the whole of reach:
+  no per-position grant on a store is read; with no memory named, or memory not answering, a graph
   convener is refused, nothing assumed. A position nobody holds is a
   hole: the refusal says "nobody holds position:<p>: it convenes
   nothing until someone does (`hale dna fill <p> <holder>`)" and the
   row carries `hole: position:<p>`, the hole #1091's path fills.
   Declaring also writes the schedule into the graph (**The
   repository's graph**): a `definition:<id>` node, once, and a
-  `convenes(position, definition)` edge whose body carries its
-  `cadence` (`every 1d`, `every 90s`, `cron <expr>`) and `schedule`.
+  `convenes(position, definition)` edge whose body carries the
+  `cadence` (`every 1d`, `every 90s`, `cron <expr>`) and `schedule` of
+  every schedule declared for that pair (`; `- and space-joined). A
+  re-declaration for another pair writes the pair it left again, and
+  retires its edge (`graph.retired`) when no schedule is left on it.
   **Occurrences.** The org program's loop ticks with the wall clock in
   milliseconds (`request_tick(std::time::nanos(std::time::current()) /
   1000000)`, never a monotonic clock), queued through the
@@ -841,7 +852,12 @@ repository:
   a cron evaluated once per minute. A tick in an occurrence's period
   admits it as an execution of the definition's newest revision
   through its first store, with the ask id `sched:<id>@<occurrence
-  time>`, `args` as its inputs and the convener as its `from`. That key
+  time>`, `args` as its inputs, and the convener as its position: the
+  admission is the convener's owner's (`to`, GH #664; the organism's
+  own positions are the organization's), and `workflow.admitted`
+  carries it as `convener`. On a shared record a body whose
+  organization does not own the convener leaves the schedule to the
+  one that does, writing nothing. That key
   is the idempotence: a schedule's state is rebuilt from the record
   (from its declaration's `from`, the admissions under its key, its
   skipped, refused and missed rows, and its pauses), so a restart, or
@@ -855,11 +871,12 @@ repository:
   `workflow.settled`) is a `schedule.skipped <id> {occurrence, task}`
   row, never silent; under `overlap` it is admitted beside it.
   **Amendments.** `hale dna schedule pause <id>` / `resume <id>` append
-  `schedule.paused` / `schedule.resumed {by}` in the caller's name from
-  any clone; the organism reads them at its tick (a git journal is
-  re-read from its ref at most every 5s). A paused schedule is not
-  due: its occurrences pass unfired and unmissed, and a resume goes on
-  from the next one. `hale dna schedule` lists each as the record has
+  `schedule.paused {by}` / `schedule.resumed {by, at}` (`at` in wall
+  milliseconds) in the caller's name from any clone; the organism
+  reads them at its tick (a git journal is re-read from its ref at
+  most every 5s). A paused schedule is not due: its occurrences pass
+  unfired and unmissed, and a resume goes on from the next one — a
+  resume read at a restart counts misses from its `at`. `hale dna schedule` lists each as the record has
   it — ``<id> [live|paused] every <n>ms|cron `<expr>` (UTC) —
   <definition>, convened by <position> · occurred N, skipped N, missed
   N · last <task>``, *occurred* counting the admissions under its key.
@@ -877,9 +894,9 @@ repository:
   cadence is a schedule (above) that the seeded operating practice
   `operating/optimize-cadence` declares once the Board ratifies it —
   `{"id": "optimize", "every_ms": 86400000, "definition":
-  "optimize-walk", "args": "{}", "convener": "position:board"}` —
-  convened by the Board, so it is refused as a hole until someone
-  holds the Board; a different cadence is an amendment the Board
+  "optimize-walk", "args": "{}", "convener": "position:leader"}` —
+  convened by the leader, who walks the machinery, so it needs no one
+  seated to be declared; a different cadence is an amendment the Board
   ratifies. The tick is the body's that holds the lease, and an
   occurrence asked twice is one pass. Its one step, `walk`, first
   asks the budget — the pass is model-backed work, and none is routed

@@ -158,7 +158,8 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         let _ = host.wait();
     };
     // the declared purpose (GH #995), the eight seeded design practices
-    // and the six operating ones are ideas too (GH #596 C, #994), plus
+    // and the seven operating ones (the optimize cadence among them, GH
+    // #1143) are ideas too (GH #596 C, #994), plus
     // this proposal; wait for the
     // nerves as well
     let nerves_up = || std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default().contains("the organization reads its facts from the nerves");
@@ -166,7 +167,7 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna dev exited early: {st}\n{}", std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default());
         }
-        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "16" && nerves_up()
+        field(&read_memory(&app, &head, "org", "8", "", ""), "ideas") == "17" && nerves_up()
     });
     if !tailed {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
