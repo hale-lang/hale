@@ -61,9 +61,9 @@ hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outco
 hale dna review              the pending Reviews
 hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (offline)
 hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]
-                             [--comment <c>] [--digest <sha>] [--evidence <receipt>[,<receipt>…]] [--no-wait]
-                             a routed Review admits only holders of the positions it requires;
-                             --evidence cites filed gate runs, checked against the candidate
+                             [--comment <c>] [--digest <sha>] [--no-wait]
+                             a routed Review admits only holders of the positions it requires,
+                             and weighs only the gate runs the host observed at the forge
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna fill <position> <holder> [project] [--as <who>]
                              ask the organization to propose who holds a position: a Board Review in
@@ -252,6 +252,7 @@ sequence either way — see [The record](./record.md).
 | `fleet.deploy` | record | `m<n>` or a short revision | plan, revision, seed, the instances touched, reason |
 | `instance.up` / `instance.exited` | ledger | the instance id | node, revision, model hash, build, pid / node, revision, code — authored `node/<name>` |
 | `github.pr` / `github.commented` | record | `m<n>` | the pull request opened / the settlement commented |
+| `gate.observed` | record | `m<n>` | a gate's check run at the candidate as the forge reported it to the host's sync (`gate`, `sha`, `conclusion`, `url`, `forge`, `run`); the only gate run a Review weighs |
 | `pressure.requested` / `pressure.raised` | ledger | a source | a signal from a source, with its own `request` id, which a node relays until answered; the answer is one object (`what`, `count`, `request`), written once per request (a row from before #986 is `<what> x<n>`) |
 | `pressure.remeasured` | ledger | `m<n>` | the Task, the declared fitness signals, the outcome |
 | `appendage.proposed` / `appendage.candidate` | record | a source | the organ proposed / the organization mutation that proposes it |

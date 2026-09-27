@@ -501,13 +501,15 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     let gates = dna::native_json_string(routed, "gates");
     let why = dna::native_json_string(routed, "why");
     out = out + "  needs " + (if len(signers) > 0 { "every one of " + signers_shown(signers) } else { r.required_authority + (if len(why) > 0 { " (the fallback: " + why + ")" } else { "" }) }) + " · candidate " + r.subject_digest + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
-    if len(gates) > 0 { out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ") + " at the candidate, cited as --evidence <receipt> (a filed `gate.run` document)\n"; }
+    if len(gates) > 0 { out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ") + " at the candidate, as the forge reports it (`hale dna github sync`)\n"; }
     // what it still awaits, as its last signature said
     let mut awaiting = "";
     let mut k = 0;
     while k < p.rows() {
         let e = p.row(k);
         if e.kind == "review.signed" && e.entity == id { awaiting = dna::native_json_string(e.body, "awaiting"); }
+        // GH #1161: each gate run the host observed at the forge
+        if e.kind == "gate.observed" && e.entity == id { out = out + "  ran: " + dna::native_json_string(e.body, "gate") + " " + dna::native_json_string(e.body, "conclusion") + " at " + short(dna::native_json_string(e.body, "sha")) + " (" + dna::native_json_string(e.body, "url") + ")\n"; }
         k = k + 1;
     }
     if len(signers) > 0 && r.state == "pending" && len(awaiting) > 0 { out = out + "  awaits " + std::str::replace(awaiting, " ", ", ") + "\n"; }
@@ -536,7 +538,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         i = i + 1;
     }
     out = out + "  receipts: refs/dna/receipts/<digest> (git cat-file -p)\n\n";
-    out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]" + (if len(gates) > 0 { " [--evidence <receipt>]" } else { "" }) + "\n";
+    out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]\n";
     if iris {
         if len(r.diff_json) == 0 { return fail("--iris: this review has no semantic diff document"); }
         let doc = receipt_read(p.root, r.diff_json);

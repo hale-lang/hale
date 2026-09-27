@@ -1236,6 +1236,7 @@ record's.
 | `fleet.deploy` | record | a genome revision expressed through the fleet's nodes |
 | `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
 | `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
+| `gate.observed` | record | a gate's check run at the candidate as the forge reported it: `gate`, `sha`, `conclusion`, `url`, `forge`, `run`; written only by the host's forge sync, once per run (GH #1161) |
 | `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | the move of the day's work into the ledger, its checkpoint, and its undoing |
 
 Their bodies are documented in the guide's reference chapter; the set
@@ -2690,8 +2691,8 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   it; **approval settles only once every required position has
   approved** — one holder of two positions signs for both — every
   affected owner, the required authority where the route left it a path,
-  and **every gate has a passing run at the candidate cited as
-  evidence**. An approval that settles nothing is answered all the same,
+  and **every gate has a passing run at the candidate, as the forge
+  reported it**. An approval that settles nothing is answered all the same,
   `review.signed <review> {by, awaiting}`, and `hale dna review <id>`
   shows what it awaits. **Holders are routed again**: while a routed
   Review is open the organization reads who holds its positions on each
@@ -2699,18 +2700,29 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   opened, a holder retired — writes `review.routed` again (the latest
   row is the requirement) and the Review takes the new holders; the
   positions stay the route's, and what was signed stays signed. The
-  Leader never decides a routed Review. **Evidence** is a verdict's
-  `evidence`: filed receipts, by digest (64 hex digits, `sha256:`
-  optional), each a gate run — `{kind: "gate.run", gate, sha,
-  conclusion, url}`. Each is checked against the candidate: a word that
-  is no digest, a digest nobody filed, a receipt that is no gate run, a
-  run of a gate guarding nothing the change touches, a run at another
-  commit (**stale**) or a run whose conclusion is not `success`
-  (**rejected**) refuses the verdict whole, saying which. A gate run is
-  attested by whoever filed its receipt; binding it to the gate's own
-  runner is GH #1161. A prepared source's Review (an organization change)
-  takes the route's positions and no gate: its verdict is a typed command
-  that cites no run. A command verdict (`command_id`) is decided once by
+  Leader never decides a routed Review. **A gate's run is the forge's**
+  (GH #1161): a gate is a workflow's job, and its run is the job's check
+  run at the candidate, which the host reads from the forge
+  (`Forge.checks`: GitHub's check runs for the commit, a file forge's
+  `<n>.checks` in fixtures) when it syncs the forge, and records once per
+  run as `gate.observed <review> {gate, sha, conclusion, url, forge,
+  run}` — completed runs of the gates the Review's route names, matched
+  by job name (a matrix leg `job (…)` and a reusable workflow's `job /
+  …` are the job's). The host's forge sync writes that row, and it is
+  the only run a Review weighs, and only from the forge its `github.pr`
+  row names: a run at another commit, one whose conclusion is not
+  `success` (`skipped` included), another gate's, or another forge's
+  counts for nothing, and a verdict cites no run (a receipt anyone files
+  is no gate's word; `--evidence` is refused). The row is trusted as
+  every record row is, by who may write the record. When such a
+  row lands, the organization tells the Review (`ReviewRouted`, on its
+  reconciliation, once per row), and the approvals it holds are weighed
+  again: with every gate's passing run in, it settles on the last of
+  them. A Review rebuilt at a restart admits the plain verdicts the
+  record holds for it again, so the approvals given before the runs
+  survive it. A
+  prepared source's Review (an organization change) takes the route's
+  positions and no gate. A command verdict (`command_id`) is decided once by
   the same rules: redelivered after a lost response, or asked of the
   Review a restart rebuilds from `review.command_decided`, it answers
   the decision it made and writes nothing. The typed `dna.review.verdict`

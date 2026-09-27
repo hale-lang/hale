@@ -176,8 +176,11 @@ fn main() {
         node_main(word(a, 0), root, flag(a, "--fleet"), if len(tick) > 0 { std::str::parse_int(tick) or 1000 } else { 1000 });
         return;
     }
-    if verb == "verdict" {
-        ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), flag(a, "--evidence"), has_flag(a, "--no-wait"), flag(a, "--request-id"), memory);
+    if verb == "verdict" && has_flag(a, "--evidence") {
+        // GH #1161: a gate's run is the forge's, observed by the host
+        ans = fail("review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)");
+    } else if verb == "verdict" {
+        ans = verdict_command_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"), flag(a, "--request-id"), memory);
     } else if verb == "raise" {
         ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)), memory);
     } else if verb == "concern-raise" {

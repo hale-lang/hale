@@ -914,25 +914,23 @@ fn practice_command_verb(root: String, seed: String, sub: String, name: String, 
     return practice_verb(root, seed, sub, name, text, because, supersedes, who_flag, memory);
 }
 
-fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, evidence: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
-    if len(evidence) > 0 && seeded_group(id) { return fail("--evidence names gate runs at one candidate; a group's Reviews are decided one by one"); }
+fn verdict_command_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, request_id: String, memory: dna::Memory) -> Answer {
     if len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0 && !seeded_group(id) {
         let cli = GovernanceCli { root: root, memory: memory };
         let selected = cli.review_profile(id);
         if !selected.ok { return fail("cannot determine native Review profile: " + selected.error); }
         if selected.supported {
-            if len(evidence) > 0 { return fail("--evidence names gate runs, and a Practice Review has no gate"); }
             return cli.verdict(id, verdict, reviewer_flag, authority_flag, comment, if len(digest_flag) > 0 { digest_flag } else { selected.subject_digest }, request_id, no_wait);
         }
     }
     if len(request_id) > 0 { return fail("--request-id requires a configured native Practice Review command; design batches and unrelated Reviews keep their existing paths"); }
-    return verdict_verb(root, seed, id, verdict, reviewer_flag, authority_flag, comment, digest_flag, evidence, no_wait, memory);
+    return verdict_verb(root, seed, id, verdict, reviewer_flag, authority_flag, comment, digest_flag, no_wait, memory);
 }
 
 // ---- a verdict ------------------------------------------------------
 
 @unbounded
-fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, evidence: String, no_wait: Bool, memory: dna::Memory) -> Answer {
+fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool, memory: dna::Memory) -> Answer {
     if !(verdict == "approve" || verdict == "revise" || verdict == "reject" || verdict == "abstain") {
         return fail("review: verdict `" + verdict + "` is not one of approve | revise | reject | abstain");
     }
@@ -959,7 +957,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         while i < n {
             let r = p.review_of(nth(ids, i));
             if r.state == "pending" && r.group == id {
-                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", "", true, memory);
+                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", true, memory);
                 if !one.ok { return one; }
                 asked = asked + r.id + "\n";
                 count = count + 1;
@@ -1009,8 +1007,6 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     b.string_field("reviewer", reviewer);
     b.string_field("authority", authority);
     b.string_field("comment", comment);
-    // GH #1089: the gate runs the verdict cites, filed receipts by digest
-    if len(evidence) > 0 { b.string_field("evidence", dna::trim_nl(std::str::replace(evidence, ",", " "))); }
     b.end_object();
     if local {
         // GH #682, #986: the row is the fact; the host beside the organism
@@ -1374,6 +1370,37 @@ fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool 
 // only grows, so a row that lands after the mark is after it (GH #1182).
 fn watch(p: Projection) -> Bool { return p.j.refresh(); }
 
+// The gates a Review's route requires (its latest `review.routed` row),
+// space-separated.
+fn routed_gates(p: Projection, id: String) -> String {
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        if e.kind == "review.routed" && e.entity == id { return dna::native_json_string(e.body, "gates"); }
+        i = i - 1;
+    }
+    return "";
+}
+
+// The gate among `gates` (`gate:<workflow>/<job>`) a check run `name`d
+// for its job is the run of, "" when none: a gate is a workflow's job,
+// and the forge names a job's run by the job — a matrix leg as `job
+// (<values>)`, a reusable workflow's as `job / <callee job>`.
+@unbounded
+fn gate_of_run(gates: String, name: String) -> String {
+    let mut i = 0;
+    while len(dna::nth_word(gates, i)) > 0 {
+        let g = dna::nth_word(gates, i);
+        i = i + 1;
+        let bare = if std::str::starts_with(g, "gate:") { g[5..len(g)] } else { g };
+        let sl = std::str::index_of(bare, "/");
+        if sl < 0 { continue; }
+        let job = bare[(sl + 1)..len(bare)];
+        if name == job || std::str::starts_with(name, job + " (") || std::str::starts_with(name, job + " / ") { return g; }
+    }
+    return "";
+}
+
 @unbounded
 fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {
     if !forge.present() { return fail("no forge: " + forge.name()); }
@@ -1450,6 +1477,48 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
                     b.end_object();
                     if !append_as(root, "review.verdict", r.id, b.result(), "", memory) { return fail("the record refused the append"); }
                     out = out + r.id + ": " + verdict + " by " + login + " (" + authority + ") from the forge's review #" + number + "\n";
+                }
+            }
+        }
+        i = i + 1;
+    }
+    // 2b. GH #1161: the forge's check runs at the candidate become the gate
+    // runs a routed Review weighs, once each — the host's word that the
+    // forge ran them (`gate.observed`); a receipt anyone files is no run
+    i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        let pr = pr_of(p, r.id);
+        let gates = routed_gates(p, r.id);
+        if r.state == "pending" && r.is_mutation && len(pr) > 0 && len(gates) > 0 {
+            let ref = std::json::find_string_field(pr, "url");
+            let mut rest = forge.checks(ref, r.candidate_commit);
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+                if len(line) == 0 { continue; }
+                let name = tab_field(line, 0);
+                let conclusion = tab_field(line, 1);
+                // one Review's runs unread (a rate limit, a sha the forge does
+                // not know) is said, and the sync goes on with the rest
+                if name == "error" { out = out + r.id + ": the forge did not answer for its check runs: " + conclusion + "\n"; break; }
+                let gate = gate_of_run(gates, name);
+                // a run still going concludes nothing yet
+                if len(gate) == 0 || len(conclusion) == 0 { continue; }
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("gate", gate);
+                b.string_field("sha", tab_field(line, 2));
+                b.string_field("conclusion", conclusion);
+                b.string_field("url", tab_field(line, 3));
+                b.string_field("forge", forge.kind());
+                b.string_field("run", name);
+                b.end_object();
+                let q = open_projection(root, seed, "", memory);
+                if !has_row(q, "gate.observed", r.id, b.result()) {
+                    if !append_as(root, "gate.observed", r.id, b.result(), "", memory) { return fail("the record refused the append"); }
+                    out = out + r.id + ": " + gate + " " + conclusion + " at " + short(tab_field(line, 2)) + ", as the forge reports it\n";
                 }
             }
         }
