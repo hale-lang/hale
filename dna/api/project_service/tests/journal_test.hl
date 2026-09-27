@@ -349,7 +349,16 @@ locus JournalCases {
         head::write_cmd(dir, "held", argv);
         let held = head::start(dir, "held", self.cwd, "PROBE=1", argv);
         std::test::assert(held.pid > 0, "the held child has a pid");
-        let now = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(held.pid)).stdout;
+        // the fork may not have exec'd its inner shell yet when `start`
+        // returns; once it has, the FIFO holds it there, so a bounded wait
+        // for it to arrive is the whole race
+        let mut now = "";
+        let mut looked = 0;
+        while looked < 100 * dna::wait_scale() && !std::str::starts_with(now, "sh\n-c\ncd ") {
+            now = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(held.pid)).stdout;
+            if !std::str::starts_with(now, "sh\n-c\ncd ") { std::time::sleep(50ms); }
+            looked = looked + 1;
+        }
         std::test::assert(std::str::starts_with(now, "sh\n-c\ncd "), "the held child is still its inner shell: " + now);
         std::test::assert(head::cmd_matches(dir, "held", held.pid), "a child held in its inner shell is ours");
         let outer = std::str::parse_int(std::str::trim(dna::run_tool("ps\n-o\nppid=\n-p\n" + to_string(held.pid)).stdout)) or - 1;
