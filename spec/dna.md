@@ -1703,7 +1703,13 @@ memory is named to it.
   digest (`hats`, insert if absent).
 - **The claim** is taken at the head. The filter names the performer
   kind and identity, the capabilities the leg has, the data classes it
-  may see, the owners it works for and a TTL. The head picks the first
+  may see, the owners it works for and a TTL. The identity is a
+  position (`position:<name>`, `#<n>` for one worker of several) the
+  record knows, and **one the principal's person holds** (GH #1162): by
+  the graph's live `holds` edges — the edge, its position and its
+  holder not retired, the person not retired — or, under a record that
+  declares `dna.trust = local`, any position; otherwise the claim is
+  refused naming the person and the position. The head picks the first
   admitted attempt of that kind that is outstanding — asked to run
   (`effect.requested attempt:<id>`), no outcome — was relayed to legs
   (`effect.relayed attempt:<id>`: the owner records it when a leg relay

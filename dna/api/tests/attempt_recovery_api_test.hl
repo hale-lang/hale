@@ -52,6 +52,16 @@ locus RecoveryCases {
         // recorded as a leg's (GH #1158)
         self.f.append("effect.requested", "attempt:" + attempt, "{\"performer\": \"legs\"}");
         self.f.append("effect.relayed", "attempt:" + attempt, "attempt " + attempt + " relayed to legs by legs");
+        // riley holds the positions her legs work as (GH #1162: a lease's
+        // position is one its person holds)
+        let seat = ops::GraphEdge { kind: "holds" };
+        seat.member("position", "position:agent");
+        seat.member("holder", "riley");
+        self.f.append("graph.edge", seat.id(), seat.body());
+        let editor = ops::GraphEdge { kind: "holds" };
+        editor.member("position", "position:editor");
+        editor.member("holder", "riley");
+        self.f.append("graph.edge", editor.id(), editor.body());
     }
     fn run_cases() {
         self.seed();

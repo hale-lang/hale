@@ -180,6 +180,42 @@ locus RecordRoles {
     }
 }
 
+// Whether `person` holds `position` by the record's live `holds` edges
+// (GH #1162), as `RecordRoles.holds` reads them: an edge naming them
+// both, not retired (the edge, the position or the holder), and the
+// person not retired from the record. What a lease's position is bound
+// to under any trust but local.
+@unbounded
+fn person_holds(j: Journal, person: String, position: String) -> Bool {
+    if len(person) == 0 || len(position) == 0 { return false; }
+    let mut edges = "\n";
+    let mut held = false;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind == "graph.edge" && std::json::find_string_field(e.body, "kind") == "holds" && graph_member(e.body, "position") == position && graph_member(e.body, "holder") == person {
+            edges = edges + e.entity + "\n";
+            held = true;
+        }
+        if e.kind == "graph.retired" && (e.entity == position || e.entity == person) { edges = "\n"; held = false; }
+        if e.kind == "graph.retired" && std::str::contains(edges, "\n" + e.entity + "\n") {
+            edges = std::str::replace(edges, "\n" + e.entity + "\n", "\n");
+            held = edges != "\n";
+        }
+        if e.kind == "person.retired" && e.entity == person { return false; }
+    }
+    return held;
+}
+
+// Whether the record at `repo` declares `dna.trust = local`: one person
+// holding every position (unset is not local).
+fn record_trust_local(repo: String) -> Bool {
+    if len(repo) == 0 { return false; }
+    let t = GitRecord { repo: repo }.git("config\n--get\ndna.trust");
+    return t.code == 0 && trim_nl(t.stdout) == "local";
+}
+
 // The node a member of `role` names in a `graph.edge` body ("" when
 // none): the first `{"role": …, "node": …}` object of `members` whose
 // role is `role`.

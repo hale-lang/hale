@@ -141,6 +141,13 @@ locus App {
         std::test::assert(!self.has_row("effect.relayed", "attempt:" + attempt) && !self.has_row("attempt.outcome", attempt), "the organism holds it: not relayed, not settled");
         return attempt;
     }
+    fn release_of(request: String, identity: String, attempt: String, holder: String, token: Int) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: request, operation: "dna.attempt.release", operation_version: "1", application_id: identity, position_id: "org",
+            target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
+            attempt_id: attempt, holder: holder, token: token, narrative: "the seat check took it; given back"
+        };
+    }
     fn renewal_of(request: String, identity: String, attempt: String, holder: String, token: Int) -> ops::GovernanceCommand {
         return ops::GovernanceCommand {
             request_id: request, operation: "dna.attempt.renew", operation_version: "1", application_id: identity, position_id: "org",
@@ -222,6 +229,37 @@ locus App {
         // an attempt the organism performs itself (GH #1158): a person's case,
         // outstanding as a leg's is, which no human leg is handed below
         let ap = self.ask_person();
+        // ---- the lease's position is one the person holds (GH #1162): with
+        // no local trust declared, the graph's `holds` edges say who works
+        // as what — a position another holds, or none at all, is refused,
+        // naming both; a retired edge holds nothing
+        if label == "record" {
+            let untrusted = in_dir(self.app, "git\nconfig\n--local\n--unset-all\ndna.trust");
+            std::test::assert_eq_int(untrusted.code, 0, l + "the record declares no trust: " + untrusted.stderr);
+            let dave = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "dave" };
+            let eve = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "eve" };
+            let seat = ops::GraphEdge { kind: "holds" };
+            seat.member("position", "position:agent");
+            seat.member("holder", "dave");
+            let gj = dna::GitJournal { repo: self.app };
+            std::test::assert(gj.append(gj.revision(), "graph.edge", seat.id(), seat.body()).ok, l + "dave holds position:agent");
+            let head_s = record.head("journal").id;
+            let as_leader = commands.submit(dave, self.claim_of(label + "s1", identity, head_s, "agent", "position:leader#9", "internal public"));
+            std::test::assert(as_leader.ok && as_leader.receipt.state == "refused" && std::str::contains(as_leader.receipt.reason, "dave does not hold position:leader"), l + "dave may not work as a position he does not hold: " + as_leader.receipt.reason);
+            let as_agent = commands.submit(dave, self.claim_of(label + "s2", identity, head_s, "agent", "position:agent#9", "internal public"));
+            std::test::assert(as_agent.ok && !std::str::contains(as_agent.receipt.reason, "does not hold"), l + "and works as the one he holds: " + as_agent.receipt.reason);
+            if as_agent.receipt.state == "claimed" {
+                let back = commands.submit(dave, self.release_of(label + "s2r", identity, as_agent.receipt.attempt.attempt_id, "position:agent#9", as_agent.receipt.attempt.token));
+                std::test::assert(back.ok && back.receipt.attempt.state == "released", l + "given back: " + back.code + " " + back.receipt.reason);
+            }
+            let no_seat = commands.submit(eve, self.claim_of(label + "s3", identity, head_s, "agent", "position:agent#8", "internal public"));
+            std::test::assert(no_seat.ok && no_seat.receipt.state == "refused" && std::str::contains(no_seat.receipt.reason, "eve does not hold position:agent"), l + "a person seated nowhere works as nothing: " + no_seat.receipt.reason);
+            std::test::assert(gj.append(gj.revision(), "graph.retired", seat.id(), "{}").ok, l + "dave's seat retired");
+            let retired = commands.submit(dave, self.claim_of(label + "s4", identity, head_s, "agent", "position:agent#9", "internal public"));
+            std::test::assert(retired.ok && retired.receipt.state == "refused" && std::str::contains(retired.receipt.reason, "dave does not hold position:agent"), l + "a retired seat holds nothing: " + retired.receipt.reason);
+            let trusted = in_dir(self.app, "git\nconfig\n--local\ndna.trust\nlocal");
+            std::test::assert_eq_int(trusted.code, 0, l + "local trust again: " + trusted.stderr);
+        }
         // ---- t0: the effect classes, on a judgment of their own
         let head_c = record.head("journal").id;
         // the classes a Work admits: an edit, which changes source, admits no

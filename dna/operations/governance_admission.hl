@@ -661,6 +661,13 @@ locus GovernanceCommands {
                     // gets a refusal receipt, and a claim taken in memory that
                     // ends in no row is given back on the way out.
                     if !attempts.known_position(rj, self.record.location(), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows (a `position:<name>` the graph names, or one of the organization's own)")); }
+                    // GH #1162: the lease's position is one the principal's person
+                    // holds — by the graph's `holds` edges, or every position under
+                    // a record that declares `dna.trust = local`
+                    let seat = holder_base(command.performer);
+                    if !dna::record_trust_local(self.record.location()) && !dna::person_holds(rj, context.principal_name, seat) {
+                        return self.refusal(s, attempts.refused(context, command, context.principal_name + " does not hold " + seat + ": a leg works only as a position its person holds (the graph's `holds` edges; the record declares no local trust)"));
+                    }
                     let scan = attempts.candidates(rj, command);
                     if len(scan.names) == 0 { return self.refusal(s, attempts.refused(context, command, attempts.nothing_awaits(command, scan))); }
                     let mut rest = scan.names; let mut taken = ""; let mut lease = dna::Lease { };
